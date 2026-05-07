@@ -105,7 +105,7 @@ def _lifecycle_manager(
     port: int,
     bind: str,
     listen: str,
-    health_timeout: float = 10.0,
+    health_timeout: float = 60.0,
     shutdown_timeout: float = 10.0,
 ) -> GatewayLifecycleManager:
     return GatewayLifecycleManager(
@@ -133,10 +133,10 @@ def start_gateway(
     port: int = typer.Option(18790, "--port", "-p", help="Port to bind"),
     bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to bind"),
     listen: str = typer.Option("", "--listen", help="Host to bind (wins over --bind)"),
-    health_timeout: float = typer.Option(10.0, "--timeout", help="Health wait timeout"),
+    health_timeout: float = typer.Option(60.0, "--timeout", help="Readiness wait timeout"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Start the gateway in the background and wait for health."""
+    """Start the gateway in the background and wait for readiness."""
 
     manager = _lifecycle_manager(
         port=port,
@@ -181,7 +181,7 @@ def restart_gateway(
     port: int = typer.Option(18790, "--port", "-p", help="Port to restart"),
     bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to restart"),
     listen: str = typer.Option("", "--listen", help="Host to restart (wins over --bind)"),
-    health_timeout: float = typer.Option(10.0, "--timeout", help="Health wait timeout"),
+    health_timeout: float = typer.Option(60.0, "--timeout", help="Readiness wait timeout"),
     shutdown_timeout: float = typer.Option(
         10.0, "--shutdown-timeout", help="Shutdown wait timeout"
     ),

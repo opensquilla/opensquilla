@@ -1848,6 +1848,7 @@ async def start_gateway_server(
         memory_retrievers=svc.memory_retrievers,
         extra_routes=webhook_routes or None,
     )
+    app.state.gateway_ready = False
 
     server_handle = GatewayServer(app=app, config=config)
     server_handle._channel_manager = channel_manager
@@ -1892,4 +1893,5 @@ async def start_gateway_server(
             else:
                 log.warning("gateway.channel_failed", channel=name)
 
+    app.state.gateway_ready = True
     return server_handle

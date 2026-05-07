@@ -209,7 +209,10 @@ async def handle_ws_connection(
 
     # Step 1: Send connect.challenge
     nonce = str(uuid.uuid4())
-    await conn.send_event("connect.challenge", {"nonce": nonce})
+    try:
+        await conn.send_event("connect.challenge", {"nonce": nonce})
+    except WebSocketDisconnect:
+        return
 
     # Step 2: Pre-auth timeout — client must send connect request
     try:

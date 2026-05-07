@@ -76,7 +76,13 @@ def create_gateway_app(
 
     async def ready(request: Request) -> JSONResponse:
         uptime = int((time.time() - _start_time) * 1000)
-        return JSONResponse({"ready": True, "uptime_ms": uptime})
+        is_ready = bool(getattr(request.app.state, "gateway_ready", True))
+        payload = {
+            "ready": is_ready,
+            "status": "ready" if is_ready else "starting",
+            "uptime_ms": uptime,
+        }
+        return JSONResponse(payload, status_code=200 if is_ready else 503)
 
     async def api_config(request: Request) -> JSONResponse:
         ctx = _make_ctx(request)

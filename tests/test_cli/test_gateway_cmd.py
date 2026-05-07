@@ -169,6 +169,38 @@ def test_gateway_start_uses_same_interpreter_cli_boundary(tmp_path, monkeypatch)
     assert kwargs["shell"] is False
 
 
+def test_gateway_start_waits_for_readiness_after_liveness(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    calls = []
+    health_checks = 0
+    ready_checks = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(pid=4244)
+
+    def fake_health(self):
+        nonlocal health_checks
+        health_checks += 1
+        return health_checks > 1
+
+    def fake_ready(self):
+        ready_checks.append(True)
+        return len(ready_checks) > 1
+
+    monkeypatch.setattr(gateway_lifecycle.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(Manager, "_probe_health", fake_health)
+    monkeypatch.setattr(Manager, "_probe_ready", fake_ready, raising=False)
+    monkeypatch.setattr(gateway_lifecycle.time, "sleep", lambda _seconds: None)
+
+    result = runner.invoke(app, ["gateway", "start", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    assert _payload(result)["state"] == "running"
+    assert calls
+    assert len(ready_checks) == 2
+
+
 def test_gateway_health_probe_uses_loopback_for_wildcard_bind(monkeypatch) -> None:
     urls = []
 

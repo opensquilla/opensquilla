@@ -100,7 +100,7 @@ class GatewayLifecycleManager:
         host: str = "127.0.0.1",
         port: int = 18790,
         config_path: str | None = None,
-        health_timeout: float = 10.0,
+        health_timeout: float = 60.0,
         shutdown_timeout: float = 10.0,
         poll_interval: float = 0.2,
     ) -> None:
@@ -241,7 +241,7 @@ class GatewayLifecycleManager:
             pid=process.pid,
             managed=True,
             code="HEALTH_TIMEOUT",
-            message="Gateway did not become healthy before the timeout.",
+            message="Gateway did not become ready before the timeout.",
             exit_code_value=1,
         )
 
@@ -495,10 +495,29 @@ class GatewayLifecycleManager:
                 continue
         return False
 
+    def _probe_ready(self) -> bool:
+        saw_ready_endpoint = False
+        for path in ("ready", "readyz"):
+            request = Request(f"{_http_url(self.probe_host, self.port)}/{path}", method="GET")
+            try:
+                with urlopen(request, timeout=0.5) as response:  # noqa: S310 - local readiness probe.
+                    saw_ready_endpoint = True
+                    if 200 <= int(response.status) < 300:
+                        return True
+            except HTTPError as exc:
+                if int(getattr(exc, "code", 0)) != 404:
+                    saw_ready_endpoint = True
+                continue
+            except (OSError, URLError, TimeoutError):
+                continue
+        if saw_ready_endpoint:
+            return False
+        return self._probe_health()
+
     def _wait_for_health(self) -> bool:
         deadline = time.monotonic() + max(self.health_timeout, 0.0)
         while time.monotonic() <= deadline:
-            if self._probe_health():
+            if self._probe_ready():
                 return True
             time.sleep(self.poll_interval)
         return False

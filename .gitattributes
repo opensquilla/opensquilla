@@ -1,3 +1,5 @@
+*.sh text eol=lf
+
 src/opensquilla/squilla_router/models/*.pkl filter=lfs diff=lfs merge=lfs -text
 src/opensquilla/squilla_router/models/*.txt filter=lfs diff=lfs merge=lfs -text
 src/opensquilla/squilla_router/models/embeddings/**/*.onnx filter=lfs diff=lfs merge=lfs -text

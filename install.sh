@@ -68,7 +68,7 @@ check_squilla_router_assets() {
             missing+=("${path}")
             continue
         fi
-        if [[ "$(head -n 1 "${path}" 2>/dev/null)" == "${pointer_line}" ]]; then
+        if LC_ALL=C grep -q -m 1 -F -x "${pointer_line}" "${path}" 2>/dev/null; then
             pointers+=("${path}")
         fi
     done

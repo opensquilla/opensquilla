@@ -766,10 +766,15 @@ def _warn_channel_dependency_gaps(spec: ChannelSetupSpec, answers: dict[str, Any
             console.print(
                 warning_panel(
                     "Feishu websocket mode requires the optional feishu extra "
-                    "(lark-oapi). Reinstall with `.[recommended,feishu]` from "
-                    "this source checkout or `opensquilla[feishu]` before "
-                    "restarting the gateway, otherwise this channel will save "
-                    "but fail to start.",
+                    "(lark-oapi).\n\n"
+                    "[bold]Installed command:[/]\n"
+                    "  pwsh -ExecutionPolicy Bypass -File install.ps1 -Extras feishu\n"
+                    "  OPENSQUILLA_INSTALL_EXTRAS=feishu bash install.sh\n"
+                    "  opensquilla gateway restart\n\n"
+                    "[bold]Development checkout:[/]\n"
+                    "  uv sync --extra recommended --extra feishu\n"
+                    "  uv run opensquilla gateway restart --json\n\n"
+                    "[bold yellow]Restarting alone will not install Python packages.[/]",
                     title="Channel dependency missing",
                 )
             )
@@ -784,7 +789,7 @@ def _print_channel_saved(name: str) -> None:
     )
     console.print(
         f"  [dim]Verify after restart:[/dim] "
-        f"[{ACCENT_SOFT}]uv run opensquilla channels status "
+        f"[{ACCENT_SOFT}]opensquilla channels status "
         f"{markup_escape(name)} --json[/]"
     )
 

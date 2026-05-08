@@ -54,6 +54,26 @@ def test_chat_renders_live_and_historical_artifacts_as_header_auth_downloads() -
     assert "Authorization" in source
 
 
+def test_chat_artifact_images_render_as_preview_cards_and_refresh_on_done() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    render_start = source.index("function _renderArtifacts(artifacts)")
+    render_end = source.index("  async function _downloadArtifact", render_start)
+    render_body = source[render_start:render_end]
+    done_start = source.index("if (event.endsWith('.done') || event === 'chat.done') {")
+    done_end = source.index("        // On natural completion", done_start)
+    done_body = source[done_start:done_end]
+
+    assert "function _isImageArtifact(artifact)" in source
+    assert "function _artifactPreviewUrl(artifact)" in source
+    assert "class=\"msg-artifact-card msg-artifact-card--image\"" in render_body
+    assert "<img class=\"msg-artifact-preview\"" in render_body
+    assert "data-artifact-download" in render_body
+    assert "_scheduleHistorySync();" in done_body
+    assert ".msg-artifact-card--image" in css
+    assert ".msg-artifact-preview" in css
+
+
 def test_chat_final_text_reconciliation_preserves_live_artifacts() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("function _replaceStreamText(finalText)")

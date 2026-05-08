@@ -26,6 +26,17 @@ config schema.
 
 The fastest path to a running OpenSquilla on your local machine.
 
+Choose one path and stay on it:
+
+| Goal | Use this path | Commands use |
+| --- | --- | --- |
+| Run OpenSquilla as a local app | **Install** | `opensquilla ...` |
+| Modify or debug OpenSquilla source | **Develop from source** | `uv run opensquilla ...` |
+
+Both paths can start from `git clone`. In the install path, the clone is only
+the source package the installer reads from. In the development path, the clone
+is the live workspace.
+
 1. Install prerequisites: [git-lfs](https://git-lfs.com/) and
    [uv](https://docs.astral.sh/uv/).
 
@@ -38,8 +49,8 @@ The fastest path to a running OpenSquilla on your local machine.
    git lfs pull --include="src/opensquilla/squilla_router/models/**"
    ```
 
-3. Install with the recommended profile. This is the default profile and
-   includes the bundled SquillaRouter runtime and model dependencies.
+3. Install with the recommended profile. This creates a user-local
+   `opensquilla` command. The checkout-local `.venv`, if any, is not used.
 
    macOS / Linux:
 
@@ -53,12 +64,15 @@ The fastest path to a running OpenSquilla on your local machine.
    pwsh -ExecutionPolicy Bypass -File install.ps1
    ```
 
+   Optional channel adapters are installed only when requested. For example,
+   add Feishu websocket support with `-Extras feishu` on Windows or
+   `OPENSQUILLA_INSTALL_EXTRAS=feishu` on macOS/Linux.
+
    Only set `OPENSQUILLA_INSTALL_PROFILE=core` if you intentionally want
    to skip the bundled router.
 
-4. Configure (interactive wizard). Use the installed `opensquilla`
-   command for the steps below; do not prefix these commands with
-   `uv run` unless you are using the development install section.
+4. Configure. Use the installed `opensquilla` command below. Do not prefix
+   these commands with `uv run` unless you chose **Develop from source**.
 
    ```sh
    opensquilla onboard
@@ -101,18 +115,16 @@ cd opensquilla
 git lfs pull --include="src/opensquilla/squilla_router/models/**"
 ```
 
-### Install (user-local, recommended)
+### Install
 
-This is the normal install path for users. The scripts install
-`.[recommended]` by default, which includes the bundled SquillaRouter
-runtime dependencies. After this install, run `opensquilla ...`
-directly.
+Use this path when you want to run OpenSquilla, not edit its source.
+The clone is only the package source for the installer. After install,
+use `opensquilla ...`; do not use `uv run`.
 
-The scripts prefer `uv tool install` and fall back to
-`python -m pip install --user`. That installed CLI uses its own Python
-environment; it is intentionally separate from a checkout-local `.venv`.
-The post-install banner records a conventional user prefix and the
-default loopback bind so you know where to look.
+The scripts install `.[recommended]` by default. `recommended` is the
+normal runtime profile: router, memory, and local model dependencies.
+Messaging channel adapters are opt-in extras. Most users do not need
+every chat platform SDK.
 
 macOS / Linux:
 
@@ -126,25 +138,66 @@ Windows PowerShell:
 pwsh -ExecutionPolicy Bypass -File install.ps1
 ```
 
-**(optional)** Set `OPENSQUILLA_INSTALL_PROFILE=core` only if you want
-the minimal runtime without the bundled router, or
-`OPENSQUILLA_INSTALL_DRY_RUN=1` to print the plan without touching the
-system.
+Install channel extras into the same user-local command:
 
-### Install (for development) — optional
+```powershell
+pwsh -ExecutionPolicy Bypass -File install.ps1 -Extras feishu
+```
 
-Use this only when you want commands to run from the current source
-checkout. This creates a checkout-local `.venv`, separate from the
-user-local `opensquilla` installed above.
+```sh
+OPENSQUILLA_INSTALL_EXTRAS=feishu bash install.sh
+```
+
+Supported extras include `feishu`, `telegram`, `dingtalk`, `wecom`,
+`qq`, `msteams`, `matrix`, `matrix-e2e`, and `document-extras`.
+
+The scripts prefer `uv tool install` and fall back to
+`python -m pip install --user`. The installed command uses its own
+Python environment; it is separate from a checkout-local `.venv`.
+
+Useful install options:
+
+```powershell
+$env:OPENSQUILLA_INSTALL_PROFILE="core"          # minimal runtime
+$env:OPENSQUILLA_INSTALL_DRY_RUN="1"             # print the plan only
+```
+
+```sh
+OPENSQUILLA_INSTALL_PROFILE=core bash install.sh
+OPENSQUILLA_INSTALL_DRY_RUN=1 bash install.sh
+```
+
+To check which command your shell will run:
+
+```powershell
+where.exe opensquilla
+```
+
+```sh
+command -v opensquilla
+```
+
+### Develop from source
+
+Use this path only when you want to modify, test, or debug the current
+checkout. `uv sync` creates the checkout-local `.venv`, and `uv run`
+executes against the live source tree.
 
 ```sh
 uv sync --extra recommended
 uv run opensquilla --help
 ```
 
-In this mode prefix every `opensquilla ...` command below with `uv run`.
-Do not mix this mode with the user-local install when debugging router
-dependencies; they use different Python environments.
+Install extras into the same environment you run:
+
+```sh
+uv sync --extra recommended --extra feishu
+uv run opensquilla channels status feishu --json
+```
+
+In this mode, prefix every command below with `uv run`. Do not debug a
+development checkout through a user-local `opensquilla` command; that
+command runs in a different Python environment.
 
 ### First-run config
 

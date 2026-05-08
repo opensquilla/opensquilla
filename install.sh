@@ -17,6 +17,45 @@
 
 set -euo pipefail
 
+cli_profile=""
+cli_extras=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --profile)
+            cli_profile="${2:?install.sh: --profile requires a value}"
+            shift 2
+            ;;
+        --profile=*)
+            cli_profile="${1#*=}"
+            shift
+            ;;
+        --extras)
+            cli_extras="${2:?install.sh: --extras requires a value}"
+            shift 2
+            ;;
+        --extras=*)
+            cli_extras="${1#*=}"
+            shift
+            ;;
+        -h|--help)
+            cat <<HELP
+Usage: bash install.sh [--profile recommended|core] [--extras name[,name]]
+
+Environment equivalents:
+  OPENSQUILLA_INSTALL_PROFILE=recommended|core
+  OPENSQUILLA_INSTALL_EXTRAS=feishu,telegram
+  OPENSQUILLA_INSTALL_DRY_RUN=1
+HELP
+            exit 0
+            ;;
+        *)
+            echo "install.sh: unknown argument '$1'." >&2
+            echo "install.sh: run 'bash install.sh --help' for usage." >&2
+            exit 1
+            ;;
+    esac
+done
+
 # --- prefix resolution ------------------------------------------------------
 
 if [[ -n "${OPENSQUILLA_PREFIX:-}" ]]; then
@@ -28,15 +67,42 @@ else
 fi
 
 dry_run="${OPENSQUILLA_INSTALL_DRY_RUN:-0}"
-profile="${OPENSQUILLA_INSTALL_PROFILE:-recommended}"
+profile="${cli_profile:-${OPENSQUILLA_INSTALL_PROFILE:-recommended}}"
+
+valid_extras=" feishu telegram dingtalk wecom qq msteams matrix matrix-e2e document-extras "
+extras_csv="${OPENSQUILLA_INSTALL_EXTRAS:-}"
+if [[ -n "${cli_extras}" ]]; then
+    extras_csv="${extras_csv}${extras_csv:+,}${cli_extras}"
+fi
+extras_csv="${extras_csv// /,}"
+IFS=',' read -r -a raw_extras <<< "${extras_csv}"
+install_extras=()
+for extra in "${raw_extras[@]}"; do
+    [[ -n "${extra}" ]] || continue
+    if [[ "${valid_extras}" != *" ${extra} "* ]]; then
+        echo "install.sh: unsupported extra '${extra}'." >&2
+        echo "install.sh: supported extras:${valid_extras}" >&2
+        exit 1
+    fi
+    duplicate=0
+    for existing in "${install_extras[@]}"; do
+        if [[ "${existing}" == "${extra}" ]]; then
+            duplicate=1
+            break
+        fi
+    done
+    if [[ "${duplicate}" -eq 0 ]]; then
+        install_extras+=("${extra}")
+    fi
+done
 
 case "${profile}" in
     core|minimal)
         profile="core"
-        install_target="."
+        target_extras=()
         ;;
     recommended)
-        install_target=".[recommended]"
+        target_extras=(recommended)
         ;;
     *)
         echo "install.sh: unsupported OPENSQUILLA_INSTALL_PROFILE='${profile}'." >&2
@@ -44,6 +110,13 @@ case "${profile}" in
         exit 1
         ;;
 esac
+target_extras+=("${install_extras[@]}")
+if (( ${#target_extras[@]} > 0 )); then
+    joined_extras="$(IFS=,; echo "${target_extras[*]}")"
+    install_target=".[${joined_extras}]"
+else
+    install_target="."
+fi
 
 check_squilla_router_assets() {
     local mode="${1:-strict}"
@@ -100,7 +173,7 @@ installer=""
 install_args=()
 if command -v uv >/dev/null 2>&1; then
     installer="uv"
-    install_args=(uv tool install "${install_target}")
+    install_args=(uv tool install --force --reinstall-package opensquilla "${install_target}")
 elif command -v python3 >/dev/null 2>&1; then
     installer="pip"
     install_args=(python3 -m pip install --user "${install_target}")
@@ -117,6 +190,7 @@ print_banner() {
     cat <<BANNER
 ────────────────────────────────────────────────────────────────────────────
 OpenSquilla installed via ${installer} → ${prefix} (profile: ${profile})
+Extras: $(if (( ${#install_extras[@]} > 0 )); then IFS=,; echo "${install_extras[*]}"; else echo "none"; fi)
 
 Default gateway bind: 127.0.0.1:18790 (loopback only)
 Network exposure is opt-in only. To expose the gateway on the network you

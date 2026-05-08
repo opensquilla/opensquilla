@@ -14,6 +14,11 @@
 # Dry-run: set $env:OPENSQUILLA_INSTALL_DRY_RUN="1" to print the install plan +
 # banner without touching the system.
 
+param(
+    [string]$Profile = "",
+    [string[]]$Extras = @()
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -28,16 +33,72 @@ if ($env:OPENSQUILLA_PREFIX) {
 }
 
 $dryRun = $env:OPENSQUILLA_INSTALL_DRY_RUN -eq '1'
-$profile = if ($env:OPENSQUILLA_INSTALL_PROFILE) { $env:OPENSQUILLA_INSTALL_PROFILE } else { 'recommended' }
+$profile = if ($Profile) {
+    $Profile
+} elseif ($env:OPENSQUILLA_INSTALL_PROFILE) {
+    $env:OPENSQUILLA_INSTALL_PROFILE
+} else {
+    'recommended'
+}
+
+$validExtras = @(
+    'feishu',
+    'telegram',
+    'dingtalk',
+    'wecom',
+    'qq',
+    'msteams',
+    'matrix',
+    'matrix-e2e',
+    'document-extras'
+)
+
+function Split-InstallExtras {
+    param([string[]]$Values)
+
+    $items = New-Object System.Collections.Generic.List[string]
+    foreach ($value in $Values) {
+        if (-not $value) {
+            continue
+        }
+        foreach ($part in ($value -split '[,\s]+')) {
+            $item = $part.Trim()
+            if ($item -and -not $items.Contains($item)) {
+                $items.Add($item)
+            }
+        }
+    }
+    return $items.ToArray()
+}
+
+$extraInputs = @()
+if ($env:OPENSQUILLA_INSTALL_EXTRAS) {
+    $extraInputs += $env:OPENSQUILLA_INSTALL_EXTRAS
+}
+$extraInputs += $Extras
+$installExtras = @(Split-InstallExtras $extraInputs)
+
+$unknownExtras = @($installExtras | Where-Object { $_ -notin $validExtras })
+if ($unknownExtras.Count -gt 0) {
+    Write-Error "install.ps1: unsupported extras: $($unknownExtras -join ', '). Supported extras: $($validExtras -join ', ')."
+    exit 1
+}
 
 switch ($profile) {
-    'core' { $installTarget = '.' }
-    'minimal' { $profile = 'core'; $installTarget = '.' }
-    'recommended' { $installTarget = '.[recommended]' }
+    'core' { $targetExtras = @() }
+    'minimal' { $profile = 'core'; $targetExtras = @() }
+    'recommended' { $targetExtras = @('recommended') }
     default {
         Write-Error "install.ps1: unsupported OPENSQUILLA_INSTALL_PROFILE='$profile'. Supported profiles: core, recommended."
         exit 1
     }
+}
+
+$targetExtras += $installExtras
+$installTarget = if ($targetExtras.Count -gt 0) {
+    ".[$($targetExtras -join ',')]"
+} else {
+    '.'
 }
 
 function Test-SquillaRouterAssets {
@@ -103,17 +164,23 @@ function Test-SquillaRouterAssets {
 # --- installer selection ----------------------------------------------------
 
 $installer = $null
-$installCmd = $null
+$installArgs = @()
 
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     $installer = 'uv'
-    $installCmd = "uv tool install $installTarget"
+    $installArgs = @('tool', 'install', '--force', '--reinstall-package', 'opensquilla', $installTarget)
 } elseif (Get-Command python -ErrorAction SilentlyContinue) {
     $installer = 'pip'
-    $installCmd = "python -m pip install --user $installTarget"
+    $installArgs = @('-m', 'pip', 'install', '--user', $installTarget)
 } else {
     Write-Error "install.ps1: neither 'uv' nor 'python' is available on PATH. Install uv (https://docs.astral.sh/uv/) or Python 3.12+ and retry."
     exit 1
+}
+
+$installCmd = if ($installer -eq 'uv') {
+    "uv $($installArgs -join ' ')"
+} else {
+    "python $($installArgs -join ' ')"
 }
 
 # --- banner -----------------------------------------------------------------
@@ -122,6 +189,7 @@ function Write-Banner {
     @"
 ────────────────────────────────────────────────────────────────────────────
 OpenSquilla installed via $installer → $prefix (profile: $profile)
+Extras: $(if ($installExtras.Count -gt 0) { $installExtras -join ', ' } else { 'none' })
 
 Default gateway bind: 127.0.0.1:18790 (loopback only)
 Network exposure is opt-in only. To expose the gateway on the network you
@@ -160,7 +228,11 @@ Test-SquillaRouterAssets
 
 Write-Host "install.ps1: installing via $installer into prefix $prefix"
 Write-Host "install.ps1: running: $installCmd"
-Invoke-Expression $installCmd
+if ($installer -eq 'uv') {
+    & uv @installArgs
+} else {
+    & python @installArgs
+}
 
 Write-Banner
 if ($env:OPENSQUILLA_LISTEN -eq '0.0.0.0') {

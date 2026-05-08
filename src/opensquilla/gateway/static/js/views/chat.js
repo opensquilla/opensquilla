@@ -2295,6 +2295,7 @@ const ChatView = (() => {
             __savings_ui_suppressed: !!u.__savings_ui_suppressed,
           });
         }
+        _scheduleHistorySync();
 
         // On natural completion, drain the head of the pending queue (FIFO).
         // On abort, recover pending into the composer instead — the user
@@ -3351,6 +3352,23 @@ const ChatView = (() => {
     }
   }
 
+  function _isImageArtifact(artifact) {
+    const mime = artifact && artifact.mime ? String(artifact.mime).toLowerCase() : '';
+    return mime.startsWith('image/');
+  }
+
+  function _artifactPreviewUrl(artifact) {
+    const raw = _artifactDownloadUrl(artifact);
+    if (!raw) return '';
+    try {
+      const url = new URL(raw, window.location.origin);
+      if (_sessionKey) url.searchParams.set('sessionKey', _sessionKey);
+      return url.pathname + url.search + url.hash;
+    } catch {
+      return raw;
+    }
+  }
+
   function _renderArtifacts(artifacts) {
     if (!Array.isArray(artifacts) || artifacts.length === 0) return '';
     let html = '<div class="msg-artifacts">';
@@ -3359,11 +3377,24 @@ const ChatView = (() => {
       const mime = artifact && artifact.mime ? String(artifact.mime) : 'artifact';
       const size = artifact && artifact.size ? `${Math.max(1, Math.round(Number(artifact.size) / 1024))} KB` : '';
       const downloadUrl = _artifactDownloadUrl(artifact || {});
-      html += `<button type="button" class="msg-artifact-chip" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="${_esc(name)}">
-        <span class="msg-file-chip__icon" aria-hidden="true">file</span>
-        <span class="msg-file-chip__name">${_esc(name)}</span>
-        <span class="msg-file-chip__meta">${_esc([mime, size].filter(Boolean).join(' · '))}</span>
-      </button>`;
+      const meta = [mime, size].filter(Boolean).join(' · ');
+      if (_isImageArtifact(artifact)) {
+        const previewUrl = _artifactPreviewUrl(artifact || {});
+        html += `<button type="button" class="msg-artifact-card msg-artifact-card--image" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="Download ${_esc(name)}">
+          ${previewUrl ? `<img class="msg-artifact-preview" src="${_esc(previewUrl)}" alt="${_esc(name)}" loading="lazy">` : '<span class="msg-artifact-preview msg-artifact-preview--empty" aria-hidden="true"></span>'}
+          <span class="msg-artifact-card__body">
+            <span class="msg-artifact-card__name">${_esc(name)}</span>
+            <span class="msg-artifact-card__meta">${_esc(meta)}</span>
+          </span>
+          <span class="msg-artifact-card__action" aria-hidden="true">Download</span>
+        </button>`;
+      } else {
+        html += `<button type="button" class="msg-artifact-chip" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="${_esc(name)}">
+          <span class="msg-file-chip__icon" aria-hidden="true">file</span>
+          <span class="msg-file-chip__name">${_esc(name)}</span>
+          <span class="msg-file-chip__meta">${_esc(meta)}</span>
+        </button>`;
+      }
     });
     html += '</div>';
     return html;

@@ -8,16 +8,6 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-from opensquilla.cli.ui import (
-    ACCENT,
-    ACCENT_DIM,
-    ACCENT_SOFT,
-    banner_panel,
-    console,
-    markup_escape,
-    questionary_style,
-    warning_panel,
-)
 from opensquilla.onboarding.channel_specs import (
     ChannelSetupField,
     ChannelSetupSpec,
@@ -51,6 +41,16 @@ from opensquilla.onboarding.search_specs import (
     list_search_provider_setup_specs,
 )
 from opensquilla.onboarding.status import get_onboarding_status
+from opensquilla.ui import (
+    ACCENT,
+    ACCENT_DIM,
+    ACCENT_SOFT,
+    banner_panel,
+    console,
+    markup_escape,
+    questionary_style,
+    warning_panel,
+)
 
 _QSTYLE = None
 

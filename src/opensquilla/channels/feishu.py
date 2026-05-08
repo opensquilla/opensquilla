@@ -149,7 +149,7 @@ def _verify_feishu_signature(
 
 def _import_lark_oapi() -> Any:
     try:
-        import lark_oapi as lark  # type: ignore[import-not-found]
+        import lark_oapi as lark  # type: ignore[import-not-found, import-untyped]
     except ImportError as exc:
         raise RuntimeError(
             "Install Feishu support with `uv sync --extra feishu` or "

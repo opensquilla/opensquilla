@@ -484,9 +484,9 @@ def test_readme_distinguishes_recommended_profile_from_channel_extras() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
     assert "Choose one path and stay on it:" in readme
-    assert "| Run OpenSquilla as a local app | **Install** | `opensquilla ...` |" in readme
+    assert "| Run OpenSquilla as a local app | [Install](#install) | `opensquilla ...` |" in readme
     assert (
-        "| Modify or debug OpenSquilla source | **Develop from source** | "
+        "| Modify or debug OpenSquilla source | [Develop from source](#develop-from-source) | "
         "`uv run opensquilla ...` |"
     ) in readme
     assert "`recommended` is the\nnormal runtime profile" in readme

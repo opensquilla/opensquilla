@@ -98,7 +98,10 @@ def _row_to_job(row: aiosqlite.Row) -> CronJob:
         except (IndexError, KeyError):
             return default
 
-    raw_payload = json.loads(row["payload"])
+    try:
+        raw_payload = json.loads(row["payload"] or "{}")
+    except json.JSONDecodeError:
+        raw_payload = {}
     raw_target = SessionTarget(_get("session_target", "isolated"))
     raw_session_key = _get("session_key", "") or ""
     raw_origin_session_key = _get("origin_session_key", "") or ""

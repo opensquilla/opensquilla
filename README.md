@@ -37,7 +37,7 @@ Both paths can start from `git clone`. In the install path, the clone is only
 the source package the installer reads from. In the development path, the clone
 is the live workspace.
 
-1. Install prerequisites: [git-lfs](https://git-lfs.com/) and
+1. Install prerequisites: [git](https://git-scm.com), [git-lfs](https://git-lfs.com/) and
    [uv](https://docs.astral.sh/uv/).
 
 2. Clone with LFS assets:

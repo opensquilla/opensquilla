@@ -27,6 +27,11 @@ class UsageSummary:
     cost_source: str = "none"
     model: str = ""
     aggregate: bool = False
+    baseline_model: str = ""
+    routed_model: str = ""
+    savings_usd: float = 0.0
+    total_savings_usd: float = 0.0
+    total_savings_pct: float = 0.0
 
     @classmethod
     def from_done_event(cls, event: object) -> UsageSummary:
@@ -39,6 +44,11 @@ class UsageSummary:
             billed_cost=float(getattr(event, "billed_cost", 0.0) or 0.0),
             cost_source=str(getattr(event, "cost_source", "none") or "none"),
             model=str(getattr(event, "model", "") or ""),
+            baseline_model=str(getattr(event, "baseline_model", "") or ""),
+            routed_model=str(getattr(event, "routed_model", "") or ""),
+            savings_usd=float(getattr(event, "savings_usd", 0.0) or 0.0),
+            total_savings_usd=float(getattr(event, "total_savings_usd", 0.0) or 0.0),
+            total_savings_pct=float(getattr(event, "total_savings_pct", 0.0) or 0.0),
         )
 
     @classmethod
@@ -56,6 +66,21 @@ class UsageSummary:
                 payload.get("cost_source") or payload.get("costSource") or "none"
             ),
             model=str(payload.get("model") or ""),
+            baseline_model=str(
+                payload.get("baseline_model") or payload.get("baselineModel") or ""
+            ),
+            routed_model=str(
+                payload.get("routed_model") or payload.get("routedModel") or ""
+            ),
+            savings_usd=float(
+                payload.get("savings_usd") or payload.get("savingsUsd") or 0.0
+            ),
+            total_savings_usd=float(
+                payload.get("total_savings_usd") or payload.get("totalSavingsUsd") or 0.0
+            ),
+            total_savings_pct=float(
+                payload.get("total_savings_pct") or payload.get("totalSavingsPct") or 0.0
+            ),
         )
 
     def has_values(self) -> bool:
@@ -77,6 +102,8 @@ class UsageCounter:
     reasoning_tokens: int = 0
     cached_tokens: int = 0
     cost_usd: float = 0.0
+    total_savings_usd: float = 0.0
+    baseline_model: str = ""
 
     def add(self, usage: UsageSummary | None) -> None:
         if usage is None:
@@ -86,6 +113,9 @@ class UsageCounter:
         self.reasoning_tokens += usage.reasoning_tokens
         self.cached_tokens += usage.cached_tokens
         self.cost_usd += usage.cost_usd
+        self.total_savings_usd += usage.total_savings_usd
+        if usage.baseline_model:
+            self.baseline_model = usage.baseline_model
 
     def reset(self) -> None:
         self.input_tokens = 0
@@ -93,14 +123,28 @@ class UsageCounter:
         self.reasoning_tokens = 0
         self.cached_tokens = 0
         self.cost_usd = 0.0
+        self.total_savings_usd = 0.0
+        self.baseline_model = ""
 
     def render(self) -> str:
         total = self.input_tokens + self.output_tokens
-        return (
+        line = (
             f"{total:,} tok ({self.input_tokens:,} in / {self.output_tokens:,} out)"
             f" · cache {self.cached_tokens:,}"
             f" · ${self.cost_usd:.6f}"
         )
+        if self.total_savings_usd > 0:
+            baseline_cost = self.cost_usd + self.total_savings_usd
+            pct = (
+                (self.total_savings_usd / baseline_cost) * 100
+                if baseline_cost > 0
+                else 0.0
+            )
+            tail = f"saved ~{pct:.0f}% vs ${baseline_cost:.6f}"
+            if self.baseline_model:
+                tail += f" if routed straight to {self.baseline_model}"
+            line += " · " + tail
+        return line
 
 
 @dataclass

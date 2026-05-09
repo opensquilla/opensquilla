@@ -483,15 +483,16 @@ def test_channel_saved_output_separates_configured_from_connected(capsys):
 def test_readme_distinguishes_recommended_profile_from_channel_extras() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "Choose one path and stay on it:" in readme
-    assert "| Run OpenSquilla as a local app | [Install](#install) | `opensquilla ...` |" in readme
+    assert "| New user | [Release package](#release-package-coming-soon) | Coming soon |" in readme
     assert (
-        "| Modify or debug OpenSquilla source | [Develop from source](#develop-from-source) | "
-        "`uv run opensquilla ...` |"
+        "| Command-line user | [Install from source](#install-from-source) | Available now |"
     ) in readme
+    assert "| Developer | [Develop from source](#develop-from-source) | Available now |" in readme
+    assert "Public release packages are not published yet." in readme
     assert "`recommended` is the\nnormal runtime profile" in readme
     assert "Messaging channel adapters are opt-in extras." in readme
-    assert "pwsh -ExecutionPolicy Bypass -File install.ps1 -Extras feishu" in readme
+    assert "Feishu is shown only\nas an example channel adapter" in readme
+    assert "powershell -ExecutionPolicy Bypass -File .\\install.ps1 -Extras feishu" in readme
     assert "OPENSQUILLA_INSTALL_EXTRAS=feishu bash install.sh" in readme
     assert "Install extras into the same environment you run:" in readme
     assert "uv sync --extra recommended --extra feishu" in readme

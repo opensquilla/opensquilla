@@ -5,6 +5,8 @@
 #   - prefers uv tool install; falls back to pip --user; errors clearly if neither exists
 #   - defaults to the "recommended" runtime profile (memory + bundled v4 router)
 #     and allows `$env:OPENSQUILLA_INSTALL_PROFILE="core"` to opt back down
+#   - on Windows, best-effort installs Microsoft Visual C++ Redistributable
+#     before the recommended router profile because onnxruntime requires it
 #   - prints a post-install banner documenting the default bind
 #     (127.0.0.1:18790) and the explicit opt-in required to expose the gateway
 #     on the network (-Listen 0.0.0.0 or $env:OPENSQUILLA_LISTEN="0.0.0.0")
@@ -33,6 +35,11 @@ if ($env:OPENSQUILLA_PREFIX) {
 }
 
 $dryRun = $env:OPENSQUILLA_INSTALL_DRY_RUN -eq '1'
+$script:isWindowsHost = if (Get-Variable IsWindows -ErrorAction SilentlyContinue) {
+    $IsWindows
+} else {
+    $env:OS -eq 'Windows_NT'
+}
 $profile = if ($Profile) {
     $Profile
 } elseif ($env:OPENSQUILLA_INSTALL_PROFILE) {
@@ -161,6 +168,65 @@ function Test-SquillaRouterAssets {
     }
 }
 
+function Test-WindowsVCRedistInstalled {
+    if (-not $script:isWindowsHost) {
+        return $true
+    }
+
+    $runtimeKeys = @(
+        'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+    )
+    foreach ($key in $runtimeKeys) {
+        if (-not (Test-Path $key)) {
+            continue
+        }
+        $runtime = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+        if ($runtime -and $runtime.Installed -eq 1 -and $runtime.Major -ge 14) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Install-WindowsVCRedistIfNeeded {
+    if (-not $script:isWindowsHost -or $profile -ne 'recommended') {
+        return
+    }
+    if ($env:OPENSQUILLA_SKIP_VC_REDIST -eq '1') {
+        Write-Host 'install.ps1: skipping Microsoft Visual C++ Redistributable check because OPENSQUILLA_SKIP_VC_REDIST=1.'
+        return
+    }
+    if (Test-WindowsVCRedistInstalled) {
+        Write-Host 'install.ps1: Microsoft Visual C++ Redistributable is already installed.'
+        return
+    }
+
+    $redistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        Write-Host 'install.ps1: Microsoft Visual C++ Redistributable not detected; installing with winget.'
+        $wingetArgs = @(
+            'install',
+            '--id',
+            'Microsoft.VCRedist.2015+.x64',
+            '--exact',
+            '--silent',
+            '--accept-package-agreements',
+            '--accept-source-agreements'
+        )
+        & winget @wingetArgs
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host 'install.ps1: Microsoft Visual C++ Redistributable installation completed.'
+            return
+        }
+        Write-Warning "install.ps1: winget could not install Microsoft Visual C++ Redistributable (exit $LASTEXITCODE)."
+    }
+
+    Write-Warning 'install.ps1: Microsoft Visual C++ Redistributable is needed for the bundled router on many Windows machines.'
+    Write-Warning "install.ps1: install it from $redistUrl, then restart PowerShell if onnxruntime reports DLL load failures."
+}
+
 # --- installer selection ----------------------------------------------------
 
 $installer = $null
@@ -187,8 +253,8 @@ $installCmd = if ($installer -eq 'uv') {
 
 function Write-Banner {
     @"
-────────────────────────────────────────────────────────────────────────────
-OpenSquilla installed via $installer → $prefix (profile: $profile)
+----------------------------------------------------------------------------
+OpenSquilla installed via $installer -> $prefix (profile: $profile)
 Extras: $(if ($installExtras.Count -gt 0) { $installExtras -join ', ' } else { 'none' })
 
 Default gateway bind: 127.0.0.1:18790 (loopback only)
@@ -199,13 +265,13 @@ must use one of:
 
 Reminder: only expose 0.0.0.0 behind a trusted reverse proxy or VPN. The
 gateway's first-class auth assumes loopback-scope by default.
-────────────────────────────────────────────────────────────────────────────
+----------------------------------------------------------------------------
 "@ | Write-Host
 }
 
 function Write-ListenWarning {
     @"
-⚠  WARNING: you have selected network-exposed default — ensure you
+WARNING: you have selected network-exposed default - ensure you
    understand the blast radius. The gateway will bind to 0.0.0.0 and be
    reachable from every interface on this host.
 "@ | Write-Host
@@ -224,6 +290,7 @@ if ($dryRun) {
 
 # --- execute ---------------------------------------------------------------
 
+Install-WindowsVCRedistIfNeeded
 Test-SquillaRouterAssets
 
 Write-Host "install.ps1: installing via $installer into prefix $prefix"
@@ -232,6 +299,11 @@ if ($installer -eq 'uv') {
     & uv @installArgs
 } else {
     & python @installArgs
+}
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "install.ps1: install command failed with exit code $LASTEXITCODE."
+    Write-Error 'install.ps1: Close any running OpenSquilla gateway or shell using the existing tool environment, then retry.'
+    exit $LASTEXITCODE
 }
 
 Write-Banner

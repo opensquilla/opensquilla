@@ -199,6 +199,31 @@ class RoutingDecision:
     source: str  # "image_route" | "v4_phase3" | "v4_unavailable" | "default"
 
 
+class _UnavailableV4Strategy:
+    source = "v4_unavailable"
+    requires_history = True
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def classify(
+        self,
+        message: str,
+        valid_tiers: list[str],
+        routing_history: list[dict] | None = None,
+        **kwargs: object,
+    ) -> tuple[str, float, str, dict]:
+        tier = "t1" if "t1" in valid_tiers else (valid_tiers[0] if valid_tiers else "t1")
+        return tier, 0.0, "v4_unavailable", {
+            "route_class": "R1",
+            "top1_label": "R1",
+            "thinking_mode": "T1",
+            "prompt_policy": "P1",
+            "model_version": "unavailable",
+            "error": str(self.error),
+        }
+
+
 def _strategy_cache_key(config: object) -> tuple:
     strategy_name = _strategy_name(config)
     confidence = getattr(config, "confidence_threshold", 0.5)
@@ -236,15 +261,19 @@ def _get_strategy(config: object) -> RouterStrategy:
             _history_store.clear()
         from opensquilla.squilla_router.v4_phase3 import V4Phase3Strategy
 
-        strategy = cast(
-            RouterStrategy,
-            V4Phase3Strategy(
-                bundle_dir=getattr(config, "v4_bundle_dir", None),
-                confidence_threshold=getattr(config, "confidence_threshold", 0.5),
-                require_router_runtime=getattr(config, "require_router_runtime", False),
-                use_aux_head=getattr(config, "v4_use_aux_head", None),
-            ),
-        )
+        try:
+            strategy = cast(
+                RouterStrategy,
+                V4Phase3Strategy(
+                    bundle_dir=getattr(config, "v4_bundle_dir", None),
+                    confidence_threshold=getattr(config, "confidence_threshold", 0.5),
+                    require_router_runtime=getattr(config, "require_router_runtime", False),
+                    use_aux_head=getattr(config, "v4_use_aux_head", None),
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("squilla_router.strategy_unavailable", error=str(exc))
+            strategy = _UnavailableV4Strategy(exc)
         _strategy = strategy
         _strategy_key = key
         return strategy

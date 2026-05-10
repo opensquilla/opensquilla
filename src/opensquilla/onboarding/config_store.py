@@ -61,11 +61,19 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
     target = _resolve_path(path)
     if not target.exists():
         cfg = GatewayConfig()
+        if cfg.llm.api_key:
+            cfg.mark_runtime_secret("llm.api_key")
         cfg.config_path = str(target)
         return cfg
     with target.open("rb") as fh:
         data = tomllib.load(fh)
     cfg = GatewayConfig.model_validate(data)
+    llm_payload = data.get("llm") if isinstance(data, dict) else None
+    if (
+        (not isinstance(llm_payload, dict) or "api_key" not in llm_payload)
+        and cfg.llm.api_key
+    ):
+        cfg.mark_runtime_secret("llm.api_key")
     cfg.config_path = str(target)
     return cfg
 

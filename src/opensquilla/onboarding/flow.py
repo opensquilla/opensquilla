@@ -796,7 +796,8 @@ def _print_channel_saved(name: str) -> None:
 
 def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
     cfg = load_config()
-    if options.if_needed and get_onboarding_status(cfg).llm_configured:
+    status = get_onboarding_status(cfg)
+    if options.if_needed and status.has_config and status.llm_configured:
         return persist_config(cfg, restart_required=False, backup=False)
 
     if not _is_tty():

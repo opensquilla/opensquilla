@@ -175,6 +175,100 @@ def test_onboard_if_needed_skips_when_key_comes_from_env(tmp_path, monkeypatch):
     assert "already complete" in result.stdout.lower()
 
 
+def test_onboard_if_needed_does_not_treat_env_as_config_without_config_file(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-from-env")
+
+    result = runner.invoke(app, ["onboard", "--if-needed"])
+
+    assert result.exit_code == 2
+    assert "requires a TTY" in result.stdout
+    assert "already complete" not in result.stdout.lower()
+    assert not target.exists()
+
+
+def test_onboard_if_needed_requires_config_to_reference_env_key(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    target.write_text(
+        '[llm]\n'
+        'provider = "openrouter"\n'
+        'model = "deepseek/deepseek-v4-flash"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-from-env")
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(app, ["onboard", "--if-needed"])
+
+    assert result.exit_code == 2
+    assert "requires a TTY" in result.stdout
+    assert "already complete" not in result.stdout.lower()
+
+
+def test_onboard_if_needed_does_not_accept_settings_env_without_config_reference(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    target.write_text(
+        '[llm]\n'
+        'provider = "openrouter"\n'
+        'model = "deepseek/deepseek-v4-flash"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "sk-from-settings-env")
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(app, ["onboard", "--if-needed"])
+
+    assert result.exit_code == 2
+    assert "requires a TTY" in result.stdout
+    assert "already complete" not in result.stdout.lower()
+
+
+def test_onboard_if_needed_does_not_accept_settings_env_with_empty_config(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    target.write_text("", encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "sk-from-settings-env")
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(app, ["onboard", "--if-needed"])
+
+    assert result.exit_code == 2
+    assert "requires a TTY" in result.stdout
+    assert "already complete" not in result.stdout.lower()
+
+
+def test_onboard_if_needed_requires_referenced_env_even_with_settings_env(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    target.write_text(
+        '[llm]\n'
+        'provider = "openrouter"\n'
+        'model = "deepseek/deepseek-v4-flash"\n'
+        'api_key_env = "OPENROUTER_API_KEY"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "sk-from-settings-env")
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(app, ["onboard", "--if-needed"])
+
+    assert result.exit_code == 2
+    assert "requires a TTY" in result.stdout
+    assert "already complete" not in result.stdout.lower()
+
+
 def test_configure_provider_noninteractive_uses_setup_engine(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
@@ -406,6 +500,88 @@ def test_configure_channel_noninteractive_adds_slack(tmp_path, monkeypatch):
     assert data["channels"]["channels"][0]["name"] == "work"
 
 
+def test_configure_channels_noninteractive_accepts_spec_fields_for_feishu(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "channels",
+            "--channel-type",
+            "feishu",
+            "--name",
+            "feishu-main",
+            "--field",
+            "app_id=cli_123",
+            "--field",
+            "app_secret=secret_123",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    data = tomllib.loads(target.read_text())
+    entry = data["channels"]["channels"][0]
+    assert entry["type"] == "feishu"
+    assert entry["name"] == "feishu-main"
+    assert entry["app_id"] == "cli_123"
+    assert entry["app_secret"] == "secret_123"
+    assert "secret_123" not in result.stdout
+
+
+def test_configure_channels_rejects_unknown_field(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "channels",
+            "--channel-type",
+            "feishu",
+            "--name",
+            "feishu-main",
+            "--field",
+            "not_a_field=value",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "unknown field" in result.output.lower()
+    assert not target.exists()
+
+
+def test_configure_channels_token_only_does_not_complete_feishu(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "channels",
+            "--channel-type",
+            "feishu",
+            "--name",
+            "feishu-main",
+            "--token",
+            "secret",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "app_id" in result.output or "app_secret" in result.output
+    assert not target.exists()
+
+
 def test_configure_image_generation_noninteractive_uses_env(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
@@ -427,6 +603,36 @@ def test_configure_image_generation_noninteractive_uses_env(tmp_path, monkeypatc
     data = tomllib.loads(target.read_text())
     assert data["image_generation"]["enabled"] is True
     assert data["image_generation"]["providers"]["openrouter"]["api_key"] == ""
+
+
+def test_configure_image_generation_can_use_nondefault_env_reference(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_TEST_IMAGE_KEY", "sk-image-env")
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "image-generation",
+            "--image-provider",
+            "openrouter",
+            "--primary",
+            "openrouter/google/gemini-3.1-flash-image-preview",
+            "--api-key-env",
+            "OPENSQUILLA_TEST_IMAGE_KEY",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    data = tomllib.loads(target.read_text())
+    provider = data["image_generation"]["providers"]["openrouter"]
+    assert provider["api_key"] == ""
+    assert provider["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
 
 
 def test_configure_memory_embedding_noninteractive(tmp_path, monkeypatch):

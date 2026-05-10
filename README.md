@@ -362,10 +362,13 @@ command runs in a different Python environment.
 
 ### First-run config
 
-`opensquilla onboard --if-needed` is the recommended post-install
-entrypoint for first-run setup and automation. It writes the active
-config file, skips when an LLM provider is already configured, and keeps
-provider secrets in environment variables when you pass `--api-key-env`.
+`opensquilla onboard` is the human first-run setup command after source
+install. It writes the active config file and keeps provider secrets in
+environment variables when you pass `--api-key-env`. `opensquilla onboard
+--if-needed` is the idempotent entrypoint for repeatable scripts,
+automation, and already-configured users; it skips only when a real config
+file exists and the required provider setup is complete. Environment
+variables are treated as candidate inputs until the config references them.
 The router defaults to `recommended`; `recommended` enables SquillaRouter for
 supported provider profiles. Pass `--router disabled` only if you
 intentionally want direct single-model routing, or `--router
@@ -374,7 +377,7 @@ Useful invocations:
 
 ```sh
 opensquilla onboard                # full interactive wizard
-opensquilla onboard --if-needed    # idempotent: skip if already configured
+opensquilla onboard --if-needed    # idempotent: script/repeat install guard
 opensquilla onboard --minimal      # provider only, skip channels/search
 ```
 
@@ -446,7 +449,10 @@ wizard:
 opensquilla configure provider --provider openai --model gpt-4o
 opensquilla configure router --router recommended
 opensquilla configure search   --search-provider brave
+opensquilla configure image-generation --image-provider openrouter --api-key-env OPENROUTER_API_KEY
 opensquilla configure channels                # interactive section
+opensquilla configure channels --channel-type feishu --name feishu-main \
+  --field app_id=cli_... --field app_secret=...
 ```
 
 Sections: `provider`, `router`, `channels`, `search`,

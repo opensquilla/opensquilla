@@ -55,25 +55,55 @@
   border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
 }
 
-/* ─── Create form ────────────────────────────────────────────────────── */
+/* ─── Inline create form (above the cards list) ─────────────────────── */
 
 .ag-create {
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
 }
 .ag-create__form {
   display: grid;
-  grid-template-columns: minmax(150px, 0.75fr) minmax(180px, 1fr) minmax(220px, 1.25fr) auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(200px, 1.2fr) auto;
   gap: var(--sp-3);
   align-items: end;
 }
+.ag-create__hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* ─── Form fields (shared by inline form + drawer) ───────────────────── */
+
 .ag-field {
   display: flex;
   flex-direction: column;
   gap: 5px;
   min-width: 0;
+}
+.ag-field__optional {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--text-dim);
+  margin-left: 4px;
+}
+.ag-field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.ag-field--inline span {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  font-size: var(--fs-sm);
+  color: var(--text);
 }
 .ag-field span {
   font-size: 10.5px;
@@ -82,22 +112,110 @@
   text-transform: uppercase;
   color: var(--text-dim);
 }
+.ag-field__hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.ag-field__hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-elevated);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
 .ag-input {
-  height: 34px;
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
   color: var(--text);
-  padding: 0 10px;
+  padding: 6px 10px;
   font: inherit;
   font-size: var(--fs-sm);
 }
+.ag-input:not(textarea) { height: 34px; }
 .ag-input:focus {
   outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   border-color: var(--accent);
 }
+.ag-input--textarea {
+  font-family: var(--font-mono);
+  resize: vertical;
+  min-height: 96px;
+  line-height: 1.45;
+}
+.ag-input:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
 
+/* ─── Drawer internals (view / edit only) ────────────────────────────── */
+
+.ag-drawer__sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.ag-drawer__readonly-meta {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px 16px;
+  padding: var(--sp-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  font-size: var(--fs-sm);
+}
+.ag-drawer__readonly-meta dt {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.ag-drawer__readonly-meta dd {
+  margin: 0;
+  color: var(--text);
+}
+.ag-dim { color: var(--text-muted); font-style: italic; }
+.ag-drawer__section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-3) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  background: var(--bg-elevated);
+}
+.ag-drawer__section legend,
+.ag-drawer__section > summary {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 0 4px;
+  cursor: default;
+}
+.ag-drawer__section--advanced > summary {
+  cursor: pointer;
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ag-drawer__section--advanced > summary::-webkit-details-marker { display: none; }
+.ag-drawer__section--advanced > summary::before {
+  content: "▸";
+  display: inline-block;
+  transition: transform 120ms ease;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.ag-drawer__section--advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
 
 /* ─── List ───────────────────────────────────────────────────────────── */
 

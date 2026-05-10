@@ -408,6 +408,7 @@ def upsert_image_generation_provider(
     provider_id: str,
     primary: str = "",
     api_key: str = "",
+    api_key_env: str = "",
     base_url: str = "",
     enabled: bool = True,
 ) -> MutationResult:
@@ -426,8 +427,16 @@ def upsert_image_generation_provider(
         )
 
     current_provider_cfg = _image_generation_provider_config(config, provider_id)
+    if api_key and api_key_env.strip():
+        raise ValueError("configure either api_key or api_key_env, not both")
     effective_api_key = api_key or getattr(current_provider_cfg, "api_key", "")
-    env_key = getattr(current_provider_cfg, "api_key_env", spec.env_key) or spec.env_key
+    env_key = (
+        ""
+        if api_key
+        else api_key_env.strip()
+        or getattr(current_provider_cfg, "api_key_env", spec.env_key)
+        or spec.env_key
+    )
     api_key_source = _image_generation_api_key_source(
         config,
         provider_id=provider_id,
@@ -449,6 +458,7 @@ def upsert_image_generation_provider(
     new_cfg.image_generation.primary = primary_model
     next_provider_cfg = _image_generation_provider_config(new_cfg, provider_id)
     next_provider_cfg.api_key = effective_api_key
+    next_provider_cfg.api_key_env = env_key
     next_provider_cfg.base_url = effective_base_url
     if api_key:
         new_cfg.clear_runtime_secret(f"image_generation.providers.{provider_id}.api_key")

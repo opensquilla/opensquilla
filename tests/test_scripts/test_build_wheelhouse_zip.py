@@ -258,6 +258,9 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
     assert '"${VENV_DIR}/bin/python" -m pip install' in sh_script
     assert '"${OPENSQUILLA_BIN}" onboard --if-needed' in sh_script
     assert '"${OPENSQUILLA_BIN}" gateway run' in sh_script
+    assert sh_script.index(
+        'export OPENSQUILLA_STATE_DIR="${SCRIPT_DIR}/.opensquilla"'
+    ) < sh_script.index('"${OPENSQUILLA_BIN}" onboard --if-needed')
 
     assert "$PythonBin = Join-Path $ScriptDir 'runtime\\python\\python.exe'" in ps_script
     assert "$VenvDir = Join-Path $VenvRoot $ReleaseId" in ps_script
@@ -269,6 +272,9 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
     assert "& $VenvPython -m pip install" in ps_script
     assert "& $OpenSquillaBin onboard --if-needed" in ps_script
     assert "& $OpenSquillaBin gateway run" in ps_script
+    assert ps_script.index(
+        "$env:OPENSQUILLA_STATE_DIR = Join-Path $ScriptDir '.opensquilla'"
+    ) < ps_script.index("& $OpenSquillaBin onboard --if-needed")
 
 
 def test_install_script_reexecs_under_bash_before_pipefail() -> None:
@@ -305,6 +311,9 @@ def test_render_readme_is_platform_specific_for_windows_portable() -> None:
     assert "## macOS / Linux" not in readme
     assert "bash start.sh" not in readme
     assert "Python is bundled in this zip." in readme
+    assert "First run opens the configuration wizard" in readme
+    assert "OPENROUTER_API_KEY" in readme
+    assert "asks before saving references" in readme
 
 
 def test_render_readme_is_platform_specific_for_macos_portable() -> None:
@@ -324,6 +333,8 @@ def test_render_readme_is_platform_specific_for_macos_portable() -> None:
     assert "## Windows PowerShell" not in readme
     assert ".\\start.ps1" not in readme
     assert "Python is bundled in this zip." in readme
+    assert "First run opens the configuration wizard" in readme
+    assert ".opensquilla/config.toml" in readme
 
 
 def test_prepare_release_tree_writes_user_surface_and_manifest(tmp_path: Path) -> None:

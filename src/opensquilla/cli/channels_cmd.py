@@ -9,6 +9,10 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from opensquilla.cli.channel_fields import (
+    apply_channel_token,
+    parse_channel_field_pairs,
+)
 from opensquilla.cli.gateway_rpc import confirm_or_exit, run_gateway_sync
 from opensquilla.cli.output import print_json
 from opensquilla.onboarding.channel_specs import (
@@ -28,42 +32,6 @@ from opensquilla.onboarding.mutations import (
 )
 
 channels_app = typer.Typer(help="Manage messaging channels.")
-
-
-_TOKEN_ALIASES = (
-    "token",
-    "access_token",
-    "client_secret",
-    "app_secret",
-    "app_password",
-    "corp_secret",
-)
-
-
-def _coerce_value(field_type: str, raw: str) -> Any:
-    if field_type == "int":
-        return int(raw)
-    if field_type == "float":
-        return float(raw)
-    if field_type == "bool":
-        return raw.strip().lower() in {"1", "true", "yes", "on"}
-    return raw
-
-
-def _parse_field_pairs(pairs: list[str], type_name: str) -> dict[str, Any]:
-    spec = get_channel_setup_spec(type_name)
-    by_name = {f.name: f for f in spec.fields}
-    out: dict[str, Any] = {}
-    for raw_pair in pairs:
-        if "=" not in raw_pair:
-            raise typer.BadParameter(f"--field expects key=value, got {raw_pair!r}")
-        key, value = raw_pair.split("=", 1)
-        if key not in by_name:
-            raise typer.BadParameter(
-                f"unknown field {key!r} for channel type {type_name!r}"
-            )
-        out[key] = _coerce_value(by_name[key].field_type, value)
-    return out
 
 
 def _print_restart_notice() -> None:
@@ -95,39 +63,6 @@ def _resolve_and_announce(config_path: Path | None) -> Path:
         fg=typer.colors.CYAN,
     )
     return target
-
-
-def _resolve_token_field(type_name: str) -> str:
-    """Pick the secret field that --token maps to, in alias-tuple order.
-
-    Walking _TOKEN_ALIASES first (rather than spec field order) means
-    operators get the field whose name matches their flag intent first
-    — e.g. wecom.token over wecom.corp_secret. Errors out for types
-    whose secret fields don't include any aliased name.
-    """
-    spec = get_channel_setup_spec(type_name)
-    secret_names = {f.name for f in spec.fields if f.secret}
-    for alias in _TOKEN_ALIASES:
-        if alias in secret_names:
-            return alias
-    typer.secho(
-        f"--token is not supported for channel type {type_name!r}; "
-        f"use --field <name>=... instead.",
-        fg=typer.colors.RED,
-        err=True,
-    )
-    raise typer.Exit(code=2)
-
-
-def _apply_token(payload: dict[str, Any], type_name: str, token: str) -> None:
-    if not token:
-        return
-    field_name = _resolve_token_field(type_name)
-    typer.secho(
-        f"--token resolved to {type_name}.{field_name}",
-        fg=typer.colors.CYAN,
-    )
-    payload[field_name] = token
 
 
 def _render_channels_table(entries: list[dict[str, Any]], *, title: str) -> None:
@@ -303,8 +238,8 @@ def channels_add(
         "enabled": enabled,
         "agent_id": agent_id,
     }
-    _apply_token(payload, type_name, token)
-    payload.update(_parse_field_pairs(fields, type_name))
+    apply_channel_token(payload, type_name, token)
+    payload.update(parse_channel_field_pairs(fields, type_name))
 
     cfg = load_config(target)
     try:
@@ -404,8 +339,8 @@ def channels_edit(
         overrides["enabled"] = enabled
     if agent_id:
         overrides["agent_id"] = agent_id
-    _apply_token(overrides, type_name, token)
-    overrides.update(_parse_field_pairs(fields, type_name))
+    apply_channel_token(overrides, type_name, token)
+    overrides.update(parse_channel_field_pairs(fields, type_name))
     # Patch semantics: every field not explicitly overridden retains its
     # existing value. upsert_channel's secret-merge guards against blanks
     # in the add path; this seeding handles non-secret partial updates

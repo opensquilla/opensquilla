@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from opensquilla.gateway.config import GatewayConfig
-from opensquilla.security import ssrf
+from opensquilla.tools import ssrf
 from opensquilla.tools.types import SSRFBlockedError
 
 web_fetch_module = import_module("opensquilla.tools.builtin.web_fetch")

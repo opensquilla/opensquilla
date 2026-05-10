@@ -1039,7 +1039,7 @@ async def build_services(
 
     set_gateway_config(config)
 
-    from opensquilla.security.ssrf import configure_trusted_fake_ip_cidrs
+    from opensquilla.tools.ssrf import configure_trusted_fake_ip_cidrs
 
     configure_trusted_fake_ip_cidrs(config.tools.trusted_fake_ip_cidrs)
 

@@ -130,7 +130,7 @@ class ToolsConfig(BaseModel):
     @field_validator("trusted_fake_ip_cidrs")
     @classmethod
     def _validate_trusted_fake_ip_cidrs(cls, values: list[str]) -> list[str]:
-        from opensquilla.security.ssrf import validate_trusted_fake_ip_cidrs
+        from opensquilla.tools.ssrf import validate_trusted_fake_ip_cidrs
 
         return validate_trusted_fake_ip_cidrs(values)
 

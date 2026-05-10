@@ -21,8 +21,8 @@ from opensquilla.provider.image_generation import (
     parse_image_generation_model_ref,
     reset_image_generation_providers,
 )
-from opensquilla.security.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.registry import tool
+from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import (
     SafeToolError,
     SSRFBlockedError,

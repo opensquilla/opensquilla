@@ -14,8 +14,8 @@ from cachetools import TTLCache
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.sandbox.integration import sandboxed
-from opensquilla.security.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.registry import tool
+from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import SSRFBlockedError
 
 log = structlog.get_logger(__name__)

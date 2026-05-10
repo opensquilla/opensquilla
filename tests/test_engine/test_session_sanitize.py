@@ -517,6 +517,37 @@ async def test_agent_preserves_reasoning_content_for_deepseek_text_replay() -> N
 
 
 @pytest.mark.asyncio
+async def test_agent_preserves_direct_deepseek_v4_reasoning_without_capabilities() -> None:
+    provider = CapturingProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=1,
+            thinking=ThinkingLevel.HIGH,
+            model_id="deepseek-v4-flash",
+            model_capabilities=None,
+        ),
+    )
+    agent.set_history(
+        [
+            Message(role="user", content="old question"),
+            Message(
+                role="assistant",
+                content=[ContentBlockText(text="old answer")],
+                reasoning_content="I reasoned before answering.",
+            ),
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    assert provider.calls
+    sent_assistant = provider.calls[0]["messages"][1]
+    assert sent_assistant.reasoning_content == "I reasoned before answering."
+
+
+@pytest.mark.asyncio
 async def test_agent_drops_reasoning_content_when_model_is_not_deepseek() -> None:
     provider = CapturingProvider()
     agent = Agent(

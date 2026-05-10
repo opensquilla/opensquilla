@@ -97,6 +97,11 @@ def _is_deepseek_model_id(model_id: str | None) -> bool:
     return normalized.startswith("deepseek") or "/deepseek" in normalized
 
 
+def _is_direct_deepseek_v4_model_id(model_id: str | None) -> bool:
+    normalized = (model_id or "").strip().lower()
+    return normalized in {"deepseek-v4-flash", "deepseek-v4-pro"}
+
+
 _TOOL_RESULT_SUMMARY_SYSTEM = (
     "You compress tool output before it is passed to another agent. Preserve exact "
     "filenames, paths, ids, numbers, commands, error messages, and code-relevant snippets. "
@@ -704,11 +709,18 @@ class Agent:
         self._write_context_stage("session:loaded", loaded_history)
         sanitized_history, sanitize_result = sanitize_session_messages(loaded_history)
         sanitized_history = repair_tool_pairing(sanitized_history)
+        caps_reasoning_format = (
+            getattr(self.config.model_capabilities, "reasoning_format", "")
+            if self.config.model_capabilities is not None
+            else ""
+        )
         preserve_reasoning_content = bool(
-            thinking_enabled
-            and self.config.model_capabilities is not None
-            and getattr(self.config.model_capabilities, "reasoning_format", "") == "deepseek"
-            and _is_deepseek_model_id(self.config.model_id)
+            _is_direct_deepseek_v4_model_id(self.config.model_id)
+            or (
+                thinking_enabled
+                and caps_reasoning_format == "deepseek"
+                and _is_deepseek_model_id(self.config.model_id)
+            )
         )
         sanitized_history = drop_reasoning(
             sanitized_history,

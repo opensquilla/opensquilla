@@ -1122,11 +1122,13 @@ async def build_services(
             )
 
     # ── Model catalog (boot order: after provider selector) ──────────
-    model_catalog = None
-    if api_key and config.llm.provider == "openrouter":
-        from opensquilla.provider.model_catalog import ModelCatalog
+    # Keep a catalog for every provider so direct-provider runtime paths still
+    # get static fallback capabilities (for example DeepSeek v4 thinking
+    # replay) even when only OpenRouter performs a remote model-list fetch.
+    from opensquilla.provider.model_catalog import ModelCatalog
 
-        model_catalog = ModelCatalog()
+    model_catalog = ModelCatalog()
+    if api_key and config.llm.provider == "openrouter":
         try:
             await asyncio.wait_for(
                 model_catalog.fetch_openrouter(api_key, resolved_base, proxy),

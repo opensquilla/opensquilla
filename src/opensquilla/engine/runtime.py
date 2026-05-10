@@ -1601,7 +1601,7 @@ class TurnRunner:
 
             # Resolve max_tokens & context_window from model catalog
             user_max_tokens = getattr(getattr(self._config, "llm", None), "max_tokens", 0)
-            if self._model_catalog:
+            if self._model_catalog is not None:
                 max_tokens = self._model_catalog.resolve_max_tokens(
                     resolved_model, user_override=user_max_tokens
                 )
@@ -1612,7 +1612,7 @@ class TurnRunner:
 
             # Resolve model capabilities for reasoning support
             model_caps = None
-            if self._model_catalog:
+            if self._model_catalog is not None:
                 provider_name = getattr(
                     getattr(self._config, "llm", None), "provider", "openrouter"
                 )

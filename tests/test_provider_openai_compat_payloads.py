@@ -368,7 +368,7 @@ def test_deepseek_v4_text_replay_adds_empty_reasoning_content_when_missing(
     }
 
 
-def test_deepseek_v4_non_thinking_strips_prior_reasoning_content(
+def test_deepseek_v4_non_thinking_replays_prior_reasoning_content(
     monkeypatch: Any,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -383,7 +383,7 @@ def test_deepseek_v4_non_thinking_strips_prior_reasoning_content(
         Message(
             role="assistant",
             content="previous answer",
-            reasoning_content="prior thinking must not be sent with disabled thinking",
+            reasoning_content="prior thinking from earlier deepseek turn",
         ),
         Message(role="user", content="continue"),
     ]
@@ -403,7 +403,45 @@ def test_deepseek_v4_non_thinking_strips_prior_reasoning_content(
     asyncio.run(_run())
 
     assert captured["payload"]["thinking"] == {"type": "disabled"}
-    assert "reasoning_content" not in captured["payload"]["messages"][0]
+    assert (
+        captured["payload"]["messages"][0]["reasoning_content"]
+        == "prior thinking from earlier deepseek turn"
+    )
+
+
+def test_deepseek_v4_replays_reasoning_content_without_catalog_capabilities(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com",
+        provider_kind="deepseek",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content="previous answer",
+            reasoning_content="prior thinking from direct deepseek",
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(thinking=True, model_capabilities=None)
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["thinking"] == {"type": "enabled"}
+    assert captured["payload"]["reasoning_effort"] == "high"
+    assert (
+        captured["payload"]["messages"][0]["reasoning_content"]
+        == "prior thinking from direct deepseek"
+    )
 
 
 def test_openrouter_reasoning_model_replays_reasoning_content_by_capability(

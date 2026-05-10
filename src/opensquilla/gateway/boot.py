@@ -1038,6 +1038,10 @@ async def build_services(
 
     set_gateway_config(config)
 
+    from opensquilla.security.ssrf import configure_trusted_fake_ip_cidrs
+
+    configure_trusted_fake_ip_cidrs(config.tools.trusted_fake_ip_cidrs)
+
     # ── Sandbox runtime ─────────────────────────────────────────────
     # validate_combination emits structured warnings; configure_runtime
     # assembles the backend + gate + ledger so tool handlers can call

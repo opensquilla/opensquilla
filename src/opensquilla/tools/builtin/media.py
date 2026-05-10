@@ -10,7 +10,7 @@ import re
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.provider.image_generation import (
@@ -21,8 +21,15 @@ from opensquilla.provider.image_generation import (
     parse_image_generation_model_ref,
     reset_image_generation_providers,
 )
+from opensquilla.security.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import SafeToolError, ToolError, current_tool_context
+from opensquilla.tools.types import (
+    SafeToolError,
+    SSRFBlockedError,
+    ToolError,
+    UnsupportedURLSchemeError,
+    current_tool_context,
+)
 
 _SUPPORTED_IMAGE_FORMATS = {"png", "jpg", "jpeg", "gif", "webp"}
 _IMAGE_SIZE_LIMIT = 20 * 1024 * 1024  # 20 MB
@@ -170,28 +177,20 @@ def _sensitive_media_url_block(tool_name: str, url: str) -> dict | None:
 
 
 async def _fetch_image_url(url: str) -> tuple[bytes, str]:
-    import ipaddress
-    import socket
-    from urllib.parse import urlparse
-
     import httpx
 
     def _check_image_url(candidate_url: str) -> None:
-        parsed_candidate = urlparse(candidate_url)
-        if parsed_candidate.scheme not in ("http", "https"):
-            raise ToolError("Only HTTP/HTTPS URLs are supported for image fetch")
         marker = _sensitive_media_url_block("image", candidate_url)
         if marker is not None:
             raise ToolError("Blocked: URL contains sensitive data")
-        hostname = parsed_candidate.hostname or ""
         try:
-            infos = socket.getaddrinfo(hostname, None)
-        except socket.gaierror:
-            raise ToolError(f"Cannot resolve hostname: {hostname}")
-        for info in infos:
-            addr = ipaddress.ip_address(info[4][0])
-            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-                raise ToolError(f"Blocked: URL resolves to private/internal IP ({addr})")
+            validate_http_url_for_fetch(candidate_url)
+        except UnsupportedURLSchemeError as exc:
+            raise ToolError("Only HTTP/HTTPS URLs are supported for image fetch") from exc
+        except SSRFBlockedError as exc:
+            raise ToolError(str(exc)) from exc
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
 
     try:
         async with httpx.AsyncClient(

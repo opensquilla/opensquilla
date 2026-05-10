@@ -125,6 +125,14 @@ class ToolsConfig(BaseModel):
     allow: list[str] = Field(default_factory=list)
     deny: list[str] = Field(default_factory=list)
     also_allow: list[str] = Field(default_factory=list)
+    trusted_fake_ip_cidrs: list[str] = Field(default_factory=list)
+
+    @field_validator("trusted_fake_ip_cidrs")
+    @classmethod
+    def _validate_trusted_fake_ip_cidrs(cls, values: list[str]) -> list[str]:
+        from opensquilla.security.ssrf import validate_trusted_fake_ip_cidrs
+
+        return validate_trusted_fake_ip_cidrs(values)
 
 
 class TaskRuntimeConfig(BaseModel):

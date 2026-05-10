@@ -37,11 +37,12 @@ async def test_heartbeat_stream_preserves_upstream_idle_timeout() -> None:
 @pytest.mark.asyncio
 async def test_upstream_run_heartbeat_resets_idle_timeout_stream() -> None:
     async def source():
-        await asyncio.sleep(0.04)
-        yield RunHeartbeatEvent(phase="tool", message="tool still running")
-        await asyncio.sleep(0.04)
+        for _ in range(5):
+            await asyncio.sleep(0.03)
+            yield RunHeartbeatEvent(phase="tool", message="tool still running")
+        await asyncio.sleep(0.03)
         yield TextDeltaEvent(text="done")
 
-    events = [event async for event in idle_timeout_stream(source(), timeout=0.06)]
+    events = [event async for event in idle_timeout_stream(source(), timeout=0.15)]
 
-    assert [event.kind for event in events] == ["run_heartbeat", "text_delta"]
+    assert [event.kind for event in events] == ["run_heartbeat"] * 5 + ["text_delta"]

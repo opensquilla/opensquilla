@@ -187,6 +187,23 @@ def _ask_provider_choice(questionary, options: OnboardOptions):
     return get_provider_setup_spec(pid_clean), pid_clean
 
 
+def _wait_for_setup_start(questionary) -> None:
+    questionary.text(
+        "Press Enter to start setup",
+        default="",
+        qmark="◆",
+    ).ask()
+
+
+def _required_value(label: str):
+    def _validate(value: str) -> bool | str:
+        if str(value or "").strip():
+            return True
+        return f"{label} is required"
+
+    return _validate
+
+
 def _ask_provider_fields(
     questionary, spec, options: OnboardOptions
 ) -> dict[str, Any]:
@@ -216,7 +233,13 @@ def _ask_provider_fields(
             answers["api_key"] = ""
             answers["api_key_env"] = env_key if use_env else ""
             if not use_env:
-                answers["api_key"] = questionary.password("API key").ask() or ""
+                answers["api_key"] = (
+                    questionary.password(
+                        "API key",
+                        validate=_required_value("API key"),
+                    ).ask()
+                    or ""
+                )
         else:
             use_env_ref = questionary.confirm(
                 (
@@ -232,11 +255,18 @@ def _ask_provider_fields(
                     questionary.text(
                         "API key environment variable",
                         default=env_key or "",
+                        validate=_required_value("API key environment variable"),
                     ).ask()
                     or ""
                 )
             else:
-                answers["api_key"] = questionary.password("API key").ask() or ""
+                answers["api_key"] = (
+                    questionary.password(
+                        "API key",
+                        validate=_required_value("API key"),
+                    ).ask()
+                    or ""
+                )
                 answers["api_key_env"] = ""
     else:
         answers["api_key"] = options.api_key or ""
@@ -796,7 +826,8 @@ def _print_channel_saved(name: str) -> None:
 
 def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
     cfg = load_config()
-    if options.if_needed and get_onboarding_status(cfg).llm_configured:
+    status = get_onboarding_status(cfg)
+    if options.if_needed and status.has_config and status.llm_configured:
         return persist_config(cfg, restart_required=False, backup=False)
 
     if not _is_tty():
@@ -811,6 +842,7 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
             "Provider · Router · Channel · Search",
         )
     )
+    _wait_for_setup_start(questionary)
     spec, provider_id = _ask_provider_choice(questionary, options)
     answers = _ask_provider_fields(questionary, spec, options)
     res = upsert_llm_provider(

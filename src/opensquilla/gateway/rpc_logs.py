@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from opensquilla.gateway.diagnostics import diagnostics_status_payload
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.observability.trace import load_trace_events
 from opensquilla.observability.turn_call_log import (
@@ -87,9 +88,15 @@ def _build_logs_status(ctx: RpcContext) -> dict[str, Any]:
     trace_files = sorted(trace_dir.glob("traces-*.jsonl")) if trace_dir.is_dir() else []
     active_tail_path = _find_log_file()
 
+    diagnostics_status = diagnostics_status_payload(
+        getattr(ctx, "diagnostics_state", None),
+        getattr(ctx, "config", None),
+    )
+
     return {
         "raw_turn_call_log": {
-            "enabled": is_turn_call_log_enabled(),
+            "enabled": is_turn_call_log_enabled(getattr(ctx, "diagnostics_state", None)),
+            "source": diagnostics_status["raw_turn_call"]["source"],
             "enable_env": _env_status(
                 TURN_CALL_LOG_ENV,
                 truthy_values=TURN_CALL_LOG_ENABLED_VALUES,
@@ -121,8 +128,12 @@ def _build_logs_status(ctx: RpcContext) -> dict[str, Any]:
         },
         "diagnostics_enabled": {
             "configured": bool(_config_value(ctx, "diagnostics_enabled", False)),
-            "controls_raw_turn_call": False,
+            "effective": diagnostics_status["enabled"],
+            "detail": diagnostics_status["detail"],
+            "controls_raw_turn_call": diagnostics_status["raw_turn_call"]["source"] == "runtime",
+            "raw_source": diagnostics_status["raw_turn_call"]["source"],
         },
+        "diagnostics": diagnostics_status,
         "env": {
             TURN_CALL_LOG_ENV: _env_status(
                 TURN_CALL_LOG_ENV,

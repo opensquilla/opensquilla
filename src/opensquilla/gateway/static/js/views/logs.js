@@ -252,16 +252,19 @@ const LogsView = (() => {
     const diagnostics = _status.diagnostics_enabled || {};
     const fileState = fileLog.enabled ? 'on' : 'off';
     const rawState = rawLog.enabled ? 'on' : 'off';
+    const rawSource = rawLog.source || 'off';
     const filePath = fileLog.path || 'debug.log';
     const rawPath = rawDir.path || '~/.opensquilla/logs';
-    const diagnosticsCopy = diagnostics.configured
-      ? 'diagnostics_enabled is on but does not enable raw capture.'
-      : 'diagnostics_enabled does not enable raw capture.';
-    const diagnosticsLabel = diagnostics.configured ? 'Diagnostics on; raw off' : 'Diagnostics not raw';
+    const diagnosticsCopy = diagnostics.detail === 'raw'
+      ? 'Diagnostics raw mode is active for future turns. Raw source: ' + rawSource + '.'
+      : 'Standard diagnostics and raw capture are separate levels. Use opensquilla diagnostics on --raw for raw turn-call capture.';
+    const diagnosticsLabel = diagnostics.detail === 'raw'
+      ? 'Diagnostics raw'
+      : (diagnostics.effective ? 'Diagnostics standard' : 'Diagnostics off');
 
     wrap.innerHTML = `
       <span class="lg-pill ${fileLog.enabled ? '' : 'lg-pill--warn'}" title="Gateway file logging is configurable via log_file_enabled, log_level, rotation settings, and OPENSQUILLA_LOG_DIR. Path: ${_esc(filePath)}.">File log ${fileState}</span>
-      <span class="lg-pill ${rawLog.enabled ? '' : 'lg-pill--warn'}" title="Raw turn-call capture requires OPENSQUILLA_TURN_CALL_LOG=1. Directory: ${_esc(rawPath)}.">Raw turn-call ${rawState}</span>
+      <span class="lg-pill ${rawLog.enabled ? '' : 'lg-pill--warn'}" title="Raw turn-call capture is enabled by OPENSQUILLA_TURN_CALL_LOG=1 or opensquilla diagnostics on --raw. Source: ${_esc(rawSource)}. Directory: ${_esc(rawPath)}.">Raw turn-call ${rawState}</span>
       <span class="lg-pill lg-pill--warn" title="${_esc(diagnosticsCopy)}">${_esc(diagnosticsLabel)}</span>`;
   }
 

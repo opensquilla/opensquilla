@@ -188,8 +188,8 @@ install_cmd="${install_args[*]}"
 
 print_banner() {
     cat <<BANNER
-────────────────────────────────────────────────────────────────────────────
-OpenSquilla installed via ${installer} → ${prefix} (profile: ${profile})
+----------------------------------------------------------------------------
+OpenSquilla installed via ${installer} -> ${prefix} (profile: ${profile})
 Extras: $(if (( ${#install_extras[@]} > 0 )); then IFS=,; echo "${install_extras[*]}"; else echo "none"; fi)
 
 Default gateway bind: 127.0.0.1:18790 (loopback only)
@@ -200,13 +200,13 @@ must use one of:
 
 Reminder: only expose 0.0.0.0 behind a trusted reverse proxy or VPN. The
 gateway's first-class auth assumes loopback-scope by default.
-────────────────────────────────────────────────────────────────────────────
+----------------------------------------------------------------------------
 BANNER
 }
 
 print_listen_warning() {
     cat <<WARNING
-⚠  WARNING: you have selected network-exposed default — ensure you
+WARNING: you have selected network-exposed default - ensure you
    understand the blast radius. The gateway will bind to 0.0.0.0 and be
    reachable from every interface on this host.
 WARNING

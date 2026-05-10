@@ -350,6 +350,36 @@ async def test_image_generation_configure_redacts_api_key(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_image_generation_configure_can_use_custom_env_reference(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_TEST_IMAGE_KEY", "sk-image-env")
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.imageGeneration.configure",
+        {
+            "providerId": "openrouter",
+            "primary": "openrouter/google/gemini-3.1-flash-image-preview",
+            "apiKeyEnv": "OPENSQUILLA_TEST_IMAGE_KEY",
+        },
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["entry"]["api_key_source"] == "env"
+    assert res.payload["entry"]["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
+    data = tomllib.loads(target.read_text())
+    provider = data["image_generation"]["providers"]["openrouter"]
+    assert provider["api_key"] == ""
+    assert provider["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
+
+
+@pytest.mark.asyncio
 async def test_onboarding_status_requires_image_generation_enable_for_llm_fallback(
     tmp_path,
     monkeypatch,

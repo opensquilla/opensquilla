@@ -4,6 +4,7 @@ from starlette.testclient import TestClient
 
 from opensquilla.gateway.app import create_gateway_app
 from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.diagnostics import DiagnosticsState
 
 
 def test_ready_endpoint_reports_starting_until_gateway_marks_ready() -> None:
@@ -19,3 +20,10 @@ def test_ready_endpoint_reports_starting_until_gateway_marks_ready() -> None:
         ready = client.get("/ready")
         assert ready.status_code == 200
         assert ready.json()["ready"] is True
+
+
+def test_create_gateway_app_creates_default_diagnostics_state() -> None:
+    app = create_gateway_app(GatewayConfig(diagnostics_enabled=True))
+
+    assert isinstance(app.state.diagnostics_state, DiagnosticsState)
+    assert app.state.diagnostics_state.snapshot().effective_enabled is True

@@ -615,6 +615,9 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {{
         --find-links $PackageDir `
         "{wheel_target}"
 }}
+if ($LASTEXITCODE -ne 0) {{
+    throw "OpenSquilla installation failed with exit code $LASTEXITCODE."
+}}
 
 $OpenSquillaBin = Resolve-OpenSquilla
 if (-not $OpenSquillaBin) {{
@@ -622,6 +625,9 @@ if (-not $OpenSquillaBin) {{
 }}
 
 & $OpenSquillaBin onboard --if-needed
+if ($LASTEXITCODE -ne 0) {{
+    throw "OpenSquilla onboarding failed with exit code $LASTEXITCODE."
+}}
 
 Write-Host ""
 Write-Host "OpenSquilla is installed."
@@ -647,6 +653,9 @@ PYTHON_BIN="${SCRIPT_DIR}/runtime/python/bin/python3"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 if [[ -z "${OPENSQUILLA_GATEWAY_CONFIG_PATH:-}" ]]; then
   export OPENSQUILLA_GATEWAY_CONFIG_PATH="${SCRIPT_DIR}/.opensquilla/config.toml"
+fi
+if [[ -z "${OPENSQUILLA_STATE_DIR:-}" ]]; then
+  export OPENSQUILLA_STATE_DIR="${SCRIPT_DIR}/.opensquilla"
 fi
 if [[ -z "${OPENSQUILLA_LLM_API_KEY:-}" && -n "${OPENROUTER_API_KEY:-}" ]]; then
   export OPENSQUILLA_LLM_API_KEY="${OPENROUTER_API_KEY}"
@@ -675,9 +684,6 @@ echo "Installing OpenSquilla from local wheelhouse..."
 
 OPENSQUILLA_BIN="${VENV_DIR}/bin/opensquilla"
 "${OPENSQUILLA_BIN}" onboard --if-needed
-if [[ -z "${OPENSQUILLA_STATE_DIR:-}" ]]; then
-  export OPENSQUILLA_STATE_DIR="${SCRIPT_DIR}/.opensquilla"
-fi
 
 echo
 echo "Starting OpenSquilla gateway."
@@ -708,6 +714,9 @@ if (-not $env:OPENSQUILLA_GATEWAY_CONFIG_PATH) {
     $ConfigDir = Join-Path $ScriptDir '.opensquilla'
     $env:OPENSQUILLA_GATEWAY_CONFIG_PATH = Join-Path $ConfigDir 'config.toml'
 }
+if (-not $env:OPENSQUILLA_STATE_DIR) {
+    $env:OPENSQUILLA_STATE_DIR = Join-Path $ScriptDir '.opensquilla'
+}
 if ((-not $env:OPENSQUILLA_LLM_API_KEY) -and $env:OPENROUTER_API_KEY) {
     $env:OPENSQUILLA_LLM_API_KEY = $env:OPENROUTER_API_KEY
 }
@@ -723,6 +732,9 @@ if (-not (Test-Path $VenvPython)) {
     Write-Host "Creating local OpenSquilla environment..."
     New-Item -ItemType Directory -Path $VenvRoot -Force | Out-Null
     & $PythonBin -m venv $VenvDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenSquilla environment creation failed with exit code $LASTEXITCODE."
+    }
 }
 
 Write-Host "Installing OpenSquilla from local wheelhouse..."
@@ -731,10 +743,13 @@ Write-Host "Installing OpenSquilla from local wheelhouse..."
     --no-index `
     --find-links $PackageDir `
     "__TARGET__"
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSquilla installation failed with exit code $LASTEXITCODE."
+}
 
 & $OpenSquillaBin onboard --if-needed
-if (-not $env:OPENSQUILLA_STATE_DIR) {
-    $env:OPENSQUILLA_STATE_DIR = Join-Path $ScriptDir '.opensquilla'
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSquilla onboarding failed with exit code $LASTEXITCODE."
 }
 
 Write-Host ""
@@ -744,6 +759,15 @@ Write-Host "Press Ctrl+C in this terminal to stop the gateway."
 & $OpenSquillaBin gateway run
 """
     return script.replace("__TARGET__", target)
+
+
+def render_start_cmd() -> str:
+    return (
+        "@echo off\r\n"
+        "title OpenSquilla Gateway\r\n"
+        'cd /d "%~dp0"\r\n'
+        'powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0start.ps1"\r\n'
+    )
 
 
 def render_readme(
@@ -760,12 +784,38 @@ def render_readme(
         unix_commands = "bash start.sh"
         windows_command = ".\\start.ps1"
         python_note = "Python is bundled in this zip."
+        setup_note = (
+            "First run opens the configuration wizard when no local config exists. "
+            "If environment variables such as `OPENROUTER_API_KEY` are present, "
+            "OpenSquilla asks before saving references to them. Later runs reuse "
+            "`.opensquilla/config.toml` and skip setup when it is complete."
+        )
     else:
         unix_commands = "bash install.sh\nopensquilla gateway run"
         windows_command = ".\\install.ps1\nopensquilla gateway run"
         python_note = f"Requires Python {python_major}.{python_minor}."
+        setup_note = (
+            "The installer runs idempotent onboarding after installation. To "
+            "reconfigure later, run `opensquilla onboard` for the full wizard or "
+            "`opensquilla configure <section>` for one area."
+        )
     if windows_target:
-        command_section = f"""## Windows PowerShell
+        if portable:
+            command_section = f"""## Windows
+
+Double-click `Start OpenSquilla.cmd`.
+
+Or run from PowerShell:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+{windows_command}
+```
+
+Keep the terminal open. Closing the terminal stops the gateway.
+"""
+        else:
+            command_section = f"""## Windows PowerShell
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -793,6 +843,8 @@ Build target:
 Open `http://127.0.0.1:18790/control/`.
 
 {python_note}
+
+{setup_note}
 """
 
 
@@ -859,6 +911,12 @@ def prepare_release_tree(
         start_sh.write_text(render_start_sh(profile), encoding="utf-8")
         start_sh.chmod(start_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         (release_root / "start.ps1").write_text(render_start_ps1(profile), encoding="utf-8")
+        if platform_tag.startswith("windows-"):
+            (release_root / "Start OpenSquilla.cmd").write_text(
+                render_start_cmd(),
+                encoding="utf-8",
+                newline="",
+            )
     else:
         install_sh = release_root / "install.sh"
         install_sh.write_text(

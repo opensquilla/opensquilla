@@ -131,6 +131,18 @@ def test_chat_maps_task_terminal_events_during_migration() -> None:
     assert "task.timeout" in source
     assert "task.abandoned" in source
     assert "task.cancelled" in source
+    assert "function _taskTerminalMessage(status, payload)" in source
+    assert "function _sessionErrorMessage(payload)" in source
+    assert "payload?.terminal_message" in source
+    terminal_mapper = source[
+        source.index("function _taskTerminalAsSessionEvent(event, payload)") :
+        source.index("function _taskTerminalMessage(status, payload)")
+    ]
+    assert "Gateway task" not in terminal_mapper
+    error_start = source.index("} else if (event.endsWith('.error'))")
+    error_end = source.index("if (_activeTaskGroups.size > 0)", error_start)
+    error_handler = source[error_start:error_end]
+    assert "_sessionErrorMessage(payload)" in error_handler
 
 
 def test_chat_subscribe_failure_is_visible() -> None:

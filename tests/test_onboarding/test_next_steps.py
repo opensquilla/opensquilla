@@ -25,8 +25,11 @@ def test_next_steps_warns_running_gateway_must_restart():
 
     text = format_next_steps(GatewayConfig(), config_path="C:/tmp/config.toml")
 
+    assert "Start gateway: opensquilla gateway run" in text
+    assert "Or start in background: opensquilla gateway start --json" in text
     assert "If a gateway is already running, restart it so it loads this config." in text
-    assert "uv run opensquilla gateway restart --json" in text
+    assert "Restart gateway: opensquilla gateway restart --json" in text
+    assert "uv run" not in text
 
 
 def test_env_reference_warnings_cover_llm_and_search_missing_env(monkeypatch):

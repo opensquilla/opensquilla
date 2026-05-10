@@ -4,6 +4,7 @@ import importlib.util
 import os
 import stat
 import sys
+import tomllib
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -157,6 +158,18 @@ def test_release_wheel_allows_router_provenance_markdown() -> None:
     assert unrelated_skill_reference in violations
 
 
+def test_pyproject_release_wheel_config_excludes_forbidden_skill_resources() -> None:
+    module = load_script()
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    wheel_config = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
+    excludes = set(wheel_config.get("exclude", []))
+    force_includes = wheel_config.get("force-include", {})
+
+    assert "src/opensquilla/skills/bundled/**/THIRD_PARTY_NOTICES.md" in excludes
+    assert "src/opensquilla/skills/bundled/**/references/*.md" in excludes
+    assert module.forbidden_release_wheel_entries(tuple(force_includes.values())) == []
+
+
 def test_required_router_assets_include_provenance_and_manifest() -> None:
     module = load_script()
 
@@ -231,6 +244,8 @@ def test_install_scripts_install_from_local_wheelhouse_and_run_onboarding() -> N
     assert "--find-links" in ps_script
     assert "opensquilla-0.1.0-py3-none-any.whl[recommended]" in ps_script
     assert "& $OpenSquillaBin onboard --if-needed" in ps_script
+    assert 'throw "OpenSquilla installation failed with exit code $LASTEXITCODE."' in ps_script
+    assert 'throw "OpenSquilla onboarding failed with exit code $LASTEXITCODE."' in ps_script
     assert "opensquilla gateway run" in ps_script
 
 
@@ -239,6 +254,7 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
 
     sh_script = module.render_start_sh()
     ps_script = module.render_start_ps1()
+    cmd_script = module.render_start_cmd()
 
     assert sh_script.startswith('#!/bin/sh\nif [ -z "${BASH_VERSION:-}" ]; then')
     assert 'exec /usr/bin/env bash "$0" "$@"' in sh_script
@@ -258,6 +274,9 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
     assert '"${VENV_DIR}/bin/python" -m pip install' in sh_script
     assert '"${OPENSQUILLA_BIN}" onboard --if-needed' in sh_script
     assert '"${OPENSQUILLA_BIN}" gateway run' in sh_script
+    assert sh_script.index(
+        'export OPENSQUILLA_STATE_DIR="${SCRIPT_DIR}/.opensquilla"'
+    ) < sh_script.index('"${OPENSQUILLA_BIN}" onboard --if-needed')
 
     assert "$PythonBin = Join-Path $ScriptDir 'runtime\\python\\python.exe'" in ps_script
     assert "$VenvDir = Join-Path $VenvRoot $ReleaseId" in ps_script
@@ -268,7 +287,23 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
     assert "& $PythonBin -m venv $VenvDir" in ps_script
     assert "& $VenvPython -m pip install" in ps_script
     assert "& $OpenSquillaBin onboard --if-needed" in ps_script
+    assert (
+        'throw "OpenSquilla environment creation failed with exit code $LASTEXITCODE."'
+        in ps_script
+    )
+    assert 'throw "OpenSquilla installation failed with exit code $LASTEXITCODE."' in ps_script
+    assert 'throw "OpenSquilla onboarding failed with exit code $LASTEXITCODE."' in ps_script
     assert "& $OpenSquillaBin gateway run" in ps_script
+    assert ps_script.index(
+        "$env:OPENSQUILLA_STATE_DIR = Join-Path $ScriptDir '.opensquilla'"
+    ) < ps_script.index("& $OpenSquillaBin onboard --if-needed")
+
+    assert cmd_script == (
+        "@echo off\r\n"
+        "title OpenSquilla Gateway\r\n"
+        'cd /d "%~dp0"\r\n'
+        'powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0start.ps1"\r\n'
+    )
 
 
 def test_install_script_reexecs_under_bash_before_pipefail() -> None:
@@ -300,11 +335,15 @@ def test_render_readme_is_platform_specific_for_windows_portable() -> None:
         portable=True,
     )
 
-    assert "## Windows PowerShell" in readme
+    assert "## Windows" in readme
+    assert "Double-click `Start OpenSquilla.cmd`" in readme
     assert ".\\start.ps1" in readme
     assert "## macOS / Linux" not in readme
     assert "bash start.sh" not in readme
     assert "Python is bundled in this zip." in readme
+    assert "First run opens the configuration wizard" in readme
+    assert "OPENROUTER_API_KEY" in readme
+    assert "asks before saving references" in readme
 
 
 def test_render_readme_is_platform_specific_for_macos_portable() -> None:
@@ -324,6 +363,8 @@ def test_render_readme_is_platform_specific_for_macos_portable() -> None:
     assert "## Windows PowerShell" not in readme
     assert ".\\start.ps1" not in readme
     assert "Python is bundled in this zip." in readme
+    assert "First run opens the configuration wizard" in readme
+    assert ".opensquilla/config.toml" in readme
 
 
 def test_prepare_release_tree_writes_user_surface_and_manifest(tmp_path: Path) -> None:
@@ -398,6 +439,7 @@ def test_prepare_portable_release_tree_includes_runtime_and_start_scripts(tmp_pa
     assert (release_root / "runtime" / "python" / "bin" / "python3").is_file()
     assert (release_root / "start.sh").is_file()
     assert (release_root / "start.ps1").is_file()
+    assert not (release_root / "Start OpenSquilla.cmd").exists()
     assert (release_root / "LICENSE").is_file()
     assert (release_root / "THIRD_PARTY_NOTICES.md").is_file()
     assert not (release_root / "install.sh").exists()
@@ -407,6 +449,40 @@ def test_prepare_portable_release_tree_includes_runtime_and_start_scripts(tmp_pa
     assert '"portable": true' in manifest
     assert '"runtime_release": "20260414"' in manifest
     assert "install_only_stripped.tar.gz" in manifest
+
+
+def test_prepare_windows_portable_release_tree_includes_double_click_launcher(
+    tmp_path: Path,
+) -> None:
+    module = load_script()
+    release_root = tmp_path / "OpenSquilla-0.1.0-windows-x64-py312-recommended-portable"
+    wheel_path = tmp_path / "opensquilla-0.1.0-py3-none-any.whl"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    (runtime_root / "python.exe").write_text("python", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel")
+
+    module.prepare_release_tree(
+        release_root,
+        wheel_path,
+        app_version="0.1.0",
+        profile="recommended",
+        platform_tag="windows-x64",
+        python_major=3,
+        python_minor=12,
+        include_router_assets=True,
+        portable=True,
+        runtime_release="20260414",
+        runtime_asset="cpython-3.12.13+20260414-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        runtime_root=runtime_root,
+    )
+
+    launcher = release_root / "Start OpenSquilla.cmd"
+    assert launcher.is_file()
+    assert launcher.read_bytes() == module.render_start_cmd().encode("utf-8")
+    readme = (release_root / "README.md").read_text(encoding="utf-8")
+    assert "Double-click `Start OpenSquilla.cmd`" in readme
+    assert "Closing the terminal stops the gateway." in readme
 
 
 def test_create_zip_contains_release_directory_and_preserves_install_mode(tmp_path: Path) -> None:

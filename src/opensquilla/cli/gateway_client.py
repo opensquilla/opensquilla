@@ -10,6 +10,8 @@ from collections.abc import AsyncIterator
 from typing import Any, cast
 from urllib.parse import urlparse
 
+from opensquilla.session.terminal_reply import build_terminal_reply
+
 
 class GatewayRPCError(Exception):
     """Operator-facing RPC failure raised by GatewayClient."""
@@ -359,6 +361,15 @@ class GatewayClient:
     async def usage_cost(self) -> dict[str, Any]:
         return cast(dict[str, Any], await self._call("usage.cost", {}))
 
+    async def diagnostics_status(self) -> dict[str, Any]:
+        return cast(dict[str, Any], await self._call("diagnostics.status", {}))
+
+    async def diagnostics_set(self, *, enabled: bool, raw: bool = False) -> dict[str, Any]:
+        params: dict[str, Any] = {"enabled": enabled}
+        if enabled:
+            params["raw"] = raw
+        return cast(dict[str, Any], await self._call("diagnostics.set", params))
+
     async def get_config(self, path: str | None = None) -> Any:
         params = {"path": path} if path else None
         return await self._call("config.get", params)
@@ -452,6 +463,8 @@ class GatewayClient:
             frame = await self._recv_queue.get()
             event_name: str = frame.get("event", "")
             payload: dict = frame.get("payload") or {}
+            if event_name == "session.event.error":
+                payload = _normalize_session_error_payload(payload)
             if task_terminal := _task_terminal_as_session_event(event_name, payload):
                 yield task_terminal
                 if active_task_groups:
@@ -538,14 +551,45 @@ def _task_terminal_as_session_event(event_name: str, payload: dict) -> dict[str,
         return None
 
     reason = payload.get("terminal_reason")
-    task_id = payload.get("task_id")
-    reason_text = f": {reason}" if isinstance(reason, str) and reason else ""
-    task_text = f" ({task_id})" if isinstance(task_id, str) and task_id else ""
+    status = event_name.removeprefix("task.")
+    message = build_terminal_reply(
+        {
+            "status": status,
+            "terminal_reason": reason,
+            **payload,
+        }
+    )
     return {
         "event": "session.event.error",
-        "message": f"Gateway task {event_name.removeprefix('task.')}{task_text}{reason_text}",
-        "code": event_name.removeprefix("task."),
+        "message": message,
+        "code": status,
         **payload,
+    }
+
+
+def _normalize_session_error_payload(payload: dict) -> dict[str, Any]:
+    message = payload.get("message")
+    error_message = payload.get("error_message")
+    raw_message = error_message if isinstance(error_message, str) and error_message else message
+    code = payload.get("code")
+    code_text = str(code or "").lower()
+    raw_text = raw_message if isinstance(raw_message, str) and raw_message else "Agent error"
+    is_timeout = "timeout" in code_text or "stream idle" in raw_text.lower()
+    terminal_payload = {
+        "status": "timeout" if is_timeout else "failed",
+        "terminal_reason": payload.get("terminal_reason")
+        or ("timeout" if is_timeout else "error"),
+        "error_class": code,
+        "error_message": raw_text,
+        **payload,
+    }
+    terminal_message = build_terminal_reply(terminal_payload)
+    return {
+        **payload,
+        "message": terminal_message,
+        "terminal_message": terminal_message,
+        "terminal_reason": terminal_payload["terminal_reason"],
+        "error_message": raw_text,
     }
 
 

@@ -30,10 +30,17 @@ TURN_CALL_LOG_ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
 log = structlog.get_logger(__name__)
 
 
-def is_turn_call_log_enabled() -> bool:
+def is_turn_call_log_enabled(diagnostics_state: Any | None = None) -> bool:
     """Return whether raw turn-call logging is explicitly enabled."""
 
-    return os.environ.get(TURN_CALL_LOG_ENV, "").strip().lower() in TURN_CALL_LOG_ENABLED_VALUES
+    if os.environ.get(TURN_CALL_LOG_ENV, "").strip().lower() in TURN_CALL_LOG_ENABLED_VALUES:
+        return True
+    if diagnostics_state is None:
+        return False
+    raw_enabled = getattr(diagnostics_state, "raw_turn_call_enabled", None)
+    if callable(raw_enabled):
+        return bool(raw_enabled())
+    return False
 
 
 def _non_empty_env(name: str) -> str | None:

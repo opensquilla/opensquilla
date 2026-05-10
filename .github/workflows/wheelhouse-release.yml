@@ -6,14 +6,6 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      profile:
-        description: Runtime profile to bundle
-        required: true
-        default: recommended
-        type: choice
-        options:
-          - recommended
-          - core
       tag:
         description: Optional existing tag to upload artifacts to
         required: false
@@ -31,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_PROFILE: ${{ github.event.inputs.profile || 'recommended' }}
+  RELEASE_PROFILE: recommended
   RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
   PYTHON_RUNTIME_RELEASE: ${{ github.event.inputs.python_runtime_release || '20260414' }}
   PYTHON_RUNTIME_VERSION: ${{ github.event.inputs.python_runtime_version || '3.12.13' }}

@@ -44,12 +44,18 @@ def create_gateway_app(
     heartbeat_service: Any = None,
     heartbeat_loop: Any = None,
     agent_registry: Any = None,
+    diagnostics_state: Any = None,
     memory_managers: dict[str, Any] | None = None,
     memory_stores: dict[str, Any] | None = None,
     memory_retrievers: dict[str, Any] | None = None,
     extra_routes: list[Route] | None = None,
 ) -> Starlette:
     """Build and return the Starlette ASGI application."""
+    if diagnostics_state is None:
+        from opensquilla.gateway.diagnostics import DiagnosticsState
+
+        diagnostics_state = DiagnosticsState.from_config(config)
+
     dispatcher = get_dispatcher()
 
     def _rpc_status_code(result: Any, default: int = 500) -> int:
@@ -197,6 +203,7 @@ def create_gateway_app(
             heartbeat_service=heartbeat_service,
             heartbeat_loop=heartbeat_loop,
             agent_registry=agent_registry,
+            diagnostics_state=diagnostics_state,
             memory_managers=memory_managers or {},
             memory_stores=memory_stores or {},
             memory_retrievers=memory_retrievers or {},
@@ -436,6 +443,7 @@ def create_gateway_app(
             heartbeat_service=heartbeat_service,
             heartbeat_loop=heartbeat_loop,
             agent_registry=agent_registry,
+            diagnostics_state=diagnostics_state,
             memory_managers=memory_managers,
             memory_stores=memory_stores,
             memory_retrievers=memory_retrievers,
@@ -490,6 +498,7 @@ def create_gateway_app(
     ]
 
     app = Starlette(routes=routes, middleware=middleware, debug=config.debug)
+    app.state.diagnostics_state = diagnostics_state
 
     # Bridge upload endpoint: self-hosted multipart sink that
     # returns an opaque file_uuid the chat.send validator can resolve.

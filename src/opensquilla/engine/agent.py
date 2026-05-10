@@ -79,6 +79,7 @@ from .types import (
     CompactionOutcome,
     DoneEvent,
     ErrorEvent,
+    RunHeartbeatEvent,
     StateChangeEvent,
     TextDeltaEvent,
     ThinkingLevel,
@@ -426,6 +427,13 @@ class Agent:
         except (TypeError, ValueError):
             timeout = max(timeout, argument_timeout)
         return timeout
+
+    def _tool_activity_heartbeat_interval(self) -> float:
+        raw_interval = self.config.metadata.get("tool_activity_heartbeat_interval", 15.0)
+        try:
+            return float(raw_interval)
+        except (TypeError, ValueError):
+            return 15.0
 
     def _write_turn_call_log(self, kind: str, **payload: Any) -> None:
         if self._turn_call_logger is not None:
@@ -1679,6 +1687,67 @@ class Agent:
                     )
                     return res
 
+                async def _collect_tool_tasks(
+                    task_to_tool_call: dict[asyncio.Task[ToolResult], ToolCall],
+                ) -> AsyncIterator[RunHeartbeatEvent]:
+                    pending = set(task_to_tool_call)
+                    if not pending:
+                        return
+
+                    interval = self._tool_activity_heartbeat_interval()
+                    started = time.monotonic()
+                    last_event_at = started
+                    try:
+                        while pending:
+                            if interval <= 0:
+                                done, pending = await asyncio.wait(
+                                    pending,
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                            else:
+                                done, pending = await asyncio.wait(
+                                    pending,
+                                    timeout=interval,
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                            if not done:
+                                now = time.monotonic()
+                                yield RunHeartbeatEvent(
+                                    phase="tool",
+                                    elapsed_ms=int((now - started) * 1000),
+                                    idle_ms=int((now - last_event_at) * 1000),
+                                    message="Tool still running",
+                                )
+                                continue
+
+                            last_event_at = time.monotonic()
+                            for task in done:
+                                tc = task_to_tool_call[task]
+                                try:
+                                    outcome = task.result()
+                                except asyncio.CancelledError:
+                                    outcome = ToolResult(
+                                        tool_use_id=tc.tool_use_id,
+                                        tool_name=tc.tool_name,
+                                        content=f"Tool '{tc.tool_name}' was cancelled",
+                                        is_error=True,
+                                    )
+                                except Exception as exc:  # noqa: BLE001
+                                    outcome = ToolResult(
+                                        tool_use_id=tc.tool_use_id,
+                                        tool_name=tc.tool_name,
+                                        content=f"Tool '{tc.tool_name}' raised: {exc}",
+                                        is_error=True,
+                                    )
+                                results_by_id[tc.tool_use_id] = outcome
+                    finally:
+                        for task in pending:
+                            if not task.done():
+                                task.cancel()
+                        for task in pending:
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await task
+
                 # Dispatch preserving original order: accumulate consecutive safe
                 # tools into a batch and flush with asyncio.gather before each
                 # mutex tool, then run the mutex tool serially.  This ensures
@@ -1686,31 +1755,31 @@ class Agent:
                 # until that mutex tool has completed.
                 safe_batch: list[ToolCall] = []
 
-                async def _flush_safe_batch(batch: list[ToolCall]) -> None:
+                async def _flush_safe_batch(
+                    batch: list[ToolCall],
+                ) -> AsyncIterator[RunHeartbeatEvent]:
                     if not batch:
                         return
-                    gather_results = await asyncio.gather(
-                        *[_run_one(tc) for tc in batch], return_exceptions=True
-                    )
-                    for tc, outcome in zip(batch, gather_results):
-                        if isinstance(outcome, BaseException):
-                            outcome = ToolResult(
-                                tool_use_id=tc.tool_use_id,
-                                tool_name=tc.tool_name,
-                                content=f"Tool '{tc.tool_name}' raised: {outcome}",
-                                is_error=True,
-                            )
-                        results_by_id[tc.tool_use_id] = outcome
+                    task_to_tool_call = {
+                        asyncio.create_task(_run_one(tc)): tc for tc in batch
+                    }
+                    async for event in _collect_tool_tasks(task_to_tool_call):
+                        yield event
 
                 for tc in tool_calls:
                     if tc.tool_name in _SAFE_TOOL_NAMES:
                         safe_batch.append(tc)
                     else:
-                        await _flush_safe_batch(safe_batch)
+                        async for event in _flush_safe_batch(safe_batch):
+                            yield event
                         safe_batch = []
-                        results_by_id[tc.tool_use_id] = await _run_one(tc)
+                        async for event in _collect_tool_tasks(
+                            {asyncio.create_task(_run_one(tc)): tc}
+                        ):
+                            yield event
 
-                await _flush_safe_batch(safe_batch)
+                async for event in _flush_safe_batch(safe_batch):
+                    yield event
 
                 # Emit results in original tool_calls order.
                 for tc in tool_calls:

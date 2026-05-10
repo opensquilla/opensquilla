@@ -35,9 +35,9 @@ const ConfigView = (() => {
     'debug':
       'Security-sensitive developer mode. Auth scope expansion can take effect immediately for new connections; Starlette debug, uvicorn log level, and some startup wiring need a gateway restart. Keep it off in shared deployments.',
     'diagnostics_enabled':
-      'Structured diagnostics flag for gateway status and future telemetry. It does not enable raw turn-call capture; raw prompt/tool logs still require OPENSQUILLA_TURN_CALL_LOG=1.',
+      'Default standard diagnostics mode at gateway startup. Raw turn-call capture stays off unless OPENSQUILLA_TURN_CALL_LOG=1 or the running gateway is switched with opensquilla diagnostics on --raw.',
     'log_file_enabled':
-      'Writes gateway debug.log records for operator troubleshooting. This is separate from raw turn-call capture, which still requires OPENSQUILLA_TURN_CALL_LOG=1.',
+      'Writes gateway debug.log records for operator troubleshooting. This is separate from raw turn-call capture, which requires OPENSQUILLA_TURN_CALL_LOG=1 or opensquilla diagnostics on --raw.',
     'log_level':
       'Minimum gateway file log level. OPENSQUILLA_LOG_LEVEL can override this at runtime.',
     'log_file_max_bytes':

@@ -24,18 +24,89 @@ config schema.
 
 ## Quick start
 
-The fastest path to a running OpenSquilla on your local machine.
+Choose the path that matches how you want to use OpenSquilla:
 
-Choose one path and stay on it:
-
-| Goal | Use this path | Commands use |
+| User type | Path | Status |
 | --- | --- | --- |
-| Run OpenSquilla as a local app | [Install](#install) | `opensquilla ...` |
-| Modify or debug OpenSquilla source | [Develop from source](#develop-from-source) | `uv run opensquilla ...` |
+| New user | [Release package](#release-package-coming-soon) | Coming soon |
+| Command-line user | [Install from source](#install-from-source) | Available now |
+| Developer | [Develop from source](#develop-from-source) | Available now |
 
-Both paths can start from `git clone`. In the install path, the clone is only
-the source package the installer reads from. In the development path, the clone
-is the live workspace.
+SquillaRouter is included by default in every currently available install path.
+Only choose the `core` profile or `--router disabled` if you intentionally want
+to skip the bundled router.
+
+### Release package — coming soon
+
+This will be the recommended path for non-developers: download a release
+package, extract it, set an API key, start OpenSquilla, and open the Web UI.
+Public release packages are not published yet. Until release packages are
+published, new users should use Install from source.
+
+### Install from source
+
+Use this path when you want to run OpenSquilla as a local app from the current
+source tree. The clone is only the package source the installer reads from; after
+installing, use `opensquilla ...` commands, not `uv run`.
+
+1. Install prerequisites: Git and Git LFS. The recommended installer is `uv`.
+
+   Download links:
+   - Git: <https://git-scm.com/downloads>
+   - Git LFS: <https://git-lfs.com/>
+   - uv: <https://docs.astral.sh/uv/getting-started/installation/>
+
+   If `uv` is unavailable, the installer falls back to Python 3.12+ with
+   `pip >= 23`.
+
+   <details>
+   <summary>Optional: install prerequisites from a terminal</summary>
+
+   Windows PowerShell:
+
+   ```powershell
+   winget install --id Git.Git -e
+   winget install --id GitHub.GitLFS -e
+   powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
+   git lfs install
+   ```
+
+   macOS, if you already use Homebrew:
+
+   ```sh
+   brew install git git-lfs uv
+   git lfs install
+   ```
+
+   Homebrew is optional: <https://brew.sh/>. If you do not use Homebrew, use the
+   download links above.
+
+   Debian / Ubuntu:
+
+   ```sh
+   sudo apt update
+   sudo apt install -y git git-lfs
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   git lfs install
+   ```
+
+   Fedora:
+
+   ```sh
+   sudo dnf install -y git git-lfs
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   git lfs install
+   ```
+
+   Arch:
+
+   ```sh
+   sudo pacman -S --needed git git-lfs
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   git lfs install
+   ```
+
+   PATH changes from these installers apply to new terminal sessions.
 
 1. Install prerequisites: [git](https://git-scm.com), [git-lfs](https://git-lfs.com/) and
    [uv](https://docs.astral.sh/uv/).
@@ -49,8 +120,12 @@ is the live workspace.
    git lfs pull --include="src/opensquilla/squilla_router/models/**"
    ```
 
+   The LFS pull is idempotent: it fetches missing model assets and exits
+   quietly when the checkout is already complete.
+
 3. Install with the recommended profile. This creates a user-local
    `opensquilla` command. The checkout-local `.venv`, if any, is not used.
+   The normal install commands above already install SquillaRouter.
 
    macOS / Linux:
 
@@ -61,21 +136,61 @@ is the live workspace.
    Windows PowerShell:
 
    ```powershell
-   pwsh -ExecutionPolicy Bypass -File install.ps1
+   powershell -ExecutionPolicy Bypass -File .\install.ps1
    ```
 
-   Optional channel adapters are installed only when requested. For example,
-   add Feishu websocket support with `-Extras feishu` on Windows or
-   `OPENSQUILLA_INSTALL_EXTRAS=feishu` on macOS/Linux.
+   PowerShell 7 users can run `pwsh -ExecutionPolicy Bypass -File .\install.ps1`.
+
+   Optional: add a channel adapter only if you need one. For example, add
+   Feishu websocket channel support with these full install commands:
+
+   Windows PowerShell:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Extras feishu
+   ```
+
+   macOS / Linux:
+
+   ```sh
+   OPENSQUILLA_INSTALL_EXTRAS=feishu bash install.sh
+   ```
 
    Only set `OPENSQUILLA_INSTALL_PROFILE=core` if you intentionally want
    to skip the bundled router.
 
+   Open a new terminal if `opensquilla` is not found after installation.
+
 4. Configure. Use the installed `opensquilla` command below. Do not prefix
    these commands with `uv run` unless you chose **Develop from source**.
 
+   Recommended for beginners:
+
    ```sh
    opensquilla onboard
+   ```
+
+   The wizard asks you to choose a provider and enter or reference its API key.
+
+   For automation, this OpenRouter example is copy-pasteable. If you choose
+   OpenRouter, create a key at <https://openrouter.ai/docs/api-keys>, then
+   replace `sk-...` with the real key value. The `export` and `$env:` examples
+   below set the key for the current terminal only.
+   OpenRouter is only an example; substitute any supported provider and its API
+   key variable.
+
+   macOS / Linux:
+
+   ```sh
+   export OPENROUTER_API_KEY="sk-..."
+   opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
+   ```
+
+   Windows PowerShell:
+
+   ```powershell
+   $env:OPENROUTER_API_KEY="sk-..."
+   opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
    ```
 
 5. Run the gateway:
@@ -84,27 +199,45 @@ is the live workspace.
    opensquilla gateway run
    ```
 
-Open the Web UI at <http://127.0.0.1:18790/control/>.
+Wait until the gateway says it is running before opening the Web UI at
+<http://127.0.0.1:18790/control/>. Press `Ctrl+C` to stop the foreground
+gateway. If Windows lacks the Visual C++ Redistributable, the gateway still
+starts but the bundled router falls back to a safe direct route. If Windows
+prints an `onnxruntime` or `DLL load failed` warning, see the Visual C++ runtime
+note in [Prerequisites](#prerequisites).
 
-## Advanced usage
+## Setup details and troubleshooting
 
-A complete tutorial that covers every step in Quick start plus the
-options Quick start glosses over. Sections marked **(optional)** can be
-skipped depending on your environment; everything else is required for
-a working install.
+Setup details expands the Quick start paths; it is not a separate install path.
+Use Install from source when you only want to run OpenSquilla. Use Develop from
+source only when you want to edit, test, or debug the code.
+
+Sections marked **(optional)** can be skipped depending on your environment;
+everything else is required for a working source install.
 
 ### Prerequisites
 
-- **Python 3.12+** — required for source and `uv` installs. **(optional)**
-  for portable-zip users, since the release zip already bundles its own
-  CPython.
+- **Python 3.12+** — not required for the normal `uv` install path. Install it
+  only when you use the `pip --user` fallback or develop from source.
+  **(optional)** for portable-zip users, since the release zip already bundles
+  its own CPython.
 - **Git and Git LFS** — required. The bundled SquillaRouter assets are
   stored as LFS pointers; without `git-lfs` the `recommended` profile
   fails with `version https://git-lfs.github.com/spec/v1` pointer files
   in place of the model bytes. Install once: <https://git-lfs.com/>.
-- **`uv` or `pip` ≥ 23** — required. The installer scripts prefer
-  `uv tool install` and fall back to `pip --user`. Install `uv` once:
-  <https://docs.astral.sh/uv/>.
+- **`uv`** — recommended for normal source installs. The installer scripts use
+  `uv tool install` when available. Install once: <https://docs.astral.sh/uv/>.
+- **`pip` >= 23** — fallback only when `uv` is unavailable. The scripts fall
+  back to `python -m pip install --user`.
+- **Windows Visual C++ runtime** — recommended when using the bundled router
+  on Windows. `install.ps1` tries to install the Microsoft Visual C++
+  Redistributable for Visual Studio 2015-2022 (x64) with `winget` when it is
+  missing. If startup still prints `DLL load failed while importing
+  onnxruntime_pybind11_state`, install it manually, then restart PowerShell:
+  <https://aka.ms/vs/17/release/vc_redist.x64.exe>. If `winget` is not present,
+  download and run the Visual C++ installer manually. If you need to run while
+  fixing the runtime, use the `--router disabled --minimal` workaround in
+  [First-run config](#first-run-config).
 
 ### Clone the repo
 
@@ -115,16 +248,25 @@ cd opensquilla
 git lfs pull --include="src/opensquilla/squilla_router/models/**"
 ```
 
-### Install
+`git lfs install` is idempotent and safe to run again.
+
+### Install from source (detailed)
 
 Use this path when you want to run OpenSquilla, not edit its source.
 The clone is only the package source for the installer. After install,
 use `opensquilla ...`; do not use `uv run`.
+This section expands step 3 of Quick start; skip it if the installer has
+already completed.
 
 The scripts install `.[recommended]` by default. `recommended` is the
-normal runtime profile: router, memory, and local model dependencies.
+normal runtime profile: SquillaRouter, memory, and local model dependencies.
 Messaging channel adapters are opt-in extras. Most users do not need
 every chat platform SDK.
+
+The install scripts default to the `recommended` profile, which installs
+`.[recommended]`. That path includes SquillaRouter dependencies and checks the
+bundled router model assets before installing. The only normal opt-out is the
+`core` profile.
 
 macOS / Linux:
 
@@ -135,15 +277,18 @@ bash install.sh
 Windows PowerShell:
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Install channel extras into the same user-local command:
+PowerShell 7 users can run `pwsh -ExecutionPolicy Bypass -File .\install.ps1`.
+
+Install channel extras into the same user-local command. Feishu is shown only
+as an example channel adapter:
 
 Windows PowerShell:
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File install.ps1 -Extras feishu
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Extras feishu
 ```
 
 macOS/Linux:
@@ -152,8 +297,9 @@ macOS/Linux:
 OPENSQUILLA_INSTALL_EXTRAS=feishu bash install.sh
 ```
 
-Supported extras include `feishu`, `telegram`, `dingtalk`, `wecom`,
-`qq`, `msteams`, `matrix`, `matrix-e2e`, and `document-extras`.
+Supported channel extras include `dingtalk`, `feishu`, `matrix`, `matrix-e2e`,
+`msteams`, `qq`, `telegram`, and `wecom`. The optional non-channel extra is
+`document-extras`.
 
 The scripts prefer `uv tool install` and fall back to
 `python -m pip install --user`. The installed command uses its own
@@ -181,19 +327,28 @@ where.exe opensquilla
 command -v opensquilla
 ```
 
+If `opensquilla` is not on `PATH`, use the command path check above. For `uv`
+installs, refresh the shell with `uv tool update-shell`; for the `pip --user`
+fallback, add the Python user scripts directory to `PATH`.
+
 After reinstalling from a local checkout, restart the gateway process so it
 loads the updated package.
 
 ### Develop from source
 
 Use this path only when you want to modify, test, or debug the current
-checkout. `uv sync` creates the checkout-local `.venv`, and `uv run`
-executes against the live source tree.
+checkout. Unlike Install from source, this development path requires `uv`.
+`uv sync` creates the checkout-local `.venv`, and `uv run` executes against the
+live source tree.
 
 ```sh
 uv sync --extra recommended
 uv run opensquilla --help
 ```
+
+The `recommended` extra includes SquillaRouter for development too. Use
+`uv sync` without `--extra recommended` only when you are intentionally testing
+a minimal environment.
 
 Install extras into the same environment you run:
 
@@ -208,11 +363,14 @@ command runs in a different Python environment.
 
 ### First-run config
 
-`opensquilla onboard --if-needed` is the recommended post-install
-entrypoint for first-run setup and automation. It writes the active
-config file, skips when an LLM provider is already configured, and keeps
-provider secrets in environment variables when you pass `--api-key-env`.
-The router defaults to `recommended`, which enables SquillaRouter for
+`opensquilla onboard` is the human first-run setup command after source
+install. It writes the active config file and keeps provider secrets in
+environment variables when you pass `--api-key-env`. `opensquilla onboard
+--if-needed` is the idempotent entrypoint for repeatable scripts,
+automation, and already-configured users; it skips only when a real config
+file exists and the required provider setup is complete. Environment
+variables are treated as candidate inputs until the config references them.
+The router defaults to `recommended`; `recommended` enables SquillaRouter for
 supported provider profiles. Pass `--router disabled` only if you
 intentionally want direct single-model routing, or `--router
 openrouter-mix` to keep the built-in OpenRouter mixed model routes.
@@ -220,7 +378,7 @@ Useful invocations:
 
 ```sh
 opensquilla onboard                # full interactive wizard
-opensquilla onboard --if-needed    # idempotent: skip if already configured
+opensquilla onboard --if-needed    # idempotent: script/repeat install guard
 opensquilla onboard --minimal      # provider only, skip channels/search
 ```
 
@@ -235,6 +393,56 @@ opensquilla onboard \
   --api-key-env OPENROUTER_API_KEY
 ```
 
+For example, with OpenAI:
+
+```sh
+export OPENAI_API_KEY="sk-..."
+opensquilla onboard --provider openai --api-key-env OPENAI_API_KEY
+```
+
+To persist the key on macOS or Linux, add the same `export` line to your shell
+profile.
+
+Windows PowerShell:
+
+```powershell
+$env:OPENROUTER_API_KEY="sk-..."
+opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
+```
+
+To persist the key for future PowerShell windows:
+
+```powershell
+setx OPENROUTER_API_KEY "sk-..."
+```
+
+Close and reopen PowerShell after `setx`, then run:
+
+```powershell
+opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
+```
+
+If a Windows machine cannot initialize `onnxruntime` and logs
+`DLL load failed while importing onnxruntime_pybind11_state`, OpenSquilla will
+keep running with a safe router fallback, but the bundled router runtime is not
+active until the Visual C++ runtime is fixed. To make a first install quiet and
+direct while fixing the Windows runtime, use:
+
+```powershell
+$env:OPENROUTER_API_KEY="sk-..."
+opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY --router disabled --minimal
+opensquilla gateway run
+```
+
+After installing the Visual C++ Redistributable and reopening PowerShell, restore
+the recommended router. If you used only `$env:OPENROUTER_API_KEY`, set it again
+in the new PowerShell window.
+
+```powershell
+opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY --router recommended
+opensquilla gateway restart
+```
+
 **(optional)** Re-configure one section later without redoing the whole
 wizard:
 
@@ -242,7 +450,10 @@ wizard:
 opensquilla configure provider --provider openai --model gpt-4o
 opensquilla configure router --router recommended
 opensquilla configure search   --search-provider brave
+opensquilla configure image-generation --image-provider openrouter --api-key-env OPENROUTER_API_KEY
 opensquilla configure channels                # interactive section
+opensquilla configure channels --channel-type feishu --name feishu-main \
+  --field app_id=cli_... --field app_secret=...
 ```
 
 Sections: `provider`, `router`, `channels`, `search`,

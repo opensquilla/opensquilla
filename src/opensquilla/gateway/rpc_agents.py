@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any, cast
 
 from opensquilla.agents.scope import resolve_agent_workspace_dir
-from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
+from opensquilla.gateway.rpc import (
+    RpcContext,
+    RpcHandlerError,
+    RpcUnavailableError,
+    get_dispatcher,
+)
 from opensquilla.identity.bootstrap import (
     CORE_BOOTSTRAP_TEMPLATE_FILENAMES,
     ONE_SHOT_BOOTSTRAP_FILENAME,
@@ -179,6 +184,18 @@ async def _handle_agents_list(params: dict | None, ctx: RpcContext) -> dict:
     return {"agents": []}
 
 
+_UPDATE_FIELD_MAP: tuple[tuple[str, ...], ...] = (
+    ("name",),
+    ("description",),
+    ("model",),
+    ("systemPrompt", "system_prompt"),
+    ("tools",),
+    ("workspace",),
+    ("agentDir", "agent_dir"),
+    ("enabled",),
+)
+
+
 @_d.method("agents.create", scope="operator.admin")
 async def _handle_agents_create(params: dict | None, ctx: RpcContext) -> dict:
     if not isinstance(params, dict):
@@ -191,17 +208,29 @@ async def _handle_agents_create(params: dict | None, ctx: RpcContext) -> dict:
     agent_id = normalize_agent_id(raw_agent_id)
 
     agent_registry = _get_agent_registry(ctx)
-    result = await agent_registry.create_agent(
-        agent_id=agent_id,
-        name=name or agent_id,
-        description=params.get("description"),
-        model=params.get("model"),
-        workspace=params.get("workspace"),
-        agent_dir=params.get("agentDir") or params.get("agent_dir"),
-        enabled=params.get("enabled", True),
-        system_prompt=params.get("systemPrompt"),
-        tools=params.get("tools"),
-    )
+    try:
+        result = await agent_registry.create_agent(
+            agent_id=agent_id,
+            name=name or agent_id,
+            description=params.get("description"),
+            model=params.get("model"),
+            workspace=params.get("workspace"),
+            agent_dir=params.get("agentDir") or params.get("agent_dir"),
+            enabled=params.get("enabled", True),
+            system_prompt=params.get("systemPrompt"),
+            tools=params.get("tools"),
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "already exists" in msg:
+            raise RpcHandlerError(
+                "agent.exists", msg, details={"agentId": agent_id}
+            ) from exc
+        if agent_id == "main" or "builtin" in msg.lower():
+            raise RpcHandlerError(
+                "agent.builtin_immutable", msg, details={"agentId": agent_id}
+            ) from exc
+        raise
     return cast(dict, result)
 
 
@@ -212,16 +241,29 @@ async def _handle_agents_update(params: dict | None, ctx: RpcContext) -> dict:
 
     agent_id = normalize_agent_id(params["id"])
     updated_fields: list[str] = []
-
-    for field in ("name", "description", "model", "systemPrompt", "tools"):
-        if field in params:
-            updated_fields.append(field)
+    for aliases in _UPDATE_FIELD_MAP:
+        if any(alias in params for alias in aliases):
+            updated_fields.append(aliases[0])
 
     if not updated_fields:
         raise ValueError("No fields to update")
 
     agent_registry = _get_agent_registry(ctx)
-    result = await agent_registry.update_agent(agent_id, **{**params, "id": agent_id})
+    try:
+        result = await agent_registry.update_agent(agent_id, **{**params, "id": agent_id})
+    except ValueError as exc:
+        msg = str(exc)
+        if "builtin" in msg.lower() or agent_id == "main":
+            raise RpcHandlerError(
+                "agent.builtin_immutable", msg, details={"agentId": agent_id}
+            ) from exc
+        raise
+    except KeyError as exc:
+        raise RpcHandlerError(
+            "agent.not_found",
+            f"Agent '{agent_id}' does not exist",
+            details={"agentId": agent_id},
+        ) from exc
     return cast(dict, result)
 
 
@@ -234,10 +276,21 @@ async def _handle_agents_delete(params: dict | None, ctx: RpcContext) -> None:
 
     # Refuse to delete builtin agents
     if agent_id == "main":
-        raise ValueError("Cannot delete builtin agent: main")
+        raise RpcHandlerError(
+            "agent.builtin_immutable",
+            "Cannot delete builtin agent: main",
+            details={"agentId": agent_id},
+        )
 
     agent_registry = _get_agent_registry(ctx)
-    await agent_registry.delete_agent(agent_id)
+    try:
+        await agent_registry.delete_agent(agent_id)
+    except KeyError as exc:
+        raise RpcHandlerError(
+            "agent.not_found",
+            f"Agent '{agent_id}' does not exist",
+            details={"agentId": agent_id},
+        ) from exc
     return None
 
 

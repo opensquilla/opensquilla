@@ -21,11 +21,13 @@ from opensquilla.gateway.session_services import (
     set_session_epoch,
 )
 from opensquilla.gateway.session_streams import get_session_streams
+from opensquilla.paths import media_root_from_config
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
     call_compact_with_optional_config,
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
+from opensquilla.session.terminal_reply import build_terminal_reply
 
 _d = get_dispatcher()
 log = structlog.get_logger(__name__)
@@ -318,6 +320,31 @@ def _agent_registry_model(ctx: RpcContext, agent_id: str) -> str | None:
         return None
 
 
+async def _agent_registry_has(ctx: RpcContext, agent_id: str) -> bool:
+    """Return True iff *agent_id* exists in the registry (built-in main always True).
+
+    Returns ``True`` when no registry is wired so legacy code paths that ran
+    without an agent registry continue to work — the validation only kicks in
+    when a registry is available to consult.
+    """
+    if normalize_agent_id(agent_id) == "main":
+        return True
+    registry = getattr(ctx, "agent_registry", None)
+    lister = getattr(registry, "list_agents", None)
+    if not callable(lister):
+        return True
+    try:
+        agents = await lister(include_builtin=True)
+    except Exception:  # noqa: BLE001 - never block session create on registry hiccups
+        log.warning("sessions.agent_registry_list_failed", agent_id=agent_id)
+        return True
+    target = normalize_agent_id(agent_id)
+    for entry in agents:
+        if normalize_agent_id(str(entry.get("id", ""))) == target:
+            return True
+    return False
+
+
 def _session_turn_model(ctx: RpcContext, session: Any | None, agent_id: str) -> str | None:
     return _model_value(getattr(session, "model", None)) or _agent_registry_model(ctx, agent_id)
 
@@ -338,7 +365,45 @@ def _task_summary(row: Any) -> dict[str, Any]:
     terminal_reason = getattr(row, "terminal_reason", None)
     if terminal_reason is not None:
         summary["terminal_reason"] = terminal_reason
+    if summary.get("status") in {"failed", "timeout", "abandoned", "cancelled"}:
+        summary["terminal_message"] = build_terminal_reply(
+            {
+                "status": summary.get("status"),
+                "terminal_reason": terminal_reason,
+                "error_class": getattr(row, "error_class", None),
+                "error_message": getattr(row, "error_message", None),
+            }
+        )
     return summary
+
+
+def _normalize_terminal_event_payload(event_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if event_name != "session.event.error":
+        return payload
+
+    message = payload.get("message")
+    error_message = payload.get("error_message")
+    raw_message = error_message if isinstance(error_message, str) and error_message else message
+    raw_text = raw_message if isinstance(raw_message, str) and raw_message else "Agent error"
+    code = payload.get("code")
+    code_text = str(code or "").lower()
+    is_timeout = "timeout" in code_text or "stream idle" in raw_text.lower()
+    terminal_payload = {
+        "status": "timeout" if is_timeout else "failed",
+        "terminal_reason": payload.get("terminal_reason")
+        or ("timeout" if is_timeout else "error"),
+        "error_class": code,
+        "error_message": raw_text,
+        **payload,
+    }
+    terminal_message = build_terminal_reply(terminal_payload)
+    return {
+        **payload,
+        "message": terminal_message,
+        "terminal_message": terminal_message,
+        "terminal_reason": terminal_payload["terminal_reason"],
+        "error_message": raw_text,
+    }
 
 
 def _sorted_task_rows(rows: list[Any]) -> list[Any]:
@@ -579,6 +644,13 @@ async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
     if message is not None and not isinstance(message, str):
         raise ValueError("params.message must be a string")
 
+    if not await _agent_registry_has(ctx, agent_id):
+        raise RpcHandlerError(
+            "agent.not_found",
+            f"Agent '{agent_id}' does not exist",
+            details={"agentId": agent_id},
+        )
+
     if ctx.session_manager is None:
         if message:
             raise RpcUnavailableError("sessions.create(message=...) requires a session manager")
@@ -618,16 +690,9 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
 
     message_text: str = params["message"]
     semantic_message_text = message_text
-    from pathlib import Path as _Path
-
     attachments_cfg = getattr(ctx.config, "attachments", None)
     persist_enabled = bool(getattr(attachments_cfg, "persist_transcripts", True))
-    media_root_raw = getattr(attachments_cfg, "media_root", None)
-    media_root = (
-        _Path(media_root_raw)
-        if media_root_raw
-        else _Path(".opensquilla") / "media"
-    )
+    media_root = media_root_from_config(ctx.config)
     session_id = key.split(":")[-1] or key
     disk_budget = getattr(attachments_cfg, "transcript_disk_budget_bytes", None)
     ingested_attachments = await _attachment_ingest.ingest_attachments(
@@ -877,6 +942,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             _terminal_emitted = True
             if task is not None:
                 setattr(task, "_opensquilla_terminal_emitted", True)
+            payload = _normalize_terminal_event_payload(event_name, payload)
             await _emit_to_subscribers(ctx, key, event_name, payload)
 
         try:

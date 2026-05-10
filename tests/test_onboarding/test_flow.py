@@ -132,6 +132,45 @@ def test_interactive_provider_fields_explains_detected_env_key(monkeypatch):
     assert answers["api_key_env"] == "OPENROUTER_API_KEY"
 
 
+def test_interactive_provider_fields_requires_pasted_api_key(monkeypatch):
+    from opensquilla.onboarding.flow import OnboardOptions, _ask_provider_fields
+    from opensquilla.onboarding.provider_specs import get_provider_setup_spec
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary:
+        def confirm(self, message: str, **_kwargs):
+            assert message == (
+                "Use OPENROUTER_API_KEY instead of storing the API key in config? "
+                "Not set now; set it before starting the gateway."
+            )
+            return _Answer(False)
+
+        def password(self, message: str, **kwargs):
+            assert message == "API key"
+            validate = kwargs.get("validate")
+            assert validate is not None
+            assert validate("") is not True
+            assert validate("sk-live") is True
+            return _Answer("sk-live")
+
+    answers = _ask_provider_fields(
+        _Questionary(),
+        get_provider_setup_spec("openrouter"),
+        OnboardOptions(),
+    )
+
+    assert answers["api_key"] == "sk-live"
+    assert answers["api_key_env"] == ""
+
+
 def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, monkeypatch):
     import sys
     import types
@@ -174,6 +213,8 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
 
         def text(self, message: str, **kwargs):
             calls.append(message)
+            if message == "Press Enter to start setup":
+                return _Answer("")
             if message == "API key environment variable":
                 assert kwargs.get("default") == "OPENROUTER_API_KEY"
                 return _Answer("OPENROUTER_API_KEY")
@@ -203,6 +244,7 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
 
     flow.run_interactive_onboard(flow.OnboardOptions())
 
+    assert calls.index("Press Enter to start setup") < calls.index("LLM provider")
     assert calls.index("Router mode") < calls.index("Configure a messaging channel now?")
     data = target.read_text()
     assert 'api_key = ""' in data
@@ -251,6 +293,8 @@ def test_interactive_onboard_can_enable_image_generation(tmp_path, monkeypatch):
 
         def text(self, message: str, **kwargs):
             calls.append(message)
+            if message == "Press Enter to start setup":
+                return _Answer("")
             if message == "Primary image model":
                 return _Answer(kwargs.get("default"))
             if message == "Image base URL":
@@ -483,15 +527,16 @@ def test_channel_saved_output_separates_configured_from_connected(capsys):
 def test_readme_distinguishes_recommended_profile_from_channel_extras() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "Choose one path and stay on it:" in readme
-    assert "| Run OpenSquilla as a local app | [Install](#install) | `opensquilla ...` |" in readme
+    assert "| New user | [Release package](#release-package-coming-soon) | Coming soon |" in readme
     assert (
-        "| Modify or debug OpenSquilla source | [Develop from source](#develop-from-source) | "
-        "`uv run opensquilla ...` |"
+        "| Command-line user | [Install from source](#install-from-source) | Available now |"
     ) in readme
+    assert "| Developer | [Develop from source](#develop-from-source) | Available now |" in readme
+    assert "Public release packages are not published yet." in readme
     assert "`recommended` is the\nnormal runtime profile" in readme
     assert "Messaging channel adapters are opt-in extras." in readme
-    assert "pwsh -ExecutionPolicy Bypass -File install.ps1 -Extras feishu" in readme
+    assert "Feishu is shown only\nas an example channel adapter" in readme
+    assert "powershell -ExecutionPolicy Bypass -File .\\install.ps1 -Extras feishu" in readme
     assert "OPENSQUILLA_INSTALL_EXTRAS=feishu bash install.sh" in readme
     assert "Install extras into the same environment you run:" in readme
     assert "uv sync --extra recommended --extra feishu" in readme

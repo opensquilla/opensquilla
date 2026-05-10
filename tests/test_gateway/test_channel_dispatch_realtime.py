@@ -668,7 +668,8 @@ async def test_direct_channel_turn_idle_timeout_sends_error_reply() -> None:
     )
 
     assert channel.sent
-    assert channel.sent[-1].content.startswith("Error: Stream idle")
+    assert channel.sent[-1].content == "The task timed out before it could finish."
+    assert "Stream idle" not in channel.sent[-1].content
 
 
 @pytest.mark.asyncio

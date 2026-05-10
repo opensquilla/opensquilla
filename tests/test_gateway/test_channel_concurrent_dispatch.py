@@ -170,10 +170,11 @@ async def test_relay_close_on_exception() -> None:
     )
 
     relay.close.assert_awaited_once()
-    # Error message should be sent to channel
+    # A user-facing terminal message should be sent; raw exception detail stays in logs.
     channel.send.assert_awaited_once()
     sent_content = channel.send.call_args[0][0].content
-    assert "boom" in sent_content or "Error" in sent_content
+    assert sent_content == "The task failed before it could finish."
+    assert "boom" not in sent_content
 
 
 @pytest.mark.asyncio

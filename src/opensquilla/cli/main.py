@@ -16,6 +16,7 @@ from opensquilla.cli.agents_cmd import agents_app  # noqa: E402
 from opensquilla.cli.channels_cmd import channels_app  # noqa: E402
 from opensquilla.cli.config_cmd import app as config_app  # noqa: E402
 from opensquilla.cli.cost_cmd import app as cost_app  # noqa: E402
+from opensquilla.cli.diagnostics_cmd import diagnostics_app  # noqa: E402
 from opensquilla.cli.cron_cmd import cron_app  # noqa: E402
 from opensquilla.cli.dist_cmd import app as dist_app  # noqa: E402
 from opensquilla.cli.init_cmd import init_command  # noqa: E402
@@ -41,6 +42,7 @@ app.add_typer(channels_app, name="channels")
 app.add_typer(agents_app, name="agents")
 app.add_typer(config_app, name="config")
 app.add_typer(cost_app, name="cost")
+app.add_typer(diagnostics_app, name="diagnostics")
 app.add_typer(cron_app, name="cron")
 app.add_typer(dist_app, name="dist")
 app.add_typer(models_app, name="models")

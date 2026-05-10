@@ -18,6 +18,7 @@ from opensquilla.gateway.boot import (
     validate_squilla_router_runtime,
 )
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
+from opensquilla.gateway.diagnostics import DiagnosticsState
 from opensquilla.gateway.routing import build_cli_route_envelope, build_cron_route_envelope
 from opensquilla.onboarding.mutations import upsert_channel
 from opensquilla.scheduler.types import CronJob, JobStatus
@@ -77,6 +78,109 @@ def test_build_turn_runner_from_services_wires_memory_services(
     assert captured["turn_capture_services"] is services.turn_capture_services
     assert captured["session_flush_service"] is services.flush_service
     assert captured["model_catalog"] is services.model_catalog
+
+
+def test_build_turn_runner_from_services_wires_diagnostics_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeTurnRunner:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    services = SimpleNamespace(
+        provider_selector=object(),
+        tool_registry=object(),
+        session_manager=object(),
+        skill_loader=object(),
+        usage_tracker=object(),
+        config=GatewayConfig(),
+    )
+    state = DiagnosticsState.from_config(GatewayConfig())
+
+    from opensquilla.gateway import boot
+
+    runner = boot.build_turn_runner_from_services(services, diagnostics_state=state)
+
+    assert isinstance(runner, FakeTurnRunner)
+    assert captured["diagnostics_state"] is state
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_server_shares_diagnostics_state_between_app_and_turn_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_runner: dict[str, Any] = {}
+
+    class FakeTurnRunner:
+        def __init__(self, **kwargs: Any) -> None:
+            captured_runner.update(kwargs)
+
+        def set_session_lock_provider(self, provider: Any) -> None:
+            captured_runner["session_lock_provider"] = provider
+
+    async def fake_build_services(**kwargs: Any) -> Any:
+        config = kwargs["config"]
+
+        async def close() -> None:
+            return None
+
+        return SimpleNamespace(
+            provider_selector=object(),
+            tool_registry=object(),
+            session_manager=object(),
+            skill_loader=object(),
+            usage_tracker=object(),
+            config=config,
+            memory_sync_managers={},
+            model_catalog=None,
+            memory_retrievers={},
+            turn_capture_services={},
+            flush_service=None,
+            cron_scheduler=None,
+            task_runtime=None,
+            agent_registry=None,
+            memory_managers={},
+            memory_stores={},
+            _turn_runner_ref=[],
+            close=close,
+        )
+
+    from opensquilla.gateway import boot
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr(boot, "build_services", fake_build_services)
+    monkeypatch.setattr(boot, "_setup_file_logging", lambda config: None)
+    monkeypatch.setattr(boot, "emit_skill_filter_banner", lambda config: None)
+    monkeypatch.setattr(
+        "opensquilla.gateway.pidlock.GatewayPidLock.acquire",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        "opensquilla.gateway.pidlock.GatewayPidLock.release",
+        lambda self: None,
+    )
+    config = GatewayConfig(
+        state_dir=str(tmp_path / "state"),
+        workspace_dir=str(tmp_path / "workspace"),
+        control_ui={"enabled": False},
+        channels={"channels": []},
+        diagnostics_enabled=True,
+    )
+
+    server = await boot.start_gateway_server(config=config, run=False)
+
+    try:
+        state = server.app.state.diagnostics_state
+        assert isinstance(state, DiagnosticsState)
+        assert captured_runner["diagnostics_state"] is state
+        state.set_runtime(enabled=True, raw=True)
+        assert captured_runner["diagnostics_state"].raw_turn_call_enabled() is True
+    finally:
+        await server.close()
 
 
 def test_build_flush_service_respects_memory_flush_enabled_config() -> None:

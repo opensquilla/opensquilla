@@ -2317,7 +2317,7 @@ const ChatView = (() => {
         }
       } else if (event.endsWith('.error')) {
         _endStreaming();
-        _addMessage('error', (payload && payload.message) || 'Agent error');
+        _addMessage('error', _sessionErrorMessage(payload));
         if (_activeTaskGroups.size > 0) {
           _applySessionRunState(_activeTaskGroupRunState(payload));
         } else {
@@ -2854,16 +2854,47 @@ const ChatView = (() => {
     }
     if (!['task.failed', 'task.timeout', 'task.abandoned'].includes(event)) return null;
     const status = event.replace('task.', '');
-    const reason = payload?.terminal_reason ? `: ${payload.terminal_reason}` : '';
-    const task = payload?.task_id ? ` (${payload.task_id})` : '';
+    const message = _taskTerminalMessage(status, payload);
     return {
       event: 'session.event.error',
       payload: {
         ...(payload || {}),
-        message: `Gateway task ${status}${task}${reason}`,
+        message,
         code: status,
       },
     };
+  }
+
+  function _taskTerminalMessage(status, payload) {
+    if (typeof payload?.terminal_message === 'string' && payload.terminal_message.trim()) {
+      return payload.terminal_message.trim();
+    }
+    if (status === 'timeout' || payload?.terminal_reason === 'timeout') {
+      return 'The task timed out before it could finish.';
+    }
+    if (status === 'abandoned') {
+      return 'The task stopped before it could finish.';
+    }
+    if (status === 'cancelled') {
+      return 'The task was cancelled before it finished.';
+    }
+    if (status === 'failed') {
+      return 'The task failed before it could finish.';
+    }
+    return 'The task ended before it could finish.';
+  }
+
+  function _sessionErrorMessage(payload) {
+    if (typeof payload?.terminal_message === 'string' && payload.terminal_message.trim()) {
+      return payload.terminal_message.trim();
+    }
+    const message = typeof payload?.message === 'string' ? payload.message : '';
+    const code = typeof payload?.code === 'string' ? payload.code.toLowerCase() : '';
+    if (code.includes('timeout') || message.toLowerCase().includes('stream idle')) {
+      return 'The task timed out before it could finish.';
+    }
+    if (message) return message;
+    return 'Agent error';
   }
 
   function _noteStreamSeq(payload) {

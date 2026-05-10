@@ -57,11 +57,23 @@ class ContextAwareFakeStrategy(FakeStrategy):
         return self.tier, self.confidence, "v4_phase3", dict(self.extra)
 
 
+class ExplodingV4Strategy:
+    def __init__(self, *args, **kwargs) -> None:
+        raise RuntimeError(
+            "failed to initialize V4 Phase 3 router: DLL load failed while importing "
+            "onnxruntime_pybind11_state"
+        )
+
+
 @pytest.fixture(autouse=True)
 def reset_squilla_router_state(monkeypatch: pytest.MonkeyPatch) -> None:
     squilla_router_step._history_store.clear()
+    squilla_router_step._strategy = None
+    squilla_router_step._strategy_key = None
     yield
     squilla_router_step._history_store.clear()
+    squilla_router_step._strategy = None
+    squilla_router_step._strategy_key = None
     monkeypatch.undo()
 
 
@@ -714,6 +726,23 @@ async def test_repeated_message_across_sessions_is_classified_each_time(
     assert first.metadata["routing_source"] == "v4_phase3"
     assert second.metadata["routing_source"] == "v4_phase3"
     assert strategy.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_required_router_runtime_failure_falls_back_to_default_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.squilla_router.v4_phase3 as v4_phase3
+
+    monkeypatch.setattr(v4_phase3, "V4Phase3Strategy", ExplodingV4Strategy)
+    ctx = make_context("Explain the setup steps.")
+    ctx.config.squilla_router.require_router_runtime = True
+
+    routed = await apply_squilla_router(ctx)
+
+    assert routed.metadata["routing_source"] == "v4_unavailable"
+    assert routed.metadata["routed_tier"] == "t1"
+    assert routed.metadata["routing_confidence"] == 0.0
 
 
 @pytest.mark.asyncio

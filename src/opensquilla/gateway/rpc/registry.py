@@ -82,6 +82,7 @@ class RpcContext:
     heartbeat_service: Any = None  # Task-style heartbeat service (injected at boot)
     heartbeat_loop: Any = None  # Background heartbeat loop (injected at boot)
     agent_registry: Any = None  # AgentRegistry instance (injected at boot)
+    diagnostics_state: Any = None  # DiagnosticsState instance (injected at boot)
     memory_managers: dict[str, Any] = field(default_factory=dict)
     memory_stores: dict[str, Any] = field(default_factory=dict)
     memory_retrievers: dict[str, Any] = field(default_factory=dict)

@@ -417,6 +417,86 @@ class TestSessionsCreate:
         session = session_manager._storage._sessions[res.payload["key"]]
         assert session.model == "explicit/model"
 
+    @pytest.mark.asyncio
+    async def test_create_rejects_missing_agent_when_registry_present(self, dispatcher):
+        cfg = GatewayConfig(agents=[AgentEntryConfig(id="ops", model="agent/default")])
+        registry = AgentRegistry(cfg, persist_changes=False)
+        session_manager = FakeSessionManager()
+        ctx = make_ctx(session_manager=session_manager, config=cfg, agent_registry=registry)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.create",
+            {"agentId": "ghost"},
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "agent.not_found"
+        assert res.error.details == {"agentId": "ghost"}
+
+    @pytest.mark.asyncio
+    async def test_create_with_create_if_missing_does_not_create_agent(self, dispatcher):
+        cfg = GatewayConfig()
+        registry = AgentRegistry(cfg, persist_changes=False)
+        session_manager = FakeSessionManager()
+        ctx = make_ctx(
+            session_manager=session_manager,
+            config=cfg,
+            agent_registry=registry,
+            scopes=["operator.write"],
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.create",
+            {
+                "agentId": "dragons",
+                "agentName": "Dragons",
+                "createAgentIfMissing": True,
+                "model": "openai/test",
+            },
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "agent.not_found"
+        assert res.error.details == {"agentId": "dragons"}
+        assert cfg.agents == []
+        assert session_manager._storage._sessions == {}
+
+    @pytest.mark.asyncio
+    async def test_create_with_create_if_missing_existing_agent_no_duplicate(self, dispatcher):
+        cfg = GatewayConfig(agents=[AgentEntryConfig(id="ops", model="agent/default")])
+        registry = AgentRegistry(cfg, persist_changes=False)
+        session_manager = FakeSessionManager()
+        ctx = make_ctx(session_manager=session_manager, config=cfg, agent_registry=registry)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.create",
+            {"agentId": "ops", "createAgentIfMissing": True},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert sum(1 for a in cfg.agents if a.id == "ops") == 1
+
+    @pytest.mark.asyncio
+    async def test_create_main_agent_passes_without_registry(self, dispatcher):
+        # No agent_registry on ctx; agentId="main" must always pass through.
+        session_manager = FakeSessionManager()
+        ctx = make_ctx(session_manager=session_manager)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.create",
+            {"agentId": "main"},
+            ctx,
+        )
+
+        assert res.ok is True
+
 
 class TestSessionsList:
     @pytest.mark.asyncio

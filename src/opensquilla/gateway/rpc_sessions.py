@@ -318,6 +318,31 @@ def _agent_registry_model(ctx: RpcContext, agent_id: str) -> str | None:
         return None
 
 
+async def _agent_registry_has(ctx: RpcContext, agent_id: str) -> bool:
+    """Return True iff *agent_id* exists in the registry (built-in main always True).
+
+    Returns ``True`` when no registry is wired so legacy code paths that ran
+    without an agent registry continue to work — the validation only kicks in
+    when a registry is available to consult.
+    """
+    if normalize_agent_id(agent_id) == "main":
+        return True
+    registry = getattr(ctx, "agent_registry", None)
+    lister = getattr(registry, "list_agents", None)
+    if not callable(lister):
+        return True
+    try:
+        agents = await lister(include_builtin=True)
+    except Exception:  # noqa: BLE001 - never block session create on registry hiccups
+        log.warning("sessions.agent_registry_list_failed", agent_id=agent_id)
+        return True
+    target = normalize_agent_id(agent_id)
+    for entry in agents:
+        if normalize_agent_id(str(entry.get("id", ""))) == target:
+            return True
+    return False
+
+
 def _session_turn_model(ctx: RpcContext, session: Any | None, agent_id: str) -> str | None:
     return _model_value(getattr(session, "model", None)) or _agent_registry_model(ctx, agent_id)
 
@@ -578,6 +603,13 @@ async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
     kind = params.get("kind") or params.get("sessionKind")
     if message is not None and not isinstance(message, str):
         raise ValueError("params.message must be a string")
+
+    if not await _agent_registry_has(ctx, agent_id):
+        raise RpcHandlerError(
+            "agent.not_found",
+            f"Agent '{agent_id}' does not exist",
+            details={"agentId": agent_id},
+        )
 
     if ctx.session_manager is None:
         if message:

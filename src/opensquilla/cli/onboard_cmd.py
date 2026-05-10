@@ -49,7 +49,8 @@ def onboard_command(
     """Run first-run onboarding (interactive or non-interactive)."""
     if if_needed:
         cfg = load_config()
-        if get_onboarding_status(cfg).llm_configured:
+        status = get_onboarding_status(cfg)
+        if status.has_config and status.llm_configured:
             console.print(
                 f"[{ACCENT_SOFT}]◆[/] [bold]onboarding already complete[/]"
                 " [dim]— nothing to do[/dim]"
@@ -133,6 +134,9 @@ def configure_command(
     channel_type: str = typer.Option("", "--channel-type"),
     name: str = typer.Option("", "--name"),
     token: str = typer.Option("", "--token"),
+    fields: list[str] = typer.Option(
+        [], "--field", "-f", help="Repeatable key=value channel field."
+    ),
     image_provider: str = typer.Option("", "--image-provider"),
     primary: str = typer.Option("", "--primary"),
     memory_provider: str = typer.Option("", "--memory-provider"),
@@ -193,10 +197,15 @@ def configure_command(
                 _print_env_reference_warnings(load_config(result.path))
                 return
             if normalized in {"channel", "channels"} and channel_type and name:
+                from opensquilla.cli.channel_fields import (
+                    apply_channel_token,
+                    parse_channel_field_pairs,
+                )
+
                 engine = SetupEngine()
                 entry = {"type": channel_type, "name": name}
-                if token:
-                    entry["token"] = token
+                apply_channel_token(entry, channel_type, token)
+                entry.update(parse_channel_field_pairs(fields, channel_type))
                 engine.apply("channel", {"entry": entry})
                 result = engine.persist()
                 console.print(
@@ -212,6 +221,7 @@ def configure_command(
                         "providerId": image_provider,
                         "primary": primary,
                         "apiKey": api_key,
+                        "apiKeyEnv": api_key_env,
                         "baseUrl": base_url,
                         "enabled": True,
                     },

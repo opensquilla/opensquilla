@@ -648,6 +648,9 @@ VENV_DIR="${SCRIPT_DIR}/.venv"
 if [[ -z "${OPENSQUILLA_GATEWAY_CONFIG_PATH:-}" ]]; then
   export OPENSQUILLA_GATEWAY_CONFIG_PATH="${SCRIPT_DIR}/.opensquilla/config.toml"
 fi
+if [[ -z "${OPENSQUILLA_STATE_DIR:-}" ]]; then
+  export OPENSQUILLA_STATE_DIR="${SCRIPT_DIR}/.opensquilla"
+fi
 if [[ -z "${OPENSQUILLA_LLM_API_KEY:-}" && -n "${OPENROUTER_API_KEY:-}" ]]; then
   export OPENSQUILLA_LLM_API_KEY="${OPENROUTER_API_KEY}"
 fi
@@ -675,9 +678,6 @@ echo "Installing OpenSquilla from local wheelhouse..."
 
 OPENSQUILLA_BIN="${VENV_DIR}/bin/opensquilla"
 "${OPENSQUILLA_BIN}" onboard --if-needed
-if [[ -z "${OPENSQUILLA_STATE_DIR:-}" ]]; then
-  export OPENSQUILLA_STATE_DIR="${SCRIPT_DIR}/.opensquilla"
-fi
 
 echo
 echo "Starting OpenSquilla gateway."
@@ -708,6 +708,9 @@ if (-not $env:OPENSQUILLA_GATEWAY_CONFIG_PATH) {
     $ConfigDir = Join-Path $ScriptDir '.opensquilla'
     $env:OPENSQUILLA_GATEWAY_CONFIG_PATH = Join-Path $ConfigDir 'config.toml'
 }
+if (-not $env:OPENSQUILLA_STATE_DIR) {
+    $env:OPENSQUILLA_STATE_DIR = Join-Path $ScriptDir '.opensquilla'
+}
 if ((-not $env:OPENSQUILLA_LLM_API_KEY) -and $env:OPENROUTER_API_KEY) {
     $env:OPENSQUILLA_LLM_API_KEY = $env:OPENROUTER_API_KEY
 }
@@ -733,9 +736,6 @@ Write-Host "Installing OpenSquilla from local wheelhouse..."
     "__TARGET__"
 
 & $OpenSquillaBin onboard --if-needed
-if (-not $env:OPENSQUILLA_STATE_DIR) {
-    $env:OPENSQUILLA_STATE_DIR = Join-Path $ScriptDir '.opensquilla'
-}
 
 Write-Host ""
 Write-Host "Starting OpenSquilla gateway."
@@ -760,10 +760,21 @@ def render_readme(
         unix_commands = "bash start.sh"
         windows_command = ".\\start.ps1"
         python_note = "Python is bundled in this zip."
+        setup_note = (
+            "First run opens the configuration wizard when no local config exists. "
+            "If environment variables such as `OPENROUTER_API_KEY` are present, "
+            "OpenSquilla asks before saving references to them. Later runs reuse "
+            "`.opensquilla/config.toml` and skip setup when it is complete."
+        )
     else:
         unix_commands = "bash install.sh\nopensquilla gateway run"
         windows_command = ".\\install.ps1\nopensquilla gateway run"
         python_note = f"Requires Python {python_major}.{python_minor}."
+        setup_note = (
+            "The installer runs idempotent onboarding after installation. To "
+            "reconfigure later, run `opensquilla onboard` for the full wizard or "
+            "`opensquilla configure <section>` for one area."
+        )
     if windows_target:
         command_section = f"""## Windows PowerShell
 
@@ -793,6 +804,8 @@ Build target:
 Open `http://127.0.0.1:18790/control/`.
 
 {python_note}
+
+{setup_note}
 """
 
 

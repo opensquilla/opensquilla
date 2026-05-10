@@ -11,6 +11,15 @@ def test_install_scripts_force_refresh_local_uv_tool_package() -> None:
     assert "--force --reinstall-package opensquilla" in sh
 
 
+def test_source_install_scripts_do_not_run_onboarding() -> None:
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    for script in (ps1, sh):
+        assert "onboard --if-needed" not in script
+        assert "opensquilla onboard" not in script
+
+
 def test_windows_installer_stops_when_native_install_command_fails() -> None:
     ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
 

@@ -156,6 +156,7 @@ class SetupEngine:
                 provider_id=str(payload["providerId"]),
                 primary=str(payload.get("primary", "")),
                 api_key=str(payload.get("apiKey", "")),
+                api_key_env=str(payload.get("apiKeyEnv", "")),
                 base_url=str(payload.get("baseUrl", "")),
                 enabled=bool(payload.get("enabled", True)),
             )

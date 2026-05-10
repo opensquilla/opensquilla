@@ -111,6 +111,9 @@ _SAFE_FLUSH_OBLIGATION_STATUSES: Final[frozenset[str]] = frozenset(
 _IMAGE_GENERATION_TOOL_NAMES: Final[frozenset[str]] = frozenset(
     {"image_generate"}
 )
+_ARTIFACT_DELIVERY_FAILURE_MARKER: Final[str] = "File delivery failed:"
+_ARTIFACT_DELIVERY_TOOL_NAME: Final[str] = "publish_artifact"
+_ARTIFACT_DELIVERY_FAILURE_MAX_CHARS: Final[int] = 360
 
 # Tools that are safe to run concurrently within a single LLM turn.
 # Any tool name absent from this set is treated as mutex (serial dispatch).
@@ -547,6 +550,55 @@ def _persisted_tool_result_segment(
         segment.update(_bounded_tool_result_metadata(parsed))
     segment["result"] = _json_tool_result_preview(parsed, len(result), max_chars)
     return segment
+
+
+def _artifact_delivery_failure_summary(event: ToolResultEvent) -> str | None:
+    if event.tool_name != _ARTIFACT_DELIVERY_TOOL_NAME or not event.is_error:
+        return None
+    raw = event.result.strip()
+    summary = raw
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        candidate = (
+            parsed.get("user_message")
+            or parsed.get("message")
+            or parsed.get("error")
+            or parsed.get("error_class")
+        )
+        if isinstance(candidate, str) and candidate.strip():
+            summary = candidate.strip()
+    summary = " ".join(summary.split())
+    if len(summary) > _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS:
+        summary = summary[: _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS - 3].rstrip() + "..."
+    return summary or "publish_artifact failed"
+
+
+def _artifact_delivery_failure_notice(summary: str | None) -> str:
+    base = (
+        f"{_ARTIFACT_DELIVERY_FAILURE_MARKER} no downloadable file was attached "
+        "to this response."
+    )
+    if not summary:
+        return base + " Retry by publishing an existing file from the active workspace."
+    return (
+        f"{base} Last publish_artifact error: {summary}. "
+        "Retry by publishing an existing file from the active workspace."
+    )
+
+
+def _should_add_artifact_delivery_failure_notice(
+    *,
+    failure_summaries: list[str],
+    turn_artifacts: list[dict[str, Any]],
+    final_text: str,
+) -> bool:
+    if not failure_summaries or turn_artifacts:
+        return False
+    return _ARTIFACT_DELIVERY_FAILURE_MARKER not in final_text
+
 
 _SUBAGENT_TASK_PROTOCOL: Final[str] = (
     "You are a spawned subagent. Execute only the delegated task and return "
@@ -1373,6 +1425,7 @@ class TurnRunner:
         final_text_parts: list[str] = []
         turn_segments: list[dict] = []
         turn_artifacts: list[dict[str, Any]] = []
+        artifact_delivery_failures: list[str] = []
         self._write_trace_event(
             "turn_start",
             trace_context,
@@ -1811,6 +1864,9 @@ class TurnRunner:
                         }
                     )
                 elif isinstance(event, ToolResultEvent):
+                    failure_summary = _artifact_delivery_failure_summary(event)
+                    if failure_summary is not None:
+                        artifact_delivery_failures.append(failure_summary)
                     if event.arguments is not None:
                         for segment in reversed(turn_segments):
                             if (
@@ -1894,6 +1950,22 @@ class TurnRunner:
                         final_text_parts.append(normalized_text)
                         if turn_segments:
                             current_text_parts.append(normalized_text)
+                    accumulated_text = "".join(final_text_parts)
+                    if _should_add_artifact_delivery_failure_notice(
+                        failure_summaries=artifact_delivery_failures,
+                        turn_artifacts=turn_artifacts,
+                        final_text=accumulated_text,
+                    ):
+                        separator = "\n\n" if accumulated_text.strip() else ""
+                        notice_delta = separator + _artifact_delivery_failure_notice(
+                            artifact_delivery_failures[-1]
+                        )
+                        final_text_parts.append(notice_delta)
+                        current_text_parts.append(notice_delta)
+                        normalized_text = "".join(final_text_parts)
+                        event = replace(event, text=normalized_text)
+                        done_event = event
+                        yield TextDeltaEvent(text=notice_delta)
                     # Hallucination check: emit Warning BEFORE yielding Done
                     # so CLI/SDK consumers that stop reading on terminal events
                     # still see it.

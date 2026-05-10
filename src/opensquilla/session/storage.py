@@ -22,8 +22,8 @@ class StaleEpochError(Exception):
 
 
 # Bumped whenever the schema is widened or narrowed via migration.
-# Version 2 added the epoch column.
-SCHEMA_VERSION = 2
+# Version 2 added the epoch column. Version 3 added transcript reasoning replay.
+SCHEMA_VERSION = 3
 
 # SQLite CREATE statements derived from SQLModel metadata
 _CREATE_SESSIONS = """
@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS transcript_entries (
     content TEXT,
     tool_calls TEXT,
     tool_call_id TEXT,
+    reasoning_content TEXT,
     created_at INTEGER NOT NULL,
     token_count INTEGER,
     provenance_kind TEXT,
@@ -271,6 +272,7 @@ class SessionStorage:
         await self._conn.commit()
         # Migrate older databases — add the epoch column if missing.
         await self._migrate_epoch_column()
+        await self._migrate_transcript_reasoning_content_column()
         await self.mark_abandoned_agent_tasks()
 
     async def _migrate_epoch_column(self) -> None:
@@ -297,6 +299,17 @@ class SessionStorage:
         if null_count > 0:
             await self._conn.execute(
                 "UPDATE sessions SET epoch = 0 WHERE epoch IS NULL"
+            )
+            await self._conn.commit()
+
+    async def _migrate_transcript_reasoning_content_column(self) -> None:
+        """Idempotently add assistant reasoning replay storage to transcripts."""
+        assert self._conn is not None
+        async with self._conn.execute("PRAGMA table_info(transcript_entries)") as cur:
+            columns = [row[1] for row in await cur.fetchall()]
+        if "reasoning_content" not in columns:
+            await self._conn.execute(
+                "ALTER TABLE transcript_entries ADD COLUMN reasoning_content TEXT"
             )
             await self._conn.commit()
 
@@ -595,7 +608,7 @@ class SessionStorage:
                 raise StaleEpochError(
                     f"Epoch mismatch for {entry.session_key}: "
                     f"expected {expected_epoch}, got {actual}"
-                )
+            )
             await self.conn.commit()
         else:
             sql = f"INSERT INTO transcript_entries ({', '.join(cols)}) VALUES ({placeholders})"

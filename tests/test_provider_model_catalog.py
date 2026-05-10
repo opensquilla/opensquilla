@@ -13,6 +13,10 @@ def test_deepseek_v4_direct_models_use_official_context_and_output_windows() -> 
     for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
         assert catalog.resolve_context_window(model) == 1_048_576
         assert catalog.resolve_max_tokens(model) == 393_216
+        caps = catalog.get_capabilities(model, provider_name="deepseek")
+        assert caps.supports_reasoning is True
+        assert caps.supports_tools is True
+        assert caps.reasoning_format == "deepseek"
 
 
 def test_direct_profile_static_fallbacks_cover_context_windows() -> None:

@@ -92,6 +92,17 @@ from .types import (
 
 logger = structlog.get_logger("opensquilla.engine.agent")
 
+
+def _is_deepseek_model_id(model_id: str | None) -> bool:
+    normalized = (model_id or "").strip().lower()
+    return normalized.startswith("deepseek") or "/deepseek" in normalized
+
+
+def _is_direct_deepseek_v4_model_id(model_id: str | None) -> bool:
+    normalized = (model_id or "").strip().lower()
+    return normalized in {"deepseek-v4-flash", "deepseek-v4-pro"}
+
+
 _TOOL_RESULT_SUMMARY_SYSTEM = (
     "You compress tool output before it is passed to another agent. Preserve exact "
     "filenames, paths, ids, numbers, commands, error messages, and code-relevant snippets. "
@@ -706,9 +717,23 @@ class Agent:
         self._write_context_stage("session:loaded", loaded_history)
         sanitized_history, sanitize_result = sanitize_session_messages(loaded_history)
         sanitized_history = repair_tool_pairing(sanitized_history)
+        caps_reasoning_format = (
+            getattr(self.config.model_capabilities, "reasoning_format", "")
+            if self.config.model_capabilities is not None
+            else ""
+        )
+        preserve_reasoning_content = bool(
+            _is_direct_deepseek_v4_model_id(self.config.model_id)
+            or (
+                thinking_enabled
+                and caps_reasoning_format == "deepseek"
+                and _is_deepseek_model_id(self.config.model_id)
+            )
+        )
         sanitized_history = drop_reasoning(
             sanitized_history,
             preserve_tool_call_reasoning=thinking_enabled,
+            preserve_reasoning_content=preserve_reasoning_content,
         )
         sanitized_history = _strip_historical_image_blocks(sanitized_history)
         self._write_context_stage(
@@ -795,6 +820,7 @@ class Agent:
         window_input_tokens = 0
         window_output_tokens = 0
         final_text_parts: list[str] = []
+        final_reasoning_parts: list[str] = []
         _fallback = FallbackPolicy(
             max_retries=self.config.max_provider_retries,
             base_backoff_ms=self.config.retry_base_backoff_ms,
@@ -1447,6 +1473,9 @@ class Agent:
                     yield terminal_error
                     break
 
+                if iter_reasoning_content:
+                    final_reasoning_parts.append(iter_reasoning_content)
+
                 window_input_tokens += iter_input_tokens
                 window_output_tokens += iter_output_tokens
 
@@ -1881,6 +1910,9 @@ class Agent:
                 model=done_model,
                 runtime_context_hash=runtime_context_hash,
                 runtime_context_chars=len(runtime_context),
+                reasoning_content=(
+                    "\n".join(final_reasoning_parts) if final_reasoning_parts else None
+                ),
             )
         # Reset for next turn
         self._state = AgentState.IDLE

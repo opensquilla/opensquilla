@@ -174,6 +174,7 @@ class TranscriptEntry(SQLModel, table=True):
     content: str | None = None
     tool_calls: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON))
     tool_call_id: str | None = None
+    reasoning_content: str | None = None
     created_at: int = Field(default_factory=_now_ms)
     token_count: int | None = None
 

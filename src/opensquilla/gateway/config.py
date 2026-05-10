@@ -163,6 +163,19 @@ class LlmProviderConfig(BaseSettings):
     # send provider.only=[name] while allowing OpenRouter fallback within that pin.
     provider_routing: dict[str, str] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _normalize_direct_deepseek_model(self) -> LlmProviderConfig:
+        if str(self.provider or "").strip().lower() != "deepseek":
+            return self
+        aliases = {
+            "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+            "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+        }
+        model = str(self.model or "").strip()
+        if model in aliases:
+            self.model = aliases[model]
+        return self
+
 
 # Module-level dedupe state for the legacy ``enabled`` deprecation warning.
 # A plain ``bool`` flag guarded by a ``Lock`` makes the check-and-set atomic
@@ -875,31 +888,43 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
         "moonshot": {
             "t0": {
                 "provider": "moonshot",
-                "model": "moonshot-v1-8k",
-                "description": "Moonshot fast tier: Moonshot V1 8K for simple text tasks.",
-                "supports_image": False,
+                "model": "kimi-k2.5",
+                "description": (
+                    "Moonshot fast tier: Kimi K2.5 for cost-efficient agent work "
+                    "with 256K context."
+                ),
+                "supports_image": True,
+                "thinking_level": "low",
             },
             "t1": {
                 "provider": "moonshot",
-                "model": "moonshot-v1-128k",
+                "model": "kimi-k2.5",
                 "description": (
-                    "Moonshot balanced tier: Moonshot V1 128K for normal agent work."
+                    "Moonshot balanced tier: Kimi K2.5 for normal multimodal "
+                    "agent work."
                 ),
-                "supports_image": False,
+                "supports_image": True,
+                "thinking_level": "medium",
             },
             "t2": {
                 "provider": "moonshot",
-                "model": "kimi-k2.5",
-                "description": "Moonshot strong tier: Kimi K2.5 for complex text tasks.",
-                "supports_image": False,
+                "model": "kimi-k2.6",
+                "description": (
+                    "Moonshot strong tier: Kimi K2.6 for complex coding, reasoning, "
+                    "and multimodal tasks."
+                ),
+                "supports_image": True,
+                "thinking_level": "medium",
             },
             "t3": {
                 "provider": "moonshot",
                 "model": "kimi-k2.6",
                 "description": (
-                    "Moonshot highest tier: Kimi K2.6 with fixed sampling constraints."
+                    "Moonshot highest tier: Kimi K2.6 for the hardest long-horizon "
+                    "agent work."
                 ),
-                "supports_image": False,
+                "supports_image": True,
+                "thinking_level": "high",
             },
         },
         "volcengine": {
@@ -1420,6 +1445,28 @@ class GatewayConfig(BaseSettings):
     control_ui: ControlUiConfig = Field(default_factory=ControlUiConfig)
     diagnostics_enabled: bool = False
     channel_admin_senders: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _default_squilla_router_profile_for_direct_provider(self) -> GatewayConfig:
+        router = self.squilla_router
+        if not router or not getattr(router, "enabled", False):
+            return self
+        if getattr(router, "tier_profile", None):
+            return self
+        provider = str(getattr(self.llm, "provider", "") or "").strip().lower()
+        if provider == "openrouter" or provider not in ROUTER_TIER_PROFILE_IDS:
+            return self
+        fields_set = set(getattr(router, "model_fields_set", set()))
+        has_custom_tiers = (
+            "tiers" in fields_set and getattr(router, "tiers", {}) != _default_tiers()
+        )
+        if "tier_profile" in fields_set or has_custom_tiers:
+            return self
+        payload = router.model_dump(mode="python")
+        payload["tier_profile"] = provider
+        payload.pop("tiers", None)
+        self.squilla_router = SquillaRouterConfig(**payload)
+        return self
 
     @model_validator(mode="after")
     def _validate_squilla_router_tier_profile_provider(self) -> GatewayConfig:

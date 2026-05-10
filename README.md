@@ -108,7 +108,8 @@ installing, use `opensquilla ...` commands, not `uv run`.
 
    PATH changes from these installers apply to new terminal sessions.
 
-   </details>
+1. Install prerequisites: [git](https://git-scm.com), [git-lfs](https://git-lfs.com/) and
+   [uv](https://docs.astral.sh/uv/).
 
 2. Clone with LFS assets:
 

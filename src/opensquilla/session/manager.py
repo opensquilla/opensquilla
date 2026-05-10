@@ -617,6 +617,7 @@ class SessionManager:
         *,
         tool_calls: list[dict[str, Any]] | None = None,
         tool_call_id: str | None = None,
+        reasoning_content: str | None = None,
         token_count: int | None = None,
         provenance: dict[str, Any] | None = None,
     ) -> TranscriptEntry:
@@ -635,6 +636,7 @@ class SessionManager:
             content=content,
             tool_calls=tool_calls,
             tool_call_id=tool_call_id,
+            reasoning_content=reasoning_content if role == "assistant" else None,
             token_count=token_count,
         )
 

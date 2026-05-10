@@ -27,6 +27,7 @@ from .types import (
     DoneEvent,
     ErrorEvent,
     Message,
+    ModelCapabilities,
     ModelInfo,
     StreamEvent,
     TextDeltaEvent,
@@ -418,16 +419,53 @@ def _attach_reasoning_content(
     payload: dict[str, Any],
     *,
     include_reasoning_content: bool = True,
+    require_assistant_reasoning_content: bool = False,
 ) -> dict[str, Any]:
     if include_reasoning_content and msg.role == "assistant" and msg.reasoning_content:
         payload["reasoning_content"] = msg.reasoning_content
+    elif (
+        include_reasoning_content
+        and require_assistant_reasoning_content
+        and msg.role == "assistant"
+    ):
+        payload["reasoning_content"] = ""
     return payload
+
+
+def _is_direct_deepseek_v4_model_id(model: str) -> bool:
+    return model.strip().lower() in {"deepseek-v4-flash", "deepseek-v4-pro"}
+
+
+def _is_direct_deepseek_v4_request(provider_kind: str, model: str) -> bool:
+    return provider_kind == "deepseek" and _is_direct_deepseek_v4_model_id(model)
+
+
+def _should_replay_reasoning_content(
+    *,
+    provider_kind: str,
+    model: str,
+    caps: ModelCapabilities | None,
+) -> bool:
+    if provider_kind == "openrouter":
+        if not caps or not caps.supports_reasoning:
+            return False
+        return caps.reasoning_format == "openrouter"
+    if _is_direct_deepseek_v4_request(provider_kind, model):
+        return True
+    if not caps or not caps.supports_reasoning:
+        return False
+    return (
+        provider_kind == "deepseek"
+        and caps.reasoning_format == "deepseek"
+        and _is_direct_deepseek_v4_model_id(model)
+    )
 
 
 def _build_openai_messages(
     msg: Message,
     *,
     include_reasoning_content: bool = True,
+    require_assistant_reasoning_content: bool = False,
 ) -> list[dict[str, Any]]:
     """Convert a opensquilla Message into one or more OpenAI-format message dicts.
 
@@ -444,6 +482,7 @@ def _build_openai_messages(
                 msg,
                 {"role": msg.role, "content": msg.content},
                 include_reasoning_content=include_reasoning_content,
+                require_assistant_reasoning_content=require_assistant_reasoning_content,
             )
         ]
 
@@ -503,6 +542,7 @@ def _build_openai_messages(
                 msg,
                 result,
                 include_reasoning_content=include_reasoning_content,
+                require_assistant_reasoning_content=require_assistant_reasoning_content,
             )
         ]
 
@@ -514,6 +554,7 @@ def _build_openai_messages(
                 msg,
                 {"role": msg.role, "content": parts},
                 include_reasoning_content=include_reasoning_content,
+                require_assistant_reasoning_content=require_assistant_reasoning_content,
             )
         ]
     content_text = " ".join(p["text"] for p in parts if p["type"] == "text")
@@ -522,6 +563,7 @@ def _build_openai_messages(
             msg,
             {"role": msg.role, "content": content_text},
             include_reasoning_content=include_reasoning_content,
+            require_assistant_reasoning_content=require_assistant_reasoning_content,
         )
     ]
 
@@ -606,13 +648,10 @@ class OpenAIProvider:
     ) -> AsyncIterator[StreamEvent]:
         openai_messages: list[dict[str, Any]] = []
         caps = cfg.model_capabilities
-        include_reasoning_content = bool(
-            caps
-            and caps.supports_reasoning
-            and (
-                (self._provider_kind == "openrouter" and caps.reasoning_format == "openrouter")
-                or caps.reasoning_format == "deepseek"
-            )
+        include_reasoning_content = _should_replay_reasoning_content(
+            provider_kind=self._provider_kind,
+            model=self._model,
+            caps=caps,
         )
         if cfg.system:
             explicit_cache_supported = self._provider_kind == "openrouter" and (
@@ -638,6 +677,9 @@ class OpenAIProvider:
                 _build_openai_messages(
                     m,
                     include_reasoning_content=include_reasoning_content,
+                    require_assistant_reasoning_content=(
+                        _is_direct_deepseek_v4_request(self._provider_kind, self._model)
+                    ),
                 )
             )
 
@@ -684,27 +726,33 @@ class OpenAIProvider:
                 }
 
         # Reasoning injection (gated on thinking being enabled)
-        if caps and caps.supports_reasoning and cfg.thinking:
+        direct_deepseek_v4 = _is_direct_deepseek_v4_request(self._provider_kind, self._model)
+        if (caps and caps.supports_reasoning and cfg.thinking) or (
+            direct_deepseek_v4 and cfg.thinking
+        ):
             effort = _resolve_reasoning_effort(cfg.thinking_level, cfg.thinking_budget_tokens)
-            if caps.reasoning_format == "openrouter":
+            reasoning_format = caps.reasoning_format if caps is not None else "deepseek"
+            if reasoning_format == "openrouter":
                 payload["reasoning"] = {"effort": effort}
-            elif caps.reasoning_format == "openai":
+            elif reasoning_format == "openai":
                 payload["reasoning_effort"] = effort
-            elif caps.reasoning_format == "deepseek":
+            elif reasoning_format == "deepseek":
                 payload["thinking"] = {"type": "enabled"}
                 payload["reasoning_effort"] = _resolve_deepseek_reasoning_effort(
                     cfg.thinking_level
                 )
-            elif caps.reasoning_format == "gemini":
+            elif reasoning_format == "gemini":
                 payload["reasoning_effort"] = effort
-            elif caps.reasoning_format == "zai":
+            elif reasoning_format == "zai":
                 payload["thinking"] = {"type": "enabled"}
-            elif caps.reasoning_format == "dashscope":
+            elif reasoning_format == "dashscope":
                 payload["enable_thinking"] = True
                 payload["thinking_budget"] = cfg.thinking_budget_tokens
-            elif caps.reasoning_format in {"moonshot", "volcengine"}:
+            elif reasoning_format in {"moonshot", "volcengine"}:
                 payload["thinking"] = {"type": "enabled"}
-        elif caps and caps.supports_reasoning and caps.reasoning_format == "deepseek":
+        elif direct_deepseek_v4 or (
+            caps and caps.supports_reasoning and caps.reasoning_format == "deepseek"
+        ):
             payload["thinking"] = {"type": "disabled"}
         elif (
             caps

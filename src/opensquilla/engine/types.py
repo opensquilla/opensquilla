@@ -144,6 +144,7 @@ class DoneEvent:
     # (notably DoneEvent(...) without kwargs) does not silently shift earlier
     # args.
     cache_write_tokens: int = 0
+    reasoning_content: str | None = None
 
     @property
     def upstream_cost_usd(self) -> float:

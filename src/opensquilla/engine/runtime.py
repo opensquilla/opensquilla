@@ -115,6 +115,12 @@ _ARTIFACT_DELIVERY_FAILURE_MARKER: Final[str] = "File delivery failed:"
 _ARTIFACT_DELIVERY_TOOL_NAME: Final[str] = "publish_artifact"
 _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS: Final[int] = 360
 
+
+def _is_deepseek_model_id(model: str) -> bool:
+    normalized = model.strip().lower()
+    return normalized.startswith("deepseek") or "/deepseek" in normalized
+
+
 # Tools that are safe to run concurrently within a single LLM turn.
 # Any tool name absent from this set is treated as mutex (serial dispatch).
 # See docs/dev/tool-concurrency-spec.md for the dispatch contract.
@@ -1646,7 +1652,7 @@ class TurnRunner:
 
             # Resolve max_tokens & context_window from model catalog
             user_max_tokens = getattr(getattr(self._config, "llm", None), "max_tokens", 0)
-            if self._model_catalog:
+            if self._model_catalog is not None:
                 max_tokens = self._model_catalog.resolve_max_tokens(
                     resolved_model, user_override=user_max_tokens
                 )
@@ -1657,7 +1663,7 @@ class TurnRunner:
 
             # Resolve model capabilities for reasoning support
             model_caps = None
-            if self._model_catalog:
+            if self._model_catalog is not None:
                 provider_name = getattr(
                     getattr(self._config, "llm", None), "provider", "openrouter"
                 )
@@ -2060,6 +2066,12 @@ class TurnRunner:
                     "content": persisted_content,
                     "tool_calls": turn_segments if turn_segments else None,
                 }
+                if (
+                    done_event is not None
+                    and done_event.reasoning_content
+                    and _is_deepseek_model_id(done_event.model or resolved_model or "")
+                ):
+                    append_kwargs["reasoning_content"] = done_event.reasoning_content
                 if _accepts_keyword_arg(self._session_manager.append_message, "token_count"):
                     append_kwargs["token_count"] = (
                         done_event.output_tokens if done_event is not None else None
@@ -3996,7 +4008,14 @@ class TurnRunner:
                 content = self._maybe_unpack_assistant_artifacts(raw_content)
             else:
                 content = raw_content
-            history.extend(reconstruct_messages_from_entry(entry.role, content, entry.tool_calls))
+            history.extend(
+                reconstruct_messages_from_entry(
+                    entry.role,
+                    content,
+                    entry.tool_calls,
+                    getattr(entry, "reasoning_content", None),
+                )
+            )
             last_entry_was_user = entry.role == "user"
         # Strip the caller-appended user turn only when the transcript really
         # ended on a user entry; an assistant entry that reconstructs into

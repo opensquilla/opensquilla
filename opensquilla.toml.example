@@ -89,7 +89,7 @@ base_url = "https://openrouter.ai/api/v1"
 #
 # Example direct DeepSeek config:
 # provider = "deepseek"
-# model = "deepseek-chat"
+# model = "deepseek-v4-flash"
 # api_key = ""          # env DEEPSEEK_API_KEY also works
 # base_url = "https://api.deepseek.com"
 

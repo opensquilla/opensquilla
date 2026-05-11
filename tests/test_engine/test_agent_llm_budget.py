@@ -6,9 +6,16 @@ from typing import Any
 
 import pytest
 
-from opensquilla.engine import Agent, AgentConfig, AgentState, DoneEvent, ErrorEvent
+from opensquilla.engine import (
+    Agent,
+    AgentConfig,
+    AgentState,
+    DoneEvent,
+    ErrorEvent,
+    RunHeartbeatEvent,
+)
 from opensquilla.engine.session_sanitize import session_payload_chars
-from opensquilla.provider import ChatConfig, Message
+from opensquilla.provider import ChatConfig, Message, ProviderHeartbeatEvent
 from opensquilla.provider import DoneEvent as ProviderDone
 from opensquilla.provider import ErrorEvent as ProviderError
 from opensquilla.provider import TextDeltaEvent as ProviderText
@@ -90,6 +97,49 @@ class _ProviderRaisesTimeout:
 
     async def list_models(self) -> list[Any]:
         return []
+
+
+class _ProviderHeartbeatThenText:
+    provider_name = "fake"
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ProviderHeartbeatEvent(phase="llm_fallback", message="retrying")
+        yield ProviderText(text="ok")
+        yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
+@pytest.mark.asyncio
+async def test_provider_heartbeat_reaches_agent_stream() -> None:
+    agent = Agent(
+        provider=_ProviderHeartbeatThenText(),
+        config=AgentConfig(iteration_timeout=30.0, timeout=60.0, max_provider_retries=0),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    heartbeat_index = _event_index(
+        events,
+        lambda event: isinstance(event, RunHeartbeatEvent)
+        and event.phase == "llm_fallback"
+        and event.message == "retrying",
+    )
+    text_index = _event_index(
+        events,
+        lambda event: getattr(event, "kind", None) == "text_delta"
+        and getattr(event, "text", None) == "ok",
+    )
+    assert heartbeat_index < text_index
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,13 @@ def test_skill_loads() -> None:
     assert spec.name == "html-to-pdf"
 
 
+def test_skill_instructs_artifact_delivery() -> None:
+    spec = _spec()
+    assert spec is not None
+    assert "publish_artifact" in spec.content
+    assert "Do not paste the full HTML/CSS source" in spec.content
+
+
 def test_eligibility_with_python(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "opensquilla.skills.eligibility.shutil.which",

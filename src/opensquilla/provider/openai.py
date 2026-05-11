@@ -29,6 +29,7 @@ from .types import (
     Message,
     ModelCapabilities,
     ModelInfo,
+    ProviderHeartbeatEvent,
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
@@ -46,6 +47,48 @@ _PLAIN_JSON_TOOL_CALL_RE = re.compile(
 _PLAIN_JSON_TOOL_PREFIX_RE = re.compile(
     r"([A-Za-z_][A-Za-z0-9_.:-]*)\s*(?=\{)",
 )
+
+
+def _provider_display_name(provider_kind: str) -> str:
+    return {
+        "openai": "OpenAI",
+        "openrouter": "OpenRouter",
+        "deepseek": "DeepSeek",
+        "moonshot": "Moonshot",
+        "dashscope": "DashScope",
+        "gemini": "Gemini",
+        "zhipu": "Zhipu",
+        "qianfan": "Qianfan",
+        "volcengine": "Volcengine",
+    }.get(provider_kind, "Provider")
+
+
+def _http_error_body_text(body: bytes | str) -> str:
+    text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body
+    text = text.strip()
+    if not text:
+        return ""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    return text
+
+
+def _format_chat_http_error(provider_kind: str, status_code: int, body: bytes | str) -> str:
+    body_text = _http_error_body_text(body) or "empty response body"
+    return (
+        f"{_provider_display_name(provider_kind)} chat request failed "
+        f"(HTTP {status_code}): {body_text}"
+    )
 
 
 def _resolve_reasoning_effort(level: ThinkingLevel | None, budget: int) -> str:
@@ -721,7 +764,7 @@ class OpenAIProvider:
             pinned_provider = self._provider_routing.get(self._model)
             if pinned_provider:
                 payload["provider"] = {
-                    "only": [pinned_provider],
+                    "order": [pinned_provider],
                     "allow_fallbacks": True,
                 }
 
@@ -844,8 +887,20 @@ class OpenAIProvider:
                 ) as response:
                     if response.status_code != 200:
                         body = await response.aread()
+                        message = _format_chat_http_error(
+                            self._provider_kind,
+                            response.status_code,
+                            body,
+                        )
+                        log.warning(
+                            "provider.chat_http_error",
+                            provider=self._provider_kind,
+                            model=self._model,
+                            status_code=response.status_code,
+                            message=message,
+                        )
                         yield ErrorEvent(
-                            message=f"HTTP {response.status_code}: {body.decode()}",
+                            message=message,
                             code=str(response.status_code),
                         )
                         return
@@ -990,6 +1045,16 @@ class OpenAIProvider:
 
         except httpx.TimeoutException as exc:
             if self._provider_kind == "openrouter" and not emitted_stream_event:
+                log.warning(
+                    "openrouter.stream_timeout_fallback_started",
+                    model=self._model,
+                    timeout_seconds=cfg.timeout,
+                    error=str(exc),
+                )
+                yield ProviderHeartbeatEvent(
+                    phase="llm_fallback",
+                    message="OpenRouter stream timed out; retrying without streaming.",
+                )
                 async for fallback_event in self._complete_non_stream(
                     payload=payload,
                     headers=headers,
@@ -1030,6 +1095,12 @@ class OpenAIProvider:
                     json=fallback_payload,
                 )
         except httpx.TimeoutException:
+            log.warning(
+                "openrouter.non_stream_fallback_timeout",
+                model=self._model,
+                timeout_seconds=cfg.timeout,
+                stream_error=str(timeout_exc),
+            )
             yield ErrorEvent(message=f"Request timed out: {timeout_exc}", code="timeout")
             return
         except httpx.RequestError as exc:
@@ -1038,7 +1109,11 @@ class OpenAIProvider:
 
         if response.status_code != 200:
             yield ErrorEvent(
-                message=f"HTTP {response.status_code}: {response.text}",
+                message=_format_chat_http_error(
+                    self._provider_kind,
+                    response.status_code,
+                    response.text,
+                ),
                 code=str(response.status_code),
             )
             return
@@ -1147,7 +1222,7 @@ class OpenAIProvider:
                 data = resp.json()
                 return [
                     ModelInfo(
-                        provider=self.provider_name,
+                        provider=self._provider_kind,
                         model_id=m["id"],
                         display_name=m.get("name", m.get("id", "")),
                         context_window=m.get("context_length", 0),

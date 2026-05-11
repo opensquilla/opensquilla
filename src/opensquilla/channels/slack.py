@@ -20,7 +20,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from opensquilla.channels._reactions import NULL_STATUS_REACTOR, SlackStatusReactor
-from opensquilla.channels._util import ChannelAccessPolicy, StreamThrottle
+from opensquilla.channels._util import ChannelAccessPolicy, EventDedupeCache, StreamThrottle
 from opensquilla.channels.types import ChannelHealth, IncomingMessage, OutgoingMessage
 from opensquilla.env import trust_env as _trust_env
 
@@ -90,6 +90,11 @@ class SlackChannel:
     _connected: bool = field(default=False, init=False, repr=False)
     _last_thread_ts: str | None = field(default=None, init=False, repr=False)
     _last_message_at: datetime | None = field(default=None, init=False, repr=False)
+    _dedupe: EventDedupeCache = field(
+        default_factory=lambda: EventDedupeCache(max_size=10_000),
+        init=False,
+        repr=False,
+    )
     supports_slash_commands: bool = True
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -387,6 +392,13 @@ class SlackChannel:
         if event_type == "event_callback":
             event = data.get("event", {})
             if event.get("type") == "message":
+                dedupe_key = str(
+                    data.get("event_id")
+                    or event.get("client_msg_id")
+                    or f"{event.get('channel', '')}:{event.get('ts', '')}"
+                ).strip(":")
+                if dedupe_key and not self._dedupe.check_and_add(dedupe_key):
+                    return Response(status_code=200)
                 msg = self.parse_event(event)
                 self.enqueue(msg)
 

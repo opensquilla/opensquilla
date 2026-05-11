@@ -123,6 +123,17 @@ def test_chat_new_session_uses_current_agent_namespace() -> None:
     assert "New chat session in the current agent: " in source
 
 
+def test_chat_switching_existing_session_does_not_mark_new_chat_intent() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    switch_start = source.index("function _switchToSession(key)")
+    switch_end = source.index("  function _bindSessionChip()", switch_start)
+    switch_body = source[switch_start:switch_end]
+
+    assert "_pendingSessionIntent = 'new_chat'" not in switch_body
+    assert source.count("_pendingSessionIntent = 'new_chat'") == 2
+    assert "params.intent = _pendingSessionIntent;" in source
+
+
 def test_chat_maps_task_terminal_events_during_migration() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 

@@ -33,6 +33,14 @@ where the source already exists in HTML form (templates, dashboards,
 invoices). For programmatic PDF assembly from data structures, use the
 `pdf-toolkit` skill's reportlab path instead.
 
+## Delivery rule
+
+When the user asks for a PDF, report, printable page, or finished HTML export,
+write the final file in the workspace. If the `publish_artifact` tool is
+available, call it for the final `.pdf` or requested file before your final
+reply. Do not paste the full HTML/CSS source into chat as a substitute for
+delivering the file unless the user explicitly asks for source code.
+
 ## When to use
 
 - HTML/Jinja template + content → styled PDF report

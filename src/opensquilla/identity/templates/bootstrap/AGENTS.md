@@ -1,6 +1,7 @@
 # AGENTS.md
 
-Use this file for workspace-level operating guidance.
+Use this file for workspace-level operating rules: how the agent should work in
+this workspace, what it should prioritize, and what it must avoid.
 
 ## Startup Context
 
@@ -14,6 +15,11 @@ Use this file for workspace-level operating guidance.
 - Higher-priority system, developer, runtime, safety, and direct user instructions
   override this file.
 - Keep changes small, reversible, and tied to the user's request.
+- Put workflow rules, standing instructions, and workspace operating boundaries
+  here.
+- Do not store user profile facts here; use `USER.md`.
+- Do not store assistant voice or naming here; use `SOUL.md` or `IDENTITY.md`.
+- Do not store long-term factual memory here; use `MEMORY.md` or `memory/*.md`.
 - Do not store secrets, credentials, or one-off task notes here.
 - In shared, channel, cron, or subagent contexts, avoid exposing private user or
   long-term memory content unless runtime policy explicitly makes it available.

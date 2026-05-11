@@ -882,7 +882,7 @@ def emit_skill_filter_banner(skills_cfg: Any) -> None:
     """One-line startup warning when the ONNX embedding backend is
     unreachable but a non-lexical filter strategy is configured.
 
-    Required runtime: ``onnxruntime`` + ``transformers`` (tokenizer) +
+    Required runtime: ``onnxruntime`` + ``tokenizers`` +
     the bundled v4 BGE ONNX dir (or a configured override). All three
     ship via ``uv sync --extra recommended``. The previous non-ONNX
     fallback was removed — there is now exactly one backend.
@@ -905,7 +905,7 @@ def emit_skill_filter_banner(skills_cfg: Any) -> None:
     onnx_ok = False
     try:
         if importlib.util.find_spec("onnxruntime") is not None and importlib.util.find_spec(
-            "transformers"
+            "tokenizers"
         ) is not None:
             from opensquilla.memory.embedding import LocalEmbeddingProvider
 
@@ -922,7 +922,7 @@ def emit_skill_filter_banner(skills_cfg: Any) -> None:
     log_std.warning(
         "ONNX embedding backend not available; filter_strategy=%r will run "
         "lexical-only. Install via `uv sync --extra recommended` to get "
-        "onnxruntime + transformers, and verify the bundled BGE ONNX dir "
+        "onnxruntime + tokenizers, and verify the bundled BGE ONNX dir "
         "is present.",
         getattr(skills_cfg, "filter_strategy", "lexical"),
     )
@@ -1927,7 +1927,6 @@ async def start_gateway_server(
                 ),
             )
         log.info("gateway.started", host=config.host, port=config.port)
-        create_background_task(preload_squilla_router_runtime(config))
 
     # Start channels (after app is ready to receive webhooks)
     if channel_manager is not None:
@@ -1946,6 +1945,9 @@ async def start_gateway_server(
                     error=details.get("error"),
                     exception=details.get("exception"),
                 )
+
+    if run:
+        create_background_task(preload_squilla_router_runtime(config))
 
     app.state.gateway_ready = True
     return server_handle

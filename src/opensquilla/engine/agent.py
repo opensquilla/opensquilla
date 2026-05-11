@@ -43,6 +43,7 @@ from opensquilla.provider import (
     ContentBlockToolUse,
     LLMProvider,
     Message,
+    ProviderHeartbeatEvent,
     ToolDefinition,
     ToolUseEndEvent,
 )
@@ -1044,6 +1045,12 @@ class Agent:
                                 provider_error = raw_ev
                                 _got_error = True
                                 break  # break stream loop
+
+                            elif isinstance(raw_ev, ProviderHeartbeatEvent):
+                                yield RunHeartbeatEvent(
+                                    phase=raw_ev.phase,
+                                    message=raw_ev.message,
+                                )
                     except _IterationStreamTimeoutError:
                         yield self._transition(AgentState.ERROR)
                         terminal_error = ErrorEvent(

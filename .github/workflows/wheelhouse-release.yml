@@ -1,4 +1,4 @@
-name: Wheelhouse Zip Release
+name: Portable Zip Release
 
 on:
   push:
@@ -29,8 +29,8 @@ env:
   PYTHON_RUNTIME_VERSION: ${{ github.event.inputs.python_runtime_version || '3.12.13' }}
 
 jobs:
-  build-wheelhouse:
-    name: Build ${{ matrix.platform_tag }} release zips
+  build-portable:
+    name: Build ${{ matrix.platform_tag }} portable zip
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -40,8 +40,6 @@ jobs:
             platform_tag: windows-x64
           - os: macos-latest
             platform_tag: macos-arm64
-          - os: ubuntu-latest
-            platform_tag: linux-x64
 
     steps:
       - name: Checkout
@@ -84,22 +82,16 @@ jobs:
       - name: Test release builder
         run: uv run --extra dev pytest tests/test_scripts/test_build_wheelhouse_zip.py
 
-      - name: Build portable and wheelhouse zips
+      - name: Build portable zip
         shell: bash
         run: |
           rm -rf dist build/wheelhouse-zip
-          for mode in portable wheelhouse; do
-            args=(
-              --profile "${RELEASE_PROFILE}"
-              --platform-tag "${{ matrix.platform_tag }}"
-              --python-runtime-release "${PYTHON_RUNTIME_RELEASE}"
-              --python-runtime-version "${PYTHON_RUNTIME_VERSION}"
-            )
-            if [[ "${mode}" == "portable" ]]; then
-              args+=(--bundle-python-runtime)
-            fi
-            python scripts/build_wheelhouse_zip.py "${args[@]}"
-          done
+          python scripts/build_wheelhouse_zip.py \
+            --profile "${RELEASE_PROFILE}" \
+            --platform-tag "${{ matrix.platform_tag }}" \
+            --python-runtime-release "${PYTHON_RUNTIME_RELEASE}" \
+            --python-runtime-version "${PYTHON_RUNTIME_VERSION}" \
+            --bundle-python-runtime
 
       - name: Smoke release artifacts
         shell: bash
@@ -113,7 +105,7 @@ jobs:
 
           version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
           zips = sorted(Path("dist").glob("*.zip"))
-          assert len(zips) == 2, f"expected portable and wheelhouse zips, got {len(zips)}"
+          assert len(zips) == 1, f"expected one portable zip, got {len(zips)}"
           checksum_lines = []
 
           for zip_path in zips:
@@ -125,7 +117,9 @@ jobs:
 
               with ZipFile(zip_path) as archive:
                   names = set(archive.namelist())
-                  root = zip_path.stem + "/"
+                  archive_roots = sorted({name.split("/", 1)[0] for name in names if "/" in name})
+                  assert len(archive_roots) == 1, f"expected one archive root in {zip_path.name}: {archive_roots}"
+                  root = archive_roots[0] + "/"
                   manifest = json.loads(archive.read(root + "manifest.json"))
                   assert manifest["version"] == version, "manifest.version must match project version"
                   assert manifest["platform_tag"] == "${{ matrix.platform_tag }}"
@@ -133,19 +127,13 @@ jobs:
                   assert root + "THIRD_PARTY_NOTICES.md" in names
                   assert root + "README.md" in names
                   assert root + "packages/" + manifest["wheel_name"] in names
+                  assert manifest["portable"] is True
 
-                  if manifest["portable"]:
-                      assert root + "start.sh" in names
-                      assert root + "start.ps1" in names
-                      assert root + "install.sh" not in names
-                      assert root + "install.ps1" not in names
-                      assert any(name.startswith(root + "runtime/python/") for name in names)
-                  else:
-                      assert root + "install.sh" in names
-                      assert root + "install.ps1" in names
-                      assert root + "start.sh" not in names
-                      assert root + "start.ps1" not in names
-                      assert not any(name.startswith(root + "runtime/") for name in names)
+                  assert root + "start.sh" in names
+                  assert root + "start.ps1" in names
+                  assert root + "install.sh" not in names
+                  assert root + "install.ps1" not in names
+                  assert any(name.startswith(root + "runtime/python/") for name in names)
 
           sha256s = Path("dist/SHA256SUMS")
           assert sha256s.is_file(), "missing aggregate SHA256SUMS"
@@ -162,7 +150,7 @@ jobs:
 
   publish-release:
     name: Aggregate release zips
-    needs: build-wheelhouse
+    needs: build-portable
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -183,6 +171,8 @@ jobs:
 
           zips = sorted(Path("dist").glob("*.zip"))
           assert zips, "no release zips were downloaded"
+          assert len(zips) == 2, f"expected Windows and macOS portable zips, got {len(zips)}"
+          assert all("portable" in zip_path.name for zip_path in zips)
           lines = []
           for zip_path in zips:
               digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()

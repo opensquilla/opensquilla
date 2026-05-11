@@ -67,37 +67,47 @@ def test_windows_installer_bootstraps_vc_redist_for_router_runtime() -> None:
     assert "https://aka.ms/vs/17/release/vc_redist.x64.exe" in ps1
 
 
-def test_readme_splits_user_paths_and_keeps_release_marked_unpublished() -> None:
+def test_readme_splits_user_paths_and_documents_preview_release_package() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     normalized = " ".join(readme.split())
-    release_section = readme.split("### Release package — coming soon", 1)[1]
+    release_section = readme.split("### Preview release package", 1)[1]
     release_section = release_section.split("### Install from source", 1)[0]
+    release_section_normalized = " ".join(release_section.split())
 
-    assert "| New user | [Release package](#release-package-coming-soon) | Coming soon |" in readme
+    assert (
+        "| New user | [Preview release package](#preview-release-package) | "
+        "Recommended |"
+        in readme
+    )
     assert (
         "| Command-line user | [Install from source](#install-from-source) | "
         "Available now |"
         in readme
     )
     assert "| Developer | [Develop from source](#develop-from-source) | Available now |" in readme
-    assert "Public release packages are not published yet." in readme
     assert (
-        "Until release packages are published, new users should use Install "
-        "from source."
+        "Use this path if you want to try OpenSquilla as a local app without "
+        "cloning the repository or installing Git, Git LFS, or `uv`."
         in normalized
     )
-    assert release_section.count("Install from source") == 1
+    assert "Current preview packages:" in readme
+    assert "windows-x64-py312-recommended-portable.zip" in readme
+    assert "macos-arm64-py312-recommended-portable.zip" in readme
+    assert "recommended-wheelhouse.zip" not in release_section
+    assert "Public release packages are not published yet." not in readme
+    assert (
+        "For a source checkout instead of a package, use the next section."
+        in release_section_normalized
+    )
+    assert release_section.count("Install from source") == 0
 
 
 def test_readme_documents_router_defaults_and_feishu_as_channel_extra() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     normalized = " ".join(readme.split())
 
-    assert (
-        "SquillaRouter is included by default in every currently available "
-        "install path"
-        in readme
-    )
+    assert "SquillaRouter is included by default in the preview release packages" in readme
+    assert "the normal source install path" in readme
     assert "The normal install commands above already install SquillaRouter." in readme
     assert (
         "The install scripts default to the `recommended` profile, which "
@@ -106,6 +116,7 @@ def test_readme_documents_router_defaults_and_feishu_as_channel_extra() -> None:
     )
     assert "recommended` enables SquillaRouter" in readme
     assert "Install channel extras into the same user-local command" in readme
+    assert "The recommended portable zip includes Feishu websocket support by default." in readme
     assert "Feishu websocket channel support" in readme
     assert "Optional: add a channel adapter only if you need one." in readme
     assert "powershell -ExecutionPolicy Bypass -File .\\install.ps1 -Extras feishu" in readme
@@ -201,7 +212,12 @@ def test_readme_explains_setup_details_vs_development_path() -> None:
         "install path."
         in normalized
     )
-    assert "Use Install from source when you only want to run OpenSquilla." in normalized
+    assert "Use the preview release package when you only want to run OpenSquilla." in normalized
+    assert (
+        "Use Install from source when a package is not available for your "
+        "platform or when you want to run the current source tree."
+        in normalized
+    )
     assert (
         "Use Develop from source only when you want to edit, test, or debug "
         "the code."

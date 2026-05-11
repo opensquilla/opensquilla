@@ -10,4 +10,8 @@ active_hours: null
 
 # HEARTBEAT
 
-Use this file for periodic heartbeat tasks and cadence configuration.
+Use this file for periodic heartbeat tasks and cadence configuration. Keep it
+short: heartbeat runs may inject this file as live operating context.
+
+Do not store user profile facts, assistant persona, durable memory, or ordinary
+task history here.

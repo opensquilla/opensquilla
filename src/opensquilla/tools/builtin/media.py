@@ -12,6 +12,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+from opensquilla.artifacts import (
+    DEFAULT_ARTIFACT_DISK_BUDGET_BYTES,
+    DEFAULT_ARTIFACT_MAX_BYTES,
+    ArtifactBudgetError,
+    ArtifactStore,
+    artifact_payload,
+)
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.provider.image_generation import (
     ImageGenerationRequest,
@@ -24,6 +31,7 @@ from opensquilla.provider.image_generation import (
 from opensquilla.tools.registry import tool
 from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import (
+    CallerKind,
     SafeToolError,
     SSRFBlockedError,
     ToolError,
@@ -300,6 +308,8 @@ async def _call_vision_provider(b64_data: str, media_type: str, prompt: str) -> 
     name="image_generate",
     description=(
         "Generate an image from a text prompt using a configured image provider. "
+        "On web and channel surfaces, the generated image is automatically published for the user; "
+        "do not call publish_artifact again for the returned path. "
         "For code, HTML, SVG, canvas, or screenshot based image artifacts, use "
         "the appropriate code/runtime/rendering tool instead."
     ),
@@ -373,17 +383,61 @@ async def _image_generate_impl(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(result.image_bytes)
-    return json.dumps(
-        {
-            "status": "ok",
-            "path": str(target),
-            "provider": result.provider,
-            "model": result.model,
-            "mime_type": result.mime_type,
-            "size_bytes": len(result.image_bytes),
-            "revised_prompt": result.revised_prompt,
-        }
-    )
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "path": str(target),
+        "provider": result.provider,
+        "model": result.model,
+        "mime_type": result.mime_type,
+        "size_bytes": len(result.image_bytes),
+        "revised_prompt": result.revised_prompt,
+    }
+    artifact = _publish_generated_image_artifact(target, result.mime_type)
+    if artifact is not None:
+        payload["artifact"] = {k: v for k, v in artifact.items() if k != "download_url"}
+        payload["artifact"]["delivered_to_user"] = True
+        payload["note"] = (
+            "The generated image is already published for the user. "
+            "Do not call publish_artifact again for this same file unless the user explicitly "
+            "asks for a separate copy."
+        )
+    return json.dumps(payload)
+
+
+def _publish_generated_image_artifact(target: Path, mime_type: str) -> dict[str, Any] | None:
+    ctx = current_tool_context.get()
+    if (
+        ctx is None
+        or ctx.caller_kind is CallerKind.SUBAGENT
+        or not ctx.artifact_media_root
+        or not ctx.artifact_session_id
+        or not ctx.session_key
+    ):
+        return None
+
+    store = ArtifactStore(ctx.artifact_media_root)
+    try:
+        ref = store.publish_file(
+            target,
+            session_id=ctx.artifact_session_id,
+            session_key=ctx.session_key,
+            name=target.name,
+            mime=mime_type or "image/png",
+            source="image_generate",
+            max_bytes=ctx.artifact_max_bytes
+            if ctx.artifact_max_bytes is not None
+            else DEFAULT_ARTIFACT_MAX_BYTES,
+            disk_budget_bytes=ctx.artifact_disk_budget_bytes
+            if ctx.artifact_disk_budget_bytes is not None
+            else DEFAULT_ARTIFACT_DISK_BUDGET_BYTES,
+        )
+    except ArtifactBudgetError as exc:
+        raise ToolError(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise ToolError(f"artifact storage path is unavailable: {exc}") from exc
+    payload = artifact_payload(ref)
+    ctx.published_artifacts.append(payload)
+    return payload
 
 
 def _resolve_image_generation_config() -> Any:

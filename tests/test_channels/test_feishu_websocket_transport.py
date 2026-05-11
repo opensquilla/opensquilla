@@ -5,11 +5,13 @@ import sys
 import time
 import types
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from opensquilla.channels.feishu import FeishuChannel, FeishuChannelConfig, FeishuWebSocketTransport
+from opensquilla.channels.transports import InboundEventEnvelope
 
 
 class _Builder:
@@ -137,3 +139,39 @@ async def test_feishu_websocket_start_does_not_block_on_bot_info(
 
     assert transport.started is True
     assert transport.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_feishu_websocket_dedupes_replayed_message_event() -> None:
+    channel = FeishuChannel(
+        FeishuChannelConfig(app_id="app", app_secret="secret", connection_mode="websocket")
+    )
+    raw_event = {
+        "header": {
+            "event_id": "evt-duplicate",
+            "event_type": "im.message.receive_v1",
+        },
+        "event": {
+            "sender": {"sender_id": {"open_id": "ou_user"}},
+            "message": {
+                "message_id": "om_1",
+                "chat_id": "oc_chat",
+                "chat_type": "p2p",
+                "message_type": "text",
+                "content": '{"text":"draw an image"}',
+            },
+        },
+    }
+    envelope = InboundEventEnvelope(
+        source="feishu:websocket",
+        event_id="evt-duplicate",
+        event_type="im.message.receive_v1",
+        raw=raw_event,
+        received_at=datetime.now(UTC),
+    )
+
+    await channel._handle_inbound_event(envelope)
+    await channel._handle_inbound_event(envelope)
+
+    assert channel._queue.qsize() == 1
+    assert (await channel.receive()).content == "draw an image"

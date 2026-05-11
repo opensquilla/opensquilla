@@ -54,6 +54,14 @@ metadata:
 Work with PowerPoint `.pptx` decks. The pptx file format is OOXML — a zip
 container holding XML descriptions of slides, layouts, masters, and media.
 
+## Delivery rule
+
+When the user asks you to create or modify a deck, save the final `.pptx` file
+in the workspace. If the `publish_artifact` tool is available, call it for the
+final `.pptx` before your final reply. Do not paste OOXML, Python, JavaScript,
+HTML, or other source as a substitute for sending the deck unless the user
+explicitly asks for source code.
+
 ## Decide the path first
 
 Pick **one** of three paths up front; do not mix them. The right path depends

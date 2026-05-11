@@ -1178,7 +1178,7 @@ const ChatView = (() => {
     _updateSessionChip(key);
     _persistSession(key);
     _messages = [];
-    _pendingSessionIntent = 'new_chat';
+    _pendingSessionIntent = null;
     _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
     _applySessionRunState({ run_status: 'idle' });
     _totalTokens = 0;

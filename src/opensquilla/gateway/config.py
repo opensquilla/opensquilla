@@ -160,7 +160,8 @@ class LlmProviderConfig(BaseSettings):
     # When unset, squilla_router may suggest thinking for selected tiers.
     thinking: str | None = None
     # OpenRouter-only: map model id -> upstream provider name. Mapped models
-    # send provider.only=[name] while allowing OpenRouter fallback within that pin.
+    # send provider.order=[name] so the provider is preferred without disabling
+    # OpenRouter fallback.
     provider_routing: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")

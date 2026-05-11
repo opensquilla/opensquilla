@@ -14,3 +14,12 @@ On the first useful conversation:
    any missing durable context unset.
 4. Once setup is complete, remove this one-shot bootstrap guide so it is not run
    again.
+
+Where to save durable setup results:
+
+- `USER.md` for user profile and preferred address.
+- `IDENTITY.md` for the assistant name or public-facing identity.
+- `SOUL.md` for durable voice and interaction style.
+- `AGENTS.md` for operating rules.
+- `TOOLS.md` for local tool conventions.
+- `MEMORY.md` or `memory/*.md` for long-term non-profile memory.

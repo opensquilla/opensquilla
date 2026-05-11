@@ -28,20 +28,88 @@ Choose the path that matches how you want to use OpenSquilla:
 
 | User type | Path | Status |
 | --- | --- | --- |
-| New user | [Release package](#release-package-coming-soon) | Coming soon |
+| New user | [Preview release package](#preview-release-package) | Recommended |
 | Command-line user | [Install from source](#install-from-source) | Available now |
 | Developer | [Develop from source](#develop-from-source) | Available now |
 
-SquillaRouter is included by default in every currently available install path.
-Only choose the `core` profile or `--router disabled` if you intentionally want
-to skip the bundled router.
+SquillaRouter is included by default in the preview release packages and in
+the normal source install path. Only choose the `core` profile or `--router
+disabled` if you intentionally want to skip the bundled router.
 
-### Release package — coming soon
+### Preview release package
 
-This will be the recommended path for non-developers: download a release
-package, extract it, set an API key, start OpenSquilla, and open the Web UI.
-Public release packages are not published yet. Until release packages are
-published, new users should use Install from source.
+Use this path if you want to try OpenSquilla as a local app without cloning the
+repository or installing Git, Git LFS, or `uv`.
+
+1. Open the [GitHub Releases](https://github.com/opensquilla/opensquilla/releases)
+   page and download the preview package for your platform.
+
+   Current preview packages:
+
+   - `OpenSquilla-<version>-windows-x64-py312-recommended-portable.zip` for
+     Windows.
+   - `OpenSquilla-<version>-macos-arm64-py312-recommended-portable.zip` for
+     Apple Silicon Macs.
+
+   The recommended portable zip includes Feishu websocket support by default.
+   If a package is not available for your platform, use the source install path
+   below.
+
+2. Extract to Downloads, Documents, or another folder you can write to.
+
+3. Install or start from the extracted folder.
+
+   Windows portable zip:
+
+   - Double-click `Start OpenSquilla.cmd`.
+   - Double-click `OpenSquilla Shell.cmd` if you want a terminal where
+     `opensquilla ...` commands work from the portable package.
+   - Keep the terminal window open. Closing it stops the gateway.
+   - First run opens onboarding when no local config exists.
+
+   Optional PowerShell start for users who want to set an API key in the same
+   terminal first:
+
+   ```powershell
+   $env:OPENROUTER_API_KEY="sk-..."
+   Set-ExecutionPolicy -Scope Process Bypass
+   .\start.ps1
+   ```
+
+   If `OPENROUTER_API_KEY` is set and no local config exists, the portable
+   launcher writes an OpenRouter env-reference config and starts the gateway
+   without asking you to paste the key. If the variable is not set, the
+   onboarding wizard lets you choose a provider freely.
+
+   macOS portable zip:
+
+   ```sh
+   export OPENROUTER_API_KEY="sk-..."  # optional shortcut for OpenRouter
+   bash start.sh
+   ```
+
+4. Configure a model provider.
+
+   Portable zip users can normally do this from the onboarding wizard opened by
+   `Start OpenSquilla.cmd`, `start.ps1`, or `start.sh`. The `OPENROUTER_API_KEY`
+   shortcut above is optional. The portable zip does not install a global
+   `opensquilla` command; run commands from the extracted folder through the
+   included start scripts or `.\opensquilla.cmd`, for example:
+
+   ```powershell
+   .\opensquilla.cmd onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
+   ```
+
+5. Start OpenSquilla and open the Web UI.
+
+   Portable zip users already start the gateway through `Start OpenSquilla.cmd`,
+   `start.ps1`, or `start.sh`. Then open
+   <http://127.0.0.1:18790/control/>.
+
+Preview packages are the recommended public distribution channel for validating
+installation, onboarding, the local gateway, and the Web UI before the stable
+`0.1.0` release. For a source checkout instead of a package, use the next
+section.
 
 ### Install from source
 
@@ -209,8 +277,10 @@ note in [Prerequisites](#prerequisites).
 ## Setup details and troubleshooting
 
 Setup details expands the Quick start paths; it is not a separate install path.
-Use Install from source when you only want to run OpenSquilla. Use Develop from
-source only when you want to edit, test, or debug the code.
+Use the preview release package when you only want to run OpenSquilla. Use
+Install from source when a package is not available for your platform or when
+you want to run the current source tree. Use Develop from source only when you
+want to edit, test, or debug the code.
 
 Sections marked **(optional)** can be skipped depending on your environment;
 everything else is required for a working source install.
@@ -219,14 +289,16 @@ everything else is required for a working source install.
 
 - **Python 3.12+** — not required for the normal `uv` install path. Install it
   only when you use the `pip --user` fallback or develop from source.
-  **(optional)** for portable-zip users, since the release zip already bundles
-  its own CPython.
-- **Git and Git LFS** — required. The bundled SquillaRouter assets are
-  stored as LFS pointers; without `git-lfs` the `recommended` profile
-  fails with `version https://git-lfs.github.com/spec/v1` pointer files
+  **(optional)** for portable release zip users, since the portable zip already
+  bundles its own CPython.
+- **Git and Git LFS** — required only for source installs. Release zip users do
+  not need Git or Git LFS. In a source checkout, the bundled SquillaRouter
+  assets are stored as LFS pointers; without `git-lfs` the `recommended`
+  profile fails with `version https://git-lfs.github.com/spec/v1` pointer files
   in place of the model bytes. Install once: <https://git-lfs.com/>.
-- **`uv`** — recommended for normal source installs. The installer scripts use
-  `uv tool install` when available. Install once: <https://docs.astral.sh/uv/>.
+- **`uv`** — recommended for normal source installs. Release zip users do not
+  need `uv`. The installer scripts use `uv tool install` when available.
+  Install once: <https://docs.astral.sh/uv/>.
 - **`pip` >= 23** — fallback only when `uv` is unavailable. The scripts fall
   back to `python -m pip install --user`.
 - **Windows Visual C++ runtime** — recommended when using the bundled router
@@ -524,7 +596,7 @@ token or password auth before binding to `0.0.0.0`.
 `./start.sh` (or `start.ps1` on Windows) wraps `docker compose up -d`
 and tails the gateway logs — convenient if you do not want a Python
 toolchain on the host. Release zips that bundle a CPython runtime are
-produced by the `Wheelhouse Zip Release` workflow; portable users
+produced by the `Portable Zip Release` workflow; portable users
 extract the zip and run its bundled launcher without a system Python
 install.
 

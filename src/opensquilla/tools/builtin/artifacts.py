@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 from difflib import SequenceMatcher
@@ -128,6 +129,24 @@ async def publish_artifact(
         raise _missing_artifact_error(path, workspace, target)
     if not target.is_file():
         raise ToolError(f"artifact path is not a file: {path}")
+
+    target_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    for published in reversed(ctx.published_artifacts):
+        if published.get("sha256") != target_sha256:
+            continue
+        llm_artifact = {k: v for k, v in published.items() if k != "download_url"}
+        return json.dumps(
+            {
+                "status": "already_published",
+                "artifact": llm_artifact,
+                "note": (
+                    "This file is already published for the user in this turn. "
+                    "Do not call publish_artifact again for the same file; "
+                    "just confirm it is ready."
+                ),
+            },
+            ensure_ascii=False,
+        )
 
     artifact_mime = (mime or mimetypes.guess_type(name or target.name)[0] or "").strip()
     if not artifact_mime:

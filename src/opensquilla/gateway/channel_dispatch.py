@@ -42,8 +42,8 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_ARTIFACT_MARKER_LINE_RE = re.compile(
-    r"^\s*\[generated artifact omitted:[^\r\n]*\]\s*$",
+_ARTIFACT_MARKER_RE = re.compile(
+    r"[ \t]*\[generated artifact omitted:[^\]\r\n]*\][ \t]*",
     re.MULTILINE,
 )
 _MARKDOWN_IMAGE_LINE_RE = re.compile(
@@ -1103,6 +1103,7 @@ class _RuntimeChannelStreamRelay:
         self._config = config
         self._queue: asyncio.Queue[str | object] = asyncio.Queue()
         self._artifacts: list[dict[str, Any]] = []
+        self.delivered_artifact_keys: set[str] = set()
         self._task: asyncio.Task[Any] | None = None
         self._closed = False
         self.text_emitted = False
@@ -1203,6 +1204,14 @@ class _RuntimeChannelStreamRelay:
                 self._artifacts,
                 self._config,
             )
+            undelivered_keys = {
+                key for artifact in undelivered if (key := _artifact_delivery_key(artifact))
+            }
+            self.delivered_artifact_keys.update(
+                key
+                for artifact in self._artifacts
+                if (key := _artifact_delivery_key(artifact)) and key not in undelivered_keys
+            )
             fallback_lines = _artifact_fallback_lines(undelivered)
             if fallback_lines:
                 await self._channel.send(
@@ -1237,6 +1246,14 @@ def _artifact_event_payload(event: Any) -> dict[str, Any] | None:
     return None
 
 
+def _artifact_delivery_key(artifact: dict[str, Any]) -> str:
+    for field in ("id", "sha256", "path", "download_url", "channel_download_url", "name"):
+        value = artifact.get(field)
+        if value:
+            return f"{field}:{value}"
+    return ""
+
+
 def _channel_safe_artifact_url(artifact: dict[str, Any]) -> str:
     for key in ("channel_download_url", "signed_download_url"):
         value = artifact.get(key)
@@ -1266,12 +1283,9 @@ def _artifact_media_root_from_config(config: Any) -> Path:
 def _strip_artifact_markers_from_channel_text(text: str) -> str:
     if "[generated artifact omitted:" not in text:
         return text
-    lines = [
-        line
-        for line in text.replace("\r\n", "\n").split("\n")
-        if not _ARTIFACT_MARKER_LINE_RE.match(line)
-    ]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    cleaned = _ARTIFACT_MARKER_RE.sub("", text.replace("\r\n", "\n"))
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
 def _artifact_reference_names(artifacts: list[dict[str, Any]]) -> set[str]:
@@ -1596,6 +1610,12 @@ async def _deliver_runtime_channel_reply(
 
     if content:
         content, artifacts = _split_assistant_artifact_content(content)
+        if stream_relay is not None and stream_relay.delivered_artifact_keys:
+            artifacts = [
+                artifact
+                for artifact in artifacts
+                if _artifact_delivery_key(artifact) not in stream_relay.delivered_artifact_keys
+            ]
         content = _strip_artifact_markers_from_channel_text(content)
         content = _strip_delivered_artifact_image_references(content, artifacts)
         if _can_deliver_channel_files(channel):

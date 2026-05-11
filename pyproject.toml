@@ -51,7 +51,7 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.5",
 ]
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.2.0"]
 memory = [
     "tiktoken>=0.5",
     "jieba>=0.42",

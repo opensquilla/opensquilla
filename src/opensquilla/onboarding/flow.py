@@ -6,7 +6,7 @@ import importlib.util
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from opensquilla.onboarding.channel_specs import (
     ChannelSetupField,
@@ -115,8 +115,9 @@ def _flush_stdin_typeahead() -> None:
             import msvcrt
         except ImportError:
             return
-        while msvcrt.kbhit():
-            msvcrt.getwch()
+        msvcrt_mod = cast(Any, msvcrt)
+        while msvcrt_mod.kbhit():
+            msvcrt_mod.getwch()
         return
 
     if not sys.stdin.isatty():
@@ -125,7 +126,8 @@ def _flush_stdin_typeahead() -> None:
         import termios
     except ImportError:
         return
-    termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    termios_mod = cast(Any, termios)
+    termios_mod.tcflush(sys.stdin, termios_mod.TCIFLUSH)
 
 
 def _wait_for_setup_start() -> None:

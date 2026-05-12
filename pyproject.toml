@@ -158,6 +158,7 @@ module = [
     "readability.*",
     "src.router.*",
     "tiktoken.*",
+    "tokenizers.*",
     "transformers.*",
     "yaml.*",
     "yoyo.*",

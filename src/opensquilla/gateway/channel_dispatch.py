@@ -1247,11 +1247,34 @@ def _artifact_event_payload(event: Any) -> dict[str, Any] | None:
 
 
 def _artifact_delivery_key(artifact: dict[str, Any]) -> str:
-    for field in ("id", "sha256", "path", "download_url", "channel_download_url", "name"):
+    for field in (
+        "sha256",
+        "path",
+        "channel_download_url",
+        "signed_download_url",
+        "download_url",
+        "id",
+        "name",
+    ):
         value = artifact.get(field)
         if value:
             return f"{field}:{value}"
     return ""
+
+
+def _dedupe_artifacts_for_channel_delivery(
+    artifacts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for artifact in artifacts:
+        key = _artifact_delivery_key(artifact)
+        if key:
+            if key in seen:
+                continue
+            seen.add(key)
+        unique.append(artifact)
+    return unique
 
 
 def _channel_safe_artifact_url(artifact: dict[str, Any]) -> str:
@@ -1266,7 +1289,7 @@ def _channel_safe_artifact_url(artifact: dict[str, Any]) -> str:
 
 def _artifact_fallback_lines(artifacts: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
-    for artifact in artifacts:
+    for artifact in _dedupe_artifacts_for_channel_delivery(artifacts):
         name = artifact.get("name") if isinstance(artifact.get("name"), str) else "artifact"
         target = _channel_safe_artifact_url(artifact)
         if target:
@@ -1349,7 +1372,7 @@ async def _deliver_artifacts_as_channel_files(
 
     store = ArtifactStore(_artifact_media_root_from_config(config))
     undelivered: list[dict[str, Any]] = []
-    for artifact in artifacts:
+    for artifact in _dedupe_artifacts_for_channel_delivery(artifacts):
         artifact_id = artifact.get("id")
         session_id = artifact.get("session_id")
         if not isinstance(artifact_id, str) or not isinstance(session_id, str):

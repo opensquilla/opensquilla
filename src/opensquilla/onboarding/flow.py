@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 from dataclasses import dataclass
 from typing import Any, cast
@@ -232,6 +233,8 @@ def _required_value(label: str):
 
 _PASTE_API_KEY_CHOICE = "Paste API key now"
 _DETECTED_ENV_SUFFIX = " (detected)"
+_TERMINAL_ESCAPE_RE = re.compile(r"\x1b")
+_LEADING_TERMINAL_KEY_RE = re.compile(r"^\[[0-9;?]+~")
 
 
 def _api_key_env_choice(env_key: str, *, detected: bool = False) -> str:
@@ -256,6 +259,26 @@ def _api_key_source_choices(env_key: str) -> list[str]:
             _api_key_env_choice(env_key, detected=bool(os.environ.get(env_key)))
         )
     return choices
+
+
+def _secret_value_validator(label: str):
+    required = _required_value(label)
+
+    def _validate(value: str) -> bool | str:
+        result = required(value)
+        if result is not True:
+            return result
+        stripped = str(value or "").strip()
+        if _TERMINAL_ESCAPE_RE.search(stripped) or _LEADING_TERMINAL_KEY_RE.search(
+            stripped
+        ):
+            return (
+                "Paste was not read correctly by this terminal. Use right-click, "
+                "Shift+Insert, or the environment variable option."
+            )
+        return True
+
+    return _validate
 
 
 def _search_api_key_prompt(spec) -> str:
@@ -298,7 +321,7 @@ def _ask_provider_fields(
                 answers["api_key"] = (
                     questionary.password(
                         "API key",
-                        validate=_required_value("API key"),
+                        validate=_secret_value_validator("API key"),
                     ).ask()
                     or ""
                 )
@@ -344,7 +367,7 @@ def _ask_search_fields(questionary, spec) -> dict[str, Any]:
             answers["api_key"] = (
                 questionary.password(
                     _search_api_key_prompt(spec),
-                    validate=_required_value("Search API key"),
+                    validate=_secret_value_validator("Search API key"),
                 ).ask()
                 or ""
             )
@@ -464,7 +487,13 @@ def _ask_image_generation_fields(
     ).ask()
     selected_env_key = _api_key_env_from_choice(key_source or "")
     if key_source == _PASTE_API_KEY_CHOICE:
-        answers["api_key"] = questionary.password("Image API key").ask() or ""
+        answers["api_key"] = (
+            questionary.password(
+                "Image API key",
+                validate=_secret_value_validator("Image API key"),
+            ).ask()
+            or ""
+        )
         answers["api_key_env"] = ""
     elif selected_env_key:
         answers["api_key"] = ""
@@ -769,7 +798,13 @@ def _ask_channel_field(questionary, field: ChannelSetupField, default: Any) -> A
     if field.field_type == "bool":
         return questionary.confirm(field.label, default=bool(default)).ask()
     if field.field_type == "password":
-        return questionary.password(field.label).ask() or ""
+        return (
+            questionary.password(
+                field.label,
+                validate=_secret_value_validator(field.label),
+            ).ask()
+            or ""
+        )
     if field.field_type == "int":
         raw = questionary.text(
             field.label, default=str(default if default is not None else 0)

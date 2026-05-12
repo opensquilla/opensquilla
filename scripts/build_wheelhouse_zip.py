@@ -1071,7 +1071,8 @@ def render_start_cmd() -> str:
         'cd /d "%~dp0"\r\n'
         'set "OSQ_POWERSHELL=powershell.exe"\r\n'
         'where pwsh.exe >nul 2>nul && set "OSQ_POWERSHELL=pwsh.exe"\r\n'
-        '"%OSQ_POWERSHELL%" -NoLogo -NoExit -ExecutionPolicy Bypass -File "%~dp0start.ps1"\r\n'
+        '"%OSQ_POWERSHELL%" -NoLogo -NoExit -NoProfile -ExecutionPolicy Bypass '
+        '-File "%~dp0start.ps1"\r\n'
     )
 
 

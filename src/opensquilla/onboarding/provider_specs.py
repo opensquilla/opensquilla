@@ -166,7 +166,15 @@ def _to_setup_spec(spec: ProviderSpec) -> ProviderSetupSpec:
 
 
 def list_provider_setup_specs() -> list[ProviderSetupSpec]:
-    return [_to_setup_spec(s) for s in list_provider_specs()]
+    specs = [_to_setup_spec(s) for s in list_provider_specs()]
+    return sorted(
+        specs,
+        key=lambda s: (
+            0 if s.provider_id == "openrouter" else 1,
+            s.label.lower(),
+            s.provider_id,
+        ),
+    )
 
 
 def get_provider_setup_spec(provider_id: str) -> ProviderSetupSpec:

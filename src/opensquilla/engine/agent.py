@@ -43,6 +43,7 @@ from opensquilla.provider import (
     ContentBlockToolUse,
     LLMProvider,
     Message,
+    ProviderHeartbeatEvent,
     ToolDefinition,
     ToolUseEndEvent,
 )
@@ -79,6 +80,7 @@ from .types import (
     CompactionOutcome,
     DoneEvent,
     ErrorEvent,
+    RunHeartbeatEvent,
     StateChangeEvent,
     TextDeltaEvent,
     ThinkingLevel,
@@ -90,6 +92,17 @@ from .types import (
 )
 
 logger = structlog.get_logger("opensquilla.engine.agent")
+
+
+def _is_deepseek_model_id(model_id: str | None) -> bool:
+    normalized = (model_id or "").strip().lower()
+    return normalized.startswith("deepseek") or "/deepseek" in normalized
+
+
+def _is_direct_deepseek_v4_model_id(model_id: str | None) -> bool:
+    normalized = (model_id or "").strip().lower()
+    return normalized in {"deepseek-v4-flash", "deepseek-v4-pro"}
+
 
 _TOOL_RESULT_SUMMARY_SYSTEM = (
     "You compress tool output before it is passed to another agent. Preserve exact "
@@ -416,6 +429,13 @@ class Agent:
             timeout = max(timeout, argument_timeout)
         return timeout
 
+    def _tool_activity_heartbeat_interval(self) -> float:
+        raw_interval = self.config.metadata.get("tool_activity_heartbeat_interval", 15.0)
+        try:
+            return float(raw_interval)
+        except (TypeError, ValueError):
+            return 15.0
+
     def _write_turn_call_log(self, kind: str, **payload: Any) -> None:
         if self._turn_call_logger is not None:
             self._turn_call_logger.write(kind, payload)
@@ -698,9 +718,23 @@ class Agent:
         self._write_context_stage("session:loaded", loaded_history)
         sanitized_history, sanitize_result = sanitize_session_messages(loaded_history)
         sanitized_history = repair_tool_pairing(sanitized_history)
+        caps_reasoning_format = (
+            getattr(self.config.model_capabilities, "reasoning_format", "")
+            if self.config.model_capabilities is not None
+            else ""
+        )
+        preserve_reasoning_content = bool(
+            _is_direct_deepseek_v4_model_id(self.config.model_id)
+            or (
+                thinking_enabled
+                and caps_reasoning_format == "deepseek"
+                and _is_deepseek_model_id(self.config.model_id)
+            )
+        )
         sanitized_history = drop_reasoning(
             sanitized_history,
             preserve_tool_call_reasoning=thinking_enabled,
+            preserve_reasoning_content=preserve_reasoning_content,
         )
         sanitized_history = _strip_historical_image_blocks(sanitized_history)
         self._write_context_stage(
@@ -787,6 +821,7 @@ class Agent:
         window_input_tokens = 0
         window_output_tokens = 0
         final_text_parts: list[str] = []
+        final_reasoning_parts: list[str] = []
         _fallback = FallbackPolicy(
             max_retries=self.config.max_provider_retries,
             base_backoff_ms=self.config.retry_base_backoff_ms,
@@ -1010,6 +1045,12 @@ class Agent:
                                 provider_error = raw_ev
                                 _got_error = True
                                 break  # break stream loop
+
+                            elif isinstance(raw_ev, ProviderHeartbeatEvent):
+                                yield RunHeartbeatEvent(
+                                    phase=raw_ev.phase,
+                                    message=raw_ev.message,
+                                )
                     except _IterationStreamTimeoutError:
                         yield self._transition(AgentState.ERROR)
                         terminal_error = ErrorEvent(
@@ -1439,6 +1480,9 @@ class Agent:
                     yield terminal_error
                     break
 
+                if iter_reasoning_content:
+                    final_reasoning_parts.append(iter_reasoning_content)
+
                 window_input_tokens += iter_input_tokens
                 window_output_tokens += iter_output_tokens
 
@@ -1650,6 +1694,67 @@ class Agent:
                     )
                     return res
 
+                async def _collect_tool_tasks(
+                    task_to_tool_call: dict[asyncio.Task[ToolResult], ToolCall],
+                ) -> AsyncIterator[RunHeartbeatEvent]:
+                    pending = set(task_to_tool_call)
+                    if not pending:
+                        return
+
+                    interval = self._tool_activity_heartbeat_interval()
+                    started = time.monotonic()
+                    last_event_at = started
+                    try:
+                        while pending:
+                            if interval <= 0:
+                                done, pending = await asyncio.wait(
+                                    pending,
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                            else:
+                                done, pending = await asyncio.wait(
+                                    pending,
+                                    timeout=interval,
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                            if not done:
+                                now = time.monotonic()
+                                yield RunHeartbeatEvent(
+                                    phase="tool",
+                                    elapsed_ms=int((now - started) * 1000),
+                                    idle_ms=int((now - last_event_at) * 1000),
+                                    message="Tool still running",
+                                )
+                                continue
+
+                            last_event_at = time.monotonic()
+                            for task in done:
+                                tc = task_to_tool_call[task]
+                                try:
+                                    outcome = task.result()
+                                except asyncio.CancelledError:
+                                    outcome = ToolResult(
+                                        tool_use_id=tc.tool_use_id,
+                                        tool_name=tc.tool_name,
+                                        content=f"Tool '{tc.tool_name}' was cancelled",
+                                        is_error=True,
+                                    )
+                                except Exception as exc:  # noqa: BLE001
+                                    outcome = ToolResult(
+                                        tool_use_id=tc.tool_use_id,
+                                        tool_name=tc.tool_name,
+                                        content=f"Tool '{tc.tool_name}' raised: {exc}",
+                                        is_error=True,
+                                    )
+                                results_by_id[tc.tool_use_id] = outcome
+                    finally:
+                        for task in pending:
+                            if not task.done():
+                                task.cancel()
+                        for task in pending:
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await task
+
                 # Dispatch preserving original order: accumulate consecutive safe
                 # tools into a batch and flush with asyncio.gather before each
                 # mutex tool, then run the mutex tool serially.  This ensures
@@ -1657,31 +1762,31 @@ class Agent:
                 # until that mutex tool has completed.
                 safe_batch: list[ToolCall] = []
 
-                async def _flush_safe_batch(batch: list[ToolCall]) -> None:
+                async def _flush_safe_batch(
+                    batch: list[ToolCall],
+                ) -> AsyncIterator[RunHeartbeatEvent]:
                     if not batch:
                         return
-                    gather_results = await asyncio.gather(
-                        *[_run_one(tc) for tc in batch], return_exceptions=True
-                    )
-                    for tc, outcome in zip(batch, gather_results):
-                        if isinstance(outcome, BaseException):
-                            outcome = ToolResult(
-                                tool_use_id=tc.tool_use_id,
-                                tool_name=tc.tool_name,
-                                content=f"Tool '{tc.tool_name}' raised: {outcome}",
-                                is_error=True,
-                            )
-                        results_by_id[tc.tool_use_id] = outcome
+                    task_to_tool_call = {
+                        asyncio.create_task(_run_one(tc)): tc for tc in batch
+                    }
+                    async for event in _collect_tool_tasks(task_to_tool_call):
+                        yield event
 
                 for tc in tool_calls:
                     if tc.tool_name in _SAFE_TOOL_NAMES:
                         safe_batch.append(tc)
                     else:
-                        await _flush_safe_batch(safe_batch)
+                        async for event in _flush_safe_batch(safe_batch):
+                            yield event
                         safe_batch = []
-                        results_by_id[tc.tool_use_id] = await _run_one(tc)
+                        async for event in _collect_tool_tasks(
+                            {asyncio.create_task(_run_one(tc)): tc}
+                        ):
+                            yield event
 
-                await _flush_safe_batch(safe_batch)
+                async for event in _flush_safe_batch(safe_batch):
+                    yield event
 
                 # Emit results in original tool_calls order.
                 for tc in tool_calls:
@@ -1812,6 +1917,9 @@ class Agent:
                 model=done_model,
                 runtime_context_hash=runtime_context_hash,
                 runtime_context_chars=len(runtime_context),
+                reasoning_content=(
+                    "\n".join(final_reasoning_parts) if final_reasoning_parts else None
+                ),
             )
         # Reset for next turn
         self._state = AgentState.IDLE

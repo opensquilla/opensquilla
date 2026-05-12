@@ -15,12 +15,13 @@ def drop_reasoning(
     messages: list[Message],
     *,
     preserve_tool_call_reasoning: bool = False,
+    preserve_reasoning_content: bool = False,
 ) -> list[Message]:
     """Strip thinking blocks AND reasoning_content from assistant messages.
 
     - Removes ContentBlockThinking blocks from content lists (Anthropic)
     - Clears reasoning_content field (DeepSeek/OpenRouter)
-    - Optionally preserves reasoning_content on assistant tool-call messages
+    - Optionally preserves reasoning_content on assistant messages
     - Inserts placeholder text block if content becomes empty
     - Returns original list reference if nothing changed
     """
@@ -30,13 +31,14 @@ def drop_reasoning(
     for msg in messages:
         # Clear reasoning_content on any assistant message that has it
         if msg.role == "assistant" and msg.reasoning_content is not None:
-            keep_reasoning = preserve_tool_call_reasoning and _has_tool_use(msg.content)
+            keep_tool_reasoning = preserve_tool_call_reasoning and _has_tool_use(msg.content)
+            keep_reasoning_content = preserve_reasoning_content or keep_tool_reasoning
             touched = True
             if isinstance(msg.content, list):
                 filtered = [
                     b
                     for b in msg.content
-                    if keep_reasoning or not isinstance(b, ContentBlockThinking)
+                    if keep_tool_reasoning or not isinstance(b, ContentBlockThinking)
                 ]
                 if not filtered:
                     filtered = [ContentBlockText(text="")]
@@ -44,7 +46,9 @@ def drop_reasoning(
                     Message(
                         role="assistant",
                         content=filtered,
-                        reasoning_content=msg.reasoning_content if keep_reasoning else None,
+                        reasoning_content=(
+                            msg.reasoning_content if keep_reasoning_content else None
+                        ),
                     )
                 )
             else:
@@ -52,7 +56,9 @@ def drop_reasoning(
                     Message(
                         role="assistant",
                         content=msg.content,
-                        reasoning_content=msg.reasoning_content if keep_reasoning else None,
+                        reasoning_content=(
+                            msg.reasoning_content if keep_reasoning_content else None
+                        ),
                     )
                 )
             continue

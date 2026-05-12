@@ -447,6 +447,43 @@
   .sess-empty__pulse { animation: none !important; }
 }
 
+/* ─── New-session modal extras ───────────────────────────────────────── */
+
+.sess-newchat-modal { width: min(440px, 92vw); }
+.sess-form__hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.sess-form__error {
+  margin-top: var(--sp-2);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger, #e35d4d) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #e35d4d) 35%, var(--border));
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+/* ─── Orphan agent indicator (sessions list) ────────────────────────── */
+
+.sess-key__sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.sess-key__agent { display: inline-flex; align-items: center; gap: 4px; }
+.sess-key__agent--orphan { color: var(--text); }
+.chip-warn {
+  background: color-mix(in srgb, #f0a030 18%, transparent);
+  color: #f0a030;
+  border: 1px solid color-mix(in srgb, #f0a030 45%, var(--border));
+}
+
 /* ─── Responsive ─────────────────────────────────────────────────────── */
 
 @media (max-width: 720px) {

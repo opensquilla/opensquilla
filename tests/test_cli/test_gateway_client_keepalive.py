@@ -8,7 +8,11 @@ from typing import Any
 
 import pytest
 
-from opensquilla.cli.gateway_client import GatewayClient
+from opensquilla.cli.gateway_client import (
+    GatewayClient,
+    _normalize_session_error_payload,
+    _task_terminal_as_session_event,
+)
 
 _STOP = object()
 
@@ -60,6 +64,36 @@ def _install_fake_websockets(monkeypatch: pytest.MonkeyPatch, ws: _FakeWebSocket
         return ws
 
     monkeypatch.setitem(sys.modules, "websockets", SimpleNamespace(connect=_connect))
+
+
+def test_task_terminal_event_uses_terminal_message() -> None:
+    event = _task_terminal_as_session_event(
+        "task.timeout",
+        {
+            "task_id": "task-1",
+            "terminal_reason": "timeout",
+            "terminal_message": "The task timed out before it could finish.",
+            "error_message": "Gateway task timeout: Stream idle for more than 60s",
+        },
+    )
+
+    assert event is not None
+    assert event["event"] == "session.event.error"
+    assert event["message"] == "The task timed out before it could finish."
+    assert "Gateway task" not in event["message"]
+
+
+def test_session_error_payload_is_normalized_for_gateway_client() -> None:
+    payload = _normalize_session_error_payload(
+        {
+            "message": "Iteration 1 exceeded iteration_timeout",
+            "code": "iteration_timeout",
+        }
+    )
+
+    assert payload["message"] == "The task timed out before it could finish."
+    assert payload["terminal_message"] == "The task timed out before it could finish."
+    assert payload["error_message"] == "Iteration 1 exceeded iteration_timeout"
 
 
 def _handshake_frames(*, keepalive_ms: int = 60_000) -> list[dict[str, Any]]:

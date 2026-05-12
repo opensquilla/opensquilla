@@ -21,7 +21,7 @@ def get_embedder(model_name: str | None = None) -> LocalEmbeddingProvider:
 
     Lazy-constructs on first call per model. The underlying ONNX session
     is loaded by LocalEmbeddingProvider on first encode, not here.
-    Raises nothing on its own; if onnxruntime / transformers / the
+    Raises nothing on its own; if onnxruntime / tokenizers / the
     bundled ONNX dir are missing, the corresponding ImportError or
     RuntimeError is surfaced when the caller invokes encode_sync /
     embed_query / embed_batch.

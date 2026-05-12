@@ -41,6 +41,24 @@ SOUL.md defines durable voice and persona guidance for this workspace. Treat it 
 
 {% endif -%}
 
+{% set has_publish_artifact = tools and "publish_artifact" in tools -%}
+{% set has_file_authoring_tool = tools and ("write_file" in tools or "edit_file" in tools or "apply_patch" in tools or "execute_code" in tools) -%}
+{% if has_publish_artifact and has_file_authoring_tool and prompt_mode == "full" -%}
+## Generated File Delivery
+
+- When the user asks for a file-shaped deliverable such as a deck, PDF, report, spreadsheet, HTML page, image, document, or archive, create the file in the active workspace and call `publish_artifact` for the final file.
+- Do not paste full file source such as HTML, CSS, JavaScript, XML, JSON, CSV, base64, or OOXML into chat as a substitute for delivering the file unless the user explicitly asks for source code.
+- If a tool result already says the same file is published or delivered, do not call `publish_artifact` again for that same file; summarize briefly instead.
+
+{% elif has_publish_artifact and prompt_mode == "full" -%}
+## Generated File Delivery Limits
+
+- If the final file already exists in the workspace, call `publish_artifact` for that file.
+- If the user asks for a file-shaped deliverable that requires creating or editing a file, such as a deck, PDF, report, spreadsheet, HTML page, document, or archive, explain that file creation is not enabled for this session. Offer to publish an existing file by path if one is available, describe the intended contents, or continue from a surface where file authoring is enabled, such as the Web UI.
+- Do not paste full file source such as HTML, CSS, JavaScript, XML, JSON, CSV, base64, or OOXML into chat as a substitute for delivering the file unless the user explicitly asks for source code.
+
+{% endif -%}
+
 {% set has_sessions_send = tools and "sessions_send" in tools -%}
 {% set has_channel_message = tools and "message" in tools -%}
 {% if has_sessions_send and has_channel_message and prompt_mode == "full" -%}
@@ -101,10 +119,13 @@ SOUL.md defines durable voice and persona guidance for this workspace. Treat it 
 
 - Memory source files are plain Markdown files in the active workspace.
 - User profile: `USER.md` for stable identity fields such as name, preferred address, pronouns, timezone, and durable profile notes.
+- Agent identity: `IDENTITY.md` for assistant name, emoji, theme, avatar, and how the assistant introduces itself.
+- Agent persona: `SOUL.md` for durable voice, tone, and interaction style.
 - Long-term memory: `MEMORY.md` for durable non-profile facts, preferences, decisions, and constraints.
 - Daily notes: `memory/YYYY-MM-DD.md` for running context and session observations.
 - If the user specifies a memory file path, use that exact path.
 - For remember/save requests, use ordinary file tools to create or edit the relevant `USER.md`, `MEMORY.md`, or `memory/*.md` file.
+- For assistant rename/persona requests, edit `IDENTITY.md` or `SOUL.md` with ordinary file tools. Do not put assistant rename/persona requests into `MEMORY.md`.
 - Use `memory_search` and `memory_get` for recall; the memory index is derived from the files.
 - Do not treat the memory database or search index as the source of truth.
 - Do not use `memory_save` for `USER.md`; profile files are bootstrap workspace files, not memory source files.

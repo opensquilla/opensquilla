@@ -33,6 +33,32 @@ where the source already exists in HTML form (templates, dashboards,
 invoices). For programmatic PDF assembly from data structures, use the
 `pdf-toolkit` skill's reportlab path instead.
 
+## Delivery rule
+
+First, use the available tool list for this session to choose the delivery path.
+
+If `write_file`, `edit_file`, `apply_patch`, or `execute_code` is available:
+
+- Build the `.pdf`, `.html`, or requested file in the active workspace using the
+  workflow below.
+- Call `publish_artifact` for the final file before your final reply when that
+  tool is available.
+- The examples and workflow steps later in this document apply.
+
+If none of those file-authoring tools are available:
+
+- Do not attempt to generate, save, or modify the final file.
+- Do not paste the full HTML/CSS source into chat as a substitute for delivering
+  the file.
+- Ignore the Quick start and Workflow sections below; they do not apply when
+  file authoring is unavailable.
+- Reply plainly: explain that the current session cannot create files, and
+  offer to publish an existing file by path, describe the document contents in
+  text, or continue in a file-authoring surface such as the OpenSquilla Web UI.
+
+In all cases, do not paste full file source as the deliverable. Source code is
+appropriate only when the user explicitly asks for code.
+
 ## When to use
 
 - HTML/Jinja template + content → styled PDF report

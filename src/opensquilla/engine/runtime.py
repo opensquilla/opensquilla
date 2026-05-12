@@ -56,6 +56,7 @@ from opensquilla.observability.decision_log import (
 from opensquilla.observability.prompt_report import PromptReport, build_prompt_report
 from opensquilla.observability.trace import TraceContext, TraceEvent, write_trace_event
 from opensquilla.observability.turn_call_log import TurnCallLogger, is_turn_call_log_enabled
+from opensquilla.paths import media_root_from_config
 from opensquilla.provider import (
     ErrorEvent as ProviderErrorEvent,
 )
@@ -110,6 +111,15 @@ _SAFE_FLUSH_OBLIGATION_STATUSES: Final[frozenset[str]] = frozenset(
 _IMAGE_GENERATION_TOOL_NAMES: Final[frozenset[str]] = frozenset(
     {"image_generate"}
 )
+_ARTIFACT_DELIVERY_FAILURE_MARKER: Final[str] = "File delivery failed:"
+_ARTIFACT_DELIVERY_TOOL_NAME: Final[str] = "publish_artifact"
+_ARTIFACT_DELIVERY_FAILURE_MAX_CHARS: Final[int] = 360
+
+
+def _is_deepseek_model_id(model: str) -> bool:
+    normalized = model.strip().lower()
+    return normalized.startswith("deepseek") or "/deepseek" in normalized
+
 
 # Tools that are safe to run concurrently within a single LLM turn.
 # Any tool name absent from this set is treated as mutex (serial dispatch).
@@ -547,6 +557,50 @@ def _persisted_tool_result_segment(
     segment["result"] = _json_tool_result_preview(parsed, len(result), max_chars)
     return segment
 
+
+def _artifact_delivery_failure_summary(event: ToolResultEvent) -> str | None:
+    if event.tool_name != _ARTIFACT_DELIVERY_TOOL_NAME or not event.is_error:
+        return None
+    raw = event.result.strip()
+    summary = raw
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        candidate = (
+            parsed.get("user_message")
+            or parsed.get("message")
+            or parsed.get("error")
+            or parsed.get("error_class")
+        )
+        if isinstance(candidate, str) and candidate.strip():
+            summary = candidate.strip()
+    summary = " ".join(summary.split())
+    if len(summary) > _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS:
+        summary = summary[: _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS - 3].rstrip() + "..."
+    return summary or "publish_artifact failed"
+
+
+def _artifact_delivery_failure_notice() -> str:
+    return (
+        f"{_ARTIFACT_DELIVERY_FAILURE_MARKER} no downloadable file was attached "
+        "to this response. Ask me to resend the file after I correct the generated "
+        "file path."
+    )
+
+
+def _should_add_artifact_delivery_failure_notice(
+    *,
+    failure_summaries: list[str],
+    turn_artifacts: list[dict[str, Any]],
+    final_text: str,
+) -> bool:
+    if not failure_summaries or turn_artifacts:
+        return False
+    return _ARTIFACT_DELIVERY_FAILURE_MARKER not in final_text
+
+
 _SUBAGENT_TASK_PROTOCOL: Final[str] = (
     "You are a spawned subagent. Execute only the delegated task and return "
     "a compact result for the parent agent to use. Prefer a direct answer; "
@@ -956,6 +1010,7 @@ class TurnRunner:
         turn_capture_services: dict[str, Any] | None = None,
         session_flush_service: SessionFlushService | None = None,
         session_lock_provider: Callable[[str], asyncio.Lock] | None = None,
+        diagnostics_state: Any | None = None,
     ) -> None:
         self._provider_selector = provider_selector
         self._tool_registry = tool_registry
@@ -968,6 +1023,7 @@ class TurnRunner:
         self._memory_retrievers = memory_retrievers
         self._turn_capture_services = turn_capture_services
         self._session_flush_service = session_flush_service
+        self._diagnostics_state = diagnostics_state
         # Per-session lock provider.
         # Gateway path: task_runtime._get_session_lock_for_turn (wired in boot.py).
         # CLI/standalone path: _standalone_lock_provider from build_turn_runner_from_services.
@@ -1372,6 +1428,7 @@ class TurnRunner:
         final_text_parts: list[str] = []
         turn_segments: list[dict] = []
         turn_artifacts: list[dict[str, Any]] = []
+        artifact_delivery_failures: list[str] = []
         self._write_trace_event(
             "turn_start",
             trace_context,
@@ -1543,7 +1600,7 @@ class TurnRunner:
                 trace_context,
                 session_id=session_id_for_log,
             )
-            if is_turn_call_log_enabled():
+            if is_turn_call_log_enabled(self._diagnostics_state):
                 turn_call_logger = TurnCallLogger(
                     trace_id=trace_context.trace_id,
                     turn_id=turn_id,
@@ -1595,7 +1652,7 @@ class TurnRunner:
 
             # Resolve max_tokens & context_window from model catalog
             user_max_tokens = getattr(getattr(self._config, "llm", None), "max_tokens", 0)
-            if self._model_catalog:
+            if self._model_catalog is not None:
                 max_tokens = self._model_catalog.resolve_max_tokens(
                     resolved_model, user_override=user_max_tokens
                 )
@@ -1606,7 +1663,7 @@ class TurnRunner:
 
             # Resolve model capabilities for reasoning support
             model_caps = None
-            if self._model_catalog:
+            if self._model_catalog is not None:
                 provider_name = getattr(
                     getattr(self._config, "llm", None), "provider", "openrouter"
                 )
@@ -1810,6 +1867,9 @@ class TurnRunner:
                         }
                     )
                 elif isinstance(event, ToolResultEvent):
+                    failure_summary = _artifact_delivery_failure_summary(event)
+                    if failure_summary is not None:
+                        artifact_delivery_failures.append(failure_summary)
                     if event.arguments is not None:
                         for segment in reversed(turn_segments):
                             if (
@@ -1893,6 +1953,20 @@ class TurnRunner:
                         final_text_parts.append(normalized_text)
                         if turn_segments:
                             current_text_parts.append(normalized_text)
+                    accumulated_text = "".join(final_text_parts)
+                    if _should_add_artifact_delivery_failure_notice(
+                        failure_summaries=artifact_delivery_failures,
+                        turn_artifacts=turn_artifacts,
+                        final_text=accumulated_text,
+                    ):
+                        separator = "\n\n" if accumulated_text.strip() else ""
+                        notice_delta = separator + _artifact_delivery_failure_notice()
+                        final_text_parts.append(notice_delta)
+                        current_text_parts.append(notice_delta)
+                        normalized_text = "".join(final_text_parts)
+                        event = replace(event, text=normalized_text)
+                        done_event = event
+                        yield TextDeltaEvent(text=notice_delta)
                     # Hallucination check: emit Warning BEFORE yielding Done
                     # so CLI/SDK consumers that stop reading on terminal events
                     # still see it.
@@ -1992,6 +2066,12 @@ class TurnRunner:
                     "content": persisted_content,
                     "tool_calls": turn_segments if turn_segments else None,
                 }
+                if (
+                    done_event is not None
+                    and done_event.reasoning_content
+                    and _is_deepseek_model_id(done_event.model or resolved_model or "")
+                ):
+                    append_kwargs["reasoning_content"] = done_event.reasoning_content
                 if _accepts_keyword_arg(self._session_manager.append_message, "token_count"):
                     append_kwargs["token_count"] = (
                         done_event.output_tokens if done_event is not None else None
@@ -3928,7 +4008,14 @@ class TurnRunner:
                 content = self._maybe_unpack_assistant_artifacts(raw_content)
             else:
                 content = raw_content
-            history.extend(reconstruct_messages_from_entry(entry.role, content, entry.tool_calls))
+            history.extend(
+                reconstruct_messages_from_entry(
+                    entry.role,
+                    content,
+                    entry.tool_calls,
+                    getattr(entry, "reasoning_content", None),
+                )
+            )
             last_entry_was_user = entry.role == "user"
         # Strip the caller-appended user turn only when the transcript really
         # ended on a user entry; an assistant entry that reconstructs into
@@ -4052,9 +4139,7 @@ class TurnRunner:
 
     @staticmethod
     def _attachment_media_root_from_config(config: Any | None) -> Path:
-        attachments_cfg = getattr(config, "attachments", None)
-        media_root_raw = getattr(attachments_cfg, "media_root", None)
-        return Path(media_root_raw) if media_root_raw else Path(".opensquilla") / "media"
+        return media_root_from_config(config)
 
     def _attachment_media_root(self) -> Path:
         return self._attachment_media_root_from_config(self._config)

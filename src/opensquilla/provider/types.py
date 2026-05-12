@@ -83,6 +83,15 @@ class ErrorEvent:
 
 
 @dataclass
+class ProviderHeartbeatEvent:
+    """Provider-side liveness signal while no user-visible tokens are ready."""
+
+    kind: Literal["provider_heartbeat"] = field(default="provider_heartbeat", init=False)
+    phase: str = "provider"
+    message: str = ""
+
+
+@dataclass
 class QuotaStatus:
     """Quota snapshot returned by ``quota_hook``.
 
@@ -115,6 +124,7 @@ StreamEvent = (
     | ToolUseEndEvent
     | DoneEvent
     | ErrorEvent
+    | ProviderHeartbeatEvent
 )
 
 

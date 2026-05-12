@@ -28,20 +28,79 @@ Choose the path that matches how you want to use OpenSquilla:
 
 | User type | Path | Status |
 | --- | --- | --- |
-| New user | [Release package](#release-package-coming-soon) | Coming soon |
+| New user | [Preview release package](#preview-release-package) | Recommended |
 | Command-line user | [Install from source](#install-from-source) | Available now |
 | Developer | [Develop from source](#develop-from-source) | Available now |
 
-SquillaRouter is included by default in every currently available install path.
-Only choose the `core` profile or `--router disabled` if you intentionally want
-to skip the bundled router.
+SquillaRouter is included by default in the preview release packages and in
+the normal source install path. Only choose the `core` profile or `--router
+disabled` if you intentionally want to skip the bundled router.
 
-### Release package — coming soon
+### Preview release package
 
-This will be the recommended path for non-developers: download a release
-package, extract it, set an API key, start OpenSquilla, and open the Web UI.
-Public release packages are not published yet. Until release packages are
-published, new users should use Install from source.
+Use this path if you want to try OpenSquilla as a local app without cloning the
+repository or installing Git, Git LFS, or `uv`.
+
+1. Open the [GitHub Releases](https://github.com/opensquilla/opensquilla/releases)
+   page and download the preview package for your platform.
+
+   Current preview packages:
+
+   - `OpenSquilla-<version>-windows-x64-py312-recommended-portable.zip` for
+     Windows.
+
+   The recommended portable zip includes Feishu websocket support by default.
+   If a package is not available for your platform, use the source install path
+   below.
+
+2. Extract to Downloads, Documents, or another folder you can write to.
+
+3. Install or start from the extracted folder.
+
+   Windows portable zip:
+
+   - Double-click `Start OpenSquilla.cmd`.
+   - Double-click `OpenSquilla Shell.cmd` if you want a terminal where
+     `opensquilla ...` commands work from the portable package.
+   - Keep the terminal window open. Closing it stops the gateway.
+   - First run opens onboarding when no local config exists.
+
+   Optional PowerShell start for users who want to set an API key in the same
+   terminal first:
+
+   ```powershell
+   $env:OPENROUTER_API_KEY="sk-..."
+   Set-ExecutionPolicy -Scope Process Bypass
+   .\start.ps1
+   ```
+
+   If `OPENROUTER_API_KEY` is set and no local config exists, the portable
+   launcher writes an OpenRouter env-reference config and starts the gateway
+   without asking you to paste the key. If the variable is not set, the
+   onboarding wizard lets you choose a provider freely.
+
+4. Configure a model provider.
+
+   Portable zip users can normally do this from the onboarding wizard opened by
+   `Start OpenSquilla.cmd`, `start.ps1`, or `start.sh`. The `OPENROUTER_API_KEY`
+   shortcut above is optional. The portable zip does not install a global
+   `opensquilla` command; run commands from the extracted folder through the
+   included start scripts or `.\opensquilla.cmd`, for example:
+
+   ```powershell
+   .\opensquilla.cmd onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
+   ```
+
+5. Start OpenSquilla and open the Web UI.
+
+   Portable zip users already start the gateway through `Start OpenSquilla.cmd`,
+   `start.ps1`, or `start.sh`. Then open
+   <http://127.0.0.1:18790/control/>.
+
+Preview packages are the recommended public distribution channel for validating
+installation, onboarding, the local gateway, and the Web UI before the stable
+`0.1.0` release. For a source checkout instead of a package, use the next
+section.
 
 ### Install from source
 
@@ -49,12 +108,15 @@ Use this path when you want to run OpenSquilla as a local app from the current
 source tree. The clone is only the package source the installer reads from; after
 installing, use `opensquilla ...` commands, not `uv run`.
 
-1. Install prerequisites: Git, Git LFS, and uv.
+1. Install prerequisites: Git and Git LFS. The recommended installer is `uv`.
 
    Download links:
    - Git: <https://git-scm.com/downloads>
    - Git LFS: <https://git-lfs.com/>
    - uv: <https://docs.astral.sh/uv/getting-started/installation/>
+
+   If `uv` is unavailable, the installer falls back to Python 3.12+ with
+   `pip >= 23`.
 
    <details>
    <summary>Optional: install prerequisites from a terminal</summary>
@@ -103,10 +165,7 @@ installing, use `opensquilla ...` commands, not `uv run`.
    git lfs install
    ```
 
-   Open a new terminal if `git`, `git lfs`, or `uv` is not found after
-   installation.
-
-   </details>
+   PATH changes from these installers apply to new terminal sessions.
 
 2. Clone with LFS assets:
 
@@ -116,6 +175,9 @@ installing, use `opensquilla ...` commands, not `uv run`.
    cd opensquilla
    git lfs pull --include="src/opensquilla/squilla_router/models/**"
    ```
+
+   The LFS pull is idempotent: it fetches missing model assets and exits
+   quietly when the checkout is already complete.
 
 3. Install with the recommended profile. This creates a user-local
    `opensquilla` command. The checkout-local `.venv`, if any, is not used.
@@ -203,23 +265,28 @@ note in [Prerequisites](#prerequisites).
 ## Setup details and troubleshooting
 
 Setup details expands the Quick start paths; it is not a separate install path.
-Use Install from source when you only want to run OpenSquilla. Use Develop from
-source only when you want to edit, test, or debug the code.
+Use the preview release package when you only want to run OpenSquilla. Use
+Install from source when a package is not available for your platform or when
+you want to run the current source tree. Use Develop from source only when you
+want to edit, test, or debug the code.
 
 Sections marked **(optional)** can be skipped depending on your environment;
 everything else is required for a working source install.
 
 ### Prerequisites
 
-- **Python 3.12+** — required only when you skip `uv` and use the `pip --user`
-  fallback, or when you develop from source. **(optional)** for portable-zip
-  users, since the release zip already bundles its own CPython.
-- **Git and Git LFS** — required. The bundled SquillaRouter assets are
-  stored as LFS pointers; without `git-lfs` the `recommended` profile
-  fails with `version https://git-lfs.github.com/spec/v1` pointer files
+- **Python 3.12+** — not required for the normal `uv` install path. Install it
+  only when you use the `pip --user` fallback or develop from source.
+  **(optional)** for portable release zip users, since the portable zip already
+  bundles its own CPython.
+- **Git and Git LFS** — required only for source installs. Release zip users do
+  not need Git or Git LFS. In a source checkout, the bundled SquillaRouter
+  assets are stored as LFS pointers; without `git-lfs` the `recommended`
+  profile fails with `version https://git-lfs.github.com/spec/v1` pointer files
   in place of the model bytes. Install once: <https://git-lfs.com/>.
-- **`uv`** — recommended for normal source installs. The installer scripts use
-  `uv tool install` when available. Install once: <https://docs.astral.sh/uv/>.
+- **`uv`** — recommended for normal source installs. Release zip users do not
+  need `uv`. The installer scripts use `uv tool install` when available.
+  Install once: <https://docs.astral.sh/uv/>.
 - **`pip` >= 23** — fallback only when `uv` is unavailable. The scripts fall
   back to `python -m pip install --user`.
 - **Windows Visual C++ runtime** — recommended when using the bundled router
@@ -248,6 +315,8 @@ git lfs pull --include="src/opensquilla/squilla_router/models/**"
 Use this path when you want to run OpenSquilla, not edit its source.
 The clone is only the package source for the installer. After install,
 use `opensquilla ...`; do not use `uv run`.
+This section expands step 3 of Quick start; skip it if the installer has
+already completed.
 
 The scripts install `.[recommended]` by default. `recommended` is the
 normal runtime profile: SquillaRouter, memory, and local model dependencies.
@@ -318,8 +387,9 @@ where.exe opensquilla
 command -v opensquilla
 ```
 
-If a new terminal still cannot find it, run `uv tool update-shell`, reopen the
-terminal, and try again.
+If `opensquilla` is not on `PATH`, use the command path check above. For `uv`
+installs, refresh the shell with `uv tool update-shell`; for the `pip --user`
+fallback, add the Python user scripts directory to `PATH`.
 
 After reinstalling from a local checkout, restart the gateway process so it
 loads the updated package.
@@ -327,8 +397,9 @@ loads the updated package.
 ### Develop from source
 
 Use this path only when you want to modify, test, or debug the current
-checkout. `uv sync` creates the checkout-local `.venv`, and `uv run`
-executes against the live source tree.
+checkout. Unlike Install from source, this development path requires `uv`.
+`uv sync` creates the checkout-local `.venv`, and `uv run` executes against the
+live source tree.
 
 ```sh
 uv sync --extra recommended
@@ -352,10 +423,13 @@ command runs in a different Python environment.
 
 ### First-run config
 
-`opensquilla onboard --if-needed` is the recommended post-install
-entrypoint for first-run setup and automation. It writes the active
-config file, skips when an LLM provider is already configured, and keeps
-provider secrets in environment variables when you pass `--api-key-env`.
+`opensquilla onboard` is the human first-run setup command after source
+install. It writes the active config file and keeps provider secrets in
+environment variables when you pass `--api-key-env`. `opensquilla onboard
+--if-needed` is the idempotent entrypoint for repeatable scripts,
+automation, and already-configured users; it skips only when a real config
+file exists and the required provider setup is complete. Environment
+variables are treated as candidate inputs until the config references them.
 The router defaults to `recommended`; `recommended` enables SquillaRouter for
 supported provider profiles. Pass `--router disabled` only if you
 intentionally want direct single-model routing, or `--router
@@ -364,7 +438,7 @@ Useful invocations:
 
 ```sh
 opensquilla onboard                # full interactive wizard
-opensquilla onboard --if-needed    # idempotent: skip if already configured
+opensquilla onboard --if-needed    # idempotent: script/repeat install guard
 opensquilla onboard --minimal      # provider only, skip channels/search
 ```
 
@@ -436,7 +510,10 @@ wizard:
 opensquilla configure provider --provider openai --model gpt-4o
 opensquilla configure router --router recommended
 opensquilla configure search   --search-provider brave
+opensquilla configure image-generation --image-provider openrouter --api-key-env OPENROUTER_API_KEY
 opensquilla configure channels                # interactive section
+opensquilla configure channels --channel-type feishu --name feishu-main \
+  --field app_id=cli_... --field app_secret=...
 ```
 
 Sections: `provider`, `router`, `channels`, `search`,
@@ -507,7 +584,7 @@ token or password auth before binding to `0.0.0.0`.
 `./start.sh` (or `start.ps1` on Windows) wraps `docker compose up -d`
 and tails the gateway logs — convenient if you do not want a Python
 toolchain on the host. Release zips that bundle a CPython runtime are
-produced by the `Wheelhouse Zip Release` workflow; portable users
+produced by the `Portable Zip Release` workflow; portable users
 extract the zip and run its bundled launcher without a system Python
 install.
 

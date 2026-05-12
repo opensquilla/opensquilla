@@ -16,6 +16,7 @@ from opensquilla.artifacts import (
     ArtifactStore,
 )
 from opensquilla.gateway.config import GatewayConfig
+from opensquilla.paths import media_root_from_config
 
 
 async def _session_id_for_download(session_manager: Any, session_key: str) -> str | None:
@@ -35,8 +36,7 @@ async def _session_id_for_download(session_manager: Any, session_key: str) -> st
 
 
 def _media_root_from_config(config: GatewayConfig) -> Path:
-    media_root = getattr(getattr(config, "attachments", None), "media_root", None)
-    return Path(media_root) if media_root else Path(".opensquilla") / "media"
+    return media_root_from_config(config)
 
 
 def register_artifact_routes(

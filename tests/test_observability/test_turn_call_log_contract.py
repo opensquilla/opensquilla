@@ -8,6 +8,8 @@ from typing import Any
 import pytest
 
 from opensquilla.engine.runtime import TurnRunner
+from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.diagnostics import DiagnosticsState
 from opensquilla.observability.decision_log import write_decision_entry
 from opensquilla.observability.turn_call_log import (
     TurnCallLogger,
@@ -94,6 +96,22 @@ def test_turn_call_log_enabled_values(monkeypatch) -> None:
     for value in ("1", "true", "yes", "on"):
         monkeypatch.setenv("OPENSQUILLA_TURN_CALL_LOG", value)
         assert is_turn_call_log_enabled() is True
+
+
+def test_turn_call_log_can_be_enabled_by_runtime_diagnostics(monkeypatch) -> None:
+    monkeypatch.delenv("OPENSQUILLA_TURN_CALL_LOG", raising=False)
+    state = DiagnosticsState.from_config(GatewayConfig())
+
+    state.set_runtime(enabled=True, raw=True)
+
+    assert is_turn_call_log_enabled(state) is True
+
+
+def test_standard_diagnostics_do_not_enable_raw_turn_call_log(monkeypatch) -> None:
+    monkeypatch.delenv("OPENSQUILLA_TURN_CALL_LOG", raising=False)
+    state = DiagnosticsState.from_config(GatewayConfig(diagnostics_enabled=True))
+
+    assert is_turn_call_log_enabled(state) is False
 
 
 def test_turn_call_log_directory_empty_specific_env_falls_back(monkeypatch, tmp_path) -> None:

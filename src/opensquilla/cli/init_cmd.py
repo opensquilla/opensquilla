@@ -10,6 +10,15 @@ from opensquilla.cli.ui import console
 from opensquilla.paths import default_opensquilla_home
 
 
+def _default_model_for_provider(provider: str) -> str:
+    normalized = provider.strip().lower()
+    if normalized == "openrouter":
+        return "deepseek/deepseek-v4-flash"
+    if normalized == "deepseek":
+        return "deepseek-v4-flash"
+    return "openai/gpt-4o-mini"
+
+
 def run_init() -> None:
     """Create a basic OpenSquilla home with env and config files."""
     home = default_opensquilla_home()
@@ -32,7 +41,7 @@ def run_init() -> None:
 
     default_model = questionary.text(
         "Default model:",
-        default="openai/gpt-4o-mini" if provider != "openrouter" else "deepseek/deepseek-v4-flash",
+        default=_default_model_for_provider(provider),
     ).ask()
     if not default_model:
         raise typer.Exit(1)

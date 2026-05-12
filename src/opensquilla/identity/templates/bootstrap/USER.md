@@ -3,6 +3,9 @@
 Use this file for stable user profile notes that are safe to include in private
 agent context.
 
+Put facts about the user here, not facts about the assistant or the current
+task.
+
 - Name:
 - What to call them:
 - Pronouns:

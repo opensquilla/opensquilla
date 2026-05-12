@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import os
-import socket
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import httpx
 import structlog
@@ -17,7 +15,8 @@ from cachetools import TTLCache
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.sandbox.integration import sandboxed
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import SSRFBlockedError, UnsupportedURLSchemeError
+from opensquilla.tools.ssrf import validate_http_url_for_fetch
+from opensquilla.tools.types import SSRFBlockedError
 
 log = structlog.get_logger(__name__)
 
@@ -54,20 +53,7 @@ _MAX_REDIRECTS = 5
 
 def _check_ssrf(url: str) -> None:
     """Raise ValueError if the URL resolves to a private/internal address."""
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise UnsupportedURLSchemeError("Only HTTP/HTTPS URLs are supported")
-    hostname = parsed.hostname
-    if not hostname:
-        raise ValueError("Invalid URL: no hostname")
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        raise ValueError(f"Cannot resolve hostname: {hostname}")
-    for info in infos:
-        addr = ipaddress.ip_address(info[4][0])
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-            raise SSRFBlockedError(f"Blocked: URL resolves to private/internal IP ({addr})")
+    validate_http_url_for_fetch(url)
 
 
 def _html_to_markdown(html: str) -> str:

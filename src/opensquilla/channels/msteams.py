@@ -35,7 +35,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
-from opensquilla.channels._util import ChannelAccessPolicy
+from opensquilla.channels._util import ChannelAccessPolicy, EventDedupeCache
 from opensquilla.channels.types import (
     ChannelHealth,
     IncomingMessage,
@@ -114,6 +114,11 @@ class MSTeamsChannel:
     _connected: bool = field(default=False, init=False, repr=False)
     _last_message_at: datetime | None = field(default=None, init=False, repr=False)
     _streams_unsupported: bool = field(default=False, init=False, repr=False)
+    _dedupe: EventDedupeCache = field(
+        default_factory=lambda: EventDedupeCache(max_size=10_000),
+        init=False,
+        repr=False,
+    )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -265,7 +270,7 @@ class MSTeamsChannel:
             self._bot_id = activity.recipient.id
 
         msg = self._activity_to_incoming(activity)
-        self._queue.put_nowait(msg)
+        self.enqueue(msg)
         log.info(
             "msteams.inbound_received",
             conversation_id=msg.metadata.get("conversation_id"),
@@ -354,6 +359,9 @@ class MSTeamsChannel:
     # ------------------------------------------------------------------
 
     def enqueue(self, message: IncomingMessage) -> None:
+        activity_id = str(message.metadata.get("activity_id") or "")
+        if activity_id and not self._dedupe.check_and_add(activity_id):
+            return
         self._queue.put_nowait(message)
 
     async def receive(self) -> IncomingMessage:

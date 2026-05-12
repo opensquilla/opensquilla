@@ -171,7 +171,14 @@ class ChannelManager:
 
         adapter = self._channels[name]
         startup_timeout = float(getattr(adapter, "startup_timeout_s", 30.0))
-        await asyncio.wait_for(adapter.start(), timeout=startup_timeout)
+        try:
+            await asyncio.wait_for(adapter.start(), timeout=startup_timeout)
+        except Exception:
+            stop = getattr(adapter, "stop", None)
+            if callable(stop):
+                with contextlib.suppress(Exception):
+                    await stop()
+            raise
         entry_agent_id = self._agent_ids.get(name, "main")
         key_builder = partial(self._build_session_key, name, agent_id=entry_agent_id)
         cap = _compute_channel_cap(self._config)

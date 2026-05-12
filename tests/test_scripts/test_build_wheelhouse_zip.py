@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 import os
 import stat
+import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -32,6 +34,27 @@ def load_script():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_build_wheel_retries_once_after_transient_uv_failure(monkeypatch, tmp_path: Path) -> None:
+    module = load_script()
+    wheel_path = tmp_path / "wheels" / "opensquilla-0.1.0-py3-none-any.whl"
+    calls = []
+
+    def fake_run(args, *, cwd, env):
+        calls.append((args, cwd, env))
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(4294967295, args)
+
+    monkeypatch.setattr(module, "run", fake_run)
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(module, "find_built_wheel", lambda wheel_dir: wheel_path)
+
+    assert (
+        module.build_wheel(tmp_path, tmp_path / "wheels", {"UV_CACHE_DIR": "cache"})
+        == wheel_path
+    )
+    assert len(calls) == 2
 
 
 def test_release_name_records_platform_python_profile() -> None:
@@ -117,6 +140,24 @@ def test_cross_platform_wheelhouse_uses_pip_download_target(tmp_path: Path) -> N
     assert str(wheel_path) + "[recommended]" in command
 
 
+def test_portable_recommended_wheelhouse_includes_feishu_extra(tmp_path: Path) -> None:
+    module = load_script()
+    wheel_path = tmp_path / "opensquilla-0.1.0-py3-none-any.whl"
+    package_dir = tmp_path / "packages"
+
+    command = module.build_wheelhouse_command(
+        package_dir,
+        wheel_path,
+        "recommended",
+        target_platform_tag="windows-x64",
+        python_major=3,
+        python_minor=12,
+        extra_extras=("feishu",),
+    )
+
+    assert str(wheel_path) + "[recommended,feishu]" in command
+
+
 def test_cross_platform_seed_wheel_commands_include_pure_python_sources(tmp_path: Path) -> None:
     module = load_script()
     package_dir = tmp_path / "packages"
@@ -155,6 +196,18 @@ def test_release_wheel_allows_router_provenance_markdown() -> None:
     assert pptx_reference not in violations
     assert unrelated_router_doc in violations
     assert unrelated_skill_reference in violations
+
+
+def test_pyproject_release_wheel_config_excludes_forbidden_skill_resources() -> None:
+    module = load_script()
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    wheel_config = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
+    excludes = set(wheel_config.get("exclude", []))
+    force_includes = wheel_config.get("force-include", {})
+
+    assert "src/opensquilla/skills/bundled/**/THIRD_PARTY_NOTICES.md" in excludes
+    assert "src/opensquilla/skills/bundled/**/references/*.md" in excludes
+    assert module.forbidden_release_wheel_entries(tuple(force_includes.values())) == []
 
 
 def test_required_router_assets_include_provenance_and_manifest() -> None:
@@ -222,6 +275,7 @@ def test_install_scripts_install_from_local_wheelhouse_and_run_onboarding() -> N
     assert "uv tool install" in sh_script
     assert '--find-links "${PACKAGE_DIR}"' in sh_script
     assert '"${PACKAGE_DIR}/opensquilla-0.1.0-py3-none-any.whl[recommended]"' in sh_script
+    assert '"${OPENSQUILLA_BIN}" onboard' in sh_script
     assert '"${OPENSQUILLA_BIN}" onboard --if-needed' in sh_script
     assert "opensquilla gateway run" in sh_script
 
@@ -231,6 +285,8 @@ def test_install_scripts_install_from_local_wheelhouse_and_run_onboarding() -> N
     assert "--find-links" in ps_script
     assert "opensquilla-0.1.0-py3-none-any.whl[recommended]" in ps_script
     assert "& $OpenSquillaBin onboard --if-needed" in ps_script
+    assert 'throw "OpenSquilla installation failed with exit code $LASTEXITCODE."' in ps_script
+    assert 'throw "OpenSquilla onboarding failed with exit code $LASTEXITCODE."' in ps_script
     assert "opensquilla gateway run" in ps_script
 
 
@@ -239,36 +295,140 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
 
     sh_script = module.render_start_sh()
     ps_script = module.render_start_ps1()
+    cmd_script = module.render_start_cmd()
 
     assert sh_script.startswith('#!/bin/sh\nif [ -z "${BASH_VERSION:-}" ]; then')
     assert 'exec /usr/bin/env bash "$0" "$@"' in sh_script
     assert 'PYTHON_BIN="${SCRIPT_DIR}/runtime/python/bin/python3"' in sh_script
-    assert 'VENV_DIR="${SCRIPT_DIR}/.venv"' in sh_script
+    assert "OPENSQUILLA_WHEEL=" in sh_script
+    assert "WHEEL_HASH=" in sh_script
+    assert 'VENV_DIR="${SCRIPT_DIR}/.venv-${WHEEL_HASH}"' in sh_script
+    assert "--without-pip" in sh_script
+    assert (
+        'export PATH="${SCRIPT_DIR}:${VENV_DIR}/bin:${SCRIPT_DIR}/runtime/python/bin:${PATH}"'
+        in sh_script
+    )
+    assert (
+        'PORTABLE_DATA_DIR="${OPENSQUILLA_PORTABLE_HOME:-${DATA_BASE}/OpenSquilla/'
+        'portable/${RELEASE_ID}}"' in sh_script
+    )
     assert 'if [[ -z "${OPENSQUILLA_GATEWAY_CONFIG_PATH:-}" ]]; then' in sh_script
     assert (
-        'export OPENSQUILLA_GATEWAY_CONFIG_PATH="${SCRIPT_DIR}/.opensquilla/config.toml"'
+        'export OPENSQUILLA_GATEWAY_CONFIG_PATH="${PORTABLE_DATA_DIR}/config.toml"'
         in sh_script
     )
     assert (
         'if [[ -z "${OPENSQUILLA_LLM_API_KEY:-}" && -n "${OPENROUTER_API_KEY:-}" ]]; then'
         in sh_script
     )
-    assert 'export OPENSQUILLA_STATE_DIR="${SCRIPT_DIR}/.opensquilla"' in sh_script
-    assert '"${PYTHON_BIN}" -m venv "${VENV_DIR}"' in sh_script
-    assert '"${VENV_DIR}/bin/python" -m pip install' in sh_script
-    assert '"${OPENSQUILLA_BIN}" onboard --if-needed' in sh_script
-    assert '"${OPENSQUILLA_BIN}" gateway run' in sh_script
+    assert 'export OPENSQUILLA_STATE_DIR="${PORTABLE_DATA_DIR}"' in sh_script
+    assert (
+        'export OPENSQUILLA_GATEWAY_STATE_DIR="${OPENSQUILLA_STATE_DIR}/state"'
+        in sh_script
+    )
+    assert (
+        'export OPENSQUILLA_GATEWAY_WORKSPACE_DIR="${OPENSQUILLA_STATE_DIR}/workspace"'
+        in sh_script
+    )
+    assert 'mkdir -p "${OPENSQUILLA_STATE_DIR}"' in sh_script
+    assert '"${PYTHON_BIN}" -m venv --without-pip "${VENV_DIR}"' in sh_script
+    assert "-m pip install" not in sh_script
+    assert "Installing OpenSquilla from bundled wheels..." in sh_script
+    assert 'OPENSQUILLA_MODULE=( "-m" "opensquilla.cli.main" )' in sh_script
+    assert (
+        'if [[ ! -f "${OPENSQUILLA_GATEWAY_CONFIG_PATH}" && '
+        '-n "${OPENROUTER_API_KEY:-}" ]]; then' in sh_script
+    )
+    assert (
+        '"${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" onboard \\\n'
+        "    --provider openrouter" in sh_script
+    )
+    assert "--api-key-env OPENROUTER_API_KEY" in sh_script
+    assert "--minimal" in sh_script
+    assert '"${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" onboard' in sh_script
+    assert '"${OPENSQUILLA_BIN}" onboard --if-needed' not in sh_script
+    assert "if [[ -t 1 ]]; then" in sh_script
+    assert 'exec "${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" gateway run' in sh_script
+    assert "else" in sh_script
+    assert 'CONSOLE_LOG="${OPENSQUILLA_STATE_DIR}/logs/gateway-console.log"' in sh_script
+    assert 'tee -a "${CONSOLE_LOG}"' in sh_script
+    assert sh_script.index("if [[ -t 1 ]]; then") < sh_script.index(
+        'tee -a "${CONSOLE_LOG}"'
+    )
+    assert sh_script.index(
+        'export OPENSQUILLA_GATEWAY_CONFIG_PATH="${PORTABLE_DATA_DIR}/config.toml"'
+    ) < sh_script.index('"${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" onboard')
 
     assert "$PythonBin = Join-Path $ScriptDir 'runtime\\python\\python.exe'" in ps_script
+    assert "$OpenSquillaWheel = Get-ChildItem -Path $PackageDir" in ps_script
+    assert "$WheelHashFull = -join" in ps_script
+    assert "$WheelHash = $WheelHashFull.Substring(0, 12).ToLowerInvariant()" in ps_script
+    assert "Get-FileHash" not in ps_script
+    assert "[System.IO.File]::OpenRead($OpenSquillaWheel.FullName)" in ps_script
+    assert "$Sha256.ComputeHash($WheelStream)" in ps_script
     assert "$VenvDir = Join-Path $VenvRoot $ReleaseId" in ps_script
-    assert "$env:LOCALAPPDATA" in ps_script
-    assert "$env:OPENSQUILLA_GATEWAY_CONFIG_PATH = Join-Path $ConfigDir 'config.toml'" in ps_script
+    assert '$env:PATH = "$VenvDir\\Scripts;$env:PATH"' in ps_script
+    assert 'Join-Path $VenvBase "OpenSquilla\\portable\\$ReleaseId"' in ps_script
+    assert (
+        "$env:OPENSQUILLA_GATEWAY_CONFIG_PATH = Join-Path $PortableDataDir 'config.toml'"
+        in ps_script
+    )
     assert "$env:OPENSQUILLA_LLM_API_KEY = $env:OPENROUTER_API_KEY" in ps_script
-    assert "$env:OPENSQUILLA_STATE_DIR = Join-Path $ScriptDir '.opensquilla'" in ps_script
-    assert "& $PythonBin -m venv $VenvDir" in ps_script
-    assert "& $VenvPython -m pip install" in ps_script
-    assert "& $OpenSquillaBin onboard --if-needed" in ps_script
-    assert "& $OpenSquillaBin gateway run" in ps_script
+    assert "$env:OPENSQUILLA_STATE_DIR = $PortableDataDir" in ps_script
+    assert (
+        "$env:OPENSQUILLA_GATEWAY_STATE_DIR = Join-Path "
+        "$env:OPENSQUILLA_STATE_DIR 'state'" in ps_script
+    )
+    assert (
+        "$env:OPENSQUILLA_GATEWAY_WORKSPACE_DIR = Join-Path "
+        "$env:OPENSQUILLA_STATE_DIR 'workspace'" in ps_script
+    )
+    assert "New-Item -ItemType Directory -Path $env:OPENSQUILLA_STATE_DIR -Force" in ps_script
+    assert "& $PythonBin -m venv --without-pip $VenvDir" in ps_script
+    assert "-m pip install" not in ps_script
+    assert "-c $WheelInstallScript" not in ps_script
+    assert "$WheelInstallScript | & $PythonBin - $PackageDir $SitePackages" in ps_script
+    assert "Installing OpenSquilla from bundled wheels..." in ps_script
+    assert '$OpenSquillaArgs = @("-m", "opensquilla.cli.main")' in ps_script
+    assert (
+        "if ((-not (Test-Path $env:OPENSQUILLA_GATEWAY_CONFIG_PATH)) "
+        "-and $env:OPENROUTER_API_KEY) {" in ps_script
+    )
+    assert "& $VenvPython @OpenSquillaArgs onboard `" in ps_script
+    assert "--provider openrouter `" in ps_script
+    assert "--api-key-env OPENROUTER_API_KEY `" in ps_script
+    assert "& $VenvPython @OpenSquillaArgs onboard" in ps_script
+    assert "& $OpenSquillaBin onboard --if-needed" not in ps_script
+    assert "OpenSquilla environment creation failed" in ps_script
+    assert "OpenSquilla installation failed" not in ps_script
+    assert 'throw "OpenSquilla onboarding failed with exit code $LASTEXITCODE."' in ps_script
+    assert "$OutputRedirected = [Console]::IsOutputRedirected" in ps_script
+    assert "if (-not $OutputRedirected) {" in ps_script
+    assert "& $VenvPython @OpenSquillaArgs gateway run" in ps_script
+    assert "$ConsoleLog = Join-Path $LogDir 'gateway-console.log'" in ps_script
+    assert "$PreviousErrorActionPreference = $ErrorActionPreference" in ps_script
+    assert "$ErrorActionPreference = \"Continue\"" in ps_script
+    assert "$_ -is [System.Management.Automation.ErrorRecord]" in ps_script
+    assert "Tee-Object -FilePath $ConsoleLog -Append" in ps_script
+    assert ps_script.index("if (-not $OutputRedirected) {") < ps_script.index(
+        "Tee-Object -FilePath $ConsoleLog -Append"
+    )
+    assert ps_script.index(
+        "$env:OPENSQUILLA_GATEWAY_CONFIG_PATH = Join-Path $PortableDataDir 'config.toml'"
+    ) < ps_script.index("& $VenvPython @OpenSquillaArgs onboard")
+    assert ps_script.index(
+        "$env:OPENSQUILLA_GATEWAY_STATE_DIR = Join-Path "
+        "$env:OPENSQUILLA_STATE_DIR 'state'"
+    ) < ps_script.index("& $VenvPython @OpenSquillaArgs onboard")
+
+    assert cmd_script == (
+        "@echo off\r\n"
+        "title OpenSquilla Gateway\r\n"
+        'cd /d "%~dp0"\r\n'
+        'set "OSQ_POWERSHELL=powershell.exe"\r\n'
+        'where pwsh.exe >nul 2>nul && set "OSQ_POWERSHELL=pwsh.exe"\r\n'
+        '"%OSQ_POWERSHELL%" -NoLogo -NoExit -ExecutionPolicy Bypass -File "%~dp0start.ps1"\r\n'
+    )
 
 
 def test_install_script_reexecs_under_bash_before_pipefail() -> None:
@@ -300,11 +460,25 @@ def test_render_readme_is_platform_specific_for_windows_portable() -> None:
         portable=True,
     )
 
-    assert "## Windows PowerShell" in readme
+    assert "## Windows" in readme
+    assert "# OpenSquilla 0.1.0 Portable Release" in readme
+    assert "Wheelhouse Release" not in readme
+    assert "Double-click `Start OpenSquilla.cmd`" in readme
     assert ".\\start.ps1" in readme
     assert "## macOS / Linux" not in readme
     assert "bash start.sh" not in readme
     assert "Python is bundled in this zip." in readme
+    assert "First run opens the configuration wizard" in readme
+    assert "The recommended portable package includes Feishu websocket support." in readme
+    assert "OPENROUTER_API_KEY" in readme
+    assert "the launcher writes an OpenRouter env-reference config" in readme
+    assert "Later runs open the wizard again" in readme
+    assert "skip setup when it is complete" not in readme
+    assert "do not install a global `opensquilla` command" in readme
+    assert (
+        "Config, workspace, logs, memory, and runtime state use the normal "
+        "user-level OpenSquilla directory." in readme
+    )
 
 
 def test_render_readme_is_platform_specific_for_macos_portable() -> None:
@@ -320,10 +494,22 @@ def test_render_readme_is_platform_specific_for_macos_portable() -> None:
     )
 
     assert "## macOS / Linux" in readme
+    assert "# OpenSquilla 0.1.0 Portable Release" in readme
+    assert "Wheelhouse Release" not in readme
     assert "bash start.sh" in readme
     assert "## Windows PowerShell" not in readme
     assert ".\\start.ps1" not in readme
     assert "Python is bundled in this zip." in readme
+    assert "First run opens the configuration wizard" in readme
+    assert "The recommended portable package includes Feishu websocket support." in readme
+    assert "Later runs open the wizard again" in readme
+    assert "skip setup when it is complete" not in readme
+    assert "do not install a global `opensquilla` command" in readme
+    assert (
+        "Config, workspace, logs, memory, and runtime state use the normal "
+        "user-level OpenSquilla directory." in readme
+    )
+    assert ".opensquilla/config.toml" not in readme
 
 
 def test_prepare_release_tree_writes_user_surface_and_manifest(tmp_path: Path) -> None:
@@ -378,6 +564,9 @@ def test_prepare_portable_release_tree_includes_runtime_and_start_scripts(tmp_pa
     runtime_root = tmp_path / "runtime"
     (runtime_root / "bin").mkdir(parents=True)
     (runtime_root / "bin" / "python3").write_text("python", encoding="utf-8")
+    (runtime_root / "Lib" / "__pycache__").mkdir(parents=True)
+    (runtime_root / "Lib" / "module.py").write_text("print('ok')\n", encoding="utf-8")
+    (runtime_root / "Lib" / "__pycache__" / "module.cpython-312.pyc").write_bytes(b"cache")
     wheel_path.write_bytes(b"wheel")
 
     module.prepare_release_tree(
@@ -396,8 +585,15 @@ def test_prepare_portable_release_tree_includes_runtime_and_start_scripts(tmp_pa
     )
 
     assert (release_root / "runtime" / "python" / "bin" / "python3").is_file()
+    assert (release_root / "runtime" / "python" / "Lib" / "module.py").is_file()
+    assert not (release_root / "runtime" / "python" / "Lib" / "__pycache__").exists()
     assert (release_root / "start.sh").is_file()
     assert (release_root / "start.ps1").is_file()
+    assert "opensquilla.cli.main" in (release_root / "start.sh").read_text(encoding="utf-8")
+    assert "opensquilla.cli.main" in (release_root / "start.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert not (release_root / "Start OpenSquilla.cmd").exists()
     assert (release_root / "LICENSE").is_file()
     assert (release_root / "THIRD_PARTY_NOTICES.md").is_file()
     assert not (release_root / "install.sh").exists()
@@ -407,6 +603,76 @@ def test_prepare_portable_release_tree_includes_runtime_and_start_scripts(tmp_pa
     assert '"portable": true' in manifest
     assert '"runtime_release": "20260414"' in manifest
     assert "install_only_stripped.tar.gz" in manifest
+
+
+def test_prepare_windows_portable_release_tree_includes_double_click_launcher(
+    tmp_path: Path,
+) -> None:
+    module = load_script()
+    release_root = tmp_path / "OpenSquilla-0.1.0-windows-x64-py312-recommended-portable"
+    wheel_path = tmp_path / "opensquilla-0.1.0-py3-none-any.whl"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    (runtime_root / "python.exe").write_text("python", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel")
+
+    module.prepare_release_tree(
+        release_root,
+        wheel_path,
+        app_version="0.1.0",
+        profile="recommended",
+        platform_tag="windows-x64",
+        python_major=3,
+        python_minor=12,
+        include_router_assets=True,
+        portable=True,
+        runtime_release="20260414",
+        runtime_asset="cpython-3.12.13+20260414-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        runtime_root=runtime_root,
+    )
+
+    launcher = release_root / "Start OpenSquilla.cmd"
+    assert launcher.is_file()
+    assert launcher.read_bytes() == module.render_start_cmd().encode("utf-8")
+    cli = release_root / "opensquilla.cmd"
+    assert cli.is_file()
+    cli_text = cli.read_text(encoding="utf-8")
+    assert "start.ps1\" -Cli %*" in cli_text
+    shell = release_root / "OpenSquilla Shell.cmd"
+    assert shell.is_file()
+    shell_text = shell.read_text(encoding="utf-8")
+    assert "function global:opensquilla" in shell_text
+    assert "opensquilla.cmd" in shell_text
+    readme = (release_root / "README.md").read_text(encoding="utf-8")
+    assert "Double-click `Start OpenSquilla.cmd`" in readme
+    assert "Double-click `OpenSquilla Shell.cmd`" in readme
+    assert ".\\opensquilla.cmd onboard" in readme
+    assert "Closing the terminal stops the gateway." in readme
+
+
+def test_install_portable_wheelhouse_preinstalls_into_bundled_python(
+    tmp_path: Path,
+) -> None:
+    module = load_script()
+    release_root = tmp_path / "release"
+    package_dir = release_root / "packages"
+    site_packages = release_root / "runtime" / "python" / "Lib" / "site-packages"
+    package_dir.mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    wheel_path = package_dir / "demo-0.1.0-py3-none-any.whl"
+    with ZipFile(wheel_path, "w") as wheel:
+        wheel.writestr("demo_pkg/__init__.py", "VALUE = 1\n")
+        wheel.writestr("demo-0.1.0.dist-info/METADATA", "Name: demo\n")
+        wheel.writestr("demo-0.1.0.data/purelib/demo_extra.py", "EXTRA = 2\n")
+        wheel.writestr("demo-0.1.0.data/scripts/demo-script.py", "print('skip')\n")
+
+    module.install_portable_wheelhouse(release_root)
+
+    assert (site_packages / "demo_pkg" / "__init__.py").read_text(encoding="utf-8") == (
+        "VALUE = 1\n"
+    )
+    assert (site_packages / "demo_extra.py").read_text(encoding="utf-8") == "EXTRA = 2\n"
+    assert not (site_packages / "demo-script.py").exists()
 
 
 def test_create_zip_contains_release_directory_and_preserves_install_mode(tmp_path: Path) -> None:
@@ -463,6 +729,19 @@ def test_create_zip_preserves_runtime_executable_mode(tmp_path: Path) -> None:
     assert stat.S_IMODE(python_info.external_attr >> 16) & stat.S_IXUSR
 
 
+def test_create_zip_can_use_short_archive_root(tmp_path: Path) -> None:
+    module = load_script()
+    release_root = tmp_path / "OpenSquilla-0.1.0-windows-x64-py312-recommended-portable"
+    (release_root / "runtime" / "python").mkdir(parents=True)
+    (release_root / "runtime" / "python" / "python.exe").write_bytes(b"python")
+    zip_path = tmp_path / "release.zip"
+
+    module.create_zip(release_root, zip_path, archive_root="OpenSquilla-0.1.0")
+
+    with ZipFile(zip_path) as archive:
+        assert archive.namelist() == ["OpenSquilla-0.1.0/runtime/python/python.exe"]
+
+
 def test_write_sha256s_records_all_release_zips(tmp_path: Path) -> None:
     module = load_script()
     first = tmp_path / "OpenSquilla-0.1.0-linux-x64-py312-recommended-portable.zip"
@@ -480,19 +759,25 @@ def test_write_sha256s_records_all_release_zips(tmp_path: Path) -> None:
     assert checksum_path.read_text(encoding="utf-8").splitlines() == expected
 
 
-def test_release_workflow_builds_portable_and_wheelhouse_together() -> None:
+def test_release_workflow_publishes_only_windows_portable_zip() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "bundle_python_runtime:" not in workflow
     assert "platform_tag: windows-x64" in workflow
-    assert "platform_tag: macos-arm64" in workflow
-    assert "platform_tag: linux-x64" in workflow
-    assert "for mode in portable wheelhouse" in workflow
+    assert "platform_tag: macos-arm64" not in workflow
+    assert "platform_tag: linux-x64" not in workflow
+    assert "for mode in portable wheelhouse" not in workflow
     assert "--bundle-python-runtime" in workflow
+    assert "expected one portable zip" in workflow
+    assert "expected one Windows portable zip" in workflow
+    assert "manifest[\"portable\"] is True" in workflow
     assert "SHA256SUMS" in workflow
     assert "manifest.version" in workflow
     assert "GH_REPO: ${{ github.repository }}" in workflow
     assert "dist/*.zip dist/*.zip.sha256 dist/SHA256SUMS" in workflow
+    assert "zip_path.stem" not in workflow
+    assert "archive_roots =" in workflow
+    assert "root = archive_roots[0] + \"/\"" in workflow
 
 
 def test_release_workflow_publishes_from_version_tags() -> None:

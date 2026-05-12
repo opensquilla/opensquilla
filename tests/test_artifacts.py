@@ -41,6 +41,30 @@ def test_artifact_store_round_trips_metadata_and_bytes(tmp_path: Path) -> None:
     assert resolved_path == path
 
 
+def test_artifact_store_uses_short_material_paths_for_uuid_sessions(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path)
+    long_root = tmp_path / ("deep-root-" + ("x" * 80))
+    store = ArtifactStore(long_root)
+    session_id = "532d5065-abce-499f-97b0-bbf2a067d5ab"
+
+    ref = store.publish_bytes(
+        b"pptx",
+        session_id=session_id,
+        session_key="agent:main:webchat:default",
+        name="北京2027房价预测分析报告.pptx",
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        source="publish_artifact",
+    )
+
+    material_path = store.path_for(ref)
+    assert material_path.name == "data"
+    assert session_id not in str(material_path)
+    assert len(str(material_path)) < 260
+    resolved_ref, resolved_path = store.resolve_for_download(ref.id, session_id=session_id)
+    assert resolved_ref == ref
+    assert resolved_path == material_path
+
+
 def test_artifact_payload_omits_session_key_and_query_token(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
     ref = store.publish_bytes(
@@ -173,6 +197,135 @@ async def test_publish_artifact_tool_allows_workspace_file_only(tmp_path: Path) 
     assert {k: v for k, v in full_artifact.items() if k != "download_url"} == payload[
         "artifact"
     ]
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_tool_is_idempotent_for_existing_turn_artifact(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = workspace / "generated-image.png"
+    output.write_bytes(b"\x89PNG\r\n\x1a\nsame image")
+    ctx = ToolContext(
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:feishu:direct:u1",
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        first = json.loads(
+            await publish_artifact(
+                path="generated-image.png",
+                name="generated-image.png",
+                mime="image/png",
+            )
+        )
+        second = json.loads(
+            await publish_artifact(
+                path="generated-image.png",
+                name="OpenSquilla-Mascot.png",
+                mime="image/png",
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert first["status"] == "published"
+    assert second["status"] == "already_published"
+    assert second["artifact"]["id"] == first["artifact"]["id"]
+    assert second["artifact"]["name"] == "generated-image.png"
+    assert "already published" in second["note"]
+    assert len(ctx.published_artifacts) == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_tool_republishes_changed_bytes_at_same_path(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = workspace / "report.txt"
+    output.write_text("first", encoding="utf-8")
+    ctx = ToolContext(
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:webchat:session-1",
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        first = json.loads(await publish_artifact(path="report.txt", mime="text/plain"))
+        output.write_text("second", encoding="utf-8")
+        second = json.loads(await publish_artifact(path="report.txt", mime="text/plain"))
+    finally:
+        current_tool_context.reset(token)
+
+    assert first["status"] == "published"
+    assert second["status"] == "published"
+    assert second["artifact"]["id"] != first["artifact"]["id"]
+    assert len(ctx.published_artifacts) == 2
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_tool_reports_storage_write_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = workspace / "report.txt"
+    output.write_text("ready", encoding="utf-8")
+    ctx = ToolContext(
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:webchat:session-1",
+    )
+
+    def fail_publish_file(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("media temp path unavailable")
+
+    monkeypatch.setattr(ArtifactStore, "publish_file", fail_publish_file)
+    token = current_tool_context.set(ctx)
+    try:
+        with pytest.raises(ToolError, match="artifact storage path is unavailable"):
+            await publish_artifact(path="report.txt", name="final.txt", mime="text/plain")
+    finally:
+        current_tool_context.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_tool_missing_file_reports_workspace_candidates(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    reports = workspace / "reports"
+    reports.mkdir(parents=True)
+    candidate = reports / "AI Agent Comparison 2026.pptx"
+    candidate.write_bytes(b"pptx")
+    ctx = ToolContext(
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:webchat:session-1",
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        with pytest.raises(ToolError) as exc_info:
+            await publish_artifact(path="AI_Agent_Comparison_2026.pptx")
+    finally:
+        current_tool_context.reset(token)
+
+    message = str(exc_info.value)
+    assert "artifact file not found" in message
+    assert f"active workspace: {workspace.resolve()}" in message
+    assert "resolved path:" in message
+    assert "candidate files:" in message
+    assert "reports/AI Agent Comparison 2026.pptx" in message.replace("\\", "/")
 
 
 @pytest.mark.asyncio

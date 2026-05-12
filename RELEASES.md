@@ -2,17 +2,28 @@
 
 | Version | Tag | Date | Notes |
 |---|---|---|---|
-| 0.1.0-alpha.1 | v0.1.0-alpha.1 | 2026-05-06 | First public alpha |
+| 0.1.0rc1 | v0.1.0rc1 | 2026-05-12 | First public preview |
 
-## Alpha tag SOP
+`0.1.0rc1` publishes the Windows portable zip only. GitHub source archives
+remain available for code review and developer reference; source installs should
+use `git clone` plus Git LFS. Public wheelhouse zips, macOS portable zips, and
+Linux portable zips are intentionally not published for this preview.
+
+## Preview tag SOP
 
 1. Verify `git status` is clean.
-2. Update `CHANGELOG.md`: move entries from `[Unreleased]` to `[0.1.0-alpha.1] - <date>` section; reopen empty `[Unreleased]`.
-3. `git tag -a v0.1.0-alpha.1 -m "First public alpha"`
-4. `git push origin v0.1.0-alpha.1` (this triggers `.github/workflows/wheelhouse-release.yml`)
-5. Wait for wheelhouse workflow → review the draft GitHub Release → publish.
-6. For subsequent alphas: bump tag to `v0.1.0-alpha.2` etc.; `pyproject.toml` version stays `0.1.0`.
+2. Update `CHANGELOG.md`: move entries from `[Unreleased]` to `[0.1.0rc1] - <date>` section; reopen empty `[Unreleased]`.
+3. `git tag -a v0.1.0rc1 -m "OpenSquilla 0.1.0 Preview 1"`
+4. `git push origin v0.1.0rc1` (this triggers `.github/workflows/wheelhouse-release.yml`)
+5. Wait for the portable release workflow → review the draft GitHub Release.
+   Confirm it contains exactly the Windows portable zip, its `.sha256` file,
+   `SHA256SUMS`, and GitHub's source archives before
+   publishing.
+6. For subsequent previews: bump `pyproject.toml`, `uv.lock`, `CHANGELOG.md`, and the tag to `0.1.0rc2`, `v0.1.0rc2`, etc.
 
-## Why pyproject stays 0.1.0
+## Why the package version uses rc
 
-PEP 440 pre-release suffixes (`0.1.0a1`) cause `uv sync` and `pip install` to skip the package by default unless `--prerelease=allow` is passed. To keep the README install command (`uv sync --extra recommended`) working without flags, the project communicates alpha status via git tags and GitHub Release labels rather than the package version itself. The version will bump to `0.2.0` (or similar) when alpha exits.
+Release zips are distributed as built artifacts, so the package filename,
+manifest, zip name, and tag should describe the same preview build. PEP 440
+accepts `0.1.0rc1`, while the public GitHub Release title can use the friendlier
+name "OpenSquilla 0.1.0 Preview 1".

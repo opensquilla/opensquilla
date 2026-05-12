@@ -12,7 +12,7 @@ from opensquilla.memory.embedding import (
     OllamaEmbeddingProvider,
     OpenAIEmbeddingProvider,
 )
-from opensquilla.memory.embedding_resolver import resolve_memory_embedding
+from opensquilla.memory.embedding_resolver import local_bge_available, resolve_memory_embedding
 from opensquilla.memory.meta import MemoryIndexMeta
 from opensquilla.memory.store import LongTermMemoryStore
 
@@ -222,6 +222,29 @@ def test_resolver_auto_never_uses_llm_openrouter_key() -> None:
     decision = resolve_memory_embedding(cfg.memory, local_available=lambda *_: False)
     assert decision.effective_provider == "none"
     assert decision.reason == "local_unavailable"
+
+
+def test_local_bge_available_uses_tokenizers_not_transformers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    onnx_dir = tmp_path / "bge_onnx"
+    onnx_dir.mkdir()
+    (onnx_dir / "model.onnx").write_bytes(b"onnx")
+
+    def fake_find_spec(name: str):
+        if name in {"onnxruntime", "tokenizers"}:
+            return object()
+        if name == "transformers":
+            return None
+        raise AssertionError(name)
+
+    monkeypatch.setattr(
+        "opensquilla.memory.embedding_resolver.importlib.util.find_spec",
+        fake_find_spec,
+    )
+
+    assert local_bge_available("BAAI/bge-small-zh-v1.5", str(onnx_dir))
 
 
 def test_resolver_explicit_none_and_fts_only() -> None:

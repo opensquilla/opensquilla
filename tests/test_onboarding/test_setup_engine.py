@@ -103,6 +103,31 @@ def test_setup_engine_next_steps_do_not_include_secret(tmp_path):
     assert "openrouter" in text
 
 
+def test_setup_engine_image_generation_can_use_custom_env_reference(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_TEST_IMAGE_KEY", "sk-image-env")
+    target = tmp_path / "config.toml"
+    engine = SetupEngine(path=target)
+
+    engine.apply(
+        "image-generation",
+        {
+            "providerId": "openrouter",
+            "primary": "openrouter/google/gemini-3.1-flash-image-preview",
+            "apiKeyEnv": "OPENSQUILLA_TEST_IMAGE_KEY",
+        },
+    )
+    engine.persist()
+
+    data = tomllib.loads(target.read_text())
+    provider = data["image_generation"]["providers"]["openrouter"]
+    assert provider["api_key"] == ""
+    assert provider["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
+
+
 def test_setup_engine_catalog_includes_memory_embedding():
     engine = SetupEngine()
 

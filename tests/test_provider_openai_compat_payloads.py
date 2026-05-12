@@ -13,8 +13,10 @@ from opensquilla.provider.types import (
     ContentBlockToolResult,
     ContentBlockToolUse,
     DoneEvent,
+    ErrorEvent,
     Message,
     ModelCapabilities,
+    ProviderHeartbeatEvent,
     ToolDefinition,
     ToolInputSchema,
     ToolUseEndEvent,
@@ -58,6 +60,68 @@ def _patch_transport(monkeypatch: Any, captured: dict[str, Any]) -> None:
     monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
 
 
+def _patch_transport_body(monkeypatch: Any, captured: dict[str, Any], body: bytes) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = request.headers
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body,
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+
+
+def _patch_transport_response(
+    monkeypatch: Any,
+    captured: dict[str, Any],
+    response: httpx.Response,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = request.headers
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return response
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+
+
+def _patch_get_transport_response(
+    monkeypatch: Any,
+    captured: dict[str, Any],
+    response: httpx.Response,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = request.headers
+        return response
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+
+
 def _collect(provider: OpenAIProvider, cfg: ChatConfig) -> DoneEvent:
     async def _run() -> DoneEvent:
         done: DoneEvent | None = None
@@ -68,6 +132,172 @@ def _collect(provider: OpenAIProvider, cfg: ChatConfig) -> DoneEvent:
         return done
 
     return asyncio.run(_run())
+
+
+def test_openrouter_stream_timeout_emits_heartbeat_before_non_stream_fallback(
+    monkeypatch: Any,
+) -> None:
+    class TimeoutStream:
+        async def __aenter__(self) -> Any:
+            raise httpx.ReadTimeout("stream idle")
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+    class TimeoutClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> TimeoutClient:
+            return self
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+        def stream(self, *args: Any, **kwargs: Any) -> TimeoutStream:
+            return TimeoutStream()
+
+    class SlowFallbackProvider(OpenAIProvider):
+        async def _complete_non_stream(self, **kwargs: Any):
+            await asyncio.sleep(0.05)
+            yield ErrorEvent(message="fallback finished", code="timeout")
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", TimeoutClient)
+    provider = SlowFallbackProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-flash",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    async def _first_event() -> Any:
+        events = provider.chat(
+            [Message(role="user", content="hi")],
+            config=ChatConfig(timeout=1.0),
+        )
+        return await asyncio.wait_for(anext(events), timeout=0.02)
+
+    event = asyncio.run(_first_event())
+
+    assert isinstance(event, ProviderHeartbeatEvent)
+    assert event.phase == "llm_fallback"
+
+
+def test_openrouter_list_models_reports_openrouter_provider(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_get_transport_response(
+        monkeypatch,
+        captured,
+        httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "deepseek/deepseek-v4-flash",
+                        "name": "DeepSeek V4 Flash",
+                        "context_length": 128000,
+                        "top_provider": {"max_completion_tokens": 8192},
+                    }
+                ]
+            },
+            request=httpx.Request("GET", "https://openrouter.ai/api/v1/models"),
+        ),
+    )
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-flash",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    rows = asyncio.run(provider.list_models())
+
+    assert captured["url"] == "https://openrouter.ai/api/v1/models"
+    assert rows[0].provider == "openrouter"
+    assert rows[0].model_id == "deepseek/deepseek-v4-flash"
+
+
+def test_openrouter_http_error_names_provider_request(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport_response(
+        monkeypatch,
+        captured,
+        httpx.Response(
+            500,
+            content=b"Internal Server Error",
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+        ),
+    )
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-flash",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    events = _collect_events(provider, ChatConfig())
+
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "500"
+    assert error.message == "OpenRouter chat request failed (HTTP 500): Internal Server Error"
+
+
+def test_openrouter_deepseek_v4_returns_reasoning_content_from_details(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    chunks = [
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [
+                {
+                    "delta": {
+                        "reasoning_details": [
+                            {"type": "reasoning.text", "text": "I considered the request."}
+                        ],
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {"content": "ok"}, "finish_reason": None}],
+        },
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        },
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    body += b"data: [DONE]\n\n"
+    _patch_transport_body(monkeypatch, captured, body)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-flash",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+        provider_routing={"deepseek/deepseek-v4-flash": "deepseek"},
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_level=ThinkingLevel.HIGH,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="openrouter",
+        ),
+    )
+
+    done = _collect(provider, cfg)
+
+    assert captured["payload"]["provider"] == {
+        "order": ["deepseek"],
+        "allow_fallbacks": True,
+    }
+    assert captured["payload"]["reasoning"] == {"effort": "high"}
+    assert done.reasoning_content == "I considered the request."
 
 
 def _collect_events(
@@ -202,6 +432,321 @@ def test_deepseek_tool_replay_preserves_reasoning_content_in_payload(
         "tool_call_id": "call_lookup",
         "content": "cache is warm",
     }
+
+
+def test_deepseek_v4_tool_replay_adds_empty_reasoning_content_when_missing(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com",
+        provider_kind="deepseek",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(
+                    id="call_lookup",
+                    name="lookup",
+                    input={"q": "cache"},
+                )
+            ],
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="call_lookup",
+                    content="cache is warm",
+                )
+            ],
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="deepseek",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["messages"][0]["reasoning_content"] == ""
+
+
+def test_deepseek_v4_text_replay_adds_empty_reasoning_content_when_missing(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com",
+        provider_kind="deepseek",
+    )
+    messages = [
+        Message(role="assistant", content="Prior non-thinking assistant turn."),
+        Message(role="user", content="continue in thinking mode"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="deepseek",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["messages"][0] == {
+        "role": "assistant",
+        "content": "Prior non-thinking assistant turn.",
+        "reasoning_content": "",
+    }
+
+
+def test_deepseek_v4_non_thinking_replays_prior_reasoning_content(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com",
+        provider_kind="deepseek",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content="previous answer",
+            reasoning_content="prior thinking from earlier deepseek turn",
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=False,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="deepseek",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+    assert (
+        captured["payload"]["messages"][0]["reasoning_content"]
+        == "prior thinking from earlier deepseek turn"
+    )
+
+
+def test_deepseek_v4_replays_reasoning_content_without_catalog_capabilities(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com",
+        provider_kind="deepseek",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content="previous answer",
+            reasoning_content="prior thinking from direct deepseek",
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(thinking=True, model_capabilities=None)
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["thinking"] == {"type": "enabled"}
+    assert captured["payload"]["reasoning_effort"] == "high"
+    assert (
+        captured["payload"]["messages"][0]["reasoning_content"]
+        == "prior thinking from direct deepseek"
+    )
+
+
+def test_openrouter_reasoning_model_replays_reasoning_content_by_capability(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="anthropic/claude-sonnet-4.5",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content="previous answer",
+            reasoning_content="openrouter-native reasoning should be replayed",
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="openrouter",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert (
+        captured["payload"]["messages"][0]["reasoning_content"]
+        == "openrouter-native reasoning should be replayed"
+    )
+
+
+def test_non_deepseek_reasoning_model_does_not_replay_reasoning_content(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="gemini-2.5-pro",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        provider_kind="gemini",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content="previous answer",
+            reasoning_content="provider-internal reasoning must not be replayed",
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="gemini",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert "reasoning_content" not in captured["payload"]["messages"][0]
+
+
+def test_deepseek_non_v4_model_does_not_replay_reasoning_content(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/v1",
+        provider_kind="deepseek",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content="previous answer",
+            reasoning_content="must not be replayed for non-v4 direct DeepSeek",
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="deepseek",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert "reasoning_content" not in captured["payload"]["messages"][0]
+
+
+def test_deepseek_reasoning_format_without_deepseek_model_does_not_replay_reasoning_content(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="custom-reasoning-model",
+        base_url="https://api.deepseek.com/v1",
+        provider_kind="deepseek",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content="previous answer",
+            reasoning_content="must not be replayed for a non-DeepSeek model",
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="deepseek",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert "reasoning_content" not in captured["payload"]["messages"][0]
 
 
 def test_gemini_reasoning_uses_openai_compatible_reasoning_effort(monkeypatch: Any) -> None:

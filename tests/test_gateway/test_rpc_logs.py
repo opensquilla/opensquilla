@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.diagnostics import DiagnosticsState
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.rpc_logs import _handle_logs_status, _handle_logs_tail
 from opensquilla.observability.trace import TraceContext, TraceEvent, write_trace_event
@@ -43,13 +44,14 @@ async def test_logs_status_reports_raw_capture_disabled_by_default(monkeypatch) 
     result = await _handle_logs_status({}, RpcContext(conn_id="test", config=GatewayConfig()))
 
     assert result["raw_turn_call_log"]["enabled"] is False
+    assert result["raw_turn_call_log"]["source"] == "off"
     assert result["raw_turn_call_log"]["enable_env"]["set"] is False
     assert result["raw_turn_call_log"]["enable_env"]["truthy"] is False
     assert result["raw_turn_call_log"]["directory"]["source"] == "default"
-    assert result["diagnostics_enabled"] == {
-        "configured": False,
-        "controls_raw_turn_call": False,
-    }
+    assert result["diagnostics_enabled"]["configured"] is False
+    assert result["diagnostics_enabled"]["effective"] is False
+    assert result["diagnostics_enabled"]["detail"] == "off"
+    assert result["diagnostics_enabled"]["controls_raw_turn_call"] is False
 
 
 @pytest.mark.asyncio
@@ -58,13 +60,50 @@ async def test_logs_status_reports_truthy_and_falsy_raw_capture_env(monkeypatch)
         monkeypatch.setenv("OPENSQUILLA_TURN_CALL_LOG", value)
         result = await _handle_logs_status({}, RpcContext(conn_id="test", config=GatewayConfig()))
         assert result["raw_turn_call_log"]["enabled"] is True
+        assert result["raw_turn_call_log"]["source"] == "env"
         assert result["raw_turn_call_log"]["enable_env"]["truthy"] is True
 
     for value in ("0", "false", "no", "off", ""):
         monkeypatch.setenv("OPENSQUILLA_TURN_CALL_LOG", value)
         result = await _handle_logs_status({}, RpcContext(conn_id="test", config=GatewayConfig()))
         assert result["raw_turn_call_log"]["enabled"] is False
+        assert result["raw_turn_call_log"]["source"] == "off"
         assert result["raw_turn_call_log"]["enable_env"]["truthy"] is False
+
+
+@pytest.mark.asyncio
+async def test_logs_status_reports_runtime_raw_capture_source(monkeypatch) -> None:
+    monkeypatch.delenv("OPENSQUILLA_TURN_CALL_LOG", raising=False)
+    state = DiagnosticsState.from_config(GatewayConfig())
+    state.set_runtime(enabled=True, raw=True)
+
+    result = await _handle_logs_status(
+        {},
+        RpcContext(conn_id="test", config=GatewayConfig(), diagnostics_state=state),
+    )
+
+    assert result["raw_turn_call_log"]["enabled"] is True
+    assert result["raw_turn_call_log"]["source"] == "runtime"
+    assert result["diagnostics_enabled"]["effective"] is True
+    assert result["diagnostics_enabled"]["detail"] == "raw"
+
+
+@pytest.mark.asyncio
+async def test_logs_status_reports_env_source_when_env_and_runtime_raw_are_enabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_TURN_CALL_LOG", "1")
+    state = DiagnosticsState.from_config(GatewayConfig())
+    state.set_runtime(enabled=True, raw=True)
+
+    result = await _handle_logs_status(
+        {},
+        RpcContext(conn_id="test", config=GatewayConfig(), diagnostics_state=state),
+    )
+
+    assert result["raw_turn_call_log"]["enabled"] is True
+    assert result["raw_turn_call_log"]["source"] == "env"
+    assert result["diagnostics_enabled"]["raw_source"] == "env"
 
 
 @pytest.mark.asyncio
@@ -116,10 +155,10 @@ async def test_logs_status_reports_gateway_file_log_path_and_existence(
     assert result["gateway_file_log"]["exists"] is True
     assert result["gateway_file_log"]["active_tail_path"] == str(log_file)
     assert result["gateway_file_log"]["active_tail_path_exists"] is True
-    assert result["diagnostics_enabled"] == {
-        "configured": True,
-        "controls_raw_turn_call": False,
-    }
+    assert result["diagnostics_enabled"]["configured"] is True
+    assert result["diagnostics_enabled"]["effective"] is True
+    assert result["diagnostics_enabled"]["detail"] == "standard"
+    assert result["diagnostics_enabled"]["controls_raw_turn_call"] is False
 
 
 @pytest.mark.asyncio

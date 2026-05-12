@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from opensquilla.artifacts import (
@@ -15,6 +17,66 @@ from opensquilla.artifacts import (
 )
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
+
+_MAX_MISSING_FILE_CANDIDATES = 5
+_MAX_MISSING_FILE_SCAN = 2000
+
+
+def _normalized_filename(value: str) -> str:
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+def _artifact_candidate_paths(
+    workspace: Path,
+    requested: Path,
+    *,
+    limit: int = _MAX_MISSING_FILE_CANDIDATES,
+    max_scan: int = _MAX_MISSING_FILE_SCAN,
+) -> list[str]:
+    requested_name = requested.name
+    if not requested_name:
+        return []
+    requested_norm = _normalized_filename(requested_name)
+    requested_suffix = requested.suffix.lower()
+    scored: list[tuple[float, str]] = []
+    scanned = 0
+    for candidate in workspace.rglob("*"):
+        scanned += 1
+        if scanned > max_scan:
+            break
+        if not candidate.is_file():
+            continue
+        candidate_name = candidate.name
+        candidate_norm = _normalized_filename(candidate_name)
+        score = 0.0
+        if candidate_name == requested_name:
+            score = 1.0
+        elif candidate_name.lower() == requested_name.lower():
+            score = 0.95
+        elif requested_norm and candidate_norm == requested_norm:
+            score = 0.9
+        elif requested_suffix and candidate.suffix.lower() == requested_suffix:
+            score = SequenceMatcher(None, requested_norm, candidate_norm).ratio()
+        if score < 0.55:
+            continue
+        rel = candidate.relative_to(workspace).as_posix()
+        scored.append((score, rel))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [path for _, path in scored[:limit]]
+
+
+def _missing_artifact_error(path: str, workspace: Path, target: Path) -> ToolError:
+    candidates = _artifact_candidate_paths(workspace, Path(path))
+    details = [
+        f"artifact file not found: {path}",
+        f"active workspace: {workspace}",
+        f"resolved path: {target}",
+    ]
+    if candidates:
+        details.append("candidate files: " + ", ".join(candidates))
+    else:
+        details.append("candidate files: none found")
+    return ToolError(". ".join(details))
 
 
 @tool(
@@ -64,9 +126,27 @@ async def publish_artifact(
     except ValueError as exc:
         raise ToolError(f"artifact path is outside workspace: {path}") from exc
     if not target.exists():
-        raise ToolError(f"artifact file not found: {path}")
+        raise _missing_artifact_error(path, workspace, target)
     if not target.is_file():
         raise ToolError(f"artifact path is not a file: {path}")
+
+    target_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    for published in reversed(ctx.published_artifacts):
+        if published.get("sha256") != target_sha256:
+            continue
+        llm_artifact = {k: v for k, v in published.items() if k != "download_url"}
+        return json.dumps(
+            {
+                "status": "already_published",
+                "artifact": llm_artifact,
+                "note": (
+                    "This file is already published for the user in this turn. "
+                    "Do not call publish_artifact again for the same file; "
+                    "just confirm it is ready."
+                ),
+            },
+            ensure_ascii=False,
+        )
 
     artifact_mime = (mime or mimetypes.guess_type(name or target.name)[0] or "").strip()
     if not artifact_mime:
@@ -90,6 +170,10 @@ async def publish_artifact(
         )
     except ArtifactBudgetError as exc:
         raise ToolError(str(exc)) from exc
+    except FileNotFoundError as exc:
+        if not target.exists():
+            raise _missing_artifact_error(path, workspace, target) from exc
+        raise ToolError(f"artifact storage path is unavailable: {exc}") from exc
 
     payload = artifact_payload(ref)
     ctx.published_artifacts.append(payload)

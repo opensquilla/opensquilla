@@ -124,8 +124,10 @@ async def test_config_patch_runtime_env_key_is_not_persisted(monkeypatch, tmp_pa
 
     await _handle_config_patch({"patch": {"llm": {"provider": "deepseek"}}}, ctx)
 
+    assert ctx.config.squilla_router.tier_profile == "deepseek"
     assert ctx.config.llm.api_key == "deepseek-key"
     assert selector.synced.api_key == "deepseek-key"
     assert "api_key" not in ctx.config.to_toml_dict()["llm"]
     persisted = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert persisted["squilla_router"]["tier_profile"] == "deepseek"
     assert "api_key" not in persisted["llm"]

@@ -91,6 +91,7 @@ METHOD_SCOPES: dict[str, str] = {
     "last-heartbeat": READ_SCOPE,
     "system-presence": READ_SCOPE,
     "doctor.memory.status": READ_SCOPE,
+    "diagnostics.status": READ_SCOPE,
     "logs.status": READ_SCOPE,
     "logs.tail": READ_SCOPE,
     "logs.trace": READ_SCOPE,
@@ -171,6 +172,7 @@ METHOD_SCOPES: dict[str, str] = {
     "skills.deps.install": ADMIN_SCOPE,
     "channels.logout": ADMIN_SCOPE,
     "channels.restart": ADMIN_SCOPE,  # OpenSquilla-only.
+    "diagnostics.set": ADMIN_SCOPE,
     "cron.add": ADMIN_SCOPE,
     "cron.create": ADMIN_SCOPE,  # OpenSquilla-only alias for cron.add.
     "cron.update": ADMIN_SCOPE,

@@ -341,6 +341,7 @@ async def _image_generation_configure(params: Any, ctx: RpcContext) -> dict[str,
         provider_id=provider_id,
         primary=params.get("primary", "") if isinstance(params, dict) else "",
         api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
+        api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
         base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
         enabled=params.get("enabled", True) if isinstance(params, dict) else True,
     )

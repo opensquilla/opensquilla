@@ -76,7 +76,7 @@ def local_bge_available(model: str, onnx_dir: str | None = None) -> bool:
         and resolved.is_dir()
         and any(resolved.glob("*.onnx"))
         and importlib.util.find_spec("onnxruntime") is not None
-        and importlib.util.find_spec("transformers") is not None
+        and importlib.util.find_spec("tokenizers") is not None
     )
 
 

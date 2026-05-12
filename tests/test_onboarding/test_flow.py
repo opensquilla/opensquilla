@@ -2,7 +2,69 @@
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
+
+
+def test_wait_for_setup_start_flushes_visible_prompt_before_accepting_enter(monkeypatch):
+    from opensquilla.onboarding import flow
+
+    events: list[str] = []
+
+    class _Console:
+        class _File:
+            def flush(self):
+                events.append("flush")
+
+        file = _File()
+
+        def print(self, message: str):
+            assert "Press Enter to start setup" in message
+            events.append("print")
+
+    monkeypatch.setattr(flow, "console", _Console())
+    monkeypatch.setattr(flow, "_flush_stdin_typeahead", lambda: events.append("clear"))
+    monkeypatch.setattr("builtins.input", lambda: events.append("input"))
+
+    flow._wait_for_setup_start()
+
+    assert events == ["print", "flush", "clear", "input"]
+
+
+def test_flush_stdin_typeahead_uses_msvcrt_on_windows(monkeypatch):
+    from opensquilla.onboarding import flow
+
+    drained: list[str] = []
+    fake_msvcrt = types.SimpleNamespace(
+        kbhit=lambda: len(drained) < 2,
+        getwch=lambda: drained.append("key"),
+    )
+
+    monkeypatch.setattr(flow.os, "name", "nt")
+    monkeypatch.setitem(__import__("sys").modules, "msvcrt", fake_msvcrt)
+
+    flow._flush_stdin_typeahead()
+
+    assert drained == ["key", "key"]
+
+
+def test_flush_stdin_typeahead_uses_termios_on_unix_tty(monkeypatch):
+    from opensquilla.onboarding import flow
+
+    calls: list[object] = []
+    fake_stdin = types.SimpleNamespace(isatty=lambda: True)
+    fake_termios = types.SimpleNamespace(
+        TCIFLUSH=123,
+        tcflush=lambda stream, selector: calls.extend([stream, selector]),
+    )
+
+    monkeypatch.setattr(flow.os, "name", "posix")
+    monkeypatch.setattr(flow.sys, "stdin", fake_stdin)
+    monkeypatch.setitem(__import__("sys").modules, "termios", fake_termios)
+
+    flow._flush_stdin_typeahead()
+
+    assert calls == [fake_stdin, 123]
 
 
 def test_interactive_provider_choice_offers_only_verified_supported_providers():
@@ -15,12 +77,15 @@ def test_interactive_provider_choice_offers_only_verified_supported_providers():
             return "openrouter (OpenRouter)"
 
     class _Questionary:
-        def select(self, _message: str, *, choices: list[str]) -> _Question:
+        def select(self, _message: str, *, choices: list[str], default: str) -> _Question:
             captured["choices"] = choices
+            captured["default"] = default
             return _Question()
 
     _ask_provider_choice(_Questionary(), OnboardOptions())
 
+    assert captured["choices"][0] == "openrouter (OpenRouter)"
+    assert captured["default"] == "openrouter (OpenRouter)"
     offered = {choice.split(" ")[0] for choice in captured["choices"]}
     assert offered == {
         "openrouter",
@@ -57,7 +122,7 @@ def test_interactive_router_supported_provider_does_not_prompt_for_model():
     assert answers["api_key_env"] == "OPENROUTER_API_KEY"
 
 
-def test_interactive_provider_fields_default_to_env_key_reference(monkeypatch):
+def test_interactive_provider_fields_default_to_pasted_api_key(monkeypatch):
     from opensquilla.onboarding.flow import OnboardOptions, _ask_provider_fields
     from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 
@@ -71,20 +136,24 @@ def test_interactive_provider_fields_default_to_env_key_reference(monkeypatch):
             return self.value
 
     class _Questionary:
-        def confirm(self, message: str, **_kwargs):
-            assert message == (
-                "Use OPENROUTER_API_KEY instead of storing the API key in config? "
-                "Not set now; set it before starting the gateway."
-            )
-            return _Answer(True)
+        def select(self, message: str, **kwargs):
+            assert message == "LLM API key source"
+            assert kwargs.get("choices") == [
+                "Paste API key now",
+                "Use environment variable OPENROUTER_API_KEY",
+            ]
+            assert kwargs.get("default") == "Paste API key now"
+            return _Answer("Paste API key now")
 
-        def text(self, message: str, **kwargs):
-            assert message == "API key environment variable"
-            assert kwargs.get("default") == "OPENROUTER_API_KEY"
-            return _Answer("OPENROUTER_API_KEY")
+        def text(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected text prompt: {message}")
 
         def password(self, message: str, **_kwargs):
-            raise AssertionError(f"unexpected password prompt: {message}")
+            assert message == "API key"
+            return _Answer("sk-live")
+
+        def confirm(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected confirm prompt: {message}")
 
     answers = _ask_provider_fields(
         _Questionary(),
@@ -93,8 +162,8 @@ def test_interactive_provider_fields_default_to_env_key_reference(monkeypatch):
     )
 
     assert answers["model"] == ""
-    assert answers["api_key"] == ""
-    assert answers["api_key_env"] == "OPENROUTER_API_KEY"
+    assert answers["api_key"] == "sk-live"
+    assert answers["api_key_env"] == ""
 
 
 def test_interactive_provider_fields_explains_detected_env_key(monkeypatch):
@@ -111,13 +180,14 @@ def test_interactive_provider_fields_explains_detected_env_key(monkeypatch):
             return self.value
 
     class _Questionary:
-        def confirm(self, message: str, **kwargs):
-            assert message == (
-                "Use OPENROUTER_API_KEY from this shell instead of storing the API key "
-                "in config? Detected now."
-            )
-            assert kwargs.get("default") is True
-            return _Answer(True)
+        def select(self, message: str, **kwargs):
+            assert message == "LLM API key source"
+            assert kwargs.get("choices") == [
+                "Paste API key now",
+                "Use environment variable OPENROUTER_API_KEY (detected)",
+            ]
+            assert kwargs.get("default") == "Paste API key now"
+            return _Answer("Use environment variable OPENROUTER_API_KEY (detected)")
 
         def password(self, message: str, **_kwargs):
             raise AssertionError(f"unexpected password prompt: {message}")
@@ -132,6 +202,43 @@ def test_interactive_provider_fields_explains_detected_env_key(monkeypatch):
     assert answers["api_key_env"] == "OPENROUTER_API_KEY"
 
 
+def test_interactive_provider_fields_requires_pasted_api_key(monkeypatch):
+    from opensquilla.onboarding.flow import OnboardOptions, _ask_provider_fields
+    from opensquilla.onboarding.provider_specs import get_provider_setup_spec
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary:
+        def select(self, message: str, **kwargs):
+            assert message == "LLM API key source"
+            assert kwargs.get("default") == "Paste API key now"
+            return _Answer("Paste API key now")
+
+        def password(self, message: str, **kwargs):
+            assert message == "API key"
+            validate = kwargs.get("validate")
+            assert validate is not None
+            assert validate("") is not True
+            assert validate("sk-live") is True
+            return _Answer("sk-live")
+
+    answers = _ask_provider_fields(
+        _Questionary(),
+        get_provider_setup_spec("openrouter"),
+        OnboardOptions(),
+    )
+
+    assert answers["api_key"] == "sk-live"
+    assert answers["api_key_env"] == ""
+
+
 def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, monkeypatch):
     import sys
     import types
@@ -142,6 +249,7 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(flow, "_is_tty", lambda: True)
+    monkeypatch.setattr(flow, "_wait_for_setup_start", lambda: calls.append("start gate"))
 
     calls: list[str] = []
 
@@ -157,6 +265,9 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
             calls.append(message)
             if message == "LLM provider":
                 return _Answer("openrouter (OpenRouter)")
+            if message == "LLM API key source":
+                assert kwargs.get("default") == "Paste API key now"
+                return _Answer("Use environment variable OPENROUTER_API_KEY")
             if message == "Router mode":
                 assert kwargs.get("choices") == ["SquillaRouter", "Disabled"]
                 assert kwargs.get("default") == "SquillaRouter"
@@ -174,9 +285,6 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
 
         def text(self, message: str, **kwargs):
             calls.append(message)
-            if message == "API key environment variable":
-                assert kwargs.get("default") == "OPENROUTER_API_KEY"
-                return _Answer("OPENROUTER_API_KEY")
             raise AssertionError(f"unexpected text prompt: {message}")
 
         def password(self, message: str, **_kwargs):
@@ -184,11 +292,6 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
 
         def confirm(self, message: str, **_kwargs):
             calls.append(message)
-            if message == (
-                "Use OPENROUTER_API_KEY instead of storing the API key in config? "
-                "Not set now; set it before starting the gateway."
-            ):
-                return _Answer(True)
             if message == "Edit router tier models now?":
                 return _Answer(False)
             if message in {
@@ -203,6 +306,8 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
 
     flow.run_interactive_onboard(flow.OnboardOptions())
 
+    assert calls[0] == "start gate"
+    assert calls[1] == "LLM provider"
     assert calls.index("Router mode") < calls.index("Configure a messaging channel now?")
     data = target.read_text()
     assert 'api_key = ""' in data
@@ -222,6 +327,7 @@ def test_interactive_onboard_can_enable_image_generation(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-image-env")
     monkeypatch.setattr(flow, "_is_tty", lambda: True)
+    monkeypatch.setattr(flow, "_wait_for_setup_start", lambda: None)
 
     calls: list[str] = []
 
@@ -237,6 +343,9 @@ def test_interactive_onboard_can_enable_image_generation(tmp_path, monkeypatch):
             calls.append(message)
             if message == "LLM provider":
                 return _Answer("openrouter (OpenRouter)")
+            if message == "LLM API key source":
+                assert kwargs.get("default") == "Paste API key now"
+                return _Answer("Paste API key now")
             if message == "Router mode":
                 return _Answer("SquillaRouter")
             if message == "Default text model":
@@ -246,7 +355,9 @@ def test_interactive_onboard_can_enable_image_generation(tmp_path, monkeypatch):
                 return _Answer("openrouter (OpenRouter Images)")
             if message == "Image API key source":
                 assert "Use environment variable OPENROUTER_API_KEY" in kwargs.get("choices", [])
-                return _Answer("Use environment variable OPENROUTER_API_KEY")
+                assert "Reuse matching LLM provider key" in kwargs.get("choices", [])
+                assert kwargs.get("default") == "Reuse matching LLM provider key"
+                return _Answer("Reuse matching LLM provider key")
             raise AssertionError(f"unexpected select prompt: {message}")
 
         def text(self, message: str, **kwargs):
@@ -258,15 +369,12 @@ def test_interactive_onboard_can_enable_image_generation(tmp_path, monkeypatch):
             raise AssertionError(f"unexpected text prompt: {message}")
 
         def password(self, message: str, **_kwargs):
+            if message == "API key":
+                return _Answer("sk-llm")
             raise AssertionError(f"unexpected password prompt: {message}")
 
         def confirm(self, message: str, **_kwargs):
             calls.append(message)
-            if message == (
-                "Use OPENROUTER_API_KEY from this shell instead of storing the API key "
-                "in config? Detected now."
-            ):
-                return _Answer(True)
             if message == "Edit router tier models now?":
                 return _Answer(False)
             if message in {
@@ -458,6 +566,8 @@ def test_interactive_feishu_websocket_prompts_only_core_fields(
     out = capsys.readouterr().out
     normalized_out = " ".join(out.split())
     assert "Feishu websocket mode requires the optional feishu extra" in out
+    assert "Portable zip:" in out
+    assert "latest recommended portable package" in out
     assert "pwsh -ExecutionPolicy Bypass -File install.ps1 -Extras feishu" in normalized_out
     assert "OPENSQUILLA_INSTALL_EXTRAS=feishu bash install.sh" in normalized_out
     assert "uv sync --extra recommended --extra feishu" in normalized_out
@@ -483,12 +593,15 @@ def test_channel_saved_output_separates_configured_from_connected(capsys):
 def test_readme_distinguishes_recommended_profile_from_channel_extras() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "| New user | [Release package](#release-package-coming-soon) | Coming soon |" in readme
+    assert (
+        "| New user | [Preview release package](#preview-release-package) | Recommended |"
+    ) in readme
     assert (
         "| Command-line user | [Install from source](#install-from-source) | Available now |"
     ) in readme
     assert "| Developer | [Develop from source](#develop-from-source) | Available now |" in readme
-    assert "Public release packages are not published yet." in readme
+    assert "Use this path if you want to try OpenSquilla as a local app" in readme
+    assert "The recommended portable zip includes Feishu websocket support by default." in readme
     assert "`recommended` is the\nnormal runtime profile" in readme
     assert "Messaging channel adapters are opt-in extras." in readme
     assert "Feishu is shown only\nas an example channel adapter" in readme
@@ -499,7 +612,7 @@ def test_readme_distinguishes_recommended_profile_from_channel_extras() -> None:
     assert "where.exe opensquilla" in readme
 
 
-def test_search_provider_key_defaults_to_env_reference(monkeypatch):
+def test_search_provider_key_defaults_to_pasted_key_with_brave_hint(monkeypatch):
     from opensquilla.onboarding.flow import _ask_search_fields
     from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
 
@@ -514,18 +627,121 @@ def test_search_provider_key_defaults_to_env_reference(monkeypatch):
 
     class _Questionary:
         def select(self, message: str, **kwargs):
-            if message == "Search API key source":
-                assert kwargs.get("choices") == [
-                    "Use environment variable BRAVE_SEARCH_API_KEY",
-                    "Paste API key now",
-                ]
-                assert kwargs.get("default") == "Use environment variable BRAVE_SEARCH_API_KEY"
-                return _Answer("Use environment variable BRAVE_SEARCH_API_KEY")
             if message == "Search fallback policy":
                 return _Answer(kwargs.get("default"))
             raise AssertionError(f"unexpected select prompt: {message}")
 
         def confirm(self, message: str, **kwargs):
+            if message == "Use environment proxy for search?":
+                return _Answer(False)
+            if message == (
+                "Enable search diagnostics? Include provider attempt/error details "
+                "for troubleshooting?"
+            ):
+                return _Answer(False)
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            assert message == (
+                "Brave Search API key "
+                "(create one at https://api-dashboard.search.brave.com/app/keys)"
+            )
+            return _Answer("brave-secret")
+
+        def text(self, message: str, **kwargs):
+            if message == "Max search results":
+                return _Answer(kwargs.get("default"))
+            if message == "Search HTTP proxy":
+                return _Answer("")
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+    answers = _ask_search_fields(
+        _Questionary(),
+        get_search_provider_setup_spec("brave"),
+    )
+
+    assert answers["api_key"] == "brave-secret"
+    assert answers["api_key_env"] == ""
+
+
+def test_search_provider_detected_env_still_defaults_to_manual_key(monkeypatch):
+    from opensquilla.onboarding.flow import _ask_search_fields
+    from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
+
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "from-env")
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary:
+        def select(self, message: str, **kwargs):
+            if message == "Search fallback policy":
+                return _Answer(kwargs.get("default"))
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def confirm(self, message: str, **kwargs):
+            if message == "Use BRAVE_SEARCH_API_KEY from environment?":
+                assert kwargs.get("default") is False
+                return _Answer(False)
+            if message == "Use environment proxy for search?":
+                return _Answer(False)
+            if message == (
+                "Enable search diagnostics? Include provider attempt/error details "
+                "for troubleshooting?"
+            ):
+                return _Answer(False)
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            assert message == (
+                "Brave Search API key "
+                "(create one at https://api-dashboard.search.brave.com/app/keys)"
+            )
+            return _Answer("manual-brave-secret")
+
+        def text(self, message: str, **kwargs):
+            if message == "Max search results":
+                return _Answer(kwargs.get("default"))
+            if message == "Search HTTP proxy":
+                return _Answer("")
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+    answers = _ask_search_fields(
+        _Questionary(),
+        get_search_provider_setup_spec("brave"),
+    )
+
+    assert answers["api_key"] == "manual-brave-secret"
+    assert answers["api_key_env"] == ""
+
+
+def test_search_provider_can_use_detected_env_when_requested(monkeypatch):
+    from opensquilla.onboarding.flow import _ask_search_fields
+    from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
+
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "from-env")
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary:
+        def select(self, message: str, **kwargs):
+            if message == "Search fallback policy":
+                return _Answer(kwargs.get("default"))
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def confirm(self, message: str, **kwargs):
+            if message == "Use BRAVE_SEARCH_API_KEY from environment?":
+                assert kwargs.get("default") is False
+                return _Answer(True)
             if message == "Use environment proxy for search?":
                 return _Answer(False)
             if message == (
@@ -569,8 +785,6 @@ def test_search_fallback_choice_names_duckduckgo_and_persists_value(monkeypatch)
 
     class _Questionary:
         def select(self, message: str, **kwargs):
-            if message == "Search API key source":
-                return _Answer("Use environment variable BRAVE_SEARCH_API_KEY")
             if message == "Search fallback policy":
                 choices = kwargs.get("choices")
                 assert choices == [
@@ -592,7 +806,7 @@ def test_search_fallback_choice_names_duckduckgo_and_persists_value(monkeypatch)
             raise AssertionError(f"unexpected confirm prompt: {message}")
 
         def password(self, message: str, **_kwargs):
-            raise AssertionError(f"unexpected password prompt: {message}")
+            return _Answer("brave-secret")
 
         def text(self, message: str, **kwargs):
             if message == "Max search results":
@@ -624,14 +838,15 @@ def test_search_provider_can_use_masked_api_key_prompt(monkeypatch):
 
     class _Questionary:
         def select(self, message: str, **kwargs):
-            if message == "Search API key source":
-                return _Answer("Paste API key now")
             if message == "Search fallback policy":
                 return _Answer(kwargs.get("default"))
             raise AssertionError(f"unexpected select prompt: {message}")
 
         def password(self, message: str, **_kwargs):
-            assert message == "Search API key"
+            assert message == (
+                "Brave Search API key "
+                "(create one at https://api-dashboard.search.brave.com/app/keys)"
+            )
             return _Answer("brave-secret")
 
         def text(self, message: str, **kwargs):

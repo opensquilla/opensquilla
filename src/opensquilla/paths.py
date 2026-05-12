@@ -49,3 +49,27 @@ def state_dir(*parts: str) -> Path:
     default and keeping prompt history out of the config/env root.
     """
     return default_opensquilla_home() / "state" / Path(*parts)
+
+
+def media_root_from_config(config: object | None = None) -> Path:
+    """Return the stable attachment/artifact media root.
+
+    Explicit ``attachments.media_root`` wins. Otherwise derive from the configured
+    OpenSquilla home instead of process cwd so artifact links keep working when the
+    gateway is launched from a long or transient source/worktree path.
+    """
+    attachments_cfg = getattr(config, "attachments", None)
+    media_root = getattr(attachments_cfg, "media_root", None)
+    if isinstance(media_root, str) and media_root.strip():
+        return _expand_user(media_root.strip())
+
+    state_root = getattr(config, "state_dir", None)
+    if isinstance(state_root, str) and state_root.strip():
+        state_path = _expand_user(state_root.strip())
+        return state_path.parent / "media"
+
+    config_path = getattr(config, "config_path", None)
+    if isinstance(config_path, str) and config_path.strip():
+        return _expand_user(config_path.strip()).parent / "media"
+
+    return default_opensquilla_home() / "media"

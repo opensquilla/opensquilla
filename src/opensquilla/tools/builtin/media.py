@@ -10,8 +10,15 @@ import re
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
+from opensquilla.artifacts import (
+    DEFAULT_ARTIFACT_DISK_BUDGET_BYTES,
+    DEFAULT_ARTIFACT_MAX_BYTES,
+    ArtifactBudgetError,
+    ArtifactStore,
+    artifact_payload,
+)
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.provider.image_generation import (
     ImageGenerationRequest,
@@ -22,7 +29,15 @@ from opensquilla.provider.image_generation import (
     reset_image_generation_providers,
 )
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import SafeToolError, ToolError, current_tool_context
+from opensquilla.tools.ssrf import validate_http_url_for_fetch
+from opensquilla.tools.types import (
+    CallerKind,
+    SafeToolError,
+    SSRFBlockedError,
+    ToolError,
+    UnsupportedURLSchemeError,
+    current_tool_context,
+)
 
 _SUPPORTED_IMAGE_FORMATS = {"png", "jpg", "jpeg", "gif", "webp"}
 _IMAGE_SIZE_LIMIT = 20 * 1024 * 1024  # 20 MB
@@ -170,28 +185,20 @@ def _sensitive_media_url_block(tool_name: str, url: str) -> dict | None:
 
 
 async def _fetch_image_url(url: str) -> tuple[bytes, str]:
-    import ipaddress
-    import socket
-    from urllib.parse import urlparse
-
     import httpx
 
     def _check_image_url(candidate_url: str) -> None:
-        parsed_candidate = urlparse(candidate_url)
-        if parsed_candidate.scheme not in ("http", "https"):
-            raise ToolError("Only HTTP/HTTPS URLs are supported for image fetch")
         marker = _sensitive_media_url_block("image", candidate_url)
         if marker is not None:
             raise ToolError("Blocked: URL contains sensitive data")
-        hostname = parsed_candidate.hostname or ""
         try:
-            infos = socket.getaddrinfo(hostname, None)
-        except socket.gaierror:
-            raise ToolError(f"Cannot resolve hostname: {hostname}")
-        for info in infos:
-            addr = ipaddress.ip_address(info[4][0])
-            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-                raise ToolError(f"Blocked: URL resolves to private/internal IP ({addr})")
+            validate_http_url_for_fetch(candidate_url)
+        except UnsupportedURLSchemeError as exc:
+            raise ToolError("Only HTTP/HTTPS URLs are supported for image fetch") from exc
+        except SSRFBlockedError as exc:
+            raise ToolError(str(exc)) from exc
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
 
     try:
         async with httpx.AsyncClient(
@@ -301,6 +308,8 @@ async def _call_vision_provider(b64_data: str, media_type: str, prompt: str) -> 
     name="image_generate",
     description=(
         "Generate an image from a text prompt using a configured image provider. "
+        "On web and channel surfaces, the generated image is automatically published for the user; "
+        "do not call publish_artifact again for the returned path. "
         "For code, HTML, SVG, canvas, or screenshot based image artifacts, use "
         "the appropriate code/runtime/rendering tool instead."
     ),
@@ -374,17 +383,61 @@ async def _image_generate_impl(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(result.image_bytes)
-    return json.dumps(
-        {
-            "status": "ok",
-            "path": str(target),
-            "provider": result.provider,
-            "model": result.model,
-            "mime_type": result.mime_type,
-            "size_bytes": len(result.image_bytes),
-            "revised_prompt": result.revised_prompt,
-        }
-    )
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "path": str(target),
+        "provider": result.provider,
+        "model": result.model,
+        "mime_type": result.mime_type,
+        "size_bytes": len(result.image_bytes),
+        "revised_prompt": result.revised_prompt,
+    }
+    artifact = _publish_generated_image_artifact(target, result.mime_type)
+    if artifact is not None:
+        payload["artifact"] = {k: v for k, v in artifact.items() if k != "download_url"}
+        payload["artifact"]["delivered_to_user"] = True
+        payload["note"] = (
+            "The generated image is already published for the user. "
+            "Do not call publish_artifact again for this same file unless the user explicitly "
+            "asks for a separate copy."
+        )
+    return json.dumps(payload)
+
+
+def _publish_generated_image_artifact(target: Path, mime_type: str) -> dict[str, Any] | None:
+    ctx = current_tool_context.get()
+    if (
+        ctx is None
+        or ctx.caller_kind is CallerKind.SUBAGENT
+        or not ctx.artifact_media_root
+        or not ctx.artifact_session_id
+        or not ctx.session_key
+    ):
+        return None
+
+    store = ArtifactStore(ctx.artifact_media_root)
+    try:
+        ref = store.publish_file(
+            target,
+            session_id=ctx.artifact_session_id,
+            session_key=ctx.session_key,
+            name=target.name,
+            mime=mime_type or "image/png",
+            source="image_generate",
+            max_bytes=ctx.artifact_max_bytes
+            if ctx.artifact_max_bytes is not None
+            else DEFAULT_ARTIFACT_MAX_BYTES,
+            disk_budget_bytes=ctx.artifact_disk_budget_bytes
+            if ctx.artifact_disk_budget_bytes is not None
+            else DEFAULT_ARTIFACT_DISK_BUDGET_BYTES,
+        )
+    except ArtifactBudgetError as exc:
+        raise ToolError(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise ToolError(f"artifact storage path is unavailable: {exc}") from exc
+    payload = artifact_payload(ref)
+    ctx.published_artifacts.append(payload)
+    return payload
 
 
 def _resolve_image_generation_config() -> Any:

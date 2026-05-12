@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from opensquilla.memory.embedding import OpenAIEmbeddingProvider
+from opensquilla.memory.embedding import LocalEmbeddingProvider, OpenAIEmbeddingProvider
 
 
 class _FakeEmbeddingResponse:
@@ -47,6 +47,27 @@ def _patch_embedding_client(monkeypatch, captured: dict[str, object]) -> None:
         "opensquilla.memory.embedding.httpx.AsyncClient",
         lambda **kwargs: _FakeEmbeddingClient(captured),
     )
+
+
+def test_local_embedding_tokenizes_for_onnx_inputs() -> None:
+    class _Encoding:
+        ids = [101, 102]
+        attention_mask = [1, 1]
+        type_ids = [0, 0]
+
+    class _Tokenizer:
+        def encode_batch(self, texts):
+            assert texts == ["hello"]
+            return [_Encoding()]
+
+    provider = LocalEmbeddingProvider()
+    provider._onnx_tokenizer = _Tokenizer()
+
+    feed = provider._tokenize_onnx(["hello"], ["input_ids", "attention_mask"])
+
+    assert sorted(feed) == ["attention_mask", "input_ids"]
+    assert feed["input_ids"].tolist() == [[101, 102]]
+    assert feed["attention_mask"].tolist() == [[1, 1]]
 
 
 @pytest.mark.asyncio

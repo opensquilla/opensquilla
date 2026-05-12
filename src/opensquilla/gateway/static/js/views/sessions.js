@@ -15,6 +15,8 @@ const SessionsView = (() => {
   let _pageSize = 25;
   let _selected = new Set();
   let _searchVal = '';
+  // agent_id → agent entry from agents.list, used for orphan-agent detection.
+  let _agentsById = new Map();
 
   function render(el) {
     _el = el;
@@ -111,16 +113,28 @@ const SessionsView = (() => {
 
   async function _loadData() {
     await _rpc.waitForConnection();
-    _rpc.call('sessions.list').then(data => {
-      if (!_el) return;
-      _allSessions = data.sessions || [];
+    // Fetch sessions and agents in parallel so the orphan-agent badge is
+    // always rendered against fresh registry state.
+    const [sessRes, agentsRes] = await Promise.allSettled([
+      _rpc.call('sessions.list'),
+      _rpc.call('agents.list'),
+    ]);
+    if (!_el) return;
+    if (agentsRes.status === 'fulfilled') {
+      const list = agentsRes.value?.agents || [];
+      _agentsById = new Map(list.map(a => [a.id, a]));
+    }
+    if (sessRes.status === 'fulfilled') {
+      _allSessions = sessRes.value?.sessions || [];
       _selected.clear();
       _applyFilter();
       _renderStats();
       _renderTable();
       _renderPagination();
       _renderBulkBar();
-    }).catch(err => UI.toast('Failed to load sessions: ' + err.message, 'err'));
+    } else {
+      UI.toast('Failed to load sessions: ' + (sessRes.reason?.message || 'unknown error'), 'err');
+    }
   }
 
   function _applyFilter() {
@@ -257,11 +271,14 @@ const SessionsView = (() => {
       const statusTip = UI.sessionStatusLabel(status);
       const modified = row.updated_at ? UI.relTime(row.updated_at) : '—';
       const isSel = _selected.has(row.key);
+      const agentId = row.agent_id || row.agentId || _agentIdFromKey(row.key);
+      const agentMeta = _agentSubline(agentId);
       html += `<tr class="${isSel ? 'is-selected' : ''}">
         <td class="sess-table__cell--check"><label class="sess-check"><input type="checkbox" class="sess-row-check" data-key="${_esc(row.key)}" ${checked} /><span></span></label></td>
         <td class="sess-table__cell--key">
           <span class="dot ${statusCls}" title="${_esc(statusTip)}"></span>
           <button type="button" class="sess-key-link" data-open-key="${_esc(row.key)}" title="Open chat">${_esc(row.key)}</button>
+          ${agentMeta}
         </td>
         <td><span class="chip ${statusChip}">${_esc(statusTip)}</span></td>
         <td class="sess-mono">${row.message_count != null ? Number(row.message_count).toLocaleString() : '—'}</td>
@@ -477,38 +494,194 @@ const SessionsView = (() => {
     );
   }
 
-  function _openNewSessionModal() {
-    UI.modal(
-      'New session',
-      `<div class="sess-form">
-        <label class="sess-form__field">
-          <span class="sess-form__label">Agent ID</span>
-          <input type="text" id="ns-agent-id" class="sess-form__input" placeholder="e.g. main" autocomplete="off" />
-        </label>
-        <label class="sess-form__field">
-          <span class="sess-form__label">Model <span class="sess-form__optional">(optional)</span></span>
-          <input type="text" id="ns-model" class="sess-form__input" placeholder="e.g. claude-opus-4-7" autocomplete="off" />
-        </label>
-      </div>`,
-      [
-        {
-          label: 'Create session', cls: 'btn-primary', onClick: () => {
-            const agentId = document.getElementById('ns-agent-id')?.value.trim() || 'main';
-            const model = document.getElementById('ns-model')?.value.trim() || undefined;
-            const params = { agentId };
-            if (model) params.model = model;
-            _rpc.call('sessions.create', params)
-              .then(data => {
-                UI.toast('Session created', 'info');
-                _loadData();
-                if (data && data.key) Router.navigate('/chat?session=' + encodeURIComponent(data.key));
-              })
-              .catch(err => UI.toast('Create failed: ' + err.message, 'err'));
+  async function _openNewSessionModal() {
+    // Build a self-contained modal so we can keep it open on RPC failure and
+    // surface inline errors instead of toast-then-reopen churn.
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-backdrop';
+    overlay.innerHTML = `
+      <div class="modal sess-newchat-modal" role="dialog" aria-modal="true" aria-labelledby="ns-title">
+        <div class="modal-title" id="ns-title">Start a new chat</div>
+        <div class="modal-body">
+          <div class="sess-form">
+            <label class="sess-form__field">
+              <span class="sess-form__label">Agent</span>
+            <div data-ns-agent-host></div>
+              <small class="sess-form__hint">Pick an agent or type a new ID to create it.</small>
+            </label>
+            <div class="sess-form__error" data-ns-error hidden></div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" data-ns-cancel>Cancel</button>
+          <button class="btn btn--primary" data-ns-submit disabled>Start chat</button>
+        </div>
+      </div>`;
+
+    const cancelBtn = overlay.querySelector('[data-ns-cancel]');
+    const submitBtn = overlay.querySelector('[data-ns-submit]');
+    const errorEl = overlay.querySelector('[data-ns-error]');
+    const agentHost = overlay.querySelector('[data-ns-agent-host]');
+
+    let agents = [];
+    try {
+      const data = await _rpc.call('agents.list');
+      agents = (data?.agents || []).map(a => ({
+        id: a.id,
+        label: a.name || a.id,
+        sublabel: a.model || (a.isBuiltin || a.type === 'builtin' ? 'built-in' : ''),
+      }));
+    } catch (err) {
+      // Non-fatal — combobox will show an empty list but still accepts typed IDs.
+      agents = [];
+    }
+
+    let selectedAgentId = '';
+    let createPending = false;
+
+    const combo = UI.combobox({
+      items: agents,
+      value: agents.find(a => a.id === 'main') ? 'main' : '',
+      placeholder: 'Pick an agent or type a new ID',
+      emptyText: agents.length ? 'No matches' : 'No agents — type to create one',
+      allowCreate: true,
+      createLabel: (typed) => `↵ Create new agent "${typed}"`,
+      onChange: (id) => {
+        selectedAgentId = id || '';
+        createPending = false;
+        _refreshSubmit();
+      },
+      onCreate: (typed) => {
+        selectedAgentId = '';
+        createPending = true;
+        // Mirror the typed text back into the input so the user sees what's about to be created.
+        combo.setValue(typed);
+        _refreshSubmit();
+      },
+      autofocus: true,
+    });
+    if (combo.getValue() === 'main') {
+      selectedAgentId = 'main';
+    }
+    agentHost.appendChild(combo.element);
+
+    function _refreshSubmit() {
+      const typed = (combo.getTyped() || '').trim();
+      const ok = !!(selectedAgentId || typed);
+      submitBtn.disabled = !ok;
+    }
+
+    // Re-evaluate the "create pending" state on every input. Without this, a
+    // user who keeps typing past a known agent would still show the picked value.
+    combo.input.addEventListener('input', () => {
+      const typed = combo.getTyped();
+      const exact = agents.find(a => a.id === typed || a.label === typed);
+      if (exact) { selectedAgentId = exact.id; createPending = false; }
+      else { selectedAgentId = ''; createPending = !!typed; }
+      _refreshSubmit();
+    });
+
+    function _close() {
+      combo.destroy();
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', _onKey);
+    }
+    function _showError(msg) {
+      errorEl.textContent = msg;
+      errorEl.hidden = false;
+    }
+    function _clearError() { errorEl.hidden = true; errorEl.textContent = ''; }
+    function _onKey(e) {
+      if (e.key === 'Escape') { e.stopPropagation(); _close(); }
+    }
+    overlay.addEventListener('mousedown', (e) => {
+      if (e.target === overlay) _close();
+    });
+    cancelBtn.addEventListener('click', _close);
+
+    async function _onSubmit() {
+      if (submitBtn.disabled) return;
+      _clearError();
+      const params = {};
+      let createdAgent = false;
+      if (createPending) {
+        const id = (combo.getTyped() || '').trim();
+        if (!id) return;
+        params.agentId = id;
+      } else {
+        params.agentId = selectedAgentId || (combo.getTyped() || '').trim() || 'main';
+      }
+      submitBtn.disabled = true;
+      const prevLabel = submitBtn.textContent;
+      submitBtn.textContent = createPending ? 'Creating…' : 'Starting…';
+      try {
+        if (createPending) {
+          try {
+            await _rpc.call('agents.create', { id: params.agentId, name: params.agentId });
+            createdAgent = true;
+          } catch (err) {
+            if ((err?.code || '') !== 'agent.exists') throw err;
           }
-        },
-        { label: 'Cancel', cls: '' },
-      ]
-    );
+        }
+        const res = await _rpc.call('sessions.create', { agentId: params.agentId });
+        UI.toast(
+          createdAgent ? `Created agent "${params.agentId}" and started chat` : 'Session created',
+          'ok'
+        );
+        _close();
+        _loadData();
+        if (res?.key) Router.navigate('/chat?session=' + encodeURIComponent(res.key));
+      } catch (err) {
+        const code = err?.code || '';
+        const msg = err?.message || String(err);
+        let friendly = 'Failed to start chat: ' + msg;
+        if (code === 'UNAUTHORIZED' && createPending) friendly = 'This connection does not have permission to create agents.';
+        if (code === 'agent.not_found') friendly = `Agent "${params.agentId}" doesn't exist. Type a new ID and pick "Create new agent" from the dropdown.`;
+        if (code === 'agent.exists') friendly = `Agent "${params.agentId}" already exists — pick it from the list instead.`;
+        _showError(friendly);
+        submitBtn.textContent = prevLabel;
+        submitBtn.disabled = false;
+      }
+    }
+    submitBtn.addEventListener('click', _onSubmit);
+
+    document.addEventListener('keydown', _onKey);
+    document.body.appendChild(overlay);
+    setTimeout(() => combo.focus(), 50);
+    _refreshSubmit();
+  }
+
+  // Pull the agent_id from a session_key like "agent:<id>:<kind>:<short>" or
+  // "agent:<id>:<short>". Falls back to '' if the prefix doesn't match.
+  function _agentIdFromKey(key) {
+    if (typeof key !== 'string') return '';
+    const m = /^agent:([^:]+):/.exec(key);
+    return m ? m[1] : '';
+  }
+
+  // Render the per-row agent subline. Shows the agent display name when known,
+  // or a yellow ⚠ Orphaned chip when the session references an agent that no
+  // longer exists in the registry. Returns '' for blank or built-in `main` so
+  // we don't add visual noise to the default case.
+  function _agentSubline(agentId) {
+    if (!agentId) return '';
+    const entry = _agentsById.get(agentId);
+    if (entry) {
+      // Don't repeat for the built-in default — the key already starts with
+      // "agent:main:" and showing "main" again is noise.
+      if (agentId === 'main') return '';
+      const name = entry.name || agentId;
+      return `<div class="sess-key__sub">
+        <span class="sess-key__agent">${_esc(name)}</span>
+      </div>`;
+    }
+    if (agentId === 'main') return '';
+    return `<div class="sess-key__sub">
+      <span class="sess-key__agent sess-key__agent--orphan" title="Agent '${_esc(agentId)}' is no longer registered">
+        ${_esc(agentId)}
+        <span class="chip chip-warn">⚠ Orphaned</span>
+      </span>
+    </div>`;
   }
 
   function _fmtBytes(bytes) {

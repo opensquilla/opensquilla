@@ -21,6 +21,27 @@ def test_default_user_template_names_profile_fields() -> None:
     assert "one-off task notes" in template
 
 
+def test_default_bootstrap_templates_define_distinct_file_roles() -> None:
+    template_dir = Path("src/opensquilla/identity/templates/bootstrap")
+
+    agents = (template_dir / "AGENTS.md").read_text(encoding="utf-8")
+    soul = (template_dir / "SOUL.md").read_text(encoding="utf-8")
+    identity = (template_dir / "IDENTITY.md").read_text(encoding="utf-8")
+    tools = (template_dir / "TOOLS.md").read_text(encoding="utf-8")
+    memory = (template_dir / "MEMORY.md").read_text(encoding="utf-8")
+
+    assert "operating rules" in agents
+    assert "Do not store user profile facts here" in agents
+    assert "voice, tone, and interaction style" in soul
+    assert "Do not store user profile facts, task history, or tool inventories here" in soul
+    assert "agent's public-facing name" in identity
+    assert "If the user asks to rename the assistant" in identity
+    assert "local tool conventions" in tools
+    assert "does not register tools, grant permissions, or change tool policy" in tools
+    assert "durable non-profile facts" in memory
+    assert "Agent name, tone, and persona belong in IDENTITY.md or SOUL.md" in memory
+
+
 def test_system_prompt_routes_profile_to_user_md() -> None:
     prompt = assemble_system_prompt(
         AgentProfile(agent_id="main", prompt_mode="full"),
@@ -33,6 +54,17 @@ def test_system_prompt_routes_profile_to_user_md() -> None:
     assert "MEMORY.md` for durable non-profile facts" in prompt
     assert "decisions, dates, people, preferences, or todos" not in prompt
     assert "prior work, decisions, dated history, todos" in prompt
+
+
+def test_system_prompt_routes_agent_identity_away_from_memory_md() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["memory_search", "memory_get", "write_file", "edit_file", "apply_patch"],
+    )
+
+    assert "Agent identity: `IDENTITY.md`" in prompt
+    assert "Agent persona: `SOUL.md`" in prompt
+    assert "Do not put assistant rename/persona requests into `MEMORY.md`" in prompt
 
 
 def test_system_prompt_only_documents_canonical_tool_names() -> None:
@@ -57,6 +89,32 @@ def test_system_prompt_disambiguates_session_send_from_channel_message() -> None
     assert "`sessions_send`" in prompt
     assert "`message` only for channel adapter delivery" in prompt
     assert "send_message" not in prompt
+
+
+def test_system_prompt_guides_generated_file_delivery() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["execute_code", "publish_artifact", "image_generate"],
+    )
+
+    assert "## Generated File Delivery" in prompt
+    assert "Do not paste full file source" in prompt
+    assert "call `publish_artifact` for the final file" in prompt
+    assert "do not call `publish_artifact` again" in prompt
+
+
+def test_system_prompt_limits_file_delivery_when_no_file_authoring_tools() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["publish_artifact", "image_generate", "read_file", "glob_search"],
+    )
+
+    assert "## Generated File Delivery Limits" in prompt
+    assert "already exists in the workspace" in prompt
+    assert "file creation is not enabled for this session" in prompt
+    assert "surface where file authoring is enabled" in prompt
+    assert "Do not paste full file source" in prompt
+    assert "create the file in the active workspace" not in prompt
 
 
 def test_legacy_image_alias_does_not_enable_image_generation_prompt() -> None:

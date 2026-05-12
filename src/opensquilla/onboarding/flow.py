@@ -6,7 +6,7 @@ import importlib.util
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from opensquilla.onboarding.channel_specs import (
     ChannelSetupField,
@@ -108,6 +108,37 @@ def _is_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def _flush_stdin_typeahead() -> None:
+    """Drop keys typed before the visible setup prompt was flushed."""
+    if os.name == "nt":
+        try:
+            import msvcrt
+        except ImportError:
+            return
+        msvcrt_mod = cast(Any, msvcrt)
+        while msvcrt_mod.kbhit():
+            msvcrt_mod.getwch()
+        return
+
+    if not sys.stdin.isatty():
+        return
+    try:
+        import termios
+    except ImportError:
+        return
+    termios_mod = cast(Any, termios)
+    termios_mod.tcflush(sys.stdin, termios_mod.TCIFLUSH)
+
+
+def _wait_for_setup_start() -> None:
+    console.print(f"[{ACCENT}]◆[/] Press Enter to start setup")
+    flush = getattr(getattr(console, "file", None), "flush", None)
+    if callable(flush):
+        flush()
+    _flush_stdin_typeahead()
+    input()
+
+
 def run_noninteractive_provider_configure(
     provider_id: str, values: dict[str, Any]
 ) -> PersistResult:
@@ -179,12 +210,61 @@ def _ask_provider_choice(questionary, options: OnboardOptions):
         spec = get_provider_setup_spec(options.provider_id)
         return spec, spec.provider_id
     supported = [s for s in list_provider_setup_specs() if s.runtime_supported]
+    choices = [f"{s.provider_id} ({s.label})" for s in supported]
+    default = next((choice for choice in choices if choice.startswith("openrouter ")), None)
     pid = questionary.select(
         "LLM provider",
-        choices=[f"{s.provider_id} ({s.label})" for s in supported],
+        choices=choices,
+        default=default,
     ).ask()
     pid_clean = pid.split(" ")[0]
     return get_provider_setup_spec(pid_clean), pid_clean
+
+
+def _required_value(label: str):
+    def _validate(value: str) -> bool | str:
+        if str(value or "").strip():
+            return True
+        return f"{label} is required"
+
+    return _validate
+
+
+_PASTE_API_KEY_CHOICE = "Paste API key now"
+_DETECTED_ENV_SUFFIX = " (detected)"
+
+
+def _api_key_env_choice(env_key: str, *, detected: bool = False) -> str:
+    suffix = _DETECTED_ENV_SUFFIX if detected else ""
+    return f"Use environment variable {env_key}{suffix}"
+
+
+def _api_key_env_from_choice(choice: str) -> str:
+    prefix = "Use environment variable "
+    if not choice.startswith(prefix):
+        return ""
+    env_key = choice[len(prefix) :]
+    if env_key.endswith(_DETECTED_ENV_SUFFIX):
+        env_key = env_key[: -len(_DETECTED_ENV_SUFFIX)]
+    return env_key
+
+
+def _api_key_source_choices(env_key: str) -> list[str]:
+    choices = [_PASTE_API_KEY_CHOICE]
+    if env_key:
+        choices.append(
+            _api_key_env_choice(env_key, detected=bool(os.environ.get(env_key)))
+        )
+    return choices
+
+
+def _search_api_key_prompt(spec) -> str:
+    if getattr(spec, "provider_id", "") == "brave":
+        return (
+            "Brave Search API key "
+            "(create one at https://api-dashboard.search.brave.com/app/keys)"
+        )
+    return "Search API key"
 
 
 def _ask_provider_fields(
@@ -205,38 +285,23 @@ def _ask_provider_fields(
         elif options.api_key_env:
             answers["api_key"] = ""
             answers["api_key_env"] = options.api_key_env
-        elif env_key and os.environ.get(env_key):
-            use_env = questionary.confirm(
-                (
-                    f"Use {env_key} from this shell instead of storing the API key "
-                    "in config? Detected now."
-                ),
-                default=True,
-            ).ask()
-            answers["api_key"] = ""
-            answers["api_key_env"] = env_key if use_env else ""
-            if not use_env:
-                answers["api_key"] = questionary.password("API key").ask() or ""
         else:
-            use_env_ref = questionary.confirm(
-                (
-                    f"Use {env_key or 'an environment variable'} instead of storing "
-                    "the API key in config? Not set now; set it before starting "
-                    "the gateway."
-                ),
-                default=True,
+            key_source = questionary.select(
+                "LLM API key source",
+                choices=_api_key_source_choices(env_key or ""),
+                default=_PASTE_API_KEY_CHOICE,
             ).ask()
-            if use_env_ref:
-                answers["api_key"] = ""
-                answers["api_key_env"] = (
-                    questionary.text(
-                        "API key environment variable",
-                        default=env_key or "",
+            selected_env_key = _api_key_env_from_choice(key_source or "")
+            answers["api_key_env"] = selected_env_key
+            answers["api_key"] = ""
+            if not selected_env_key:
+                answers["api_key"] = (
+                    questionary.password(
+                        "API key",
+                        validate=_required_value("API key"),
                     ).ask()
                     or ""
                 )
-            else:
-                answers["api_key"] = questionary.password("API key").ask() or ""
                 answers["api_key_env"] = ""
     else:
         answers["api_key"] = options.api_key or ""
@@ -264,18 +329,25 @@ def _ask_search_fields(questionary, spec) -> dict[str, Any]:
     answers: dict[str, Any] = {}
     if spec.requires_api_key:
         env_key = spec.env_key or ""
-        env_choice = f"Use environment variable {env_key}"
-        paste_choice = "Paste API key now"
-        key_source = questionary.select(
-            "Search API key source",
-            choices=([env_choice] if env_key else []) + [paste_choice],
-            default=env_choice if env_key else paste_choice,
-        ).ask()
-        if key_source == env_choice and env_key:
+        use_env_key = False
+        if env_key and os.environ.get(env_key):
+            use_env_key = bool(
+                questionary.confirm(
+                    f"Use {env_key} from environment?",
+                    default=False,
+                ).ask()
+            )
+        if use_env_key:
             answers["api_key"] = ""
             answers["api_key_env"] = env_key
         else:
-            answers["api_key"] = questionary.password("Search API key").ask() or ""
+            answers["api_key"] = (
+                questionary.password(
+                    _search_api_key_prompt(spec),
+                    validate=_required_value("Search API key"),
+                ).ask()
+                or ""
+            )
             answers["api_key_env"] = ""
     else:
         answers["api_key"] = ""
@@ -373,24 +445,33 @@ def _ask_image_generation_fields(
     )
 
     key_choices: list[str] = []
-    env_choice = f"Use environment variable {spec.env_key}" if spec.env_key else ""
-    if env_choice and os.environ.get(spec.env_key):
-        key_choices.append(env_choice)
     llm_choice = "Reuse matching LLM provider key"
     if config.llm.provider == spec.provider_id and config.llm.api_key:
         key_choices.append(llm_choice)
-    paste_choice = "Paste API key now"
-    key_choices.append(paste_choice)
+    key_choices.append(_PASTE_API_KEY_CHOICE)
+    env_choice = (
+        _api_key_env_choice(spec.env_key)
+        if spec.env_key
+        else ""
+    )
+    if env_choice:
+        key_choices.append(env_choice)
 
     key_source = questionary.select(
         "Image API key source",
         choices=key_choices,
         default=key_choices[0],
     ).ask()
-    if key_source == paste_choice:
+    selected_env_key = _api_key_env_from_choice(key_source or "")
+    if key_source == _PASTE_API_KEY_CHOICE:
         answers["api_key"] = questionary.password("Image API key").ask() or ""
+        answers["api_key_env"] = ""
+    elif selected_env_key:
+        answers["api_key"] = ""
+        answers["api_key_env"] = selected_env_key
     else:
         answers["api_key"] = ""
+        answers["api_key_env"] = ""
 
     answers["base_url"] = (
         questionary.text("Image base URL", default=spec.default_base_url).ask()
@@ -767,6 +848,8 @@ def _warn_channel_dependency_gaps(spec: ChannelSetupSpec, answers: dict[str, Any
                 warning_panel(
                     "Feishu websocket mode requires the optional feishu extra "
                     "(lark-oapi).\n\n"
+                    "[bold]Portable zip:[/]\n"
+                    "  Use the latest recommended portable package, then restart.\n\n"
                     "[bold]Installed command:[/]\n"
                     "  pwsh -ExecutionPolicy Bypass -File install.ps1 -Extras feishu\n"
                     "  OPENSQUILLA_INSTALL_EXTRAS=feishu bash install.sh\n"
@@ -796,7 +879,8 @@ def _print_channel_saved(name: str) -> None:
 
 def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
     cfg = load_config()
-    if options.if_needed and get_onboarding_status(cfg).llm_configured:
+    status = get_onboarding_status(cfg)
+    if options.if_needed and status.has_config and status.llm_configured:
         return persist_config(cfg, restart_required=False, backup=False)
 
     if not _is_tty():
@@ -811,6 +895,7 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
             "Provider · Router · Channel · Search",
         )
     )
+    _wait_for_setup_start()
     spec, provider_id = _ask_provider_choice(questionary, options)
     answers = _ask_provider_fields(questionary, spec, options)
     res = upsert_llm_provider(

@@ -1,6 +1,6 @@
 [project]
 name = "opensquilla"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "OpenSquilla — microkernel Python agent runtime with MCP-native tools and multi-channel messaging"
 license = "Apache-2.0"
 readme = "README.release.md"
@@ -65,7 +65,7 @@ recommended = [
     "scikit-learn>=1.3",
     "onnxruntime>=1.17",
     "tokenizers>=0.15",
-    "transformers>=4.40",
+    "python-pptx>=1.0.0",
 ]
 model-router = [
     "numpy>=1.26",
@@ -99,20 +99,13 @@ build-backend = "hatchling.build"
 packages = ["src/opensquilla"]
 exclude = [
     "src/opensquilla/scheduler/templates/*.md",
+    "src/opensquilla/skills/bundled/**/THIRD_PARTY_NOTICES.md",
     "src/opensquilla/skills/bundled/**/references/*.md",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/opensquilla/skills/bundled/pptx/references/pptxgenjs.md" = "opensquilla/skills/bundled/pptx/references/pptxgenjs.md"
 "src/opensquilla/skills/bundled/pptx/references/python_pptx.md" = "opensquilla/skills/bundled/pptx/references/python_pptx.md"
-"src/opensquilla/skills/bundled/docx/references/python_docx.md" = "opensquilla/skills/bundled/docx/references/python_docx.md"
-"src/opensquilla/skills/bundled/xlsx/references/openpyxl.md" = "opensquilla/skills/bundled/xlsx/references/openpyxl.md"
-"src/opensquilla/skills/bundled/pdf-toolkit/references/pypdf.md" = "opensquilla/skills/bundled/pdf-toolkit/references/pypdf.md"
-"src/opensquilla/skills/bundled/pdf-toolkit/references/reportlab.md" = "opensquilla/skills/bundled/pdf-toolkit/references/reportlab.md"
-"src/opensquilla/skills/bundled/deep-research/references/methodology.md" = "opensquilla/skills/bundled/deep-research/references/methodology.md"
-"src/opensquilla/skills/bundled/deep-research/references/sources.md" = "opensquilla/skills/bundled/deep-research/references/sources.md"
-"src/opensquilla/skills/bundled/html-to-pdf/references/weasyprint.md" = "opensquilla/skills/bundled/html-to-pdf/references/weasyprint.md"
-"src/opensquilla/skills/bundled/multi-search-engine/references/engines.md" = "opensquilla/skills/bundled/multi-search-engine/references/engines.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -165,6 +158,7 @@ module = [
     "readability.*",
     "src.router.*",
     "tiktoken.*",
+    "tokenizers.*",
     "transformers.*",
     "yaml.*",
     "yoyo.*",

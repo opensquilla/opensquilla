@@ -32,6 +32,7 @@ from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
     call_compact_with_optional_config,
 )
+from opensquilla.session.terminal_reply import build_terminal_reply
 
 _CLI_ALLOWED_FILE_MIMES = _cli_attachments.CLI_ALLOWED_FILE_MIMES
 _CLI_INLINE_THRESHOLD_BYTES = _cli_attachments.CLI_INLINE_THRESHOLD_BYTES
@@ -40,6 +41,33 @@ _CLI_ATTACHMENT_COMPAT_EXPORTS = (_CLI_ALLOWED_FILE_MIMES, _CLI_INLINE_THRESHOLD
 
 _DEFAULT_STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
 _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 180.0
+
+
+def _turn_stream_error_message(event: Any) -> str:
+    message = getattr(event, "message", "")
+    code = str(getattr(event, "code", "") or "").lower()
+    message_text = str(message)
+    if "timeout" in code or "stream idle" in message_text.lower():
+        return build_terminal_reply(
+            {
+                "status": "timeout",
+                "terminal_reason": "timeout",
+                "error_class": getattr(event, "code", None),
+                "error_message": message_text,
+            }
+        )
+    return message_text
+
+
+def _timeout_exception_message(exc: BaseException) -> str:
+    return build_terminal_reply(
+        {
+            "status": "timeout",
+            "terminal_reason": "timeout",
+            "error_class": exc.__class__.__name__,
+            "error_message": str(exc),
+        }
+    )
 
 
 class _GatewayClientLike(Protocol):
@@ -1546,11 +1574,12 @@ async def _stream_response_turnrunner(
                 elif isinstance(event, WarningEvent):
                     console.print(f"[yellow]{event.message}[/yellow]")
                 elif isinstance(event, ErrorEvent):
-                    renderer.error(event.message)
+                    message_text = _turn_stream_error_message(event)
+                    renderer.error(message_text)
                     return TurnResult(
                         text=renderer.buffer,
                         usage=usage,
-                        error=event.message,
+                        error=message_text,
                         artifacts=artifacts,
                     )
                 elif isinstance(event, DoneEvent):
@@ -1559,7 +1588,7 @@ async def _stream_response_turnrunner(
             _clear_current_cancel()
             cancelled = True
         except TimeoutError as exc:
-            message_text = str(exc)
+            message_text = _timeout_exception_message(exc)
             renderer.error(message_text)
             return TurnResult(text=renderer.buffer, error=message_text)
         renderer.finalize(usage, cancelled=cancelled)
@@ -1628,12 +1657,13 @@ async def _handle_image_command_turnrunner(
                 elif isinstance(event, ToolUseStartEvent):
                     renderer.tool_call(event.tool_name)
                 elif isinstance(event, ErrorEvent):
-                    renderer.error(event.message)
-                    return TurnResult(text=renderer.buffer, usage=usage, error=event.message)
+                    message_text = _turn_stream_error_message(event)
+                    renderer.error(message_text)
+                    return TurnResult(text=renderer.buffer, usage=usage, error=message_text)
                 elif isinstance(event, DoneEvent):
                     usage = UsageSummary.from_done_event(event)
         except TimeoutError as exc:
-            message_text = str(exc)
+            message_text = _timeout_exception_message(exc)
             renderer.error(message_text)
             return TurnResult(text=renderer.buffer, error=message_text)
         renderer.finalize(usage)

@@ -360,7 +360,7 @@ async def test_direct_channel_batch_turn_removes_artifact_markers_from_channel_t
 
     class FakeTurnRunner:
         async def run(self, message: str, session_key: str, **kwargs):
-            yield TextDeltaEvent(text=f"ready\n\n{marker}")
+            yield TextDeltaEvent(text=f"ready {marker}")
             yield ArtifactEvent(**artifact)
             yield DoneEvent()
 
@@ -644,6 +644,81 @@ async def test_runtime_channel_stream_relay_sends_artifact_with_adapter_upload(
 
 
 @pytest.mark.asyncio
+async def test_runtime_channel_stream_relay_does_not_redeliver_transcript_artifact(
+    tmp_path,
+) -> None:
+    store = ArtifactStore(tmp_path)
+    ref = store.publish_bytes(
+        b"\x89PNG\r\n\x1a\nimage bytes",
+        session_id="session-1",
+        session_key="agent:main:discord:direct:u1",
+        name="chart.png",
+        mime="image/png",
+        source="publish_artifact",
+    )
+
+    class StreamingFileChannel(_FakeChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.chunks: list[str] = []
+            self.files: list[tuple[str, str]] = []
+
+        async def send_streaming(self, chunks, **kwargs):
+            async for chunk in chunks:
+                self.chunks.append(chunk)
+
+        async def send_file(self, chat_id: str, file_path: str) -> None:
+            assert Path(file_path).is_file()
+            self.files.append((chat_id, Path(file_path).name))
+
+    class FakeTaskRuntime:
+        async def enqueue(self, envelope, message: str, *, stream_event_sink=None):
+            return None
+
+        async def wait(self, task_id: str):
+            return SimpleNamespace(status="succeeded")
+
+    class FakeSessionManager:
+        async def read_transcript(self, key: str):
+            return [
+                {"role": "user", "content": "draw chart"},
+                {
+                    "role": "assistant",
+                    "content": json.dumps({"text": "", "artifacts": [ref.to_dict()]}),
+                },
+            ]
+
+    config = SimpleNamespace(attachments=SimpleNamespace(media_root=str(tmp_path)))
+    channel = StreamingFileChannel()
+    runtime = FakeTaskRuntime()
+    relay = _RuntimeChannelStreamRelay.maybe_start(
+        channel,
+        _message(),
+        runtime,
+        config,
+    )
+
+    assert relay is not None
+
+    await relay.emit(ArtifactEvent(**ref.to_dict()))
+    await _deliver_runtime_channel_reply(
+        channel=channel,
+        task_runtime=runtime,
+        session_manager=FakeSessionManager(),
+        session_key="agent:main:discord:direct:u1",
+        task_id="task-1",
+        route_envelope=SimpleNamespace(reply_target=None),
+        inbound=_message(),
+        transcript_watermark=1,
+        config=config,
+        stream_relay=relay,
+    )
+
+    assert channel.files == [("c1", "chart.png")]
+    assert channel.sent == []
+
+
+@pytest.mark.asyncio
 async def test_direct_channel_turn_idle_timeout_sends_error_reply() -> None:
     class SlowTurnRunner:
         async def run(self, message: str, session_key: str, **kwargs):
@@ -668,7 +743,8 @@ async def test_direct_channel_turn_idle_timeout_sends_error_reply() -> None:
     )
 
     assert channel.sent
-    assert channel.sent[-1].content.startswith("Error: Stream idle")
+    assert channel.sent[-1].content == "The task timed out before it could finish."
+    assert "Stream idle" not in channel.sent[-1].content
 
 
 @pytest.mark.asyncio

@@ -132,6 +132,7 @@ def reconstruct_messages_from_entry(
     role: str,
     content: Any,
     tool_calls: list[dict[str, Any]] | None,
+    reasoning_content: str | None = None,
 ) -> list[Message]:
     """Rebuild provider Messages from one persisted transcript entry.
 
@@ -161,7 +162,13 @@ def reconstruct_messages_from_entry(
 
     if not tool_calls:
         if content:
-            return [Message(role="assistant", content=content)]
+            return [
+                Message(
+                    role="assistant",
+                    content=content,
+                    reasoning_content=reasoning_content,
+                )
+            ]
         return []
 
     messages: list[Message] = []
@@ -269,5 +276,10 @@ def reconstruct_messages_from_entry(
                     content_blocks.append(ContentBlockText(text=marker_text))
             elif not messages:
                 messages.append(Message(role="assistant", content=marker_text))
+
+    if reasoning_content:
+        first_assistant = next((m for m in messages if m.role == "assistant"), None)
+        if first_assistant is not None:
+            first_assistant.reasoning_content = reasoning_content
 
     return messages

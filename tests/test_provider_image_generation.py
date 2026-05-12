@@ -4,6 +4,7 @@ import pytest
 
 from opensquilla.provider.image_generation import (
     ImageGenerationRequest,
+    ImageGenerationResult,
     OpenRouterImageGenerationProvider,
     get_image_generation_provider,
 )
@@ -71,6 +72,111 @@ async def test_openrouter_image_provider_adds_app_attribution_headers(monkeypatc
         "X-OpenRouter-Categories": "cli-agent,personal-agent",
     }
     assert result.image_bytes == b"opensquilla"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller_kind", ["web", "channel"])
+async def test_image_generate_auto_publishes_generated_image_artifact_for_surfaces(
+    monkeypatch, tmp_path, caller_kind
+) -> None:
+    from opensquilla.gateway.config import ImageGenerationConfig
+    from opensquilla.tools.builtin import media
+    from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+
+    async def fake_generate_with_fallbacks(**_kwargs):
+        return ImageGenerationResult(
+            image_bytes=b"fake-png",
+            mime_type="image/png",
+            model="google/gemini-3.1-flash-image-preview",
+            provider="openrouter",
+        )
+
+    monkeypatch.setattr(media, "generate_with_fallbacks", fake_generate_with_fallbacks)
+    config = ImageGenerationConfig(
+        enabled=True,
+        primary="openrouter/google/gemini-3.1-flash-image-preview",
+    )
+    config.providers.openrouter.api_key = "sk-or-test"
+    media.configure_image_generation(config)
+
+    ctx = ToolContext(
+        caller_kind=CallerKind(caller_kind),
+        workspace_dir=str(tmp_path / "workspace"),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key=f"agent:main:{caller_kind}:test",
+    )
+    token = current_tool_context.set(ctx)
+    try:
+        payload = await media.image_generate(
+            prompt="draw an elephant",
+            filename="Elephant.png",
+        )
+    finally:
+        current_tool_context.reset(token)
+        media.configure_image_generation(None)
+
+    result = __import__("json").loads(payload)
+    assert result["status"] == "ok"
+    assert result["path"].endswith("Elephant.png")
+    assert result["artifact"]["name"] == "Elephant.png"
+    assert result["artifact"]["mime"] == "image/png"
+    assert result["artifact"]["delivered_to_user"] is True
+    assert "download_url" not in result["artifact"]
+    assert "already published" in result["note"]
+    assert "Do not call publish_artifact" in result["note"]
+    assert len(ctx.published_artifacts) == 1
+    published = ctx.published_artifacts[0]
+    assert published["name"] == "Elephant.png"
+    assert published["mime"] == "image/png"
+    assert published["download_url"] == f"/api/v1/artifacts/{published['id']}"
+
+
+@pytest.mark.asyncio
+async def test_image_generate_does_not_auto_publish_artifact_for_subagent(
+    monkeypatch, tmp_path
+) -> None:
+    from opensquilla.gateway.config import ImageGenerationConfig
+    from opensquilla.tools.builtin import media
+    from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+
+    async def fake_generate_with_fallbacks(**_kwargs):
+        return ImageGenerationResult(
+            image_bytes=b"fake-png",
+            mime_type="image/png",
+            model="google/gemini-3.1-flash-image-preview",
+            provider="openrouter",
+        )
+
+    monkeypatch.setattr(media, "generate_with_fallbacks", fake_generate_with_fallbacks)
+    config = ImageGenerationConfig(
+        enabled=True,
+        primary="openrouter/google/gemini-3.1-flash-image-preview",
+    )
+    config.providers.openrouter.api_key = "sk-or-test"
+    media.configure_image_generation(config)
+
+    ctx = ToolContext(
+        caller_kind=CallerKind.SUBAGENT,
+        workspace_dir=str(tmp_path / "workspace"),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:subagent:test",
+    )
+    token = current_tool_context.set(ctx)
+    try:
+        payload = await media.image_generate(
+            prompt="draw an elephant",
+            filename="Elephant.png",
+        )
+    finally:
+        current_tool_context.reset(token)
+        media.configure_image_generation(None)
+
+    result = __import__("json").loads(payload)
+    assert result["status"] == "ok"
+    assert "artifact" not in result
+    assert ctx.published_artifacts == []
 
 
 def test_image_generation_reuses_llm_key_only_after_capability_is_enabled(monkeypatch) -> None:

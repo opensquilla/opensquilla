@@ -114,3 +114,12 @@ def test_live_release_e2e_fails_fast_when_required_provider_secret_is_missing() 
     assert "Fail if Telegram secrets are missing when channel smoke is enabled" in text
     assert 'if [ -z "$OPENSQUILLA_LIVE_TELEGRAM_BOT_TOKEN" ]' in text
     assert 'if [ -z "$OPENSQUILLA_LIVE_TELEGRAM_CHAT_ID" ]' in text
+
+
+def test_wheelhouse_release_publishes_only_recommended_router_profile() -> None:
+    text = (WORKFLOW_DIR / "wheelhouse-release.yml").read_text(encoding="utf-8")
+
+    assert "      profile:\n" not in text
+    assert "RELEASE_PROFILE: recommended" in text
+    assert "--profile \"${RELEASE_PROFILE}\"" in text
+    assert "- core" not in text

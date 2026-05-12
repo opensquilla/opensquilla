@@ -110,9 +110,10 @@ def format_next_steps(config: Any, *, config_path: str | Path | None = None) -> 
                 f"default={router.default_tier}"
             )
         ),
-        "  Start gateway: uv run opensquilla gateway start --json",
+        "  Start gateway: opensquilla gateway run",
+        "  Or start in background: opensquilla gateway start --json",
         "  If a gateway is already running, restart it so it loads this config.",
-        "  Restart gateway: uv run opensquilla gateway restart --json",
+        "  Restart gateway: opensquilla gateway restart --json",
         "  Web UI: http://127.0.0.1:18790/control/",
     ]
     if key_source == "missing_env" and env_key:

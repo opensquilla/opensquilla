@@ -5,7 +5,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from opensquilla.gateway.config import ROUTER_TIER_PROFILE_IDS
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DIRECT_ROUTER_PROFILE_IDS = sorted(ROUTER_TIER_PROFILE_IDS - {"openrouter"})
 
 
 def _squilla_router_config_cls():
@@ -107,14 +110,50 @@ def test_provider_profile_accepts_matching_llm_provider() -> None:
     assert cfg.squilla_router.tiers["t0"]["model"] == "qwen3.6-flash"
 
 
-def test_unset_tier_profile_preserves_legacy_behavior_even_with_non_openrouter_llm() -> None:
+@pytest.mark.parametrize("provider_id", DIRECT_ROUTER_PROFILE_IDS)
+def test_unset_tier_profile_uses_matching_direct_provider_profile(provider_id: str) -> None:
+    from opensquilla.gateway.config import _router_tier_profile_defaults
+
     gateway_config_cls = _gateway_config_cls()
 
-    cfg = gateway_config_cls(llm={"provider": "deepseek"})
+    cfg = gateway_config_cls(llm={"provider": provider_id})
 
-    assert cfg.squilla_router.tier_profile is None
-    assert cfg.squilla_router.tiers["t0"]["provider"] == "openrouter"
-    assert cfg.squilla_router.tiers["t0"]["model"] == "deepseek/deepseek-v4-flash"
+    expected = _router_tier_profile_defaults(provider_id)
+    assert cfg.squilla_router.tier_profile == provider_id
+    for tier in ("t0", "t1", "t2", "t3"):
+        assert cfg.squilla_router.tiers[tier]["provider"] == provider_id
+        assert cfg.squilla_router.tiers[tier]["model"] == expected[tier]["model"]
+
+
+@pytest.mark.parametrize("provider_id", DIRECT_ROUTER_PROFILE_IDS)
+def test_direct_legacy_openrouter_router_defaults_are_migrated(provider_id: str) -> None:
+    from opensquilla.gateway.config import _router_tier_profile_defaults
+
+    gateway_config_cls = _gateway_config_cls()
+
+    cfg = gateway_config_cls(
+        llm={"provider": provider_id},
+        squilla_router={"enabled": True, "tiers": _router_tier_profile_defaults("openrouter")},
+    )
+
+    expected = _router_tier_profile_defaults(provider_id)
+    assert cfg.squilla_router.tier_profile == provider_id
+    for tier in ("t0", "t1", "t2", "t3"):
+        assert cfg.squilla_router.tiers[tier]["provider"] == provider_id
+        assert cfg.squilla_router.tiers[tier]["model"] == expected[tier]["model"]
+
+
+def test_deepseek_direct_legacy_openrouter_model_default_is_normalized() -> None:
+    gateway_config_cls = _gateway_config_cls()
+
+    cfg = gateway_config_cls(
+        llm={
+            "provider": "deepseek",
+            "model": "deepseek/deepseek-v4-pro",
+        }
+    )
+
+    assert cfg.llm.model == "deepseek-v4-pro"
 
 
 def test_each_provider_profile_has_four_text_tiers_without_default_image_model() -> None:
@@ -173,10 +212,13 @@ def test_moonshot_profile_uses_kimi_for_strong_tiers() -> None:
 
     cfg = squilla_router_config_cls(tier_profile="moonshot")
 
-    assert cfg.tiers["t0"]["model"] == "moonshot-v1-8k"
-    assert cfg.tiers["t1"]["model"] == "moonshot-v1-128k"
-    assert cfg.tiers["t2"]["model"] == "kimi-k2.5"
+    assert cfg.tiers["t0"]["model"] == "kimi-k2.5"
+    assert cfg.tiers["t1"]["model"] == "kimi-k2.5"
+    assert cfg.tiers["t2"]["model"] == "kimi-k2.6"
     assert cfg.tiers["t3"]["model"] == "kimi-k2.6"
+    assert all(
+        cfg.tiers[tier]["supports_image"] is True for tier in ("t0", "t1", "t2", "t3")
+    )
 
 
 def test_volcengine_profile_uses_seed_2_capability_ladder() -> None:

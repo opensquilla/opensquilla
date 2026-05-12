@@ -22,6 +22,7 @@ from opensquilla.gateway.attachment_ingest import (
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.gateway.rpc_sessions import _normalize_terminal_event_payload
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.uploads import set_upload_store
 from opensquilla.gateway.websocket import SubscriptionManager, get_registry
@@ -417,6 +418,86 @@ class TestSessionsCreate:
         session = session_manager._storage._sessions[res.payload["key"]]
         assert session.model == "explicit/model"
 
+    @pytest.mark.asyncio
+    async def test_create_rejects_missing_agent_when_registry_present(self, dispatcher):
+        cfg = GatewayConfig(agents=[AgentEntryConfig(id="ops", model="agent/default")])
+        registry = AgentRegistry(cfg, persist_changes=False)
+        session_manager = FakeSessionManager()
+        ctx = make_ctx(session_manager=session_manager, config=cfg, agent_registry=registry)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.create",
+            {"agentId": "ghost"},
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "agent.not_found"
+        assert res.error.details == {"agentId": "ghost"}
+
+    @pytest.mark.asyncio
+    async def test_create_with_create_if_missing_does_not_create_agent(self, dispatcher):
+        cfg = GatewayConfig()
+        registry = AgentRegistry(cfg, persist_changes=False)
+        session_manager = FakeSessionManager()
+        ctx = make_ctx(
+            session_manager=session_manager,
+            config=cfg,
+            agent_registry=registry,
+            scopes=["operator.write"],
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.create",
+            {
+                "agentId": "dragons",
+                "agentName": "Dragons",
+                "createAgentIfMissing": True,
+                "model": "openai/test",
+            },
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "agent.not_found"
+        assert res.error.details == {"agentId": "dragons"}
+        assert cfg.agents == []
+        assert session_manager._storage._sessions == {}
+
+    @pytest.mark.asyncio
+    async def test_create_with_create_if_missing_existing_agent_no_duplicate(self, dispatcher):
+        cfg = GatewayConfig(agents=[AgentEntryConfig(id="ops", model="agent/default")])
+        registry = AgentRegistry(cfg, persist_changes=False)
+        session_manager = FakeSessionManager()
+        ctx = make_ctx(session_manager=session_manager, config=cfg, agent_registry=registry)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.create",
+            {"agentId": "ops", "createAgentIfMissing": True},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert sum(1 for a in cfg.agents if a.id == "ops") == 1
+
+    @pytest.mark.asyncio
+    async def test_create_main_agent_passes_without_registry(self, dispatcher):
+        # No agent_registry on ctx; agentId="main" must always pass through.
+        session_manager = FakeSessionManager()
+        ctx = make_ctx(session_manager=session_manager)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.create",
+            {"agentId": "main"},
+            ctx,
+        )
+
+        assert res.ok is True
+
 
 class TestSessionsList:
     @pytest.mark.asyncio
@@ -530,6 +611,20 @@ class TestSessionsSend:
         assert ctx_with_sessions.session_manager.applied_intents == [
             (session.session_key, "continue")
         ]
+
+    def test_legacy_session_error_payload_is_terminal_message_normalized(self):
+        payload = _normalize_terminal_event_payload(
+            "session.event.error",
+            {
+                "message": "Session event stream idle before terminal event",
+                "code": "stream_idle_timeout",
+            },
+        )
+
+        assert payload["message"] == "The task timed out before it could finish."
+        assert payload["terminal_message"] == "The task timed out before it could finish."
+        assert payload["terminal_reason"] == "timeout"
+        assert payload["error_message"] == "Session event stream idle before terminal event"
 
     @pytest.mark.asyncio
     async def test_send_reset_same_key_intent_applies_before_append(

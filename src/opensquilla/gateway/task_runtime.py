@@ -32,6 +32,7 @@ import structlog
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
 from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus
+from opensquilla.session.terminal_reply import build_terminal_reply
 
 log = structlog.get_logger(__name__)
 
@@ -143,6 +144,8 @@ class SubagentCompletionEvent:
             payload["error_class"] = self.error_class
         if self.error_message:
             payload["error_message"] = self.error_message
+        if self.status != AgentTaskStatus.SUCCEEDED:
+            payload["terminal_message"] = build_terminal_reply(payload)
         return payload
 
 
@@ -860,11 +863,20 @@ class TaskRuntime:
             error_class=error_class,
             error_message=error_message,
         )
-        await self._emit(
-            task.envelope.session_key,
-            f"task.{status.value}",
-            {"task_id": task.task_id, "terminal_reason": terminal_reason},
-        )
+        payload: dict[str, Any] = {
+            "task_id": task.task_id,
+            "terminal_reason": terminal_reason,
+        }
+        if status != AgentTaskStatus.SUCCEEDED:
+            payload["terminal_message"] = build_terminal_reply(
+                {
+                    "status": status,
+                    "terminal_reason": terminal_reason,
+                    "error_class": error_class,
+                    "error_message": error_message,
+                }
+            )
+        await self._emit(task.envelope.session_key, f"task.{status.value}", payload)
         task.done.set()
         await self._notify_subagent_terminal(
             task,

@@ -54,6 +54,31 @@ metadata:
 Work with PowerPoint `.pptx` decks. The pptx file format is OOXML — a zip
 container holding XML descriptions of slides, layouts, masters, and media.
 
+## Delivery rule
+
+First, use the available tool list for this session to choose the delivery path.
+
+If `write_file`, `edit_file`, `apply_patch`, or `execute_code` is available:
+
+- Build the `.pptx` in the active workspace using the paths below.
+- Call `publish_artifact` for the final `.pptx` before your final reply when
+  that tool is available.
+- The code examples later in this document apply.
+
+If none of those file-authoring tools are available:
+
+- Do not attempt to generate, save, or modify the `.pptx`.
+- Do not paste OOXML, Python, JavaScript, HTML, or other source as a substitute
+  for sending the deck.
+- Ignore the Path B, Path C, and Visual QA sections below; they do not apply
+  when file authoring is unavailable.
+- Reply plainly: explain that the current session cannot create files, and
+  offer to publish an existing `.pptx` by path, describe the slide contents in
+  text, or continue in a file-authoring surface such as the OpenSquilla Web UI.
+
+In all cases, do not paste full file source as the deliverable. Source code is
+appropriate only when the user explicitly asks for code.
+
 ## Decide the path first
 
 Pick **one** of three paths up front; do not mix them. The right path depends

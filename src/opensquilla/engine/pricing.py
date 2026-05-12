@@ -417,6 +417,8 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     # MiniMax.
     ("minimax/minimax-m2.7", PriceEntry(0.118, 0.99)),
     # Ollama / local (free).
+    ("baai/", PriceEntry(0.0, 0.0)),
+    ("sentence-transformers/", PriceEntry(0.0, 0.0)),
     ("ollama/", PriceEntry(0.0, 0.0)),
     ("local/", PriceEntry(0.0, 0.0)),
 ]
@@ -441,7 +443,7 @@ def _should_fetch_live_price(model_id: str) -> bool:
         return False
     if "/" not in model_lower:
         return False
-    if model_lower.startswith(("ollama/", "local/")):
+    if model_lower.startswith(("baai/", "sentence-transformers/", "ollama/", "local/")):
         return False
     return True
 

@@ -18,9 +18,11 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 import tomllib
 import urllib.parse
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
@@ -296,7 +298,17 @@ def find_built_wheel(wheel_dir: Path) -> Path:
 
 
 def build_wheel(repo_root: Path, wheel_dir: Path, env: dict[str, str]) -> Path:
-    run(["uv", "build", "--wheel", "--out-dir", str(wheel_dir), "--clear"], cwd=repo_root, env=env)
+    args = ["uv", "build", "--wheel", "--out-dir", str(wheel_dir), "--clear"]
+    try:
+        run(args, cwd=repo_root, env=env)
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"uv build failed with exit code {exc.returncode}; retrying once.",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(2)
+        run(args, cwd=repo_root, env=env)
     return find_built_wheel(wheel_dir)
 
 
@@ -308,8 +320,10 @@ def build_wheelhouse_command(
     target_platform_tag: str,
     python_major: int,
     python_minor: int,
+    extra_extras: tuple[str, ...] = (),
 ) -> list[str]:
-    target = str(wheel_path if profile == "core" else f"{wheel_path}[{profile}]")
+    extras = tuple(extra for extra in (profile, *extra_extras) if extra != "core")
+    target = str(wheel_path if not extras else f"{wheel_path}[{','.join(extras)}]")
     if target_platform_tag == platform_tag():
         return [sys.executable, "-m", "pip", "wheel", "--wheel-dir", str(package_dir), target]
     python_version = f"{python_major}{python_minor}"
@@ -363,6 +377,7 @@ def download_wheelhouse(
     target_platform_tag: str,
     python_major: int,
     python_minor: int,
+    extra_extras: tuple[str, ...] = (),
 ) -> None:
     if target_platform_tag != platform_tag():
         for command in cross_platform_seed_wheel_commands(package_dir, profile):
@@ -375,6 +390,7 @@ def download_wheelhouse(
             target_platform_tag=target_platform_tag,
             python_major=python_major,
             python_minor=python_minor,
+            extra_extras=extra_extras,
         ),
         cwd=wheel_path.parent,
         env=env,
@@ -436,6 +452,51 @@ def extract_python_runtime_archive(archive_path: Path, runtime_root: Path) -> No
         shutil.copytree(candidate, runtime_root)
     finally:
         shutil.rmtree(extract_dir, ignore_errors=True)
+
+
+def prune_portable_runtime(runtime_root: Path) -> None:
+    for pycache in sorted(runtime_root.rglob("__pycache__"), reverse=True):
+        if pycache.is_dir():
+            shutil.rmtree(pycache)
+    for pyc in runtime_root.rglob("*.pyc"):
+        if pyc.is_file():
+            pyc.unlink()
+
+
+def install_portable_wheelhouse(release_root: Path) -> None:
+    """Preinstall wheelhouse contents into the bundled Python runtime.
+
+    Portable zips should start like an app, not like a package manager. Avoid
+    runtime venv/ensurepip/pip work on user machines; Windows PowerShell and
+    antivirus hooks can make that path look hung even when the wheels are local.
+    """
+
+    package_dir = release_root / "packages"
+    site_packages = release_root / "runtime" / "python" / "Lib" / "site-packages"
+    if not package_dir.is_dir() or not site_packages.is_dir():
+        raise SystemExit("Portable wheelhouse preinstall requires packages and site-packages.")
+
+    for wheel_path in sorted(package_dir.glob("*.whl")):
+        with zipfile.ZipFile(wheel_path) as wheel:
+            for info in wheel.infolist():
+                name = info.filename
+                if not name or name.endswith("/"):
+                    continue
+                target_rel: Path | None
+                if ".data/" in name:
+                    prefix, data_rel = name.split(".data/", 1)
+                    _ = prefix
+                    kind, _, remainder = data_rel.partition("/")
+                    if kind in {"purelib", "platlib"} and remainder:
+                        target_rel = Path(remainder)
+                    else:
+                        continue
+                else:
+                    target_rel = Path(name)
+                target = site_packages / target_rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with wheel.open(info) as src, target.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
 
 
 def render_install_sh(
@@ -615,6 +676,9 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {{
         --find-links $PackageDir `
         "{wheel_target}"
 }}
+if ($LASTEXITCODE -ne 0) {{
+    throw "OpenSquilla installation failed with exit code $LASTEXITCODE."
+}}
 
 $OpenSquillaBin = Resolve-OpenSquilla
 if (-not $OpenSquillaBin) {{
@@ -622,6 +686,9 @@ if (-not $OpenSquillaBin) {{
 }}
 
 & $OpenSquillaBin onboard --if-needed
+if ($LASTEXITCODE -ne 0) {{
+    throw "OpenSquilla onboarding failed with exit code $LASTEXITCODE."
+}}
 
 Write-Host ""
 Write-Host "OpenSquilla is installed."
@@ -633,21 +700,34 @@ Write-Host "  http://127.0.0.1:18790/control/"
 """
 
 
+def _install_target(base: str, profile: str, extra_extras: tuple[str, ...] = ()) -> str:
+    extras = tuple(extra for extra in (profile, *extra_extras) if extra != "core")
+    return base if not extras else f"{base}[{','.join(extras)}]"
+
+
+def _portable_profile_extras(profile: str) -> tuple[str, ...]:
+    if profile == "recommended":
+        return ("feishu",)
+    return ()
+
+
 def render_start_sh(profile: str = "recommended") -> str:
-    target = "opensquilla" if profile == "core" else f"opensquilla[{profile}]"
+    target = _install_target("opensquilla", profile, _portable_profile_extras(profile))
     script = """#!/bin/sh
 if [ -z "${BASH_VERSION:-}" ]; then
   exec /usr/bin/env bash "$0" "$@"
 fi
 set -euo pipefail
 
+CLI_MODE=0
+if [[ "${1:-}" == "--cli" ]]; then
+  CLI_MODE=1
+  shift
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_DIR="${SCRIPT_DIR}/packages"
 PYTHON_BIN="${SCRIPT_DIR}/runtime/python/bin/python3"
-VENV_DIR="${SCRIPT_DIR}/.venv"
-if [[ -z "${OPENSQUILLA_GATEWAY_CONFIG_PATH:-}" ]]; then
-  export OPENSQUILLA_GATEWAY_CONFIG_PATH="${SCRIPT_DIR}/.opensquilla/config.toml"
-fi
 if [[ -z "${OPENSQUILLA_LLM_API_KEY:-}" && -n "${OPENROUTER_API_KEY:-}" ]]; then
   export OPENSQUILLA_LLM_API_KEY="${OPENROUTER_API_KEY}"
 fi
@@ -660,54 +740,134 @@ if [[ ! -d "${PACKAGE_DIR}" ]]; then
   echo "OpenSquilla package directory not found: ${PACKAGE_DIR}" >&2
   exit 1
 fi
+OPENSQUILLA_WHEEL="$(
+  find "${PACKAGE_DIR}" -maxdepth 1 -type f -name 'opensquilla-*.whl' |
+    sort |
+    head -n 1
+)"
+if [[ -z "${OPENSQUILLA_WHEEL}" ]]; then
+  echo "OpenSquilla wheel not found in ${PACKAGE_DIR}" >&2
+  exit 1
+fi
+WHEEL_HASH="$(
+  "${PYTHON_BIN}" -c '
+import hashlib, pathlib, sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()[:12])
+' "${OPENSQUILLA_WHEEL}"
+)"
+VENV_DIR="${SCRIPT_DIR}/.venv-${WHEEL_HASH}"
+VENV_PYTHON="${VENV_DIR}/bin/python"
+INSTALL_MARKER="${VENV_DIR}/.opensquilla-wheelhouse-${WHEEL_HASH}"
+export PATH="${SCRIPT_DIR}:${VENV_DIR}/bin:${SCRIPT_DIR}/runtime/python/bin:${PATH}"
+RELEASE_ID="$(
+  "${PYTHON_BIN}" -c '
+import hashlib, sys
+print(hashlib.sha256(f"{sys.argv[1]}|{sys.argv[2]}".encode("utf-8")).hexdigest()[:12])
+' "${SCRIPT_DIR}" "${WHEEL_HASH}"
+)"
+DATA_BASE="${XDG_DATA_HOME:-${HOME}/.local/share}"
+PORTABLE_DATA_DIR="${OPENSQUILLA_PORTABLE_HOME:-${DATA_BASE}/OpenSquilla/portable/${RELEASE_ID}}"
+if [[ -z "${OPENSQUILLA_GATEWAY_CONFIG_PATH:-}" ]]; then
+  export OPENSQUILLA_GATEWAY_CONFIG_PATH="${PORTABLE_DATA_DIR}/config.toml"
+fi
+if [[ -z "${OPENSQUILLA_STATE_DIR:-}" ]]; then
+  export OPENSQUILLA_STATE_DIR="${PORTABLE_DATA_DIR}"
+fi
+if [[ -z "${OPENSQUILLA_GATEWAY_STATE_DIR:-}" ]]; then
+  export OPENSQUILLA_GATEWAY_STATE_DIR="${OPENSQUILLA_STATE_DIR}/state"
+fi
+if [[ -z "${OPENSQUILLA_GATEWAY_WORKSPACE_DIR:-}" ]]; then
+  export OPENSQUILLA_GATEWAY_WORKSPACE_DIR="${OPENSQUILLA_STATE_DIR}/workspace"
+fi
+mkdir -p "${OPENSQUILLA_STATE_DIR}"
 
-if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+if [[ ! -x "${VENV_PYTHON}" ]]; then
   echo "Creating local OpenSquilla environment..."
-  "${PYTHON_BIN}" -m venv "${VENV_DIR}"
+  "${PYTHON_BIN}" -m venv --without-pip "${VENV_DIR}"
 fi
 
-echo "Installing OpenSquilla from local wheelhouse..."
-"${VENV_DIR}/bin/python" -m pip install \
-  --upgrade \
-  --no-index \
-  --find-links "${PACKAGE_DIR}" \
-  "__TARGET__"
+if [[ ! -f "${INSTALL_MARKER}" ]]; then
+  echo "Installing OpenSquilla from bundled wheels..."
+  SITE_PACKAGES="$("${VENV_PYTHON}" -c 'import site; print(site.getsitepackages()[0])')"
+  "${PYTHON_BIN}" - "${PACKAGE_DIR}" "${SITE_PACKAGES}" <<'PY'
+import pathlib
+import shutil
+import sys
+import zipfile
 
-OPENSQUILLA_BIN="${VENV_DIR}/bin/opensquilla"
-"${OPENSQUILLA_BIN}" onboard --if-needed
-if [[ -z "${OPENSQUILLA_STATE_DIR:-}" ]]; then
-  export OPENSQUILLA_STATE_DIR="${SCRIPT_DIR}/.opensquilla"
+package_dir = pathlib.Path(sys.argv[1])
+site_packages = pathlib.Path(sys.argv[2])
+site_packages.mkdir(parents=True, exist_ok=True)
+for wheel_path in sorted(package_dir.glob("*.whl")):
+    with zipfile.ZipFile(wheel_path) as wheel:
+        for info in wheel.infolist():
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            if ".data/" in name:
+                _prefix, data_rel = name.split(".data/", 1)
+                kind, _sep, remainder = data_rel.partition("/")
+                if kind not in {"purelib", "platlib"} or not remainder:
+                    continue
+                target_rel = pathlib.Path(remainder)
+            else:
+                target_rel = pathlib.Path(name)
+            target = site_packages / target_rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with wheel.open(info) as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+PY
+  touch "${INSTALL_MARKER}"
+fi
+
+OPENSQUILLA_BIN="${VENV_PYTHON}"
+OPENSQUILLA_MODULE=( "-m" "opensquilla.cli.main" )
+if [[ "${CLI_MODE}" == "1" ]]; then
+  exec "${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" "$@"
+fi
+
+if [[ ! -f "${OPENSQUILLA_GATEWAY_CONFIG_PATH}" && -n "${OPENROUTER_API_KEY:-}" ]]; then
+  "${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" onboard \\
+    --provider openrouter \\
+    --api-key-env OPENROUTER_API_KEY \\
+    --minimal
+else
+  "${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" onboard
 fi
 
 echo
 echo "Starting OpenSquilla gateway."
 echo "Web UI: http://127.0.0.1:18790/control/"
 echo "Press Ctrl+C in this terminal to stop the gateway."
-exec "${OPENSQUILLA_BIN}" gateway run
+if [[ -t 1 ]]; then
+  exec "${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" gateway run
+else
+  LOG_DIR="${OPENSQUILLA_STATE_DIR}/logs"
+  mkdir -p "${LOG_DIR}"
+  CONSOLE_LOG="${OPENSQUILLA_STATE_DIR}/logs/gateway-console.log"
+  echo "Console log: ${CONSOLE_LOG}"
+  "${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" gateway run 2>&1 | tee -a "${CONSOLE_LOG}"
+  exit "${PIPESTATUS[0]}"
+fi
 """
     return script.replace("__TARGET__", target)
 
 
 def render_start_ps1(profile: str = "recommended") -> str:
-    target = "opensquilla" if profile == "core" else f"opensquilla[{profile}]"
-    script = """$ErrorActionPreference = "Stop"
+    target = _install_target("opensquilla", profile, _portable_profile_extras(profile))
+    script = """param(
+    [switch]$Cli,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$CliArgs
+)
+
+$ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Join-Path $ScriptDir 'packages'
 $PythonBin = Join-Path $ScriptDir 'runtime\\python\\python.exe'
 $VenvBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:TEMP }
 $VenvRoot = Join-Path $VenvBase 'OpenSquilla\\venvs'
-$Hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
-    [System.Text.Encoding]::UTF8.GetBytes($ScriptDir)
-)
-$ReleaseId = -join ($Hash[0..5] | ForEach-Object { $_.ToString('x2') })
-$VenvDir = Join-Path $VenvRoot $ReleaseId
-$VenvPython = Join-Path $VenvDir 'Scripts\\python.exe'
-$OpenSquillaBin = Join-Path $VenvDir 'Scripts\\opensquilla.exe'
-if (-not $env:OPENSQUILLA_GATEWAY_CONFIG_PATH) {
-    $ConfigDir = Join-Path $ScriptDir '.opensquilla'
-    $env:OPENSQUILLA_GATEWAY_CONFIG_PATH = Join-Path $ConfigDir 'config.toml'
-}
 if ((-not $env:OPENSQUILLA_LLM_API_KEY) -and $env:OPENROUTER_API_KEY) {
     $env:OPENSQUILLA_LLM_API_KEY = $env:OPENROUTER_API_KEY
 }
@@ -718,32 +878,201 @@ if (-not (Test-Path $PythonBin)) {
 if (-not (Test-Path $PackageDir)) {
     throw "OpenSquilla package directory not found: $PackageDir"
 }
+if (-not (Test-Path $VenvRoot)) {
+    New-Item -ItemType Directory -Path $VenvRoot -Force | Out-Null
+}
+$OpenSquillaWheel = Get-ChildItem -Path $PackageDir -Filter 'opensquilla-*.whl' |
+    Sort-Object Name |
+    Select-Object -First 1
+if (-not $OpenSquillaWheel) {
+    throw "OpenSquilla wheel not found in $PackageDir"
+}
+$Sha256 = [System.Security.Cryptography.SHA256]::Create()
+$WheelStream = [System.IO.File]::OpenRead($OpenSquillaWheel.FullName)
+try {
+    $WheelHashFull = -join ($Sha256.ComputeHash($WheelStream) | ForEach-Object {
+        $_.ToString('x2')
+    })
+} finally {
+    $WheelStream.Dispose()
+    $Sha256.Dispose()
+}
+$WheelHash = $WheelHashFull.Substring(0, 12).ToLowerInvariant()
+$Hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+    [System.Text.Encoding]::UTF8.GetBytes("$ScriptDir|$WheelHash")
+)
+$ReleaseId = -join ($Hash[0..5] | ForEach-Object { $_.ToString('x2') })
+$VenvDir = Join-Path $VenvRoot $ReleaseId
+$VenvPython = Join-Path $VenvDir 'Scripts\\python.exe'
+$InstallMarker = Join-Path $VenvDir ".opensquilla-wheelhouse-$WheelHash"
+$env:PATH = "$ScriptDir;$ScriptDir\\runtime\\python;$env:PATH"
+$env:PATH = "$VenvDir\\Scripts;$env:PATH"
+$PortableDataDir = if ($env:OPENSQUILLA_PORTABLE_HOME) {
+    $env:OPENSQUILLA_PORTABLE_HOME
+} else {
+    Join-Path $VenvBase "OpenSquilla\\portable\\$ReleaseId"
+}
+if (-not $env:OPENSQUILLA_GATEWAY_CONFIG_PATH) {
+    $env:OPENSQUILLA_GATEWAY_CONFIG_PATH = Join-Path $PortableDataDir 'config.toml'
+}
+if (-not $env:OPENSQUILLA_STATE_DIR) {
+    $env:OPENSQUILLA_STATE_DIR = $PortableDataDir
+}
+if (-not $env:OPENSQUILLA_GATEWAY_STATE_DIR) {
+    $env:OPENSQUILLA_GATEWAY_STATE_DIR = Join-Path $env:OPENSQUILLA_STATE_DIR 'state'
+}
+if (-not $env:OPENSQUILLA_GATEWAY_WORKSPACE_DIR) {
+    $env:OPENSQUILLA_GATEWAY_WORKSPACE_DIR = Join-Path $env:OPENSQUILLA_STATE_DIR 'workspace'
+}
+New-Item -ItemType Directory -Path $env:OPENSQUILLA_STATE_DIR -Force | Out-Null
 
 if (-not (Test-Path $VenvPython)) {
     Write-Host "Creating local OpenSquilla environment..."
-    New-Item -ItemType Directory -Path $VenvRoot -Force | Out-Null
-    & $PythonBin -m venv $VenvDir
+    & $PythonBin -m venv --without-pip $VenvDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenSquilla environment creation failed with exit code $LASTEXITCODE."
+    }
 }
 
-Write-Host "Installing OpenSquilla from local wheelhouse..."
-& $VenvPython -m pip install `
-    --upgrade `
-    --no-index `
-    --find-links $PackageDir `
-    "__TARGET__"
+if (-not (Test-Path $InstallMarker)) {
+    Write-Host "Installing OpenSquilla from bundled wheels..."
+    $SitePackages = & $VenvPython -c "import site; print(site.getsitepackages()[0])"
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenSquilla site-packages lookup failed with exit code $LASTEXITCODE."
+    }
+    $WheelInstallScript = @'
+import pathlib
+import shutil
+import sys
+import zipfile
 
-& $OpenSquillaBin onboard --if-needed
-if (-not $env:OPENSQUILLA_STATE_DIR) {
-    $env:OPENSQUILLA_STATE_DIR = Join-Path $ScriptDir '.opensquilla'
+package_dir = pathlib.Path(sys.argv[1])
+site_packages = pathlib.Path(sys.argv[2])
+site_packages.mkdir(parents=True, exist_ok=True)
+for wheel_path in sorted(package_dir.glob("*.whl")):
+    with zipfile.ZipFile(wheel_path) as wheel:
+        for info in wheel.infolist():
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            if ".data/" in name:
+                _prefix, data_rel = name.split(".data/", 1)
+                kind, _sep, remainder = data_rel.partition("/")
+                if kind not in {"purelib", "platlib"} or not remainder:
+                    continue
+                target_rel = pathlib.Path(remainder)
+            else:
+                target_rel = pathlib.Path(name)
+            target = site_packages / target_rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with wheel.open(info) as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+'@
+    $WheelInstallScript | & $PythonBin - $PackageDir $SitePackages
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenSquilla bundled wheel installation failed with exit code $LASTEXITCODE."
+    }
+    New-Item -ItemType File -Path $InstallMarker -Force | Out-Null
+}
+
+$OpenSquillaArgs = @("-m", "opensquilla.cli.main")
+
+if ($Cli) {
+    & $VenvPython @OpenSquillaArgs @CliArgs
+    exit $LASTEXITCODE
+}
+
+if ((-not (Test-Path $env:OPENSQUILLA_GATEWAY_CONFIG_PATH)) -and $env:OPENROUTER_API_KEY) {
+    & $VenvPython @OpenSquillaArgs onboard `
+        --provider openrouter `
+        --api-key-env OPENROUTER_API_KEY `
+        --minimal
+} else {
+    & $VenvPython @OpenSquillaArgs onboard
+}
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSquilla onboarding failed with exit code $LASTEXITCODE."
 }
 
 Write-Host ""
 Write-Host "Starting OpenSquilla gateway."
 Write-Host "Web UI: http://127.0.0.1:18790/control/"
 Write-Host "Press Ctrl+C in this terminal to stop the gateway."
-& $OpenSquillaBin gateway run
+$OutputRedirected = [Console]::IsOutputRedirected
+if (-not $OutputRedirected) {
+    & $VenvPython @OpenSquillaArgs gateway run
+    $GatewayExitCode = $LASTEXITCODE
+} else {
+    $LogDir = Join-Path $env:OPENSQUILLA_STATE_DIR 'logs'
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    $ConsoleLog = Join-Path $LogDir 'gateway-console.log'
+    Write-Host "Console log: $ConsoleLog"
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $VenvPython @OpenSquillaArgs gateway run 2>&1 |
+            ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                    $_.ToString()
+                } else {
+                    $_
+                }
+            } |
+            Tee-Object -FilePath $ConsoleLog -Append
+        $GatewayExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+}
+exit $GatewayExitCode
 """
     return script.replace("__TARGET__", target)
+
+
+def render_cli_sh() -> str:
+    return """#!/bin/sh
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "${SCRIPT_DIR}/start.sh" --cli "$@"
+"""
+
+
+def render_cli_cmd() -> str:
+    return (
+        "@echo off\r\n"
+        'cd /d "%~dp0"\r\n'
+        'set "OSQ_POWERSHELL=powershell.exe"\r\n'
+        'where pwsh.exe >nul 2>nul && set "OSQ_POWERSHELL=pwsh.exe"\r\n'
+        '"%OSQ_POWERSHELL%" -NoLogo -NoProfile -ExecutionPolicy Bypass '
+        '-File "%~dp0start.ps1" -Cli %*\r\n'
+    )
+
+
+def render_shell_cmd() -> str:
+    return (
+        "@echo off\r\n"
+        "title OpenSquilla Shell\r\n"
+        'cd /d "%~dp0"\r\n'
+        'set "OSQ_POWERSHELL=powershell.exe"\r\n'
+        'where pwsh.exe >nul 2>nul && set "OSQ_POWERSHELL=pwsh.exe"\r\n'
+        '"%OSQ_POWERSHELL%" -NoLogo -NoExit -NoProfile -ExecutionPolicy Bypass -Command '
+        "\"Set-Location -LiteralPath '%~dp0'; "
+        "function global:opensquilla { & (Join-Path (Get-Location) 'opensquilla.cmd') @args }; "
+        "Write-Host 'OpenSquilla portable shell'; "
+        "Write-Host 'Run commands like:'; "
+        "Write-Host '  opensquilla onboard --provider openrouter'; "
+        "Write-Host '  opensquilla gateway run'\"\r\n"
+    )
+
+
+def render_start_cmd() -> str:
+    return (
+        "@echo off\r\n"
+        "title OpenSquilla Gateway\r\n"
+        'cd /d "%~dp0"\r\n'
+        'set "OSQ_POWERSHELL=powershell.exe"\r\n'
+        'where pwsh.exe >nul 2>nul && set "OSQ_POWERSHELL=pwsh.exe"\r\n'
+        '"%OSQ_POWERSHELL%" -NoLogo -NoExit -ExecutionPolicy Bypass -File "%~dp0start.ps1"\r\n'
+    )
 
 
 def render_readme(
@@ -757,15 +1086,58 @@ def render_readme(
 ) -> str:
     windows_target = platform_tag.startswith("windows-")
     if portable:
+        release_kind = "Portable Release"
         unix_commands = "bash start.sh"
         windows_command = ".\\start.ps1"
         python_note = "Python is bundled in this zip."
+        setup_note = (
+            "The recommended portable package includes Feishu websocket support. "
+            "First run opens the configuration wizard when no local config exists. "
+            "If `OPENROUTER_API_KEY` is present and no local config exists, "
+            "the launcher writes an OpenRouter env-reference config and starts "
+            "the gateway without asking you to paste the key. Later runs open "
+            "the wizard again so you can review or change configuration before "
+            "the gateway starts. Config, workspace, logs, memory, and runtime "
+            "state use the normal user-level OpenSquilla directory. "
+            "Portable packages do not install a global `opensquilla` command; "
+            "run commands from this extracted folder with `./opensquilla` or "
+            "`opensquilla.cmd`."
+        )
     else:
+        release_kind = "Wheelhouse Release"
         unix_commands = "bash install.sh\nopensquilla gateway run"
         windows_command = ".\\install.ps1\nopensquilla gateway run"
         python_note = f"Requires Python {python_major}.{python_minor}."
+        setup_note = (
+            "The installer runs idempotent onboarding after installation. To "
+            "reconfigure later, run `opensquilla onboard` for the full wizard or "
+            "`opensquilla configure <section>` for one area."
+        )
     if windows_target:
-        command_section = f"""## Windows PowerShell
+        if portable:
+            command_section = f"""## Windows
+
+Double-click `Start OpenSquilla.cmd`.
+Double-click `OpenSquilla Shell.cmd` for a terminal where `opensquilla ...`
+commands work from this portable package.
+
+Or run from PowerShell:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+{windows_command}
+```
+
+Portable CLI commands can also be run from this folder:
+
+```powershell
+.\\opensquilla.cmd onboard
+```
+
+Keep the terminal open. Closing the terminal stops the gateway.
+"""
+        else:
+            command_section = f"""## Windows PowerShell
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -780,7 +1152,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 """
 
-    return f"""# OpenSquilla {app_version} Wheelhouse Release
+    return f"""# OpenSquilla {app_version} {release_kind}
 
 Build target:
 
@@ -793,6 +1165,8 @@ Build target:
 Open `http://127.0.0.1:18790/control/`.
 
 {python_note}
+
+{setup_note}
 """
 
 
@@ -854,11 +1228,31 @@ def prepare_release_tree(
             raise SystemExit("Portable release requires a Python runtime directory.")
         runtime_target = release_root / "runtime" / "python"
         shutil.copytree(runtime_root, runtime_target)
+        prune_portable_runtime(runtime_target)
 
         start_sh = release_root / "start.sh"
         start_sh.write_text(render_start_sh(profile), encoding="utf-8")
         start_sh.chmod(start_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        cli_sh = release_root / "opensquilla"
+        cli_sh.write_text(render_cli_sh(), encoding="utf-8")
+        cli_sh.chmod(cli_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         (release_root / "start.ps1").write_text(render_start_ps1(profile), encoding="utf-8")
+        if platform_tag.startswith("windows-"):
+            (release_root / "Start OpenSquilla.cmd").write_text(
+                render_start_cmd(),
+                encoding="utf-8",
+                newline="",
+            )
+            (release_root / "opensquilla.cmd").write_text(
+                render_cli_cmd(),
+                encoding="utf-8",
+                newline="",
+            )
+            (release_root / "OpenSquilla Shell.cmd").write_text(
+                render_shell_cmd(),
+                encoding="utf-8",
+                newline="",
+            )
     else:
         install_sh = release_root / "install.sh"
         install_sh.write_text(
@@ -911,7 +1305,7 @@ def prepare_release_tree(
     return bundled_wheel
 
 
-def create_zip(release_root: Path, zip_path: Path) -> None:
+def create_zip(release_root: Path, zip_path: Path, *, archive_root: str | None = None) -> None:
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     if zip_path.exists():
         zip_path.unlink()
@@ -919,7 +1313,10 @@ def create_zip(release_root: Path, zip_path: Path) -> None:
     root_parent = release_root.parent
     with ZipFile(zip_path, "w", ZIP_DEFLATED) as archive:
         for path in sorted(p for p in release_root.rglob("*") if p.is_file()):
-            rel = path.relative_to(root_parent).as_posix()
+            if archive_root:
+                rel = Path(archive_root, path.relative_to(release_root)).as_posix()
+            else:
+                rel = path.relative_to(root_parent).as_posix()
             info = ZipInfo(rel)
             info.compress_type = ZIP_DEFLATED
             source_mode = stat.S_IMODE(path.stat().st_mode)
@@ -1109,8 +1506,10 @@ def main(argv: list[str] | None = None) -> int:
             target_platform_tag=tag,
             python_major=sys.version_info.major,
             python_minor=sys.version_info.minor,
+            extra_extras=(
+                _portable_profile_extras(args.profile) if args.bundle_python_runtime else ()
+            ),
         )
-
     write_manifest(
         release_root / "manifest.json",
         app_version=app_version,
@@ -1131,7 +1530,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     zip_path = (repo_root / args.output_dir / f"{name}.zip").resolve()
-    create_zip(release_root, zip_path)
+    archive_root = f"OpenSquilla-{app_version}" if args.bundle_python_runtime else None
+    create_zip(release_root, zip_path, archive_root=archive_root)
     checksum_path = write_sha256(zip_path)
     checksums_path = write_sha256s(
         tuple(zip_path.parent.glob("*.zip")), zip_path.parent / "SHA256SUMS"

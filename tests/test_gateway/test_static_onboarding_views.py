@@ -89,6 +89,11 @@ def test_setup_view_warns_when_env_key_is_not_visible_to_gateway():
     assert "if (_providerEnvMissing())" in txt
 
 
+def test_setup_view_does_not_default_env_key_over_stored_provider_key():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "current.api_key ? '' : field.default" in txt
+
+
 def test_setup_view_preserves_selected_channel_type_while_redrawing_fields():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
     assert "let _channelType" in txt

@@ -20,16 +20,29 @@
 # agent_stream_idle_timeout_seconds = 180.0
 # webui_stream_idle_grace_seconds = 210.0
 
+# WebSocket per-connection outbound writer queue. When enabled (default),
+# each WS connection gets a bounded asyncio queue + dedicated writer task.
+# Producers enqueue and return immediately; slow clients trigger a fast
+# 1011 close instead of back-pressuring the gateway. Disable to fall back
+# to the legacy direct-`ws.send_text` path under a per-connection lock.
+# Kill switch affects new connections only; existing connections retain
+# their startup-time behavior.
+# Env override: OPENSQUILLA_WS_WRITER_QUEUE_ENABLED=true|false
+# ws_writer_queue_enabled = true
+# Env override: OPENSQUILLA_WS_WRITER_QUEUE_MAXSIZE=512
+# ws_writer_queue_maxsize = 512
+
 # Gateway debug file logging. Raw prompt/tool call capture is separate from
-# debug.log and diagnostics_enabled; it is opt-in through
-# OPENSQUILLA_TURN_CALL_LOG=1.
+# debug.log and standard diagnostics; it is opt-in through
+# OPENSQUILLA_TURN_CALL_LOG=1 or `opensquilla diagnostics on --raw`.
 # log_file_enabled = true
 # log_level = "DEBUG"          # CRITICAL/FATAL/ERROR/WARNING/WARN/INFO/DEBUG/TRACE
 # log_file_max_bytes = 5000000
 # log_file_backup_count = 3
 
 # Developer diagnostics. debug is security-sensitive; keep it false in shared
-# deployments. diagnostics_enabled does not enable raw turn-call capture.
+# deployments. diagnostics_enabled enables standard diagnostics at startup.
+# Raw turn-call capture remains a separate explicit runtime/env switch.
 # debug = false
 # diagnostics_enabled = false
 
@@ -76,7 +89,7 @@ base_url = "https://openrouter.ai/api/v1"
 #
 # Example direct DeepSeek config:
 # provider = "deepseek"
-# model = "deepseek-chat"
+# model = "deepseek-v4-flash"
 # api_key = ""          # env DEEPSEEK_API_KEY also works
 # base_url = "https://api.deepseek.com"
 

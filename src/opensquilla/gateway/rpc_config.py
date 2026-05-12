@@ -58,6 +58,52 @@ def _collect_paths(payload: Any, prefix: str = "") -> set[str]:
     return paths
 
 
+def _align_auto_router_profile_for_provider_patch(
+    source_config: Any,
+    cfg_dict: dict[str, Any],
+    explicit_paths: set[str],
+) -> None:
+    if "llm.provider" not in explicit_paths:
+        return
+    if any(
+        path == "squilla_router" or path.startswith("squilla_router.")
+        for path in explicit_paths
+    ):
+        return
+
+    llm = cfg_dict.get("llm")
+    router = cfg_dict.get("squilla_router")
+    if not isinstance(llm, dict) or not isinstance(router, dict):
+        return
+
+    old_provider = str(getattr(getattr(source_config, "llm", None), "provider", "") or "")
+    old_provider = old_provider.strip().lower()
+    new_provider = str(llm.get("provider") or "").strip().lower()
+    if not old_provider or not new_provider or old_provider == new_provider:
+        return
+
+    profile = str(router.get("tier_profile") or "").strip().lower()
+    if profile != old_provider:
+        return
+
+    from opensquilla.gateway.config import ROUTER_TIER_PROFILE_IDS, _router_tier_profile_defaults
+
+    try:
+        old_defaults = _router_tier_profile_defaults(old_provider)
+    except ValueError:
+        return
+    if router.get("tiers") != old_defaults:
+        return
+
+    if new_provider in ROUTER_TIER_PROFILE_IDS and new_provider != "openrouter":
+        router["tier_profile"] = new_provider
+        router["tiers"] = _router_tier_profile_defaults(new_provider)
+        return
+
+    router.pop("tier_profile", None)
+    router.pop("tiers", None)
+
+
 _REDACTED_PUBLIC_VALUE = "[redacted]"
 
 
@@ -344,12 +390,14 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
         redacted_paths.update(merge_restored_paths)
         cfg_dict = _deep_merge(cfg_dict, patch_data)
 
-    from opensquilla.gateway.config import GatewayConfig
-
-    new_config = GatewayConfig(**cfg_dict)
     explicit_paths = set(dot_patches.keys()) | _collect_paths(patch_data)
     for path, value in dot_patches.items():
         explicit_paths.update(_collect_paths(value, path))
+    _align_auto_router_profile_for_provider_patch(ctx.config, cfg_dict, explicit_paths)
+
+    from opensquilla.gateway.config import GatewayConfig
+
+    new_config = GatewayConfig(**cfg_dict)
     if _memory_restart_required_for_paths(explicit_paths):
         _validate_memory_embedding_semantics(new_config)
     _inherit_runtime_secrets(ctx.config, new_config)

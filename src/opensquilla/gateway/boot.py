@@ -42,6 +42,7 @@ from opensquilla.gateway.session_services import get_session_storage
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.websocket import get_registry
 from opensquilla.paths import default_opensquilla_home
+from opensquilla.session.terminal_reply import build_terminal_reply
 
 log = structlog.get_logger(__name__)
 
@@ -62,7 +63,7 @@ _LOG_LEVELS = {
 
 
 # fmt: off
-def _make_channel_rpc_context_factory(svc: ServiceContainer, config: GatewayConfig, *, subscription_manager: Any, channel_manager_ref: Any, turn_runner: Any, heartbeat_service: Any) -> Any:  # noqa: E501
+def _make_channel_rpc_context_factory(svc: ServiceContainer, config: GatewayConfig, *, subscription_manager: Any, channel_manager_ref: Any, turn_runner: Any, heartbeat_service: Any, diagnostics_state: Any | None = None) -> Any:  # noqa: E501
     from opensquilla.channels.command_registry import build_channel_rpc_context
 
     def _factory(envelope: Any) -> Any:
@@ -75,6 +76,7 @@ def _make_channel_rpc_context_factory(svc: ServiceContainer, config: GatewayConf
             channel_manager=channel_manager_ref(),
             turn_runner=turn_runner,
             heartbeat_service=heartbeat_service,
+            diagnostics_state=diagnostics_state,
         )
 
     return _factory
@@ -650,13 +652,32 @@ async def _emit_task_runtime_stream_events(
                 if not key.startswith("_")
             }
         event_kind = event_dict.pop("kind", getattr(event, "kind", event.__class__.__name__))
+        if event_kind == "error":
+            raw_message = event_dict.get("message")
+            error_message = (
+                raw_message if isinstance(raw_message, str) and raw_message else "Agent error"
+            )
+            code = event_dict.get("code")
+            code_text = str(code or "").lower()
+            is_timeout = "timeout" in code_text or "stream idle" in error_message.lower()
+            terminal_payload = {
+                "status": "timeout" if is_timeout else "failed",
+                "terminal_reason": "timeout" if is_timeout else "error",
+                "error_class": code,
+                "error_message": error_message,
+            }
+            terminal_message = build_terminal_reply(terminal_payload)
+            event_dict["message"] = terminal_message
+            event_dict["terminal_message"] = terminal_message
+            event_dict["terminal_reason"] = terminal_payload["terminal_reason"]
+            event_dict["error_message"] = error_message
         await event_emitter(
             session_key,
             f"session.event.{event_kind}",
             event_dict,
         )
         if event_kind == "error":
-            message = event_dict.get("message")
+            message = event_dict.get("error_message")
             error_message = message if isinstance(message, str) and message else "Agent error"
     if error_message is not None:
         raise RuntimeError(error_message)
@@ -861,7 +882,7 @@ def emit_skill_filter_banner(skills_cfg: Any) -> None:
     """One-line startup warning when the ONNX embedding backend is
     unreachable but a non-lexical filter strategy is configured.
 
-    Required runtime: ``onnxruntime`` + ``transformers`` (tokenizer) +
+    Required runtime: ``onnxruntime`` + ``tokenizers`` +
     the bundled v4 BGE ONNX dir (or a configured override). All three
     ship via ``uv sync --extra recommended``. The previous non-ONNX
     fallback was removed — there is now exactly one backend.
@@ -884,7 +905,7 @@ def emit_skill_filter_banner(skills_cfg: Any) -> None:
     onnx_ok = False
     try:
         if importlib.util.find_spec("onnxruntime") is not None and importlib.util.find_spec(
-            "transformers"
+            "tokenizers"
         ) is not None:
             from opensquilla.memory.embedding import LocalEmbeddingProvider
 
@@ -901,7 +922,7 @@ def emit_skill_filter_banner(skills_cfg: Any) -> None:
     log_std.warning(
         "ONNX embedding backend not available; filter_strategy=%r will run "
         "lexical-only. Install via `uv sync --extra recommended` to get "
-        "onnxruntime + transformers, and verify the bundled BGE ONNX dir "
+        "onnxruntime + tokenizers, and verify the bundled BGE ONNX dir "
         "is present.",
         getattr(skills_cfg, "filter_strategy", "lexical"),
     )
@@ -1018,6 +1039,10 @@ async def build_services(
 
     set_gateway_config(config)
 
+    from opensquilla.tools.ssrf import configure_trusted_fake_ip_cidrs
+
+    configure_trusted_fake_ip_cidrs(config.tools.trusted_fake_ip_cidrs)
+
     # ── Sandbox runtime ─────────────────────────────────────────────
     # validate_combination emits structured warnings; configure_runtime
     # assembles the backend + gate + ledger so tool handlers can call
@@ -1122,11 +1147,13 @@ async def build_services(
             )
 
     # ── Model catalog (boot order: after provider selector) ──────────
-    model_catalog = None
-    if api_key and config.llm.provider == "openrouter":
-        from opensquilla.provider.model_catalog import ModelCatalog
+    # Keep a catalog for every provider so direct-provider runtime paths still
+    # get static fallback capabilities (for example DeepSeek v4 thinking
+    # replay) even when only OpenRouter performs a remote model-list fetch.
+    from opensquilla.provider.model_catalog import ModelCatalog
 
-        model_catalog = ModelCatalog()
+    model_catalog = ModelCatalog()
+    if api_key and config.llm.provider == "openrouter":
         try:
             await asyncio.wait_for(
                 model_catalog.fetch_openrouter(api_key, resolved_base, proxy),
@@ -1400,6 +1427,7 @@ def build_turn_runner_from_services(
     svc: Any,
     *,
     config: GatewayConfig | None = None,
+    diagnostics_state: Any | None = None,
 ) -> Any:
     """Build a TurnRunner with every service-backed memory integration wired.
 
@@ -1434,6 +1462,7 @@ def build_turn_runner_from_services(
         turn_capture_services=getattr(svc, "turn_capture_services", None) or None,
         session_flush_service=getattr(svc, "flush_service", None),
         session_lock_provider=_standalone_lock_provider,
+        diagnostics_state=diagnostics_state,
     )
 
 
@@ -1527,8 +1556,17 @@ async def start_gateway_server(
         auth_mode=config.auth.mode,
     )
 
+    # ── Diagnostics runtime state ───────────────────────────────────
+    from opensquilla.gateway.diagnostics import DiagnosticsState
+
+    diagnostics_state = DiagnosticsState.from_config(config)
+
     # ── TurnRunner (shared agent orchestration layer) ────────────────
-    turn_runner = build_turn_runner_from_services(svc, config=config)
+    turn_runner = build_turn_runner_from_services(
+        svc,
+        config=config,
+        diagnostics_state=diagnostics_state,
+    )
     # Patch deferred callback so memory writes refresh TurnRunner snapshots
     if hasattr(svc, "_turn_runner_ref"):
         svc._turn_runner_ref.append(turn_runner)  # type: ignore[attr-defined]
@@ -1807,6 +1845,7 @@ async def start_gateway_server(
             channel_manager_ref=lambda: _cm_holder[0],
             turn_runner=turn_runner,
             heartbeat_service=heartbeat_service,
+            diagnostics_state=diagnostics_state,
         )
         channel_manager = ChannelManager.from_config(
             config.channels.channels,
@@ -1848,6 +1887,7 @@ async def start_gateway_server(
         heartbeat_service=heartbeat_service,
         heartbeat_loop=heartbeat_loop,
         agent_registry=svc.agent_registry,
+        diagnostics_state=diagnostics_state,
         memory_managers=svc.memory_managers,
         memory_stores=svc.memory_stores,
         memory_retrievers=svc.memory_retrievers,
@@ -1887,7 +1927,6 @@ async def start_gateway_server(
                 ),
             )
         log.info("gateway.started", host=config.host, port=config.port)
-        create_background_task(preload_squilla_router_runtime(config))
 
     # Start channels (after app is ready to receive webhooks)
     if channel_manager is not None:
@@ -1906,6 +1945,9 @@ async def start_gateway_server(
                     error=details.get("error"),
                     exception=details.get("exception"),
                 )
+
+    if run:
+        create_background_task(preload_squilla_router_runtime(config))
 
     app.state.gateway_ready = True
     return server_handle

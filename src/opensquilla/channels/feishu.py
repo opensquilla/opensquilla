@@ -152,8 +152,9 @@ def _import_lark_oapi() -> Any:
         import lark_oapi as lark  # type: ignore[import-not-found, import-untyped]
     except ImportError as exc:
         raise RuntimeError(
-            "Install Feishu support with `uv sync --extra feishu` or "
-            "`pip install 'opensquilla[feishu]'` to use connection_mode='websocket'."
+            "Feishu websocket mode requires lark-oapi. Use the latest recommended "
+            "portable package, or install Feishu support with "
+            "`pip install 'opensquilla[feishu]'` / `uv sync --extra feishu`."
         ) from exc
     return lark
 
@@ -743,6 +744,13 @@ class FeishuChannel:
         return self._transport.create_route(path)
 
     async def _handle_inbound_event(self, envelope: InboundEventEnvelope) -> None:
+        if (
+            envelope.source == "feishu:websocket"
+            and envelope.event_id
+            and not self._dedupe.check_and_add(envelope.event_id)
+        ):
+            return
+
         if envelope.event_type == "im.message.receive_v1":
             self.enqueue(self.parse_event(envelope.raw))
         elif envelope.event_type == "im.chat.member.bot.added_v1":

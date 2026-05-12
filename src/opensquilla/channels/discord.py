@@ -312,14 +312,36 @@ class DiscordChannel:
         elif event_type == "MESSAGE_CREATE":
             if data.get("author", {}).get("id") == self.bot_user_id:
                 return
+            msg_id = str(data.get("id") or "")
+            if msg_id and not self._dedupe.check_and_add(f"message:{msg_id}"):
+                return
             msg = self.parse_event(data)
             self.enqueue(msg)
         elif event_type == "MESSAGE_REACTION_ADD":
+            reaction_key = self._reaction_dedupe_key(data)
+            if reaction_key and not self._dedupe.check_and_add(reaction_key):
+                return
             self._enqueue_reaction(data)
         elif event_type == "INTERACTION_CREATE":
+            interaction_id = str(data.get("id") or "")
+            if interaction_id and not self._dedupe.check_and_add(
+                f"interaction:{interaction_id}"
+            ):
+                return
             self._handle_interaction(data)
         elif event_type == "RESUMED":
             log.info("discord.resumed")
+
+    @staticmethod
+    def _reaction_dedupe_key(data: dict[str, Any]) -> str:
+        emoji = data.get("emoji", {})
+        emoji_key = emoji.get("id") or emoji.get("name") or ""
+        if not data.get("message_id") or not data.get("user_id") or not emoji_key:
+            return ""
+        return (
+            f"reaction:{data.get('message_id', '')}:"
+            f"{data.get('user_id', '')}:{emoji_key}"
+        )
 
     def _enqueue_reaction(self, data: dict[str, Any]) -> None:
         user_id = data.get("user_id", "unknown")

@@ -93,6 +93,7 @@ async def run_agent_once(
     from opensquilla.gateway import build_services, build_turn_runner_from_services
     from opensquilla.gateway.config import GatewayConfig
     from opensquilla.gateway.routing import build_cli_route_envelope, tool_context_from_envelope
+    from opensquilla.paths import media_root_from_config
     from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
     from opensquilla.tools.types import InteractionMode
 
@@ -160,8 +161,6 @@ async def run_agent_once(
         message = ingested_attachments.text
         run_attachments = ingested_attachments.attachments
         if run_attachments:
-            from pathlib import Path as _Path
-
             from opensquilla.gateway.transcripts import build_transcript_attachment_envelope
 
             if hasattr(svc.session_manager, "stamp_user_text"):
@@ -171,12 +170,7 @@ async def run_agent_once(
 
             attachments_cfg = getattr(service_cfg, "attachments", None)
             persist_enabled = bool(getattr(attachments_cfg, "persist_transcripts", True))
-            media_root_raw = getattr(attachments_cfg, "media_root", None)
-            media_root = (
-                _Path(media_root_raw)
-                if media_root_raw
-                else _Path(".opensquilla") / "media"
-            )
+            media_root = media_root_from_config(service_cfg)
             disk_budget = getattr(attachments_cfg, "transcript_disk_budget_bytes", None)
             persist_content, _writes = build_transcript_attachment_envelope(
                 text=message,

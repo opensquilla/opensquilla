@@ -47,11 +47,11 @@ def _llm_status(cfg: GatewayConfig) -> tuple[bool, str]:
         return False, "none"
     if not spec.requires_api_key:
         return True, "none"
-    if llm.api_key and "llm.api_key" in getattr(cfg, "_runtime_secret_paths", set()):
-        return True, "env"
-    if llm.api_key:
+    if llm.api_key and "llm.api_key" not in getattr(
+        cfg, "_runtime_secret_paths", set()
+    ):
         return True, "explicit"
-    env_key = getattr(llm, "api_key_env", "") or spec.env_key
+    env_key = getattr(llm, "api_key_env", "").strip()
     if env_key and os.environ.get(env_key):
         return True, "env"
     if env_key:

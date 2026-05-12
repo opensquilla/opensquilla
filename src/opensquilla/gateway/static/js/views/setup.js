@@ -131,7 +131,7 @@ const SetupView = (() => {
       if (name === 'model') value = current.model || field.default || '';
       else if (name === 'base_url') value = current.base_url || field.default || '';
       else if (name === 'proxy') value = current.proxy || '';
-      else if (name === 'api_key_env') value = current.api_key_env || field.default || '';
+      else if (name === 'api_key_env') value = current.api_key_env || (current.api_key ? '' : field.default || '');
       return _fieldHtml(field, value, 'provider');
     }).join('');
   }

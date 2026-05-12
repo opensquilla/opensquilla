@@ -248,7 +248,7 @@ class LocalEmbeddingProvider:
 
     Loads the bundled v4 router BGE ONNX export
     (``squilla_router/models/v4.2_phase3_inference/bge_onnx/``) via
-    ``onnxruntime`` + ``transformers.AutoTokenizer``. There is no
+    ``onnxruntime`` + the Hugging Face ``tokenizers`` runtime. There is no
     sentence-transformers / torch path: the project ships an INT8 BGE
     ONNX so the FP32 sentence-transformers download is unnecessary
     weight, and earlier dual-backend coexistence created a real
@@ -260,7 +260,7 @@ class LocalEmbeddingProvider:
     themselves.
 
     Failure modes:
-      * ``onnxruntime`` or ``transformers`` not installed → ``ImportError``
+      * ``onnxruntime`` or ``tokenizers`` not installed → ``ImportError``
       * bundled ONNX dir / weights missing → ``RuntimeError``
       * runtime error during model load → ``RuntimeError``
 
@@ -366,11 +366,11 @@ class LocalEmbeddingProvider:
         any failure — there is no fallback to retry against."""
         try:
             import onnxruntime as ort
-            from transformers import AutoTokenizer
+            from tokenizers import Tokenizer
         except ImportError as exc:
             raise ImportError(
                 "LocalEmbeddingProvider requires `onnxruntime` and "
-                "`transformers` (tokenizer). Install via "
+                "`tokenizers`. Install via "
                 "`uv sync --extra recommended`."
             ) from exc
         if self._onnx_dir is None or not self._onnx_dir.is_dir():
@@ -388,17 +388,16 @@ class LocalEmbeddingProvider:
             )
         try:
             session = ort.InferenceSession(str(onnx_files[0]), providers=["CPUExecutionProvider"])
-            tokenizer = AutoTokenizer.from_pretrained(str(self._onnx_dir))
+            tokenizer_path = self._onnx_dir / "tokenizer.json"
+            if not tokenizer_path.is_file():
+                raise RuntimeError(f"tokenizer.json not found in {self._onnx_dir}")
+            tokenizer = Tokenizer.from_file(str(tokenizer_path))
+            tokenizer.enable_truncation(max_length=512)
+            tokenizer.enable_padding()
             input_names = [inp.name for inp in session.get_inputs()]
             # Warm-up + dim discovery via a dummy encode.
-            warm = tokenizer(
-                ["warmup"],
-                padding=True,
-                truncation=True,
-                max_length=512,
-                return_tensors="np",
-            )
-            feed = {k: v for k, v in warm.items() if k in input_names}
+            self._onnx_tokenizer = tokenizer
+            feed = self._tokenize_onnx(["warmup"], input_names)
             out = session.run(None, feed)[0]
             if out.ndim == 3:
                 out = out[:, 0, :]  # CLS pooling for BGE-style models
@@ -412,6 +411,21 @@ class LocalEmbeddingProvider:
         self._onnx_tokenizer = tokenizer
         self._onnx_input_names = input_names
         self._dim = int(out.shape[-1])
+
+    def _tokenize_onnx(self, texts: list[str], input_names: list[str]) -> dict[str, Any]:
+        import numpy as np
+
+        assert self._onnx_tokenizer is not None
+        encodings = self._onnx_tokenizer.encode_batch(texts)  # type: ignore[union-attr]
+        arrays: dict[str, Any] = {
+            "input_ids": np.asarray([enc.ids for enc in encodings], dtype=np.int64),
+            "attention_mask": np.asarray(
+                [enc.attention_mask for enc in encodings],
+                dtype=np.int64,
+            ),
+            "token_type_ids": np.asarray([enc.type_ids for enc in encodings], dtype=np.int64),
+        }
+        return {name: value for name, value in arrays.items() if name in input_names}
 
     def encode_sync(
         self,
@@ -434,14 +448,7 @@ class LocalEmbeddingProvider:
         chunks: list[np.ndarray] = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
-            encoded = self._onnx_tokenizer(  # type: ignore[operator]
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=512,
-                return_tensors="np",
-            )
-            feed = {k: v for k, v in encoded.items() if k in self._onnx_input_names}
+            feed = self._tokenize_onnx(batch, self._onnx_input_names)
             outputs = self._onnx_session.run(None, feed)[0]  # type: ignore[union-attr]
             if outputs.ndim == 3:
                 outputs = outputs[:, 0, :]  # CLS pooling

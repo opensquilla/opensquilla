@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -197,6 +198,10 @@ def _resolve_python_bin(*, sandbox_enabled: bool) -> str:
         for candidate in _SANDBOX_PYTHON_CANDIDATES:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
+    else:
+        current_python = Path(sys.executable)
+        if current_python.is_file():
+            return str(current_python)
 
     python_bin = shutil.which("python3") or shutil.which("python")
     if python_bin is None:

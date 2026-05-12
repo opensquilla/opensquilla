@@ -15,6 +15,8 @@ from opensquilla.attachment_refs import _atomic_write_bytes, _validate_sha256
 
 ARTIFACT_REF_KIND = "artifact_ref"
 ARTIFACT_STORE = "artifacts"
+ARTIFACT_SESSION_BUCKET = "s"
+ARTIFACT_MATERIAL_NAME = "data"
 DEFAULT_ARTIFACT_MAX_BYTES = 30 * 1024 * 1024
 DEFAULT_ARTIFACT_DISK_BUDGET_BYTES = 512 * 1024 * 1024
 
@@ -175,7 +177,7 @@ class ArtifactStore:
         artifact_dir = self._artifact_dir(session_id, artifact_id)
         artifact_dir.mkdir(parents=True, exist_ok=False)
         try:
-            _atomic_write_bytes(artifact_dir / sha, payload)
+            _atomic_write_bytes(artifact_dir / ARTIFACT_MATERIAL_NAME, payload)
             _atomic_write_bytes(
                 artifact_dir / "meta.json",
                 json.dumps(ref.to_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8"),
@@ -224,7 +226,7 @@ class ArtifactStore:
         session_id: str,
     ) -> tuple[ArtifactRef, Path]:
         artifact_id = _validate_artifact_id(artifact_id)
-        meta_path = self._artifact_dir(session_id, artifact_id) / "meta.json"
+        meta_path = self._resolve_meta_path(session_id, artifact_id)
         if not meta_path.exists():
             raise ArtifactNotFoundError("artifact not found")
         ref = ArtifactRef.from_dict(json.loads(meta_path.read_text(encoding="utf-8")))
@@ -241,15 +243,38 @@ class ArtifactStore:
         return ref, path
 
     def path_for(self, ref: ArtifactRef) -> Path:
-        return self._artifact_dir(ref.session_id, ref.id) / _validate_sha256(ref.sha256)
+        _validate_sha256(ref.sha256)
+        material_path = self._artifact_dir(ref.session_id, ref.id) / ARTIFACT_MATERIAL_NAME
+        if material_path.exists():
+            return material_path
+        return self._legacy_artifact_dir(ref.session_id, ref.id) / ref.sha256
 
     def _artifact_dir(self, session_id: str, artifact_id: str) -> Path:
+        return (
+            self.media_root
+            / ARTIFACT_STORE
+            / ARTIFACT_SESSION_BUCKET
+            / _session_store_token(session_id)
+            / _artifact_store_token(artifact_id)
+        )
+
+    def _legacy_artifact_dir(self, session_id: str, artifact_id: str) -> Path:
         return (
             self.media_root
             / ARTIFACT_STORE
             / _safe_token(_validate_non_empty("session_id", session_id))
             / _validate_artifact_id(artifact_id)
         )
+
+    def _resolve_meta_path(self, session_id: str, artifact_id: str) -> Path:
+        for artifact_dir in (
+            self._artifact_dir(session_id, artifact_id),
+            self._legacy_artifact_dir(session_id, artifact_id),
+        ):
+            meta_path = artifact_dir / "meta.json"
+            if meta_path.exists():
+                return meta_path
+        return self._artifact_dir(session_id, artifact_id) / "meta.json"
 
     def _disk_usage_bytes(self) -> int:
         root = self.media_root / ARTIFACT_STORE
@@ -282,6 +307,16 @@ def _safe_mime(value: Any) -> str:
 def _safe_token(value: str) -> str:
     cleaned = _SAFE_TOKEN_RE.sub("_", value.strip())
     return cleaned[:180] or "session"
+
+
+def _session_store_token(session_id: str) -> str:
+    raw = _validate_non_empty("session_id", session_id)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _artifact_store_token(artifact_id: str) -> str:
+    raw = _validate_artifact_id(artifact_id)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def _validate_artifact_id(value: Any) -> str:

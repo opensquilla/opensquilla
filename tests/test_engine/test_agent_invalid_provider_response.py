@@ -12,6 +12,7 @@ from opensquilla.engine.usage import UsageTracker
 from opensquilla.provider import (
     ChatConfig,
     Message,
+    ModelCapabilities,
     ToolDefinition,
     ToolInputSchema,
 )
@@ -88,6 +89,43 @@ class _CacheReport:
 
     def to_log_dict(self) -> dict[str, Any]:
         return {}
+
+
+@pytest.mark.asyncio
+async def test_final_done_returns_openrouter_deepseek_reasoning_content() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="ok"),
+                ProviderDone(
+                    stop_reason="stop",
+                    input_tokens=10,
+                    output_tokens=1,
+                    reasoning_tokens=4,
+                    reasoning_content="I reasoned through the OpenRouter response.",
+                    model="deepseek/deepseek-v4-flash",
+                ),
+            ]
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.HIGH,
+            model_id="deepseek/deepseek-v4-flash",
+            model_capabilities=ModelCapabilities(
+                supports_reasoning=True,
+                supports_tools=True,
+                reasoning_format="openrouter",
+            ),
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "ok"
+    assert done.reasoning_content == "I reasoned through the OpenRouter response."
 
 
 @pytest.mark.asyncio

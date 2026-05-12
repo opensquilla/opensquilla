@@ -759,16 +759,17 @@ def test_write_sha256s_records_all_release_zips(tmp_path: Path) -> None:
     assert checksum_path.read_text(encoding="utf-8").splitlines() == expected
 
 
-def test_release_workflow_publishes_only_windows_and_macos_portable_zips() -> None:
+def test_release_workflow_publishes_only_windows_portable_zip() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "bundle_python_runtime:" not in workflow
     assert "platform_tag: windows-x64" in workflow
-    assert "platform_tag: macos-arm64" in workflow
+    assert "platform_tag: macos-arm64" not in workflow
     assert "platform_tag: linux-x64" not in workflow
     assert "for mode in portable wheelhouse" not in workflow
     assert "--bundle-python-runtime" in workflow
     assert "expected one portable zip" in workflow
+    assert "expected one Windows portable zip" in workflow
     assert "manifest[\"portable\"] is True" in workflow
     assert "SHA256SUMS" in workflow
     assert "manifest.version" in workflow

@@ -48,8 +48,6 @@ repository or installing Git, Git LFS, or `uv`.
 
    - `OpenSquilla-<version>-windows-x64-py312-recommended-portable.zip` for
      Windows.
-   - `OpenSquilla-<version>-macos-arm64-py312-recommended-portable.zip` for
-     Apple Silicon Macs.
 
    The recommended portable zip includes Feishu websocket support by default.
    If a package is not available for your platform, use the source install path
@@ -80,13 +78,6 @@ repository or installing Git, Git LFS, or `uv`.
    launcher writes an OpenRouter env-reference config and starts the gateway
    without asking you to paste the key. If the variable is not set, the
    onboarding wizard lets you choose a provider freely.
-
-   macOS portable zip:
-
-   ```sh
-   export OPENROUTER_API_KEY="sk-..."  # optional shortcut for OpenRouter
-   bash start.sh
-   ```
 
 4. Configure a model provider.
 
@@ -175,9 +166,6 @@ installing, use `opensquilla ...` commands, not `uv run`.
    ```
 
    PATH changes from these installers apply to new terminal sessions.
-
-1. Install prerequisites: [git](https://git-scm.com), [git-lfs](https://git-lfs.com/) and
-   [uv](https://docs.astral.sh/uv/).
 
 2. Clone with LFS assets:
 

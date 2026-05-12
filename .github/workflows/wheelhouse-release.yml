@@ -38,8 +38,6 @@ jobs:
         include:
           - os: windows-latest
             platform_tag: windows-x64
-          - os: macos-latest
-            platform_tag: macos-arm64
 
     steps:
       - name: Checkout
@@ -171,7 +169,8 @@ jobs:
 
           zips = sorted(Path("dist").glob("*.zip"))
           assert zips, "no release zips were downloaded"
-          assert len(zips) == 2, f"expected Windows and macOS portable zips, got {len(zips)}"
+          assert len(zips) == 1, f"expected one Windows portable zip, got {len(zips)}"
+          assert "windows-x64" in zips[0].name
           assert all("portable" in zip_path.name for zip_path in zips)
           lines = []
           for zip_path in zips:

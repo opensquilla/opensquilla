@@ -92,7 +92,7 @@ def test_readme_splits_user_paths_and_documents_preview_release_package() -> Non
     )
     assert "Current preview packages:" in readme
     assert "windows-x64-py312-recommended-portable.zip" in readme
-    assert "macos-arm64-py312-recommended-portable.zip" in readme
+    assert "macos-arm64-py312-recommended-portable.zip" not in readme
     assert "recommended-wheelhouse.zip" not in release_section
     assert "Public release packages are not published yet." not in readme
     assert (

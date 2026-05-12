@@ -1957,7 +1957,9 @@ class Agent:
                 next_event.cancel()
                 with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
                     await next_event
-                await self._close_provider_stream(stream_iter)
+                # Don't call _close_provider_stream here: awaiting the cancelled
+                # future already triggered generator cleanup. Calling aclose()
+                # while cleanup is running raises RuntimeError (issue #14).
                 if total_deadline is not None and loop.time() >= total_deadline:
                     raise TimeoutError(f"Agent total timeout after {self.config.timeout}s")
                 raise _IterationStreamTimeoutError

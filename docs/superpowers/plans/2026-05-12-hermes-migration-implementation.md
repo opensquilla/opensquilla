@@ -77,7 +77,8 @@ Add this test file:
 ```python
 from __future__ import annotations
 
-import os
+import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -87,7 +88,7 @@ from opensquilla.migration.hermes import HermesMigrationOptions, HermesMigrator
 
 def _make_hermes_home(root: Path) -> Path:
     home = root / ".hermes"
-    home.mkdir()
+    home.mkdir(parents=True)
     (home / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
     return home
 
@@ -226,9 +227,8 @@ class HermesMigrator:
         self.options = options
         self.source = self._resolve_source()
         self.home = default_opensquilla_home()
-        self.output_dir = self.home / "migration" / "hermes" / datetime.utcnow().strftime(
-            "%Y%m%d-%H%M%S"
-        )
+        timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+        self.output_dir = self.home / "migration" / "hermes" / timestamp
         self.items: list[ItemResult] = []
 
     def _resolve_source(self) -> Path:
@@ -573,9 +573,6 @@ git commit -m "Apply Hermes user data migration"
 Append:
 
 ```python
-import tomllib
-
-
 def test_apply_maps_config_env_channels_and_mcp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = _make_hermes_home(tmp_path)
     (source / "config.yaml").write_text(
@@ -615,6 +612,11 @@ slack:
         + "\n",
         encoding="utf-8",
     )
+    (source / "skills" / "demo").mkdir(parents=True)
+    (source / "skills" / "demo" / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo\n---\n",
+        encoding="utf-8",
+    )
     home = tmp_path / "opensquilla-home"
     config_path = tmp_path / "opensquilla.toml"
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
@@ -635,6 +637,7 @@ slack:
     assert config["llm"]["base_url"] == "https://anthropic.example.test/v1"
     assert config["search_provider"] == "brave"
     assert config["search_api_key_env"] == "BRAVE_SEARCH_API_KEY"
+    assert str(home / "skills" / "hermes-imports") in config["skills"]["extra_dirs"]
     assert config["mcp"]["enabled"] is True
     assert {entry["name"] for entry in config["mcp"]["servers"]} == {"docs", "filesystem"}
     channels = {entry["type"]: entry for entry in config["channels"]["channels"]}
@@ -672,9 +675,7 @@ Add constants:
 SECRET_ENV_KEYS = {
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
-    "OPENROUTER_BASE_URL",
     "ANTHROPIC_API_KEY",
-    "ANTHROPIC_BASE_URL",
     "BRAVE_API_KEY",
     "BRAVE_SEARCH_API_KEY",
     "TAVILY_API_KEY",
@@ -682,6 +683,12 @@ SECRET_ENV_KEYS = {
     "DISCORD_BOT_TOKEN",
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
+}
+
+NON_SECRET_ENV_KEYS = {
+    "OPENAI_BASE_URL",
+    "OPENROUTER_BASE_URL",
+    "ANTHROPIC_BASE_URL",
 }
 
 PROVIDER_ENV_KEYS = {
@@ -734,6 +741,8 @@ Add:
     def _migrate_config_and_env(self, selected: set[str]) -> None:
         raw_config = _load_yaml(self.source / "config.yaml")
         env_values = _load_env_file(self.source / ".env")
+        if "skills" in selected:
+            self._ensure_skills_extra_dir()
         if "model-config" in selected:
             self._migrate_model_config(raw_config)
         if "provider-keys" in selected or "search-config" in selected:
@@ -765,9 +774,12 @@ Add:
         migrated = 0
         for key, value in env_values.items():
             target_key = "BRAVE_SEARCH_API_KEY" if key == "BRAVE_API_KEY" else key
-            if target_key not in SECRET_ENV_KEYS or not value:
+            if target_key not in SECRET_ENV_KEYS and target_key not in NON_SECRET_ENV_KEYS:
                 continue
-            if not self.options.migrate_secrets:
+            if not value:
+                continue
+            is_secret = target_key in SECRET_ENV_KEYS
+            if is_secret and not self.options.migrate_secrets:
                 continue
             self._env_additions[target_key] = value
             migrated += 1
@@ -781,9 +793,24 @@ Add:
             self.source / ".env",
             self.home / ".env",
             "migrated" if migrated and self.options.apply else "planned" if migrated else "skipped",
-            "pass --migrate-secrets to migrate recognized secrets" if env_values and not migrated else "",
+            "pass --migrate-secrets to migrate recognized secrets" if any(key in SECRET_ENV_KEYS for key in env_values) and not self.options.migrate_secrets else "",
             {"migrated_keys": [SECRET_REDACTION] * migrated},
         )
+
+    def _ensure_skills_extra_dir(self) -> None:
+        destination_root = str(self.home / "skills" / SKILL_IMPORT_DIRNAME)
+        cfg = self._config()
+        extra_dirs = list(cfg.skills.extra_dirs)
+        if destination_root not in extra_dirs:
+            extra_dirs.append(destination_root)
+            cfg.skills.extra_dirs = extra_dirs
+            self._config_changed = True
+            self._record(
+                "skills-config",
+                self.source / "skills",
+                self.config_path,
+                "migrated" if self.options.apply else "planned",
+            )
 
     def _migrate_mcp_servers(self, raw_config: dict[str, Any]) -> None:
         servers = raw_config.get("mcp", {}).get("servers", {}) if isinstance(raw_config.get("mcp"), dict) else {}
@@ -798,6 +825,10 @@ Add:
             for key in ("command", "args", "env", "url"):
                 if key in raw:
                     entry[key] = raw[key]
+            if entry.get("url") and not entry.get("command"):
+                entry["transport"] = "sse"
+            elif entry.get("command"):
+                entry["transport"] = "stdio"
             entries.append(MCPServerEntry.model_validate(entry))
         cfg = self._config()
         cfg.mcp.enabled = True
@@ -806,13 +837,26 @@ Add:
         self._record("mcp-servers", self.source / "config.yaml", self.config_path, "migrated" if self.options.apply else "planned")
 
     def _migrate_channels(self, raw_config: dict[str, Any], env_values: dict[str, str], selected: set[str]) -> None:
+        if not self.options.migrate_secrets:
+            self._record(
+                "channels",
+                self.source / ".env",
+                self.config_path,
+                "skipped",
+                "pass --migrate-secrets to migrate channel tokens",
+            )
+            return
         raw_entries = [entry.model_dump(mode="python") for entry in self._config().channels.channels]
+        changed = False
         def upsert(entry: dict[str, Any]) -> None:
+            nonlocal changed
             for idx, existing in enumerate(raw_entries):
                 if existing.get("name") == entry["name"]:
                     raw_entries[idx] = entry
+                    changed = True
                     return
             raw_entries.append(entry)
+            changed = True
         if "telegram-settings" in selected and self.options.migrate_secrets and env_values.get("TELEGRAM_BOT_TOKEN"):
             telegram = raw_config.get("telegram", {}) if isinstance(raw_config.get("telegram"), dict) else {}
             upsert({"name": "hermes-telegram", "type": "telegram", "token": env_values["TELEGRAM_BOT_TOKEN"], "default_chat_id": str(telegram.get("default_chat_id", ""))})
@@ -822,9 +866,11 @@ Add:
         if "slack-settings" in selected and self.options.migrate_secrets and env_values.get("SLACK_BOT_TOKEN"):
             slack = raw_config.get("slack", {}) if isinstance(raw_config.get("slack"), dict) else {}
             upsert({"name": "hermes-slack", "type": "slack", "token": env_values["SLACK_BOT_TOKEN"], "slack_channel_id": str(slack.get("channel_id", ""))})
-        cfg = self._config()
-        cfg.channels = ChannelsConfig.model_validate({"channels": raw_entries})
-        self._config_changed = True
+        if changed:
+            cfg = self._config()
+            cfg.channels = ChannelsConfig.model_validate({"channels": raw_entries})
+            self._config_changed = True
+            self._record("channels", self.source / ".env", self.config_path, "migrated" if self.options.apply else "planned")
 ```
 
 Add write helpers:
@@ -980,6 +1026,7 @@ Create `tests/test_migration/test_hermes_e2e.py`:
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -991,7 +1038,7 @@ runner = CliRunner()
 
 def _write_hermes_home(root: Path) -> Path:
     source = root / ".hermes"
-    source.mkdir()
+    source.mkdir(parents=True)
     (source / "config.yaml").write_text("model:\n  provider: openrouter\n  model: openai/gpt-4o-mini\n", encoding="utf-8")
     (source / "SOUL.md").write_text("Hermes soul\n", encoding="utf-8")
     return source
@@ -1143,9 +1190,6 @@ git commit -m "Add Hermes migration CLI"
 Append a second test to `tests/test_migration/test_hermes_e2e.py`:
 
 ```python
-import tomllib
-
-
 def test_cli_hermes_apply_preserves_existing_config_and_redacts_report(tmp_path: Path, monkeypatch) -> None:
     source = _write_hermes_home(tmp_path)
     (source / ".env").write_text(

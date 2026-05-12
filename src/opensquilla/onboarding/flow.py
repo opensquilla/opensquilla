@@ -265,7 +265,7 @@ def _secret_value_validator(label: str):
     required = _required_value(label)
 
     def _validate(value: str) -> bool | str:
-        result = required(value)
+        result = cast(bool | str, required(value))
         if result is not True:
             return result
         stripped = str(value or "").strip()

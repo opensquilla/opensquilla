@@ -310,12 +310,15 @@ class HermesMigrator:
             self._record("model-config", self.source / "config.yaml", self.config_path, "skipped")
             return
         cfg = self._config()
+        base_url = model_cfg.get("base_url") or model_cfg.get("baseUrl")
+        target_provider = "openai" if provider == "custom" and base_url else provider
         if provider:
-            cfg.llm.provider = provider
-            cfg.llm.api_key_env = PROVIDER_ENV_KEYS.get(provider, cfg.llm.api_key_env)
+            cfg.llm.provider = target_provider
+            cfg.llm.api_key_env = PROVIDER_ENV_KEYS.get(
+                target_provider, cfg.llm.api_key_env
+            )
         if model:
             cfg.llm.model = model
-        base_url = model_cfg.get("base_url") or model_cfg.get("baseUrl")
         if base_url:
             cfg.llm.base_url = str(base_url)
         self._config_changed = True

@@ -191,6 +191,34 @@ slack:
     )
 
 
+def test_custom_provider_with_base_url_maps_to_openai_compatible_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _make_hermes_home(tmp_path)
+    (source / "config.yaml").write_text(
+        """
+model:
+  provider: custom
+  default: e2e-local
+  base_url: http://127.0.0.1:48921/v1
+""",
+        encoding="utf-8",
+    )
+    home = tmp_path / "opensquilla-home"
+    config_path = tmp_path / "opensquilla.toml"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    HermesMigrator(
+        HermesMigrationOptions(source=source, config_path=config_path, apply=True)
+    ).migrate()
+
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert config["llm"]["provider"] == "openai"
+    assert config["llm"]["api_key_env"] == "OPENAI_API_KEY"
+    assert config["llm"]["model"] == "e2e-local"
+    assert config["llm"]["base_url"] == "http://127.0.0.1:48921/v1"
+
+
 def test_archive_unsupported_runtime_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

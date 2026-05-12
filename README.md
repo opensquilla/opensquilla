@@ -38,35 +38,38 @@ disabled` if you intentionally want to skip the bundled router.
 
 ### Preview release package
 
-Use this path if you want to try OpenSquilla as a local app without cloning the
-repository or installing Git, Git LFS, or `uv`.
+Download the preview package if you want to try OpenSquilla as a local app
+without cloning the repository or installing Git, Git LFS, or `uv`.
+
+Current preview packages:
+
+- `OpenSquilla-<version>-windows-x64-py312-recommended-portable.zip` for
+  Windows.
+
+The recommended portable zip includes Feishu websocket support by default. If a
+package is not available for your platform, use the source install path below.
 
 1. Open the [GitHub Releases](https://github.com/opensquilla/opensquilla/releases)
-   page and download the preview package for your platform.
-
-   Current preview packages:
-
-   - `OpenSquilla-<version>-windows-x64-py312-recommended-portable.zip` for
-     Windows.
-
-   The recommended portable zip includes Feishu websocket support by default.
-   If a package is not available for your platform, use the source install path
-   below.
+   page and download the package.
 
 2. Extract to Downloads, Documents, or another folder you can write to.
 
-3. Install or start from the extracted folder.
+3. Double-click `Start OpenSquilla.cmd` from the extracted folder.
 
-   Windows portable zip:
+   Keep the terminal window open. Closing it stops the gateway.
 
-   - Double-click `Start OpenSquilla.cmd`.
-   - Double-click `OpenSquilla Shell.cmd` if you want a terminal where
-     `opensquilla ...` commands work from the portable package.
-   - Keep the terminal window open. Closing it stops the gateway.
-   - First run opens onboarding when no local config exists.
+4. Complete onboarding and open the Web UI.
 
-   Optional PowerShell start for users who want to set an API key in the same
-   terminal first:
+   The launcher opens onboarding before the gateway starts. On first run, choose
+   a provider and paste the requested keys; later starts let you review or change
+   the config. Then open <http://127.0.0.1:18790/control/>.
+
+<details>
+<summary>Advanced portable usage</summary>
+
+Use these options only when you want scripted setup or portable CLI commands.
+
+- To provide an OpenRouter key before first start:
 
    ```powershell
    $env:OPENROUTER_API_KEY="sk-..."
@@ -79,23 +82,28 @@ repository or installing Git, Git LFS, or `uv`.
    without asking you to paste the key. If the variable is not set, the
    onboarding wizard lets you choose a provider freely.
 
-4. Configure a model provider.
-
-   Portable zip users can normally do this from the onboarding wizard opened by
-   `Start OpenSquilla.cmd`, `start.ps1`, or `start.sh`. The `OPENROUTER_API_KEY`
-   shortcut above is optional. The portable zip does not install a global
-   `opensquilla` command; run commands from the extracted folder through the
-   included start scripts or `.\opensquilla.cmd`, for example:
+- The portable zip does not install a global `opensquilla` command. For a
+  terminal where `opensquilla ...` commands work, double-click
+  `OpenSquilla Shell.cmd`, or run commands from the extracted folder through
+  `.\opensquilla.cmd`:
 
    ```powershell
    .\opensquilla.cmd onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
    ```
 
-5. Start OpenSquilla and open the Web UI.
+</details>
 
-   Portable zip users already start the gateway through `Start OpenSquilla.cmd`,
-   `start.ps1`, or `start.sh`. Then open
-   <http://127.0.0.1:18790/control/>.
+<details>
+<summary>Portable troubleshooting</summary>
+
+- If Windows blocks the launcher, make sure the zip came from the official
+  GitHub Releases page, then use the Windows prompt to allow it.
+- If the Web UI does not open, keep the gateway terminal open and visit
+  <http://127.0.0.1:18790/control/> manually.
+- If `opensquilla` is not recognized, use `OpenSquilla Shell.cmd` or
+  `.\opensquilla.cmd` from the extracted folder.
+
+</details>
 
 Preview packages are the recommended public distribution channel for validating
 installation, onboarding, the local gateway, and the Web UI before the stable

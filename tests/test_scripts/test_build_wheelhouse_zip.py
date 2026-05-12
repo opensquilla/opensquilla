@@ -469,13 +469,14 @@ def test_render_readme_is_platform_specific_for_windows_portable() -> None:
     assert "## macOS / Linux" not in readme
     assert "bash start.sh" not in readme
     assert "Python is bundled in this zip." in readme
-    assert "First run opens the configuration wizard" in readme
+    assert "Complete onboarding." in readme
     assert "The recommended portable package includes Feishu websocket support." in readme
+    assert "Advanced portable usage" in readme
     assert "OPENROUTER_API_KEY" in readme
-    assert "the launcher writes an OpenRouter env-reference config" in readme
-    assert "Later runs open the wizard again" in readme
+    assert "writes an OpenRouter env-reference config" in readme
+    assert "later starts let you review or change the config" in readme
     assert "skip setup when it is complete" not in readme
-    assert "do not install a global `opensquilla` command" in readme
+    assert "does not install a global `opensquilla` command" in readme
     assert (
         "Config, workspace, logs, memory, and runtime state use the normal "
         "user-level OpenSquilla directory." in readme
@@ -501,11 +502,11 @@ def test_render_readme_is_platform_specific_for_macos_portable() -> None:
     assert "## Windows PowerShell" not in readme
     assert ".\\start.ps1" not in readme
     assert "Python is bundled in this zip." in readme
-    assert "First run opens the configuration wizard" in readme
+    assert "Complete onboarding." in readme
     assert "The recommended portable package includes Feishu websocket support." in readme
-    assert "Later runs open the wizard again" in readme
+    assert "later starts let you review or change the config" in readme
     assert "skip setup when it is complete" not in readme
-    assert "do not install a global `opensquilla` command" in readme
+    assert "does not install a global `opensquilla` command" not in readme
     assert (
         "Config, workspace, logs, memory, and runtime state use the normal "
         "user-level OpenSquilla directory." in readme
@@ -646,9 +647,10 @@ def test_prepare_windows_portable_release_tree_includes_double_click_launcher(
     assert "opensquilla.cmd" in shell_text
     readme = (release_root / "README.md").read_text(encoding="utf-8")
     assert "Double-click `Start OpenSquilla.cmd`" in readme
-    assert "Double-click `OpenSquilla Shell.cmd`" in readme
+    assert "double-click\n`OpenSquilla Shell.cmd`" in readme
     assert ".\\opensquilla.cmd onboard" in readme
     assert "Closing the terminal stops the gateway." in readme
+    assert "Advanced portable usage" in readme
 
 
 def test_install_portable_wheelhouse_preinstalls_into_bundled_python(

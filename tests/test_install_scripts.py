@@ -86,9 +86,9 @@ def test_readme_splits_user_paths_and_documents_preview_release_package() -> Non
     )
     assert "| Developer | [Develop from source](#develop-from-source) | Available now |" in readme
     assert (
-        "Use this path if you want to try OpenSquilla as a local app without "
-        "cloning the repository or installing Git, Git LFS, or `uv`."
-        in normalized
+        "Download the preview package if you want to try OpenSquilla as a "
+        "local app without cloning the repository or installing Git, Git LFS, "
+        "or `uv`." in normalized
     )
     assert "Current preview packages:" in readme
     assert "windows-x64-py312-recommended-portable.zip" in readme

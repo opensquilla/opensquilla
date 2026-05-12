@@ -1093,16 +1093,8 @@ def render_readme(
         python_note = "Python is bundled in this zip."
         setup_note = (
             "The recommended portable package includes Feishu websocket support. "
-            "First run opens the configuration wizard when no local config exists. "
-            "If `OPENROUTER_API_KEY` is present and no local config exists, "
-            "the launcher writes an OpenRouter env-reference config and starts "
-            "the gateway without asking you to paste the key. Later runs open "
-            "the wizard again so you can review or change configuration before "
-            "the gateway starts. Config, workspace, logs, memory, and runtime "
-            "state use the normal user-level OpenSquilla directory. "
-            "Portable packages do not install a global `opensquilla` command; "
-            "run commands from this extracted folder with `./opensquilla` or "
-            "`opensquilla.cmd`."
+            "Config, workspace, logs, memory, and runtime state use the normal "
+            "user-level OpenSquilla directory."
         )
     else:
         release_kind = "Wheelhouse Release"
@@ -1118,24 +1110,37 @@ def render_readme(
         if portable:
             command_section = f"""## Windows
 
-Double-click `Start OpenSquilla.cmd`.
-Double-click `OpenSquilla Shell.cmd` for a terminal where `opensquilla ...`
-commands work from this portable package.
+1. Double-click `Start OpenSquilla.cmd`.
+2. Keep the terminal open. Closing the terminal stops the gateway.
+3. Complete onboarding. On first run, choose a provider and paste the requested
+   keys; later starts let you review or change the config.
+4. Open `http://127.0.0.1:18790/control/`.
 
-Or run from PowerShell:
+<details>
+<summary>Advanced portable usage</summary>
+
+Use these options only when you want scripted setup or portable CLI commands.
+
+To start from PowerShell:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 {windows_command}
 ```
 
-Portable CLI commands can also be run from this folder:
+If `OPENROUTER_API_KEY` is present and no local config exists, the launcher
+writes an OpenRouter env-reference config and starts the gateway without asking
+you to paste the key.
+
+The portable package does not install a global `opensquilla` command. For a
+terminal where `opensquilla ...` commands work, double-click
+`OpenSquilla Shell.cmd`, or run commands from this folder:
 
 ```powershell
 .\\opensquilla.cmd onboard
 ```
 
-Keep the terminal open. Closing the terminal stops the gateway.
+</details>
 """
         else:
             command_section = f"""## Windows PowerShell
@@ -1146,12 +1151,33 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 """
     else:
-        command_section = f"""## macOS / Linux
+        if portable:
+            command_section = f"""## macOS / Linux
+
+1. Run the launcher from the extracted folder:
+
+```sh
+{unix_commands}
+```
+
+2. Keep the terminal open. Closing the terminal stops the gateway.
+3. Complete onboarding. On first run, choose a provider and paste the requested
+   keys; later starts let you review or change the config.
+4. Open `http://127.0.0.1:18790/control/`.
+"""
+        else:
+            command_section = f"""## macOS / Linux
 
 ```sh
 {unix_commands}
 ```
 """
+
+    web_ui_note = (
+        ""
+        if portable
+        else "Open `http://127.0.0.1:18790/control/`.\n\n"
+    )
 
     return f"""# OpenSquilla {app_version} {release_kind}
 
@@ -1161,11 +1187,9 @@ Build target:
 - Python: `{python_major}.{python_minor}`
 - profile: `{profile}`
 
-{command_section}
+{command_section.rstrip()}
 
-Open `http://127.0.0.1:18790/control/`.
-
-{python_note}
+{web_ui_note}{python_note}
 
 {setup_note}
 """

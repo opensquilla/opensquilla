@@ -75,26 +75,33 @@ if [[ -n "${cli_extras}" ]]; then
     extras_csv="${extras_csv}${extras_csv:+,}${cli_extras}"
 fi
 extras_csv="${extras_csv// /,}"
-IFS=',' read -r -a raw_extras <<< "${extras_csv}"
+raw_extras=()
+if [[ -n "${extras_csv}" ]]; then
+    IFS=',' read -r -a raw_extras <<< "${extras_csv}"
+fi
 install_extras=()
-for extra in "${raw_extras[@]}"; do
-    [[ -n "${extra}" ]] || continue
-    if [[ "${valid_extras}" != *" ${extra} "* ]]; then
-        echo "install.sh: unsupported extra '${extra}'." >&2
-        echo "install.sh: supported extras:${valid_extras}" >&2
-        exit 1
-    fi
-    duplicate=0
-    for existing in "${install_extras[@]}"; do
-        if [[ "${existing}" == "${extra}" ]]; then
-            duplicate=1
-            break
+if (( ${#raw_extras[@]} > 0 )); then
+    for extra in "${raw_extras[@]}"; do
+        [[ -n "${extra}" ]] || continue
+        if [[ "${valid_extras}" != *" ${extra} "* ]]; then
+            echo "install.sh: unsupported extra '${extra}'." >&2
+            echo "install.sh: supported extras:${valid_extras}" >&2
+            exit 1
+        fi
+        duplicate=0
+        if (( ${#install_extras[@]} > 0 )); then
+            for existing in "${install_extras[@]}"; do
+                if [[ "${existing}" == "${extra}" ]]; then
+                    duplicate=1
+                    break
+                fi
+            done
+        fi
+        if [[ "${duplicate}" -eq 0 ]]; then
+            install_extras+=("${extra}")
         fi
     done
-    if [[ "${duplicate}" -eq 0 ]]; then
-        install_extras+=("${extra}")
-    fi
-done
+fi
 
 case "${profile}" in
     core|minimal)
@@ -110,7 +117,9 @@ case "${profile}" in
         exit 1
         ;;
 esac
-target_extras+=("${install_extras[@]}")
+if (( ${#install_extras[@]} > 0 )); then
+    target_extras+=("${install_extras[@]}")
+fi
 if (( ${#target_extras[@]} > 0 )); then
     joined_extras="$(IFS=,; echo "${target_extras[*]}")"
     install_target=".[${joined_extras}]"

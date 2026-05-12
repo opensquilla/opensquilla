@@ -20,6 +20,7 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("cli", "engine"),
     ("cli", "gateway"),
     ("cli", "memory"),
+    ("cli", "mcp_server"),
     ("cli", "observability"),
     ("cli", "onboarding"),
     ("cli", "sandbox"),

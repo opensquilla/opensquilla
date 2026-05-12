@@ -1887,7 +1887,7 @@ requires-dist = [
     { name = "markdown", marker = "extra == 'matrix-e2e'", specifier = ">=3.0" },
     { name = "matrix-nio", marker = "extra == 'matrix'", specifier = ">=0.25,<0.26" },
     { name = "matrix-nio", extras = ["e2e"], marker = "extra == 'matrix-e2e'", specifier = ">=0.25,<0.26" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "numpy", marker = "extra == 'model-router'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'recommended'", specifier = ">=1.26" },

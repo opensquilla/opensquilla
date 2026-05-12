@@ -15,5 +15,9 @@ def test_pptx_skill_instructs_artifact_delivery() -> None:
 
     assert spec is not None
     assert "publish_artifact" in spec.content
+    assert "file-authoring tools" in spec.content
+    assert "If none of those file-authoring tools are available" in spec.content
+    assert "Do not attempt to generate, save, or modify the `.pptx`" in spec.content
+    assert "Ignore the Path B, Path C, and Visual QA sections below" in spec.content
     assert "Do not paste OOXML" in spec.content
     assert "final `.pptx`" in spec.content

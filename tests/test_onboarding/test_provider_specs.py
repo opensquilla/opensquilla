@@ -83,9 +83,12 @@ def test_catalog_marks_unverified_and_unsupported_providers_disabled():
         assert specs[pid].runtime_supported is False
 
 
-def test_catalog_is_sorted_alphabetically():
-    ids = [s.provider_id for s in list_provider_setup_specs()]
-    assert ids == sorted(ids)
+def test_catalog_prioritizes_openrouter_then_sorts_remaining_providers():
+    specs = list_provider_setup_specs()
+    assert specs[0].provider_id == "openrouter"
+    assert [(s.label.lower(), s.provider_id) for s in specs[1:]] == sorted(
+        (s.label.lower(), s.provider_id) for s in specs[1:]
+    )
 
 
 @pytest.mark.parametrize("provider_id", sorted(EXPECTED_SUPPORTED))

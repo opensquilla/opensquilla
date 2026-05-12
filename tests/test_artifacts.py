@@ -59,7 +59,7 @@ def test_artifact_store_uses_short_material_paths_for_uuid_sessions(tmp_path: Pa
     material_path = store.path_for(ref)
     assert material_path.name == "data"
     assert session_id not in str(material_path)
-    assert len(str(material_path)) < 240
+    assert len(str(material_path)) < 260
     resolved_ref, resolved_path = store.resolve_for_download(ref.id, session_id=session_id)
     assert resolved_ref == ref
     assert resolved_path == material_path

@@ -19,6 +19,7 @@ from opensquilla.gateway.attachment_ingest import (
 )
 from opensquilla.gateway.channel_dispatch import (
     _artifact_fallback_lines,
+    _deliver_artifacts_as_channel_files,
     _deliver_runtime_channel_reply,
     _dispatch_combined_message_after_debounce,
     _ingest_channel_message_attachments,
@@ -641,6 +642,50 @@ async def test_runtime_channel_stream_relay_sends_artifact_with_adapter_upload(
     assert channel.chunks == ["done"]
     assert channel.files == [("c1", "report.pptx")]
     assert channel.sent == []
+
+
+@pytest.mark.asyncio
+async def test_channel_file_delivery_dedupes_same_artifact_material(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    payload = b"\x89PNG\r\n\x1a\nimage bytes"
+    first = store.publish_bytes(
+        payload,
+        session_id="session-1",
+        session_key="agent:main:feishu:direct:u1",
+        name="image.png",
+        mime="image/png",
+        source="image_generate",
+    )
+    second = store.publish_bytes(
+        payload,
+        session_id="session-1",
+        session_key="agent:main:feishu:direct:u1",
+        name="image.png",
+        mime="image/png",
+        source="publish_artifact",
+    )
+
+    class FileChannel(_FakeChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.files: list[tuple[str, str]] = []
+
+        async def send_file(self, chat_id: str, file_path: str) -> None:
+            assert Path(file_path).is_file()
+            self.files.append((chat_id, Path(file_path).name))
+
+    channel = FileChannel()
+    config = SimpleNamespace(attachments=SimpleNamespace(media_root=str(tmp_path)))
+
+    undelivered = await _deliver_artifacts_as_channel_files(
+        channel,
+        _message(),
+        [first.to_dict(), second.to_dict()],
+        config,
+    )
+
+    assert undelivered == []
+    assert channel.files == [("c1", "image.png")]
 
 
 @pytest.mark.asyncio

@@ -239,6 +239,44 @@ def test_interactive_provider_fields_requires_pasted_api_key(monkeypatch):
     assert answers["api_key_env"] == ""
 
 
+def test_interactive_provider_fields_rejects_terminal_paste_escape(monkeypatch):
+    from opensquilla.onboarding.flow import OnboardOptions, _ask_provider_fields
+    from opensquilla.onboarding.provider_specs import get_provider_setup_spec
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary:
+        def select(self, message: str, **kwargs):
+            assert message == "LLM API key source"
+            assert kwargs.get("default") == "Paste API key now"
+            return _Answer("Paste API key now")
+
+        def password(self, message: str, **kwargs):
+            assert message == "API key"
+            validate = kwargs.get("validate")
+            assert validate is not None
+            assert validate("[2;2~") is not True
+            assert validate("\x1b[200~sk-live\x1b[201~") is not True
+            assert validate("sk-live-with-[2;2~-literal-suffix") is True
+            assert validate("sk-live") is True
+            return _Answer("sk-live")
+
+    answers = _ask_provider_fields(
+        _Questionary(),
+        get_provider_setup_spec("openrouter"),
+        OnboardOptions(),
+    )
+
+    assert answers["api_key"] == "sk-live"
+
+
 def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, monkeypatch):
     import sys
     import types

@@ -1,7 +1,7 @@
 # Hermes Agent to OpenSquilla Migration Design
 
 Date: 2026-05-12
-Status: Draft for user review
+Status: Reviewed for implementation planning
 
 ## Purpose
 
@@ -51,6 +51,7 @@ Supported options:
 opensquilla migrate hermes
 opensquilla migrate hermes --apply
 opensquilla migrate hermes --source ~/.hermes --apply
+opensquilla migrate hermes --config ~/.opensquilla/config.toml --apply
 opensquilla migrate hermes --profile work --apply
 opensquilla migrate hermes --migrate-secrets --apply
 opensquilla migrate hermes --preset user-data
@@ -148,12 +149,21 @@ Recognized keys should include provider and channel keys such as:
 
 - `OPENAI_API_KEY`
 - `OPENROUTER_API_KEY`
+- `OPENROUTER_BASE_URL`
 - `ANTHROPIC_API_KEY`
+- `ANTHROPIC_BASE_URL`
 - `ELEVENLABS_API_KEY`
+- `BRAVE_API_KEY`
+- `BRAVE_SEARCH_API_KEY`
+- `TAVILY_API_KEY`
 - `TELEGRAM_BOT_TOKEN`
 - `DISCORD_BOT_TOKEN`
 - `SLACK_BOT_TOKEN`
-- provider base URL variables already supported by OpenSquilla
+- `SLACK_APP_TOKEN`
+
+Where Hermes uses `BRAVE_API_KEY`, the migrator should write the same value under
+the OpenSquilla search key that the target runtime expects, preferring
+`BRAVE_SEARCH_API_KEY` when configuring `search_provider = "brave"`.
 
 Reports must redact secret values.
 
@@ -190,16 +200,20 @@ safe name/reference rebranding in copied text files.
 ### Channels
 
 First-class migration should cover channels that OpenSquilla already supports
-with compatible config semantics, starting with:
+with compatible config semantics. The initial priority is:
 
 - Telegram
 - Discord
 - Slack
 
-Other Hermes channels should be archived and reported unless their OpenSquilla
-schema is confirmed during implementation. Examples include WhatsApp, Signal,
-Mattermost, Matrix, QQ, Feishu, DingTalk, WeCom, SMS, or platform-specific
-gateway adapters.
+OpenSquilla also has config models for Feishu, DingTalk, WeCom, QQ, MS Teams,
+and Matrix. These should be migrated in the first version only when Hermes source
+fields can be mapped without guessing required credentials or transport
+semantics. Otherwise they should be archived and reported.
+
+Hermes-only or currently unsupported channel families such as WhatsApp, Signal,
+Mattermost, SMS, or platform-specific gateway adapters should be archived and
+reported unless a compatible OpenSquilla schema is added before implementation.
 
 ### MCP Servers
 
@@ -240,7 +254,9 @@ The report should explain that these are not imported by the first version.
 - memory
 - user profile
 - skills
-- safe workspace files
+- direct user-authored workspace files explicitly recognized by the migrator,
+  excluding runtime databases, logs, caches, checkpoints, generated artifacts,
+  and hidden control directories
 
 `full` should include all `user-data` items plus:
 

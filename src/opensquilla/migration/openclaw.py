@@ -500,6 +500,48 @@ class OpenClawMigrator:
             return workspace
         return self.source / "workspace.default"
 
+    # Files that mark a directory as a real OpenClaw workspace. A name match
+    # alone (``workspace-*``) is not enough — backup/cache directories often
+    # share the prefix without being workspaces themselves.
+    _WORKSPACE_MARKERS = ("SOUL.md", "MEMORY.md", "USER.md", "AGENTS.md", "IDENTITY.md")
+
+    @classmethod
+    def _looks_like_workspace(cls, path: Path) -> bool:
+        return any((path / marker).is_file() for marker in cls._WORKSPACE_MARKERS)
+
+    def _openclaw_workspaces(self) -> list[Path]:
+        # OpenClaw users often keep multiple workspaces side by side under
+        # ``source/`` (``workspace``, ``workspace-w1`` ... ``workspace-wN``).
+        # The primary one is selected by config; the rest are discovered as
+        # siblings so per-workspace files (notably daily memory) are not lost.
+        # Siblings without persona marker files are rejected so unrelated
+        # ``workspace-*`` directories (backups, caches) do not bleed in.
+        primary = self._openclaw_workspace()
+        found: list[Path] = []
+        if primary.is_dir():
+            found.append(primary)
+        if self.source.is_dir():
+            try:
+                primary_real = primary.resolve() if primary.is_dir() else None
+            except OSError:
+                primary_real = None
+            for sibling in sorted(self.source.iterdir()):
+                if not sibling.is_dir():
+                    continue
+                name = sibling.name
+                if name != "workspace" and not name.startswith("workspace-"):
+                    continue
+                try:
+                    if primary_real is not None and sibling.resolve() == primary_real:
+                        continue
+                except OSError:
+                    pass
+                if not self._looks_like_workspace(sibling):
+                    continue
+                if sibling not in found:
+                    found.append(sibling)
+        return found
+
     def _load_openclaw_config(self) -> dict[str, Any]:
         for name in ("openclaw.json", "clawdbot.json", "moltbot.json"):
             data = _read_json(self.source / name)
@@ -578,24 +620,51 @@ class OpenClawMigrator:
         self._record(f"workspace-original/{filename}", source, destination, "archived")
 
     def _migrate_memory(self) -> None:
-        workspace = self._openclaw_workspace()
-        source = workspace / "MEMORY.md"
+        primary = self._openclaw_workspace()
+        workspaces = self._openclaw_workspaces() or [primary]
+        source = primary / "MEMORY.md"
         destination = self._workspace_dir() / "MEMORY.md"
         parts: list[str] = []
         rebranded_sources: list[tuple[Path, Path]] = []
-        if source.is_file():
-            body = source.read_text(encoding="utf-8-sig", errors="replace").rstrip()
-            parts.append(body)
-            if _rebrand_text(body)[1]:
-                rebranded_sources.append((source, Path("MEMORY.md")))
-        memory_dir = workspace / "memory"
-        if memory_dir.is_dir():
-            for note in sorted(memory_dir.glob("*.md")):
-                body = note.read_text(encoding="utf-8-sig", errors="replace").strip()
+        read_sources: list[Path] = []
+        for workspace in workspaces:
+            # Primary is identified by path equality with the config-derived
+            # primary path; siblings get a workspace-name prefix so their
+            # daily-memory labels and archived originals do not collide.
+            is_primary = workspace == primary
+            memo = workspace / "MEMORY.md"
+            if memo.is_file():
+                body = memo.read_text(encoding="utf-8-sig", errors="replace").rstrip()
                 if body:
-                    parts.append(f"## Imported daily memory: {note.name}\n\n{body}")
+                    parts.append(body)
+                    read_sources.append(memo)
                     if _rebrand_text(body)[1]:
-                        rebranded_sources.append((note, Path("memory") / note.name))
+                        rel = (
+                            Path("MEMORY.md")
+                            if is_primary
+                            else Path(workspace.name) / "MEMORY.md"
+                        )
+                        rebranded_sources.append((memo, rel))
+            memory_dir = workspace / "memory"
+            if memory_dir.is_dir():
+                for note in sorted(memory_dir.glob("*.md")):
+                    body = note.read_text(encoding="utf-8-sig", errors="replace").strip()
+                    if not body:
+                        continue
+                    label = (
+                        note.name if is_primary else f"{workspace.name}/{note.name}"
+                    )
+                    parts.append(f"## Imported daily memory: {label}\n\n{body}")
+                    read_sources.append(note)
+                    if _rebrand_text(body)[1]:
+                        rel = (
+                            Path("memory") / note.name
+                            if is_primary
+                            else Path(workspace.name) / "memory" / note.name
+                        )
+                        rebranded_sources.append((note, rel))
+        if read_sources:
+            source = read_sources[0]
         if not parts:
             self._record("memory", source, destination, "skipped", "no memory files found")
             return
@@ -606,6 +675,7 @@ class OpenClawMigrator:
             rebranded_parts.append(converted)
             rebranded = rebranded or changed
         text, details = self._prepare_memory_text(rebranded_parts)
+        details["read_sources"] = [str(path) for path in read_sources]
         if rebranded:
             details["semantic_conversions"] = ["openclaw-branding"]
             for original, relative in rebranded_sources:

@@ -42,7 +42,7 @@ Download the preview package if you want to try OpenSquilla as a local app
 without cloning the repository or installing Git, Git LFS, or `uv`.
 
 1. Download the package from the [GitHub Releases](https://github.com/opensquilla/opensquilla/releases)
-   page and extract it to Downloads, Documents, or another folder you can write to.
+   page and extract it to a writable folder.
 
 2. Double-click `Start OpenSquilla.cmd` from the extracted folder.
 

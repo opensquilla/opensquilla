@@ -185,10 +185,47 @@ coverage surface. Review the dry-run report carefully before applying.
 Current limits:
 
 - Live runtime state, active sessions, process state, and gateway state are not imported.
-- Some Hermes runtime config option ids are accepted but may be archive-only or limited
-  until OpenSquilla has matching native fields.
+- Some Hermes runtime config option ids are accepted but currently deferred:
+  `workspace-files`, `tools-config`, `browser-config`, `session-config`,
+  `gateway-config`, `approvals-config`, `logging-config`, and `memory-backend`.
+  Each appears in the migration report as `status: deferred` with reason
+  `handler not implemented yet`. Selecting them via `--include` is not an
+  error; the migrator just records the gap so it is visible.
 - Browser, tool, session, gateway, approval, and logging settings may require manual review.
 - A full pre-apply snapshot of `~/.opensquilla` is not created automatically.
+
+### Hermes Agent Migration Behavior
+
+The Hermes migrator now mirrors the OpenClaw migrator on a few correctness
+behaviors that were previously documented but not implemented:
+
+- **Item-level backups.** When `--overwrite` replaces an existing
+  workspace file (`SOUL.md`, `MEMORY.md`, `USER.md`) or skill directory, the
+  prior contents are written to `<name>.backup.<timestamp>` next to the
+  original before the new content is applied.
+- **Semantic deduplication on merge.** Existing destination content is split
+  into paragraph blocks and compared after whitespace normalization. A new
+  source body is appended unless an equivalent block already exists. The
+  previous naive substring check could silently drop short source bodies.
+- **Memory overflow archival.** If the merged `MEMORY.md` would exceed
+  OpenSquilla's per-file size limit, the overflow is split at a paragraph
+  boundary and archived to
+  `~/.opensquilla/migration/hermes/<timestamp>/archive/memory-overflow/MEMORY.overflow.md`.
+  A short pointer is left at the end of `MEMORY.md`.
+- **Branding rewrite.** Hermes branding in imported workspace prose
+  (`SOUL.md`, `MEMORY.md`, `USER.md`) is rewritten to OpenSquilla. Bare
+  `Hermes` is only rewritten when it is followed by a workspace-context word
+  (e.g. `home`, `workspace`, `memory`, `config`). Source-reference tokens
+  such as `HERMES_HOME`, `NousResearch`, and `hermes-agent` are preserved so
+  the migration archive still points back at the original source. The
+  unrebranded original is copied to
+  `<output_dir>/archive/files/workspace-original/<name>.md` for review.
+- **Skill compatibility reporting.** Each imported skill's
+  report record now includes `details.compatibility` (`loadable` /
+  `needs_review` / `not_loadable`) and `details.compatibility_issues` listing
+  missing frontmatter, oversize bodies, or invalid YAML. Skills are still
+  copied; the field is informational so you can find ones that may need
+  attention before activating.
 
 ## Reports
 

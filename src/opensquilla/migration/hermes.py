@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -43,6 +44,20 @@ RUNTIME_CONFIG_OPTIONS = {
     "approvals-config",
     "logging-config",
 }
+
+# Option ids accepted by the CLI but not yet wired to a real migration handler.
+# Migrate() emits a `deferred` record for each so users can see exactly which
+# selections are no-ops instead of getting an empty success report.
+DEFERRED_OPTIONS = {
+    "workspace-files",
+    "tools-config",
+    "browser-config",
+    "session-config",
+    "gateway-config",
+    "approvals-config",
+    "logging-config",
+    "memory-backend",
+}
 MIGRATION_OPTIONS = USER_DATA_OPTIONS | RUNTIME_CONFIG_OPTIONS
 MIGRATION_PRESETS = {"user-data": USER_DATA_OPTIONS, "full": MIGRATION_OPTIONS}
 
@@ -70,6 +85,11 @@ PROVIDER_ENV_KEYS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
 }
+
+# Hermes itself validates profile names against this regex (see hermes_cli/
+# profiles.py). Enforcing it here prevents `--profile "../secrets"` from
+# escaping the hermes home via path traversal.
+_HERMES_PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 ARCHIVE_SOURCE_ARTIFACTS = {"cron": "cron-jobs", "plugins": "plugins-config"}
 SKIP_SOURCE_ARTIFACTS = {
@@ -123,10 +143,26 @@ def _is_valid_hermes_home(path: Path) -> bool:
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
+    # Returns ({}, None) on missing file or unparseable YAML so a hand-edited
+    # config.yaml with a syntax error cannot crash the entire migration.
+    # Callers that need to surface the parse failure should use
+    # _load_yaml_with_error.
+    data, _ = _load_yaml_with_error(path)
+    return data
+
+
+def _load_yaml_with_error(path: Path) -> tuple[dict[str, Any], str | None]:
     if not path.exists():
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
-    return data if isinstance(data, dict) else {}
+        return {}, None
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+    except yaml.YAMLError as exc:
+        return {}, str(exc).splitlines()[0]
+    if loaded is None:
+        return {}, None
+    if not isinstance(loaded, dict):
+        return {}, None
+    return loaded, None
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
@@ -137,9 +173,67 @@ def _load_env_file(path: Path) -> dict[str, str]:
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
+        # bash-style `export FOO=bar` is common in hand-written .env files.
+        # Strip the leading `export ` keyword so the key matches the known
+        # SECRET_ENV_KEYS set instead of being lost as "export FOO".
+        if stripped.startswith("export "):
+            stripped = stripped[len("export "):].lstrip()
         key, value = stripped.split("=", 1)
         values[key.strip()] = value.strip().strip('"').strip("'")
     return values
+
+
+def _hermes_rebrand_text(text: str) -> tuple[str, bool]:
+    # Rewrite Hermes-Agent branding in workspace prose to OpenSquilla. The
+    # transformation is intentionally narrow: bare "Hermes" is only rewritten
+    # when followed by a workspace-context word, and source-reference tokens
+    # (project URLs, env var names, module names) are protected so the
+    # migration archive still points back at the original source clearly.
+    protected: dict[str, str] = {}
+
+    def protect(match: re.Match[str]) -> str:
+        key = f"__OPENSQUILLA_HERMES_REF_{len(protected)}__"
+        protected[key] = match.group(0)
+        return key
+
+    source_reference_patterns = (
+        r"\bHERMES_HOME\b",
+        r"\bhermes-agent\b",
+        r"\bNousResearch\b",
+        r"\bhermes_constants\b",
+        r"\bhermes_state\b",
+        r"\bhermes_cli\b",
+    )
+    migrated = text
+    for pattern in source_reference_patterns:
+        migrated = re.sub(pattern, protect, migrated)
+
+    # Brand-token replacements run before contextual lookahead rules so that
+    # the multi-word brand "Hermes Agent" collapses to "OpenSquilla" cleanly
+    # instead of leaving a dangling "Agent" behind. The "Hermes Agent"
+    # variant uses a regex so multiple spaces, tabs, or a newline between
+    # the two words still match.
+    migrated = re.sub(r"\bHermes\s+Agent\b", "OpenSquilla", migrated)
+    migrated = migrated.replace(".hermes", ".opensquilla")
+
+    contextual_replacements = (
+        (
+            r"\bHermes(?=\s+(?:home|workspace|skills?|config|configuration|"
+            r"memory|gateway|state|runtime|来源|源|配置|工作区|状态|技能|内存))",
+            "OpenSquilla",
+        ),
+        (
+            r"\bhermes(?=\s+(?:home|workspace|skills?|config|memory|gateway|"
+            r"state))",
+            "opensquilla",
+        ),
+    )
+    for pattern, replacement in contextual_replacements:
+        migrated = re.sub(pattern, replacement, migrated)
+
+    for key, value in protected.items():
+        migrated = migrated.replace(key, value)
+    return migrated, migrated != text
 
 
 class HermesMigrator:
@@ -147,13 +241,14 @@ class HermesMigrator:
         self.options = options
         self.source = self._resolve_source()
         self.home = default_opensquilla_home()
-        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
-        self.output_dir = self.home / "migration" / "hermes" / timestamp
+        self.timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+        self.output_dir = self.home / "migration" / "hermes" / self.timestamp
         self.items: list[ItemResult] = []
         self.config_path = _as_path(options.config_path)
         self._config_obj: GatewayConfig | None = None
         self._config_changed = False
         self._env_additions: dict[str, str] = {}
+        self._last_merge_details: dict[str, Any] = {}
 
     def _resolve_source(self) -> Path:
         explicit = _as_path(self.options.source)
@@ -167,6 +262,20 @@ class HermesMigrator:
         return root
 
     def migrate(self) -> dict[str, Any]:
+        if (
+            self.options.profile is not None
+            and not _HERMES_PROFILE_NAME_RE.match(self.options.profile)
+        ):
+            # Reject up front so we never construct a source path that
+            # escapes the hermes home via ``..`` segments or hidden chars.
+            self._record(
+                "profile",
+                None,
+                None,
+                "error",
+                f"invalid profile name: {self.options.profile!r}",
+            )
+            return self._report()
         if not _is_valid_hermes_home(self.source):
             self._record("source", self.source, None, "error", "not a Hermes home")
             return self._report()
@@ -176,8 +285,19 @@ class HermesMigrator:
         self._write_config()
         self._write_env()
         self._archive_unsupported(selected)
+        self._record_deferred(selected)
         self._write_reports()
         return self._report()
+
+    def _record_deferred(self, selected: set[str]) -> None:
+        for option_id in sorted(DEFERRED_OPTIONS & selected):
+            self._record(
+                option_id,
+                None,
+                None,
+                "deferred",
+                "handler not implemented yet",
+            )
 
     def _config(self) -> GatewayConfig:
         if self._config_obj is None:
@@ -216,23 +336,41 @@ class HermesMigrator:
             self._record(kind, source, destination, "skipped", "source missing")
             return
         status = "migrated" if self.options.apply else "planned"
+        reason = ""
+        details: dict[str, Any] = {}
         if self.options.apply:
             self._write_text_merge(source, destination)
-        self._record(
-            kind,
-            source,
-            destination,
-            status,
-        )
+            details = dict(self._last_merge_details)
+            # When the source content already matches an existing destination
+            # block the merge is a no-op. Reflect that in the status so the
+            # report doesn't claim "migrated" for a write that never happened.
+            if details.get("deduplicated"):
+                status = "skipped"
+                reason = "duplicate of existing destination block"
+        self._record(kind, source, destination, status, reason, details=details or None)
 
     def _plan_skills(self) -> None:
         skills_dir = self.source / "skills"
         destination_root = self.home / "skills" / SKILL_IMPORT_DIRNAME
-        if not skills_dir.exists():
-            self._record("skills", skills_dir, destination_root, "skipped", "source missing")
+        # is_dir() instead of exists() — if `skills` happens to be a regular
+        # file the migrator must not crash on iterdir(). Treat both
+        # "missing" and "not a directory" as a clean skip.
+        if not skills_dir.is_dir():
+            reason = "source missing" if not skills_dir.exists() else "source is not a directory"
+            self._record("skills", skills_dir, destination_root, "skipped", reason)
             return
-        for skill_dir in sorted(path for path in skills_dir.iterdir() if path.is_dir()):
+        skill_subdirs = sorted(path for path in skills_dir.iterdir() if path.is_dir())
+        if not skill_subdirs:
+            # An empty skills/ directory used to produce no record at all,
+            # leaving users unable to distinguish "checked but empty" from
+            # "skipped/never checked".
+            self._record(
+                "skills", skills_dir, destination_root, "skipped", "no skills to migrate"
+            )
+            return
+        for skill_dir in skill_subdirs:
             target = destination_root / skill_dir.name
+            compat = self._skill_compatibility_details(skill_dir)
             status = "migrated" if self.options.apply else "planned"
             reason = ""
             if self.options.apply:
@@ -242,20 +380,171 @@ class HermesMigrator:
                     reason = "target exists"
                 else:
                     target = copied
-            self._record("skills", skill_dir, target, status, reason)
+            self._record("skills", skill_dir, target, status, reason, details=compat or None)
 
     def _write_text_merge(self, source: Path, destination: Path) -> None:
+        # Reset per-call details so _plan_file's record reflects only this merge.
+        self._last_merge_details = {}
         destination.parent.mkdir(parents=True, exist_ok=True)
         source_text = source.read_text(encoding="utf-8-sig")
+        rebranded_text, rebranded = _hermes_rebrand_text(source_text)
+        if rebranded:
+            self._last_merge_details["semantic_conversions"] = ["hermes-branding"]
+            self._archive_original_workspace_file(source, destination.name)
+
         if destination.exists() and not self.options.overwrite:
             existing = destination.read_text(encoding="utf-8")
-            if source_text.strip() in existing:
+            if self._is_substantively_present(rebranded_text, existing):
+                self._last_merge_details["deduplicated"] = True
                 return
-            destination.write_text(
-                existing.rstrip() + "\n\n" + source_text.lstrip(), encoding="utf-8"
-            )
+            combined = existing.rstrip() + "\n\n" + rebranded_text.lstrip()
+        else:
+            if destination.exists():
+                # --overwrite: keep an item-level backup before destroying the
+                # existing target so the user can roll back. The CLI help has
+                # always advertised this; the implementation now keeps that
+                # promise.
+                self._backup_file(destination)
+                self._last_merge_details["backup_created"] = True
+            combined = rebranded_text
+
+        # Memory overflow archival. The merged text may exceed the size limit
+        # OpenSquilla applies to a single MEMORY.md; split at a paragraph
+        # boundary and archive the tail rather than truncating silently.
+        if destination.name == "MEMORY.md" and len(combined) > MAX_MEMORY_CHARS:
+            trimmed, overflow = self._split_memory_overflow(combined)
+            if overflow:
+                self._write_memory_overflow(overflow)
+                self._last_merge_details["overflow_chars"] = len(overflow)
+            combined = trimmed
+
+        destination.write_text(combined, encoding="utf-8")
+
+    @staticmethod
+    def _is_substantively_present(source_text: str, existing: str) -> bool:
+        # Block-level subset check after whitespace normalization. Source is
+        # considered "already present" only if EVERY non-empty source block
+        # has an equivalent block in the destination. Comparing the
+        # normalized whole-source string against individual destination
+        # blocks (the previous approach) silently failed for multi-block
+        # MEMORY.md because the concatenated form never matched any single
+        # destination block, causing re-migration to append duplicates.
+        def _blocks(text: str) -> list[str]:
+            return [
+                re.sub(r"\s+", " ", block.strip())
+                for block in re.split(r"\n{2,}", text)
+                if block.strip()
+            ]
+
+        source_blocks = _blocks(source_text)
+        if not source_blocks:
+            return True
+        existing_blocks = set(_blocks(existing))
+        return all(block in existing_blocks for block in source_blocks)
+
+    @staticmethod
+    def _split_memory_overflow(text: str) -> tuple[str, str]:
+        # No-op fast path when the input already fits — the previous
+        # implementation appended an overflow marker even when the overflow
+        # slice was empty, so callers that defensively invoked the helper got
+        # a marker-laden text with no archive to point at.
+        if len(text) <= MAX_MEMORY_CHARS:
+            return text, ""
+        cutoff = text.rfind("\n\n", 0, MAX_MEMORY_CHARS)
+        if cutoff < MAX_MEMORY_CHARS // 2:
+            cutoff = MAX_MEMORY_CHARS
+        overflow = text[cutoff:].lstrip()
+        trimmed = text[:cutoff].rstrip()
+        if not overflow:
+            return trimmed, ""
+        marker = (
+            "\n\n## Migration overflow\n\n"
+            f"Additional Hermes memory was archived under `{MEMORY_OVERFLOW_DIR}`.\n"
+        )
+        return trimmed + marker, overflow
+
+    def _write_memory_overflow(self, text: str) -> None:
+        destination = self.output_dir / "archive" / MEMORY_OVERFLOW_DIR / "MEMORY.overflow.md"
+        if not self.options.apply:
             return
-        destination.write_text(source_text, encoding="utf-8")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(text, encoding="utf-8")
+        self._record("memory-overflow", "Hermes memory", destination, "archived")
+
+    def _archive_original_workspace_file(self, source: Path, filename: str) -> None:
+        # Only invoked from _write_text_merge under apply=True, so no dry-run
+        # branch is needed here.
+        if not source.is_file():
+            return
+        destination = (
+            self.output_dir / "archive" / "files" / "workspace-original" / filename
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        self._record(f"workspace-original/{filename}", source, destination, "archived")
+
+    def _backup_file(self, path: Path) -> None:
+        backup = path.with_name(f"{path.name}.backup.{self.timestamp}")
+        backup.write_bytes(path.read_bytes())
+
+    def _backup_dir(self, path: Path) -> None:
+        backup = path.with_name(f"{path.name}.backup.{self.timestamp}")
+        if backup.exists():
+            shutil.rmtree(backup)
+        shutil.copytree(path, backup)
+
+    def _skill_compatibility_details(self, skill_dir: Path) -> dict[str, Any]:
+        # Mirror the openclaw migrator's compatibility shape so downstream
+        # tooling can read either report uniformly.
+        skill_file = skill_dir / "SKILL.md"
+        issues: list[str] = []
+        try:
+            size = skill_file.stat().st_size
+        except OSError:
+            return {
+                "opensquilla_loadable": False,
+                "compatibility": "not_loadable",
+                "compatibility_issues": ["SKILL.md cannot be read"],
+            }
+        if size > MAX_SKILL_FILE_BYTES:
+            issues.append("SKILL.md exceeds OpenSquilla skill file size limit")
+        try:
+            text = skill_file.read_text(encoding="utf-8-sig")
+        except OSError:
+            return {
+                "opensquilla_loadable": False,
+                "compatibility": "not_loadable",
+                "compatibility_issues": ["SKILL.md cannot be read"],
+            }
+        match = re.match(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n", text, re.DOTALL)
+        if not match:
+            return {
+                "opensquilla_loadable": False,
+                "compatibility": "not_loadable",
+                "compatibility_issues": ["missing YAML frontmatter"],
+            }
+        try:
+            frontmatter = yaml.safe_load(match.group(1))
+        except yaml.YAMLError:
+            return {
+                "opensquilla_loadable": False,
+                "compatibility": "not_loadable",
+                "compatibility_issues": ["invalid YAML frontmatter"],
+            }
+        if not isinstance(frontmatter, dict) or not frontmatter.get("name"):
+            issues.append("missing frontmatter name")
+        if not frontmatter.get("description"):
+            issues.append("missing frontmatter description")
+        blocking = {
+            "SKILL.md exceeds OpenSquilla skill file size limit",
+            "missing frontmatter name",
+        }
+        loadable = not any(issue in blocking for issue in issues)
+        return {
+            "opensquilla_loadable": loadable,
+            "compatibility": "loadable" if loadable and not issues else "needs_review",
+            "compatibility_issues": issues,
+        }
 
     def _copy_skill_dir(self, source: Path, destination: Path) -> Path | None:
         target = destination
@@ -268,6 +557,9 @@ class HermesMigrator:
                     target = destination.with_name(f"{destination.name}-imported-{index}")
                     index += 1
             elif self.options.skill_conflict == "overwrite":
+                # Keep an item-level backup so a skill that turns out to have
+                # local edits is not lost to rmtree.
+                self._backup_dir(target)
                 shutil.rmtree(target)
         shutil.copytree(source, target)
         return target
@@ -289,7 +581,19 @@ class HermesMigrator:
         (self.output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _migrate_config_and_env(self, selected: set[str]) -> None:
-        raw_config = _load_yaml(self.source / "config.yaml")
+        config_path = self.source / "config.yaml"
+        raw_config, yaml_error = _load_yaml_with_error(config_path)
+        if yaml_error is not None:
+            # Record an explicit error item instead of letting a hand-edited
+            # config.yaml with bad syntax crash the whole migration. raw_config
+            # is empty so downstream sections simply find nothing to migrate.
+            self._record(
+                "config.yaml",
+                config_path,
+                self.config_path,
+                "error",
+                f"could not parse config.yaml: {yaml_error}",
+            )
         env_values = _load_env_file(self.source / ".env")
         if "skills" in selected:
             self._ensure_skills_extra_dir()
@@ -301,22 +605,52 @@ class HermesMigrator:
             self._migrate_mcp_servers(raw_config)
         self._migrate_channels(raw_config, env_values, selected)
 
+    @staticmethod
+    def _extract_model_id(model_cfg: dict[str, Any]) -> str:
+        # Hermes configs that came from OpenClaw or were authored against a
+        # multi-model setup nest the model id inside a dict like
+        # ``{primary: ..., fallback: ...}``. The previous implementation
+        # stringified the whole dict via ``str()``, producing a Python
+        # ``repr`` (``{'primary': 'claude', ...}``) that OpenSquilla cannot
+        # use as a model id.
+        raw = model_cfg.get("model")
+        if raw is None:
+            raw = model_cfg.get("default")
+        if isinstance(raw, dict):
+            for key in ("primary", "default", "main", "active"):
+                value = raw.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return ""
+        if isinstance(raw, str):
+            return raw.strip()
+        return ""
+
     def _migrate_model_config(self, raw_config: dict[str, Any]) -> None:
         raw_model = raw_config.get("model")
         model_cfg = raw_model if isinstance(raw_model, dict) else {}
         provider = str(model_cfg.get("provider") or "").strip()
-        model = str(model_cfg.get("model") or model_cfg.get("default") or "").strip()
+        model = self._extract_model_id(model_cfg)
         if not provider and not model:
             self._record("model-config", self.source / "config.yaml", self.config_path, "skipped")
             return
         cfg = self._config()
         base_url = model_cfg.get("base_url") or model_cfg.get("baseUrl")
         target_provider = "openai" if provider == "custom" and base_url else provider
+        details: dict[str, Any] = {}
         if provider:
             cfg.llm.provider = target_provider
-            cfg.llm.api_key_env = PROVIDER_ENV_KEYS.get(
-                target_provider, cfg.llm.api_key_env
-            )
+            env_key = PROVIDER_ENV_KEYS.get(target_provider)
+            if env_key is not None:
+                cfg.llm.api_key_env = env_key
+            elif target_provider:
+                # Surface the gap so the user sees they need to set
+                # api_key_env manually instead of finding a blank field
+                # after a "migrated" report.
+                details["unrecognized_provider"] = target_provider
+                details["manual_steps"] = [
+                    "set llm.api_key_env to the env var your provider uses"
+                ]
         if model:
             cfg.llm.model = model
         if base_url:
@@ -327,6 +661,7 @@ class HermesMigrator:
             self.source / "config.yaml",
             self.config_path,
             "migrated" if self.options.apply else "planned",
+            details=details or None,
         )
 
     def _migrate_env_values(self, env_values: dict[str, str]) -> None:
@@ -378,14 +713,45 @@ class HermesMigrator:
 
     def _migrate_mcp_servers(self, raw_config: dict[str, Any]) -> None:
         raw_mcp = raw_config.get("mcp")
-        servers = raw_mcp.get("servers", {}) if isinstance(raw_mcp, dict) else {}
-        if not isinstance(servers, dict) or not servers:
-            self._record("mcp-servers", self.source / "config.yaml", self.config_path, "skipped")
+        raw_servers = raw_mcp.get("servers") if isinstance(raw_mcp, dict) else None
+        # Hermes config.yaml supports both shapes:
+        #   mcp.servers: {name: {command: ...}}        (dict-of-dicts)
+        #   mcp.servers: [{name: x, command: y}, ...]  (list-of-dicts)
+        # The earlier implementation only accepted the dict form and
+        # silently dropped the list form along with every server in it.
+        servers: dict[str, dict[str, Any]] = {}
+        dropped: list[str] = []
+        if isinstance(raw_servers, dict):
+            for name, raw in raw_servers.items():
+                if isinstance(raw, dict):
+                    servers[str(name)] = raw
+                else:
+                    dropped.append(str(name))
+        elif isinstance(raw_servers, list):
+            for idx, entry in enumerate(raw_servers):
+                if not isinstance(entry, dict):
+                    dropped.append(f"index {idx}")
+                    continue
+                name = entry.get("name") or entry.get("id")
+                if not isinstance(name, str) or not name.strip():
+                    dropped.append(f"index {idx} (missing name)")
+                    continue
+                servers[name] = {k: v for k, v in entry.items() if k not in ("name", "id")}
+        if not servers:
+            reason = "no MCP servers found" if not dropped else (
+                f"all {len(dropped)} server entries were malformed"
+            )
+            self._record(
+                "mcp-servers",
+                self.source / "config.yaml",
+                self.config_path,
+                "skipped",
+                reason,
+                details={"dropped_entries": dropped} if dropped else None,
+            )
             return
         entries: list[MCPServerEntry] = []
         for name, raw in servers.items():
-            if not isinstance(raw, dict):
-                continue
             entry: dict[str, Any] = {"name": name}
             for key in ("command", "args", "env", "url"):
                 if key in raw:
@@ -399,11 +765,15 @@ class HermesMigrator:
         cfg.mcp.enabled = True
         cfg.mcp.servers = entries
         self._config_changed = True
+        details: dict[str, Any] = {"server_count": len(entries)}
+        if dropped:
+            details["dropped_entries"] = dropped
         self._record(
             "mcp-servers",
             self.source / "config.yaml",
             self.config_path,
             "migrated" if self.options.apply else "planned",
+            details=details,
         )
 
     def _migrate_channels(
@@ -479,16 +849,54 @@ class HermesMigrator:
                 self.config_path,
                 "migrated" if self.options.apply else "planned",
             )
+        else:
+            # Always emit a channels record so the user sees the migrator
+            # checked even if no tokens were found or all channel options
+            # were excluded. Previously a `--migrate-secrets` run against a
+            # source with no `.env` (or no channel tokens) produced silence,
+            # leaving users unsure whether channels were considered at all.
+            self._record(
+                "channels",
+                self.source / ".env",
+                self.config_path,
+                "skipped",
+                "no channel tokens found in source",
+            )
 
     def _write_env(self) -> None:
         if not self.options.apply or not self._env_additions:
             return
         env_path = self.home / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
-        existing = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-        lines = [existing.rstrip()] if existing.strip() else []
-        lines.extend(f"{key}={value}" for key, value in sorted(self._env_additions.items()))
-        env_path.write_text("\n".join(line for line in lines if line) + "\n", encoding="utf-8")
+        # Dedupe by key when writing back. The previous implementation blindly
+        # appended every additions row each run, so repeated `--migrate-secrets`
+        # invocations grew the .env with duplicate entries unboundedly.
+        existing_lines = (
+            env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+        )
+
+        def _line_key(text: str) -> str | None:
+            stripped = text.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                return None
+            if stripped.startswith("export "):
+                stripped = stripped[len("export "):].lstrip()
+            key, _, _ = stripped.partition("=")
+            return key.strip()
+
+        merged_lines: list[str] = []
+        consumed: set[str] = set()
+        for line in existing_lines:
+            key = _line_key(line)
+            if key is not None and key in self._env_additions:
+                merged_lines.append(f"{key}={self._env_additions[key]}")
+                consumed.add(key)
+            else:
+                merged_lines.append(line)
+        for key, value in sorted(self._env_additions.items()):
+            if key not in consumed:
+                merged_lines.append(f"{key}={value}")
+        env_path.write_text("\n".join(merged_lines).rstrip() + "\n", encoding="utf-8")
 
     def _write_config(self) -> None:
         if self.options.apply and self._config_changed and self._config_obj is not None:

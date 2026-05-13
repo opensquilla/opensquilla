@@ -741,14 +741,53 @@ class OpenClawMigrator:
             for original, relative in rebranded_sources:
                 self._archive_original_workspace_file(original, relative)
         record_details = {k: v for k, v in details.items() if k != "overflow"}
-        self._write_text_target(
-            "memory",
-            source,
-            destination,
-            text,
-            details=record_details,
-            bootstrap_template_filename="MEMORY.md",
-        )
+        # Memory needs special-case handling for when the destination already
+        # holds real, user-curated content (not the pristine bootstrap
+        # template and we are not running with --overwrite). The plain
+        # ``_write_text_target`` path would record a silent ``conflict`` and
+        # drop everything. Memory is additive by nature, so the right
+        # default is to append the imported blocks that are not already
+        # present, preserving the user's existing memory verbatim.
+        if (
+            self.options.apply
+            and destination.is_file()
+            and not self.options.overwrite
+            and not _dest_is_pristine_bootstrap_template(destination, "MEMORY.md")
+        ):
+            existing = destination.read_text(encoding="utf-8-sig")
+            merged, deduped, appended_count = (
+                self._merge_blocks_preserving_existing(existing, text)
+            )
+            if appended_count == 0:
+                record_details["deduplicated_against_existing"] = True
+                self._record(
+                    "memory",
+                    source,
+                    destination,
+                    "skipped",
+                    "all openclaw memory blocks already present in destination",
+                    details=record_details,
+                )
+            else:
+                self._backup_file(destination)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(merged, encoding="utf-8")
+                record_details["appended_to_existing"] = True
+                record_details["new_blocks_appended"] = appended_count
+                if deduped:
+                    record_details["deduplicated_blocks_vs_existing"] = deduped
+                self._record(
+                    "memory", source, destination, "migrated", details=record_details
+                )
+        else:
+            self._write_text_target(
+                "memory",
+                source,
+                destination,
+                text,
+                details=record_details,
+                bootstrap_template_filename="MEMORY.md",
+            )
         overflow = details.get("overflow")
         if isinstance(overflow, str):
             self._write_memory_overflow(overflow)
@@ -790,6 +829,59 @@ class OpenClawMigrator:
         if match:
             stripped = match.group(1).strip()
         return re.sub(r"\s+", " ", stripped)
+
+    def _merge_blocks_preserving_existing(
+        self, existing: str, new: str
+    ) -> tuple[str, int, int]:
+        # Append blocks from ``new`` that are not already present in
+        # ``existing``. A "block" is a paragraph, but daily-memory entries
+        # of the form ``## Imported daily memory: <name>\n\n<body>`` are
+        # kept glued together — otherwise the header and body, separated
+        # by ``\n\n``, would be deduped independently and produce wrong
+        # results when only the body happens to appear elsewhere.
+        #
+        # Returns ``(merged_text, n_deduplicated, n_appended)``. When all
+        # logical blocks already exist the existing text is returned.
+        def _logical_blocks(text: str) -> list[str]:
+            raw = [b for b in re.split(r"\n{2,}", text) if b.strip()]
+            glued: list[str] = []
+            i = 0
+            while i < len(raw):
+                current = raw[i]
+                if re.match(r"^## Imported daily memory: ", current) and i + 1 < len(raw):
+                    glued.append(f"{current}\n\n{raw[i + 1]}")
+                    i += 2
+                else:
+                    glued.append(current)
+                    i += 1
+            return glued
+
+        def _norm(block: str) -> str:
+            stripped = block.strip()
+            match = re.match(
+                r"^## Imported daily memory: .+?\r?\n\r?\n(.*)$",
+                stripped,
+                re.DOTALL,
+            )
+            if match:
+                stripped = match.group(1).strip()
+            return re.sub(r"\s+", " ", stripped)
+
+        existing_norms = {_norm(block) for block in _logical_blocks(existing)}
+        appended: list[str] = []
+        deduped = 0
+        seen_in_new: set[str] = set()
+        for block in _logical_blocks(new):
+            normalised = _norm(block)
+            if normalised in existing_norms or normalised in seen_in_new:
+                deduped += 1
+                continue
+            seen_in_new.add(normalised)
+            appended.append(block)
+        if not appended:
+            return existing, deduped, 0
+        merged = existing.rstrip() + "\n\n" + "\n\n".join(appended) + "\n"
+        return merged, deduped, len(appended)
 
     def _write_memory_overflow(self, text: str) -> None:
         destination = self.output_dir / "archive" / MEMORY_OVERFLOW_DIR / "MEMORY.overflow.md"

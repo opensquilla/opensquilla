@@ -107,6 +107,27 @@ The OpenClaw migrator also rewrites OpenClaw branding in migrated user-facing
 workspace text to OpenSquilla branding and archives the original changed text
 for review.
 
+### MEMORY.md Merge Semantics
+
+OpenClaw memory is additive by nature: every imported daily-memory file is
+its own ``## Imported daily memory: <name>`` section. The OpenClaw migrator
+therefore handles ``MEMORY.md`` differently from other workspace files: it
+will never silently overwrite existing user-curated memory and it will
+never silently drop the imported memory either.
+
+Behaviour matrix (without ``--overwrite``):
+
+| Destination state | What happens |
+| --- | --- |
+| ``MEMORY.md`` does not exist | Imported memory is written fresh. |
+| Pristine OpenSquilla bootstrap template | Template is backed up, imported memory replaces it. ``details.replaced_bootstrap_template: true``. |
+| Real user-curated content | Imported blocks that are not already present (after a whitespace-normalised, header-stripped comparison) are appended below the existing content. The pre-existing file is backed up first. ``details.appended_to_existing: true``, ``new_blocks_appended: N``, ``deduplicated_blocks_vs_existing: M``. |
+| All imported blocks already present | The file is left untouched. ``status: skipped, reason: "all openclaw memory blocks already present in destination"``, ``details.deduplicated_against_existing: true``. No backup created. |
+
+``--overwrite`` is the explicit "replace, do not merge" escape hatch — the
+destination is backed up and replaced wholesale regardless of its current
+contents.
+
 ### OpenSquilla Bootstrap-Template Handling
 
 `ensure_agent_workspace` seeds placeholder ``SOUL.md`` / ``USER.md`` /

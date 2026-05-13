@@ -84,12 +84,13 @@ def test_pristine_bootstrap_templates_do_not_block_migration(
     assert {"SOUL.md", "USER.md", "MEMORY.md", "AGENTS.md"} <= backup_basenames
 
 
-def test_user_edited_workspace_file_still_conflicts(
+def test_user_edited_memory_is_preserved_and_openclaw_appended(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # User who has truly edited their MEMORY.md should still get a conflict
-    # record, not have their content silently overwritten. Only the pristine
-    # template gets the override-safe treatment.
+    # User who has truly edited their MEMORY.md should NOT have their
+    # content silently overwritten AND the openclaw memory should NOT be
+    # silently dropped. The migrator merges instead: user content stays
+    # at the top, openclaw blocks that aren't already there are appended.
     source = _make_openclaw_source(tmp_path)
     home = tmp_path / "opensquilla-home"
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
@@ -104,13 +105,117 @@ def test_user_edited_workspace_file_still_conflicts(
     ).migrate()
 
     memory_item = next(i for i in report["items"] if i["kind"] == "memory")
-    assert memory_item["status"] == "conflict"
-    assert memory_item["reason"] == "target exists"
-    # Confirm the user content really was preserved.
+    assert memory_item["status"] == "migrated"
+    assert memory_item["details"]["appended_to_existing"] is True
+    assert memory_item["details"]["new_blocks_appended"] >= 1
+    # User content verbatim at the top.
+    text = (home / "workspace" / "MEMORY.md").read_text(encoding="utf-8")
+    assert text.startswith("# My real, edited memory")
+    assert "This is not the template." in text
+    # openclaw content appended below.
+    assert "real daily entry that needs to survive migration" in text
+    # The pre-existing edited file was backed up before being modified.
+    backups = list((home / "workspace").glob("MEMORY.md.backup.*"))
+    assert len(backups) == 1
     assert (
         "This is not the template."
-        in (home / "workspace" / "MEMORY.md").read_text(encoding="utf-8")
+        in backups[0].read_text(encoding="utf-8")
     )
+
+
+def test_re_migration_against_existing_destination_dedupes_to_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Second pass over an already-migrated destination should record
+    # `skipped: all openclaw memory blocks already present in destination`
+    # and leave the file untouched. No duplicate growth, no conflict.
+    source = _make_openclaw_source(tmp_path)
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    ensure_agent_workspace(home / "workspace")
+
+    OpenClawMigrator(
+        MigrationOptions(source=source, config_path=tmp_path / "cfg.toml", apply=True)
+    ).migrate()
+    after_first = (home / "workspace" / "MEMORY.md").read_text(encoding="utf-8")
+
+    second = OpenClawMigrator(
+        MigrationOptions(source=source, config_path=tmp_path / "cfg.toml", apply=True)
+    ).migrate()
+    memory_item = next(i for i in second["items"] if i["kind"] == "memory")
+    assert memory_item["status"] == "skipped"
+    assert "already present" in memory_item["reason"]
+    assert memory_item["details"]["deduplicated_against_existing"] is True
+    after_second = (home / "workspace" / "MEMORY.md").read_text(encoding="utf-8")
+    assert after_first == after_second  # byte-identical, no second backup either
+
+
+def test_partial_overlap_appends_only_new_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Destination already contains one of the openclaw daily blocks (e.g. a
+    # prior migration's output). Only the genuinely new blocks should be
+    # appended; duplicates should be counted in details.
+    source = tmp_path / ".openclaw"
+    ws = source / "workspace"
+    ws.mkdir(parents=True)
+    (ws / "memory").mkdir()
+    (ws / "memory" / "day-one.md").write_text("shared fact\n", encoding="utf-8")
+    (ws / "memory" / "day-two.md").write_text("brand new fact\n", encoding="utf-8")
+    (source / "openclaw.json").write_text("{}", encoding="utf-8")
+
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    (home / "workspace").mkdir(parents=True)
+    # Pre-existing destination already has the day-one block.
+    (home / "workspace" / "MEMORY.md").write_text(
+        "Unique opensquilla note.\n\n"
+        "## Imported daily memory: day-one.md\n\n"
+        "shared fact\n",
+        encoding="utf-8",
+    )
+
+    report = OpenClawMigrator(
+        MigrationOptions(source=source, config_path=tmp_path / "cfg.toml", apply=True)
+    ).migrate()
+
+    memory_item = next(i for i in report["items"] if i["kind"] == "memory")
+    assert memory_item["status"] == "migrated"
+    assert memory_item["details"]["new_blocks_appended"] == 1
+    assert memory_item["details"]["deduplicated_blocks_vs_existing"] >= 1
+
+    text = (home / "workspace" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "Unique opensquilla note" in text
+    assert text.count("shared fact") == 1
+    assert "brand new fact" in text
+
+
+def test_overwrite_flag_still_replaces_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --overwrite is the explicit "replace, do not merge" escape hatch.
+    # Confirm its semantics are unchanged by the new merge-by-default flow.
+    source = _make_openclaw_source(tmp_path)
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    (home / "workspace").mkdir(parents=True)
+    (home / "workspace" / "MEMORY.md").write_text(
+        "REAL USER MEMORY THAT GETS REPLACED\n", encoding="utf-8"
+    )
+
+    OpenClawMigrator(
+        MigrationOptions(
+            source=source, config_path=tmp_path / "cfg.toml", apply=True, overwrite=True
+        )
+    ).migrate()
+
+    text = (home / "workspace" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "REAL USER MEMORY THAT GETS REPLACED" not in text
+    assert "real daily entry that needs to survive migration" in text
+    # Backup of the previous content is still kept on --overwrite.
+    backups = list((home / "workspace").glob("MEMORY.md.backup.*"))
+    assert len(backups) == 1
+    assert "REAL USER MEMORY THAT GETS REPLACED" in backups[0].read_text(encoding="utf-8")
 
 
 def test_template_detection_is_robust_to_trailing_whitespace(

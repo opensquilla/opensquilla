@@ -18,7 +18,13 @@ from opensquilla.cli.repl import commands as repl_commands
 from opensquilla.cli.repl import prompt as repl_prompt
 from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.engine.commands import DEFAULT_REGISTRY, Surface
-from opensquilla.engine.types import ArtifactEvent, DoneEvent, TextDeltaEvent
+from opensquilla.engine.types import (
+    ArtifactEvent,
+    DoneEvent,
+    TextDeltaEvent,
+    ToolResultEvent,
+    ToolUseStartEvent,
+)
 from opensquilla.session.compaction import CompactionConfig
 from opensquilla.tools.types import CallerKind, ToolContext
 
@@ -387,6 +393,8 @@ class _RecordingRenderer:
         self.pulses = 0
         self.errors: list[str] = []
         self.finalized = False
+        self.tool_starts: list[tuple[str, object, str | None]] = []
+        self.tool_finishes: list[tuple[str | None, bool]] = []
         _RecordingRenderer.instances.append(self)
 
     def __enter__(self) -> _RecordingRenderer:
@@ -402,13 +410,34 @@ class _RecordingRenderer:
         self.pulses += 1
 
     def tool_call(self, name: str, args=None) -> None:
-        return None
+        # Legacy shim kept for tests that haven't migrated.
+        self.tool_starts.append((name, args, None))
+
+    def tool_start(self, name: str, args=None, tool_use_id: str | None = None) -> None:
+        self.tool_starts.append((name, args, tool_use_id))
+
+    def tool_finished(
+        self,
+        tool_use_id: str | None,
+        *,
+        success: bool,
+        elapsed: float | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.tool_finishes.append((tool_use_id, success))
 
     def error(self, message: str) -> None:
         self.errors.append(message)
 
-    def finalize(self, usage=None, *, cancelled: bool = False) -> None:
+    def finalize(
+        self,
+        usage=None,
+        *,
+        cancelled: bool = False,
+        cumulative_cost: float | None = None,
+    ) -> None:
         self.finalized = True
+        self.cumulative_cost = cumulative_cost
 
 
 @pytest.mark.asyncio
@@ -686,6 +715,137 @@ async def test_standalone_turnrunner_stream_collects_artifacts(monkeypatch) -> N
     assert result.artifacts[0]["download_url"] == "/api/v1/artifacts/art-chat"
     assert "session_key" not in result.artifacts[0]
     assert "sessionKey" not in json.dumps(result.artifacts[0])
+
+
+@pytest.mark.asyncio
+async def test_standalone_turnrunner_wires_tool_strip(monkeypatch) -> None:
+    """Tool events must drive ``tool_start``/``tool_finished`` on the renderer.
+
+    Without this wiring the ToolCallStrip pairing/coalescing never runs against
+    real traffic and the 12-call ``execute_code`` flood reappears.
+    """
+
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            yield ToolUseStartEvent(tool_use_id="call-1", tool_name="execute_code")
+            yield ToolResultEvent(
+                tool_use_id="call-1",
+                tool_name="execute_code",
+                result="2",
+                is_error=False,
+            )
+            yield ToolUseStartEvent(tool_use_id="call-2", tool_name="execute_code")
+            yield ToolResultEvent(
+                tool_use_id="call-2",
+                tool_name="execute_code",
+                result="boom",
+                is_error=True,
+            )
+            yield DoneEvent()
+
+    _RecordingRenderer.instances.clear()
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr(chat_cmd, "StreamingRenderer", _RecordingRenderer)
+    svc = SimpleNamespace(
+        config=SimpleNamespace(
+            agent_stream_heartbeat_interval_seconds=0.0,
+            agent_stream_idle_timeout_seconds=1.0,
+        ),
+        session_manager=_FakeSessionManager(),
+    )
+    tool_ctx = ToolContext(caller_kind=CallerKind.CLI, channel_kind="cli", channel_id="cli:chat")
+
+    await chat_cmd._stream_response_turnrunner(
+        FakeTurnRunner(),
+        "agent:main:standalone:test",
+        tool_ctx,
+        "hello",
+        svc=svc,
+    )
+
+    renderer = _RecordingRenderer.instances[-1]
+    assert renderer.tool_starts == [
+        ("execute_code", None, "call-1"),
+        ("execute_code", None, "call-2"),
+    ]
+    assert renderer.tool_finishes == [
+        ("call-1", True),
+        ("call-2", False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resolve_gateway_session_cost_picks_matching_entry() -> None:
+    """The helper must return the cost for *this* session, not the first one."""
+
+    class _Client:
+        async def usage_status(self):
+            return {
+                "sessions": [
+                    {"session_key": "agent:other", "cost_usd": 9.99},
+                    {"session_key": "agent:main:cli:abc", "cost_usd": 2.789012},
+                ]
+            }
+
+    cost = await chat_cmd._resolve_gateway_session_cost(_Client(), "agent:main:cli:abc")
+    assert cost == pytest.approx(2.789012)
+
+
+@pytest.mark.asyncio
+async def test_resolve_gateway_session_cost_returns_none_on_unknown_session() -> None:
+    """Unknown session → no ∑ segment, never silently mis-attribute another session's spend."""
+
+    class _Client:
+        async def usage_status(self):
+            return {"sessions": [{"session_key": "agent:other", "cost_usd": 9.99}]}
+
+    cost = await chat_cmd._resolve_gateway_session_cost(_Client(), "agent:main:cli:abc")
+    assert cost is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_gateway_session_cost_returns_none_on_rpc_failure() -> None:
+    """RPC errors must downgrade silently — footer just omits the ∑ segment."""
+
+    class _Client:
+        async def usage_status(self):
+            raise RuntimeError("gateway down")
+
+    cost = await chat_cmd._resolve_gateway_session_cost(_Client(), "agent:main:cli:abc")
+    assert cost is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_gateway_session_cost_propagates_cancellation() -> None:
+    """Don't swallow CancelledError — let asyncio teardown work normally."""
+
+    class _Client:
+        async def usage_status(self):
+            raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await chat_cmd._resolve_gateway_session_cost(_Client(), "agent:main:cli:abc")
+
+
+@pytest.mark.asyncio
+async def test_resolve_gateway_session_cost_swallows_timeout() -> None:
+    """A slow gateway must NOT crash the completed turn.
+
+    An earlier draft re-raised asyncio.TimeoutError alongside CancelledError,
+    so any gateway taking longer than the helper's budget would abort the
+    turn just to print the ∑ segment. Timeout has to fall back to None like
+    every other gateway-side failure.
+    """
+
+    class _Client:
+        async def usage_status(self):
+            await asyncio.sleep(0.5)
+            return {"sessions": []}
+
+    cost = await chat_cmd._resolve_gateway_session_cost(
+        _Client(), "agent:main:cli:abc", timeout=0.05
+    )
+    assert cost is None
 
 
 @pytest.mark.asyncio

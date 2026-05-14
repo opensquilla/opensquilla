@@ -228,6 +228,29 @@ def _resolve_compaction_provider(
         return None
 
 
+def _is_approval_or_blocked_result(result: Any) -> bool:
+    """Return True when a tool_result payload is an approval/block envelope.
+
+    The tool itself has not finished in those cases — the real outcome arrives
+    in a later tool_result with the same tool_use_id once the user approves or
+    the call retries. Gating tool_finished() on this prevents ToolCallStrip
+    from flushing a run prematurely while the user is being prompted.
+    """
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        payload = parsed
+    elif isinstance(result, dict):
+        payload = result
+    else:
+        return False
+    return payload.get("status") in {"approval_required", "approval_pending", "blocked"}
+
+
 async def _maybe_handle_approval(
     result: Any,
     live: Any,
@@ -1491,6 +1514,50 @@ def _artifact_status_line(artifact: dict[str, Any]) -> str:
     return f"Generated file: {name} -> {target or artifact.get('id', '')}"
 
 
+async def _resolve_gateway_session_cost(
+    client: _GatewayClientLike,
+    session_key: str,
+    *,
+    timeout: float = 2.0,
+) -> float | None:
+    """Look up the gateway-authoritative cumulative cost for *session_key*.
+
+    Returns ``None`` on RPC failure / timeout / unknown session so the footer
+    falls back to its single-turn snapshot — the ``(∑…)`` segment is reserved
+    for trustworthy session-total numbers that match the WebUI usage panel.
+    """
+    try:
+        payload = await asyncio.wait_for(client.usage_status(), timeout=timeout)
+    except asyncio.CancelledError:
+        # Real teardown signal — propagate so asyncio can unwind the task
+        # tree. The footer ∑ segment is not worth delaying cancellation for.
+        raise
+    except asyncio.TimeoutError:
+        # 2s budget elapsed; the turn already finished, so silently fall back
+        # to "no ∑ segment" rather than crashing a successful turn.
+        return None
+    except Exception:  # noqa: BLE001 — best-effort lookup, never fail the turn
+        return None
+    sessions = payload.get("sessions") if isinstance(payload, dict) else None
+    if not isinstance(sessions, list):
+        return None
+    for entry in sessions:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("session_key") or entry.get("sessionKey")
+        if key != session_key:
+            continue
+        raw = entry.get("cost_usd") if "cost_usd" in entry else entry.get("costUsd")
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+    return None
+
+
 async def _stream_response_gateway(
     client: _GatewayClientLike,
     session_key: str,
@@ -1514,7 +1581,11 @@ async def _stream_response_gateway(
                 if event_name == "session.event.text_delta":
                     renderer.append_text(event.get("text", ""))
                 elif event_name == "session.event.tool_use_start":
-                    renderer.tool_call(event.get("tool_name") or event.get("toolName") or "tool")
+                    renderer.tool_start(
+                        event.get("tool_name") or event.get("toolName") or "tool",
+                        event.get("input") or event.get("arguments"),
+                        event.get("tool_use_id") or event.get("toolUseId"),
+                    )
                 elif event_name == "session.event.tool_result":
                     await _maybe_handle_approval(
                         event.get("result"),
@@ -1522,6 +1593,11 @@ async def _stream_response_gateway(
                         client.resolve_approval,
                         elevated_state=elevated_state,
                     )
+                    if not _is_approval_or_blocked_result(event.get("result")):
+                        renderer.tool_finished(
+                            event.get("tool_use_id") or event.get("toolUseId"),
+                            success=not bool(event.get("is_error") or event.get("isError")),
+                        )
                 elif event_name == "session.event.artifact":
                     artifact = _artifact_event_payload(event)
                     artifacts.append(artifact)
@@ -1549,7 +1625,13 @@ async def _stream_response_gateway(
             _clear_current_cancel()
             await client.abort_session(session_key)
             cancelled = True
-        renderer.finalize(usage, cancelled=cancelled)
+        # Best-effort gateway-side session total: matches the number the WebUI
+        # usage panel shows for the same session_key. Falls back to None (no
+        # ∑ segment) on RPC failure, unknown session, or after a cancel.
+        cumulative_cost = (
+            None if cancelled else await _resolve_gateway_session_cost(client, session_key)
+        )
+        renderer.finalize(usage, cancelled=cancelled, cumulative_cost=cumulative_cost)
     return TurnResult(
         text=renderer.buffer,
         usage=usage,
@@ -1630,9 +1712,11 @@ async def _stream_response_turnrunner(
                 elif isinstance(event, RunHeartbeatEvent):
                     renderer.pulse()
                 elif isinstance(event, ToolUseStartEvent):
-                    renderer.tool_call(event.tool_name)
+                    renderer.tool_start(event.tool_name, None, event.tool_use_id)
                 elif isinstance(event, ToolResultEvent):
                     await _maybe_handle_approval(event.result, renderer, resolver)
+                    if not _is_approval_or_blocked_result(event.result):
+                        renderer.tool_finished(event.tool_use_id, success=not event.is_error)
                 elif isinstance(event, ArtifactEvent):
                     artifact = _artifact_event_payload(event)
                     artifacts.append(artifact)
@@ -1727,7 +1811,7 @@ async def _handle_image_command_turnrunner(
                 elif isinstance(event, RunHeartbeatEvent):
                     renderer.pulse()
                 elif isinstance(event, ToolUseStartEvent):
-                    renderer.tool_call(event.tool_name)
+                    renderer.tool_start(event.tool_name, None, event.tool_use_id)
                 elif isinstance(event, ErrorEvent):
                     message_text = _turn_stream_error_message(event)
                     renderer.error(message_text)

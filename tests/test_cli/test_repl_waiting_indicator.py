@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from opensquilla.cli.repl import stream as stream_module
-from opensquilla.cli.repl.stream import StreamingRenderer, WaitingIndicator
+from opensquilla.cli.repl.stream import StreamingRenderer, UsageSummary, WaitingIndicator
 
 
 def test_verb_cycles_by_dwell_seconds() -> None:
@@ -222,3 +222,44 @@ def test_append_text_keeps_newlines_and_tabs(monkeypatch) -> None:
     assert renderer.buffer == payload
     assert "# heading" in buf.getvalue()
     assert "\tindented" in buf.getvalue()
+
+
+def _usage(turn_cost: float = 0.5) -> UsageSummary:
+    return UsageSummary(
+        input_tokens=10,
+        output_tokens=20,
+        cost_usd=turn_cost,
+        model="deepseek/v4-flash",
+    )
+
+
+def test_footer_omits_cumulative_segment_when_no_total() -> None:
+    """Backward-compat: no cumulative_cost → footer matches the pre-upgrade form."""
+    renderer = StreamingRenderer()
+    line = renderer.footer(_usage(turn_cost=0.123456), elapsed=1.0)
+    assert "$0.123456" in line
+    assert "∑" not in line, "cumulative segment must be suppressed when source is absent"
+
+
+def test_footer_appends_session_total_with_sigma() -> None:
+    """Gateway path: pass a session total → footer adds `(∑$X)` after turn cost."""
+    renderer = StreamingRenderer()
+    line = renderer.footer(_usage(turn_cost=0.123456), elapsed=1.0, cumulative_cost=2.789012)
+    assert "$0.123456 (∑$2.789012)" in line, line
+
+
+def test_footer_drops_cumulative_when_zero_or_negative() -> None:
+    """A 0 cumulative is treated as 'no useful data' — keeps ∑ semantics clean."""
+    renderer = StreamingRenderer()
+    zero_line = renderer.footer(_usage(turn_cost=0.5), elapsed=1.0, cumulative_cost=0.0)
+    negative_line = renderer.footer(_usage(turn_cost=0.5), elapsed=1.0, cumulative_cost=-0.01)
+    assert "∑" not in zero_line
+    assert "∑" not in negative_line
+
+
+def test_footer_skips_cumulative_when_turn_cost_zero() -> None:
+    """Free-tier turns don't render a turn-cost segment, so ∑ has no anchor either."""
+    renderer = StreamingRenderer()
+    line = renderer.footer(_usage(turn_cost=0.0), elapsed=1.0, cumulative_cost=2.5)
+    assert "$" not in line, line
+    assert "∑" not in line

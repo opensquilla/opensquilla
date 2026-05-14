@@ -411,18 +411,30 @@ class StreamingRenderer:
         """Backward-compatible shim — delegates to tool_start."""
         self.tool_start(name, args if isinstance(args, dict) else None, None)
 
-    def finalize(self, usage: UsageSummary | None = None, *, cancelled: bool = False) -> None:
+    def finalize(
+        self,
+        usage: UsageSummary | None = None,
+        *,
+        cancelled: bool = False,
+        cumulative_cost: float | None = None,
+    ) -> None:
         self._strip.flush()
         self._end_stream_line()
         self.stop()
         elapsed = time.monotonic() - self.started_at
         if cancelled:
             console.print("[yellow]turn cancelled[/yellow]")
-        footer = self.footer(usage, elapsed)
+        footer = self.footer(usage, elapsed, cumulative_cost=cumulative_cost)
         if footer:
             console.print(f"[dim]{footer}[/dim]")
 
-    def footer(self, usage: UsageSummary | None, elapsed: float) -> str:
+    def footer(
+        self,
+        usage: UsageSummary | None,
+        elapsed: float,
+        *,
+        cumulative_cost: float | None = None,
+    ) -> str:
         parts: list[str] = []
         if usage and usage.model:
             parts.append(usage.model)
@@ -433,7 +445,13 @@ class StreamingRenderer:
         if usage and usage.reasoning_tokens:
             parts.append(f"{usage.reasoning_tokens:,} reasoning")
         if usage and usage.cost_usd:
-            parts.append(f"${usage.cost_usd:.6f}")
+            cost_part = f"${usage.cost_usd:.6f}"
+            # ∑ marker is reserved for gateway-authoritative session totals so
+            # users can distinguish "single-turn snapshot" from "session total".
+            # Absent ∑ = no cumulative source (standalone mode or RPC failure).
+            if cumulative_cost is not None and cumulative_cost > 0:
+                cost_part += f" (∑${cumulative_cost:.6f})"
+            parts.append(cost_part)
         if usage and usage.aggregate:
             parts.append("aggregate")
         parts.append(f"{elapsed:.1f}s")

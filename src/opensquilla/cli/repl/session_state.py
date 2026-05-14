@@ -7,6 +7,22 @@ from dataclasses import dataclass, field
 from opensquilla.cli.repl.stream import UsageCounter
 
 
+def _model_alias(full: str | None) -> str:
+    """Return a short display alias for a model identifier.
+
+    - None or empty  → "…"
+    - "provider/model-name" → "model-name" (segment after last "/")
+    - If the segment is over 28 chars → first 12 + "…" + last 12
+    - No slash → the whole string as-is
+    """
+    if not full:
+        return "…"
+    seg = full.rsplit("/", 1)[-1]
+    if len(seg) > 28:
+        return seg[:12] + "…" + seg[-12:]
+    return seg
+
+
 @dataclass
 class PromptState:
     model: str | None = None
@@ -14,9 +30,8 @@ class PromptState:
 
     @property
     def label(self) -> str:
-        model = self.model or "model"
         mode = self.elevated or "normal"
-        return f"[{model} {mode}] you > "
+        return f"[{_model_alias(self.model)} {mode}] you > "
 
 
 @dataclass

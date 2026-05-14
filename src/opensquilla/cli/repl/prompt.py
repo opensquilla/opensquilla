@@ -7,13 +7,14 @@ import sys
 from dataclasses import dataclass
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import Completer, Completion, FuzzyCompleter, WordCompleter
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.shortcuts import CompleteStyle
 
 from opensquilla.cli.repl.commands import slash_words
-from opensquilla.engine.commands import Surface, parse_surface
+from opensquilla.engine.commands import DEFAULT_REGISTRY, Surface, parse_surface
 from opensquilla.paths import state_dir
 
 
@@ -42,13 +43,41 @@ def _history_path() -> str:
     return str(path)
 
 
+def _build_meta_dict(surface: Surface) -> dict[str, str]:
+    """Build word→description mapping from the command registry for a surface."""
+    meta: dict[str, str] = {}
+    for cmd in DEFAULT_REGISTRY.for_surface(surface):
+        for word in cmd.words():
+            meta[word] = cmd.description
+    return meta
+
+
+class _SlashCompleter(Completer):
+    """Fuzzy completer that only fires when the buffer starts with '/'."""
+
+    def __init__(self, surface: Surface) -> None:
+        words = slash_words(surface)
+        meta_dict = _build_meta_dict(surface)
+        inner = WordCompleter(words, meta_dict=meta_dict, ignore_case=True, WORD=True)
+        self._fuzzy = FuzzyCompleter(inner)
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+        yield from self._fuzzy.get_completions(document, complete_event)
+
+
 def _prompt_session(surface: Surface | str = Surface.CLI_GATEWAY) -> PromptSession[str]:
     global _session
     parsed = parse_surface(surface) if isinstance(surface, str) else surface
     if parsed not in _sessions:
         _sessions[parsed] = PromptSession(
             history=FileHistory(_history_path()),
-            completer=WordCompleter(slash_words(parsed), ignore_case=True),
+            completer=_SlashCompleter(parsed),
+            complete_while_typing=True,
+            complete_in_thread=True,
+            complete_style=CompleteStyle.MULTI_COLUMN,
             enable_history_search=True,
             key_bindings=_key_bindings(),
         )

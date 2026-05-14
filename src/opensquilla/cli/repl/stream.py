@@ -143,6 +143,113 @@ class TurnResult:
     error: str | None = None
     cancelled: bool = False
     artifacts: list[dict[str, Any]] | None = None
+    model_after: str | None = None
+
+
+def _summarize_args(name: str, args: dict | None) -> str:
+    """Return a short human-readable summary of a tool call's key argument.
+
+    Only the tool names that actually exist in the builtin registry are handled;
+    all others return an empty string so unknown tools still show correctly.
+    """
+    if not args:
+        return ""
+    if name in {"exec_command", "background_process"}:
+        cmd = args.get("command") or args.get("cmd") or ""
+        return str(cmd)[:60] if cmd else ""
+    if name == "execute_code":
+        code = args.get("code") or args.get("source") or ""
+        first_line = str(code).split("\n", 1)[0]
+        return first_line[:60] if first_line else ""
+    if name in {"read_file", "write_file", "list_dir", "apply_patch"}:
+        path = (
+            args.get("path")
+            or args.get("file_path")
+            or args.get("target")
+            or ""
+        )
+        return str(path)[-50:] if path else ""
+    if name == "web_search":
+        query = args.get("query") or ""
+        return str(query)[:60] if query else ""
+    if name == "web_fetch":
+        url = args.get("url") or args.get("uri") or ""
+        return str(url)[:60] if url else ""
+    return ""
+
+
+class _ToolCallStrip:
+    """Coalesces repeated tool calls of the same name into a summary line.
+
+    Rules:
+    - Calls 1 and 2 in a run of the same name print normally.
+    - On call 3: print "· {name} ×3 (cumulative)" once; suppress further
+      prints for that run while counting.
+    - On name-change, finalize(), or error: if count >= 3, flush a
+      "· {prev} ×{count} total {sec}s" row.
+    """
+
+    def __init__(self) -> None:
+        self._pending: dict[str, tuple[str, str, float]] = {}  # id → (name, summary, start_ts)
+        self._run_name: str | None = None
+        self._run_count: int = 0
+        self._run_start: float = 0.0
+        self._coalesced: bool = False  # True once the ×3 line has been printed
+
+    def _flush_run(self) -> None:
+        if self._run_name is not None and self._run_count >= 3:
+            elapsed = time.monotonic() - self._run_start
+            console.print(
+                f"[{ACCENT}]·[/] [dim]{self._run_name} "
+                f"×{self._run_count} total {elapsed:.1f}s[/dim]"
+            )
+        self._run_name = None
+        self._run_count = 0
+        self._run_start = 0.0
+        self._coalesced = False
+
+    def record_start(self, name: str, summary: str, tool_use_id: str | None) -> None:
+        ts = time.monotonic()
+        tid = tool_use_id or f"_anon_{ts}"
+        self._pending[tid] = (name, summary, ts)
+
+        if self._run_name != name:
+            self._flush_run()
+            self._run_name = name
+            self._run_count = 0
+            self._run_start = ts
+
+        self._run_count += 1
+
+        if self._run_count <= 2:
+            suffix = f" {summary}" if summary else ""
+            console.print(f"[{ACCENT}]·[/] [dim]{name}{suffix}[/dim]")
+        elif self._run_count == 3:
+            self._coalesced = True
+            console.print(
+                f"[{ACCENT}]·[/] [dim]{name} ×3 (cumulative)[/dim]"
+            )
+        # count > 3 and already coalesced: suppress output, keep counting
+
+    def record_finish(
+        self,
+        tool_use_id: str | None,
+        *,
+        success: bool,
+        elapsed: float | None = None,
+        error: str | None = None,
+    ) -> None:
+        entry = self._pending.pop(tool_use_id or "", None)
+        if error:
+            # Flush any active run, then print an error row.
+            if self._run_name is not None and self._run_count >= 3:
+                self._flush_run()
+            name = entry[0] if entry else (tool_use_id or "tool")
+            console.print(f"[red]✗[/] [dim]{name}: {error}[/dim]")
+
+    def flush(self) -> None:
+        """Call before finalizing the turn to close any open coalesced run."""
+        self._flush_run()
 
 
 class WaitingIndicator:
@@ -197,6 +304,7 @@ class StreamingRenderer:
         self.started_at = time.monotonic()
         self._waiting_live: Live | None = None
         self._stream_started = False
+        self._strip = _ToolCallStrip()
 
     def __enter__(self) -> StreamingRenderer:
         self.started_at = time.monotonic()
@@ -278,13 +386,33 @@ class StreamingRenderer:
         self._stop_waiting()
         console.print(Text(message, style=style))
 
-    def tool_call(self, name: str, args: Any | None = None) -> None:
+    def tool_start(
+        self,
+        name: str,
+        args: dict | None = None,
+        tool_use_id: str | None = None,
+    ) -> None:
         self._end_stream_line()
         self._stop_waiting()
-        suffix = f" {args}" if args else ""
-        console.print(f"[{ACCENT}]tool[/] [dim]{name}{suffix}[/dim]")
+        summary = _summarize_args(name, args)
+        self._strip.record_start(name, summary, tool_use_id)
+
+    def tool_finished(
+        self,
+        tool_use_id: str | None,
+        *,
+        success: bool,
+        elapsed: float | None = None,
+        error: str | None = None,
+    ) -> None:
+        self._strip.record_finish(tool_use_id, success=success, elapsed=elapsed, error=error)
+
+    def tool_call(self, name: str, args: Any | None = None) -> None:
+        """Backward-compatible shim — delegates to tool_start."""
+        self.tool_start(name, args if isinstance(args, dict) else None, None)
 
     def finalize(self, usage: UsageSummary | None = None, *, cancelled: bool = False) -> None:
+        self._strip.flush()
         self._end_stream_line()
         self.stop()
         elapsed = time.monotonic() - self.started_at

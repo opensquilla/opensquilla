@@ -114,10 +114,11 @@ async def test_prompt_user_uses_surface_specific_completions(monkeypatch) -> Non
     completion_words: dict[str, set[str]] = {}
     created_sessions: list[object] = []
 
-    class FakeWordCompleter:
-        def __init__(self, words, *, ignore_case: bool) -> None:
-            self.words = set(words)
-            self.ignore_case = ignore_case
+    class FakeSlashCompleter:
+        """Fake _SlashCompleter that exposes the slash_words for the surface."""
+
+        def __init__(self, surface) -> None:
+            self.words = set(repl_commands.slash_words(surface))
 
     class FakePromptSession:
         def __init__(self, **kwargs) -> None:
@@ -138,7 +139,7 @@ async def test_prompt_user_uses_surface_specific_completions(monkeypatch) -> Non
     repl_prompt._session = None
     monkeypatch.setattr(repl_prompt.sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(repl_prompt.sys, "stdout", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr(repl_prompt, "WordCompleter", FakeWordCompleter)
+    monkeypatch.setattr(repl_prompt, "_SlashCompleter", FakeSlashCompleter)
     monkeypatch.setattr(repl_prompt, "PromptSession", FakePromptSession)
     monkeypatch.setattr(repl_prompt, "patch_stdout", lambda: FakePatchStdout())
 

@@ -27,7 +27,7 @@ from opensquilla.cli.repl.commands import is_exit_command, render_help_table
 from opensquilla.cli.repl.prompt import prompt_approval, prompt_user
 from opensquilla.cli.repl.session_state import ChatSessionState, messages_to_markdown
 from opensquilla.cli.repl.stream import StreamingRenderer, TurnResult, UsageSummary
-from opensquilla.cli.ui import ACCENT, ACCENT_HEADER, console, error_panel
+from opensquilla.cli.ui import ACCENT, ACCENT_HEADER, console, error_panel, notice_panel
 from opensquilla.engine.commands import Surface
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
@@ -270,11 +270,10 @@ async def _maybe_handle_approval(
         try:
             console.print()
             console.print(
-                Panel(
-                    f"[bold]Command:[/bold] {str(payload.get('command', '')).strip()}\n"
-                    f"[dim]{payload.get('message', '')}[/dim]",
-                    title="[red]Blocked (sensitive path)[/red]",
-                    border_style="red",
+                notice_panel(
+                    str(payload.get("message", "")),
+                    kind="block",
+                    command=str(payload.get("command", "")).strip() or None,
                 )
             )
         finally:
@@ -293,18 +292,12 @@ async def _maybe_handle_approval(
     live.stop()
     try:
         console.print()
-        body = f"[bold]Command:[/bold] {command or '(not shown)'}"
-        if warning:
-            body += f"\n[dim]{warning}[/dim]"
         console.print(
-            Panel(
-                body,
-                title=(
-                    "[yellow]Approval pending[/yellow]"
-                    if status == "approval_pending"
-                    else "[yellow]Approval required[/yellow]"
-                ),
-                border_style="yellow",
+            notice_panel(
+                warning,
+                kind="warn",
+                title="Approval pending" if status == "approval_pending" else "Approval required",
+                command=command or "(not shown)",
             )
         )
         console.print(
@@ -765,6 +758,15 @@ async def _gateway_chat(model: str | None, session_id: str | None) -> None:
             if model:
                 console.print(f"[dim]Model: {model}[/dim]")
         state = ChatSessionState(session_key=session_key, model=model)
+        # Best-effort: latch the gateway-resolved model name into state so the
+        # prompt label shows the real model identifier from the first keystroke.
+        try:
+            _resolved = await asyncio.wait_for(
+                client.resolve_session(session_key), timeout=2.0
+            )
+            state.model = _resolved.get("model") or state.model
+        except Exception:  # noqa: BLE001 — network/timeout; non-fatal
+            pass
 
         # Interactive REPL via gateway
         console.print(
@@ -817,6 +819,7 @@ async def _gateway_chat(model: str | None, session_id: str | None) -> None:
             except GatewayRPCError as exc:
                 console.print(error_panel(str(exc)))
                 continue
+            state.model = result.model_after or state.model
             state.transcript.add("user", user_input)
             state.transcript.add("assistant", result.text)
             state.usage.add(result.usage)
@@ -842,6 +845,13 @@ async def _handle_gateway_slash_command(
         state.session_key = session_key
         state.transcript.clear()
         state.usage.reset()
+        try:
+            _resolved = await asyncio.wait_for(
+                client.resolve_session(session_key), timeout=2.0
+            )
+            state.model = _resolved.get("model") or state.model
+        except Exception:  # noqa: BLE001 — network/timeout; non-fatal
+            pass
         label = f" ({title})" if title else ""
         console.print(f"[green]Started new session{label}:[/green] {session_key}")
         return True
@@ -1493,6 +1503,7 @@ async def _stream_response_gateway(
     usage: UsageSummary | None = None
     cancelled = False
     artifacts: list[dict[str, Any]] = []
+    model_after: str | None = None
 
     with StreamingRenderer() as renderer:
         try:
@@ -1533,6 +1544,7 @@ async def _stream_response_gateway(
                 elif event_name == "session.event.done":
                     usage = UsageSummary.from_gateway_payload(event)
                     cancelled = event.get("reason") == "aborted"
+                    model_after = event.get("routed_model") or event.get("model") or None
         except (KeyboardInterrupt, asyncio.CancelledError):
             _clear_current_cancel()
             await client.abort_session(session_key)
@@ -1543,6 +1555,7 @@ async def _stream_response_gateway(
         usage=usage,
         cancelled=cancelled,
         artifacts=artifacts,
+        model_after=model_after,
     )
 
 
@@ -1604,6 +1617,7 @@ async def _stream_response_turnrunner(
     usage: UsageSummary | None = None
     cancelled = False
     artifacts: list[dict[str, Any]] = []
+    model_after: str | None = None
 
     with StreamingRenderer() as renderer:
         try:
@@ -1640,6 +1654,7 @@ async def _stream_response_turnrunner(
                     )
                 elif isinstance(event, DoneEvent):
                     usage = UsageSummary.from_done_event(event)
+                    model_after = usage.model or None
         except (KeyboardInterrupt, asyncio.CancelledError):
             _clear_current_cancel()
             cancelled = True
@@ -1653,6 +1668,7 @@ async def _stream_response_turnrunner(
         usage=usage,
         cancelled=cancelled,
         artifacts=artifacts,
+        model_after=model_after,
     )
 
 

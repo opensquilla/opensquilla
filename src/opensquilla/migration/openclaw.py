@@ -424,18 +424,25 @@ def _rebrand_text(text: str) -> tuple[str, bool]:
     for pattern in source_reference_patterns:
         migrated = re.sub(pattern, protect, migrated)
 
-    replacements = (
-        (".openclaw", ".opensquilla"),
-        (".OpenClaw", ".OpenSquilla"),
-        ("OpenClaw", "OpenSquilla"),
-        ("openclaw", "opensquilla"),
-        ("ClawdBot", "OpenSquilla"),
-        ("clawdbot", "opensquilla"),
-        ("MoltBot", "OpenSquilla"),
-        ("moltbot", "opensquilla"),
+    # Use word-boundary aware regex replacements so prefix-substring
+    # matches like ``.openclawrc``, ``OpenClawFlavored``, or
+    # ``openclaw_pid`` are not mangled into nonsense. The path-style
+    # ``.openclaw``/``.OpenClaw`` patterns additionally require a path
+    # terminator (``/``, whitespace, quote, end-of-string) so paths like
+    # ``.openclawd/run.sock`` stay intact.
+    path_terminator = r"(?=[/\s'\"`)\],;:]|$)"
+    regex_replacements = (
+        (rf"\.openclaw{path_terminator}", ".opensquilla"),
+        (rf"\.OpenClaw{path_terminator}", ".OpenSquilla"),
+        (r"\bOpenClaw\b", "OpenSquilla"),
+        (r"\bopenclaw\b", "opensquilla"),
+        (r"\bClawdBot\b", "OpenSquilla"),
+        (r"\bclawdbot\b", "opensquilla"),
+        (r"\bMoltBot\b", "OpenSquilla"),
+        (r"\bmoltbot\b", "opensquilla"),
     )
-    for old, new in replacements:
-        migrated = migrated.replace(old, new)
+    for pattern, replacement in regex_replacements:
+        migrated = re.sub(pattern, replacement, migrated)
     for key, value in protected.items():
         migrated = migrated.replace(key, value)
     return migrated, migrated != text
@@ -1446,24 +1453,41 @@ class OpenClawMigrator:
             else:
                 existing_servers.append(entry)
                 added.append(entry.name)
-        cfg.mcp.enabled = True
+        # Preserve user's explicit ``mcp.enabled = false`` choice: only
+        # flip to True when MCP was defaulted off (no pre-existing
+        # servers). If the user had servers AND disabled MCP, keep it
+        # disabled and surface a manual_steps hint.
+        mcp_enabled_left_disabled = False
+        if not cfg.mcp.enabled:
+            if not existing_by_name:
+                cfg.mcp.enabled = True
+            else:
+                mcp_enabled_left_disabled = True
         cfg.mcp.servers = existing_servers
         self._config_changed = True
+        record_details: dict[str, Any] = {
+            "count": len(entries),
+            "added": added,
+            "replaced": replaced,
+            "preserved_existing": [
+                s.name for s in existing_servers
+                if s.name not in {e.name for e in entries}
+            ],
+            "unsupported_fields": unsupported_fields,
+        }
+        if mcp_enabled_left_disabled:
+            record_details["mcp_enabled_left_disabled"] = True
+            record_details["manual_steps"] = [
+                "MCP is disabled in your OpenSquilla config but you have "
+                "configured servers. Set `mcp.enabled = true` via "
+                "`opensquilla config set mcp.enabled true` to activate them."
+            ]
         self._record(
             "mcp-servers",
             self.source / "openclaw.json",
             self.config_path or cfg.config_path,
             "migrated" if self.options.apply else "planned",
-            details={
-                "count": len(entries),
-                "added": added,
-                "replaced": replaced,
-                "preserved_existing": [
-                    s.name for s in existing_servers
-                    if s.name not in {e.name for e in entries}
-                ],
-                "unsupported_fields": unsupported_fields,
-            },
+            details=record_details,
         )
 
     def _migrate_agent_config(self, config: dict[str, Any]) -> None:

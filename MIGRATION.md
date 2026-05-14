@@ -321,6 +321,27 @@ behaviors that were previously documented but not implemented:
   the migration archive still points back at the original source. The
   unrebranded original is copied to
   `<output_dir>/archive/files/workspace-original/<name>.md` for review.
+- **Path-token replacement is word-boundary aware.** Previously a plain
+  string replace turned `~/.hermesrc` into `~/.opensquillarc` and
+  `.hermes_backup` into `.opensquilla_backup` — meaningless paths. The
+  rebrand now only rewrites `.hermes` when it ends a path token (i.e.
+  followed by `/`, whitespace, quote, or end-of-string). Same rule
+  applied to `.openclaw` on the OpenClaw side, and bare-word
+  `OpenClaw` / `openclaw` are now matched with `\b` so substrings like
+  `OpenClawFlavored` or `openclaw_pid` are left alone.
+- **Non-UTF-8 source files no longer crash.** Hand-edited source files
+  with stray bad bytes (CP1252 fragments, leftover binary paste, etc.)
+  used to abort the entire Hermes migration with
+  `UnicodeDecodeError`. The source read now uses `errors="replace"`
+  (matching OpenClaw); offending bytes become U+FFFD so users can spot
+  them.
+- **`mcp.enabled = false` is no longer silently flipped.** When the
+  destination home already has MCP servers AND `mcp.enabled = false`
+  (an explicit "I don't want MCP right now" choice), importing more
+  MCP servers leaves the flag at `false` and surfaces
+  `details.mcp_enabled_left_disabled` plus a `manual_steps` hint. MCP
+  is still flipped on automatically when the destination had no
+  servers (framework default — flipping is what the user wants).
 - **Mixed-subject prose is kept verbatim.** Workspace notes often
   describe Hermes AND OpenSquilla as distinct entities ("Hermes Agent
   v0.13.0 installed at ~/.local/bin/hermes; OpenSquilla also installed

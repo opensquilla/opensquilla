@@ -252,7 +252,12 @@ def _hermes_rebrand_text(text: str) -> tuple[str, bool]:
     # variant uses a regex so multiple spaces, tabs, or a newline between
     # the two words still match.
     migrated = re.sub(r"\bHermes\s+Agent\b", "OpenSquilla", migrated)
-    migrated = migrated.replace(".hermes", ".opensquilla")
+    # Only rewrite ``.hermes`` when it ends a path token. A plain substring
+    # replacement turned ``.hermesrc`` into ``.opensquillarc`` and
+    # ``.hermes_backup`` into ``.opensquilla_backup``, both of which are
+    # meaningless. The lookahead permits ``/``, whitespace, end-of-string,
+    # or a quote char (so ``"~/.hermes"`` still rebrands).
+    migrated = re.sub(r"\.hermes(?=[/\s'\"`)\],;:]|$)", ".opensquilla", migrated)
 
     contextual_replacements = (
         (
@@ -424,7 +429,13 @@ class HermesMigrator:
         # Reset per-call details so _plan_file's record reflects only this merge.
         self._last_merge_details = {}
         destination.parent.mkdir(parents=True, exist_ok=True)
-        source_text = source.read_text(encoding="utf-8-sig")
+        # Use ``errors="replace"`` so a hand-edited source with stray bad
+        # bytes (BOM markers, mixed CP1252 fragments, accidental binary
+        # paste) does not crash the entire migration with
+        # ``UnicodeDecodeError``. Openclaw already uses this strategy;
+        # hermes was inconsistent. Replaced characters land as U+FFFD
+        # so the user can spot them after migration.
+        source_text = source.read_text(encoding="utf-8-sig", errors="replace")
         skip_reason = _rebrand_skip_reason(source_text)
         rebranded_text, rebranded = _hermes_rebrand_text(source_text)
         if skip_reason is not None:
@@ -896,7 +907,24 @@ class HermesMigrator:
             else:
                 existing_servers.append(entry)
                 added.append(entry.name)
-        cfg.mcp.enabled = True
+        # Preserve the user's explicit choice on ``mcp.enabled``. A
+        # previous implementation flipped it to ``True`` unconditionally,
+        # which silently re-enabled MCP for users who had deliberately
+        # turned it off. We only flip ``False`` -> ``True`` when MCP
+        # has never been configured (defaulted False) and report any
+        # leave-as-is in the migration record.
+        mcp_was_disabled = not cfg.mcp.enabled
+        mcp_enabled_left_disabled = False
+        if mcp_was_disabled:
+            # Heuristic: if the user previously had no servers AND mcp
+            # was disabled, treat that as "MCP defaulted off" and turn
+            # it on along with the imported servers. If they HAD
+            # servers and explicitly disabled MCP, respect that choice.
+            had_servers = bool(existing_by_name)
+            if not had_servers:
+                cfg.mcp.enabled = True
+            else:
+                mcp_enabled_left_disabled = True
         cfg.mcp.servers = existing_servers
         self._config_changed = True
         details: dict[str, Any] = {
@@ -907,6 +935,13 @@ class HermesMigrator:
                 s.name for s in existing_servers if s.name not in {e.name for e in imported}
             ],
         }
+        if mcp_enabled_left_disabled:
+            details["mcp_enabled_left_disabled"] = True
+            details["manual_steps"] = [
+                "MCP is disabled in your OpenSquilla config but you have "
+                "configured servers. Set `mcp.enabled = true` via "
+                "`opensquilla config set mcp.enabled true` to activate them."
+            ]
         if dropped:
             details["dropped_entries"] = dropped
         self._record(

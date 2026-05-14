@@ -438,6 +438,63 @@ def test_openclaw_workspace_with_opensquilla_mention_is_kept_verbatim(
     assert "semantic_conversions" not in soul_item["details"]
 
 
+def test_openclaw_rebrand_does_not_mangle_path_substrings() -> None:
+    # Plain string replace turned ``.openclawrc`` into ``.opensquillarc``,
+    # ``OpenClawFlavored`` into ``OpenSquillaFlavored``, and
+    # ``openclaw_pid`` into ``opensquilla_pid``. None of these were
+    # intentional rebrands. Word-boundary aware regex replacement
+    # leaves prefix-substring tokens alone.
+    from opensquilla.migration.openclaw import _rebrand_text
+
+    cases = [
+        ("Config ~/.openclawrc keeps working", "Config ~/.openclawrc keeps working"),
+        ("var openclaw_pid", "var openclaw_pid"),
+        ("Has OpenClawFlavored name", "Has OpenClawFlavored name"),
+        # Legitimate rebrands:
+        ("Use ~/.openclaw home", "Use ~/.opensquilla home"),
+        ("I am OpenClaw", "I am OpenSquilla"),
+        ("Run: openclaw migrate", "Run: opensquilla migrate"),
+    ]
+    for source_text, expected in cases:
+        out, _ = _rebrand_text(source_text)
+        assert out == expected, f"{source_text!r} -> {out!r}, expected {expected!r}"
+
+
+def test_openclaw_mcp_enabled_false_is_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same fix as hermes side: respect an explicit ``mcp.enabled=false``
+    # when the user already has configured servers.
+    import json as _json
+
+    source = tmp_path / ".openclaw"
+    (source / "workspace").mkdir(parents=True)
+    (source / "openclaw.json").write_text(
+        _json.dumps({"mcp": {"servers": {"new": {"command": "/usr/bin/x"}}}}),
+        encoding="utf-8",
+    )
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    home.mkdir(parents=True, exist_ok=True)
+    config_path = tmp_path / "cfg.toml"
+    config_path.write_text(
+        "[mcp]\nenabled = false\n\n"
+        "[[mcp.servers]]\n"
+        "name = \"existing\"\ncommand = \"/usr/bin/y\"\ntransport = \"stdio\"\n",
+        encoding="utf-8",
+    )
+
+    report = OpenClawMigrator(
+        MigrationOptions(source=source, config_path=config_path, apply=True)
+    ).migrate()
+
+    import tomllib
+    data = tomllib.loads(config_path.read_text())
+    assert data["mcp"]["enabled"] is False
+    mc = next(i for i in report["items"] if i["kind"] == "mcp-servers")
+    assert mc["details"]["mcp_enabled_left_disabled"] is True
+
+
 def test_openclaw_memory_blocks_track_skipped_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

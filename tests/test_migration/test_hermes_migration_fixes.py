@@ -238,6 +238,117 @@ def test_workspace_prose_with_opensquilla_mention_is_kept_verbatim(
     assert "semantic_conversions" not in memory_item["details"]
 
 
+def test_rebrand_does_not_mangle_path_substrings_of_dot_hermes() -> None:
+    # Prefix-substring regression: a plain string replace turned
+    # ``.hermesrc`` into ``.opensquillarc`` and ``.hermes-cache`` into
+    # ``.opensquilla-cache``. Both are nonsense. Only ``.hermes`` as a
+    # complete path token (followed by ``/``, whitespace, quote, etc.)
+    # should be rebranded.
+    cases = [
+        ("Path ~/.hermesrc keeps working", "Path ~/.hermesrc keeps working"),
+        ("Cache .hermes-cache here", "Cache .hermes-cache here"),
+        ("Backup ~/.hermes_backup", "Backup ~/.hermes_backup"),
+        # Legit path forms still rebrand:
+        ("Use ~/.hermes for state", "Use ~/.opensquilla for state"),
+        ('Quoted "~/.hermes" works', 'Quoted "~/.opensquilla" works'),
+        ("Slashed ~/.hermes/sub", "Slashed ~/.opensquilla/sub"),
+    ]
+    for source_text, expected in cases:
+        out, _ = _hermes_rebrand_text(source_text)
+        assert out == expected, f"{source_text!r} -> {out!r}, expected {expected!r}"
+
+
+def test_hermes_migrate_survives_non_utf8_source_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: a source MEMORY.md containing stray non-UTF-8 bytes
+    # (BOM tail, CP1252 fragment, accidental binary paste) used to crash
+    # the entire migration with UnicodeDecodeError out of
+    # ``read_text(encoding="utf-8-sig")``. Now the read uses
+    # ``errors="replace"`` so migration completes; the bad bytes land as
+    # U+FFFD replacement chars in the destination.
+    source = _make_hermes_home_with_user_data(tmp_path)
+    (source / "memories" / "MEMORY.md").write_bytes(
+        b"\xff garbage \xff\nthen valid markdown\n"
+    )
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    # The previous version raised here. Should now succeed.
+    report = HermesMigrator(HermesMigrationOptions(source=source, apply=True)).migrate()
+
+    memory_item = next(i for i in report["items"] if i["kind"] == "memory")
+    assert memory_item["status"] == "migrated"
+    written = (home / "workspace" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "then valid markdown" in written
+    # Replacement chars survived where the bad bytes were.
+    assert "�" in written
+
+
+def test_hermes_mcp_enabled_false_is_preserved_when_user_has_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: ``cfg.mcp.enabled = True`` was set unconditionally
+    # when importing MCP servers, silently re-enabling MCP for users
+    # who had deliberately turned it off. Now the migrator respects an
+    # explicit ``mcp.enabled = false`` if the user already had
+    # configured servers (i.e. it isn't just the framework default).
+    source = _make_hermes_home_with_user_data(tmp_path)
+    (source / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n"
+        "mcp:\n  servers:\n    new:\n      command: /usr/bin/x\n",
+        encoding="utf-8",
+    )
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text(
+        "[mcp]\nenabled = false\n\n"
+        "[[mcp.servers]]\n"
+        "name = \"existing\"\ncommand = \"/usr/bin/y\"\ntransport = \"stdio\"\n",
+        encoding="utf-8",
+    )
+
+    report = HermesMigrator(
+        HermesMigrationOptions(
+            source=source, config_path=home / "config.toml", apply=True
+        )
+    ).migrate()
+
+    import tomllib
+    data = tomllib.loads((home / "config.toml").read_text())
+    assert data["mcp"]["enabled"] is False, (
+        "explicit mcp.enabled=false must NOT be silently flipped on import"
+    )
+    mc = next(i for i in report["items"] if i["kind"] == "mcp-servers")
+    assert mc["details"]["mcp_enabled_left_disabled"] is True
+    assert "manual_steps" in mc["details"]
+
+
+def test_hermes_mcp_enabled_flips_when_default_and_no_existing_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Symmetric regression guard: when MCP is at its framework default
+    # (enabled=false because there's nothing to enable) and the user
+    # imports MCP servers for the first time, we DO turn MCP on so the
+    # imported servers actually work.
+    source = _make_hermes_home_with_user_data(tmp_path)
+    (source / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n"
+        "mcp:\n  servers:\n    fresh:\n      command: /usr/bin/x\n",
+        encoding="utf-8",
+    )
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    # No pre-existing config.toml at all — MCP defaulted off.
+
+    HermesMigrator(HermesMigrationOptions(source=source, apply=True)).migrate()
+
+    import tomllib
+    data = tomllib.loads((home / "config.toml").read_text())
+    assert data["mcp"]["enabled"] is True
+
+
 def test_pure_hermes_prose_still_rebrands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -404,3 +404,78 @@ def test_template_detection_is_robust_to_trailing_whitespace(
     memory_item = next(i for i in report["items"] if i["kind"] == "memory")
     assert memory_item["status"] == "migrated"
     assert memory_item["details"]["replaced_bootstrap_template"] is True
+
+
+def test_openclaw_workspace_with_opensquilla_mention_is_kept_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same mixed-subject prose bug as hermes, on the openclaw side.
+    # Source SOUL.md mentions OpenClaw AND OpenSquilla as distinct
+    # entities — mechanical rebrand would corrupt every sentence. The
+    # migrator must write the text verbatim and surface
+    # ``details.rebrand_skipped``.
+    source = _make_openclaw_source(tmp_path)
+    (source / "workspace" / "SOUL.md").write_text(
+        "OpenClaw v1.2 is installed at ~/.openclaw.\n"
+        "OpenSquilla is also installed at ~/.opensquilla and exposes "
+        "`migrate openclaw` for importing OpenClaw state.\n",
+        encoding="utf-8",
+    )
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    report = OpenClawMigrator(
+        MigrationOptions(source=source, config_path=tmp_path / "cfg.toml", apply=True)
+    ).migrate()
+
+    migrated = (home / "workspace" / "SOUL.md").read_text(encoding="utf-8")
+    # OpenClaw mention preserved verbatim (no rebrand).
+    assert "OpenClaw v1.2 is installed at ~/.openclaw" in migrated
+    # The "migrate openclaw" command name is kept verbatim too.
+    assert "`migrate openclaw`" in migrated
+    soul_item = next(i for i in report["items"] if i["kind"] == "soul")
+    assert soul_item["details"]["rebrand_skipped"] == "mentions-opensquilla"
+    assert "semantic_conversions" not in soul_item["details"]
+
+
+def test_openclaw_memory_blocks_track_skipped_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two daily-memory entries: one is pure OpenClaw prose (gets rebranded),
+    # the other is mixed-subject (must be kept verbatim). The memory
+    # report should record that exactly one block was skipped while the
+    # other was rebranded.
+    #
+    # Note: the openclaw rebrand protects "OpenClaw home/skills/..." as
+    # source-reference markers, so we use plain "I am OpenClaw" (which
+    # IS rebranded to "I am OpenSquilla") to drive the rebranded branch.
+    source = tmp_path / ".openclaw"
+    ws = source / "workspace"
+    ws.mkdir(parents=True)
+    (ws / "memory").mkdir()
+    (ws / "memory" / "single.md").write_text(
+        "I am OpenClaw and I remember everything.\n",
+        encoding="utf-8",
+    )
+    (ws / "memory" / "mixed.md").write_text(
+        "OpenClaw v1.2 lives at ~/.openclaw; OpenSquilla is at ~/.opensquilla.\n",
+        encoding="utf-8",
+    )
+    (source / "openclaw.json").write_text("{}", encoding="utf-8")
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    report = OpenClawMigrator(
+        MigrationOptions(source=source, config_path=tmp_path / "cfg.toml", apply=True)
+    ).migrate()
+
+    text = (home / "workspace" / "MEMORY.md").read_text(encoding="utf-8")
+    # Rebranded block: "I am OpenClaw" -> "I am OpenSquilla".
+    assert "I am OpenSquilla" in text
+    # Mixed-subject block: kept verbatim, OpenClaw mention survives.
+    assert "OpenClaw v1.2 lives at ~/.openclaw" in text
+    memory_item = next(i for i in report["items"] if i["kind"] == "memory")
+    assert memory_item["details"]["rebrand_skipped"] == "mentions-opensquilla"
+    assert memory_item["details"]["rebrand_skipped_block_count"] == 1
+    # The other block was rebranded, so semantic_conversions still appears.
+    assert memory_item["details"].get("semantic_conversions") == ["openclaw-branding"]

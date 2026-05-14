@@ -160,6 +160,107 @@ def test_rebrand_helper_does_not_touch_unrelated_uses_of_hermes() -> None:
     assert changed is False
 
 
+def test_rebrand_helper_skips_text_that_already_mentions_opensquilla() -> None:
+    # Mixed-subject prose. The user is documenting that BOTH Hermes and
+    # OpenSquilla are installed; mechanical replacement would collapse the
+    # two subjects into one and produce nonsense like
+    # "OpenSquilla skills loadable by OpenSquilla". The helper must
+    # leave the text alone in this case.
+    text = (
+        "Hermes Agent v0.13.0 installed at ~/.local/bin/hermes.\n"
+        "OpenSquilla also installed at ~/.local/bin/opensquilla. "
+        "Has `migrate hermes` subcommand.\n"
+        "Only those two flat Hermes skills are loadable by OpenSquilla.\n"
+    )
+    out, changed = _hermes_rebrand_text(text)
+    assert out == text
+    assert changed is False
+
+
+def test_rebrand_skip_reason_detects_opensquilla_case_insensitively() -> None:
+    from opensquilla.migration.hermes import (
+        REBRAND_SKIP_REASON_MIXED,
+        _rebrand_skip_reason,
+    )
+
+    # CamelCase brand mention.
+    assert _rebrand_skip_reason("OpenSquilla is great") == REBRAND_SKIP_REASON_MIXED
+    # Lowercase path / module mention.
+    assert _rebrand_skip_reason("~/.opensquilla/config") == REBRAND_SKIP_REASON_MIXED
+    # ALL CAPS env var name.
+    assert _rebrand_skip_reason("OPENSQUILLA_HOME") == REBRAND_SKIP_REASON_MIXED
+    # No mention -> rebrand should proceed normally.
+    assert _rebrand_skip_reason("Hermes Agent home and skills") is None
+
+
+def test_workspace_prose_with_opensquilla_mention_is_kept_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Reproduces the user-reported bug: the source MEMORY.md describes
+    # both Hermes and OpenSquilla as distinct entities. Mechanical
+    # replacement used to corrupt every sentence that mentioned both
+    # (path mismatch, tautologies, self-referential commands). The
+    # migrator must now detect this and write the text VERBATIM, with
+    # `details.rebrand_skipped: "mentions-opensquilla"` so the user
+    # knows to reword by hand.
+    source = _make_hermes_home_with_user_data(tmp_path)
+    mixed = (
+        "Hermes Agent v0.13.0 installed at ~/.local/bin/hermes.\n"
+        "OpenSquilla also installed at ~/.local/bin/opensquilla. "
+        "Has `migrate hermes` subcommand.\n"
+        "Only those two flat Hermes skills are loadable by OpenSquilla.\n"
+        "Plan: migrate Hermes skills to OpenSquilla.\n"
+    )
+    (source / "memories" / "MEMORY.md").write_text(mixed, encoding="utf-8")
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    report = HermesMigrator(HermesMigrationOptions(source=source, apply=True)).migrate()
+
+    migrated = (home / "workspace" / "MEMORY.md").read_text(encoding="utf-8")
+    # Verbatim: every original wording survives.
+    for line in (
+        "Hermes Agent v0.13.0 installed at ~/.local/bin/hermes",
+        "OpenSquilla also installed at ~/.local/bin/opensquilla",
+        "Only those two flat Hermes skills are loadable by OpenSquilla",
+        "migrate Hermes skills to OpenSquilla",
+    ):
+        assert line in migrated, f"missing verbatim line: {line!r}"
+    # The four broken-translation outputs we observed in the bug report
+    # must NOT appear anywhere in the migrated file.
+    assert "OpenSquilla v0.13.0 installed at ~/.local/bin/hermes" not in migrated
+    assert "Only those two flat OpenSquilla skills" not in migrated
+    assert "migrate OpenSquilla skills to OpenSquilla" not in migrated
+
+    memory_item = next(i for i in report["items"] if i["kind"] == "memory")
+    assert memory_item["details"]["rebrand_skipped"] == "mentions-opensquilla"
+    # Did NOT also claim a successful rebrand.
+    assert "semantic_conversions" not in memory_item["details"]
+
+
+def test_pure_hermes_prose_still_rebrands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: source that does NOT mention OpenSquilla should keep
+    # the original rebrand behavior.
+    source = _make_hermes_home_with_user_data(tmp_path)
+    (source / "memories" / "MEMORY.md").write_text(
+        "Single-subject note about Hermes Agent home and Hermes skills.\n",
+        encoding="utf-8",
+    )
+    home = tmp_path / "opensquilla-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    report = HermesMigrator(HermesMigrationOptions(source=source, apply=True)).migrate()
+
+    migrated = (home / "workspace" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "OpenSquilla home" in migrated
+    assert "OpenSquilla skills" in migrated
+    memory_item = next(i for i in report["items"] if i["kind"] == "memory")
+    assert memory_item["details"].get("semantic_conversions") == ["hermes-branding"]
+    assert "rebrand_skipped" not in memory_item["details"]
+
+
 def test_skill_overwrite_creates_backup_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

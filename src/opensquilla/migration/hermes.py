@@ -183,7 +183,45 @@ def _load_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+REBRAND_SKIP_REASON_MIXED = "mentions-opensquilla"
+_OPENSQUILLA_MENTION_RE = re.compile(r"opensquilla", re.IGNORECASE)
+
+
+def _rebrand_skip_reason(text: str) -> str | None:
+    """Return a reason string when the source text should NOT be mechanically
+    rebranded, otherwise ``None``.
+
+    Mechanical "Hermes" -> "OpenSquilla" replacement assumes the source is
+    *single-subject* prose (notes written from inside Hermes, about Hermes).
+    Real users keep "what is installed where" notes that talk about Hermes
+    AND OpenSquilla as distinct entities — e.g. "Hermes Agent v0.13.0
+    installed at ~/.local/bin/hermes. OpenSquilla also installed at
+    ~/.local/bin/opensquilla. Has `migrate hermes` subcommand." A
+    mechanical rebrand collapses the two subjects into one, producing
+    tautologies ("OpenSquilla skills loadable by OpenSquilla"), self-
+    referential nonsense ("migrate OpenSquilla skills to OpenSquilla"),
+    and factual errors (OpenSquilla "installed at ~/.local/bin/hermes").
+
+    When the source already contains any case-variant of "opensquilla",
+    treat it as mixed-subject prose and skip rebrand entirely. Callers
+    write the original verbatim and record ``rebrand_skipped`` in the
+    migration report so the user can review.
+    """
+    if _OPENSQUILLA_MENTION_RE.search(text):
+        return REBRAND_SKIP_REASON_MIXED
+    return None
+
+
 def _hermes_rebrand_text(text: str) -> tuple[str, bool]:
+    # Skip mechanical rebrand for mixed-subject prose: when the source
+    # already mentions OpenSquilla, collapsing "Hermes" into "OpenSquilla"
+    # turns previously-distinct subjects into the same subject and
+    # corrupts the text (see _rebrand_skip_reason for the failure modes).
+    # Callers consult _rebrand_skip_reason separately to record the skip
+    # in the migration report.
+    if _rebrand_skip_reason(text) is not None:
+        return text, False
+
     # Rewrite Hermes-Agent branding in workspace prose to OpenSquilla. The
     # transformation is intentionally narrow: bare "Hermes" is only rewritten
     # when followed by a workspace-context word, and source-reference tokens
@@ -387,8 +425,14 @@ class HermesMigrator:
         self._last_merge_details = {}
         destination.parent.mkdir(parents=True, exist_ok=True)
         source_text = source.read_text(encoding="utf-8-sig")
+        skip_reason = _rebrand_skip_reason(source_text)
         rebranded_text, rebranded = _hermes_rebrand_text(source_text)
-        if rebranded:
+        if skip_reason is not None:
+            # Source is mixed-subject prose. The text is written verbatim
+            # (no Hermes->OpenSquilla mangling) so the user can decide
+            # themselves which mentions need rewording.
+            self._last_merge_details["rebrand_skipped"] = skip_reason
+        elif rebranded:
             self._last_merge_details["semantic_conversions"] = ["hermes-branding"]
             self._archive_original_workspace_file(source, destination.name)
 

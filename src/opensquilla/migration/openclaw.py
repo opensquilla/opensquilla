@@ -379,7 +379,28 @@ def _dest_is_pristine_bootstrap_template(destination: Path, filename: str) -> bo
     return existing.rstrip() == template.rstrip()
 
 
+REBRAND_SKIP_REASON_MIXED = "mentions-opensquilla"
+_OPENSQUILLA_MENTION_RE = re.compile(r"opensquilla", re.IGNORECASE)
+
+
+def _rebrand_skip_reason(text: str) -> str | None:
+    """Return a reason string when ``text`` should NOT be mechanically rebranded.
+
+    Mirrors hermes._rebrand_skip_reason: when the source prose talks about
+    both OpenClaw and OpenSquilla as distinct entities (a "what is
+    installed where" note, for instance), mechanical replacement collapses
+    the two subjects and produces tautologies / factual errors. Skip the
+    rebrand in that case and let the user reword by hand.
+    """
+    if _OPENSQUILLA_MENTION_RE.search(text):
+        return REBRAND_SKIP_REASON_MIXED
+    return None
+
+
 def _rebrand_text(text: str) -> tuple[str, bool]:
+    # Mixed-subject prose: keep verbatim, let callers record the skip.
+    if _rebrand_skip_reason(text) is not None:
+        return text, False
     protected: dict[str, str] = {}
 
     def protect(match: re.Match[str]) -> str:
@@ -699,10 +720,20 @@ class OpenClawMigrator:
     def _migrate_workspace_file(self, filename: str, kind: str) -> None:
         source = self._openclaw_workspace() / filename
         destination = self._workspace_dir() / filename
-        text = source.read_text(encoding="utf-8-sig", errors="replace") if source.is_file() else ""
-        text, changed = _rebrand_text(text)
+        raw_text = (
+            source.read_text(encoding="utf-8-sig", errors="replace")
+            if source.is_file()
+            else ""
+        )
+        skip_reason = _rebrand_skip_reason(raw_text) if raw_text else None
+        text, changed = _rebrand_text(raw_text)
         details: dict[str, Any] = {}
-        if changed:
+        if skip_reason is not None:
+            # Mixed-subject prose: keep the original wording so the user
+            # can reword by hand. The destination receives the verbatim
+            # text below.
+            details["rebrand_skipped"] = skip_reason
+        elif changed:
             details["semantic_conversions"] = ["openclaw-branding"]
         if not source.is_file():
             self._record(kind, source, destination, "skipped", "source file not found")
@@ -924,7 +955,15 @@ class OpenClawMigrator:
             return
         rebranded_parts: list[str] = []
         rebranded = False
+        skipped_parts = 0
         for part in parts:
+            if _rebrand_skip_reason(part) is not None:
+                # Mixed-subject memory entry: keep verbatim and count it
+                # so the migration report flags how many entries the
+                # user should reword by hand.
+                rebranded_parts.append(part)
+                skipped_parts += 1
+                continue
             converted, changed = _rebrand_text(part)
             rebranded_parts.append(converted)
             rebranded = rebranded or changed
@@ -934,6 +973,9 @@ class OpenClawMigrator:
             details["semantic_conversions"] = ["openclaw-branding"]
             for original, relative in rebranded_sources:
                 self._archive_original_workspace_file(original, relative)
+        if skipped_parts:
+            details["rebrand_skipped"] = REBRAND_SKIP_REASON_MIXED
+            details["rebrand_skipped_block_count"] = skipped_parts
         record_details = {k: v for k, v in details.items() if k != "overflow"}
         # Memory needs special-case handling for when the destination already
         # holds real, user-curated content (not the pristine bootstrap

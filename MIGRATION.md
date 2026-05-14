@@ -125,6 +125,16 @@ The OpenClaw migrator also rewrites OpenClaw branding in migrated user-facing
 workspace text to OpenSquilla branding and archives the original changed text
 for review.
 
+**Mixed-subject prose is kept verbatim.** When a workspace file (or a
+single MEMORY.md block) already mentions `OpenSquilla` (any case), the
+migrator skips the mechanical rebrand for that file/block and writes it
+verbatim. Mechanical replacement of `OpenClaw` -> `OpenSquilla` in prose
+that already names both runtimes as distinct entities produces factual
+errors and self-referential nonsense. The report records
+`details.rebrand_skipped: "mentions-opensquilla"` for the affected file
+and, for MEMORY.md, `details.rebrand_skipped_block_count` so you can
+reword the relevant lines by hand.
+
 ### SOUL.md / USER.md / AGENTS.md Conflict Handling
 
 These persona files are identity definitions (not additive like memory), so
@@ -311,6 +321,20 @@ behaviors that were previously documented but not implemented:
   the migration archive still points back at the original source. The
   unrebranded original is copied to
   `<output_dir>/archive/files/workspace-original/<name>.md` for review.
+- **Mixed-subject prose is kept verbatim.** Workspace notes often
+  describe Hermes AND OpenSquilla as distinct entities ("Hermes Agent
+  v0.13.0 installed at ~/.local/bin/hermes; OpenSquilla also installed
+  at ~/.local/bin/opensquilla. Has `migrate hermes` subcommand."). A
+  mechanical rebrand collapses the two subjects into one and produces
+  factual errors (path mismatches), tautologies ("OpenSquilla skills
+  loadable by OpenSquilla"), and self-referential commands ("migrate
+  OpenSquilla skills to OpenSquilla"). When the source already
+  mentions `OpenSquilla` (any case), the migrator now skips rebrand
+  for that file and writes it verbatim, recording
+  `details.rebrand_skipped: "mentions-opensquilla"` so you can decide
+  which mentions to reword by hand. The same rule applies per-block
+  during MEMORY.md merging; the count of skipped blocks is reported
+  via `details.rebrand_skipped_block_count`.
 - **Skill compatibility reporting.** Each imported skill's
   report record now includes `details.compatibility` (`loadable` /
   `needs_review` / `not_loadable`) and `details.compatibility_issues` listing

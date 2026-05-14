@@ -3,21 +3,39 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 from opensquilla.sandbox.integration import get_runtime, run_under_backend, sandboxed
 from opensquilla.sandbox.policy import build_policy, select_level
+from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import current_tool_context
 
 
 def _effective_workdir(workdir: str | None) -> str | None:
-    if workdir:
-        return workdir
     ctx = current_tool_context.get()
+    if workdir:
+        workspace = (
+            Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+            if ctx is not None and ctx.workspace_dir
+            else None
+        )
+        reject_foreign_host_path(workdir, platform=os.name, workspace=workspace)
+        return workdir
     if ctx and ctx.workspace_dir:
         return str(Path(ctx.workspace_dir).expanduser().resolve())
     return None
+
+
+def _reject_foreign_git_path(path: str) -> None:
+    ctx = current_tool_context.get()
+    workspace = (
+        Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+        if ctx is not None and ctx.workspace_dir
+        else None
+    )
+    reject_foreign_host_path(path, platform=os.name, workspace=workspace)
 
 
 async def _run_git(*args: str, cwd: str | None = None) -> str:
@@ -125,6 +143,7 @@ async def git_diff(
     if staged:
         args.append("--cached")
     if path:
+        _reject_foreign_git_path(path)
         args += ["--", path]
     return await _run_git(*args, cwd=_effective_workdir(workdir))
 
@@ -161,6 +180,8 @@ async def git_commit(
 ) -> str:
     cwd = _effective_workdir(workdir)
     if files:
+        for file_path in files:
+            _reject_foreign_git_path(file_path)
         await _run_git("add", "--", *files, cwd=cwd)
     else:
         await _run_git("add", "-A", cwd=cwd)

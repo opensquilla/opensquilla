@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -237,7 +238,7 @@ async def test_publish_artifact_tool_is_idempotent_for_existing_turn_artifact(
     assert second["status"] == "already_published"
     assert second["artifact"]["id"] == first["artifact"]["id"]
     assert second["artifact"]["name"] == "generated-image.png"
-    assert "already published" in second["note"]
+    assert "already registered" in second["note"]
     assert len(ctx.published_artifacts) == 1
 
 
@@ -326,6 +327,40 @@ async def test_publish_artifact_tool_missing_file_reports_workspace_candidates(
     assert "resolved path:" in message
     assert "candidate files:" in message
     assert "reports/AI Agent Comparison 2026.pptx" in message.replace("\\", "/")
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_rejects_foreign_posix_target_with_workspace_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.tools.builtin.artifacts as artifacts_module
+
+    monkeypatch.setattr(artifacts_module, "os", SimpleNamespace(name="nt"), raising=False)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    actual = workspace / "report.pptx"
+    actual.write_bytes(b"pptx")
+    ctx = ToolContext(
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:webchat:session-1",
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        with pytest.raises(ToolError) as exc_info:
+            await publish_artifact(path="/Users/a1/Desktop/report.pptx")
+    finally:
+        current_tool_context.reset(token)
+
+    message = str(exc_info.value)
+    assert "foreign_host_path" in message
+    assert "requested path is from another host/platform" in message
+    assert "report.pptx" in message
+    assert "D:\\Users" not in message
+    assert not ctx.published_artifacts
 
 
 @pytest.mark.asyncio

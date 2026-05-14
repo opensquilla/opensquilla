@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from opensquilla.tools.builtin import shell
-from opensquilla.tools.types import ToolContext, current_tool_context
+from opensquilla.tools.types import ToolContext, ToolError, current_tool_context
 
 
 @pytest.mark.asyncio
@@ -52,5 +52,20 @@ def test_effective_workdir_resolves_relative_paths_against_workspace(tmp_path: P
     token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
     try:
         assert shell._effective_workdir("subdir") == str((workspace / "subdir").resolve())
+    finally:
+        current_tool_context.reset(token)
+
+
+def test_effective_workdir_rejects_foreign_posix_absolute_path_on_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(shell.os, "name", "nt")
+    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
+    try:
+        with pytest.raises(ToolError, match="foreign_host_path"):
+            shell._effective_workdir("/Users/a1/Desktop")
     finally:
         current_tool_context.reset(token)

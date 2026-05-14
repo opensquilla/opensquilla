@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
 from opensquilla.sandbox.integration import sandboxed
+from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
 
@@ -149,20 +151,12 @@ def _default_patch_root() -> Path:
 
 def _validate_path(path: str, root: Path | None = None) -> Path:
     """Resolve path and ensure it stays within the active patch root."""
-    raw = Path(path).expanduser()
     root = root if root is not None else _default_patch_root()
+    reject_foreign_host_path(path, platform=os.name, workspace=root)
+    raw = Path(path).expanduser()
     resolved = (root / raw).resolve() if not raw.is_absolute() else raw.resolve()
     if not resolved.is_relative_to(root):
         raise ValueError(f"Path traversal detected: {path!r} resolves outside patch root")
-    try:
-        rel = resolved.relative_to(root)
-    except ValueError:
-        rel = Path()
-    if rel.parts[:2] == ("memory", "archive"):
-        raise ValueError(
-            "memory archive is private turn-capture storage; use memory_search and memory_get "
-            "against durable memory sources instead"
-        )
     return resolved
 
 
@@ -175,8 +169,6 @@ def _memory_source_rel_path(path: str, root: Path) -> str | None:
 
     if rel.parts == ("MEMORY.md",):
         return "MEMORY.md"
-    if rel.parts[:2] == ("memory", "archive"):
-        return None
     if len(rel.parts) >= 2 and rel.parts[0] == "memory" and rel.suffix == ".md":
         return rel.as_posix()
     return None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import os
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from opensquilla.artifacts import (
     ArtifactStore,
     artifact_payload,
 )
+from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
 
@@ -82,10 +84,10 @@ def _missing_artifact_error(path: str, workspace: Path, target: Path) -> ToolErr
 @tool(
     name="publish_artifact",
     description=(
-        "Publish an existing workspace file as a generated artifact for the user to download. "
+        "Register an existing workspace file as a generated artifact for the current surface. "
         "Only files inside the active workspace are allowed. "
-        "The user's UI shows a clickable download chip automatically; do not include any URL "
-        "in your reply — just confirm the file is ready."
+        "The active surface handles download chips or native channel delivery; do not include "
+        "any URL in your reply — just confirm the file is ready."
     ),
     params={
         "path": {
@@ -119,6 +121,7 @@ async def publish_artifact(
         raise ToolError("artifact session scope is not configured for this turn")
 
     workspace = Path(ctx.workspace_dir).resolve()
+    reject_foreign_host_path(path, platform=os.name, workspace=workspace)
     raw_path = Path(path)
     target = (raw_path if raw_path.is_absolute() else workspace / raw_path).resolve()
     try:
@@ -140,7 +143,7 @@ async def publish_artifact(
                 "status": "already_published",
                 "artifact": llm_artifact,
                 "note": (
-                    "This file is already published for the user in this turn. "
+                    "This file is already registered for the current surface in this turn. "
                     "Do not call publish_artifact again for the same file; "
                     "just confirm it is ready."
                 ),

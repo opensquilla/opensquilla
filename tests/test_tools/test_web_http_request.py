@@ -276,6 +276,34 @@ async def test_http_request_output_path_rejects_fetch_directory_escape(
 
 
 @pytest.mark.asyncio
+async def test_http_request_output_path_rejects_foreign_posix_path_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import web
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(web.os, "name", "nt")
+    _patch_response(
+        monkeypatch,
+        httpx.Response(
+            200,
+            content=b"foreign",
+            headers={"content-type": "text/plain"},
+            request=httpx.Request("GET", "https://example.test/data"),
+        ),
+    )
+
+    with pytest.raises(ToolError, match="foreign_host_path"):
+        await _original_http_request()(
+            url="https://example.test/data",
+            output_path="/Users/a1/Desktop/raw.txt",
+        )
+
+    assert not (tmp_path / "Users").exists()
+
+
+@pytest.mark.asyncio
 async def test_http_request_reuses_content_hash_path_for_repeated_large_fetches(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

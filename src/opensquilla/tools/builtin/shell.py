@@ -30,6 +30,7 @@ from opensquilla.sandbox.integration import (
 from opensquilla.sandbox.policy import build_policy, select_level
 from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy, SandboxRequest
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
+from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import (
     CallerKind,
@@ -289,6 +290,12 @@ def _resolve_background_timeout(timeout: float | int | None) -> float:
 def _effective_workdir(workdir: str | None) -> str | None:
     ctx = current_tool_context.get()
     if workdir:
+        workspace = (
+            Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+            if ctx is not None and ctx.workspace_dir
+            else None
+        )
+        reject_foreign_host_path(workdir, platform=os.name, workspace=workspace)
         raw = Path(workdir).expanduser()
         if not raw.is_absolute() and ctx and ctx.workspace_dir:
             return str((Path(ctx.workspace_dir).expanduser().resolve() / raw).resolve())

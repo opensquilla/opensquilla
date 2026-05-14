@@ -5,6 +5,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -88,6 +89,25 @@ async def test_workspace_strict_allows_inside_workspace(tmp_path: Path) -> None:
         assert "inside.txt" in await fs.list_dir(str(tmp_path))
         assert "inside.txt" in await fs.glob_search("*.txt", path=str(tmp_path))
         assert "needle" in await fs.grep_search("needle", path=str(tmp_path))
+
+
+def test_resolve_path_rejects_foreign_posix_absolute_path_on_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fs, "os", SimpleNamespace(name="nt"), raising=False)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with tool_context(workspace):
+        with pytest.raises(ToolError) as exc_info:
+            fs._resolve_path("/Users/a1/Desktop/report.pptx")
+
+    message = str(exc_info.value)
+    assert "foreign_host_path" in message
+    assert "/Users/a1/Desktop/report.pptx" in message
+    assert "workspace-relative" in message
+    assert "D:\\Users" not in message
 
 
 @pytest.mark.asyncio

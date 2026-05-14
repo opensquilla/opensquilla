@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -284,6 +285,46 @@ async def test_apply_patch_sensitive_path_blocks_even_with_approval_id(tmp_path:
     assert payload["status"] == "blocked"
     assert payload["reason"] == "sensitive_path"
     assert not (tmp_path / ".env").exists()
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_rejects_foreign_posix_path_on_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(patch_tool, "os", SimpleNamespace(name="nt"), raising=False)
+    token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        with pytest.raises(ToolError, match="foreign_host_path"):
+            await apply_patch(
+                """*** Begin Patch
+*** Add File: /Users/a1/Desktop/report.txt
++new
+*** End Patch"""
+            )
+    finally:
+        current_tool_context.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_rejects_foreign_windows_path_on_posix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(patch_tool, "os", SimpleNamespace(name="posix"), raising=False)
+    token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        with pytest.raises(ToolError, match="foreign_host_path"):
+            await apply_patch(
+                """*** Begin Patch
+*** Add File: C:\\Users\\a1\\Desktop\\report.txt
++new
+*** End Patch"""
+            )
+    finally:
+        current_tool_context.reset(token)
 
 
 @pytest.mark.asyncio

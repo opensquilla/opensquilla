@@ -16,6 +16,7 @@ import httpx
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.sandbox.integration import sandboxed
 from opensquilla.search.types import SearchProviderError, SearchResult
+from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, UnsupportedURLSchemeError, current_tool_context
 
@@ -141,6 +142,7 @@ def _resolve_fetch_output_path(digest: str, output_path: str | None) -> Path:
     if not raw:
         raise ToolError("output_path must not be empty")
 
+    reject_foreign_host_path(raw, platform=os.name, workspace=_fetch_workspace_dir())
     requested = Path(raw).expanduser()
     if requested.drive and not requested.is_absolute():
         raise ToolError("output_path must be an absolute path or a relative .fetch path")

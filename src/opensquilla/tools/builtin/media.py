@@ -28,6 +28,7 @@ from opensquilla.provider.image_generation import (
     parse_image_generation_model_ref,
     reset_image_generation_providers,
 )
+from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import (
@@ -144,10 +145,16 @@ async def _read_image_file(path: str) -> tuple[bytes, str]:
 
 
 def _resolve_media_path(path: str) -> Path:
+    ctx = current_tool_context.get()
+    root = (
+        Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+        if ctx and ctx.workspace_dir
+        else None
+    )
+    reject_foreign_host_path(path, platform=os.name, workspace=root)
     candidate = Path(path).expanduser()
     if candidate.is_absolute():
         return candidate.resolve(strict=False)
-    ctx = current_tool_context.get()
     if ctx and ctx.workspace_dir:
         return (Path(ctx.workspace_dir).expanduser() / candidate).resolve(strict=False)
     return candidate.resolve(strict=False)
@@ -308,8 +315,8 @@ async def _call_vision_provider(b64_data: str, media_type: str, prompt: str) -> 
     name="image_generate",
     description=(
         "Generate an image from a text prompt using a configured image provider. "
-        "On web and channel surfaces, the generated image is automatically published for the user; "
-        "do not call publish_artifact again for the returned path. "
+        "On web and channel surfaces, the generated image is registered as an artifact "
+        "for that surface to deliver; do not call publish_artifact again for the returned path. "
         "For code, HTML, SVG, canvas, or screenshot based image artifacts, use "
         "the appropriate code/runtime/rendering tool instead."
     ),
@@ -395,9 +402,10 @@ async def _image_generate_impl(
     artifact = _publish_generated_image_artifact(target, result.mime_type)
     if artifact is not None:
         payload["artifact"] = {k: v for k, v in artifact.items() if k != "download_url"}
-        payload["artifact"]["delivered_to_user"] = True
+        payload["artifact"]["registered_for_delivery"] = True
+        payload["artifact"]["delivery_managed_by_surface"] = True
         payload["note"] = (
-            "The generated image is already published for the user. "
+            "The generated image is registered for the current chat surface. "
             "Do not call publish_artifact again for this same file unless the user explicitly "
             "asks for a separate copy."
         )
@@ -507,14 +515,17 @@ def _image_generation_provider_has_auth(provider: Any) -> bool:
 def _resolve_generated_image_path(filename: str | None, output_format: str) -> Path:
     ext = "jpg" if output_format == "jpeg" else output_format
     raw = filename or f"generated-image-{uuid.uuid4().hex[:12]}.{ext}"
+    ctx = current_tool_context.get()
+    root = (
+        Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+        if ctx and ctx.workspace_dir
+        else Path.cwd()
+    )
+    reject_foreign_host_path(raw, platform=os.name, workspace=root)
     candidate = Path(raw).expanduser()
     if not candidate.suffix:
         candidate = candidate.with_suffix(f".{ext}")
 
-    ctx = current_tool_context.get()
-    root = (
-        Path(ctx.workspace_dir).expanduser().resolve() if ctx and ctx.workspace_dir else Path.cwd()
-    )
     target = candidate if candidate.is_absolute() else root / candidate
     resolved = target.resolve(strict=False)
     try:

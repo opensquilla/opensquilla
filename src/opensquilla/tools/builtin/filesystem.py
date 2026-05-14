@@ -6,6 +6,7 @@ import asyncio
 import csv
 import fnmatch
 import json
+import os
 import posixpath
 import re
 import zipfile
@@ -14,6 +15,7 @@ from xml.etree import ElementTree as ET
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
 from opensquilla.sandbox.integration import get_runtime, sandboxed
+from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
 
@@ -34,10 +36,6 @@ _BINARY_EXTENSIONS = {
 _XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _XLSX_PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 _XLSX_OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-_MEMORY_ARCHIVE_ERROR = (
-    "memory archive is private turn-capture storage. Use memory_search and memory_get "
-    "against durable memory sources instead."
-)
 _BOOTSTRAP_SOURCE_FILENAMES = frozenset(BOOTSTRAP_FILENAMES)
 
 
@@ -75,6 +73,7 @@ def _resolve_path(path: str) -> Path:
     """
     raw = Path(path).expanduser()
     root = _workspace_root()
+    reject_foreign_host_path(str(path), platform=os.name, workspace=root)
     if root is not None and not raw.is_absolute():
         return (root / raw).resolve(strict=False)
     return raw.resolve(strict=False) if raw.is_absolute() else raw
@@ -97,8 +96,6 @@ def _memory_source_rel_path(path: Path) -> str | None:
 
         if rel.parts in {("MEMORY.md",), ("memory.md",)}:
             return rel.as_posix()
-        if rel.parts[:2] == ("memory", "archive"):
-            return None
         if len(rel.parts) >= 2 and rel.parts[0] == "memory" and rel.suffix == ".md":
             return rel.as_posix()
     return None
@@ -117,30 +114,6 @@ def _bootstrap_source_rel_path(path: Path) -> str | None:
     if len(rel.parts) == 1 and rel_path in _BOOTSTRAP_SOURCE_FILENAMES:
         return rel_path
     return None
-
-
-def _memory_archive_rel_path(path: Path, root: Path | None = None) -> str | None:
-    roots = (root,) if root is not None else _memory_roots()
-    resolved = path.resolve(strict=False)
-    for current in roots:
-        if current is None:
-            continue
-        try:
-            rel = resolved.relative_to(current)
-        except ValueError:
-            continue
-        if rel.parts[:2] == ("memory", "archive"):
-            return rel.as_posix()
-    return None
-
-
-def _is_memory_archive_path(path: Path, root: Path | None = None) -> bool:
-    return _memory_archive_rel_path(path, root=root) is not None
-
-
-def _reject_memory_archive_path(path: Path) -> None:
-    if _is_memory_archive_path(path):
-        raise ToolError(_MEMORY_ARCHIVE_ERROR)
 
 
 def _notify_memory_source_write(path: Path) -> None:
@@ -441,7 +414,6 @@ async def _gate_out_of_workspace_write(
 )
 async def read_file(path: str, offset: int | None = None, limit: int | None = None) -> str:
     p = _resolve_path(path)
-    _reject_memory_archive_path(p)
     blocked = _sensitive_access_block("read_file", p, path)
     if blocked is not None:
         return json.dumps(blocked)
@@ -497,7 +469,6 @@ async def read_spreadsheet(
     limit: int | None = None,
 ) -> str:
     p = _resolve_path(path)
-    _reject_memory_archive_path(p)
     blocked = _sensitive_access_block("read_spreadsheet", p, path)
     if blocked is not None:
         return json.dumps(blocked)
@@ -712,7 +683,6 @@ def _format_spreadsheet(
 )
 async def write_file(path: str, content: str, approval_id: str | None = None) -> str:
     p = _resolve_path(path)
-    _reject_memory_archive_path(p)
     approval = await _gate_out_of_workspace_write("write_file", p, path, approval_id)
     if approval is not None:
         return json.dumps(approval)
@@ -752,7 +722,6 @@ async def edit_file(
     path: str, old_text: str, new_text: str, approval_id: str | None = None
 ) -> str:
     p = _resolve_path(path)
-    _reject_memory_archive_path(p)
     approval = await _gate_out_of_workspace_write("edit_file", p, path, approval_id)
     if approval is not None:
         return json.dumps(approval)
@@ -790,12 +759,10 @@ async def edit_file(
 )
 async def list_dir(path: str) -> str:
     p = _resolve_path(path)
-    _reject_memory_archive_path(p)
     blocked = _sensitive_access_block("list_dir", p, path)
     if blocked is not None:
         return json.dumps(blocked)
     _gate_workspace_strict_read("list_dir", p, path)
-    root = _workspace_root()
     if not p.exists():
         raise FileNotFoundError(f"Path not found: {path}")
     if not p.is_dir():
@@ -813,9 +780,7 @@ async def list_dir(path: str) -> str:
             if marker is not None:
                 blocked_entries.append(marker)
                 continue
-            if _is_memory_archive_path(entry, root=root) or _is_sensitive_access_path(
-                entry.resolve(strict=False)
-            ):
+            if _is_sensitive_access_path(entry.resolve(strict=False)):
                 continue
             if entry.is_dir():
                 dirs.append(f"[dir]  {entry.name}/")
@@ -841,12 +806,10 @@ async def list_dir(path: str) -> str:
 )
 async def glob_search(pattern: str, path: str | None = None) -> str:
     base = _resolve_base(path)
-    _reject_memory_archive_path(base)
     blocked = _sensitive_access_block("glob_search", base, path or str(base))
     if blocked is not None:
         return json.dumps(blocked)
     _gate_workspace_strict_read("glob_search", base, path or str(base))
-    root = _workspace_root()
 
     loop = asyncio.get_event_loop()
     strict_root = _strict_read_workspace_root()
@@ -862,9 +825,7 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
             if marker is not None:
                 matches.append(marker)
                 continue
-            if _is_memory_archive_path(candidate, root=root) or _is_sensitive_access_path(
-                candidate.resolve(strict=False)
-            ):
+            if _is_sensitive_access_path(candidate.resolve(strict=False)):
                 continue
             matches.append(str(candidate))
         return matches
@@ -896,12 +857,10 @@ async def grep_search(
     max_results: int = 100,
 ) -> str:
     base = _resolve_base(path)
-    _reject_memory_archive_path(base)
     blocked = _sensitive_access_block("grep_search", base, path or str(base))
     if blocked is not None:
         return json.dumps(blocked)
     _gate_workspace_strict_read("grep_search", base, path or str(base))
-    root = _workspace_root()
 
     loop = asyncio.get_event_loop()
     strict_root = _strict_read_workspace_root()
@@ -915,9 +874,7 @@ async def grep_search(
         results: list[str] = []
 
         def search_file(fp: Path) -> None:
-            if _is_memory_archive_path(fp, root=root) or _is_sensitive_access_path(
-                fp.resolve(strict=False)
-            ):
+            if _is_sensitive_access_path(fp.resolve(strict=False)):
                 return
             try:
                 text = fp.read_text(encoding="utf-8", errors="replace")

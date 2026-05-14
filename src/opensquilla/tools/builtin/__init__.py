@@ -12,6 +12,8 @@ _NAMES = [
     "agents",
     "artifacts",
     "code_exec",
+    "file_authoring",
+    "feishu_platform",
     "filesystem",
     "git",
     "media",

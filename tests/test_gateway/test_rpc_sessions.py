@@ -1295,6 +1295,37 @@ class TestSessionsContextCompact:
         assert res.payload["summary_source"] == "unknown"
         assert manager.compact_calls == [(session.session_key, 1234)]
 
+    def test_gateway_context_compact_delegates_payload_to_session_boundary(self):
+        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imports = {
+            (node.module, alias.name)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        handler = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_handle_sessions_context_compact"
+        )
+        handler_constants = {
+            node.value for node in ast.walk(handler) if isinstance(node, ast.Constant)
+        }
+
+        assert (
+            "opensquilla.session.rpc_payload",
+            "session_context_compact_response",
+        ) in imports
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_context_compact_response"
+            for node in ast.walk(handler)
+        )
+        assert "compacted" not in handler_constants
+        assert "summary_len" not in handler_constants
+        assert "context_window_tokens" not in handler_constants
+
     @pytest.mark.asyncio
     async def test_context_compact_not_found(self, dispatcher, ctx_with_sessions):
         res = await dispatcher.dispatch(

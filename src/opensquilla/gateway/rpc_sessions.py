@@ -30,6 +30,7 @@ from opensquilla.session.keys import canonicalize_session_key, normalize_agent_i
 from opensquilla.session.rpc_payload import (
     messages_subscribe_response,
     normalize_terminal_event_payload,
+    session_context_compact_response,
     session_create_response,
     session_create_stub_response,
     session_delete_response,
@@ -1341,14 +1342,13 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             )
             removed_count = 1 if summary else 0
             summary_source = "unknown"
-        return {
-            "key": key,
-            "compacted": removed_count > 0,
-            "mode": "summary",
-            "summary_len": len(summary),
-            "summary_source": summary_source,
-            "context_window_tokens": context_window_tokens,
-        }
+        return session_context_compact_response(
+            key,
+            removed_count=removed_count,
+            summary=summary,
+            summary_source=summary_source,
+            context_window_tokens=context_window_tokens,
+        )
 
     if lock is None:
         return await _run_locked()

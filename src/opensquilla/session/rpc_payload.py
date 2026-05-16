@@ -302,12 +302,31 @@ def session_reset_response(
     return response
 
 
+def session_context_compact_response(
+    key: str,
+    *,
+    removed_count: int,
+    summary: str,
+    summary_source: str,
+    context_window_tokens: int,
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "compacted": removed_count > 0,
+        "mode": "summary",
+        "summary_len": len(summary),
+        "summary_source": summary_source,
+        "context_window_tokens": context_window_tokens,
+    }
+
+
 __all__ = [
     "active_task_summary",
     "enum_value",
     "last_task_summary",
     "messages_subscribe_response",
     "normalize_terminal_event_payload",
+    "session_context_compact_response",
     "session_create_response",
     "session_create_stub_response",
     "session_delete_response",

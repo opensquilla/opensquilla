@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from opensquilla.session.rpc_payload import (
     messages_subscribe_response,
     normalize_terminal_event_payload,
+    session_context_compact_response,
     session_create_response,
     session_create_stub_response,
     session_delete_response,
@@ -315,4 +316,38 @@ def test_session_reset_response_owns_flush_wire_shape() -> None:
         "session_id": "new-session",
         "epoch": 4,
         "flush_receipt": {"mode": "skipped", "message_count": 0},
+    }
+
+
+def test_session_context_compact_response_owns_wire_shape() -> None:
+    assert session_context_compact_response(
+        "agent:main:webchat:abc123",
+        removed_count=2,
+        summary="condensed context",
+        summary_source="fallback",
+        context_window_tokens=1234,
+    ) == {
+        "key": "agent:main:webchat:abc123",
+        "compacted": True,
+        "mode": "summary",
+        "summary_len": len("condensed context"),
+        "summary_source": "fallback",
+        "context_window_tokens": 1234,
+    }
+
+
+def test_session_context_compact_response_marks_empty_result_not_compacted() -> None:
+    assert session_context_compact_response(
+        "agent:main:webchat:abc123",
+        removed_count=0,
+        summary="",
+        summary_source="skipped",
+        context_window_tokens=1234,
+    ) == {
+        "key": "agent:main:webchat:abc123",
+        "compacted": False,
+        "mode": "summary",
+        "summary_len": 0,
+        "summary_source": "skipped",
+        "context_window_tokens": 1234,
     }

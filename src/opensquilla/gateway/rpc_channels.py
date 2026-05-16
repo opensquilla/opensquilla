@@ -4,129 +4,26 @@ from __future__ import annotations
 
 from typing import Any
 
+from opensquilla.channels.rpc_payload import (
+    channel_logout_rpc_payload,
+    channel_restart_rpc_payload,
+    channel_status_rpc_payload,
+)
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 
 _d = get_dispatcher()
 
 
-def _channel_status(connected: bool) -> str:
-    return "connected" if connected else "stopped"
-
-
-def _configured_channel_entries(ctx: RpcContext) -> list[dict[str, Any]]:
-    config = getattr(ctx, "config", None)
-    channels_cfg = getattr(config, "channels", None)
-    entries = getattr(channels_cfg, "channels", None) or []
-    out: list[dict[str, Any]] = []
-    for entry in entries:
-        if hasattr(entry, "model_dump"):
-            out.append(entry.model_dump(mode="python"))
-        elif isinstance(entry, dict):
-            out.append(dict(entry))
-    return out
-
-
-def _health_extra(health: Any) -> dict[str, Any]:
-    extra = getattr(health, "extra", None)
-    return extra if isinstance(extra, dict) else {}
-
-
-def _status_for(*, connected: bool, enabled: bool, dispatch_state: str | None) -> str:
-    if not enabled:
-        return "disabled"
-    if dispatch_state in {"dead", "exhausted", "restarting"}:
-        return dispatch_state
-    return _channel_status(connected)
-
-
 @_d.method("channels.status", scope="operator.read")
 async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
-    health_map = await ctx.channel_manager.health() if ctx.channel_manager else {}
-    manager_types = (
-        getattr(ctx.channel_manager, "_channel_types", {}) if ctx.channel_manager else {}
-    )
-    channels: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    for entry in _configured_channel_entries(ctx):
-        name = str(entry.get("name") or "")
-        if not name:
-            continue
-        enabled = bool(entry.get("enabled", True))
-        health = health_map.get(name)
-        extra = _health_extra(health)
-        connected = bool(getattr(health, "connected", False)) if health else False
-        channels.append(
-            {
-                "name": name,
-                "connected": connected,
-                "status": _status_for(
-                    connected=connected,
-                    enabled=enabled,
-                    dispatch_state=extra.get("dispatch_state"),
-                ),
-                "bot_user_id": getattr(health, "bot_user_id", None) if health else None,
-                "connected_since": extra.get("connected_since"),
-                "restart_attempts": extra.get("restart_attempts", 0),
-                "type": entry.get("type"),
-                "enabled": enabled,
-                "configured": True,
-            }
-        )
-        seen.add(name)
-
-    for name, health in health_map.items():
-        if name in seen:
-            continue
-        extra = _health_extra(health)
-        adapter = ctx.channel_manager.get(name) if ctx.channel_manager else None
-        connected = bool(getattr(health, "connected", False))
-        channels.append(
-            {
-                "name": name,
-                "connected": connected,
-                "status": _status_for(
-                    connected=connected,
-                    enabled=True,
-                    dispatch_state=extra.get("dispatch_state"),
-                ),
-                "bot_user_id": getattr(health, "bot_user_id", None),
-                "connected_since": extra.get("connected_since"),
-                "restart_attempts": extra.get("restart_attempts", 0),
-                "type": manager_types.get(name) or type(adapter).__name__,
-                "enabled": True,
-                "configured": False,
-            }
-        )
-
-    return {"channels": channels}
+    return await channel_status_rpc_payload(getattr(ctx, "config", None), ctx.channel_manager)
 
 
 @_d.method("channels.logout", scope="operator.admin")
 async def _handle_channels_logout(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
-    channel_name = None
-    if isinstance(params, dict):
-        channel_name = params.get("channel") or params.get("name")
-    if not channel_name:
-        raise ValueError("channel name required")
-    if ctx.channel_manager is None:
-        raise KeyError(f"Channel not found: {channel_name}")
-    if ctx.channel_manager.get(channel_name) is None:
-        raise KeyError(f"Channel not found: {channel_name}")
-    await ctx.channel_manager.stop_channel(channel_name)
-    return {"status": "disconnected", "channel": channel_name}
+    return await channel_logout_rpc_payload(params, ctx.channel_manager)
 
 
 @_d.method("channels.restart", scope="operator.admin")
 async def _handle_channels_restart(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
-    channel_name = None
-    if isinstance(params, dict):
-        channel_name = params.get("channel") or params.get("name")
-    if not channel_name:
-        raise ValueError("channel name required")
-    if ctx.channel_manager is None:
-        raise KeyError(f"Channel not found: {channel_name}")
-    if ctx.channel_manager.get(channel_name) is None:
-        raise KeyError(f"Channel not found: {channel_name}")
-    await ctx.channel_manager.restart_channel(channel_name)
-    return {"status": "restarted", "channel": channel_name}
+    return await channel_restart_rpc_payload(params, ctx.channel_manager)

@@ -20,15 +20,13 @@ from opensquilla.cli.ui import console
 from opensquilla.skills.hub.operations import (
     default_skill_installer_factory,
     install_skill,
+    publish_skill_from_request,
     search_skills,
     skill_install_request,
+    skill_publish_request,
     skill_search_request,
     skill_uninstall_request,
     uninstall_skill,
-)
-from opensquilla.skills.hub.publisher import (
-    publish_skill_from_request,
-    skill_publish_request,
 )
 from opensquilla.skills.hub.taps import (
     add_tap,

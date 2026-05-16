@@ -553,19 +553,15 @@ def test_skills_publish_delegates_to_hub_publish_request(monkeypatch):
     ]
 
 
-def test_cli_skills_publish_does_not_import_publish_skill_directly() -> None:
+def test_cli_skills_publish_does_not_import_publisher_boundary() -> None:
     from opensquilla.cli import skills_cmd
 
     tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
-    publisher_imports = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "opensquilla.skills.hub.publisher"
-        for alias in node.names
+    imported_modules = {
+        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
     }
 
-    assert "publish_skill" not in publisher_imports
+    assert "opensquilla.skills.hub.publisher" not in imported_modules
     assert not any(
         isinstance(node, ast.Name) and node.id == "publish_skill"
         for node in ast.walk(tree)

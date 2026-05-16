@@ -10,11 +10,13 @@ from opensquilla.skills.hub.installer import InstallResult
 from opensquilla.skills.hub.operations import (
     install_loaded_skill_dependency,
     install_skill,
+    publish_skill_from_request,
     run_skill_install_operation,
     run_skill_uninstall_operation,
     run_skills_update_operation,
     skill_deps_install_request,
     skill_install_request,
+    skill_publish_request,
     skill_uninstall_request,
     skills_update_request,
     uninstall_skill,
@@ -62,6 +64,7 @@ def test_operations_does_not_import_deps_boundary_at_module_load() -> None:
     }
 
     assert "opensquilla.skills.hub.deps" not in top_level_imports
+    assert "opensquilla.skills.hub.publisher" not in top_level_imports
 
 
 def test_skill_operation_requests_preserve_defaults_and_validation() -> None:
@@ -84,6 +87,15 @@ def test_skill_operation_requests_preserve_defaults_and_validation() -> None:
         skill_deps_install_request({"name": "planner"})
     with pytest.raises(ValueError, match="params.name is required"):
         skill_uninstall_request({})
+
+
+def test_skill_publish_request_delegates_to_publisher_request(tmp_path: Path) -> None:
+    request = skill_publish_request(
+        {"skill_dir": tmp_path / "demo-skill", "repo": "acme/skills"}
+    )
+
+    assert request.skill_dir == tmp_path / "demo-skill"
+    assert request.target_repo == "acme/skills"
 
 
 @pytest.mark.asyncio
@@ -160,6 +172,35 @@ async def test_skill_deps_operation_delegates_to_deps_boundary(
     assert outcome.result.success is True
     assert outcome.missing_still == {"bins": [], "env": []}
     assert calls == [(loader, request)]
+
+
+@pytest.mark.asyncio
+async def test_skill_publish_operation_delegates_to_publisher_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.skills.hub import publisher
+
+    calls: list[object] = []
+
+    async def fake_publish_skill_from_request(request: object) -> SimpleNamespace:
+        calls.append(request)
+        return SimpleNamespace(success=True, message="ok", skill_name="demo")
+
+    monkeypatch.setattr(
+        publisher,
+        "publish_skill_from_request",
+        fake_publish_skill_from_request,
+    )
+
+    request = skill_publish_request(
+        {"skill_dir": tmp_path / "demo-skill", "target_repo": "acme/skills"}
+    )
+    result = await publish_skill_from_request(request)
+
+    assert result.success is True
+    assert result.skill_name == "demo"
+    assert calls == [request]
 
 
 @pytest.mark.asyncio

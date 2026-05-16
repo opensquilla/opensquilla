@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         SkillDepsInstallOutcome,
         SkillDepsInstallRequest,
     )
+    from opensquilla.skills.hub.publisher import PublishResult, SkillPublishRequest
 
 SkillInstallerFactory = Callable[[], SkillInstaller | None]
 SkillRouterFactory = Callable[[], Any | None]
@@ -121,6 +122,14 @@ def skill_deps_install_request(
     return _build_request(dict(params) if isinstance(params, Mapping) else params)
 
 
+def skill_publish_request(params: Mapping[str, Any] | None) -> SkillPublishRequest:
+    """Build a ``skills.publish`` operation request from CLI params."""
+
+    from opensquilla.skills.hub.publisher import skill_publish_request as _build_request
+
+    return _build_request(dict(params) if isinstance(params, Mapping) else params)
+
+
 def skill_install_request(params: Mapping[str, Any] | None) -> SkillInstallRequest:
     """Build a ``skills.install`` operation request from RPC params."""
 
@@ -198,6 +207,16 @@ async def install_loaded_skill_dependency(
     )
 
     return await _install_dependency(loader, request)
+
+
+async def publish_skill_from_request(
+    request: SkillPublishRequest,
+) -> PublishResult:
+    """Publish a skill from a validated operation request."""
+
+    from opensquilla.skills.hub.publisher import publish_skill_from_request as _publish
+
+    return await _publish(request)
 
 
 def invalidate_skill_loader(loader: Any | None) -> None:

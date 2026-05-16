@@ -9,7 +9,7 @@ from opensquilla.provider.runtime_status import build_provider_status_rpc_payloa
 from opensquilla.search.execution import (
     search_provider_payload,
     search_query_rpc_payload,
-    search_runtime_status,
+    search_status_rpc_payload,
 )
 from opensquilla.tools.registry import (
     tools_catalog_payload,
@@ -68,10 +68,7 @@ async def _handle_providers_status(params: dict | None, ctx: RpcContext) -> dict
 
 @_d.method("search.status", scope="operator.read")
 async def _handle_search_status(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
-    if params is not None and not isinstance(params, dict):
-        raise ValueError("params must be an object")
-    provider = (params or {}).get("provider")
-    return search_runtime_status(str(provider) if provider else None)
+    return search_status_rpc_payload(params)
 
 
 @_d.method("search.query", scope="operator.write")

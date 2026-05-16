@@ -90,7 +90,12 @@ def test_gateway_runs_search_queries_through_search_boundary() -> None:
     assert ("opensquilla.search.execution", "search_query_rpc_payload") in _imports_from(
         RPC_TOOLS
     )
-    assert ("opensquilla.search.execution", "search_runtime_status") in _imports_from(RPC_TOOLS)
+    assert ("opensquilla.search.execution", "search_runtime_status") not in _imports_from(
+        RPC_TOOLS
+    )
+    assert ("opensquilla.search.execution", "search_status_rpc_payload") in _imports_from(
+        RPC_TOOLS
+    )
 
 
 def test_web_compat_wrappers_delegate_to_search_runtime() -> None:

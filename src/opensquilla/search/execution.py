@@ -105,6 +105,22 @@ def search_provider_payload() -> dict[str, str]:
     return {"provider": search_runtime.get_active_provider()}
 
 
+def _search_status_rpc_params(params: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if params is None:
+        return {}
+    if not isinstance(params, Mapping):
+        raise ValueError("params must be an object")
+    return params
+
+
+def search_status_rpc_payload(params: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Build the RPC wire payload for a search status request."""
+
+    raw = _search_status_rpc_params(params)
+    provider = raw.get("provider")
+    return search_runtime_status(str(provider) if provider else None)
+
+
 def _query_limit_from_params(params: Mapping[str, Any]) -> int | None:
     if "limit" not in params or params.get("limit") is None:
         return None

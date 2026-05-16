@@ -6,11 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.gateway.config import GatewayConfig
-from opensquilla.onboarding.channel_specs import channel_catalog_payload
 from opensquilla.onboarding.config_store import PersistResult, load_config, persist_config
-from opensquilla.onboarding.image_generation_specs import (
-    image_generation_provider_catalog_payload,
-)
 from opensquilla.onboarding.mutations import (
     MutationResult,
     upsert_channel,
@@ -21,51 +17,8 @@ from opensquilla.onboarding.mutations import (
     upsert_search_provider,
 )
 from opensquilla.onboarding.next_steps import format_next_steps
-from opensquilla.onboarding.provider_specs import provider_catalog_payload
-from opensquilla.onboarding.router_specs import router_catalog_payload
-from opensquilla.onboarding.search_specs import search_provider_catalog_payload
+from opensquilla.onboarding.rpc_payload import onboarding_catalog_rpc_payload
 from opensquilla.onboarding.status import OnboardingStatus, get_onboarding_status
-
-
-def _memory_embedding_catalog_payload() -> list[dict[str, Any]]:
-    return [
-        {
-            "providerId": "auto",
-            "label": "Auto (local BGE first)",
-            "requiresApiKey": False,
-            "requiresBaseUrl": False,
-        },
-        {
-            "providerId": "local",
-            "label": "Bundled BGE-small",
-            "requiresApiKey": False,
-            "requiresBaseUrl": False,
-        },
-        {
-            "providerId": "openai",
-            "label": "OpenAI",
-            "requiresApiKey": True,
-            "requiresBaseUrl": False,
-        },
-        {
-            "providerId": "openai-compatible",
-            "label": "OpenAI-compatible remote",
-            "requiresApiKey": True,
-            "requiresBaseUrl": False,
-        },
-        {
-            "providerId": "ollama",
-            "label": "Ollama",
-            "requiresApiKey": False,
-            "requiresBaseUrl": False,
-        },
-        {
-            "providerId": "none",
-            "label": "FTS-only",
-            "requiresApiKey": False,
-            "requiresBaseUrl": False,
-        },
-    ]
 
 
 class SetupEngine:
@@ -86,14 +39,7 @@ class SetupEngine:
         return get_onboarding_status(self.config)
 
     def catalog(self, section: str | None = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "providers": provider_catalog_payload(),
-            "routerProfiles": router_catalog_payload(),
-            "searchProviders": search_provider_catalog_payload(),
-            "channels": channel_catalog_payload(),
-            "imageGenerationProviders": image_generation_provider_catalog_payload(),
-            "memoryEmbeddingProviders": _memory_embedding_catalog_payload(),
-        }
+        payload = onboarding_catalog_rpc_payload()
         if section is None:
             return payload
         normalized = section.strip().lower()

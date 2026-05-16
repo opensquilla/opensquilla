@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import tomllib
+from pathlib import Path
 
 import pytest
 
-import opensquilla.gateway.rpc_onboarding  # noqa: F401  ensures registration
+import opensquilla.gateway.rpc_onboarding as rpc_onboarding  # noqa: F401  ensures registration
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 
@@ -73,6 +75,20 @@ async def test_onboarding_catalog_returns_providers_and_channels(tmp_path, monke
     } <= memory_provider_ids
     router_profile_ids = {p["profileId"] for p in payload["routerProfiles"]["profiles"]}
     assert {"openrouter", "deepseek", "openai"} <= router_profile_ids
+
+
+def test_gateway_rpc_onboarding_delegates_status_and_catalog_payloads_to_onboarding_boundary():
+    source = Path(rpc_onboarding.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    top_level_functions = {
+        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert "_status_payload" not in top_level_functions
+    assert "get_onboarding_status" not in source
+    assert '"memoryEmbeddingProviders": [' not in source
+    assert '"providerId": "auto"' not in source
 
 
 @pytest.mark.asyncio

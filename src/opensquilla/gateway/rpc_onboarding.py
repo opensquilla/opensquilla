@@ -132,89 +132,19 @@ def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
     return str(persist.path)
 
 
-def _status_payload(ctx: RpcContext) -> dict[str, Any]:
-    from opensquilla.onboarding.status import get_onboarding_status
-
-    cfg = _active_config(ctx)
-    s = get_onboarding_status(cfg)
-    return {
-        "configPath": _config_path_for(ctx, cfg) or s.config_path,
-        "hasConfig": s.has_config,
-        "llmConfigured": s.llm_configured,
-        "llmSource": s.llm_source,
-        "imageGenerationConfigured": s.image_generation_configured,
-        "imageGenerationEnabled": s.image_generation_enabled,
-        "imageGenerationSource": s.image_generation_source,
-        "imageGenerationProvider": s.image_generation_provider,
-        "imageGenerationPrimary": s.image_generation_primary,
-        "searchConfigured": s.search_configured,
-        "channelCount": s.channel_count,
-        "channelsConfigured": s.channels_configured,
-        "needsOnboarding": s.needs_onboarding,
-        "warnings": list(s.warnings),
-    }
-
-
 @_d.method("onboarding.status", scope="operator.read")
 async def _onboarding_status(params: Any, ctx: RpcContext) -> dict[str, Any]:
-    return _status_payload(ctx)
+    from opensquilla.onboarding.rpc_payload import onboarding_status_rpc_payload
+
+    cfg = _active_config(ctx)
+    return onboarding_status_rpc_payload(cfg, config_path=_config_path_for(ctx, cfg))
 
 
 @_d.method("onboarding.catalog", scope="operator.read")
 async def _onboarding_catalog(params: Any, ctx: RpcContext) -> dict[str, Any]:
-    from opensquilla.onboarding.channel_specs import channel_catalog_payload
-    from opensquilla.onboarding.image_generation_specs import (
-        image_generation_provider_catalog_payload,
-    )
-    from opensquilla.onboarding.provider_specs import provider_catalog_payload
-    from opensquilla.onboarding.router_specs import router_catalog_payload
-    from opensquilla.onboarding.search_specs import search_provider_catalog_payload
+    from opensquilla.onboarding.rpc_payload import onboarding_catalog_rpc_payload
 
-    return {
-        "providers": provider_catalog_payload(),
-        "channels": channel_catalog_payload(),
-        "searchProviders": search_provider_catalog_payload(),
-        "routerProfiles": router_catalog_payload(),
-        "memoryEmbeddingProviders": [
-            {
-                "providerId": "auto",
-                "label": "Auto (local BGE first)",
-                "requiresApiKey": False,
-                "requiresBaseUrl": False,
-            },
-            {
-                "providerId": "local",
-                "label": "Bundled BGE-small",
-                "requiresApiKey": False,
-                "requiresBaseUrl": False,
-            },
-            {
-                "providerId": "openai",
-                "label": "OpenAI",
-                "requiresApiKey": True,
-                "requiresBaseUrl": False,
-            },
-            {
-                "providerId": "openai-compatible",
-                "label": "OpenAI-compatible remote",
-                "requiresApiKey": True,
-                "requiresBaseUrl": False,
-            },
-            {
-                "providerId": "ollama",
-                "label": "Ollama",
-                "requiresApiKey": False,
-                "requiresBaseUrl": False,
-            },
-            {
-                "providerId": "none",
-                "label": "FTS-only",
-                "requiresApiKey": False,
-                "requiresBaseUrl": False,
-            },
-        ],
-        "imageGenerationProviders": image_generation_provider_catalog_payload(),
-    }
+    return onboarding_catalog_rpc_payload()
 
 
 def _require(params: Any, key: str) -> Any:

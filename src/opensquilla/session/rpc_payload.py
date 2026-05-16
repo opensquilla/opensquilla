@@ -134,6 +134,13 @@ def normalize_terminal_event_payload(event_name: str, payload: dict[str, Any]) -
     }
 
 
+def session_send_accepted_response(key: str, *, task_id: str | None = None) -> dict[str, Any]:
+    payload = {"status": "accepted", "key": key}
+    if task_id is not None:
+        payload["task_id"] = task_id
+    return payload
+
+
 def session_source_metadata(session: Any) -> dict[str, Any]:
     key = str(getattr(session, "session_key", "") or "")
     origin = getattr(session, "origin", None)
@@ -369,6 +376,7 @@ __all__ = [
     "session_preview_row",
     "session_reset_response",
     "session_resolve_response",
+    "session_send_accepted_response",
     "session_source_metadata",
     "sorted_task_rows",
     "task_run_status",

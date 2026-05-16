@@ -6,8 +6,8 @@ from typing import Any
 
 import httpx
 
-from opensquilla.engine.types import ThinkingLevel
 from opensquilla.provider.openai import OpenAIProvider
+from opensquilla.provider.thinking import ThinkingLevel
 from opensquilla.provider.types import (
     ChatConfig,
     ContentBlockToolResult,

@@ -37,6 +37,7 @@ from .selector import (
     build_provider,
 )
 from .smart_routing import RefusalDecision, should_refuse
+from .thinking import THINKING_BUDGETS, ThinkingLevel
 from .types import (
     ChatConfig,
     ContentBlockDocument,
@@ -101,6 +102,8 @@ __all__ = [
     # Smart routing
     "RefusalDecision",
     "should_refuse",
+    "ThinkingLevel",
+    "THINKING_BUDGETS",
     # Types
     "StreamEvent",
     "TextDeltaEvent",

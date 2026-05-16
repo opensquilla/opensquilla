@@ -70,7 +70,6 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("onboarding", "gateway"),
     ("onboarding", "provider"),
     ("onboarding", "search"),
-    ("provider", "engine"),
     ("sandbox", "application"),
     ("sandbox", "safety"),
     ("sandbox", "tools"),

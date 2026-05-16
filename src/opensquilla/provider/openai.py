@@ -8,11 +8,8 @@ import os
 import re
 import sys
 from collections.abc import AsyncIterator, Mapping
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from uuid import uuid4
-
-if TYPE_CHECKING:
-    from opensquilla.engine.types import ThinkingLevel
 
 import httpx
 import structlog
@@ -22,6 +19,7 @@ from opensquilla.env import trust_env as _trust_env
 from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
 from .openrouter_attribution import openrouter_app_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
+from .thinking import ThinkingLevel
 from .types import (
     ChatConfig,
     DoneEvent,
@@ -93,10 +91,6 @@ def _format_chat_http_error(provider_kind: str, status_code: int, body: bytes | 
 
 def _resolve_reasoning_effort(level: ThinkingLevel | None, budget: int) -> str:
     """Map ThinkingLevel to OpenRouter/DeepSeek effort string."""
-    from opensquilla.engine.types import (
-        ThinkingLevel,  # local: avoids circular import at module load
-    )
-
     _level_map = {
         ThinkingLevel.MINIMAL: "minimal",
         ThinkingLevel.LOW: "low",
@@ -116,10 +110,6 @@ def _resolve_reasoning_effort(level: ThinkingLevel | None, budget: int) -> str:
 
 def _resolve_deepseek_reasoning_effort(level: ThinkingLevel | None) -> str:
     """Map OpenSquilla thinking levels to DeepSeek V4's documented effort values."""
-    from opensquilla.engine.types import (
-        ThinkingLevel,  # local: avoids circular import at module load
-    )
-
     if level == ThinkingLevel.XHIGH:
         return "max"
     return "high"

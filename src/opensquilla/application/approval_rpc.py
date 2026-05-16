@@ -83,6 +83,31 @@ async def approval_wait_decision_rpc_payload(
     return approval_status_rpc_payload(queue, approval_id, queue.get_settings().mode)
 
 
+def approval_snapshot_rpc_payload(queue: ApprovalQueue, intent_cache: Any) -> dict[str, Any]:
+    """Build the diagnostic snapshot payload for approval state."""
+
+    return {
+        "mode": queue.get_settings().mode,
+        "intent_cache_size": len(intent_cache._entries),  # noqa: SLF001 - diagnostic
+        "intent_cache_entries": [
+            {"kind": kind, "target": target, "scope": scope}
+            for (kind, target), (_expires, scope) in intent_cache._entries.items()  # noqa: SLF001
+        ],
+    }
+
+
+def approval_forget_rpc_payload(intent_cache: Any, target: Any = None) -> dict[str, Any]:
+    """Forget cached intent approvals and return the RPC wire payload."""
+
+    if isinstance(target, str) and target.strip():
+        stripped = target.strip()
+        intent_cache.forget(f"rm {stripped}")
+        intent_cache.forget(stripped)
+        return {"scope": "target", "target": stripped}
+    intent_cache.clear()
+    return {"scope": "all"}
+
+
 def approval_resolve_rpc_payload(
     queue: ApprovalQueue,
     approval_id: str,
@@ -105,9 +130,11 @@ def approval_resolve_rpc_payload(
 
 
 __all__ = [
+    "approval_forget_rpc_payload",
     "approval_request_rpc_payload",
     "approval_resolve_rpc_payload",
     "approval_settings_rpc_payload",
+    "approval_snapshot_rpc_payload",
     "approval_status_rpc_payload",
     "approval_wait_decision_rpc_payload",
 ]

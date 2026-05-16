@@ -5,15 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
-from opensquilla.skills.hub.deps import (
-    install_loaded_skill_dependency,
-    skill_deps_install_request,
-)
 from opensquilla.skills.hub.operations import (
+    install_loaded_skill_dependency,
     run_skill_install_operation,
     run_skill_uninstall_operation,
     run_skills_update_operation,
     search_skills,
+    skill_deps_install_request,
     skill_install_request,
     skill_search_request,
     skill_uninstall_request,

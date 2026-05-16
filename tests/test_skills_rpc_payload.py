@@ -719,7 +719,7 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
 
     assert "opensquilla.skills.eligibility" not in imported_modules
     assert "opensquilla.paths" not in imported_modules
-    assert "opensquilla.skills.hub.deps" in imported_modules
+    assert "opensquilla.skills.hub.deps" not in imported_modules
     assert "opensquilla.skills.hub.operations" in imported_modules
     assert "opensquilla.skills.hub.clawhub" not in imported_modules
     assert "opensquilla.skills.hub.github" not in imported_modules

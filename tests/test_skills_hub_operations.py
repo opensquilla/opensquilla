@@ -6,10 +6,12 @@ import pytest
 
 from opensquilla.skills.hub.installer import InstallResult
 from opensquilla.skills.hub.operations import (
+    install_loaded_skill_dependency,
     install_skill,
     run_skill_install_operation,
     run_skill_uninstall_operation,
     run_skills_update_operation,
+    skill_deps_install_request,
     skill_install_request,
     skill_uninstall_request,
     skills_update_request,
@@ -54,12 +56,19 @@ def test_skill_operation_requests_preserve_defaults_and_validation() -> None:
     assert install_request.identifier == "planner"
     assert install_request.source_id == "clawhub"
     assert install_request.force is False
+    deps_request = skill_deps_install_request({"name": "planner", "install_id": "brew"})
+    assert deps_request.name == "planner"
+    assert deps_request.install_id == "brew"
     assert skills_update_request(None).name is None
     assert skills_update_request({"name": "planner"}).name == "planner"
     assert skill_uninstall_request({"name": "planner"}).name == "planner"
 
     with pytest.raises(ValueError, match="params.identifier is required"):
         skill_install_request({})
+    with pytest.raises(ValueError, match="params must be a dict"):
+        skill_deps_install_request(None)
+    with pytest.raises(ValueError, match="params.install_id is required"):
+        skill_deps_install_request({"name": "planner"})
     with pytest.raises(ValueError, match="params.name is required"):
         skill_uninstall_request({})
 
@@ -105,6 +114,39 @@ async def test_update_skills_maps_os_errors_to_unavailable_message() -> None:
 
     assert outcome.results == []
     assert outcome.unavailable_message == "Skill update unavailable: lockfile unavailable"
+
+
+@pytest.mark.asyncio
+async def test_skill_deps_operation_delegates_to_deps_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.skills.hub import deps
+
+    loader = object()
+    calls: list[tuple[object, object]] = []
+
+    async def fake_install_loaded_skill_dependency(
+        actual_loader: object,
+        request: object,
+    ) -> SimpleNamespace:
+        calls.append((actual_loader, request))
+        return SimpleNamespace(
+            result=SimpleNamespace(success=True),
+            missing_still={"bins": [], "env": []},
+        )
+
+    monkeypatch.setattr(
+        deps,
+        "install_loaded_skill_dependency",
+        fake_install_loaded_skill_dependency,
+    )
+
+    request = skill_deps_install_request({"name": "planner", "install_id": "brew"})
+    outcome = await install_loaded_skill_dependency(loader, request)
+
+    assert outcome.result.success is True
+    assert outcome.missing_still == {"bins": [], "env": []}
+    assert calls == [(loader, request)]
 
 
 @pytest.mark.asyncio

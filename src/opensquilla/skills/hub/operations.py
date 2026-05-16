@@ -10,6 +10,10 @@ from opensquilla.skills.hub.defaults import (
     get_default_skill_installer,
     get_default_skill_router,
 )
+from opensquilla.skills.hub.deps import (
+    SkillDepsInstallOutcome,
+    SkillDepsInstallRequest,
+)
 from opensquilla.skills.hub.installer import InstallResult, SkillInstaller
 from opensquilla.skills.hub.lockfile import installed_skill_names
 
@@ -105,6 +109,16 @@ def skill_search_request(params: Mapping[str, Any] | None) -> SkillSearchRequest
     )
 
 
+def skill_deps_install_request(
+    params: Mapping[str, Any] | None,
+) -> SkillDepsInstallRequest:
+    """Build a ``skills.deps.install`` operation request from RPC params."""
+
+    from opensquilla.skills.hub.deps import skill_deps_install_request as _build_request
+
+    return _build_request(dict(params) if isinstance(params, Mapping) else params)
+
+
 def skill_install_request(params: Mapping[str, Any] | None) -> SkillInstallRequest:
     """Build a ``skills.install`` operation request from RPC params."""
 
@@ -169,6 +183,19 @@ async def search_skills(
         ),
         installed_names=installed_skill_names(),
     )
+
+
+async def install_loaded_skill_dependency(
+    loader: Any | None,
+    request: SkillDepsInstallRequest,
+) -> SkillDepsInstallOutcome:
+    """Install a dependency spec by resolving a loaded skill from a loader."""
+
+    from opensquilla.skills.hub.deps import (
+        install_loaded_skill_dependency as _install_dependency,
+    )
+
+    return await _install_dependency(loader, request)
 
 
 def invalidate_skill_loader(loader: Any | None) -> None:

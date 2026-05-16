@@ -203,8 +203,37 @@ def test_skills_view_and_update_use_gateway_rpc(monkeypatch):
     assert ("skills.update", {"name": "planner"}) in fake.calls
 
 
-def test_skills_search_delegates_to_hub_search_boundary(monkeypatch):
+def test_skills_search_delegates_to_cli_search_rows_boundary(monkeypatch):
     from opensquilla.cli import skills_cmd
+
+    async def fake_search_skill_rows(query: str, *, limit: int = 20):
+        assert query == "plan"
+        assert limit == 20
+        return [
+            {
+                "name": "Planner",
+                "description": "Plan work",
+                "version": "1.0.0",
+                "author": "Tests",
+                "source_id": "clawhub",
+                "trust_level": "community",
+                "identifier": "planner",
+            }
+        ]
+
+    monkeypatch.setattr(skills_cmd, "search_skill_rows", fake_search_skill_rows)
+
+    result = runner.invoke(app, ["skills", "search", "plan", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload[0]["name"] == "Planner"
+    assert payload[0]["source_id"] == "clawhub"
+
+
+def test_cli_skill_search_rows_use_hub_operation_boundary(monkeypatch):
+    from opensquilla.cli.skills_search_rows import search_skill_rows
+    from opensquilla.skills.hub import operations as hub_operations
 
     @dataclass(frozen=True)
     class SearchResult:
@@ -216,9 +245,15 @@ def test_skills_search_delegates_to_hub_search_boundary(monkeypatch):
         trust_level: str
         identifier: str
 
+    calls: list[tuple[str, object]] = []
+
+    def fake_skill_search_request(params: object) -> object:
+        calls.append(("request", params))
+        return ("search", params)
+
     async def fake_search_skills(router: object, request: object) -> SimpleNamespace:
         assert router is None
-        assert request == ("search", {"query": "plan", "limit": 20})
+        calls.append(("search", request))
         return SimpleNamespace(
             results=[
                 SearchResult(
@@ -235,18 +270,29 @@ def test_skills_search_delegates_to_hub_search_boundary(monkeypatch):
         )
 
     monkeypatch.setattr(
-        skills_cmd,
+        hub_operations,
         "skill_search_request",
-        lambda params: ("search", params),
+        fake_skill_search_request,
     )
-    monkeypatch.setattr(skills_cmd, "search_skills", fake_search_skills)
+    monkeypatch.setattr(hub_operations, "search_skills", fake_search_skills)
 
-    result = runner.invoke(app, ["skills", "search", "plan", "--json"])
+    rows = asyncio.run(search_skill_rows("plan", limit=7))
 
-    assert result.exit_code == 0, result.stdout
-    payload = json.loads(result.stdout)
-    assert payload[0]["name"] == "Planner"
-    assert payload[0]["source_id"] == "clawhub"
+    assert rows == [
+        {
+            "name": "Planner",
+            "description": "Plan work",
+            "version": "1.0.0",
+            "author": "Tests",
+            "source_id": "clawhub",
+            "trust_level": "community",
+            "identifier": "planner",
+        }
+    ]
+    assert calls == [
+        ("request", {"query": "plan", "limit": 7}),
+        ("search", ("search", {"query": "plan", "limit": 7})),
+    ]
 
 
 def test_skills_list_delegates_to_cli_rows_boundary(monkeypatch):
@@ -562,6 +608,22 @@ def test_cli_skills_does_not_import_hub_defaults() -> None:
     assert "opensquilla.gateway.config" not in imported_modules
     assert "opensquilla.skills.eligibility" not in imported_modules
     assert "opensquilla.skills.runtime" not in imported_modules
+
+
+def test_cli_skills_search_does_not_import_hub_search_operation_details() -> None:
+    from opensquilla.cli import skills_cmd
+
+    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    imported_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.skills.hub.operations"
+        for alias in node.names
+    }
+
+    assert "search_skills" not in imported_names
+    assert "skill_search_request" not in imported_names
 
 
 def test_cli_skills_install_fallback_uses_operation_workflows() -> None:

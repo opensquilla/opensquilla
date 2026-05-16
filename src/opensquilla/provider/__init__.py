@@ -36,6 +36,7 @@ from .runtime_status import (
     ProviderStatusRow,
     build_provider_status_payload,
     build_provider_status_report,
+    build_provider_status_rpc_payload,
     probe_provider_models,
     provider_status_report_to_wire,
 )
@@ -111,6 +112,7 @@ __all__ = [
     "ProviderStatusReport",
     "ProviderStatusRow",
     "build_provider_status_payload",
+    "build_provider_status_rpc_payload",
     "build_provider_status_report",
     "probe_provider_models",
     "provider_status_report_to_wire",

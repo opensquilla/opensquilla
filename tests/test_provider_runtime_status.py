@@ -10,6 +10,7 @@ import pytest
 from opensquilla.provider.runtime_status import (
     build_provider_status_payload,
     build_provider_status_report,
+    build_provider_status_rpc_payload,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -186,13 +187,55 @@ async def test_build_provider_status_payload_owns_gateway_wire_shape() -> None:
     assert "secret-key" not in repr(payload)
 
 
+@pytest.mark.asyncio
+async def test_build_provider_status_rpc_payload_owns_request_params() -> None:
+    payload = await build_provider_status_rpc_payload(
+        [
+            FakeStatusSpec(provider_id="openrouter"),
+            FakeStatusSpec(
+                provider_id="ollama",
+                env_key="",
+                requires_api_key=False,
+                default_base_url="",
+            ),
+        ],
+        {"provider": "openrouter", "probeModels": True},
+        provider_selector=ListingModelSelector(),
+        config=_config(api_key="secret-key", base_url="https://custom.example/v1"),
+        environ={},
+    )
+
+    assert payload["activeProvider"] == "openrouter"
+    assert [row["providerId"] for row in payload["providers"]] == ["openrouter"]
+    assert payload["providers"][0]["modelProbe"] == {
+        "attempted": True,
+        "status": "ok",
+        "count": 1,
+        "error": None,
+    }
+    assert "secret-key" not in repr(payload)
+
+    with pytest.raises(ValueError, match="params must be an object"):
+        await build_provider_status_rpc_payload(
+            [FakeStatusSpec(provider_id="openrouter")],
+            "bad-params",  # type: ignore[arg-type]
+            provider_selector=None,
+            config=_config(),
+            environ={},
+        )
+
+
 def test_gateway_delegates_provider_status_wire_shape_to_provider_boundary() -> None:
     imports = _imports_from(RPC_TOOLS)
 
     assert (
         "opensquilla.provider.runtime_status",
-        "build_provider_status_payload",
+        "build_provider_status_rpc_payload",
     ) in imports
+    assert (
+        "opensquilla.provider.runtime_status",
+        "build_provider_status_payload",
+    ) not in imports
     assert (
         "opensquilla.provider.runtime_status",
         "build_provider_status_report",

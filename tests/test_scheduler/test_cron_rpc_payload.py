@@ -6,6 +6,8 @@ from opensquilla.scheduler.payloads import AGENT_TURN_KIND
 from opensquilla.scheduler.rpc_payload import (
     cron_job_to_wire,
     cron_run_to_wire,
+    cron_subscription_error_response,
+    cron_subscription_response,
     manual_run_to_wire,
     tool_policy_from_params,
 )
@@ -101,6 +103,17 @@ def test_manual_run_and_execution_payloads_preserve_wire_shape() -> None:
         "summary": "done",
         "sessionKey": "agent:main:webchat:abc",
         "deliveryStatus": "skipped",
+    }
+
+
+def test_cron_subscription_responses_preserve_wire_shape() -> None:
+    assert cron_subscription_error_response("no connection context") == {
+        "ok": False,
+        "error": "no connection context",
+    }
+    assert cron_subscription_response("cron:drink") == {
+        "ok": True,
+        "topic": "cron:drink",
     }
 
 

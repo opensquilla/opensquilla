@@ -181,6 +181,14 @@ def cron_run_to_wire(run: Any) -> dict[str, Any]:
     }
 
 
+def cron_subscription_error_response(error: str) -> dict[str, Any]:
+    return {"ok": False, "error": error}
+
+
+def cron_subscription_response(topic: str) -> dict[str, Any]:
+    return {"ok": True, "topic": topic}
+
+
 def iso_datetime(value: object) -> str | None:
     """Convert datetime-like values to ISO strings."""
 
@@ -303,6 +311,8 @@ __all__ = [
     "build_cron_payload",
     "cron_job_to_wire",
     "cron_run_to_wire",
+    "cron_subscription_error_response",
+    "cron_subscription_response",
     "delivery_to_wire",
     "ensure_delivery_supported",
     "iso_datetime",

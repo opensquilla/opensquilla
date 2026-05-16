@@ -15,6 +15,8 @@ from opensquilla.scheduler.rpc_payload import (
     build_cron_payload,
     cron_job_to_wire,
     cron_run_to_wire,
+    cron_subscription_error_response,
+    cron_subscription_response,
     ensure_delivery_supported,
     manual_run_to_wire,
     parse_delivery_overrides,
@@ -337,14 +339,14 @@ async def _handle_cron_subscribe(params: dict | None, ctx: RpcContext) -> dict[s
     """Subscribe this connection to cron events."""
     sub_mgr = getattr(ctx, "subscription_manager", None)
     if sub_mgr is None:
-        return {"ok": False, "error": "subscription_manager not available"}
+        return cron_subscription_error_response("subscription_manager not available")
     conn_id = getattr(ctx, "conn_id", None)
     if not conn_id:
-        return {"ok": False, "error": "no connection context"}
+        return cron_subscription_error_response("no connection context")
     job_id = (params or {}).get("jobId")
     topic = f"cron:{job_id}" if job_id else "cron:*"
     sub_mgr.subscribe_topic(conn_id, topic)
-    return {"ok": True, "topic": topic}
+    return cron_subscription_response(topic)
 
 
 @_d.method("cron.unsubscribe", scope="operator.read")
@@ -352,11 +354,11 @@ async def _handle_cron_unsubscribe(params: dict | None, ctx: RpcContext) -> dict
     """Unsubscribe this connection from cron events."""
     sub_mgr = getattr(ctx, "subscription_manager", None)
     if sub_mgr is None:
-        return {"ok": False, "error": "subscription_manager not available"}
+        return cron_subscription_error_response("subscription_manager not available")
     conn_id = getattr(ctx, "conn_id", None)
     if not conn_id:
-        return {"ok": False, "error": "no connection context"}
+        return cron_subscription_error_response("no connection context")
     job_id = (params or {}).get("jobId")
     topic = f"cron:{job_id}" if job_id else "cron:*"
     sub_mgr.unsubscribe_topic(conn_id, topic)
-    return {"ok": True, "topic": topic}
+    return cron_subscription_response(topic)

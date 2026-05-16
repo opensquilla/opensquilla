@@ -9,6 +9,8 @@ from opensquilla.gateway import rpc_cron
 from opensquilla.gateway.rpc import RpcContext
 from opensquilla.gateway.rpc_cron import (
     _handle_cron_add,
+    _handle_cron_subscribe,
+    _handle_cron_unsubscribe,
     _handle_cron_update,
 )
 from opensquilla.scheduler.delivery import DeliveryChain
@@ -98,6 +100,18 @@ class _FakeTurnRunner:
             yield SimpleNamespace(kind="done")
 
         return events()
+
+
+class _FakeSubscriptionManager:
+    def __init__(self) -> None:
+        self.subscriptions = []
+        self.unsubscriptions = []
+
+    def subscribe_topic(self, conn_id, topic) -> None:
+        self.subscriptions.append((conn_id, topic))
+
+    def unsubscribe_topic(self, conn_id, topic) -> None:
+        self.unsubscriptions.append((conn_id, topic))
 
 
 def test_rpc_current_session_params_bind_target_and_origin_session() -> None:
@@ -287,6 +301,61 @@ def test_gateway_rpc_cron_delegates_wire_payloads_to_scheduler_boundary() -> Non
     assert "_job_to_wire" not in top_level_functions
     assert "_manual_run_to_wire" not in top_level_functions
     assert "_tool_policy_to_wire" not in top_level_functions
+
+
+@pytest.mark.asyncio
+async def test_rpc_cron_subscribe_and_unsubscribe_topic_responses() -> None:
+    subscription_manager = _FakeSubscriptionManager()
+    ctx = RpcContext(conn_id="conn-1", subscription_manager=subscription_manager)
+
+    subscribe_result = await _handle_cron_subscribe({"jobId": "drink"}, ctx)
+    unsubscribe_result = await _handle_cron_unsubscribe({}, ctx)
+
+    assert subscribe_result == {"ok": True, "topic": "cron:drink"}
+    assert unsubscribe_result == {"ok": True, "topic": "cron:*"}
+    assert subscription_manager.subscriptions == [("conn-1", "cron:drink")]
+    assert subscription_manager.unsubscriptions == [("conn-1", "cron:*")]
+
+
+def test_gateway_rpc_cron_subscription_envelopes_delegate_to_scheduler_boundary() -> None:
+    source = Path(rpc_cron.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imports = {
+        (node.module, alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+    handlers = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name in {"_handle_cron_subscribe", "_handle_cron_unsubscribe"}
+    }
+    handler_names = {
+        node.id
+        for handler in handlers.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Name)
+    }
+    direct_key_sets = {
+        tuple(key.value for key in node.keys if isinstance(key, ast.Constant))
+        for handler in handlers.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Dict)
+    }
+    helper_names = {
+        "cron_subscription_error_response",
+        "cron_subscription_response",
+    }
+
+    assert {
+        ("opensquilla.scheduler.rpc_payload", helper_name)
+        for helper_name in helper_names
+    }.issubset(imports)
+    assert helper_names.issubset(handler_names)
+    assert ("ok", "error") not in direct_key_sets
+    assert ("ok", "topic") not in direct_key_sets
 
 
 def test_scheduler_current_session_resolves_bound_session_key() -> None:

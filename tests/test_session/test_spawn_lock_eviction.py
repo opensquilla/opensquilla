@@ -53,7 +53,7 @@ async def test_finish_evicts_spawn_lock() -> None:
     sessions_tool._get_spawn_lock("agent:main:main")
     assert "agent:main:main" in sessions_tool._spawn_locks
 
-    mgr = SessionManager(storage)  # type: ignore[arg-type]
+    mgr = SessionManager(storage, runtime_state_evictors=[sessions_tool.evict_spawn_lock])  # type: ignore[arg-type]
     await mgr.finish("agent:main:main", status=SessionStatus.DONE)
 
     assert "agent:main:main" not in sessions_tool._spawn_locks

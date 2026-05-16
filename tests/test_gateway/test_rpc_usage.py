@@ -1,14 +1,19 @@
 """Tests for /api/usage RPC handlers — focused on cache_read / cache_write totals."""
 
+import ast
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 from opensquilla.engine.usage import UsageTracker
 from opensquilla.gateway import rpc_usage
 from opensquilla.gateway.rpc.registry import RpcContext
-from opensquilla.gateway.rpc_usage import _handle_usage_cost, _handle_usage_status
 from opensquilla.session.manager import SessionManager
 from opensquilla.session.storage import SessionStorage
+from opensquilla.session.usage_rpc import (
+    usage_cost_rpc_payload,
+    usage_status_rpc_payload,
+)
 
 
 def _ctx(*, session_manager=None, usage_tracker=None) -> RpcContext:
@@ -17,6 +22,24 @@ def _ctx(*, session_manager=None, usage_tracker=None) -> RpcContext:
         session_manager=session_manager,
         usage_tracker=usage_tracker,
         config=SimpleNamespace(llm=SimpleNamespace(model="claude-opus-4-7")),
+    )
+
+
+async def _handle_usage_status(_params, ctx: RpcContext):
+    return await usage_status_rpc_payload(
+        session_manager=ctx.session_manager,
+        usage_tracker=ctx.usage_tracker,
+        config=ctx.config,
+        now_ms=rpc_usage._now_ms(),
+    )
+
+
+async def _handle_usage_cost(_params, ctx: RpcContext):
+    return await usage_cost_rpc_payload(
+        session_manager=ctx.session_manager,
+        usage_tracker=ctx.usage_tracker,
+        config=ctx.config,
+        now_ms=rpc_usage._now_ms(),
     )
 
 
@@ -356,3 +379,45 @@ def test_usage_status_no_data_returns_zeros() -> None:
     assert payload["totalCacheReadTokens"] == 0
     assert payload["totalCacheWriteTokens"] == 0
     assert payload["totalSessions"] == 0
+
+
+def test_gateway_rpc_usage_status_handler_delegates_to_session_payload(monkeypatch) -> None:
+    seen = {}
+
+    async def fake_payload(**kwargs):
+        seen.update(kwargs)
+        return {"ok": True}
+
+    tracker = UsageTracker()
+    session_manager = object()
+    ctx = _ctx(session_manager=session_manager, usage_tracker=tracker)
+    monkeypatch.setattr(rpc_usage, "_now_ms", lambda: 123)
+    monkeypatch.setattr(rpc_usage, "usage_status_rpc_payload", fake_payload)
+
+    payload = asyncio.run(rpc_usage._handle_usage_status(None, ctx))
+
+    assert payload == {"ok": True}
+    assert seen == {
+        "session_manager": session_manager,
+        "usage_tracker": tracker,
+        "config": ctx.config,
+        "now_ms": 123,
+    }
+
+
+def test_gateway_rpc_usage_delegates_payloads_to_session_boundary() -> None:
+    source = Path(rpc_usage.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    top_level_functions = {
+        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert "_usage_row" not in top_level_functions
+    assert "_tracker_rows" not in top_level_functions
+    assert "_resolved_session_cost_fields" not in top_level_functions
+    assert "rollup_cost_source" not in source
+    assert "opensquilla.observability.usage_rpc" not in source
+    assert "opensquilla.session.usage_rpc" in source
+    assert "usage_status_rpc_payload" in source
+    assert "usage_cost_rpc_payload" in source

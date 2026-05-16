@@ -99,31 +99,17 @@ def _emit_skill_mutation_result(
 
 def _load_skill_rows() -> list[dict[str, Any]]:
     import os
-    from pathlib import Path
 
     from opensquilla.gateway.config import GatewayConfig
     from opensquilla.skills.eligibility import EligibilityContext, check_eligibility
-    from opensquilla.skills.loader import SkillLoader
-    from opensquilla.skills.paths import resolve_skill_layer_dirs
+    from opensquilla.skills.runtime import create_configured_skill_loader
 
     config = GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
-    workspace_root = Path(config.workspace_dir) if config.workspace_dir else None
-    workspace_override = Path(config.skills.workspace_dir) if config.skills.workspace_dir else None
-    layer_dirs = resolve_skill_layer_dirs(
-        allow_bundled=config.skills.allow_bundled,
-        workspace_root=workspace_root,
-        workspace_override=workspace_override,
-        managed_override=config.skills.managed_dir,
-        extra_dirs=[Path(d) for d in config.skills.extra_dirs],
+    skill_setup = create_configured_skill_loader(
+        config.skills,
+        workspace_dir=config.workspace_dir,
     )
-    loader = SkillLoader(
-        bundled_dir=layer_dirs.bundled_dir,
-        workspace_dir=layer_dirs.workspace_dir,
-        managed_dir=layer_dirs.managed_dir,
-        personal_agents_dir=layer_dirs.personal_agents_dir,
-        project_agents_dir=layer_dirs.project_agents_dir,
-        extra_dirs=layer_dirs.extra_dirs,
-    )
+    loader = skill_setup.loader
     ctx = EligibilityContext.auto()
     rows: list[dict[str, Any]] = []
     for skill in sorted(loader.load_all(), key=lambda x: x.name):

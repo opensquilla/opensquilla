@@ -7,6 +7,9 @@ import pytest
 from opensquilla.skills.hub.installer import InstallResult
 from opensquilla.skills.hub.operations import (
     install_skill,
+    run_skill_install_operation,
+    run_skill_uninstall_operation,
+    run_skills_update_operation,
     skill_install_request,
     skill_uninstall_request,
     skills_update_request,
@@ -36,6 +39,14 @@ class FakeInstaller:
     async def uninstall(self, name: str) -> InstallResult:
         self.calls.append(("uninstall", (name,), {}))
         return InstallResult(success=True, name=str(name), message="uninstalled")
+
+
+class FakeLoader:
+    def __init__(self) -> None:
+        self.invalidations = 0
+
+    def invalidate_cache(self) -> None:
+        self.invalidations += 1
 
 
 def test_skill_operation_requests_preserve_defaults_and_validation() -> None:
@@ -94,3 +105,65 @@ async def test_update_skills_maps_os_errors_to_unavailable_message() -> None:
 
     assert outcome.results == []
     assert outcome.unavailable_message == "Skill update unavailable: lockfile unavailable"
+
+
+@pytest.mark.asyncio
+async def test_skill_management_workflows_handle_availability_and_invalidation() -> None:
+    loader = FakeLoader()
+    installer = FakeInstaller()
+
+    missing_loader = await run_skill_install_operation(
+        None,
+        lambda: installer,
+        skill_install_request({"identifier": "planner"}),
+    )
+    missing_installer = await run_skill_install_operation(
+        loader,
+        lambda: None,
+        skill_install_request({"identifier": "planner"}),
+    )
+    install_outcome = await run_skill_install_operation(
+        loader,
+        lambda: installer,
+        skill_install_request({"identifier": "planner"}),
+    )
+    update_outcome = await run_skills_update_operation(
+        loader,
+        lambda: installer,
+        skills_update_request({"name": "planner"}),
+    )
+    uninstall_outcome = await run_skill_uninstall_operation(
+        loader,
+        lambda: installer,
+        skill_uninstall_request({"name": "planner"}),
+    )
+    update_missing_loader = await run_skills_update_operation(
+        None,
+        lambda: installer,
+        skills_update_request(None),
+    )
+    update_missing_installer = await run_skills_update_operation(
+        loader,
+        lambda: None,
+        skills_update_request(None),
+    )
+    uninstall_missing_installer = await run_skill_uninstall_operation(
+        loader,
+        lambda: None,
+        skill_uninstall_request({"name": "planner"}),
+    )
+
+    assert missing_loader.unavailable_message == "No skill loader configured"
+    assert missing_installer.unavailable_message == "No skill installer configured"
+    assert install_outcome.result is not None
+    assert update_outcome.unavailable_message == ""
+    assert uninstall_outcome.result is not None
+    assert update_missing_loader.unavailable_message == "No skill loader configured"
+    assert update_missing_loader.unavailable_payload == "empty_results"
+    assert update_missing_installer.unavailable_message == "No skill installer configured"
+    assert update_missing_installer.unavailable_payload == "unavailable"
+    assert (
+        uninstall_missing_installer.unavailable_message
+        == "No skill installer configured"
+    )
+    assert loader.invalidations == 3

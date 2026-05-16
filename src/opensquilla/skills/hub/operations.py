@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from opensquilla.skills.hub.installer import InstallResult, SkillInstaller
+
+SkillInstallerFactory = Callable[[], SkillInstaller | None]
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,23 @@ class SkillUpdateOutcome:
     """Result of updating managed Community skills."""
 
     results: list[InstallResult]
+    unavailable_message: str = ""
+    unavailable_payload: Literal["empty_results", "unavailable"] = "empty_results"
+
+
+@dataclass(frozen=True)
+class SkillInstallOutcome:
+    """Result of running the ``skills.install`` operation workflow."""
+
+    result: InstallResult | None = None
+    unavailable_message: str = ""
+
+
+@dataclass(frozen=True)
+class SkillUninstallOutcome:
+    """Result of running the ``skills.uninstall`` operation workflow."""
+
+    result: InstallResult | None = None
     unavailable_message: str = ""
 
 
@@ -83,6 +102,32 @@ async def install_skill(
     )
 
 
+def invalidate_skill_loader(loader: Any | None) -> None:
+    """Drop the skill loader's in-memory cache when one is configured."""
+
+    if loader is not None:
+        loader.invalidate_cache()
+
+
+async def run_skill_install_operation(
+    loader: Any | None,
+    installer_factory: SkillInstallerFactory,
+    request: SkillInstallRequest,
+) -> SkillInstallOutcome:
+    """Run ``skills.install`` with availability checks and cache invalidation."""
+
+    if loader is None:
+        return SkillInstallOutcome(unavailable_message="No skill loader configured")
+    installer = installer_factory()
+    if installer is None:
+        return SkillInstallOutcome(unavailable_message="No skill installer configured")
+
+    result = await install_skill(installer, request)
+    if result.success:
+        invalidate_skill_loader(loader)
+    return SkillInstallOutcome(result=result)
+
+
 async def update_skills(
     installer: SkillInstaller,
     request: SkillUpdateRequest,
@@ -98,6 +143,32 @@ async def update_skills(
         )
 
 
+async def run_skills_update_operation(
+    loader: Any | None,
+    installer_factory: SkillInstallerFactory,
+    request: SkillUpdateRequest,
+) -> SkillUpdateOutcome:
+    """Run ``skills.update`` with availability checks and cache invalidation."""
+
+    if loader is None:
+        return SkillUpdateOutcome(
+            results=[],
+            unavailable_message="No skill loader configured",
+        )
+    installer = installer_factory()
+    if installer is None:
+        return SkillUpdateOutcome(
+            results=[],
+            unavailable_message="No skill installer configured",
+            unavailable_payload="unavailable",
+        )
+
+    outcome = await update_skills(installer, request)
+    if any(result.success for result in outcome.results):
+        invalidate_skill_loader(loader)
+    return outcome
+
+
 async def uninstall_skill(
     installer: SkillInstaller,
     request: SkillUninstallRequest,
@@ -105,3 +176,20 @@ async def uninstall_skill(
     """Uninstall a managed Community skill from a validated operation request."""
 
     return await installer.uninstall(request.name)
+
+
+async def run_skill_uninstall_operation(
+    loader: Any | None,
+    installer_factory: SkillInstallerFactory,
+    request: SkillUninstallRequest,
+) -> SkillUninstallOutcome:
+    """Run ``skills.uninstall`` with availability checks and cache invalidation."""
+
+    installer = installer_factory()
+    if installer is None:
+        return SkillUninstallOutcome(unavailable_message="No skill installer configured")
+
+    result = await uninstall_skill(installer, request)
+    if result.success:
+        invalidate_skill_loader(loader)
+    return SkillUninstallOutcome(result=result)

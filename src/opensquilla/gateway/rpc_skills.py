@@ -14,12 +14,12 @@ from opensquilla.skills.hub.deps import (
     skill_deps_install_request,
 )
 from opensquilla.skills.hub.operations import (
-    install_skill,
+    run_skill_install_operation,
+    run_skill_uninstall_operation,
+    run_skills_update_operation,
     skill_install_request,
     skill_uninstall_request,
     skills_update_request,
-    uninstall_skill,
-    update_skills,
 )
 from opensquilla.skills.hub.search import search_skills, skill_search_request
 from opensquilla.skills.rpc_payload import (
@@ -82,65 +82,46 @@ async def _handle_skills_search(params: dict | None, ctx: RpcContext) -> dict[st
     return skills_search_rpc_payload(outcome.results, outcome.installed_names)
 
 
-def _invalidate_loader(ctx: RpcContext) -> None:
-    """Drop the loader's in-memory cache so the next read re-scans disk.
-
-    The disk snapshot has its own mtime/size manifest check, but the
-    in-memory ``_cached`` field is populated at boot and would otherwise
-    mask newly-installed (or removed) managed skills until the next
-    restart.
-    """
-    loader = _get_loader(ctx)
-    if loader is not None:
-        loader.invalidate_cache()
-
-
 @_d.method("skills.install", scope="operator.admin")
 async def _handle_skills_install(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     """Install a skill from a Community source."""
-    request = skill_install_request(params)
-    if _get_loader(ctx) is None:
-        return skill_install_unavailable_rpc_payload("No skill loader configured")
-
-    installer = _get_default_installer()
-    if installer is None:
-        return skill_install_unavailable_rpc_payload("No skill installer configured")
-
-    result = await install_skill(installer, request)
-    if result.success:
-        _invalidate_loader(ctx)
+    outcome = await run_skill_install_operation(
+        _get_loader(ctx),
+        _get_default_installer,
+        skill_install_request(params),
+    )
+    if outcome.result is None:
+        return skill_install_unavailable_rpc_payload(outcome.unavailable_message)
+    result = outcome.result
     return skill_install_result_rpc_payload(result)
 
 
 @_d.method("skills.update", scope="operator.admin")
 async def _handle_skills_update(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     """Update installed skills from lockfile."""
-    if _get_loader(ctx) is None:
-        return skills_update_empty_results_rpc_payload("No skill loader configured")
-    installer = _get_default_installer()
-    if installer is None:
-        return skills_update_unavailable_rpc_payload("No skill installer configured")
-
-    outcome = await update_skills(installer, skills_update_request(params))
+    outcome = await run_skills_update_operation(
+        _get_loader(ctx),
+        _get_default_installer,
+        skills_update_request(params),
+    )
     if outcome.unavailable_message:
+        if outcome.unavailable_payload == "unavailable":
+            return skills_update_unavailable_rpc_payload(outcome.unavailable_message)
         return skills_update_empty_results_rpc_payload(outcome.unavailable_message)
-    if any(r.success for r in outcome.results):
-        _invalidate_loader(ctx)
     return skills_update_results_rpc_payload(outcome.results)
 
 
 @_d.method("skills.uninstall", scope="operator.admin")
 async def _handle_skills_uninstall(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     """Uninstall a managed skill."""
-    request = skill_uninstall_request(params)
-
-    installer = _get_default_installer()
-    if installer is None:
-        return skill_uninstall_unavailable_rpc_payload("No skill installer configured")
-
-    result = await uninstall_skill(installer, request)
-    if result.success:
-        _invalidate_loader(ctx)
+    outcome = await run_skill_uninstall_operation(
+        _get_loader(ctx),
+        _get_default_installer,
+        skill_uninstall_request(params),
+    )
+    if outcome.result is None:
+        return skill_uninstall_unavailable_rpc_payload(outcome.unavailable_message)
+    result = outcome.result
     return skill_uninstall_result_rpc_payload(result)
 
 

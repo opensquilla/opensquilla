@@ -320,12 +320,30 @@ def session_context_compact_response(
     }
 
 
+def session_compact_response(
+    key: str,
+    result: dict[str, Any],
+    *,
+    receipt: Any | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "key": key,
+        "compacted": result["truncated"],
+        "before_count": result["before_count"],
+        "after_count": result["after_count"],
+    }
+    if receipt is not None:
+        payload["flush_receipt"] = receipt.to_dict()
+    return payload
+
+
 __all__ = [
     "active_task_summary",
     "enum_value",
     "last_task_summary",
     "messages_subscribe_response",
     "normalize_terminal_event_payload",
+    "session_compact_response",
     "session_context_compact_response",
     "session_create_response",
     "session_create_stub_response",

@@ -30,6 +30,7 @@ from opensquilla.session.keys import canonicalize_session_key, normalize_agent_i
 from opensquilla.session.rpc_payload import (
     messages_subscribe_response,
     normalize_terminal_event_payload,
+    session_compact_response,
     session_context_compact_response,
     session_create_response,
     session_create_stub_response,
@@ -1467,15 +1468,7 @@ async def _handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict
                 )
 
         result = await ctx.session_manager.truncate(key, max_messages=max_messages)
-        payload = {
-            "key": key,
-            "compacted": result["truncated"],
-            "before_count": result["before_count"],
-            "after_count": result["after_count"],
-        }
-        if receipt is not None:
-            payload["flush_receipt"] = receipt.to_dict()
-        return payload
+        return session_compact_response(key, result, receipt=receipt)
 
     if lock is None:
         return await _run_locked()

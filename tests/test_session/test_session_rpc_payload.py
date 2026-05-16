@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from opensquilla.session.rpc_payload import (
     messages_subscribe_response,
     normalize_terminal_event_payload,
+    session_compact_response,
     session_context_compact_response,
     session_create_response,
     session_create_stub_response,
@@ -350,4 +351,32 @@ def test_session_context_compact_response_marks_empty_result_not_compacted() -> 
         "summary_len": 0,
         "summary_source": "skipped",
         "context_window_tokens": 1234,
+    }
+
+
+def test_session_compact_response_owns_wire_shape() -> None:
+    assert session_compact_response(
+        "agent:main:webchat:abc123",
+        {"truncated": True, "before_count": 10, "after_count": 3},
+    ) == {
+        "key": "agent:main:webchat:abc123",
+        "compacted": True,
+        "before_count": 10,
+        "after_count": 3,
+    }
+
+
+def test_session_compact_response_includes_flush_receipt_when_available() -> None:
+    receipt = SimpleNamespace(to_dict=lambda: {"mode": "summary", "message_count": 10})
+
+    assert session_compact_response(
+        "agent:main:webchat:abc123",
+        {"truncated": True, "before_count": 10, "after_count": 3},
+        receipt=receipt,
+    ) == {
+        "key": "agent:main:webchat:abc123",
+        "compacted": True,
+        "before_count": 10,
+        "after_count": 3,
+        "flush_receipt": {"mode": "summary", "message_count": 10},
     }

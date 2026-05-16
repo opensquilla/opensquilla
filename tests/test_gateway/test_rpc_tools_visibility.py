@@ -127,7 +127,8 @@ async def test_tools_rpc_subagent_visibility_respects_principal_ownership(
 @pytest.mark.parametrize("method", ["tools.catalog", "tools.effective"])
 async def test_default_tools_rpc_hides_owner_only_tools_from_non_owner(method: str) -> None:
     import opensquilla.tools.builtin  # noqa: F401
-    from opensquilla.gateway.config import ImageGenerationConfig, LlmProviderConfig
+    from opensquilla.gateway.config import LlmProviderConfig
+    from opensquilla.provider.image_generation_config import ImageGenerationConfig
     from opensquilla.tools.builtin.media import configure_image_generation
     from opensquilla.tools.registry import get_default_registry
 

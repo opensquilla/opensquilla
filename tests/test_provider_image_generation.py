@@ -79,7 +79,7 @@ async def test_openrouter_image_provider_adds_app_attribution_headers(monkeypatc
 async def test_image_generate_auto_publishes_generated_image_artifact_for_surfaces(
     monkeypatch, tmp_path, caller_kind
 ) -> None:
-    from opensquilla.gateway.config import ImageGenerationConfig
+    from opensquilla.provider.image_generation_config import ImageGenerationConfig
     from opensquilla.tools.builtin import media
     from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
@@ -136,7 +136,7 @@ async def test_image_generate_auto_publishes_generated_image_artifact_for_surfac
 async def test_image_generate_does_not_auto_publish_artifact_for_subagent(
     monkeypatch, tmp_path
 ) -> None:
-    from opensquilla.gateway.config import ImageGenerationConfig
+    from opensquilla.provider.image_generation_config import ImageGenerationConfig
     from opensquilla.tools.builtin import media
     from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
@@ -183,7 +183,8 @@ def test_image_generation_reuses_llm_key_only_after_capability_is_enabled(monkey
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
-    from opensquilla.gateway.config import ImageGenerationConfig, LlmProviderConfig
+    from opensquilla.gateway.config import LlmProviderConfig
+    from opensquilla.provider.image_generation_config import ImageGenerationConfig
     from opensquilla.tools.builtin.media import (
         _resolve_image_generation_candidates,
         configure_image_generation,
@@ -216,7 +217,7 @@ def test_image_generation_uses_provider_specific_api_key(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
-    from opensquilla.gateway.config import (
+    from opensquilla.provider.image_generation_config import (
         ImageGenerationConfig,
         ImageGenerationOpenAIProviderConfig,
         ImageGenerationProvidersConfig,
@@ -246,7 +247,8 @@ def test_image_generation_nondefault_primary_does_not_auto_add_llm_provider(monk
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
-    from opensquilla.gateway.config import ImageGenerationConfig, LlmProviderConfig
+    from opensquilla.gateway.config import LlmProviderConfig
+    from opensquilla.provider.image_generation_config import ImageGenerationConfig
     from opensquilla.tools.builtin.media import (
         _resolve_image_generation_candidates,
         configure_image_generation,
@@ -287,7 +289,8 @@ def test_image_generation_capability_exposes_agent_tool_when_configured(monkeypa
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     from opensquilla.engine.runtime import TurnRunner
-    from opensquilla.gateway.config import ImageGenerationConfig, LlmProviderConfig
+    from opensquilla.gateway.config import LlmProviderConfig
+    from opensquilla.provider.image_generation_config import ImageGenerationConfig
     from opensquilla.tools.builtin.media import configure_image_generation
     from opensquilla.tools.registry import get_default_registry
     from opensquilla.tools.types import CallerKind, ToolContext
@@ -315,7 +318,8 @@ def test_image_generation_capability_does_not_expose_agent_tool_when_disabled(
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     from opensquilla.engine.runtime import TurnRunner
-    from opensquilla.gateway.config import ImageGenerationConfig, LlmProviderConfig
+    from opensquilla.gateway.config import LlmProviderConfig
+    from opensquilla.provider.image_generation_config import ImageGenerationConfig
     from opensquilla.tools.builtin.media import configure_image_generation
     from opensquilla.tools.registry import get_default_registry
     from opensquilla.tools.types import CallerKind, ToolContext

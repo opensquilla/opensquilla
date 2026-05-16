@@ -28,6 +28,7 @@ from opensquilla.provider.image_generation import (
     parse_image_generation_model_ref,
     reset_image_generation_providers,
 )
+from opensquilla.provider.image_generation_config import ImageGenerationConfig
 from opensquilla.tools.registry import tool
 from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import (
@@ -443,8 +444,6 @@ def _publish_generated_image_artifact(target: Path, mime_type: str) -> dict[str,
 def _resolve_image_generation_config() -> Any:
     if _image_generation_config is not None:
         return _image_generation_config
-    from opensquilla.gateway.config import ImageGenerationConfig
-
     return ImageGenerationConfig()
 
 

@@ -57,6 +57,18 @@ from opensquilla.channels.entries import (
     WeComChannelEntry as WeComChannelEntry,
 )
 from opensquilla.paths import default_opensquilla_home
+from opensquilla.provider.image_generation_config import (
+    ImageGenerationConfig as ImageGenerationConfig,
+)
+from opensquilla.provider.image_generation_config import (
+    ImageGenerationOpenAIProviderConfig as ImageGenerationOpenAIProviderConfig,
+)
+from opensquilla.provider.image_generation_config import (
+    ImageGenerationOpenRouterProviderConfig as ImageGenerationOpenRouterProviderConfig,
+)
+from opensquilla.provider.image_generation_config import (
+    ImageGenerationProvidersConfig as ImageGenerationProvidersConfig,
+)
 from opensquilla.sandbox.config import SandboxSettings
 
 
@@ -1147,44 +1159,6 @@ class HeartbeatConfig(BaseSettings):
         if not isinstance(value, str) or not value.strip():
             raise ValueError("target must be a non-empty string")
         return value.strip()
-
-
-class ImageGenerationOpenAIProviderConfig(BaseModel):
-    base_url: str = "https://api.openai.com/v1"
-    api_key: str = ""
-    api_key_env: str = "OPENAI_API_KEY"
-
-
-class ImageGenerationOpenRouterProviderConfig(BaseModel):
-    base_url: str = "https://openrouter.ai/api/v1"
-    api_key: str = ""
-    api_key_env: str = "OPENROUTER_API_KEY"
-
-
-class ImageGenerationProvidersConfig(BaseModel):
-    openai: ImageGenerationOpenAIProviderConfig = Field(
-        default_factory=ImageGenerationOpenAIProviderConfig
-    )
-    openrouter: ImageGenerationOpenRouterProviderConfig = Field(
-        default_factory=ImageGenerationOpenRouterProviderConfig
-    )
-
-
-class ImageGenerationConfig(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_prefix="OPENSQUILLA_IMAGE_GENERATION_",
-        env_nested_delimiter="__",
-    )
-
-    enabled: bool = False
-    primary: str = "openai/gpt-image-1"
-    fallbacks: list[str] = Field(default_factory=list)
-    size: str = "1024x1024"
-    timeout_seconds: float = 180.0
-    output_format: Literal["png", "jpeg", "webp"] = "png"
-    providers: ImageGenerationProvidersConfig = Field(
-        default_factory=ImageGenerationProvidersConfig
-    )
 
 
 class ChannelsConfig(BaseModel):

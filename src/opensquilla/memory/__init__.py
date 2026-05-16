@@ -41,6 +41,13 @@ from .source_paths import (
     is_raw_fallback_save_path,
     private_archive_error,
 )
+from .source_search import (
+    MEMORY_SOURCE_SEARCH_DEFAULT_RESULTS,
+    MEMORY_SOURCE_SEARCH_MAX_RESULTS,
+    MemorySourceSearchRow,
+    memory_source_search_row,
+    search_memory_sources,
+)
 from .store import LongTermMemoryStore
 from .sync_manager import MemorySyncManager, SessionDeltaTracker
 from .sync_manager import MemorySyncManager as MemoryFileWatcher
@@ -99,6 +106,12 @@ __all__ = [
     "is_memory_source_path",
     "is_raw_fallback_save_path",
     "private_archive_error",
+    # source search
+    "MEMORY_SOURCE_SEARCH_DEFAULT_RESULTS",
+    "MEMORY_SOURCE_SEARCH_MAX_RESULTS",
+    "MemorySourceSearchRow",
+    "memory_source_search_row",
+    "search_memory_sources",
     # source inspection
     "MEMORY_SOURCE_MAX_SHOW_CHARS",
     "MEMORY_SOURCE_MAX_SHOW_FILE_BYTES",

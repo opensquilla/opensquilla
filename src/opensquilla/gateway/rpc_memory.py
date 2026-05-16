@@ -13,7 +13,12 @@ from opensquilla.memory.source_inspection import (
     list_memory_source_rows,
     read_memory_source_content,
 )
-from opensquilla.memory.types import MemorySearchOpts, SearchIntent
+from opensquilla.memory.source_search import (
+    MEMORY_SOURCE_SEARCH_DEFAULT_RESULTS,
+    MEMORY_SOURCE_SEARCH_MAX_RESULTS,
+    MemorySourceSearchRow,
+    search_memory_sources,
+)
 from opensquilla.session.keys import normalize_agent_id
 
 _d = get_dispatcher()
@@ -50,21 +55,19 @@ def _int_param(
     return number
 
 
-def _result_to_wire(result: Any) -> dict[str, Any]:
-    source = getattr(result, "source", "")
-    source_value = getattr(source, "value", source)
+def _memory_source_search_row_to_wire(row: MemorySourceSearchRow) -> dict[str, Any]:
     return {
-        "chunkId": getattr(result, "chunk_id", ""),
-        "path": getattr(result, "path", ""),
-        "source": str(source_value),
-        "startLine": getattr(result, "start_line", 0),
-        "endLine": getattr(result, "end_line", 0),
-        "snippet": getattr(result, "snippet", ""),
-        "score": getattr(result, "score", 0.0),
-        "vectorScore": getattr(result, "vector_score", None),
-        "textScore": getattr(result, "text_score", None),
-        "chunkHash": getattr(result, "chunk_hash", None),
-        "citation": getattr(result, "citation", None),
+        "chunkId": row.chunk_id,
+        "path": row.path,
+        "source": row.source,
+        "startLine": row.start_line,
+        "endLine": row.end_line,
+        "snippet": row.snippet,
+        "score": row.score,
+        "vectorScore": row.vector_score,
+        "textScore": row.text_score,
+        "chunkHash": row.chunk_hash,
+        "citation": row.citation,
     }
 
 
@@ -105,16 +108,21 @@ async def _handle_memory_search(params: dict | None, ctx: RpcContext) -> dict[st
     query = str(params.get("query") or "").strip()
     if not query:
         raise ValueError("params.query is required")
-    limit = _int_param(params, "limit", 10, minimum=1, maximum=20)
+    limit = _int_param(
+        params,
+        "limit",
+        MEMORY_SOURCE_SEARCH_DEFAULT_RESULTS,
+        minimum=1,
+        maximum=MEMORY_SOURCE_SEARCH_MAX_RESULTS,
+    )
     try:
         min_score = float(params.get("minScore", 0.0) or 0.0)
     except (TypeError, ValueError) as exc:
         raise ValueError("params.minScore must be a number") from exc
 
     agent_id, manager = _require_memory_manager(ctx, params.get("agentId"))
-    opts = MemorySearchOpts(max_results=limit, min_score=min_score)
-    results = await manager.search(query, opts, intent=SearchIntent.ADMIN)
-    rows = [_result_to_wire(result) for result in results]
+    results = await search_memory_sources(manager, query, max_results=limit, min_score=min_score)
+    rows = [_memory_source_search_row_to_wire(row) for row in results]
     return {"agentId": agent_id, "query": query, "count": len(rows), "results": rows}
 
 

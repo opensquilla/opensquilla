@@ -43,6 +43,7 @@ from opensquilla.session.rpc_payload import (
     session_preview_row,
     session_reset_response,
     session_resolve_response,
+    session_send_accepted_response,
 )
 
 _d = get_dispatcher()
@@ -762,7 +763,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                     await _store.evict(_u)
                 except Exception:  # noqa: BLE001 — eviction is best-effort
                     log.warning("uploads.evict_failed_post_turn uuid=%s", _u[:8])
-        return {"status": "accepted", "key": key, "task_id": handle.task_id}
+        return session_send_accepted_response(key, task_id=handle.task_id)
 
     # 2. Run agent turn in background via TurnRunner
     async def _run() -> None:
@@ -909,7 +910,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 await _store.evict(_u)
             except Exception:  # noqa: BLE001 — eviction is best-effort
                 log.warning("uploads.evict_failed_post_turn uuid=%s", _u[:8])
-    return {"status": "accepted", "key": key}
+    return session_send_accepted_response(key)
 
 
 async def _emit_to_subscribers(

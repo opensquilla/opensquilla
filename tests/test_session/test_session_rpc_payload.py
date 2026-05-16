@@ -19,6 +19,7 @@ from opensquilla.session.rpc_payload import (
     session_preview_row,
     session_reset_response,
     session_resolve_response,
+    session_send_accepted_response,
     task_state_summary,
 )
 
@@ -183,6 +184,21 @@ def test_normalize_terminal_event_payload_prefers_error_message_and_reason() -> 
     assert payload["terminal_message"] == "The task failed before it could finish."
     assert payload["terminal_reason"] == "model_error"
     assert payload["error_message"] == "inner failure"
+
+
+def test_session_send_accepted_response_owns_wire_shape() -> None:
+    assert session_send_accepted_response("agent:main:webchat:abc123") == {
+        "status": "accepted",
+        "key": "agent:main:webchat:abc123",
+    }
+    assert session_send_accepted_response(
+        "agent:main:webchat:abc123",
+        task_id="task-123",
+    ) == {
+        "status": "accepted",
+        "key": "agent:main:webchat:abc123",
+        "task_id": "task-123",
+    }
 
 
 def test_session_preview_row_uses_display_title_and_last_chat_message() -> None:

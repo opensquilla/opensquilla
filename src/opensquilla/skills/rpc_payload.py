@@ -213,6 +213,20 @@ def skill_uninstall_result_rpc_payload(result: Any) -> dict[str, Any]:
     return _skill_result_rpc_payload(result)
 
 
+def skill_deps_install_result_rpc_payload(
+    result: Any,
+    missing_still: Mapping[str, list[str]],
+) -> dict[str, Any]:
+    """Build the RPC wire payload for ``skills.deps.install`` results."""
+
+    return {
+        "success": result.success,
+        "kind": result.kind,
+        "message": result.message,
+        "missing_still": dict(missing_still),
+    }
+
+
 def skill_get_rpc_payload(params: Mapping[str, Any] | None, loader: Any | None) -> dict[str, Any]:
     """Build the RPC wire payload for ``skills.get``."""
 
@@ -260,6 +274,7 @@ def skill_missing_requirements_rpc_payload(skill: Any) -> dict[str, list[str]]:
 
 
 __all__ = [
+    "skill_deps_install_result_rpc_payload",
     "skill_get_rpc_payload",
     "skill_install_result_rpc_payload",
     "skill_install_unavailable_rpc_payload",

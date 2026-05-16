@@ -187,6 +187,27 @@ def test_web_group_can_surface_owner_only_http_request_for_owner_only() -> None:
     assert "http_request" not in non_owner_names
 
 
+def test_tool_surface_capabilities_can_be_built_from_runtime_dependencies() -> None:
+    from opensquilla.tools.policy import tool_surface_capabilities_from_runtime
+
+    caps = tool_surface_capabilities_from_runtime(
+        session_manager=object(),
+        task_runtime=None,
+        scheduler=object(),
+        gateway_config=object(),
+        channel_manager=None,
+        originating_envelope=object(),
+        image_generation=False,
+    )
+
+    assert caps.session_manager is True
+    assert caps.task_runtime is False
+    assert caps.scheduler is True
+    assert caps.gateway_config is True
+    assert caps.channel_backing is True
+    assert caps.image_generation is False
+
+
 @pytest.mark.asyncio
 async def test_list_tools_uses_visible_helper_and_stable_sorting() -> None:
     registry = ToolRegistry()

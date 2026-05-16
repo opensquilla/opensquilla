@@ -67,6 +67,42 @@ class ToolSurfaceCapabilities:
     channel_backing: bool = False
     image_generation: bool = True
 
+
+def _detect_image_generation_capability() -> bool:
+    try:
+        from opensquilla.provider.image_generation_runtime import image_generation_available
+
+        return image_generation_available()
+    except Exception:
+        return False
+
+
+def tool_surface_capabilities_from_runtime(
+    *,
+    session_manager: object | None = None,
+    task_runtime: object | None = None,
+    scheduler: object | None = None,
+    gateway_config: object | None = None,
+    channel_manager: object | None = None,
+    originating_envelope: object | None = None,
+    image_generation: bool | None = None,
+) -> ToolSurfaceCapabilities:
+    """Build tool-surface capabilities from injected runtime dependencies."""
+
+    return ToolSurfaceCapabilities(
+        session_manager=session_manager is not None,
+        task_runtime=task_runtime is not None,
+        scheduler=scheduler is not None,
+        gateway_config=gateway_config is not None,
+        channel_backing=channel_manager is not None or originating_envelope is not None,
+        image_generation=(
+            _detect_image_generation_capability()
+            if image_generation is None
+            else image_generation
+        ),
+    )
+
+
 _TOOL_PROFILES: Mapping[str, frozenset[str] | None] = {
     "full": None,
     "minimal": frozenset({"session_status"}),
@@ -304,9 +340,7 @@ def detect_runtime_tool_surface_capabilities(
     except Exception:
         pass
     try:
-        from opensquilla.provider.image_generation_runtime import image_generation_available
-
-        image_generation = image_generation_available()
+        image_generation = _detect_image_generation_capability()
     except Exception:
         image_generation = False
     return ToolSurfaceCapabilities(

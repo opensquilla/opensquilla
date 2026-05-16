@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
-from opensquilla.provider.image_generation_runtime import image_generation_available
 from opensquilla.provider.runtime_status import (
     ProviderModelProbe,
     ProviderStatusRow,
@@ -13,27 +12,23 @@ from opensquilla.provider.runtime_status import (
 )
 from opensquilla.search.execution import run_search_payload, search_runtime_status
 from opensquilla.search.runtime import get_active_provider
-from opensquilla.tools.policy import ToolSurfaceCapabilities
+from opensquilla.tools.policy import (
+    ToolSurfaceCapabilities,
+    tool_surface_capabilities_from_runtime,
+)
 from opensquilla.tools.registry import get_default_registry
 
 _d = get_dispatcher()
 
 
 def _tool_surface_capabilities(ctx: RpcContext) -> ToolSurfaceCapabilities:
-    try:
-        image_generation = image_generation_available()
-    except Exception:
-        image_generation = False
-    return ToolSurfaceCapabilities(
-        session_manager=getattr(ctx, "session_manager", None) is not None,
-        task_runtime=getattr(ctx, "task_runtime", None) is not None,
-        scheduler=getattr(ctx, "cron_scheduler", None) is not None,
-        gateway_config=getattr(ctx, "config", None) is not None,
-        channel_backing=(
-            getattr(ctx, "channel_manager", None) is not None
-            or getattr(ctx, "originating_envelope", None) is not None
-        ),
-        image_generation=image_generation,
+    return tool_surface_capabilities_from_runtime(
+        session_manager=getattr(ctx, "session_manager", None),
+        task_runtime=getattr(ctx, "task_runtime", None),
+        scheduler=getattr(ctx, "cron_scheduler", None),
+        gateway_config=getattr(ctx, "config", None),
+        channel_manager=getattr(ctx, "channel_manager", None),
+        originating_envelope=getattr(ctx, "originating_envelope", None),
     )
 
 

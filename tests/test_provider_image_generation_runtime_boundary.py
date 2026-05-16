@@ -62,7 +62,22 @@ def test_gateway_reads_image_generation_capability_from_runtime_boundary() -> No
     assert (
         "opensquilla.provider.image_generation_runtime",
         "image_generation_available",
+    ) not in _imports_from(RPC_TOOLS)
+    assert (
+        "opensquilla.tools.policy",
+        "tool_surface_capabilities_from_runtime",
     ) in _imports_from(RPC_TOOLS)
+    assert (
+        "opensquilla.provider.image_generation_runtime",
+        "image_generation_available",
+    ) in _imports_from(TOOLS_POLICY)
+    assert (
+        "opensquilla.tools.builtin.media",
+        "image_generation_available",
+    ) not in _imports_from(TOOLS_POLICY)
+
+
+def test_tools_policy_owns_image_generation_capability_detection() -> None:
     assert (
         "opensquilla.provider.image_generation_runtime",
         "image_generation_available",
@@ -81,4 +96,3 @@ def test_media_compat_wrappers_delegate_to_image_runtime() -> None:
     )
 
     image_generation_runtime.configure_image_generation(None)
-

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from opensquilla.session.rpc_payload import (
     messages_subscribe_response,
     normalize_terminal_event_payload,
+    session_create_response,
+    session_create_stub_response,
     session_list_row,
     session_preview_last_message,
     session_preview_row,
@@ -231,4 +233,28 @@ def test_session_resolve_response_owns_wire_shape() -> None:
         "model": "gpt-test",
         "created_at": 1000,
         "updated_at": 2000,
+    }
+
+
+def test_session_create_stub_response_owns_no_manager_wire_shape() -> None:
+    payload = session_create_stub_response("agent:ops:webchat:abc123")
+
+    assert payload == {
+        "key": "agent:ops:webchat:abc123",
+        "sessionId": "abc123",
+        "note": "session manager not available",
+    }
+
+
+def test_session_create_response_owns_created_session_wire_shape() -> None:
+    session = SimpleNamespace(session_key="agent:ops:cli:abc123", session_id="abc123")
+
+    assert session_create_response(session) == {
+        "key": "agent:ops:cli:abc123",
+        "sessionId": "abc123",
+    }
+    assert session_create_response(session, seeded_message=True) == {
+        "key": "agent:ops:cli:abc123",
+        "sessionId": "abc123",
+        "seededMessage": True,
     }

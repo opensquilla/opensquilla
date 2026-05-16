@@ -335,6 +335,37 @@ class TestSessionsCreate:
         assert res.payload["key"].startswith("agent:myagent:")
         assert "sessionId" in res.payload
 
+    def test_gateway_create_delegates_payload_to_session_boundary(self):
+        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imports = {
+            (node.module, alias.name)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        handler = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_sessions_create"
+        )
+        handler_constants = {
+            node.value for node in ast.walk(handler) if isinstance(node, ast.Constant)
+        }
+
+        assert ("opensquilla.session.rpc_payload", "session_create_response") in imports
+        assert ("opensquilla.session.rpc_payload", "session_create_stub_response") in imports
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_create_response"
+            for node in ast.walk(handler)
+        )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_create_stub_response"
+            for node in ast.walk(handler)
+        )
+        assert "sessionId" not in handler_constants
+        assert "seededMessage" not in handler_constants
+
     @pytest.mark.asyncio
     async def test_create_defaults(self, dispatcher, ctx_no_manager):
         res = await dispatcher.dispatch("r1", "sessions.create", None, ctx_no_manager)

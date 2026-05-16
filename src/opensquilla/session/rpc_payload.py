@@ -253,12 +253,33 @@ def session_resolve_response(session: Any) -> dict[str, Any]:
     }
 
 
+def session_create_stub_response(
+    key: str,
+    *,
+    note: str = "session manager not available",
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "sessionId": key.rsplit(":", 1)[-1],
+        "note": note,
+    }
+
+
+def session_create_response(session: Any, *, seeded_message: bool = False) -> dict[str, Any]:
+    response = {"key": session.session_key, "sessionId": session.session_id}
+    if seeded_message:
+        response["seededMessage"] = True
+    return response
+
+
 __all__ = [
     "active_task_summary",
     "enum_value",
     "last_task_summary",
     "messages_subscribe_response",
     "normalize_terminal_event_payload",
+    "session_create_response",
+    "session_create_stub_response",
     "session_list_row",
     "session_preview_last_message",
     "session_preview_row",

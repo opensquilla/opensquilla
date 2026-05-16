@@ -30,6 +30,8 @@ from opensquilla.session.keys import canonicalize_session_key, normalize_agent_i
 from opensquilla.session.rpc_payload import (
     messages_subscribe_response,
     normalize_terminal_event_payload,
+    session_create_response,
+    session_create_stub_response,
     session_list_row,
     session_preview_row,
     session_resolve_response,
@@ -494,11 +496,7 @@ async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
         if message:
             raise RpcUnavailableError("sessions.create(message=...) requires a session manager")
         key = _create_session_key(agent_id, kind)
-        return {
-            "key": key,
-            "sessionId": key.rsplit(":", 1)[-1],
-            "note": "session manager not available",
-        }
+        return session_create_stub_response(key)
 
     session = await ctx.session_manager.create(
         session_key=_create_session_key(agent_id, kind),
@@ -506,7 +504,7 @@ async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
         display_name=display_name,
         model=model,
     )
-    result = {"key": session.session_key, "sessionId": session.session_id}
+    seeded_message = False
 
     if message:
         _persisted = await ctx.session_manager.append_message(
@@ -516,9 +514,9 @@ async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
         )
         if _persisted is not None and isinstance(_persisted.content, str):
             message = _persisted.content
-        result["seededMessage"] = True
+        seeded_message = True
 
-    return result
+    return session_create_response(session, seeded_message=seeded_message)
 
 
 @_d.method("sessions.send", scope="operator.write")

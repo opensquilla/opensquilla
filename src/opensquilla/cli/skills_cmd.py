@@ -22,16 +22,11 @@ from opensquilla.cli.skills_local_mutations import (
 )
 from opensquilla.cli.skills_rows import load_skill_rows
 from opensquilla.cli.skills_search_rows import search_skill_rows
+from opensquilla.cli.skills_taps import add_skill_tap, list_skill_taps, remove_skill_tap
 from opensquilla.cli.ui import console
 from opensquilla.skills.hub.operations import (
-    add_tap,
-    default_taps_manager_factory,
-    list_taps,
     publish_skill_from_request,
-    remove_tap,
     skill_publish_request,
-    tap_add_request,
-    tap_remove_request,
 )
 
 skills_app = typer.Typer(help="Skill management - list, search, install, uninstall.")
@@ -399,8 +394,7 @@ skills_app.add_typer(tap_app, name="tap")
 def tap_add(owner_repo: str = typer.Argument(..., help="GitHub owner/repo")) -> None:
     """Add a custom skill source tap."""
     try:
-        manager = default_taps_manager_factory()
-        tap = add_tap(manager, tap_add_request({"owner_repo": owner_repo}))
+        tap = add_skill_tap(owner_repo)
         console.print(f"[green]Added tap:[/] {tap.full_name} ({tap.url})")
     except ValueError as e:
         console.print(f"[red]Error:[/] {e}")
@@ -409,8 +403,7 @@ def tap_add(owner_repo: str = typer.Argument(..., help="GitHub owner/repo")) -> 
 @tap_app.command("list")
 def tap_list() -> None:
     """List registered taps."""
-    manager = default_taps_manager_factory()
-    taps = list_taps(manager)
+    taps = list_skill_taps()
     if not taps:
         console.print("[dim]No taps registered.[/]")
         return
@@ -421,8 +414,7 @@ def tap_list() -> None:
 @tap_app.command("remove")
 def tap_remove(owner_repo: str = typer.Argument(..., help="GitHub owner/repo")) -> None:
     """Remove a tap."""
-    manager = default_taps_manager_factory()
-    if remove_tap(manager, tap_remove_request({"owner_repo": owner_repo})):
+    if remove_skill_tap(owner_repo):
         console.print(f"[green]Removed:[/] {owner_repo}")
     else:
         console.print(f"[yellow]Not found:[/] {owner_repo}")

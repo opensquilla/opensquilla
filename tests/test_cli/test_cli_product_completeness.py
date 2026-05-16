@@ -720,8 +720,57 @@ def test_cli_skills_install_fallback_uses_local_mutation_boundary() -> None:
     assert "uninstall_skill" not in imported_names
 
 
-def test_skills_tap_commands_delegate_to_hub_tap_operations(monkeypatch):
+def test_skills_tap_commands_delegate_to_cli_tap_boundary(monkeypatch):
     from opensquilla.cli import skills_cmd
+
+    calls: list[tuple[str, object]] = []
+
+    def fake_add_skill_tap(owner_repo: str) -> SimpleNamespace:
+        calls.append(("add", owner_repo))
+        return SimpleNamespace(full_name="acme/tap", url="https://example.test/acme/tap")
+
+    def fake_list_skill_taps() -> list[SimpleNamespace]:
+        calls.append(("list", None))
+        return [
+            SimpleNamespace(
+                full_name="acme/tap",
+                url="https://example.test/acme/tap",
+                added_at="2026-05-17T00:00:00Z",
+            )
+        ]
+
+    def fake_remove_skill_tap(owner_repo: str) -> bool:
+        calls.append(("remove", owner_repo))
+        return True
+
+    monkeypatch.setattr(skills_cmd, "add_skill_tap", fake_add_skill_tap)
+    monkeypatch.setattr(skills_cmd, "list_skill_taps", fake_list_skill_taps)
+    monkeypatch.setattr(skills_cmd, "remove_skill_tap", fake_remove_skill_tap)
+
+    add = runner.invoke(app, ["skills", "tap", "add", "acme/tap"])
+    listed = runner.invoke(app, ["skills", "tap", "list"])
+    removed = runner.invoke(app, ["skills", "tap", "remove", "acme/tap"])
+
+    assert add.exit_code == 0, add.stdout
+    assert listed.exit_code == 0, listed.stdout
+    assert removed.exit_code == 0, removed.stdout
+    assert "acme/tap" in add.stdout
+    assert "acme/tap" in listed.stdout
+    assert "Removed" in removed.stdout
+    assert calls == [
+        ("add", "acme/tap"),
+        ("list", None),
+        ("remove", "acme/tap"),
+    ]
+
+
+def test_cli_skill_taps_use_hub_tap_operations(monkeypatch):
+    from opensquilla.cli.skills_taps import (
+        add_skill_tap,
+        list_skill_taps,
+        remove_skill_tap,
+    )
+    from opensquilla.skills.hub import operations as hub_operations
 
     manager = object()
     calls: list[tuple[str, object]] = []
@@ -752,34 +801,31 @@ def test_skills_tap_commands_delegate_to_hub_tap_operations(monkeypatch):
         return True
 
     monkeypatch.setattr(
-        skills_cmd,
+        hub_operations,
         "default_taps_manager_factory",
         fake_taps_manager_factory,
     )
-    monkeypatch.setattr(skills_cmd, "add_tap", fake_add_tap)
-    monkeypatch.setattr(skills_cmd, "list_taps", fake_list_taps)
-    monkeypatch.setattr(skills_cmd, "remove_tap", fake_remove_tap)
+    monkeypatch.setattr(hub_operations, "add_tap", fake_add_tap)
+    monkeypatch.setattr(hub_operations, "list_taps", fake_list_taps)
+    monkeypatch.setattr(hub_operations, "remove_tap", fake_remove_tap)
     monkeypatch.setattr(
-        skills_cmd,
+        hub_operations,
         "tap_add_request",
         lambda params: ("add", params),
     )
     monkeypatch.setattr(
-        skills_cmd,
+        hub_operations,
         "tap_remove_request",
         lambda params: ("remove", params),
     )
 
-    add = runner.invoke(app, ["skills", "tap", "add", "acme/tap"])
-    listed = runner.invoke(app, ["skills", "tap", "list"])
-    removed = runner.invoke(app, ["skills", "tap", "remove", "acme/tap"])
+    added = add_skill_tap("acme/tap")
+    taps = list_skill_taps()
+    removed = remove_skill_tap("acme/tap")
 
-    assert add.exit_code == 0, add.stdout
-    assert listed.exit_code == 0, listed.stdout
-    assert removed.exit_code == 0, removed.stdout
-    assert "acme/tap" in add.stdout
-    assert "acme/tap" in listed.stdout
-    assert "Removed" in removed.stdout
+    assert added.full_name == "acme/tap"
+    assert taps[0].full_name == "acme/tap"
+    assert removed is True
     assert calls == [
         ("factory", None),
         ("add", ("add", {"owner_repo": "acme/tap"})),
@@ -797,8 +843,21 @@ def test_cli_skills_tap_does_not_import_taps_boundary() -> None:
     imported_modules = {
         node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
     }
+    imported_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.skills.hub.operations"
+        for alias in node.names
+    }
 
     assert "opensquilla.skills.hub.taps" not in imported_modules
+    assert "default_taps_manager_factory" not in imported_names
+    assert "add_tap" not in imported_names
+    assert "list_taps" not in imported_names
+    assert "remove_tap" not in imported_names
+    assert "tap_add_request" not in imported_names
+    assert "tap_remove_request" not in imported_names
     assert not any(
         isinstance(node, ast.Name) and node.id == "TapsManager"
         for node in ast.walk(tree)

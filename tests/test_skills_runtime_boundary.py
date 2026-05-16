@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL_TOOLS = ROOT / "src/opensquilla/tools/builtin/skill_tools.py"
 BOOT = ROOT / "src/opensquilla/gateway/boot.py"
 CLI_SKILLS = ROOT / "src/opensquilla/cli/skills_cmd.py"
+CLI_SKILLS_ROWS = ROOT / "src/opensquilla/cli/skills_rows.py"
 SKILLS_INIT = ROOT / "src/opensquilla/skills/__init__.py"
 
 
@@ -99,7 +100,7 @@ def test_boot_delegates_skill_loader_construction_to_skills_runtime() -> None:
 
 
 def test_cli_delegates_skill_loader_construction_to_skills_runtime() -> None:
-    imports = _runtime_imports_from(CLI_SKILLS)
+    imports = _runtime_imports_from(CLI_SKILLS_ROWS)
 
     assert ("opensquilla.skills.runtime", "create_configured_skill_loader") in imports
     assert ("opensquilla.skills.loader", "SkillLoader") not in imports

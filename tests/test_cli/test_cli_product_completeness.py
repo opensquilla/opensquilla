@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from opensquilla.cli.main import app
@@ -248,6 +249,135 @@ def test_skills_search_delegates_to_hub_search_boundary(monkeypatch):
     assert payload[0]["source_id"] == "clawhub"
 
 
+def test_skills_list_delegates_to_cli_rows_boundary(monkeypatch):
+    from opensquilla.cli import skills_cmd
+
+    calls: list[str] = []
+
+    def fake_load_skill_rows() -> list[dict[str, object]]:
+        calls.append("load")
+        return [
+            {
+                "name": "planner",
+                "layer": "bundled",
+                "eligible": True,
+                "description": "Plan work",
+                "always": False,
+                "triggers": ["plan"],
+                "path": "",
+                "filePath": "/skills/planner/SKILL.md",
+                "baseDir": "/skills/planner",
+                "homepage": "https://example.test/planner",
+                "userInvocable": True,
+                "disableModelInvocation": False,
+                "provenance": {
+                    "origin": "opensquilla-original",
+                    "license": "Apache-2.0",
+                    "upstreamUrl": "",
+                    "maintainedBy": "OpenSquilla",
+                },
+            }
+        ]
+
+    monkeypatch.setattr(skills_cmd, "load_skill_rows", fake_load_skill_rows)
+
+    result = runner.invoke(app, ["skills", "list", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload[0]["name"] == "planner"
+    assert calls == ["load"]
+
+
+def test_cli_skill_rows_use_configured_loader_and_eligibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.skills_rows import load_skill_rows
+    from opensquilla.gateway import config as gateway_config
+    from opensquilla.skills import eligibility, runtime
+
+    calls: list[tuple[str, object]] = []
+    ctx = object()
+
+    skill = SimpleNamespace(
+        name="planner",
+        layer=SimpleNamespace(value="bundled"),
+        description="Plan work",
+        always=False,
+        triggers=["plan"],
+        path=None,
+        file_path="/skills/planner/SKILL.md",
+        base_dir="/skills/planner",
+        homepage="https://example.test/planner",
+        user_invocable=True,
+        disable_model_invocation=False,
+        provenance=SimpleNamespace(
+            origin="opensquilla-original",
+            license="Apache-2.0",
+            upstream_url="https://example.test/upstream",
+            maintained_by="OpenSquilla",
+        ),
+    )
+
+    class FakeLoader:
+        def load_all(self) -> list[SimpleNamespace]:
+            calls.append(("load_all", None))
+            return [skill]
+
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", "/tmp/config.toml")
+    monkeypatch.setattr(
+        gateway_config.GatewayConfig,
+        "load",
+        staticmethod(
+            lambda path: (
+                calls.append(("config", path))
+                or SimpleNamespace(
+                    skills=SimpleNamespace(enabled=True),
+                    workspace_dir="/tmp/ws",
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "create_configured_skill_loader",
+        lambda skills_config, *, workspace_dir: (
+            calls.append(("runtime", (skills_config.enabled, workspace_dir)))
+            or SimpleNamespace(loader=FakeLoader())
+        ),
+    )
+    monkeypatch.setattr(
+        eligibility.EligibilityContext,
+        "auto",
+        staticmethod(lambda: calls.append(("ctx", None)) or ctx),
+    )
+    monkeypatch.setattr(
+        eligibility,
+        "check_eligibility",
+        lambda actual_skill, actual_ctx: (
+            calls.append(("eligible", (actual_skill.name, actual_ctx is ctx))) or True
+        ),
+    )
+
+    rows = load_skill_rows()
+
+    assert rows[0]["name"] == "planner"
+    assert rows[0]["eligible"] is True
+    assert rows[0]["provenance"] == {
+        "origin": "opensquilla-original",
+        "license": "Apache-2.0",
+        "upstreamUrl": "https://example.test/upstream",
+        "maintainedBy": "OpenSquilla",
+    }
+    assert calls == [
+        ("config", "/tmp/config.toml"),
+        ("runtime", (True, "/tmp/ws")),
+        ("ctx", None),
+        ("load_all", None),
+        ("eligible", ("planner", True)),
+    ]
+
+
 def test_skills_update_all_exits_nonzero_on_partial_failure(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {
@@ -429,6 +559,9 @@ def test_cli_skills_does_not_import_hub_defaults() -> None:
 
     assert "opensquilla.skills.hub.defaults" not in imported_modules
     assert "opensquilla.skills.hub.search" not in imported_modules
+    assert "opensquilla.gateway.config" not in imported_modules
+    assert "opensquilla.skills.eligibility" not in imported_modules
+    assert "opensquilla.skills.runtime" not in imported_modules
 
 
 def test_cli_skills_install_fallback_uses_operation_workflows() -> None:

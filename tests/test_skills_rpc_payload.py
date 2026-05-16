@@ -495,6 +495,13 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     top_level_functions = {
         node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+    top_level_assigns = {
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
     handlers = {
         node.name: node
         for node in tree.body
@@ -514,7 +521,14 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     }
 
     assert "opensquilla.skills.eligibility" not in imported_modules
+    assert "opensquilla.skills.hub.clawhub" not in imported_modules
+    assert "opensquilla.skills.hub.github" not in imported_modules
+    assert "opensquilla.skills.hub.installer" not in imported_modules
+    assert "opensquilla.skills.hub.router" not in imported_modules
+    assert "opensquilla.skills.hub.defaults" in imported_modules
     assert "shutil" not in imported_names
+    assert "_default_router" not in top_level_assigns
+    assert "_default_installer" not in top_level_assigns
     assert {
         "skills_search_rpc_payload",
         "skills_search_unavailable_rpc_payload",

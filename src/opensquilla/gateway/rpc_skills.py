@@ -7,6 +7,10 @@ import weakref
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.skills.hub.defaults import (
+    get_default_skill_installer,
+    get_default_skill_router,
+)
 from opensquilla.skills.hub.deps import install_deps
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.rpc_payload import (
@@ -229,37 +233,9 @@ async def _handle_skills_deps_install(params: dict | None, ctx: RpcContext) -> d
     return skill_deps_install_result_rpc_payload(r, missing_still)
 
 
-# ---------------------------------------------------------------------------
-# Default router/installer (lazy init)
-# ---------------------------------------------------------------------------
-
-_default_router = None
-_default_installer = None
-
-
 def _get_default_router():
-    global _default_router
-    if _default_router is None:
-        import os
-
-        from opensquilla.skills.hub.clawhub import ClawHubSource
-        from opensquilla.skills.hub.github import GitHubSource
-        from opensquilla.skills.hub.router import SourceRouter
-
-        sources = [
-            ClawHubSource(token=os.environ.get("CLAWHUB_TOKEN")),
-            GitHubSource(token=os.environ.get("GITHUB_TOKEN")),
-        ]
-        _default_router = SourceRouter(sources)
-    return _default_router
+    return get_default_skill_router()
 
 
 def _get_default_installer():
-    global _default_installer
-    if _default_installer is None:
-        router = _get_default_router()
-        if router:
-            from opensquilla.skills.hub.installer import SkillInstaller
-
-            _default_installer = SkillInstaller(router=router)
-    return _default_installer
+    return get_default_skill_installer()

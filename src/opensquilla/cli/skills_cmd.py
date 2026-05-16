@@ -17,7 +17,10 @@ from opensquilla.cli.gateway_rpc import (
 )
 from opensquilla.cli.output import emit_error, print_json
 from opensquilla.cli.ui import console
-from opensquilla.skills.hub.source import SkillSource
+from opensquilla.skills.hub.defaults import (
+    build_default_skill_installer,
+    build_default_skill_router,
+)
 
 skills_app = typer.Typer(help="Skill management - list, search, install, uninstall.")
 
@@ -190,18 +193,7 @@ def skills_search(
     """Search for skills across Community sources."""
 
     async def _search() -> None:
-        import os
-
-        from opensquilla.skills.hub.clawhub import ClawHubSource
-        from opensquilla.skills.hub.github import GitHubSource
-        from opensquilla.skills.hub.router import SourceRouter
-
-        sources: list[SkillSource] = [
-            ClawHubSource(token=os.environ.get("CLAWHUB_TOKEN")),
-            GitHubSource(token=os.environ.get("GITHUB_TOKEN")),
-        ]
-
-        router = SourceRouter(sources)
+        router = build_default_skill_router()
         results = await router.search(query, limit=20)
 
         if json_output:
@@ -336,20 +328,7 @@ def skills_install(
             )
             return
 
-        import os
-
-        from opensquilla.skills.hub.clawhub import ClawHubSource
-        from opensquilla.skills.hub.github import GitHubSource
-        from opensquilla.skills.hub.installer import SkillInstaller
-        from opensquilla.skills.hub.router import SourceRouter
-
-        sources: list[SkillSource] = [
-            ClawHubSource(token=os.environ.get("CLAWHUB_TOKEN")),
-            GitHubSource(token=os.environ.get("GITHUB_TOKEN")),
-        ]
-
-        router = SourceRouter(sources)
-        installer = SkillInstaller(router=router)
+        installer = build_default_skill_installer()
 
         if not json_output:
             console.print(f"Installing '{identifier}' from {source}...")
@@ -397,10 +376,7 @@ def skills_uninstall(
             )
             return
 
-        from opensquilla.skills.hub.installer import SkillInstaller
-        from opensquilla.skills.hub.router import SourceRouter
-
-        installer = SkillInstaller(router=SourceRouter())
+        installer = build_default_skill_installer()
         result = await installer.uninstall(name)
 
         if json_output:

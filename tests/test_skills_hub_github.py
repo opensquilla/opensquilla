@@ -111,16 +111,27 @@ async def test_fetch_legacy_identifier_keeps_support_and_downloads_directory(mon
     assert set(bundle.files) == {"SKILL.md", "scripts/run.py", "assets/logo.bin"}
 
 
-def test_default_gateway_router_exposes_github_without_token(monkeypatch) -> None:
+def test_default_skill_sources_preserve_default_order_and_tokens() -> None:
+    from opensquilla.skills.hub.defaults import build_default_skill_sources
+
+    sources = build_default_skill_sources(
+        {"CLAWHUB_TOKEN": "claw-token", "GITHUB_TOKEN": "github-token"}
+    )
+
+    assert [source.source_id for source in sources] == ["clawhub", "github"]
+    assert sources[0]._headers()["Authorization"] == "Bearer claw-token"
+    assert sources[1]._headers()["Authorization"] == "token github-token"
+
+
+def test_default_skill_router_exposes_github_without_token(monkeypatch) -> None:
     import opensquilla.gateway.rpc_skills as rpc_skills
+    from opensquilla.skills.hub.defaults import reset_default_skill_hub
 
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    rpc_skills._default_router = None
-    rpc_skills._default_installer = None
+    reset_default_skill_hub()
 
     try:
         router = rpc_skills._get_default_router()
         assert "github" in router.source_ids
     finally:
-        rpc_skills._default_router = None
-        rpc_skills._default_installer = None
+        reset_default_skill_hub()

@@ -9,6 +9,8 @@ import pytest
 from opensquilla.skills.hub.installer import InstallResult
 from opensquilla.skills.hub.operations import (
     add_tap,
+    default_skill_installer_factory,
+    default_skill_router_factory,
     default_taps_manager_factory,
     install_loaded_skill_dependency,
     install_skill,
@@ -18,9 +20,11 @@ from opensquilla.skills.hub.operations import (
     run_skill_install_operation,
     run_skill_uninstall_operation,
     run_skills_update_operation,
+    search_skills,
     skill_deps_install_request,
     skill_install_request,
     skill_publish_request,
+    skill_search_request,
     skill_uninstall_request,
     skills_update_request,
     tap_add_request,
@@ -70,6 +74,9 @@ def test_operations_does_not_import_deps_boundary_at_module_load() -> None:
     }
 
     assert "opensquilla.skills.hub.deps" not in top_level_imports
+    assert "opensquilla.skills.hub.defaults" not in top_level_imports
+    assert "opensquilla.skills.hub.installer" not in top_level_imports
+    assert "opensquilla.skills.hub.lockfile" not in top_level_imports
     assert "opensquilla.skills.hub.publisher" not in top_level_imports
     assert "opensquilla.skills.hub.taps" not in top_level_imports
 
@@ -146,6 +153,48 @@ async def test_skill_operations_delegate_to_installer() -> None:
         ("update", ("planner",), {}),
         ("uninstall", ("planner",), {}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_search_skills_delegates_to_default_router_and_lockfile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.skills.hub import defaults, lockfile
+
+    calls: list[tuple[str, object]] = []
+
+    class FakeRouter:
+        async def search(
+            self,
+            query: object,
+            *,
+            limit: int,
+            source_id: str | None,
+        ) -> list[SimpleNamespace]:
+            calls.append(("search", (query, limit, source_id)))
+            return [SimpleNamespace(name="planner")]
+
+    router = FakeRouter()
+    monkeypatch.setattr(
+        defaults,
+        "get_default_skill_router",
+        lambda: router,
+    )
+    monkeypatch.setattr(
+        lockfile,
+        "installed_skill_names",
+        lambda: {"planner"},
+    )
+
+    outcome = await search_skills(
+        None,
+        skill_search_request({"query": "plan", "limit": 3, "source": "github"}),
+    )
+
+    assert [result.name for result in outcome.results] == ["planner"]
+    assert outcome.installed_names == {"planner"}
+    assert outcome.unavailable is False
+    assert calls == [("search", ("plan", 3, "github"))]
 
 
 @pytest.mark.asyncio
@@ -272,6 +321,21 @@ def test_tap_operations_delegate_to_taps_boundary(
         ("list", None),
         ("remove", remove_request),
     ]
+
+
+def test_default_skill_factories_delegate_to_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.skills.hub import defaults
+
+    installer = object()
+    router = object()
+
+    monkeypatch.setattr(defaults, "get_default_skill_installer", lambda: installer)
+    monkeypatch.setattr(defaults, "get_default_skill_router", lambda: router)
+
+    assert default_skill_installer_factory() is installer
+    assert default_skill_router_factory() is router
 
 
 @pytest.mark.asyncio

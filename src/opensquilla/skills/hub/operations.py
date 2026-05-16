@@ -6,18 +6,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from opensquilla.skills.hub.defaults import (
-    get_default_skill_installer,
-    get_default_skill_router,
-)
-from opensquilla.skills.hub.installer import InstallResult, SkillInstaller
-from opensquilla.skills.hub.lockfile import installed_skill_names
-
 if TYPE_CHECKING:
     from opensquilla.skills.hub.deps import (
         SkillDepsInstallOutcome,
         SkillDepsInstallRequest,
     )
+    from opensquilla.skills.hub.installer import InstallResult, SkillInstaller
     from opensquilla.skills.hub.publisher import PublishResult, SkillPublishRequest
     from opensquilla.skills.hub.taps import (
         Tap,
@@ -26,7 +20,7 @@ if TYPE_CHECKING:
         TapsManager,
     )
 
-SkillInstallerFactory = Callable[[], SkillInstaller | None]
+SkillInstallerFactory = Callable[[], "SkillInstaller | None"]
 SkillRouterFactory = Callable[[], Any | None]
 
 
@@ -152,6 +146,14 @@ def tap_remove_request(params: Mapping[str, Any] | None) -> TapRemoveRequest:
     return _build_request(dict(params) if isinstance(params, Mapping) else params)
 
 
+def installed_skill_names() -> set[str]:
+    """Return installed Community skill aliases."""
+
+    from opensquilla.skills.hub.lockfile import installed_skill_names as _installed_names
+
+    return _installed_names()
+
+
 def skill_install_request(params: Mapping[str, Any] | None) -> SkillInstallRequest:
     """Build a ``skills.install`` operation request from RPC params."""
 
@@ -199,12 +201,17 @@ async def search_skills(
     router: Any | None,
     request: SkillSearchRequest,
     *,
-    default_router_factory: SkillRouterFactory = get_default_skill_router,
+    default_router_factory: SkillRouterFactory | None = None,
 ) -> SkillSearchOutcome:
     """Search Community skill sources and include installed-skill aliases."""
 
     if router is None:
-        router = default_router_factory()
+        factory = (
+            default_skill_router_factory
+            if default_router_factory is None
+            else default_router_factory
+        )
+        router = factory()
     if router is None:
         return SkillSearchOutcome(results=[], installed_names=set(), unavailable=True)
 
@@ -283,7 +290,17 @@ def invalidate_skill_loader(loader: Any | None) -> None:
 def default_skill_installer_factory() -> SkillInstaller | None:
     """Return the default Community skill installer."""
 
+    from opensquilla.skills.hub.defaults import get_default_skill_installer
+
     return get_default_skill_installer()
+
+
+def default_skill_router_factory() -> Any | None:
+    """Return the default Community skill router."""
+
+    from opensquilla.skills.hub.defaults import get_default_skill_router
+
+    return get_default_skill_router()
 
 
 def _resolve_installer_factory(

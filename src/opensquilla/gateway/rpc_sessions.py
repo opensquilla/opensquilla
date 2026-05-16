@@ -32,6 +32,7 @@ from opensquilla.session.rpc_payload import (
     normalize_terminal_event_payload,
     session_create_response,
     session_create_stub_response,
+    session_delete_response,
     session_list_row,
     session_patch_response,
     session_preview_row,
@@ -1317,7 +1318,7 @@ async def _handle_sessions_delete(params: dict | None, ctx: RpcContext) -> dict:
         except Exception as exc:
             errors.append(f"{k}: {exc}")
 
-    return {"deleted": deleted, "errors": errors}
+    return session_delete_response(deleted, errors)
 
 
 @_d.method("sessions.contextCompact", scope="operator.write")

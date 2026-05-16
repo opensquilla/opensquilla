@@ -7,6 +7,7 @@ from opensquilla.session.rpc_payload import (
     normalize_terminal_event_payload,
     session_create_response,
     session_create_stub_response,
+    session_delete_response,
     session_list_row,
     session_patch_response,
     session_preview_last_message,
@@ -265,4 +266,14 @@ def test_session_patch_response_owns_wire_shape() -> None:
     assert session_patch_response("agent:main:webchat:abc123", ["displayName"]) == {
         "key": "agent:main:webchat:abc123",
         "updated": ["displayName"],
+    }
+
+
+def test_session_delete_response_owns_wire_shape() -> None:
+    assert session_delete_response(
+        ["agent:main:webchat:abc123"],
+        ["agent:main:webchat:missing: not found"],
+    ) == {
+        "deleted": ["agent:main:webchat:abc123"],
+        "errors": ["agent:main:webchat:missing: not found"],
     }

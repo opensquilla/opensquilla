@@ -515,7 +515,7 @@ def test_skills_install_and_uninstall_fall_back_when_gateway_unavailable(monkeyp
     assert json.loads(uninstall.stdout)["message"] == "missing"
 
 
-def test_skills_install_and_uninstall_fallback_delegates_to_hub_operations(
+def test_skills_install_and_uninstall_fallback_delegates_to_local_mutations(
     monkeypatch,
 ):
     _install_fake_gateway(monkeypatch, FailingConnectGatewayClient)
@@ -531,25 +531,22 @@ def test_skills_install_and_uninstall_fallback_delegates_to_hub_operations(
 
     calls: list[tuple[str, object]] = []
 
-    async def fake_run_skill_install_operation(
-        loader: object,
-        request: object,
-        **kwargs: object,
+    async def fake_run_local_skill_install(
+        identifier: str,
+        *,
+        source: str,
+        force: bool,
     ) -> SimpleNamespace:
-        assert loader is None
-        assert kwargs == {"require_loader": False}
-        calls.append(("install", request))
+        calls.append(
+            ("install", {"identifier": identifier, "source": source, "force": force})
+        )
         return SimpleNamespace(
             result=LocalResult(True, "planner", "installed", "/tmp/planner"),
             unavailable_message="",
         )
 
-    async def fake_run_skill_uninstall_operation(
-        loader: object,
-        request: object,
-    ) -> SimpleNamespace:
-        assert loader is None
-        calls.append(("uninstall", request))
+    async def fake_run_local_skill_uninstall(name: str) -> SimpleNamespace:
+        calls.append(("uninstall", {"name": name}))
         return SimpleNamespace(
             result=LocalResult(True, "planner", "removed"),
             unavailable_message="",
@@ -557,23 +554,13 @@ def test_skills_install_and_uninstall_fallback_delegates_to_hub_operations(
 
     monkeypatch.setattr(
         skills_cmd,
-        "run_skill_install_operation",
-        fake_run_skill_install_operation,
+        "run_local_skill_install",
+        fake_run_local_skill_install,
     )
     monkeypatch.setattr(
         skills_cmd,
-        "run_skill_uninstall_operation",
-        fake_run_skill_uninstall_operation,
-    )
-    monkeypatch.setattr(
-        skills_cmd,
-        "skill_install_request",
-        lambda params: ("install", params),
-    )
-    monkeypatch.setattr(
-        skills_cmd,
-        "skill_uninstall_request",
-        lambda params: ("uninstall", params),
+        "run_local_skill_uninstall",
+        fake_run_local_skill_uninstall,
     )
 
     install = runner.invoke(
@@ -589,8 +576,85 @@ def test_skills_install_and_uninstall_fallback_delegates_to_hub_operations(
     assert calls == [
         (
             "install",
+            {"identifier": "planner", "source": "github", "force": True},
+        ),
+        ("uninstall", {"name": "planner"}),
+    ]
+
+
+def test_cli_local_skill_mutations_use_hub_operation_workflows(monkeypatch) -> None:
+    from opensquilla.cli.skills_local_mutations import (
+        run_local_skill_install,
+        run_local_skill_uninstall,
+    )
+    from opensquilla.skills.hub import operations as hub_operations
+
+    calls: list[tuple[str, object]] = []
+
+    def fake_skill_install_request(params: object) -> object:
+        calls.append(("install_request", params))
+        return ("install", params)
+
+    def fake_skill_uninstall_request(params: object) -> object:
+        calls.append(("uninstall_request", params))
+        return ("uninstall", params)
+
+    async def fake_run_skill_install_operation(
+        loader: object,
+        request: object,
+        **kwargs: object,
+    ) -> SimpleNamespace:
+        assert loader is None
+        assert kwargs == {"require_loader": False}
+        calls.append(("install", request))
+        return SimpleNamespace(result="installed", unavailable_message="")
+
+    async def fake_run_skill_uninstall_operation(
+        loader: object,
+        request: object,
+    ) -> SimpleNamespace:
+        assert loader is None
+        calls.append(("uninstall", request))
+        return SimpleNamespace(result="removed", unavailable_message="")
+
+    monkeypatch.setattr(
+        hub_operations,
+        "skill_install_request",
+        fake_skill_install_request,
+    )
+    monkeypatch.setattr(
+        hub_operations,
+        "skill_uninstall_request",
+        fake_skill_uninstall_request,
+    )
+    monkeypatch.setattr(
+        hub_operations,
+        "run_skill_install_operation",
+        fake_run_skill_install_operation,
+    )
+    monkeypatch.setattr(
+        hub_operations,
+        "run_skill_uninstall_operation",
+        fake_run_skill_uninstall_operation,
+    )
+
+    install = asyncio.run(
+        run_local_skill_install("planner", source="github", force=True)
+    )
+    uninstall = asyncio.run(run_local_skill_uninstall("planner"))
+
+    assert install.result == "installed"
+    assert uninstall.result == "removed"
+    assert calls == [
+        (
+            "install_request",
+            {"identifier": "planner", "source": "github", "force": True},
+        ),
+        (
+            "install",
             ("install", {"identifier": "planner", "source": "github", "force": True}),
         ),
+        ("uninstall_request", {"name": "planner"}),
         ("uninstall", ("uninstall", {"name": "planner"})),
     ]
 
@@ -626,7 +690,7 @@ def test_cli_skills_search_does_not_import_hub_search_operation_details() -> Non
     assert "skill_search_request" not in imported_names
 
 
-def test_cli_skills_install_fallback_uses_operation_workflows() -> None:
+def test_cli_skills_install_fallback_uses_local_mutation_boundary() -> None:
     from opensquilla.cli import skills_cmd
 
     tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
@@ -637,9 +701,20 @@ def test_cli_skills_install_fallback_uses_operation_workflows() -> None:
         and node.module == "opensquilla.skills.hub.operations"
         for alias in node.names
     }
+    imported_cli_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_local_mutations"
+        for alias in node.names
+    }
 
-    assert "run_skill_install_operation" in imported_names
-    assert "run_skill_uninstall_operation" in imported_names
+    assert "run_local_skill_install" in imported_cli_names
+    assert "run_local_skill_uninstall" in imported_cli_names
+    assert "run_skill_install_operation" not in imported_names
+    assert "run_skill_uninstall_operation" not in imported_names
+    assert "skill_install_request" not in imported_names
+    assert "skill_uninstall_request" not in imported_names
     assert "default_skill_installer_factory" not in imported_names
     assert "install_skill" not in imported_names
     assert "uninstall_skill" not in imported_names

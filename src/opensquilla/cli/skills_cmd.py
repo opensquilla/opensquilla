@@ -16,6 +16,10 @@ from opensquilla.cli.gateway_rpc import (
     run_gateway_sync,
 )
 from opensquilla.cli.output import emit_error, print_json
+from opensquilla.cli.skills_local_mutations import (
+    run_local_skill_install,
+    run_local_skill_uninstall,
+)
 from opensquilla.cli.skills_rows import load_skill_rows
 from opensquilla.cli.skills_search_rows import search_skill_rows
 from opensquilla.cli.ui import console
@@ -25,11 +29,7 @@ from opensquilla.skills.hub.operations import (
     list_taps,
     publish_skill_from_request,
     remove_tap,
-    run_skill_install_operation,
-    run_skill_uninstall_operation,
-    skill_install_request,
     skill_publish_request,
-    skill_uninstall_request,
     tap_add_request,
     tap_remove_request,
 )
@@ -288,12 +288,10 @@ def skills_install(
 
         if not json_output:
             console.print(f"Installing '{identifier}' from {source}...")
-        outcome = await run_skill_install_operation(
-            None,
-            skill_install_request(
-                {"identifier": identifier, "source": source, "force": force}
-            ),
-            require_loader=False,
+        outcome = await run_local_skill_install(
+            identifier,
+            source=source,
+            force=force,
         )
         if outcome.unavailable_message:
             _emit_skill_mutation_result(
@@ -356,10 +354,7 @@ def skills_uninstall(
             )
             return
 
-        outcome = await run_skill_uninstall_operation(
-            None,
-            skill_uninstall_request({"name": name}),
-        )
+        outcome = await run_local_skill_uninstall(name)
         if outcome.unavailable_message:
             _emit_skill_mutation_result(
                 {"success": False, "message": outcome.unavailable_message},

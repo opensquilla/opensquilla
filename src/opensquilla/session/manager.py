@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from opensquilla.engine.steps.inject_time_prefix import stamp as _stamp_time_prefix
 from opensquilla.paths import default_opensquilla_home
 from opensquilla.session.compaction import (
     CompactionConfig,
@@ -30,7 +29,10 @@ from opensquilla.session.models import (
     TranscriptEntry,
 )
 from opensquilla.session.storage import SessionStorage
+from opensquilla.session.time_prefix import stamp as _stamp_time_prefix
 from opensquilla.session.tokenizer import estimate_tokens
+
+RuntimeStateEvictor = Callable[[str], None]
 
 
 def _validate_iana_name(name: str) -> str | None:
@@ -113,6 +115,9 @@ class SessionManager:
         time_prefix_tz: str | None = None,
         agent_registry: Any = None,
         task_runtime: Any = None,
+        runtime_state_evictors: list[RuntimeStateEvictor]
+        | tuple[RuntimeStateEvictor, ...]
+        | None = None,
     ) -> None:
         self._storage = storage
         self._memory_sync_notify = memory_sync_notify
@@ -120,6 +125,9 @@ class SessionManager:
         self._time_prefix_tz = time_prefix_tz
         self._agent_registry = agent_registry
         self._task_runtime = task_runtime
+        self._runtime_state_evictors: list[RuntimeStateEvictor] = list(
+            runtime_state_evictors or ()
+        )
         # In-process epoch cache so _emit_to_subscribers can
         # read the current epoch without a DB round-trip on every event.
         # Invalidated (updated) whenever increment_epoch commits a new value.
@@ -141,6 +149,14 @@ class SessionManager:
     def attach_task_runtime(self, task_runtime: Any) -> None:
         """Attach the TaskRuntime so kill_session can cancel running children."""
         self._task_runtime = task_runtime
+
+    def add_runtime_state_evictor(self, evictor: RuntimeStateEvictor) -> None:
+        """Register a process-local cleanup hook for terminal sessions."""
+        if not any(
+            existing is evictor or existing == evictor
+            for existing in self._runtime_state_evictors
+        ):
+            self._runtime_state_evictors.append(evictor)
 
     def _resolve_time_prefix_tz(self) -> str:
         return self._time_prefix_tz or _resolve_local_tz_name()
@@ -507,13 +523,12 @@ class SessionManager:
         self._evict_session_runtime_state(session_key)
         return node
 
-    @staticmethod
-    def _evict_session_runtime_state(session_key: str) -> None:
-        """Drop in-memory subagent and routing bookkeeping for ``session_key``.
+    def _evict_session_runtime_state(self, session_key: str) -> None:
+        """Drop in-memory lifecycle bookkeeping for ``session_key``.
 
         Called from ``finish`` so terminal sessions don't leak unbounded
-        entries in long-running gateway processes. Imports are local to
-        avoid import cycles with engine/gateway packages.
+        entries in long-running processes. Engine/tool-specific cleanup is
+        supplied by the composition root through ``add_runtime_state_evictor``.
         """
         try:
             from opensquilla.session.spawn_groups import spawn_group_tracker
@@ -521,20 +536,11 @@ class SessionManager:
             spawn_group_tracker.evict(session_key)
         except Exception:
             pass
-        try:
-            from opensquilla.engine.steps.squilla_router import (
-                _history_store as _routing_store,
-            )
-
-            _routing_store.evict(session_key)
-        except Exception:
-            pass
-        try:
-            from opensquilla.tools.builtin.sessions import evict_spawn_lock
-
-            evict_spawn_lock(session_key)
-        except Exception:
-            pass
+        for evictor in tuple(self._runtime_state_evictors):
+            try:
+                evictor(session_key)
+            except Exception:
+                pass
 
     async def branch(
         self,

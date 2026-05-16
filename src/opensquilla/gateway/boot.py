@@ -1100,15 +1100,21 @@ async def build_services(
         session_manager = SessionManager(storage, agent_registry=agent_registry)
 
     # Wire session services into the tool layer.
+    from opensquilla.engine.steps.squilla_router import _history_store as _routing_history_store
     from opensquilla.gateway.subagent_announce import close_subagent_spawn_group
     from opensquilla.tools.builtin.sessions import (
-        set_gateway_config as _set_sessions_gateway_config,
-    )
-    from opensquilla.tools.builtin.sessions import (
+        evict_spawn_lock,
         set_session_manager,
         set_spawn_group_closer,
     )
+    from opensquilla.tools.builtin.sessions import (
+        set_gateway_config as _set_sessions_gateway_config,
+    )
 
+    add_runtime_state_evictor = getattr(session_manager, "add_runtime_state_evictor", None)
+    if callable(add_runtime_state_evictor):
+        add_runtime_state_evictor(_routing_history_store.evict)
+        add_runtime_state_evictor(evict_spawn_lock)
     set_session_manager(session_manager)
     _set_sessions_gateway_config(config)
     set_spawn_group_closer(close_subagent_spawn_group)

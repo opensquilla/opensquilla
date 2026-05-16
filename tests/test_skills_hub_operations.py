@@ -8,9 +8,13 @@ import pytest
 
 from opensquilla.skills.hub.installer import InstallResult
 from opensquilla.skills.hub.operations import (
+    add_tap,
+    default_taps_manager_factory,
     install_loaded_skill_dependency,
     install_skill,
+    list_taps,
     publish_skill_from_request,
+    remove_tap,
     run_skill_install_operation,
     run_skill_uninstall_operation,
     run_skills_update_operation,
@@ -19,6 +23,8 @@ from opensquilla.skills.hub.operations import (
     skill_publish_request,
     skill_uninstall_request,
     skills_update_request,
+    tap_add_request,
+    tap_remove_request,
     uninstall_skill,
     update_skills,
 )
@@ -65,6 +71,7 @@ def test_operations_does_not_import_deps_boundary_at_module_load() -> None:
 
     assert "opensquilla.skills.hub.deps" not in top_level_imports
     assert "opensquilla.skills.hub.publisher" not in top_level_imports
+    assert "opensquilla.skills.hub.taps" not in top_level_imports
 
 
 def test_skill_operation_requests_preserve_defaults_and_validation() -> None:
@@ -96,6 +103,19 @@ def test_skill_publish_request_delegates_to_publisher_request(tmp_path: Path) ->
 
     assert request.skill_dir == tmp_path / "demo-skill"
     assert request.target_repo == "acme/skills"
+
+
+def test_tap_operation_requests_preserve_validation() -> None:
+    add_request = tap_add_request({"owner_repo": "acme/tap"})
+    remove_request = tap_remove_request({"owner_repo": "acme/tap"})
+
+    assert add_request.owner_repo == "acme/tap"
+    assert remove_request.owner_repo == "acme/tap"
+
+    with pytest.raises(ValueError, match="params.owner_repo is required"):
+        tap_add_request({})
+    with pytest.raises(ValueError, match="params.owner_repo is required"):
+        tap_remove_request({})
 
 
 @pytest.mark.asyncio
@@ -201,6 +221,57 @@ async def test_skill_publish_operation_delegates_to_publisher_boundary(
     assert result.success is True
     assert result.skill_name == "demo"
     assert calls == [request]
+
+
+def test_tap_operations_delegate_to_taps_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.skills.hub import taps
+
+    manager = object()
+    calls: list[tuple[str, object]] = []
+
+    def fake_taps_manager_factory() -> object:
+        calls.append(("factory", None))
+        return manager
+
+    def fake_add_tap(actual_manager: object, request: object) -> SimpleNamespace:
+        assert actual_manager is manager
+        calls.append(("add", request))
+        return SimpleNamespace(full_name="acme/tap", url="https://example.test/acme/tap")
+
+    def fake_list_taps(actual_manager: object) -> list[SimpleNamespace]:
+        assert actual_manager is manager
+        calls.append(("list", None))
+        return [SimpleNamespace(full_name="acme/tap")]
+
+    def fake_remove_tap(actual_manager: object, request: object) -> bool:
+        assert actual_manager is manager
+        calls.append(("remove", request))
+        return True
+
+    monkeypatch.setattr(taps, "default_taps_manager_factory", fake_taps_manager_factory)
+    monkeypatch.setattr(taps, "add_tap", fake_add_tap)
+    monkeypatch.setattr(taps, "list_taps", fake_list_taps)
+    monkeypatch.setattr(taps, "remove_tap", fake_remove_tap)
+
+    actual_manager = default_taps_manager_factory()
+    add_request = tap_add_request({"owner_repo": "acme/tap"})
+    remove_request = tap_remove_request({"owner_repo": "acme/tap"})
+    added = add_tap(actual_manager, add_request)
+    listed = list_taps(actual_manager)
+    removed = remove_tap(actual_manager, remove_request)
+
+    assert actual_manager is manager
+    assert added.full_name == "acme/tap"
+    assert [tap.full_name for tap in listed] == ["acme/tap"]
+    assert removed is True
+    assert calls == [
+        ("factory", None),
+        ("add", add_request),
+        ("list", None),
+        ("remove", remove_request),
+    ]
 
 
 @pytest.mark.asyncio

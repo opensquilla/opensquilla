@@ -18,23 +18,21 @@ from opensquilla.cli.gateway_rpc import (
 from opensquilla.cli.output import emit_error, print_json
 from opensquilla.cli.ui import console
 from opensquilla.skills.hub.operations import (
+    add_tap,
     default_skill_installer_factory,
+    default_taps_manager_factory,
     install_skill,
+    list_taps,
     publish_skill_from_request,
+    remove_tap,
     search_skills,
     skill_install_request,
     skill_publish_request,
     skill_search_request,
     skill_uninstall_request,
-    uninstall_skill,
-)
-from opensquilla.skills.hub.taps import (
-    add_tap,
-    default_taps_manager_factory,
-    list_taps,
-    remove_tap,
     tap_add_request,
     tap_remove_request,
+    uninstall_skill,
 )
 
 skills_app = typer.Typer(help="Skill management - list, search, install, uninstall.")

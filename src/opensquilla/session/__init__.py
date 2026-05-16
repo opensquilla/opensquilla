@@ -40,6 +40,7 @@ from opensquilla.session.models import (
     SessionSummary,
     TranscriptEntry,
 )
+from opensquilla.session.spawn_groups import SpawnGroupTracker, spawn_group_tracker
 from opensquilla.session.storage import SessionStorage
 
 __all__ = [
@@ -59,6 +60,8 @@ __all__ = [
     "SessionStorage",
     # Manager
     "SessionManager",
+    "SpawnGroupTracker",
+    "spawn_group_tracker",
     # Keys
     "DmScope",
     "PeerKind",

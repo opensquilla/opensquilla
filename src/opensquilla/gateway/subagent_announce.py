@@ -6,53 +6,21 @@ import json
 from typing import Any
 
 from opensquilla.gateway.task_runtime import SubagentCompletionEvent
+from opensquilla.session.spawn_groups import SpawnGroupTracker, spawn_group_tracker
 
 _RESULT_MAX_CHARS = 12000
 _TERMINAL_SESSION_STATUSES = {"done", "failed", "killed", "timeout"}
 
+__all__ = [
+    "SpawnGroupTracker",
+    "_list_spawn_group_sessions",
+    "_tracker",
+    "announce_subagent_completion",
+    "close_subagent_spawn_group",
+    "set_background_completion_manager",
+]
 
-class SpawnGroupTracker:
-    """Tracks per-spawn-group close and wake state for parent-session announces.
-
-    Spawn groups are keyed by ``(parent_session_key, parent_task_id)``. The
-    tracker exposes an ``evict`` hook so the gateway can drop bookkeeping for
-    a parent session when it terminates, preventing unbounded growth in
-    long-running deployments.
-    """
-
-    def __init__(self) -> None:
-        self._closed: set[tuple[str, str]] = set()
-        self._woken: set[tuple[str, str]] = set()
-
-    def mark_closed(self, parent_session_key: str, parent_task_id: str) -> None:
-        self._closed.add((parent_session_key, parent_task_id))
-
-    def is_closed(self, parent_session_key: str, parent_task_id: str) -> bool:
-        return (parent_session_key, parent_task_id) in self._closed
-
-    def mark_woken(self, group_key: tuple[str, str]) -> None:
-        self._woken.add(group_key)
-
-    def is_woken(self, group_key: tuple[str, str]) -> bool:
-        return group_key in self._woken
-
-    def discard_woken(self, group_key: tuple[str, str]) -> None:
-        self._woken.discard(group_key)
-
-    def evict(self, parent_session_key: str) -> int:
-        """Drop all groups associated with ``parent_session_key``.
-
-        Returns the count of removed entries (closed + woken).
-        """
-        removed = 0
-        for bucket in (self._closed, self._woken):
-            for entry in [e for e in bucket if e[0] == parent_session_key]:
-                bucket.discard(entry)
-                removed += 1
-        return removed
-
-
-_tracker = SpawnGroupTracker()
+_tracker = spawn_group_tracker
 _background_completion_manager: Any | None = None
 
 

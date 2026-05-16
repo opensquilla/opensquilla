@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.engine.steps.squilla_router import _history_store
-from opensquilla.gateway.subagent_announce import _tracker
 from opensquilla.session.manager import SessionManager
 from opensquilla.session.models import SessionStatus
+from opensquilla.session.spawn_groups import spawn_group_tracker
 
 
 class _MemoryStorage:
@@ -37,13 +37,13 @@ async def test_finish_evicts_spawn_group_tracker_and_routing_history() -> None:
     )
     await storage.upsert_session(node)
 
-    _tracker.mark_closed("agent:main:main", "task-X")
+    spawn_group_tracker.mark_closed("agent:main:main", "task-X")
     _history_store.set("agent:main:main", [{"turn_index": 0}])
-    assert _tracker.is_closed("agent:main:main", "task-X")
+    assert spawn_group_tracker.is_closed("agent:main:main", "task-X")
     assert _history_store.get("agent:main:main") is not None
 
     mgr = SessionManager(storage)  # type: ignore[arg-type]
     await mgr.finish("agent:main:main", status=SessionStatus.DONE)
 
-    assert not _tracker.is_closed("agent:main:main", "task-X")
+    assert not spawn_group_tracker.is_closed("agent:main:main", "task-X")
     assert _history_store.get("agent:main:main") is None

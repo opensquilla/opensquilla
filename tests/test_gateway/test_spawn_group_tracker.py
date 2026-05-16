@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from opensquilla.gateway.subagent_announce import SpawnGroupTracker
+from opensquilla.session.spawn_groups import SpawnGroupTracker
 
 
 def test_mark_and_query_closed() -> None:

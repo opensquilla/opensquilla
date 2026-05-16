@@ -516,9 +516,9 @@ class SessionManager:
         avoid import cycles with engine/gateway packages.
         """
         try:
-            from opensquilla.gateway.subagent_announce import _tracker as _spawn_tracker
+            from opensquilla.session.spawn_groups import spawn_group_tracker
 
-            _spawn_tracker.evict(session_key)
+            spawn_group_tracker.evict(session_key)
         except Exception:
             pass
         try:

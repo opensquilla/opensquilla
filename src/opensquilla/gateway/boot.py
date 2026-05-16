@@ -1832,6 +1832,7 @@ async def start_gateway_server(
     webhook_routes: list = []
     if channel_manager is None and config.channels.channels:
         from opensquilla.channels.manager import ChannelManager
+        from opensquilla.gateway.channel_ingress import GatewayChannelIngress
         from opensquilla.gateway.event_bridge import EventBridge
 
         event_bridge = EventBridge(
@@ -1856,6 +1857,7 @@ async def start_gateway_server(
             task_runtime=task_runtime,
             rpc_dispatcher=get_dispatcher(),
             channel_rpc_context_factory=channel_rpc_context_factory,
+            channel_ingress=GatewayChannelIngress(),
         )
         webhook_routes = channel_manager.collect_webhook_routes()
         # Populate lazy ref so cron handler can deliver to channels

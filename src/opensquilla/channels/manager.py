@@ -12,10 +12,10 @@ from typing import Any
 import structlog
 from starlette.routing import Route
 
+from opensquilla.channels.debounce import _DefaultDebounceCoordinator
+from opensquilla.channels.ingress import ChannelInFlightSetPort, ChannelIngressPort
 from opensquilla.channels.registry import build_managed_channel
 from opensquilla.channels.types import ChannelHealth, DeliveryTargetResolution, ManagedChannel
-from opensquilla.gateway._debounce import _DefaultDebounceCoordinator
-from opensquilla.gateway.channel_dispatch import run_channel_dispatch
 from opensquilla.session.keys import DmScope, build_direct_key, build_group_key, build_thread_key
 
 log = structlog.get_logger(__name__)
@@ -41,6 +41,7 @@ class ChannelManager:
     _task_runtime: Any = None
     _rpc_dispatcher: Any = None
     _channel_rpc_context_factory: Callable[[Any], Any] | None = None
+    _channel_ingress: ChannelIngressPort | None = None
     _debounce_coordinator: Any = field(default_factory=_DefaultDebounceCoordinator)
     _agent_ids: dict[str, str] = field(default_factory=dict)
     _channel_types: dict[str, str] = field(default_factory=dict)
@@ -79,6 +80,7 @@ class ChannelManager:
         task_runtime: Any = None,
         rpc_dispatcher: Any = None,
         channel_rpc_context_factory: Callable[[Any], Any] | None = None,
+        channel_ingress: ChannelIngressPort | None = None,
     ) -> ChannelManager:
         """Build adapter instances from gateway config entries.
 
@@ -113,6 +115,7 @@ class ChannelManager:
             _task_runtime=task_runtime,
             _rpc_dispatcher=rpc_dispatcher,
             _channel_rpc_context_factory=channel_rpc_context_factory,
+            _channel_ingress=channel_ingress,
             _agent_ids=agent_ids,
             _channel_types=channel_types,
         )
@@ -167,8 +170,6 @@ class ChannelManager:
 
     async def _safe_start(self, name: str) -> None:
         """Start a single channel with 30 s timeout, then launch dispatch loop."""
-        from opensquilla.gateway.channel_dispatch import _ChannelInFlightSet, _compute_channel_cap
-
         adapter = self._channels[name]
         startup_timeout = float(getattr(adapter, "startup_timeout_s", 30.0))
         try:
@@ -179,10 +180,15 @@ class ChannelManager:
                 with contextlib.suppress(Exception):
                     await stop()
             raise
+        if self._channel_ingress is None:
+            stop = getattr(adapter, "stop", None)
+            if callable(stop):
+                with contextlib.suppress(Exception):
+                    await stop()
+            raise RuntimeError("Channel ingress is not configured")
         entry_agent_id = self._agent_ids.get(name, "main")
         key_builder = partial(self._build_session_key, name, agent_id=entry_agent_id)
-        cap = _compute_channel_cap(self._config)
-        in_flight = _ChannelInFlightSet(cap)
+        in_flight = self._channel_ingress.create_in_flight_set(self._config)
         self._in_flight_sets[name] = in_flight
         self._tasks[name] = asyncio.create_task(
             self._dispatch_with_retry(name, key_builder, in_flight=in_flight),
@@ -193,7 +199,7 @@ class ChannelManager:
         self,
         name: str,
         key_builder: Callable[[Any], str],
-        in_flight: Any = None,
+        in_flight: ChannelInFlightSetPort | None = None,
     ) -> None:
         """Inner retry loop. Returns once retries are exhausted.
 
@@ -206,7 +212,9 @@ class ChannelManager:
 
         for attempt in range(self._max_retries + 1):
             try:
-                await run_channel_dispatch(
+                if self._channel_ingress is None:
+                    raise RuntimeError("Channel ingress is not configured")
+                await self._channel_ingress.run_dispatch(
                     channel=self._channels[name],
                     turn_runner=self._turn_runner,
                     session_manager=self._session_manager,
@@ -219,7 +227,7 @@ class ChannelManager:
                     channel_rpc_context_factory=self._channel_rpc_context_factory,
                     debounce_coordinator=self._debounce_coordinator,
                     debounce_window_s=getattr(self._channels[name], "debounce_window_s", 0.0),
-                    _in_flight=in_flight,
+                    in_flight=in_flight,
                 )
             except asyncio.CancelledError:
                 raise  # intentional shutdown — never retry
@@ -242,7 +250,7 @@ class ChannelManager:
         self,
         name: str,
         key_builder: Callable[[Any], str],
-        in_flight: Any = None,
+        in_flight: ChannelInFlightSetPort | None = None,
     ) -> None:
         """Outer cycle loop wrapping the inner retry budget.
 

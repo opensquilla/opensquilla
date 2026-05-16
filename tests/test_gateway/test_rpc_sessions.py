@@ -188,6 +188,15 @@ class FakeSessionManager:
         return session, True
 
 
+class _TranscriptSessionManager(FakeSessionManager):
+    def __init__(self, sessions: list[FakeSession], transcript: list[Any]) -> None:
+        super().__init__(sessions)
+        self.transcript = transcript
+
+    async def get_transcript(self, key: str) -> list[Any]:
+        return list(self.transcript)
+
+
 def make_ctx(session_manager=None, **kwargs) -> RpcContext:
     role = kwargs.pop("role", "operator")
     scopes = kwargs.pop("scopes", None)
@@ -1263,8 +1272,27 @@ class TestSessionsReset:
             for node in tree.body
             if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_sessions_reset"
         )
+        dict_key_sets = {
+            tuple(
+                key.value
+                for key in node.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            )
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Dict)
+        }
 
+        assert ("opensquilla.session.rpc_payload", "session_flush_unavailable_details") in imports
+        assert ("opensquilla.session.rpc_payload", "session_permission_denied_details") in imports
         assert ("opensquilla.session.rpc_payload", "session_reset_response") in imports
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_flush_unavailable_details"
+            for node in ast.walk(handler)
+        )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_permission_denied_details"
+            for node in ast.walk(handler)
+        )
         assert not any(
             isinstance(node, ast.FunctionDef) and node.name == "_reset_response"
             for node in tree.body
@@ -1277,6 +1305,8 @@ class TestSessionsReset:
             isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)
             for node in ast.walk(handler)
         )
+        assert ("key", "session_id") not in dict_key_sets
+        assert ("key", "session_id", "reason", "message_count") not in dict_key_sets
 
     @pytest.mark.asyncio
     async def test_reset_not_found(self, dispatcher, ctx_with_sessions):
@@ -1285,6 +1315,45 @@ class TestSessionsReset:
         )
         assert res.ok is False
         assert res.error.code == "NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_reset_flush_unavailable_returns_session_boundary_details(
+        self, dispatcher, session
+    ):
+        manager = _TranscriptSessionManager([session], [SimpleNamespace(content="hi")])
+        ctx = make_ctx(session_manager=manager, scopes=["operator.write"])
+
+        res = await dispatcher.dispatch("r1", "sessions.reset", {"key": session.session_key}, ctx)
+
+        assert res.ok is False
+        assert res.error.code == "flush_unavailable"
+        assert res.error.details == {
+            "key": session.session_key,
+            "session_id": session.session_id,
+            "reason": "flush_service_disabled",
+            "message_count": 1,
+        }
+
+    @pytest.mark.asyncio
+    async def test_reset_force_requires_admin_scope_with_session_boundary_details(
+        self, dispatcher, session
+    ):
+        manager = _TranscriptSessionManager([session], [SimpleNamespace(content="hi")])
+        ctx = make_ctx(session_manager=manager, scopes=["operator.write"])
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.reset",
+            {"key": session.session_key, "force": True},
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "permission_denied"
+        assert res.error.details == {
+            "key": session.session_key,
+            "session_id": session.session_id,
+        }
 
 
 class TestSessionsDelete:
@@ -1365,14 +1434,41 @@ class TestSessionsCompact:
         handler_constants = {
             node.value for node in ast.walk(handler) if isinstance(node, ast.Constant)
         }
+        dict_key_sets = {
+            tuple(
+                key.value
+                for key in node.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            )
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Dict)
+        }
 
+        assert ("opensquilla.session.rpc_payload", "session_flush_error_details") in imports
+        assert ("opensquilla.session.rpc_payload", "session_flush_unavailable_details") in imports
         assert ("opensquilla.session.rpc_payload", "session_compact_response") in imports
+        assert ("opensquilla.session.rpc_payload", "session_permission_denied_details") in imports
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_flush_error_details"
+            for node in ast.walk(handler)
+        )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_flush_unavailable_details"
+            for node in ast.walk(handler)
+        )
         assert any(
             isinstance(node, ast.Name) and node.id == "session_compact_response"
             for node in ast.walk(handler)
         )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_permission_denied_details"
+            for node in ast.walk(handler)
+        )
         assert "before_count" not in handler_constants
         assert "after_count" not in handler_constants
+        assert ("key", "session_id") not in dict_key_sets
+        assert ("key", "session_id", "reason", "message_count") not in dict_key_sets
+        assert ("flush_receipt", "key", "session_id") not in dict_key_sets
 
     @pytest.mark.asyncio
     async def test_compact_not_found(self, dispatcher, ctx_with_sessions):
@@ -1381,6 +1477,45 @@ class TestSessionsCompact:
         )
         assert res.ok is False
         assert res.error.code == "NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_compact_flush_unavailable_returns_session_boundary_details(
+        self, dispatcher, session
+    ):
+        manager = _TranscriptSessionManager([session], [SimpleNamespace(content="hi")])
+        ctx = make_ctx(session_manager=manager, scopes=["operator.write"])
+
+        res = await dispatcher.dispatch("r1", "sessions.compact", {"key": session.session_key}, ctx)
+
+        assert res.ok is False
+        assert res.error.code == "flush_unavailable"
+        assert res.error.details == {
+            "key": session.session_key,
+            "session_id": session.session_id,
+            "reason": "flush_service_disabled",
+            "message_count": 1,
+        }
+
+    @pytest.mark.asyncio
+    async def test_compact_force_requires_admin_scope_with_session_boundary_details(
+        self, dispatcher, session
+    ):
+        manager = _TranscriptSessionManager([session], [SimpleNamespace(content="hi")])
+        ctx = make_ctx(session_manager=manager, scopes=["operator.write"])
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.compact",
+            {"key": session.session_key, "force": True},
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "permission_denied"
+        assert res.error.details == {
+            "key": session.session_key,
+            "session_id": session.session_id,
+        }
 
 
 class TestSessionsContextCompact:

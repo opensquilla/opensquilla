@@ -11,9 +11,12 @@ from opensquilla.session.rpc_payload import (
     session_create_response,
     session_create_stub_response,
     session_delete_response,
+    session_flush_error_details,
+    session_flush_unavailable_details,
     session_list_response,
     session_list_row,
     session_patch_response,
+    session_permission_denied_details,
     session_preview_last_message,
     session_preview_response,
     session_preview_row,
@@ -384,6 +387,34 @@ def test_session_reset_response_owns_flush_wire_shape() -> None:
         "session_id": "new-session",
         "epoch": 4,
         "flush_receipt": {"mode": "skipped", "message_count": 0},
+    }
+
+
+def test_session_flush_error_details_own_wire_shapes() -> None:
+    receipt = SimpleNamespace(to_dict=lambda: {"mode": "error", "message_count": 3})
+
+    assert session_flush_unavailable_details(
+        "agent:main:webchat:abc123",
+        "abc123",
+        message_count=3,
+    ) == {
+        "key": "agent:main:webchat:abc123",
+        "session_id": "abc123",
+        "reason": "flush_service_disabled",
+        "message_count": 3,
+    }
+    assert session_permission_denied_details("agent:main:webchat:abc123", "abc123") == {
+        "key": "agent:main:webchat:abc123",
+        "session_id": "abc123",
+    }
+    assert session_flush_error_details(
+        "agent:main:webchat:abc123",
+        "abc123",
+        receipt,
+    ) == {
+        "flush_receipt": {"mode": "error", "message_count": 3},
+        "key": "agent:main:webchat:abc123",
+        "session_id": "abc123",
     }
 
 

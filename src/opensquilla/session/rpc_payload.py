@@ -344,6 +344,32 @@ def session_reset_response(
     return response
 
 
+def session_flush_unavailable_details(
+    key: str,
+    session_id: str | None,
+    *,
+    message_count: int,
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "session_id": session_id,
+        "reason": "flush_service_disabled",
+        "message_count": message_count,
+    }
+
+
+def session_permission_denied_details(key: str, session_id: str | None) -> dict[str, Any]:
+    return {"key": key, "session_id": session_id}
+
+
+def session_flush_error_details(key: str, session_id: str | None, receipt: Any) -> dict[str, Any]:
+    return {
+        "flush_receipt": receipt.to_dict(),
+        "key": key,
+        "session_id": session_id,
+    }
+
+
 def session_context_compact_response(
     key: str,
     *,
@@ -395,9 +421,12 @@ __all__ = [
     "session_create_response",
     "session_create_stub_response",
     "session_delete_response",
+    "session_flush_error_details",
+    "session_flush_unavailable_details",
     "session_list_response",
     "session_list_row",
     "session_patch_response",
+    "session_permission_denied_details",
     "session_preview_last_message",
     "session_preview_response",
     "session_preview_row",

@@ -36,9 +36,12 @@ from opensquilla.session.rpc_payload import (
     session_create_response,
     session_create_stub_response,
     session_delete_response,
+    session_flush_error_details,
+    session_flush_unavailable_details,
     session_list_response,
     session_list_row,
     session_patch_response,
+    session_permission_denied_details,
     session_preview_response,
     session_preview_row,
     session_reset_response,
@@ -1101,18 +1104,17 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
                     "transcript is non-empty. Re-run with force=true (admin) "
                     "to discard without backup."
                 ),
-                details={
-                    "key": key,
-                    "session_id": previous_session_id,
-                    "reason": "flush_service_disabled",
-                    "message_count": len(transcript),
-                },
+                details=session_flush_unavailable_details(
+                    key,
+                    previous_session_id,
+                    message_count=len(transcript),
+                ),
             )
         if transcript and force and "operator.admin" not in ctx.principal.scopes:
             raise RpcHandlerError(
                 code="permission_denied",
                 message="force=true on sessions.reset requires operator.admin scope.",
-                details={"key": key, "session_id": previous_session_id},
+                details=session_permission_denied_details(key, previous_session_id),
             )
 
         updated, rotated = await ctx.session_manager.apply_intent(key, SessionIntent.RESET_SAME_KEY)
@@ -1396,18 +1398,17 @@ async def _handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict
                         "the transcript is non-empty. Re-run with force=true "
                         "(admin) to truncate without backup."
                     ),
-                    details={
-                        "key": key,
-                        "session_id": previous_session_id,
-                        "reason": "flush_service_disabled",
-                        "message_count": len(transcript),
-                    },
+                    details=session_flush_unavailable_details(
+                        key,
+                        previous_session_id,
+                        message_count=len(transcript),
+                    ),
                 )
             if transcript and force and "operator.admin" not in ctx.principal.scopes:
                 raise RpcHandlerError(
                     code="permission_denied",
                     message="force=true on sessions.compact requires operator.admin scope.",
-                    details={"key": key, "session_id": previous_session_id},
+                    details=session_permission_denied_details(key, previous_session_id),
                 )
         else:
             if storage is None:
@@ -1439,11 +1440,7 @@ async def _handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict
                     raise RpcHandlerError(
                         code="flush_disk_error",
                         message=f"Compact aborted: flush failed ({receipt.error})",
-                        details={
-                            "flush_receipt": receipt.to_dict(),
-                            "key": key,
-                            "session_id": previous_session_id,
-                        },
+                        details=session_flush_error_details(key, previous_session_id, receipt),
                     ) from exc
 
                 # ``flush_service.execute`` can return ``mode="error"`` (no
@@ -1455,11 +1452,7 @@ async def _handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict
                         message=(
                             f"Compact aborted: flush failed ({receipt.error or 'unknown error'})"
                         ),
-                        details={
-                            "flush_receipt": receipt.to_dict(),
-                            "key": key,
-                            "session_id": previous_session_id,
-                        },
+                        details=session_flush_error_details(key, previous_session_id, receipt),
                     )
             else:
                 receipt = FlushReceipt(

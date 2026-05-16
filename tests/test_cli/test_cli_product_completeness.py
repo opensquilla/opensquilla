@@ -720,6 +720,47 @@ def test_cli_skills_install_fallback_uses_local_mutation_boundary() -> None:
     assert "uninstall_skill" not in imported_names
 
 
+def test_cli_skills_install_gateway_mutations_use_cli_boundary() -> None:
+    from opensquilla.cli import skills_cmd
+
+    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    imported_gateway_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.gateway_rpc"
+        for alias in node.names
+    }
+    imported_output_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    imported_mutation_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_gateway_mutations"
+        for alias in node.names
+    }
+    identifiers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    function_names = {
+        node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    } | {
+        node.name for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+    }
+
+    assert "try_gateway_skill_mutation" in imported_mutation_names
+    assert "default_gateway_url" not in imported_gateway_names
+    assert "rpc_error_exit_code" not in imported_gateway_names
+    assert "emit_error" not in imported_output_names
+    assert "GatewayClient" not in identifiers
+    assert "GatewayRPCError" not in identifiers
+    assert "_try_gateway_skill_mutation" not in function_names
+
+
 def test_skills_tap_commands_delegate_to_cli_tap_boundary(monkeypatch):
     from opensquilla.cli import skills_cmd
 

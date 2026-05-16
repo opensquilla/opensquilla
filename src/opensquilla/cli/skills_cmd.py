@@ -10,12 +10,9 @@ import typer
 from rich.panel import Panel
 from rich.table import Table
 
-from opensquilla.cli.gateway_rpc import (
-    default_gateway_url,
-    rpc_error_exit_code,
-    run_gateway_sync,
-)
-from opensquilla.cli.output import emit_error, print_json
+from opensquilla.cli.gateway_rpc import run_gateway_sync
+from opensquilla.cli.output import print_json
+from opensquilla.cli.skills_gateway_mutations import try_gateway_skill_mutation
 from opensquilla.cli.skills_local_mutations import (
     run_local_skill_install,
     run_local_skill_uninstall,
@@ -35,42 +32,6 @@ def _install_result_payload(result: Any) -> dict[str, Any]:
     if scan is None:
         payload.pop("scan", None)
     return payload
-
-
-async def _try_gateway_skill_mutation(
-    method: str,
-    params: dict[str, Any],
-    *,
-    json_output: bool,
-) -> dict[str, Any] | None:
-    """Use the running gateway when available; return None only for connect failures."""
-
-    from opensquilla.cli import gateway_client as gateway_client_module
-
-    client = gateway_client_module.GatewayClient()
-    try:
-        await client.connect(default_gateway_url())
-    except (SystemExit, ConnectionError, OSError):
-        await client.close()
-        return None
-
-    try:
-        payload = await client.call(method, params)
-    except gateway_client_module.GatewayRPCError as exc:
-        emit_error(
-            exc.message,
-            json_output=json_output,
-            code=exc.code,
-            details=exc.data,
-        )
-        raise typer.Exit(rpc_error_exit_code(exc.code)) from exc
-    except (ConnectionError, OSError) as exc:
-        emit_error(str(exc), json_output=json_output, code="GATEWAY_UNAVAILABLE")
-        raise typer.Exit(1) from exc
-    finally:
-        await client.close()
-
-    return payload if isinstance(payload, dict) else {"result": payload}
 
 
 def _emit_skill_mutation_result(
@@ -264,7 +225,7 @@ def skills_install(
     """Install a skill from a Community source."""
 
     async def _install() -> None:
-        payload = await _try_gateway_skill_mutation(
+        payload = await try_gateway_skill_mutation(
             "skills.install",
             {"identifier": identifier, "source": source, "force": force},
             json_output=json_output,
@@ -332,7 +293,7 @@ def skills_uninstall(
     """Uninstall a managed skill."""
 
     async def _uninstall() -> None:
-        payload = await _try_gateway_skill_mutation(
+        payload = await try_gateway_skill_mutation(
             "skills.uninstall",
             {"name": name},
             json_output=json_output,

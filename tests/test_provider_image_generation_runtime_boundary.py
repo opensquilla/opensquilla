@@ -14,6 +14,7 @@ RPC_CONFIG = ROOT / "src/opensquilla/gateway/rpc_config.py"
 RPC_ONBOARDING = ROOT / "src/opensquilla/gateway/rpc_onboarding.py"
 RPC_TOOLS = ROOT / "src/opensquilla/gateway/rpc_tools.py"
 TOOLS_POLICY = ROOT / "src/opensquilla/tools/policy.py"
+TOOLS_REGISTRY = ROOT / "src/opensquilla/tools/registry.py"
 
 
 def _top_level_names(path: Path) -> set[str]:
@@ -66,7 +67,19 @@ def test_gateway_reads_image_generation_capability_from_runtime_boundary() -> No
     assert (
         "opensquilla.tools.policy",
         "tool_surface_capabilities_from_runtime",
+    ) not in _imports_from(RPC_TOOLS)
+    assert (
+        "opensquilla.tools.registry",
+        "tools_catalog_payload",
     ) in _imports_from(RPC_TOOLS)
+    assert (
+        "opensquilla.tools.registry",
+        "tools_effective_payload",
+    ) in _imports_from(RPC_TOOLS)
+    assert (
+        "opensquilla.tools.policy",
+        "tool_surface_capabilities_from_runtime",
+    ) in _imports_from(TOOLS_REGISTRY)
     assert (
         "opensquilla.provider.image_generation_runtime",
         "image_generation_available",

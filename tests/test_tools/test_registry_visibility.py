@@ -16,12 +16,18 @@ async def _handler() -> str:
     return "ok"
 
 
-def _spec(name: str, *, exposed_by_default: bool = True) -> ToolSpec:
+def _spec(
+    name: str,
+    *,
+    exposed_by_default: bool = True,
+    owner_only: bool = False,
+) -> ToolSpec:
     return ToolSpec(
         name=name,
         description=f"{name} tool",
         parameters={},
         exposed_by_default=exposed_by_default,
+        owner_only=owner_only,
     )
 
 
@@ -206,6 +212,48 @@ def test_tool_surface_capabilities_can_be_built_from_runtime_dependencies() -> N
     assert caps.gateway_config is True
     assert caps.channel_backing is True
     assert caps.image_generation is False
+
+
+@pytest.mark.asyncio
+async def test_tools_rpc_payloads_are_built_by_registry_boundary() -> None:
+    from opensquilla.tools.registry import tools_catalog_payload, tools_effective_payload
+
+    registry = ToolRegistry()
+    registry.register(_spec("ordinary_probe"), _handler)
+    registry.register(_spec("owner_probe", owner_only=True), _handler)
+    registry.register(_spec("sessions_list"), _handler)
+    registry.register(_spec("sessions_send"), _handler)
+
+    params = {
+        "sessionKey": "agent:main:auto",
+        "agentId": "main",
+        "callerKind": "agent",
+        "interactionMode": "unattended",
+    }
+    caps = ToolSurfaceCapabilities(session_manager=True, task_runtime=False)
+
+    catalog = await tools_catalog_payload(
+        params,
+        tool_registry=registry,
+        is_owner=False,
+        tool_surface_capabilities=caps,
+    )
+    effective = await tools_effective_payload(
+        params,
+        tool_registry=registry,
+        is_owner=False,
+        tool_surface_capabilities=caps,
+    )
+
+    assert {tool["name"] for tool in catalog["tools"]} == {
+        "ordinary_probe",
+        "sessions_list",
+    }
+    assert {tool["name"] for tool in effective["tools"]} == {
+        "ordinary_probe",
+        "sessions_list",
+    }
+    assert all(tool["enabled"] is True for tool in catalog["tools"])
 
 
 @pytest.mark.asyncio

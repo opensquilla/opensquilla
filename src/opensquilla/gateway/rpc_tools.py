@@ -11,17 +11,20 @@ from opensquilla.search.execution import (
     search_query_rpc_payload,
     search_runtime_status,
 )
-from opensquilla.tools.policy import (
-    ToolSurfaceCapabilities,
-    tool_surface_capabilities_from_runtime,
+from opensquilla.tools.registry import (
+    tools_catalog_payload,
+    tools_effective_payload,
 )
-from opensquilla.tools.registry import get_default_registry
 
 _d = get_dispatcher()
 
 
-def _tool_surface_capabilities(ctx: RpcContext) -> ToolSurfaceCapabilities:
-    return tool_surface_capabilities_from_runtime(
+@_d.method("tools.catalog", scope="operator.read")
+async def _handle_tools_catalog(params: dict | None, ctx: RpcContext) -> dict:
+    return await tools_catalog_payload(
+        params,
+        tool_registry=getattr(ctx, "tool_registry", None),
+        is_owner=ctx.principal.is_owner,
         session_manager=getattr(ctx, "session_manager", None),
         task_runtime=getattr(ctx, "task_runtime", None),
         scheduler=getattr(ctx, "cron_scheduler", None),
@@ -31,40 +34,19 @@ def _tool_surface_capabilities(ctx: RpcContext) -> ToolSurfaceCapabilities:
     )
 
 
-@_d.method("tools.catalog", scope="operator.read")
-async def _handle_tools_catalog(params: dict | None, ctx: RpcContext) -> dict:
-    raw = params or {}
-    profile = raw.get("profile")
-    tool_registry = getattr(ctx, "tool_registry", None) or get_default_registry()
-    tools = await tool_registry.list_tools(
-        profile=profile,
-        session_key=raw.get("sessionKey"),
-        agent_id=raw.get("agentId"),
-        caller_kind=raw.get("callerKind"),
-        interaction_mode=raw.get("interactionMode"),
-        tool_surface_capabilities=_tool_surface_capabilities(ctx),
-        is_owner=ctx.principal.is_owner,
-    )
-    return {"tools": tools}
-
-
 @_d.method("tools.effective", scope="operator.read")
 async def _handle_tools_effective(params: dict | None, ctx: RpcContext) -> dict:
-    raw = params or {}
-    session_key = raw.get("sessionKey")
-    agent_id = raw.get("agentId")
-    caller_kind = raw.get("callerKind")
-    interaction_mode = raw.get("interactionMode")
-    tool_registry = getattr(ctx, "tool_registry", None) or get_default_registry()
-    tools = await tool_registry.effective_tools(
-        session_key=session_key,
-        agent_id=agent_id,
-        caller_kind=caller_kind,
-        interaction_mode=interaction_mode,
-        tool_surface_capabilities=_tool_surface_capabilities(ctx),
+    return await tools_effective_payload(
+        params,
+        tool_registry=getattr(ctx, "tool_registry", None),
         is_owner=ctx.principal.is_owner,
+        session_manager=getattr(ctx, "session_manager", None),
+        task_runtime=getattr(ctx, "task_runtime", None),
+        scheduler=getattr(ctx, "cron_scheduler", None),
+        gateway_config=getattr(ctx, "config", None),
+        channel_manager=getattr(ctx, "channel_manager", None),
+        originating_envelope=getattr(ctx, "originating_envelope", None),
     )
-    return {"tools": tools}
 
 
 @_d.method("tools.search_provider", scope="operator.read")

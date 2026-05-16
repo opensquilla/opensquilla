@@ -28,6 +28,11 @@ from opensquilla.observability.decision_log import (
     load_entries,
     write_decision_entry,
 )
+from opensquilla.observability.log_rpc import (
+    logs_status_rpc_payload,
+    logs_tail_rpc_payload,
+    logs_trace_rpc_payload,
+)
 from opensquilla.observability.prompt_report import PromptReport, ToolEntry, build_prompt_report
 from opensquilla.observability.replay import format_transcript, load_turn
 from opensquilla.observability.safety_log import (
@@ -69,6 +74,9 @@ __all__ = [
     "load_trace_events",
     "load_entries",
     "load_turn",
+    "logs_status_rpc_payload",
+    "logs_tail_rpc_payload",
+    "logs_trace_rpc_payload",
     "write_decision_entry",
     "write_safety_event",
     "write_trace_event",

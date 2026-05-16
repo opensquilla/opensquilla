@@ -1,12 +1,28 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 
+import opensquilla.gateway.rpc_logs as rpc_logs
 from opensquilla.gateway.config import GatewayConfig
-from opensquilla.gateway.diagnostics import DiagnosticsState
+from opensquilla.gateway.diagnostics import DiagnosticsState, diagnostics_status_payload
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
-from opensquilla.gateway.rpc_logs import _handle_logs_status, _handle_logs_tail
+from opensquilla.observability.log_rpc import logs_status_rpc_payload, logs_tail_rpc_payload
 from opensquilla.observability.trace import TraceContext, TraceEvent, write_trace_event
+
+
+def _logs_status_payload(
+    *,
+    config: GatewayConfig,
+    diagnostics_state: DiagnosticsState | None = None,
+) -> dict:
+    return logs_status_rpc_payload(
+        config=config,
+        diagnostics_state=diagnostics_state,
+        diagnostics_status=diagnostics_status_payload(diagnostics_state, config),
+    )
 
 
 @pytest.mark.asyncio
@@ -19,7 +35,7 @@ async def test_logs_tail_uses_opensquilla_log_dir_and_filters_level(tmp_path, mo
         encoding="utf-8",
     )
 
-    result = await _handle_logs_tail({"limit": 10, "cursor": 0, "level": "INFO"}, None)  # type: ignore[arg-type]
+    result = logs_tail_rpc_payload({"limit": 10, "cursor": 0, "level": "INFO"})
 
     assert result["lines"] == ["2026-05-03 [INFO] opensquilla: selected"]
     assert result["cursor"] == log_file.stat().st_size
@@ -30,7 +46,7 @@ async def test_logs_tail_uses_opensquilla_log_dir_and_filters_level(tmp_path, mo
 async def test_logs_tail_missing_file_returns_empty_payload(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))
 
-    result = await _handle_logs_tail({"limit": 10, "cursor": 0}, None)  # type: ignore[arg-type]
+    result = logs_tail_rpc_payload({"limit": 10, "cursor": 0})
 
     assert result == {"lines": [], "cursor": 0, "has_more": False}
 
@@ -41,7 +57,7 @@ async def test_logs_status_reports_raw_capture_disabled_by_default(monkeypatch) 
     monkeypatch.delenv("OPENSQUILLA_TURN_CALL_LOG_DIR", raising=False)
     monkeypatch.delenv("OPENSQUILLA_LOG_DIR", raising=False)
 
-    result = await _handle_logs_status({}, RpcContext(conn_id="test", config=GatewayConfig()))
+    result = _logs_status_payload(config=GatewayConfig())
 
     assert result["raw_turn_call_log"]["enabled"] is False
     assert result["raw_turn_call_log"]["source"] == "off"
@@ -58,14 +74,14 @@ async def test_logs_status_reports_raw_capture_disabled_by_default(monkeypatch) 
 async def test_logs_status_reports_truthy_and_falsy_raw_capture_env(monkeypatch) -> None:
     for value in ("1", "TRUE", " yes ", "on"):
         monkeypatch.setenv("OPENSQUILLA_TURN_CALL_LOG", value)
-        result = await _handle_logs_status({}, RpcContext(conn_id="test", config=GatewayConfig()))
+        result = _logs_status_payload(config=GatewayConfig())
         assert result["raw_turn_call_log"]["enabled"] is True
         assert result["raw_turn_call_log"]["source"] == "env"
         assert result["raw_turn_call_log"]["enable_env"]["truthy"] is True
 
     for value in ("0", "false", "no", "off", ""):
         monkeypatch.setenv("OPENSQUILLA_TURN_CALL_LOG", value)
-        result = await _handle_logs_status({}, RpcContext(conn_id="test", config=GatewayConfig()))
+        result = _logs_status_payload(config=GatewayConfig())
         assert result["raw_turn_call_log"]["enabled"] is False
         assert result["raw_turn_call_log"]["source"] == "off"
         assert result["raw_turn_call_log"]["enable_env"]["truthy"] is False
@@ -77,10 +93,7 @@ async def test_logs_status_reports_runtime_raw_capture_source(monkeypatch) -> No
     state = DiagnosticsState.from_config(GatewayConfig())
     state.set_runtime(enabled=True, raw=True)
 
-    result = await _handle_logs_status(
-        {},
-        RpcContext(conn_id="test", config=GatewayConfig(), diagnostics_state=state),
-    )
+    result = _logs_status_payload(config=GatewayConfig(), diagnostics_state=state)
 
     assert result["raw_turn_call_log"]["enabled"] is True
     assert result["raw_turn_call_log"]["source"] == "runtime"
@@ -96,10 +109,7 @@ async def test_logs_status_reports_env_source_when_env_and_runtime_raw_are_enabl
     state = DiagnosticsState.from_config(GatewayConfig())
     state.set_runtime(enabled=True, raw=True)
 
-    result = await _handle_logs_status(
-        {},
-        RpcContext(conn_id="test", config=GatewayConfig(), diagnostics_state=state),
-    )
+    result = _logs_status_payload(config=GatewayConfig(), diagnostics_state=state)
 
     assert result["raw_turn_call_log"]["enabled"] is True
     assert result["raw_turn_call_log"]["source"] == "env"
@@ -115,7 +125,7 @@ async def test_logs_status_resolves_raw_directory_precedence_without_creating_pa
     monkeypatch.setenv("OPENSQUILLA_TURN_CALL_LOG_DIR", str(raw_dir))
     monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(shared_log_dir))
 
-    result = await _handle_logs_status({}, RpcContext(conn_id="test", config=GatewayConfig()))
+    result = _logs_status_payload(config=GatewayConfig())
 
     assert result["raw_turn_call_log"]["directory"] == {
         "path": str(raw_dir),
@@ -126,7 +136,7 @@ async def test_logs_status_resolves_raw_directory_precedence_without_creating_pa
     assert not shared_log_dir.exists()
 
     monkeypatch.setenv("OPENSQUILLA_TURN_CALL_LOG_DIR", " ")
-    result = await _handle_logs_status({}, RpcContext(conn_id="test", config=GatewayConfig()))
+    result = _logs_status_payload(config=GatewayConfig())
 
     assert result["raw_turn_call_log"]["directory"] == {
         "path": str(shared_log_dir),
@@ -146,7 +156,7 @@ async def test_logs_status_reports_gateway_file_log_path_and_existence(
     log_file.write_text("2026-05-03 [INFO] opensquilla: selected\n", encoding="utf-8")
     config = GatewayConfig(log_file_enabled=False, log_level="INFO", diagnostics_enabled=True)
 
-    result = await _handle_logs_status({}, RpcContext(conn_id="test", config=config))
+    result = _logs_status_payload(config=config)
 
     assert result["gateway_file_log"]["enabled"] is False
     assert result["gateway_file_log"]["level"] == "INFO"
@@ -169,7 +179,7 @@ async def test_logs_status_reports_trace_log_directory(tmp_path, monkeypatch) ->
         log_dir=tmp_path,
     )
 
-    result = await _handle_logs_status({}, RpcContext(conn_id="test", config=GatewayConfig()))
+    result = _logs_status_payload(config=GatewayConfig())
 
     assert result["trace_log"] == {
         "directory": {
@@ -220,3 +230,20 @@ async def test_logs_status_is_mounted_on_dispatcher(monkeypatch) -> None:
     assert response.ok is True
     assert isinstance(response.payload, dict)
     assert response.payload["raw_turn_call_log"]["enabled"] is False
+
+
+def test_gateway_rpc_logs_delegates_payloads_to_observability_boundary() -> None:
+    source = Path(rpc_logs.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    top_level_functions = {
+        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert "_build_logs_status" not in top_level_functions
+    assert "_find_log_file" not in top_level_functions
+    assert "_env_status" not in top_level_functions
+    assert "load_trace_events" not in source
+    assert "logs_status_rpc_payload" in source
+    assert "logs_tail_rpc_payload" in source
+    assert "logs_trace_rpc_payload" in source

@@ -951,7 +951,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             # previous turn. "always" entries survive per IntentApprovalCache
             # scope semantics.
             try:
-                from opensquilla.sandbox.intent_cache import get_intent_cache
+                from opensquilla.application.intent_cache import get_intent_cache
 
                 get_intent_cache().clear_scope("once")
             except Exception:  # pragma: no cover — never block turn start

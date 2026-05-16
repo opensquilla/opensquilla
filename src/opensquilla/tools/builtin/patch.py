@@ -349,7 +349,7 @@ def _validate_patch_approval(
     approval_id: str,
     plan: _PatchApprovalPlan,
 ) -> dict[str, object] | None:
-    from opensquilla.gateway.approval_queue import get_approval_queue
+    from opensquilla.application.approval_queue import get_approval_queue
 
     queue = get_approval_queue()
     try:
@@ -386,7 +386,7 @@ def _validate_patch_approval(
 
 
 def _request_patch_approval(plan: _PatchApprovalPlan) -> dict[str, object] | None:
-    from opensquilla.gateway.approval_queue import get_approval_queue
+    from opensquilla.application.approval_queue import get_approval_queue
 
     queue = get_approval_queue()
     settings = queue.get_settings()

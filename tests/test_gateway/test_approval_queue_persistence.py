@@ -5,7 +5,13 @@ import sqlite3
 
 import pytest
 
-from opensquilla.gateway.approval_queue import ApprovalQueue
+from opensquilla.application.approval_queue import ApprovalQueue
+
+
+def test_gateway_approval_queue_module_reexports_application_service() -> None:
+    from opensquilla.gateway.approval_queue import ApprovalQueue as GatewayApprovalQueue
+
+    assert GatewayApprovalQueue is ApprovalQueue
 
 
 def test_approval_queue_request_persists_across_queue_restart(tmp_path) -> None:

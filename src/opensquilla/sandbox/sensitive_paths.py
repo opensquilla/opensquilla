@@ -164,7 +164,7 @@ def sensitive_target_in_command(command: str) -> str | None:
     Multi-target commands (``rm /tmp/ok /etc/bad``) are each checked — the
     presence of a single sensitive path is enough to block the whole command.
     """
-    from opensquilla.sandbox.intent_cache import _extract_intents
+    from opensquilla.application.intent_cache import _extract_intents
 
     for _kind, target in _extract_intents(command):
         marker = is_sensitive_path(target)

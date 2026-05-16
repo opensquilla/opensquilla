@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+from opensquilla.application.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.tools.builtin import patch as patch_tool
 from opensquilla.tools.registry import get_default_registry
 from opensquilla.tools.types import (

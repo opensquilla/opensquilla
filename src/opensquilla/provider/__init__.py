@@ -9,6 +9,7 @@ from .failures import (
     classify_provider_error,
     decide_recovery_action,
 )
+from .model_listing import ProviderModelRow, list_provider_model_rows
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .protocol import (
@@ -95,6 +96,8 @@ __all__ = [
     "ProviderFactory",
     "ProviderFactoryPort",
     "build_provider_from_config",
+    "ProviderModelRow",
+    "list_provider_model_rows",
     # Credentials
     "Credential",
     "CredentialPool",

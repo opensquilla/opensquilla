@@ -17,6 +17,8 @@ ARTIFACT_REF_KIND = "artifact_ref"
 ARTIFACT_STORE = "artifacts"
 ARTIFACT_SESSION_BUCKET = "s"
 ARTIFACT_MATERIAL_NAME = "data"
+ARTIFACT_STORE_TOKEN_CHARS = 12
+_PREVIOUS_ARTIFACT_STORE_TOKEN_CHARS = 16
 DEFAULT_ARTIFACT_MAX_BYTES = 30 * 1024 * 1024
 DEFAULT_ARTIFACT_DISK_BUDGET_BYTES = 512 * 1024 * 1024
 
@@ -247,15 +249,31 @@ class ArtifactStore:
         material_path = self._artifact_dir(ref.session_id, ref.id) / ARTIFACT_MATERIAL_NAME
         if material_path.exists():
             return material_path
+        previous_material_path = (
+            self._artifact_dir(
+                ref.session_id,
+                ref.id,
+                token_chars=_PREVIOUS_ARTIFACT_STORE_TOKEN_CHARS,
+            )
+            / ARTIFACT_MATERIAL_NAME
+        )
+        if previous_material_path.exists():
+            return previous_material_path
         return self._legacy_artifact_dir(ref.session_id, ref.id) / ref.sha256
 
-    def _artifact_dir(self, session_id: str, artifact_id: str) -> Path:
+    def _artifact_dir(
+        self,
+        session_id: str,
+        artifact_id: str,
+        *,
+        token_chars: int = ARTIFACT_STORE_TOKEN_CHARS,
+    ) -> Path:
         return (
             self.media_root
             / ARTIFACT_STORE
             / ARTIFACT_SESSION_BUCKET
-            / _session_store_token(session_id)
-            / _artifact_store_token(artifact_id)
+            / _session_store_token(session_id, token_chars=token_chars)
+            / _artifact_store_token(artifact_id, token_chars=token_chars)
         )
 
     def _legacy_artifact_dir(self, session_id: str, artifact_id: str) -> Path:
@@ -269,6 +287,11 @@ class ArtifactStore:
     def _resolve_meta_path(self, session_id: str, artifact_id: str) -> Path:
         for artifact_dir in (
             self._artifact_dir(session_id, artifact_id),
+            self._artifact_dir(
+                session_id,
+                artifact_id,
+                token_chars=_PREVIOUS_ARTIFACT_STORE_TOKEN_CHARS,
+            ),
             self._legacy_artifact_dir(session_id, artifact_id),
         ):
             meta_path = artifact_dir / "meta.json"
@@ -309,14 +332,22 @@ def _safe_token(value: str) -> str:
     return cleaned[:180] or "session"
 
 
-def _session_store_token(session_id: str) -> str:
+def _session_store_token(
+    session_id: str,
+    *,
+    token_chars: int = ARTIFACT_STORE_TOKEN_CHARS,
+) -> str:
     raw = _validate_non_empty("session_id", session_id)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:token_chars]
 
 
-def _artifact_store_token(artifact_id: str) -> str:
+def _artifact_store_token(
+    artifact_id: str,
+    *,
+    token_chars: int = ARTIFACT_STORE_TOKEN_CHARS,
+) -> str:
     raw = _validate_artifact_id(artifact_id)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:token_chars]
 
 
 def _validate_artifact_id(value: Any) -> str:

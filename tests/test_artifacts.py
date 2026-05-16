@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -63,6 +64,35 @@ def test_artifact_store_uses_short_material_paths_for_uuid_sessions(tmp_path: Pa
     resolved_ref, resolved_path = store.resolve_for_download(ref.id, session_id=session_id)
     assert resolved_ref == ref
     assert resolved_path == material_path
+
+
+def test_artifact_store_resolves_previous_short_material_paths(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path)
+    session_id = "532d5065-abce-499f-97b0-bbf2a067d5ab"
+    ref = store.publish_bytes(
+        b"pptx",
+        session_id=session_id,
+        session_key="agent:main:webchat:default",
+        name="report.pptx",
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        source="publish_artifact",
+    )
+
+    current_dir = store.path_for(ref).parent
+    old_dir = (
+        tmp_path
+        / "artifacts"
+        / "s"
+        / hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+        / hashlib.sha256(ref.id.encode("utf-8")).hexdigest()[:16]
+    )
+    old_dir.parent.mkdir(parents=True, exist_ok=True)
+    current_dir.rename(old_dir)
+
+    resolved_ref, resolved_path = store.resolve_for_download(ref.id, session_id=session_id)
+
+    assert resolved_ref == ref
+    assert resolved_path == old_dir / "data"
 
 
 def test_artifact_payload_omits_session_key_and_query_token(tmp_path: Path) -> None:

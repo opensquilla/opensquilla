@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
+from opensquilla.agents.config import AgentEntryConfig
 from opensquilla.agents.scope import resolve_agent_workspace_dir
-from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
 from opensquilla.identity.bootstrap import (
     CORE_BOOTSTRAP_TEMPLATE_FILENAMES,
     ONE_SHOT_BOOTSTRAP_FILENAME,
@@ -26,12 +26,17 @@ _WORKSPACE_AGENT_FILE_NAME_SET = frozenset(_WORKSPACE_AGENT_FILE_NAMES)
 _ALLOWED_FILE_EXTENSIONS = frozenset({".md", ".txt", ".yaml", ".yml", ".j2"})
 
 
+class AgentRegistryConfig(Protocol):
+    agents: list[AgentEntryConfig]
+    config_path: str | None
+
+
 class AgentRegistry:
-    """Durable agent registry backed by ``GatewayConfig.agents``."""
+    """Durable agent registry backed by a config object's ``agents`` list."""
 
     def __init__(
         self,
-        config: GatewayConfig,
+        config: AgentRegistryConfig,
         *,
         config_path: str | Path | None = None,
         persist_changes: bool = True,
@@ -180,7 +185,7 @@ class AgentRegistry:
         from opensquilla.onboarding.config_store import persist_config
 
         persist_config(
-            self.config,
+            cast(Any, self.config),
             path=self.config_path or self.config.config_path,
             restart_required=True,
         )

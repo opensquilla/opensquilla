@@ -15,10 +15,15 @@ from opensquilla.skills.rpc_payload import (
     skill_install_unavailable_rpc_payload,
     skill_status_from_report,
     skill_to_rpc_payload,
+    skill_uninstall_result_rpc_payload,
+    skill_uninstall_unavailable_rpc_payload,
     skills_list_rpc_payload,
     skills_search_rpc_payload,
     skills_search_unavailable_rpc_payload,
     skills_status_rpc_payload,
+    skills_update_empty_results_rpc_payload,
+    skills_update_results_rpc_payload,
+    skills_update_unavailable_rpc_payload,
 )
 from opensquilla.skills.types import (
     SkillInstallSpec,
@@ -262,6 +267,36 @@ def test_skill_install_payloads_preserve_wire_shape_and_scan_details() -> None:
     }
 
 
+def test_skill_update_and_uninstall_payloads_preserve_wire_shape() -> None:
+    first = SimpleNamespace(success=True, name="planner", message="Updated planner")
+    second = SimpleNamespace(success=False, name="writer", message="Missing writer")
+
+    assert skills_update_empty_results_rpc_payload("No skill loader configured") == {
+        "results": [],
+        "success": False,
+        "message": "No skill loader configured",
+    }
+    assert skills_update_unavailable_rpc_payload("No skill installer configured") == {
+        "success": False,
+        "message": "No skill installer configured",
+    }
+    assert skills_update_results_rpc_payload([first, second]) == {
+        "results": [
+            {"success": True, "name": "planner", "message": "Updated planner"},
+            {"success": False, "name": "writer", "message": "Missing writer"},
+        ]
+    }
+    assert skill_uninstall_unavailable_rpc_payload("No skill installer configured") == {
+        "success": False,
+        "message": "No skill installer configured",
+    }
+    assert skill_uninstall_result_rpc_payload(first) == {
+        "success": True,
+        "name": "planner",
+        "message": "Updated planner",
+    }
+
+
 @pytest.mark.asyncio
 async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
     monkeypatch: pytest.MonkeyPatch,
@@ -294,6 +329,26 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
         "skill_install_unavailable_rpc_payload",
         lambda message: {"success": False, "message": message, "delegated": True},
     )
+    monkeypatch.setattr(
+        rpc_skills,
+        "skills_update_empty_results_rpc_payload",
+        lambda message: {
+            "results": [],
+            "success": False,
+            "message": message,
+            "delegated": True,
+        },
+    )
+    monkeypatch.setattr(
+        rpc_skills,
+        "skills_update_unavailable_rpc_payload",
+        lambda message: {"success": False, "message": message, "delegated": True},
+    )
+    monkeypatch.setattr(
+        rpc_skills,
+        "skill_uninstall_unavailable_rpc_payload",
+        lambda message: {"success": False, "message": message, "delegated": True},
+    )
 
     assert await rpc_skills._handle_skills_status(None, ctx) == [
         {"name": "status", "loader": True}
@@ -313,6 +368,23 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
     assert await rpc_skills._handle_skills_install({"identifier": "planner"}, object()) == {
         "success": False,
         "message": "No skill loader configured",
+        "delegated": True,
+    }
+    monkeypatch.setattr(rpc_skills, "_get_default_installer", lambda: None)
+    assert await rpc_skills._handle_skills_update(None, object()) == {
+        "results": [],
+        "success": False,
+        "message": "No skill loader configured",
+        "delegated": True,
+    }
+    assert await rpc_skills._handle_skills_update(None, ctx) == {
+        "success": False,
+        "message": "No skill installer configured",
+        "delegated": True,
+    }
+    assert await rpc_skills._handle_skills_uninstall({"name": "planner"}, ctx) == {
+        "success": False,
+        "message": "No skill installer configured",
         "delegated": True,
     }
 
@@ -357,6 +429,11 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
         "skills_search_unavailable_rpc_payload",
         "skill_install_result_rpc_payload",
         "skill_install_unavailable_rpc_payload",
+        "skill_uninstall_result_rpc_payload",
+        "skill_uninstall_unavailable_rpc_payload",
+        "skills_update_empty_results_rpc_payload",
+        "skills_update_results_rpc_payload",
+        "skills_update_unavailable_rpc_payload",
     }.issubset(imported_helpers)
     assert {
         "skills_search_rpc_payload",
@@ -383,6 +460,49 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
         "skill_install_result_rpc_payload",
         "skill_install_unavailable_rpc_payload",
     }.issubset(install_handler_names)
+    update_handler = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_skills_update"
+    }
+    update_handler_names = {
+        node.id
+        for handler in update_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Name)
+    }
+    update_direct_key_sets = {
+        tuple(key.value for key in node.keys if isinstance(key, ast.Constant))
+        for handler in update_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Dict)
+    }
+    assert {
+        "skills_update_empty_results_rpc_payload",
+        "skills_update_results_rpc_payload",
+        "skills_update_unavailable_rpc_payload",
+    }.issubset(update_handler_names)
+    uninstall_handler = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_skills_uninstall"
+    }
+    uninstall_handler_names = {
+        node.id
+        for handler in uninstall_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Name)
+    }
+    uninstall_direct_key_sets = {
+        tuple(key.value for key in node.keys if isinstance(key, ast.Constant))
+        for handler in uninstall_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Dict)
+    }
+    assert {
+        "skill_uninstall_result_rpc_payload",
+        "skill_uninstall_unavailable_rpc_payload",
+    }.issubset(uninstall_handler_names)
     assert "_skill_to_dict" not in top_level_functions
     assert "_status_from_report" not in top_level_functions
     assert "_status_detail" not in top_level_functions
@@ -401,3 +521,8 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     assert ("success", "message") not in install_direct_key_sets
     assert ("success", "name", "message") not in install_direct_key_sets
     assert ("scan_verdict", "scan_findings") not in install_direct_key_sets
+    assert ("results", "success", "message") not in update_direct_key_sets
+    assert ("success", "message") not in update_direct_key_sets
+    assert ("results",) not in update_direct_key_sets
+    assert ("success", "message") not in uninstall_direct_key_sets
+    assert ("success", "name", "message") not in uninstall_direct_key_sets

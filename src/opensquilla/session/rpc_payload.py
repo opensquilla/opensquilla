@@ -241,6 +241,10 @@ def session_preview_row(
     }
 
 
+def session_preview_response(now_ms: int, previews: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"ts": now_ms, "previews": previews}
+
+
 def session_resolve_response(session: Any) -> dict[str, Any]:
     return {
         "session_key": session.session_key,
@@ -356,6 +360,7 @@ __all__ = [
     "session_list_row",
     "session_patch_response",
     "session_preview_last_message",
+    "session_preview_response",
     "session_preview_row",
     "session_reset_response",
     "session_resolve_response",

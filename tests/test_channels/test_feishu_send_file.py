@@ -8,7 +8,7 @@ import pytest
 
 from opensquilla.channels.feishu import FeishuChannel, FeishuChannelConfig, _TokenState
 from opensquilla.channels.stream_policy import resolve_channel_stream_policy
-from opensquilla.gateway.attachment_ingest import MAX_ATTACHMENT_BYTES
+from opensquilla.contracts.attachments import MAX_ATTACHMENT_BYTES
 
 
 @pytest.mark.asyncio

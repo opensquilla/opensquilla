@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import structlog
 
 from opensquilla.channels.types import IncomingMessage, OutgoingMessage
-from opensquilla.gateway.websocket import WsConnection
 
 log = structlog.get_logger(__name__)
+
+
+class WebSocketConnection(Protocol):
+    conn_id: str
+
+    async def send_event(self, event: str, payload: Any = None) -> None: ...
 
 
 @dataclass
@@ -22,7 +27,7 @@ class WebSocketChannel:
     (e.g. the gateway message loop) using ``enqueue``.
     """
 
-    conn: WsConnection
+    conn: WebSocketConnection
     channel_id: str = "websocket"
     sender_id: str = "ws-client"
     _queue: asyncio.Queue[IncomingMessage] = field(

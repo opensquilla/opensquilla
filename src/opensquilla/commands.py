@@ -9,7 +9,7 @@ lockstep across surfaces.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -99,6 +99,43 @@ class SlashCommandRegistry:
     def help_lines(self, surface: Surface) -> list[str]:
         """Return ``["/name — description", ...]`` for the surface, sorted."""
         return [f"{c.name} — {c.description}" for c in self.for_surface(surface)]
+
+
+def command_def_rpc_payload(cmd: CommandDef) -> dict[str, Any]:
+    """Project a CommandDef into a JSON-safe RPC payload."""
+
+    out: dict[str, Any] = {
+        "name": cmd.name,
+        "usage": cmd.usage,
+        "description": cmd.description,
+        "aliases": list(cmd.aliases),
+    }
+    if cmd.rpc_method is not None:
+        out["rpc_method"] = cmd.rpc_method
+    return out
+
+
+def commands_for_surface_rpc_payload(
+    params: Mapping[str, Any] | None,
+    registry: SlashCommandRegistry | None = None,
+) -> dict[str, Any]:
+    """Build the RPC wire payload for slash commands visible on a surface."""
+
+    registry = registry or DEFAULT_REGISTRY
+    if params is not None and not isinstance(params, Mapping):
+        raise ValueError("params must be an object")
+    raw = (params or {}).get("surface", "web")
+    if not isinstance(raw, str):
+        raise ValueError("params.surface must be a string")
+    try:
+        surface = Surface(raw.lower())
+    except ValueError as exc:
+        valid = ", ".join(sorted(s.value for s in Surface))
+        raise ValueError(f"unknown surface {raw!r}; valid: {valid}") from exc
+    return {
+        "surface": surface.value,
+        "commands": [command_def_rpc_payload(cmd) for cmd in registry.for_surface(surface)],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -317,4 +354,6 @@ __all__ = [
     "ParamsFactory",
     "SlashCommandRegistry",
     "Surface",
+    "command_def_rpc_payload",
+    "commands_for_surface_rpc_payload",
 ]

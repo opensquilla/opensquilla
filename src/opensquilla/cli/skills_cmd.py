@@ -24,6 +24,10 @@ from opensquilla.skills.hub.operations import (
     skill_uninstall_request,
     uninstall_skill,
 )
+from opensquilla.skills.hub.publisher import (
+    publish_skill_from_request,
+    skill_publish_request,
+)
 from opensquilla.skills.hub.search import search_skills, skill_search_request
 from opensquilla.skills.hub.taps import (
     add_tap,
@@ -468,12 +472,11 @@ def skills_publish(
     repo: str | None = typer.Option(None, "--repo", "-r", help="Target repo (owner/repo) for PR"),
 ) -> None:
     """Validate and publish a skill to a repository."""
-    from pathlib import Path
 
     async def _publish() -> None:
-        from opensquilla.skills.hub.publisher import publish_skill
-
-        result = await publish_skill(Path(skill_dir), target_repo=repo)
+        result = await publish_skill_from_request(
+            skill_publish_request({"skill_dir": skill_dir, "target_repo": repo})
+        )
         if result.success:
             console.print(f"[green]OK:[/] {result.message}")
         else:

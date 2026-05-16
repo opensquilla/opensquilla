@@ -491,19 +491,15 @@ def test_skills_tap_commands_delegate_to_hub_tap_operations(monkeypatch):
     ]
 
 
-def test_cli_skills_tap_does_not_construct_taps_manager() -> None:
+def test_cli_skills_tap_does_not_import_taps_boundary() -> None:
     from opensquilla.cli import skills_cmd
 
     tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
-    tap_imports = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "opensquilla.skills.hub.taps"
-        for alias in node.names
+    imported_modules = {
+        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
     }
 
-    assert "TapsManager" not in tap_imports
+    assert "opensquilla.skills.hub.taps" not in imported_modules
     assert not any(
         isinstance(node, ast.Name) and node.id == "TapsManager"
         for node in ast.walk(tree)

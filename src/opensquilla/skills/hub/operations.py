@@ -19,6 +19,12 @@ if TYPE_CHECKING:
         SkillDepsInstallRequest,
     )
     from opensquilla.skills.hub.publisher import PublishResult, SkillPublishRequest
+    from opensquilla.skills.hub.taps import (
+        Tap,
+        TapAddRequest,
+        TapRemoveRequest,
+        TapsManager,
+    )
 
 SkillInstallerFactory = Callable[[], SkillInstaller | None]
 SkillRouterFactory = Callable[[], Any | None]
@@ -130,6 +136,22 @@ def skill_publish_request(params: Mapping[str, Any] | None) -> SkillPublishReque
     return _build_request(dict(params) if isinstance(params, Mapping) else params)
 
 
+def tap_add_request(params: Mapping[str, Any] | None) -> TapAddRequest:
+    """Build a ``skills.tap.add`` operation request from CLI params."""
+
+    from opensquilla.skills.hub.taps import tap_add_request as _build_request
+
+    return _build_request(dict(params) if isinstance(params, Mapping) else params)
+
+
+def tap_remove_request(params: Mapping[str, Any] | None) -> TapRemoveRequest:
+    """Build a ``skills.tap.remove`` operation request from CLI params."""
+
+    from opensquilla.skills.hub.taps import tap_remove_request as _build_request
+
+    return _build_request(dict(params) if isinstance(params, Mapping) else params)
+
+
 def skill_install_request(params: Mapping[str, Any] | None) -> SkillInstallRequest:
     """Build a ``skills.install`` operation request from RPC params."""
 
@@ -217,6 +239,38 @@ async def publish_skill_from_request(
     from opensquilla.skills.hub.publisher import publish_skill_from_request as _publish
 
     return await _publish(request)
+
+
+def default_taps_manager_factory() -> TapsManager:
+    """Return the default Community tap manager."""
+
+    from opensquilla.skills.hub.taps import default_taps_manager_factory as _factory
+
+    return _factory()
+
+
+def add_tap(manager: TapsManager, request: TapAddRequest) -> Tap:
+    """Register a Community skill tap from a validated operation request."""
+
+    from opensquilla.skills.hub.taps import add_tap as _add_tap
+
+    return _add_tap(manager, request)
+
+
+def list_taps(manager: TapsManager) -> list[Tap]:
+    """List registered Community skill taps."""
+
+    from opensquilla.skills.hub.taps import list_taps as _list_taps
+
+    return _list_taps(manager)
+
+
+def remove_tap(manager: TapsManager, request: TapRemoveRequest) -> bool:
+    """Remove a Community skill tap from a validated operation request."""
+
+    from opensquilla.skills.hub.taps import remove_tap as _remove_tap
+
+    return _remove_tap(manager, request)
 
 
 def invalidate_skill_loader(loader: Any | None) -> None:

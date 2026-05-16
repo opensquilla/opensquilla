@@ -864,8 +864,39 @@ def test_cli_skills_tap_does_not_import_taps_boundary() -> None:
     )
 
 
-def test_skills_publish_delegates_to_hub_publish_request(monkeypatch):
+def test_skills_publish_delegates_to_cli_publish_boundary(monkeypatch):
     from opensquilla.cli import skills_cmd
+
+    calls: list[tuple[str, object]] = []
+
+    async def fake_publish_skill_for_cli(
+        skill_dir: str,
+        repo: str | None = None,
+    ) -> SimpleNamespace:
+        calls.append(("publish", {"skill_dir": skill_dir, "repo": repo}))
+        return SimpleNamespace(success=True, message="validated")
+
+    monkeypatch.setattr(
+        skills_cmd,
+        "publish_skill_for_cli",
+        fake_publish_skill_for_cli,
+    )
+
+    result = runner.invoke(
+        app,
+        ["skills", "publish", "/tmp/demo-skill", "--repo", "acme/skills"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "validated" in result.stdout
+    assert calls == [
+        ("publish", {"skill_dir": "/tmp/demo-skill", "repo": "acme/skills"}),
+    ]
+
+
+def test_cli_skill_publish_uses_hub_operation_boundary(monkeypatch):
+    from opensquilla.cli.skills_publish import publish_skill_for_cli
+    from opensquilla.skills.hub import operations as hub_operations
 
     calls: list[tuple[str, object]] = []
 
@@ -878,23 +909,20 @@ def test_skills_publish_delegates_to_hub_publish_request(monkeypatch):
         return SimpleNamespace(success=True, message="validated")
 
     monkeypatch.setattr(
-        skills_cmd,
+        hub_operations,
         "skill_publish_request",
         fake_skill_publish_request,
     )
     monkeypatch.setattr(
-        skills_cmd,
+        hub_operations,
         "publish_skill_from_request",
         fake_publish_skill_from_request,
     )
 
-    result = runner.invoke(
-        app,
-        ["skills", "publish", "/tmp/demo-skill", "--repo", "acme/skills"],
-    )
+    result = asyncio.run(publish_skill_for_cli("/tmp/demo-skill", "acme/skills"))
 
-    assert result.exit_code == 0, result.stdout
-    assert "validated" in result.stdout
+    assert result.success is True
+    assert result.message == "validated"
     assert calls == [
         (
             "request",
@@ -914,8 +942,17 @@ def test_cli_skills_publish_does_not_import_publisher_boundary() -> None:
     imported_modules = {
         node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
     }
+    imported_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.skills.hub.operations"
+        for alias in node.names
+    }
 
     assert "opensquilla.skills.hub.publisher" not in imported_modules
+    assert "publish_skill_from_request" not in imported_names
+    assert "skill_publish_request" not in imported_names
     assert not any(
         isinstance(node, ast.Name) and node.id == "publish_skill"
         for node in ast.walk(tree)

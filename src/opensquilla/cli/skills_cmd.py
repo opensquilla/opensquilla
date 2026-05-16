@@ -20,14 +20,11 @@ from opensquilla.cli.skills_local_mutations import (
     run_local_skill_install,
     run_local_skill_uninstall,
 )
+from opensquilla.cli.skills_publish import publish_skill_for_cli
 from opensquilla.cli.skills_rows import load_skill_rows
 from opensquilla.cli.skills_search_rows import search_skill_rows
 from opensquilla.cli.skills_taps import add_skill_tap, list_skill_taps, remove_skill_tap
 from opensquilla.cli.ui import console
-from opensquilla.skills.hub.operations import (
-    publish_skill_from_request,
-    skill_publish_request,
-)
 
 skills_app = typer.Typer(help="Skill management - list, search, install, uninstall.")
 
@@ -431,9 +428,7 @@ def skills_publish(
     """Validate and publish a skill to a repository."""
 
     async def _publish() -> None:
-        result = await publish_skill_from_request(
-            skill_publish_request({"skill_dir": skill_dir, "target_repo": repo})
-        )
+        result = await publish_skill_for_cli(skill_dir, repo)
         if result.success:
             console.print(f"[green]OK:[/] {result.message}")
         else:

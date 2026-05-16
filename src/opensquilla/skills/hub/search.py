@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from opensquilla.skills.hub.defaults import get_default_skill_router
 from opensquilla.skills.hub.lockfile import installed_skill_names
+
+SkillRouterFactory = Callable[[], Any | None]
 
 
 @dataclass(frozen=True)
@@ -51,9 +55,13 @@ def skill_search_request(params: dict[str, Any] | None) -> SkillSearchRequest:
 async def search_skills(
     router: Any | None,
     request: SkillSearchRequest,
+    *,
+    default_router_factory: SkillRouterFactory = get_default_skill_router,
 ) -> SkillSearchOutcome:
     """Search Community skill sources and include installed-skill aliases."""
 
+    if router is None:
+        router = default_router_factory()
     if router is None:
         return SkillSearchOutcome(results=[], installed_names=set(), unavailable=True)
 

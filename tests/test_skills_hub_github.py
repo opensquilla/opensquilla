@@ -124,14 +124,16 @@ def test_default_skill_sources_preserve_default_order_and_tokens() -> None:
 
 
 def test_default_skill_router_exposes_github_without_token(monkeypatch) -> None:
-    import opensquilla.gateway.rpc_skills as rpc_skills
-    from opensquilla.skills.hub.defaults import reset_default_skill_hub
+    from opensquilla.skills.hub.defaults import (
+        get_default_skill_router,
+        reset_default_skill_hub,
+    )
 
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     reset_default_skill_hub()
 
     try:
-        router = rpc_skills._get_default_router()
+        router = get_default_skill_router()
         assert "github" in router.source_ids
     finally:
         reset_default_skill_hub()

@@ -30,8 +30,12 @@ def test_skill_search_request_validates_defaults_and_source_filter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_skills_returns_unavailable_without_router() -> None:
-    outcome = await search_skills(None, skill_search_request({"query": "plan"}))
+async def test_search_skills_returns_unavailable_without_any_router() -> None:
+    outcome = await search_skills(
+        None,
+        skill_search_request({"query": "plan"}),
+        default_router_factory=lambda: None,
+    )
 
     assert outcome.results == []
     assert outcome.installed_names == set()
@@ -60,6 +64,36 @@ async def test_search_skills_delegates_to_router_and_reads_installed_names(
     outcome = await search_skills(
         FakeRouter(),
         skill_search_request({"query": "plan", "limit": 3, "source": "github"}),
+    )
+
+    assert [result.identifier for result in outcome.results] == ["planner"]
+    assert outcome.installed_names == {"planner"}
+    assert outcome.unavailable is False
+
+
+@pytest.mark.asyncio
+async def test_search_skills_uses_default_router_when_context_router_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRouter:
+        async def search(
+            self,
+            query: object,
+            *,
+            limit: int,
+            source_id: str | None,
+        ) -> list[SimpleNamespace]:
+            assert query == "plan"
+            assert limit == 20
+            assert source_id is None
+            return [SimpleNamespace(identifier="planner")]
+
+    monkeypatch.setattr(hub_search, "installed_skill_names", lambda: {"planner"})
+
+    outcome = await search_skills(
+        None,
+        skill_search_request({"query": "plan"}),
+        default_router_factory=FakeRouter,
     )
 
     assert [result.identifier for result in outcome.results] == ["planner"]

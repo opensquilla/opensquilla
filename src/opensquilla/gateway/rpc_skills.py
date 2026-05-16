@@ -7,7 +7,6 @@ from typing import Any
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.skills.hub.defaults import (
     get_default_skill_installer,
-    get_default_skill_router,
 )
 from opensquilla.skills.hub.deps import (
     install_loaded_skill_dependency,
@@ -74,8 +73,6 @@ async def _handle_skills_get(params: dict | None, ctx: RpcContext) -> dict[str, 
 async def _handle_skills_search(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     """Search for skills across Community sources."""
     router = getattr(ctx, "_skill_router", None)
-    if router is None:
-        router = _get_default_router()
     outcome = await search_skills(router, skill_search_request(params))
     if outcome.unavailable:
         return skills_search_unavailable_rpc_payload()
@@ -138,10 +135,6 @@ async def _handle_skills_deps_install(params: dict | None, ctx: RpcContext) -> d
         skill_deps_install_request(params),
     )
     return skill_deps_install_result_rpc_payload(outcome.result, outcome.missing_still)
-
-
-def _get_default_router():
-    return get_default_skill_router()
 
 
 def _get_default_installer():

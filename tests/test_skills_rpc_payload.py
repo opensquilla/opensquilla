@@ -460,7 +460,14 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
         "name": "planner",
         "loader": True,
     }
-    monkeypatch.setattr(rpc_skills, "_get_default_router", lambda: None)
+    async def fake_unavailable_search_skills(
+        actual_router: object,
+        request: object,
+    ) -> SimpleNamespace:
+        assert actual_router is None
+        return SimpleNamespace(results=[], installed_names=set(), unavailable=True)
+
+    monkeypatch.setattr(rpc_skills, "search_skills", fake_unavailable_search_skills)
     assert await rpc_skills._handle_skills_search({"query": "planner"}, ctx) == {
         "results": [],
         "delegated": True,
@@ -699,6 +706,7 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     assert "_deps_lock_for" not in top_level_functions
     assert "_installed_names" not in top_level_functions
     assert "_invalidate_loader" not in top_level_functions
+    assert "_get_default_router" not in top_level_functions
     assert "_deps_locks" not in top_level_assigns
     assert "_default_router" not in top_level_assigns
     assert "_default_installer" not in top_level_assigns
@@ -725,6 +733,7 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     assert "query" not in handler_constants
     assert "limit" not in handler_constants
     assert "source" not in handler_constants
+    assert "get_default_skill_router" not in handler_names
     bins_handler = {
         node.name: node
         for node in tree.body

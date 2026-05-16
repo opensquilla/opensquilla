@@ -64,7 +64,7 @@ _LOG_LEVELS = {
 
 # fmt: off
 def _make_channel_rpc_context_factory(svc: ServiceContainer, config: GatewayConfig, *, subscription_manager: Any, channel_manager_ref: Any, turn_runner: Any, heartbeat_service: Any, diagnostics_state: Any | None = None) -> Any:  # noqa: E501
-    from opensquilla.channels.command_registry import build_channel_rpc_context
+    from opensquilla.gateway.channel_commands import build_channel_rpc_context
 
     def _factory(envelope: Any) -> Any:
         names = ("session_manager", "provider_selector", "tool_registry", "usage_tracker", "skill_loader", "cron_scheduler", "task_runtime", "flush_service", "heartbeat_loop", "agent_registry", "memory_managers", "memory_stores", "memory_retrievers")  # noqa: E501

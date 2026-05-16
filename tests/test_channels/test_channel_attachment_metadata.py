@@ -13,7 +13,7 @@ from opensquilla.channels.discord import DiscordChannel, DiscordChannelConfig
 from opensquilla.channels.matrix import MatrixChannel, MatrixChannelConfig
 from opensquilla.channels.telegram import TelegramChannel, TelegramChannelConfig
 from opensquilla.channels.types import Attachment
-from opensquilla.gateway.attachment_ingest import (
+from opensquilla.contracts.attachments import (
     IMAGE_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_BYTES,
     MAX_STAGED_PDF_BYTES,

@@ -16,7 +16,7 @@ from typing import Any, cast
 
 import structlog
 
-from opensquilla.gateway.approval_queue import get_approval_queue
+from opensquilla.application.approval_queue import get_approval_queue
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend, build_bwrap_argv
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.governance import action_fingerprint
@@ -1022,7 +1022,7 @@ async def _check_exec_approval(
     # destructive intent recently (e.g. rm /x, and now os.remove("/x")),
     # skip the queue entirely. Keeps paraphrased retries from re-prompting.
     if approval_id is None and not sandbox_off_requires_approval:
-        from opensquilla.sandbox.intent_cache import get_intent_cache
+        from opensquilla.application.intent_cache import get_intent_cache
 
         if get_intent_cache().check(command):
             log.info(

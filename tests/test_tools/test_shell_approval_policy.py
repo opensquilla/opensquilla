@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+from opensquilla.application.approval_queue import get_approval_queue, reset_approval_queue
+from opensquilla.application.intent_cache import get_intent_cache, reset_intent_cache
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime
-from opensquilla.sandbox.intent_cache import get_intent_cache, reset_intent_cache
 from opensquilla.tools.builtin import code_exec, filesystem, shell
 from opensquilla.tools.builtin.code_exec import execute_code
 from opensquilla.tools.types import (

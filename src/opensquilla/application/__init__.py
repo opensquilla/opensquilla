@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from .approval_queue import (
+    ApprovalQueue,
+    ApprovalSettings,
+    PendingApproval,
+    get_approval_queue,
+    reset_approval_queue,
+)
+from .intent_cache import IntentApprovalCache, get_intent_cache, reset_intent_cache
 from .turn import (
     HistoryServicePort,
     MemoryOrchestratorPort,
@@ -14,12 +22,20 @@ from .turn import (
 )
 
 __all__ = [
+    "ApprovalQueue",
+    "ApprovalSettings",
     "HistoryServicePort",
+    "IntentApprovalCache",
     "MemoryOrchestratorPort",
+    "PendingApproval",
     "PromptAssemblerPort",
     "PromptBundle",
     "ProviderExecutorPort",
     "ToolSurfaceBuilderPort",
     "TurnRequest",
     "TurnUseCase",
+    "get_approval_queue",
+    "get_intent_cache",
+    "reset_approval_queue",
+    "reset_intent_cache",
 ]

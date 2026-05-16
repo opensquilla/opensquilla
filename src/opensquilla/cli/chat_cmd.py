@@ -1201,7 +1201,7 @@ async def _forget_server_approvals(client: object | None, target: str | None = N
             )
             return False
 
-    from opensquilla.sandbox.intent_cache import get_intent_cache
+    from opensquilla.application.intent_cache import get_intent_cache
 
     cache = get_intent_cache()
     if target:
@@ -1222,8 +1222,8 @@ async def _handle_approvals_command(cmd: str, client: object | None = None) -> N
     arg = parts[1].lower() if len(parts) > 1 else "status"
 
     if client is None:
-        from opensquilla.gateway.approval_queue import get_approval_queue
-        from opensquilla.sandbox.intent_cache import get_intent_cache
+        from opensquilla.application.approval_queue import get_approval_queue
+        from opensquilla.application.intent_cache import get_intent_cache
 
         queue = get_approval_queue()
         cache = get_intent_cache()
@@ -1345,7 +1345,7 @@ async def _handle_elevated_command(
                     f"({type(exc).__name__}: {exc}).[/bold red]"
                 )
         else:
-            from opensquilla.gateway.approval_queue import get_approval_queue
+            from opensquilla.application.approval_queue import get_approval_queue
 
             get_approval_queue().set_settings(mode="prompt")
     revoked_suffix = (
@@ -1502,7 +1502,7 @@ def _local_approval_resolver() -> Callable[..., Awaitable[None]]:
     """
 
     async def _resolve(approval_id: str, approved: bool, *, allow_always: bool = False) -> None:
-        from opensquilla.gateway.approval_queue import get_approval_queue
+        from opensquilla.application.approval_queue import get_approval_queue
 
         get_approval_queue().resolve(approval_id, approved, allow_always=allow_always)
 

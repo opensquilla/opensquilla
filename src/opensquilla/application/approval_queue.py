@@ -1,0 +1,455 @@
+"""Approval queue with single-process persistent state."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sqlite3
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import cast
+
+from opensquilla.paths import state_dir
+
+VALID_APPROVAL_MODES = frozenset({"auto-approve", "auto-deny", "prompt"})
+VALID_ELEVATED_MODES = frozenset({"on", "bypass", "full"})
+
+
+@dataclass
+class ApprovalSettings:
+    mode: str = "prompt"
+    allow_patterns: list[str] = field(default_factory=list)
+    deny_patterns: list[str] = field(default_factory=list)
+
+
+@dataclass
+class PendingApproval:
+    approval_id: str
+    namespace: str  # "exec" or "plugin"
+    params: dict
+    created_at: float = field(default_factory=time.time)
+    resolved: bool = False
+    approved: bool = False
+    consumed: bool = False
+    _event: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+_DEFAULT_APPROVAL_QUEUE_PATH = state_dir("approval_queue.sqlite")
+
+
+class ApprovalQueue:
+    def __init__(
+        self,
+        default_timeout: float = 300.0,
+        *,
+        db_path: str | None = None,
+        poll_interval: float = 0.25,
+    ):
+        self._pending: dict[str, PendingApproval] = {}
+        self._timeout = default_timeout
+        self._poll_interval = max(0.01, float(poll_interval))
+        self._global_settings = ApprovalSettings()
+        self._node_settings: dict[str, ApprovalSettings] = {}
+        self._session_elevated_modes: dict[str, str] = {}
+
+        self._db_path = Path(db_path or os.fspath(_DEFAULT_APPROVAL_QUEUE_PATH))
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(
+            self._db_path,
+            timeout=30.0,
+            check_same_thread=False,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL;")
+        self._conn.execute("PRAGMA synchronous=NORMAL;")
+        self._init_schema()
+        self._load_pending()
+
+    def _init_schema(self) -> None:
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS approval_queue (
+                approval_id   TEXT PRIMARY KEY,
+                namespace     TEXT NOT NULL,
+                params        TEXT NOT NULL,
+                created_at    REAL NOT NULL,
+                resolved      INTEGER NOT NULL DEFAULT 0,
+                approved      INTEGER NOT NULL DEFAULT 0,
+                consumed      INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_approval_namespace_status
+            ON approval_queue(namespace, resolved);
+            """
+        )
+        self._conn.commit()
+
+    def _serialize_params(self, params: dict | None) -> str:
+        return json.dumps(params or {}, ensure_ascii=False, sort_keys=True)
+
+    def _deserialize_params(self, raw: str | bytes | bytearray) -> dict:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _row_to_entry(self, row: sqlite3.Row) -> PendingApproval:
+        aid = str(row["approval_id"])
+        existing = self._pending.get(aid)
+        return PendingApproval(
+            approval_id=aid,
+            namespace=str(row["namespace"]),
+            params=self._deserialize_params(row["params"]),
+            created_at=float(row["created_at"]),
+            resolved=bool(row["resolved"]),
+            approved=bool(row["approved"]),
+            consumed=bool(row["consumed"]),
+            _event=existing._event if existing is not None else asyncio.Event(),
+        )
+
+    def _load_pending(self) -> None:
+        self._pending = {}
+        for row in self._conn.execute(
+            "SELECT approval_id, namespace, params, created_at, resolved, approved, consumed "
+            "FROM approval_queue WHERE resolved = 0"
+        ):
+            entry = self._row_to_entry(row)
+            self._pending[entry.approval_id] = entry
+
+    def _get_row(self, approval_id: str) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            self._conn.execute(
+                "SELECT approval_id, namespace, params, created_at, resolved, approved, consumed "
+                "FROM approval_queue WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone(),
+        )
+
+    def request(self, namespace: str = "exec", params: dict | None = None) -> str:
+        payload = self._serialize_params(params or {})
+        while True:
+            approval_id = uuid.uuid4().hex[:12]
+            now = time.time()
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "INSERT INTO approval_queue "
+                    "(approval_id, namespace, params, created_at, resolved, approved, consumed) "
+                    "VALUES (?, ?, ?, ?, 0, 0, 0)",
+                    (approval_id, namespace, payload, now),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                continue
+            break
+
+        entry = PendingApproval(
+            approval_id=approval_id,
+            namespace=namespace,
+            params=params or {},
+            created_at=now,
+        )
+        self._pending[approval_id] = entry
+        return approval_id
+
+    def get(self, approval_id: str) -> PendingApproval:
+        row = self._get_row(approval_id)
+        if row is None:
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        self._pending[approval_id] = entry
+        return entry
+
+    async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
+        entry = self.get(approval_id)
+        if entry.resolved:
+            return entry.approved
+        t = timeout if timeout is not None else self._timeout
+        deadline = time.monotonic() + t
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(
+                    entry._event.wait(),
+                    timeout=min(self._poll_interval, remaining),
+                )
+            except TimeoutError:
+                pass
+            entry = self.get(approval_id)
+            if entry.resolved:
+                return entry.approved
+        return self._deny_on_timeout_if_unresolved(approval_id)
+
+    def _deny_on_timeout_if_unresolved(self, approval_id: str) -> bool:
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if entry.resolved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            entry._event.set()
+            return entry.approved
+        self._conn.execute(
+            "UPDATE approval_queue "
+            "SET resolved = 1, approved = 0 "
+            "WHERE approval_id = ? AND resolved = 0",
+            (approval_id,),
+        )
+        self._conn.commit()
+        entry = self.get(approval_id)
+        entry._event.set()
+        self._pending[approval_id] = entry
+        return entry.approved
+
+    def resolve(
+        self,
+        approval_id: str,
+        approved: bool,
+        *,
+        allow_always: bool = False,
+        remember_intent: bool = False,
+        elevated_mode: str | None = None,
+    ) -> None:
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if entry.resolved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            entry._event.set()
+            if entry.approved == approved:
+                return
+            raise ValueError(f"Approval already resolved: {approval_id}")
+
+        cursor = self._conn.execute(
+            "UPDATE approval_queue "
+            "SET resolved = 1, approved = ? "
+            "WHERE approval_id = ? AND resolved = 0",
+            (1 if approved else 0, approval_id),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            entry = self.get(approval_id)
+            if entry.resolved:
+                entry._event.set()
+                if entry.approved == approved:
+                    return
+                raise ValueError(f"Approval already resolved: {approval_id}")
+            raise ValueError(f"Approval could not be resolved: {approval_id}")
+        self._conn.commit()
+
+        entry = self.get(approval_id)
+        entry.approved = bool(approved)
+        entry.resolved = True
+        entry._event.set()
+        self._pending[approval_id] = entry
+
+        if approved and elevated_mode in VALID_ELEVATED_MODES:
+            entry.params["elevatedMode"] = elevated_mode
+            session_key = str(entry.params.get("sessionKey") or "").strip()
+            if session_key:
+                self.set_elevated_mode(session_key, elevated_mode)
+
+        if approved and entry.namespace == "exec" and (allow_always or remember_intent):
+            self._persist_command_intent(entry.params, allow_always=allow_always)
+
+    def _persist_command_intent(self, params: dict, allow_always: bool = False) -> None:
+        if not isinstance(params, dict):
+            return
+        command = str(params.get("command") or "")
+        if not command:
+            return
+        try:
+            from opensquilla.application.intent_cache import get_intent_cache
+
+            cache = get_intent_cache()
+            if allow_always:
+                cache.record_always(command)
+            else:
+                cache.record(command)
+        except Exception:  # pragma: no cover — cache path is best-effort
+            return
+
+    def consume(self, approval_id: str) -> None:
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if not entry.resolved or not entry.approved:
+            self._conn.rollback()
+            raise ValueError(f"Approval is not approved: {approval_id}")
+        if entry.consumed:
+            self._conn.rollback()
+            raise ValueError(f"Approval already consumed: {approval_id}")
+        cursor = self._conn.execute(
+            "UPDATE approval_queue "
+            "SET consumed = 1 "
+            "WHERE approval_id = ? AND resolved = 1 AND approved = 1 AND consumed = 0",
+            (approval_id,),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            entry = self.get(approval_id)
+            if entry.consumed:
+                raise ValueError(f"Approval already consumed: {approval_id}")
+            raise ValueError(f"Approval is not approved: {approval_id}")
+        self._conn.commit()
+        entry = self.get(approval_id)
+        self._pending.pop(approval_id, None)
+
+    def status(self, approval_id: str) -> dict:
+        entry = self.get(approval_id)
+        return {
+            "id": entry.approval_id,
+            "namespace": entry.namespace,
+            "params": entry.params,
+            "created_at": entry.created_at,
+            "resolved": entry.resolved,
+            "approved": entry.approved,
+            "consumed": entry.consumed,
+        }
+
+    def list_pending(self, namespace: str | None = None) -> list[dict]:
+        if namespace:
+            rows = self._conn.execute(
+                "SELECT approval_id, namespace, params, created_at "
+                "FROM approval_queue "
+                "WHERE resolved = 0 AND namespace = ?",
+                (namespace,),
+            )
+        else:
+            rows = self._conn.execute(
+                "SELECT approval_id, namespace, params, created_at "
+                "FROM approval_queue "
+                "WHERE resolved = 0",
+            )
+        return [
+            {
+                "id": str(row["approval_id"]),
+                "namespace": str(row["namespace"]),
+                "params": self._deserialize_params(row["params"]),
+                "created_at": float(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def set_elevated_mode(self, session_key: str, mode: str | None) -> None:
+        key = session_key.strip()
+        if not key:
+            raise ValueError("session_key is required")
+        if mode in (None, "", "off"):
+            self._session_elevated_modes.pop(key, None)
+            return
+        if mode not in VALID_ELEVATED_MODES:
+            raise ValueError("mode must be one of: on, bypass, full, off")
+        self._session_elevated_modes[key] = mode
+
+    def get_elevated_mode(self, session_key: str | None) -> str | None:
+        key = (session_key or "").strip()
+        if not key:
+            return None
+        return self._session_elevated_modes.get(key)
+
+    def resolve_pending_for_session(
+        self,
+        session_key: str,
+        *,
+        approved: bool,
+        elevated_mode: str | None = None,
+    ) -> int:
+        key = session_key.strip()
+        if not key:
+            return 0
+        count = 0
+        for row in self._conn.execute(
+            "SELECT approval_id, namespace, params, created_at, resolved, approved, consumed "
+            "FROM approval_queue "
+            "WHERE resolved = 0 AND namespace = 'exec'",
+        ).fetchall():
+            entry = self._row_to_entry(row)
+            if str(entry.params.get("sessionKey") or "").strip() != key:
+                continue
+            self.resolve(
+                entry.approval_id,
+                approved,
+                elevated_mode=elevated_mode,
+            )
+            count += 1
+        return count
+
+    def get_settings(self, node_id: str | None = None) -> ApprovalSettings:
+        settings = self._node_settings.get(node_id) if node_id else self._global_settings
+        if settings is None:
+            settings = self._global_settings
+        return ApprovalSettings(
+            mode=settings.mode,
+            allow_patterns=list(settings.allow_patterns),
+            deny_patterns=list(settings.deny_patterns),
+        )
+
+    def has_node_settings(self, node_id: str) -> bool:
+        return node_id in self._node_settings
+
+    def set_settings(
+        self,
+        mode: str,
+        allow_patterns: list[str] | None = None,
+        deny_patterns: list[str] | None = None,
+        node_id: str | None = None,
+    ) -> ApprovalSettings:
+        if mode not in VALID_APPROVAL_MODES:
+            raise ValueError(f"mode must be one of: {', '.join(sorted(VALID_APPROVAL_MODES))}")
+        settings = ApprovalSettings(
+            mode=mode,
+            allow_patterns=list(allow_patterns or []),
+            deny_patterns=list(deny_patterns or []),
+        )
+        if node_id is None:
+            self._global_settings = settings
+        else:
+            self._node_settings[node_id] = settings
+        return settings
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+_queue: ApprovalQueue | None = None
+
+
+def get_approval_queue() -> ApprovalQueue:
+    global _queue
+    if _queue is None:
+        _queue = ApprovalQueue()
+    return _queue
+
+
+def reset_approval_queue() -> None:
+    global _queue
+    if _queue is not None:
+        path = _queue._db_path
+        _queue.close()
+        _queue = None
+    else:
+        path = _DEFAULT_APPROVAL_QUEUE_PATH
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass

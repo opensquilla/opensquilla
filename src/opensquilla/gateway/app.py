@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
-from opensquilla.gateway.approval_queue import get_approval_queue
+from opensquilla.application.approval_queue import get_approval_queue
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.control_ui import create_control_ui_routes
 from opensquilla.gateway.middleware import (

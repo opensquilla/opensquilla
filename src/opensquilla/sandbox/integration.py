@@ -70,7 +70,7 @@ log = logging.getLogger(__name__)
 
 
 class _ApprovalQueueLike(Protocol):
-    """Structural subset of :class:`opensquilla.gateway.approval_queue.ApprovalQueue`."""
+    """Structural subset of :class:`opensquilla.application.approval_queue.ApprovalQueue`."""
 
     def request(self, namespace: str = ..., params: dict | None = ...) -> str: ...
 
@@ -138,8 +138,7 @@ def configure_runtime(
     if approval_queue is not None:
         gate = ApprovalGate(approval_queue)
     else:
-        # Lazy import: avoids a circular import when gateway is not yet loaded.
-        from opensquilla.gateway.approval_queue import get_approval_queue
+        from opensquilla.application.approval_queue import get_approval_queue
 
         gate = ApprovalGate(get_approval_queue())
 

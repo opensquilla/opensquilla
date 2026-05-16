@@ -2,7 +2,7 @@
 
 This module is the bridge between :class:`~opensquilla.sandbox.types.SandboxPolicy`
 (produced by :mod:`opensquilla.sandbox.policy`) and the already-existing
-:class:`~opensquilla.gateway.approval_queue.ApprovalQueue`.
+:class:`~opensquilla.application.approval_queue.ApprovalQueue`.
 
 Public surface:
 
@@ -88,7 +88,7 @@ def action_fingerprint(request: SandboxRequest) -> str:
 
 
 class _ApprovalQueueLike(Protocol):
-    """Minimal slice of :class:`opensquilla.gateway.approval_queue.ApprovalQueue`.
+    """Minimal slice of :class:`opensquilla.application.approval_queue.ApprovalQueue`.
 
     We deliberately do not import the concrete queue here so the gate can
     be unit-tested with a simple fake. The real queue already satisfies

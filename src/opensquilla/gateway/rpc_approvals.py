@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from opensquilla.gateway.approval_queue import get_approval_queue
+from opensquilla.application.approval_queue import get_approval_queue
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 
 _d = get_dispatcher()
@@ -130,7 +130,7 @@ async def _handle_exec_approval_wait_decision(
 @_d.method("exec.approval.snapshot", scope="operator.approvals")
 async def _handle_exec_approval_snapshot(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     """Return a diagnostic snapshot: current mode + cached intent count."""
-    from opensquilla.sandbox.intent_cache import get_intent_cache
+    from opensquilla.application.intent_cache import get_intent_cache
 
     queue = get_approval_queue()
     mode = queue.get_settings().mode
@@ -152,7 +152,7 @@ async def _handle_exec_approval_forget(params: dict | None, ctx: RpcContext) -> 
     ``params.target`` (optional) — clear entries matching a single command/path.
     Omit to wipe the whole intent cache.
     """
-    from opensquilla.sandbox.intent_cache import get_intent_cache
+    from opensquilla.application.intent_cache import get_intent_cache
 
     cache = get_intent_cache()
     if isinstance(params, dict):

@@ -38,6 +38,7 @@ from opensquilla.session.rpc_payload import (
     session_delete_response,
     session_list_row,
     session_patch_response,
+    session_preview_response,
     session_preview_row,
     session_reset_response,
     session_resolve_response,
@@ -1538,11 +1539,11 @@ async def _handle_sessions_preview(params: dict | None, ctx: RpcContext) -> dict
     now_ms = int(time.time() * 1000)
 
     if ctx.session_manager is None:
-        return {"ts": now_ms, "previews": []}
+        return session_preview_response(now_ms, [])
 
     storage = get_session_storage(ctx.session_manager)
     if storage is None:
-        return {"ts": now_ms, "previews": []}
+        return session_preview_response(now_ms, [])
 
     if keys:
         sessions = []
@@ -1562,7 +1563,7 @@ async def _handle_sessions_preview(params: dict | None, ctx: RpcContext) -> dict
             pass
         previews.append(session_preview_row(s, transcript=transcript, now_ms=now_ms))
 
-    return {"ts": now_ms, "previews": previews}
+    return session_preview_response(now_ms, previews)
 
 
 @_d.method("sessions.resolve", scope="operator.read")

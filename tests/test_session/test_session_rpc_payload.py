@@ -14,6 +14,7 @@ from opensquilla.session.rpc_payload import (
     session_list_row,
     session_patch_response,
     session_preview_last_message,
+    session_preview_response,
     session_preview_row,
     session_reset_response,
     session_resolve_response,
@@ -209,6 +210,15 @@ def test_session_preview_row_falls_back_to_derived_title_and_session_id() -> Non
 
     session.derived_title = None
     assert session_preview_row(session, transcript=[], now_ms=1)["title"] == "abcdef12"
+
+
+def test_session_preview_response_owns_container_wire_shape() -> None:
+    previews = [{"key": "agent:main:webchat:abc123", "title": "Chat"}]
+
+    assert session_preview_response(123456, previews) == {
+        "ts": 123456,
+        "previews": previews,
+    }
 
 
 def test_session_preview_last_message_truncates_and_skips_non_chat_entries() -> None:

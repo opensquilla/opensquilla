@@ -1593,7 +1593,7 @@ class TestSessionsPreview:
         assert res.ok is True
         assert len(res.payload["previews"]) == 1
 
-    def test_gateway_sessions_preview_delegates_rows_to_session_boundary(self):
+    def test_gateway_sessions_preview_delegates_payload_to_session_boundary(self):
         source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         imports = {
@@ -1613,11 +1613,17 @@ class TestSessionsPreview:
         }
 
         assert ("opensquilla.session.rpc_payload", "session_preview_row") in imports
+        assert ("opensquilla.session.rpc_payload", "session_preview_response") in imports
         assert any(
             isinstance(node, ast.Name) and node.id == "session_preview_row"
             for node in ast.walk(preview_handler)
         )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_preview_response"
+            for node in ast.walk(preview_handler)
+        )
         assert "lastMessage" not in preview_constants
+        assert "previews" not in preview_constants
 
     @pytest.mark.asyncio
     async def test_preview_no_manager(self, dispatcher, ctx_no_manager):

@@ -7,6 +7,12 @@ from opensquilla.application.wizard import (
     get_wizard_registry,
     reset_wizard_registry,
 )
+from opensquilla.application.wizard_rpc import (
+    wizard_cancel_rpc_payload,
+    wizard_next_rpc_payload,
+    wizard_start_rpc_payload,
+    wizard_status_rpc_payload,
+)
 from opensquilla.gateway import wizard as gateway_wizard
 
 
@@ -49,6 +55,36 @@ def test_wizard_registry_rejects_blank_required_answers() -> None:
 
     with pytest.raises(ValueError, match="missing required field"):
         registry.advance(wizard_id, {"agent_name": "  "})
+
+
+def test_wizard_rpc_payload_helpers_own_wire_shapes() -> None:
+    registry = WizardRegistry()
+    wizard_id, first_step = registry.start("onboard_agent")
+
+    started = wizard_start_rpc_payload(wizard_id, first_step)
+    assert started["wizardId"] == wizard_id
+    assert started["step"]["stepId"] == "agent_identity"
+
+    outcome = registry.advance(wizard_id, {"agent_name": "cora"})
+    assert outcome.next_step is not None
+    advanced = wizard_next_rpc_payload(outcome)
+    assert advanced == {
+        "step": outcome.next_step.to_dict(),
+        "completed": False,
+        "result": None,
+    }
+    assert wizard_status_rpc_payload(registry.status(wizard_id), total_steps=3) == {
+        "wizardId": wizard_id,
+        "wizardType": "onboard_agent",
+        "currentStepId": "system_prompt",
+        "totalSteps": 3,
+        "startedAt": registry.status(wizard_id).started_at,
+        "completed": False,
+    }
+    assert wizard_cancel_rpc_payload(wizard_id) == {
+        "wizardId": wizard_id,
+        "cancelled": True,
+    }
 
 
 def test_gateway_wizard_imports_remain_compatible_with_application_singleton() -> None:

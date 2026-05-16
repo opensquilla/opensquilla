@@ -119,6 +119,54 @@ def test_gateway_rpc_wizard_depends_on_application_boundary() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module is not None
     ]
+    helper_names = {
+        "wizard_cancel_rpc_payload",
+        "wizard_next_rpc_payload",
+        "wizard_start_rpc_payload",
+        "wizard_status_rpc_payload",
+    }
+    imported_helpers = {
+        alias.name
+        for node in imports
+        if node.module == "opensquilla.application.wizard_rpc"
+        for alias in node.names
+    }
+    handlers = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name
+        in {
+            "_handle_wizard_start",
+            "_handle_wizard_next",
+            "_handle_wizard_cancel",
+            "_handle_wizard_status",
+        }
+    }
+    handler_names = {
+        node.id
+        for handler in handlers.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Name)
+    }
+    direct_key_sets = {
+        tuple(key.value for key in node.keys if isinstance(key, ast.Constant))
+        for handler in handlers.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Dict)
+    }
+    handler_attributes = {
+        node.attr
+        for handler in handlers.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Attribute)
+    }
 
     assert any(node.module == "opensquilla.application.wizard" for node in imports)
     assert all(node.module != "opensquilla.gateway.wizard" for node in imports)
+    assert helper_names.issubset(imported_helpers)
+    assert helper_names.issubset(handler_names)
+    assert ("wizardId", "step") not in direct_key_sets
+    assert ("step", "completed", "result") not in direct_key_sets
+    assert ("wizardId", "cancelled") not in direct_key_sets
+    assert "to_dict" not in handler_attributes

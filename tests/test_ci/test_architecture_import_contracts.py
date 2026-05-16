@@ -118,6 +118,12 @@ APPROVED_CYCLIC_PACKAGES: frozenset[str] = frozenset({
     "tools",
 })
 
+ARCHITECTURE_LAYER_IMPORTS: dict[str, frozenset[str]] = {
+    "contracts": frozenset(),
+    "application": frozenset({"contracts"}),
+    "adapters": frozenset({"application", "contracts"}),
+}
+
 
 def _top_level_packages() -> set[str]:
     return {
@@ -249,3 +255,19 @@ def test_new_packages_do_not_join_existing_circular_dependency_baseline() -> Non
     assert not unexpected, "Packages unexpectedly joined import cycles: " + ", ".join(
         sorted(unexpected)
     )
+
+
+def test_new_architecture_layers_keep_inward_dependencies() -> None:
+    """Future refactor packages must preserve the ports-and-adapters direction."""
+    actual_edges = _package_import_edges()
+    packages = _top_level_packages()
+    violations: list[str] = []
+
+    for source, allowed_targets in ARCHITECTURE_LAYER_IMPORTS.items():
+        if source not in packages:
+            continue
+        for _, target in sorted(edge for edge in actual_edges if edge[0] == source):
+            if target not in allowed_targets:
+                violations.append(f"{source}->{target}")
+
+    assert not violations, "Architecture layer imports point outward: " + ", ".join(violations)

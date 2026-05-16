@@ -236,3 +236,38 @@ async def test_agents_rpc_update_agent_dir_camelcase_persists() -> None:
 
     assert result.error is None, result.error
     assert cfg.agents[0].agent_dir == ".opensquilla/ops-dir"
+
+
+@pytest.mark.asyncio
+async def test_agents_files_rpc_falls_back_to_workspace_when_registry_unavailable(tmp_path) -> None:
+    cfg = GatewayConfig(workspace_dir=str(tmp_path / "workspace"))
+    ctx = RpcContext(conn_id="test", config=cfg)
+
+    set_result = await get_dispatcher().dispatch(
+        "r1",
+        "agents.files.set",
+        {"agentId": "main", "name": "MEMORY.md", "content": "notes"},
+        ctx,
+    )
+    assert set_result.error is None, set_result.error
+    assert set_result.payload == {"name": "MEMORY.md", "path": "MEMORY.md", "size": 5}
+
+    get_result = await get_dispatcher().dispatch(
+        "r2",
+        "agents.files.get",
+        {"agentId": "main", "name": "MEMORY.md"},
+        ctx,
+    )
+    assert get_result.error is None, get_result.error
+    assert get_result.payload == {"name": "MEMORY.md", "content": "notes"}
+
+    list_result = await get_dispatcher().dispatch(
+        "r3",
+        "agents.files.list",
+        {"agentId": "main"},
+        ctx,
+    )
+    assert list_result.error is None, list_result.error
+    memory_entry = next(row for row in list_result.payload["files"] if row["name"] == "MEMORY.md")
+    assert memory_entry["status"] == "present"
+    assert memory_entry["size"] == 5

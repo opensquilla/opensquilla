@@ -165,11 +165,41 @@ def session_list_row(
     return row
 
 
+def session_preview_last_message(entries: list[Any], *, max_chars: int = 120) -> str:
+    for entry in reversed(entries):
+        if enum_value(getattr(entry, "role", None)) in ("user", "assistant"):
+            content = getattr(entry, "content", None)
+            if content:
+                return str(content)[:max_chars]
+    return ""
+
+
+def session_preview_row(
+    session: Any,
+    *,
+    transcript: list[Any],
+    now_ms: int,
+) -> dict[str, Any]:
+    title = (
+        getattr(session, "display_name", None)
+        or getattr(session, "derived_title", None)
+        or session.session_id[:8]
+    )
+    return {
+        "key": session.session_key,
+        "title": title,
+        "lastMessage": session_preview_last_message(transcript),
+        "updatedAt": getattr(session, "updated_at", now_ms),
+    }
+
+
 __all__ = [
     "active_task_summary",
     "enum_value",
     "last_task_summary",
     "session_list_row",
+    "session_preview_last_message",
+    "session_preview_row",
     "session_source_metadata",
     "sorted_task_rows",
     "task_run_status",

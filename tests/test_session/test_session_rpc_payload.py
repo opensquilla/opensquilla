@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from opensquilla.session.rpc_payload import session_list_row, task_state_summary
+from opensquilla.session.rpc_payload import (
+    session_list_row,
+    session_preview_last_message,
+    session_preview_row,
+    task_state_summary,
+)
 
 
 def test_session_list_row_preserves_source_metadata_and_task_state() -> None:
@@ -74,3 +79,55 @@ def test_task_state_summary_maps_abandoned_terminal_task_to_interrupted() -> Non
     assert payload["last_task"]["terminal_reason"] == "runtime-restart"
     assert payload["last_task"]["terminal_message"]
     assert payload["run_status"] == "interrupted"
+
+
+def test_session_preview_row_uses_display_title_and_last_chat_message() -> None:
+    session = SimpleNamespace(
+        session_key="agent:main:webchat:abc123",
+        session_id="abc123987654",
+        display_name="Support thread",
+        derived_title="Fallback title",
+        updated_at=12345,
+    )
+    transcript = [
+        SimpleNamespace(role="system", content="internal"),
+        SimpleNamespace(role="user", content="first"),
+        SimpleNamespace(role="tool", content="tool output"),
+        SimpleNamespace(role="assistant", content="latest assistant message"),
+    ]
+
+    row = session_preview_row(session, transcript=transcript, now_ms=99999)
+
+    assert row == {
+        "key": "agent:main:webchat:abc123",
+        "title": "Support thread",
+        "lastMessage": "latest assistant message",
+        "updatedAt": 12345,
+    }
+
+
+def test_session_preview_row_falls_back_to_derived_title_and_session_id() -> None:
+    session = SimpleNamespace(
+        session_key="agent:main:cli:abc123",
+        session_id="abcdef123456",
+        display_name=None,
+        derived_title="Derived",
+    )
+
+    row = session_preview_row(session, transcript=[], now_ms=99999)
+
+    assert row["title"] == "Derived"
+    assert row["lastMessage"] == ""
+    assert row["updatedAt"] == 99999
+
+    session.derived_title = None
+    assert session_preview_row(session, transcript=[], now_ms=1)["title"] == "abcdef12"
+
+
+def test_session_preview_last_message_truncates_and_skips_non_chat_entries() -> None:
+    transcript = [
+        SimpleNamespace(role="tool", content="x" * 200),
+        SimpleNamespace(role="assistant", content="a" * 130),
+    ]
+
+    assert session_preview_last_message(transcript) == "a" * 120

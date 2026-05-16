@@ -27,7 +27,11 @@ from opensquilla.session.compaction import (
     call_compact_with_optional_config,
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
-from opensquilla.session.rpc_payload import session_list_row, task_state_summary
+from opensquilla.session.rpc_payload import (
+    session_list_row,
+    session_preview_row,
+    task_state_summary,
+)
 from opensquilla.session.terminal_reply import build_terminal_reply
 
 _d = get_dispatcher()
@@ -1609,30 +1613,12 @@ async def _handle_sessions_preview(params: dict | None, ctx: RpcContext) -> dict
 
     previews = []
     for s in sessions:
-        title = (
-            getattr(s, "display_name", None)
-            or getattr(s, "derived_title", None)
-            or s.session_id[:8]
-        )
-        last_msg = ""
+        transcript = []
         try:
             transcript = await storage.get_transcript(s.session_id, limit=-1)
-            if transcript:
-                # Find the last user or assistant message for preview
-                for entry in reversed(transcript):
-                    if entry.role in ("user", "assistant") and entry.content:
-                        last_msg = entry.content[:120]
-                        break
         except Exception:
             pass
-        previews.append(
-            {
-                "key": s.session_key,
-                "title": title,
-                "lastMessage": last_msg,
-                "updatedAt": getattr(s, "updated_at", now_ms),
-            }
-        )
+        previews.append(session_preview_row(s, transcript=transcript, now_ms=now_ms))
 
     return {"ts": now_ms, "previews": previews}
 

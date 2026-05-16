@@ -12,6 +12,8 @@ from opensquilla.skills.hub.deps import install_deps
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.rpc_payload import (
     skill_get_rpc_payload,
+    skill_install_result_rpc_payload,
+    skill_install_unavailable_rpc_payload,
     skill_missing_requirements_rpc_payload,
     skills_list_rpc_payload,
     skills_search_rpc_payload,
@@ -145,11 +147,11 @@ async def _handle_skills_install(params: dict | None, ctx: RpcContext) -> dict[s
     if not isinstance(params, dict) or "identifier" not in params:
         raise ValueError("params.identifier is required")
     if _get_loader(ctx) is None:
-        return {"success": False, "message": "No skill loader configured"}
+        return skill_install_unavailable_rpc_payload("No skill loader configured")
 
     installer = _get_default_installer()
     if installer is None:
-        return {"success": False, "message": "No skill installer configured"}
+        return skill_install_unavailable_rpc_payload("No skill installer configured")
 
     identifier = params["identifier"]
     source_id = params.get("source", "clawhub")
@@ -157,15 +159,7 @@ async def _handle_skills_install(params: dict | None, ctx: RpcContext) -> dict[s
     result = await installer.install(identifier, source_id, force=force)
     if result.success:
         _invalidate_loader(ctx)
-    resp: dict[str, Any] = {
-        "success": result.success,
-        "name": result.name,
-        "message": result.message,
-    }
-    if result.scan:
-        resp["scan_verdict"] = result.scan.verdict
-        resp["scan_findings"] = [finding.__dict__ for finding in result.scan.findings]
-    return resp
+    return skill_install_result_rpc_payload(result)
 
 
 @_d.method("skills.update", scope="operator.admin")

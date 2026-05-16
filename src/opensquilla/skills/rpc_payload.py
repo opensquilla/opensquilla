@@ -155,6 +155,26 @@ def skills_search_unavailable_rpc_payload() -> dict[str, Any]:
     return {"results": [], "message": "No skill sources configured"}
 
 
+def skill_install_unavailable_rpc_payload(message: str) -> dict[str, Any]:
+    """Build the unavailable RPC wire payload for ``skills.install``."""
+
+    return {"success": False, "message": message}
+
+
+def skill_install_result_rpc_payload(result: Any) -> dict[str, Any]:
+    """Build the RPC wire payload for ``skills.install`` results."""
+
+    payload: dict[str, Any] = {
+        "success": result.success,
+        "name": result.name,
+        "message": result.message,
+    }
+    if result.scan:
+        payload["scan_verdict"] = result.scan.verdict
+        payload["scan_findings"] = [finding.__dict__ for finding in result.scan.findings]
+    return payload
+
+
 def skill_get_rpc_payload(params: Mapping[str, Any] | None, loader: Any | None) -> dict[str, Any]:
     """Build the RPC wire payload for ``skills.get``."""
 
@@ -203,6 +223,8 @@ def skill_missing_requirements_rpc_payload(skill: Any) -> dict[str, list[str]]:
 
 __all__ = [
     "skill_get_rpc_payload",
+    "skill_install_result_rpc_payload",
+    "skill_install_unavailable_rpc_payload",
     "skill_search_result_rpc_payload",
     "skill_missing_requirements_rpc_payload",
     "skill_status_detail",

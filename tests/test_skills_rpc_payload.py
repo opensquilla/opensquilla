@@ -11,6 +11,8 @@ from opensquilla.gateway import rpc_skills
 from opensquilla.skills.eligibility import EligibilityReport
 from opensquilla.skills.rpc_payload import (
     skill_get_rpc_payload,
+    skill_install_result_rpc_payload,
+    skill_install_unavailable_rpc_payload,
     skill_status_from_report,
     skill_to_rpc_payload,
     skills_list_rpc_payload,
@@ -215,6 +217,51 @@ def test_skills_search_payloads_preserve_wire_shape_and_installed_aliases() -> N
     }
 
 
+def test_skill_install_payloads_preserve_wire_shape_and_scan_details() -> None:
+    result = SimpleNamespace(
+        success=True,
+        name="planner",
+        message="Installed planner",
+        scan=SimpleNamespace(
+            verdict="warning",
+            findings=[
+                SimpleNamespace(
+                    rule="shell",
+                    severity="medium",
+                    message="runs shell",
+                    line=7,
+                )
+            ],
+        ),
+    )
+
+    assert skill_install_unavailable_rpc_payload("No skill installer configured") == {
+        "success": False,
+        "message": "No skill installer configured",
+    }
+    assert skill_install_result_rpc_payload(result) == {
+        "success": True,
+        "name": "planner",
+        "message": "Installed planner",
+        "scan_verdict": "warning",
+        "scan_findings": [
+            {
+                "rule": "shell",
+                "severity": "medium",
+                "message": "runs shell",
+                "line": 7,
+            }
+        ],
+    }
+    assert skill_install_result_rpc_payload(
+        SimpleNamespace(success=False, name="", message="missing", scan=None)
+    ) == {
+        "success": False,
+        "name": "",
+        "message": "missing",
+    }
+
+
 @pytest.mark.asyncio
 async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
     monkeypatch: pytest.MonkeyPatch,
@@ -242,6 +289,11 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
         "skills_search_unavailable_rpc_payload",
         lambda: {"results": [], "delegated": True},
     )
+    monkeypatch.setattr(
+        rpc_skills,
+        "skill_install_unavailable_rpc_payload",
+        lambda message: {"success": False, "message": message, "delegated": True},
+    )
 
     assert await rpc_skills._handle_skills_status(None, ctx) == [
         {"name": "status", "loader": True}
@@ -256,6 +308,11 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
     monkeypatch.setattr(rpc_skills, "_get_default_router", lambda: None)
     assert await rpc_skills._handle_skills_search({"query": "planner"}, ctx) == {
         "results": [],
+        "delegated": True,
+    }
+    assert await rpc_skills._handle_skills_install({"identifier": "planner"}, object()) == {
+        "success": False,
+        "message": "No skill loader configured",
         "delegated": True,
     }
 
@@ -298,11 +355,34 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     assert {
         "skills_search_rpc_payload",
         "skills_search_unavailable_rpc_payload",
+        "skill_install_result_rpc_payload",
+        "skill_install_unavailable_rpc_payload",
     }.issubset(imported_helpers)
     assert {
         "skills_search_rpc_payload",
         "skills_search_unavailable_rpc_payload",
     }.issubset(handler_names)
+    install_handler = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_skills_install"
+    }
+    install_handler_names = {
+        node.id
+        for handler in install_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Name)
+    }
+    install_direct_key_sets = {
+        tuple(key.value for key in node.keys if isinstance(key, ast.Constant))
+        for handler in install_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Dict)
+    }
+    assert {
+        "skill_install_result_rpc_payload",
+        "skill_install_unavailable_rpc_payload",
+    }.issubset(install_handler_names)
     assert "_skill_to_dict" not in top_level_functions
     assert "_status_from_report" not in top_level_functions
     assert "_status_detail" not in top_level_functions
@@ -318,3 +398,6 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
         "identifier",
         "installed",
     ) not in direct_key_sets
+    assert ("success", "message") not in install_direct_key_sets
+    assert ("success", "name", "message") not in install_direct_key_sets
+    assert ("scan_verdict", "scan_findings") not in install_direct_key_sets

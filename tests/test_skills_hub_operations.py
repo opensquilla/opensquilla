@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -49,6 +51,17 @@ class FakeLoader:
 
     def invalidate_cache(self) -> None:
         self.invalidations += 1
+
+
+def test_operations_does_not_import_deps_boundary_at_module_load() -> None:
+    import opensquilla.skills.hub.operations as hub_operations
+
+    tree = ast.parse(Path(hub_operations.__file__).read_text(encoding="utf-8"))
+    top_level_imports = {
+        node.module for node in tree.body if isinstance(node, ast.ImportFrom)
+    }
+
+    assert "opensquilla.skills.hub.deps" not in top_level_imports
 
 
 def test_skill_operation_requests_preserve_defaults_and_validation() -> None:

@@ -4,18 +4,20 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from opensquilla.skills.hub.defaults import (
     get_default_skill_installer,
     get_default_skill_router,
 )
-from opensquilla.skills.hub.deps import (
-    SkillDepsInstallOutcome,
-    SkillDepsInstallRequest,
-)
 from opensquilla.skills.hub.installer import InstallResult, SkillInstaller
 from opensquilla.skills.hub.lockfile import installed_skill_names
+
+if TYPE_CHECKING:
+    from opensquilla.skills.hub.deps import (
+        SkillDepsInstallOutcome,
+        SkillDepsInstallRequest,
+    )
 
 SkillInstallerFactory = Callable[[], SkillInstaller | None]
 SkillRouterFactory = Callable[[], Any | None]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
-from opensquilla.provider.runtime_status import build_provider_status_payload
+from opensquilla.provider.runtime_status import build_provider_status_rpc_payload
 from opensquilla.search.execution import (
     search_provider_payload,
     search_query_rpc_payload,
@@ -58,17 +58,11 @@ async def _handle_tools_search_provider(params: dict | None, ctx: RpcContext) ->
 async def _handle_providers_status(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     from opensquilla.onboarding.provider_specs import list_provider_setup_specs
 
-    if params is not None and not isinstance(params, dict):
-        raise ValueError("params must be an object")
-    provider_filter = (params or {}).get("provider")
-    probe_models = bool((params or {}).get("probeModels", False))
-
-    return await build_provider_status_payload(
+    return await build_provider_status_rpc_payload(
         list_provider_setup_specs(),
+        params,
         provider_selector=getattr(ctx, "provider_selector", None),
         config=getattr(ctx, "config", None),
-        provider_filter=str(provider_filter) if provider_filter else None,
-        probe_models=probe_models,
     )
 
 

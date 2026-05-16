@@ -109,6 +109,36 @@ async def build_provider_status_payload(
     return provider_status_report_to_wire(report)
 
 
+def _provider_status_rpc_params(params: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if params is None:
+        return {}
+    if not isinstance(params, Mapping):
+        raise ValueError("params must be an object")
+    return params
+
+
+async def build_provider_status_rpc_payload(
+    specs: Iterable[ProviderStatusSpec],
+    params: Mapping[str, Any] | None,
+    *,
+    provider_selector: Any | None,
+    config: Any | None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build the provider status RPC payload from request params."""
+
+    raw = _provider_status_rpc_params(params)
+    provider_filter = raw.get("provider")
+    return await build_provider_status_payload(
+        specs,
+        provider_selector=provider_selector,
+        config=config,
+        provider_filter=str(provider_filter) if provider_filter else None,
+        probe_models=bool(raw.get("probeModels", False)),
+        environ=environ,
+    )
+
+
 async def build_provider_status_report(
     specs: Iterable[ProviderStatusSpec],
     *,

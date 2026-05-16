@@ -17,10 +17,8 @@ from opensquilla.cli.gateway_rpc import (
 )
 from opensquilla.cli.output import emit_error, print_json
 from opensquilla.cli.ui import console
-from opensquilla.skills.hub.defaults import (
-    build_default_skill_installer,
-    build_default_skill_router,
-)
+from opensquilla.skills.hub.defaults import build_default_skill_installer
+from opensquilla.skills.hub.search import search_skills, skill_search_request
 
 skills_app = typer.Typer(help="Skill management - list, search, install, uninstall.")
 
@@ -179,8 +177,11 @@ def skills_search(
     """Search for skills across Community sources."""
 
     async def _search() -> None:
-        router = build_default_skill_router()
-        results = await router.search(query, limit=20)
+        outcome = await search_skills(
+            None,
+            skill_search_request({"query": query, "limit": 20}),
+        )
+        results = outcome.results
 
         if json_output:
             print_json([asdict(result) for result in results])

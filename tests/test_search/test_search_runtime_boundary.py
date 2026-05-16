@@ -76,14 +76,20 @@ def test_gateway_configures_search_runtime_boundary() -> None:
 
 def test_gateway_reads_search_provider_from_runtime_boundary() -> None:
     assert ("opensquilla.tools.builtin.web", "get_active_provider") not in _imports_from(RPC_TOOLS)
-    assert ("opensquilla.search.runtime", "get_active_provider") in _imports_from(RPC_TOOLS)
+    assert ("opensquilla.search.runtime", "get_active_provider") not in _imports_from(RPC_TOOLS)
+    assert ("opensquilla.search.execution", "search_provider_payload") in _imports_from(
+        RPC_TOOLS
+    )
 
 
 def test_gateway_runs_search_queries_through_search_boundary() -> None:
     forbidden = ("opensquilla.tools.builtin.web", "run_web_search_payload")
 
     assert forbidden not in _imports_from(RPC_TOOLS)
-    assert ("opensquilla.search.execution", "run_search_payload") in _imports_from(RPC_TOOLS)
+    assert ("opensquilla.search.execution", "run_search_payload") not in _imports_from(RPC_TOOLS)
+    assert ("opensquilla.search.execution", "search_query_rpc_payload") in _imports_from(
+        RPC_TOOLS
+    )
     assert ("opensquilla.search.execution", "search_runtime_status") in _imports_from(RPC_TOOLS)
 
 

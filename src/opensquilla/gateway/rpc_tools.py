@@ -6,8 +6,11 @@ from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.provider.runtime_status import build_provider_status_payload
-from opensquilla.search.execution import run_search_payload, search_runtime_status
-from opensquilla.search.runtime import get_active_provider
+from opensquilla.search.execution import (
+    search_provider_payload,
+    search_query_rpc_payload,
+    search_runtime_status,
+)
 from opensquilla.tools.policy import (
     ToolSurfaceCapabilities,
     tool_surface_capabilities_from_runtime,
@@ -66,7 +69,7 @@ async def _handle_tools_effective(params: dict | None, ctx: RpcContext) -> dict:
 
 @_d.method("tools.search_provider", scope="operator.read")
 async def _handle_tools_search_provider(params: dict | None, ctx: RpcContext) -> dict:
-    return {"provider": get_active_provider()}
+    return search_provider_payload()
 
 
 @_d.method("providers.status", scope="operator.read")
@@ -95,61 +98,6 @@ async def _handle_search_status(params: dict | None, ctx: RpcContext) -> dict[st
     return search_runtime_status(str(provider) if provider else None)
 
 
-def _query_limit(params: dict[str, Any]) -> int | None:
-    if "limit" not in params or params.get("limit") is None:
-        return None
-    try:
-        limit = int(params["limit"])
-    except (TypeError, ValueError) as exc:
-        raise ValueError("params.limit must be an integer") from exc
-    if limit < 1 or limit > 20:
-        raise ValueError("params.limit must be between 1 and 20")
-    return limit
-
-
 @_d.method("search.query", scope="operator.write")
 async def _handle_search_query(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
-    if not isinstance(params, dict):
-        raise ValueError("params must be an object")
-    query = str(params.get("query") or "").strip()
-    if not query:
-        raise ValueError("params.query is required")
-    provider = params.get("provider")
-    provider_name = str(provider) if provider else None
-    if provider_name:
-        search_runtime_status(provider_name)
-    payload = await run_search_payload(
-        query,
-        _query_limit(params),
-        provider_name=provider_name,
-    )
-    error = payload.get("error")
-    if payload.get("ok", False):
-        result = {
-            "ok": True,
-            "query": payload.get("query", query),
-            "provider": payload.get("provider", provider_name or get_active_provider()),
-            "results": payload.get("results", []),
-        }
-        if payload.get("fallbackFrom"):
-            result["fallbackFrom"] = payload.get("fallbackFrom")
-        if payload.get("attempts") is not None:
-            result["attempts"] = payload.get("attempts")
-        return result
-    if not isinstance(error, dict):
-        error = {
-            "kind": payload.get("error_kind", "unknown"),
-            "class": payload.get("error_class", ""),
-            "message": str(payload.get("error") or ""),
-            "retryable": False,
-        }
-    result = {
-        "ok": False,
-        "query": payload.get("query", query),
-        "provider": payload.get("provider", provider_name or get_active_provider()),
-        "results": payload.get("results", []),
-        "error": error,
-    }
-    if payload.get("attempts") is not None:
-        result["attempts"] = payload.get("attempts")
-    return result
+    return await search_query_rpc_payload(params)

@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.provider.image_generation_runtime import image_generation_available
 from opensquilla.search.runtime import get_active_provider
 from opensquilla.tools.builtin.web import (
     run_web_search_payload,
@@ -19,8 +20,6 @@ _d = get_dispatcher()
 
 def _tool_surface_capabilities(ctx: RpcContext) -> ToolSurfaceCapabilities:
     try:
-        from opensquilla.tools.builtin.media import image_generation_available
-
         image_generation = image_generation_available()
     except Exception:
         image_generation = False

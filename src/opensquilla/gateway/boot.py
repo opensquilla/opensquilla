@@ -224,6 +224,7 @@ class ServiceContainer:
     """Typed container for initialized services. Returned by build_services().
 
     WARNING: build_services() mutates module-level state:
+    - provider.image_generation_runtime (configure_image_generation)
     - tools.builtin.memory_tools (create_memory_tools)
     - tools.builtin.skill_tools (create_skill_tools)
     - tools.services (configure_tool_services)
@@ -1192,7 +1193,7 @@ async def build_services(
         tool_registry = get_default_registry()
 
     try:
-        from opensquilla.tools.builtin.media import configure_image_generation
+        from opensquilla.provider.image_generation_runtime import configure_image_generation
 
         configure_image_generation(config.image_generation, llm_config=config.llm)
     except Exception as e:

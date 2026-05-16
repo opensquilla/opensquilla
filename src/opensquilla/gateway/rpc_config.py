@@ -233,7 +233,7 @@ def _sync_provider_selector(ctx: RpcContext, config: Any) -> None:
 
 
 def _sync_image_generation(config: Any) -> None:
-    from opensquilla.tools.builtin.media import configure_image_generation
+    from opensquilla.provider.image_generation_runtime import configure_image_generation
 
     configure_image_generation(
         getattr(config, "image_generation", None),

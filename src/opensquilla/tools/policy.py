@@ -304,7 +304,7 @@ def detect_runtime_tool_surface_capabilities(
     except Exception:
         pass
     try:
-        from opensquilla.tools.builtin.media import image_generation_available
+        from opensquilla.provider.image_generation_runtime import image_generation_available
 
         image_generation = image_generation_available()
     except Exception:

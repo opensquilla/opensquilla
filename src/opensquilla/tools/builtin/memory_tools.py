@@ -21,7 +21,6 @@ Usage (multi-agent routing):
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -36,6 +35,21 @@ from opensquilla.memory.runtime import (
     current_memory_tools_runtime,
     resolve_memory_agent,
 )
+from opensquilla.memory.source_paths import (
+    is_memory_archive_path as _is_memory_archive_path,
+)
+from opensquilla.memory.source_paths import (
+    is_memory_source_path as _is_memory_source_path,
+)
+from opensquilla.memory.source_paths import (
+    private_archive_error,
+)
+from opensquilla.memory.tool_writes import (
+    MemoryWriteError,
+    PlannedMemoryWrite,
+    apply_memory_writes,
+    validate_memory_save_target,
+)
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
 
@@ -45,122 +59,6 @@ if TYPE_CHECKING:
     from opensquilla.tools.registry import ToolRegistry
 
 logger = structlog.get_logger(__name__)
-
-# ---------------------------------------------------------------------------
-# Injection scanning
-# ---------------------------------------------------------------------------
-
-_MEMORY_THREAT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.I),
-    re.compile(r"you\s+are\s+now\s+(a|an)\b", re.I),
-    re.compile(r"system\s+prompt\s+override", re.I),
-    re.compile(r"new\s+instructions?\s*:", re.I),
-    re.compile(r"(curl|wget)\s+.*\$\{?\w*(KEY|SECRET|TOKEN|PASSWORD)", re.I),
-    re.compile(r"cat\s+.*(\.env|\.netrc|\.pgpass|credentials)", re.I),
-    re.compile(r"authorized_keys", re.I),
-    re.compile(r"<\s*system\s*>", re.I),
-)
-
-_INVISIBLE_CHARS = re.compile(r"[\u200b\u200c\u200d\ufeff\u202a-\u202e]")
-
-
-def _scan_memory_content(content: str) -> str | None:
-    """Lightweight check for injection/exfiltration in memory content.
-
-    Returns an error message if blocked, None if clean.
-    """
-    if _INVISIBLE_CHARS.search(content):
-        return "Blocked: content contains invisible Unicode control characters."
-    for pattern in _MEMORY_THREAT_PATTERNS:
-        if pattern.search(content):
-            return f"Blocked: content matches threat pattern ({pattern.pattern[:40]}...)."
-    return None
-
-
-async def _prune_expired_files(
-    memory_dir: str,
-    store: LongTermMemoryStore,
-    ttl_days: int,
-    *,
-    workspace_dir: str | None = None,
-) -> None:
-    """In-line TTL prune used by ``memory_save``.
-
-    Thin back-compat wrapper around ``memory/retention.py``. Callers
-    that hold a ``ResolvedMemoryAgent`` should pass ``workspace_dir`` so the
-    helper builds store keys identical to the inline indexing path
-    (``_apply_memory_writes`` indexes ``plan.path`` which is
-    workspace-relative). Defaults to ``memory_dir.parent`` for legacy
-    direct calls. The background sweeper in ``MemorySyncManager`` covers
-    paths the in-line call cannot reach (notably ``memory/archive/**``
-    written by ``TurnCaptureService``).
-    """
-    from opensquilla.memory.retention import prune_expired_memory_files
-
-    await prune_expired_memory_files(
-        memory_dir=Path(memory_dir),
-        store=store,
-        ttl_days=ttl_days,
-        workspace_dir=Path(workspace_dir) if workspace_dir else None,
-    )
-
-
-def _is_memory_archive_path(path: str) -> bool:
-    rel = Path(path)
-    return (
-        not rel.is_absolute()
-        and not any(part in {"", ".", ".."} for part in rel.parts)
-        and rel.parts[:2] == ("memory", "archive")
-    )
-
-
-def _is_memory_source_path(path: str, *, allow_archive: bool = False) -> bool:
-    """Return True for OpenSquilla memory source files."""
-    rel = Path(path)
-    if rel.is_absolute() or any(part in {"", ".", ".."} for part in rel.parts):
-        return False
-    if rel.parts == ("MEMORY.md",):
-        return True
-    if rel.parts[:2] == ("memory", "archive") and not allow_archive:
-        return False
-    return (
-        len(rel.parts) >= 2
-        and rel.parts[0] == "memory"
-        and rel.suffix == ".md"
-        and not any(part.startswith(".") for part in rel.parts[1:])
-    )
-
-
-def _is_raw_fallback_save_path(path: str) -> bool:
-    """Return True for paths under the ``memory/.raw_fallbacks/`` sidecar.
-
-    Raw-dump fallback files (written by ``SessionFlushService._raw_dump_fallback``
-    when both LLM flush and the curated path fail) live under a dot-prefix
-    sidecar so the memory sync_manager scanner skips them — but the writer
-    itself still goes through ``memory_save`` for unified file-write
-    semantics. This predicate carves a narrow exception in the source-path
-    gate for that single sidecar; nothing else dot-prefixed is writable.
-    """
-    rel = Path(path)
-    return (
-        not rel.is_absolute()
-        and not any(part in {"", ".", ".."} for part in rel.parts)
-        and len(rel.parts) >= 3
-        and rel.parts[:2] == ("memory", ".raw_fallbacks")
-        and rel.suffix == ".md"
-    )
-
-
-def _is_memory_save_path(path: str) -> bool:
-    """Return True for writable memory files.
-
-    Save targets must be readable/searchable memory sources OR the raw-dump
-    fallback sidecar (``memory/.raw_fallbacks/``). Bootstrap profile files
-    such as USER.md and AGENTS.md are edited through agent-file or
-    filesystem surfaces, not memory_save.
-    """
-    return _is_memory_source_path(path) or _is_raw_fallback_save_path(path)
-
 
 _MEMORY_SEARCH_DEFAULT_RESULTS: Final[int] = 10
 _MEMORY_SEARCH_MAX_RESULTS: Final[int] = 20
@@ -318,38 +216,6 @@ def _score_parts(result: Any) -> list[str]:
     return parts
 
 
-def _enforce_size_limits(memory_dir: Path, memory_config: Any) -> None:
-    """FIFO-prune ``memory_dir`` against the effective ``max_files`` cap.
-
-    Skips ``MEMORY.md`` (curated) and anything whose suffix is not
-    ``.md``. Oldest files by mtime are deleted first.
-    """
-    if memory_config is None:
-        return
-    max_files = getattr(memory_config, "max_files", 0) or 0
-    if max_files <= 0:
-        return
-    effective_cap = max_files
-    files = sorted(
-        (
-            p
-            for p in memory_dir.iterdir()
-            if p.is_file()
-            and p.suffix.lower() == ".md"
-            and p.name != "MEMORY.md"
-            and not p.name.startswith(".")
-        ),
-        key=lambda p: (p.stat().st_mtime, p.name),
-    )
-    if len(files) <= effective_cap:
-        return
-    for old in files[: len(files) - effective_cap]:
-        try:
-            old.unlink()
-        except OSError:
-            pass
-
-
 def create_memory_tools(
     stores: dict[str, LongTermMemoryStore] | LongTermMemoryStore,
     retrievers: dict[str, MemoryRetriever] | MemoryRetriever,
@@ -396,241 +262,9 @@ def create_memory_tools(
         except MemoryToolRuntimeError as exc:
             raise ToolError(str(exc)) from exc
 
-    @dataclass(frozen=True)
-    class PlannedWrite:
-        path: str
-        content: str
-        mode: str
-
-    @dataclass(frozen=True)
-    class FileSnapshot:
-        path: str
-        abs_path: Path
-        existed: bool
-        content: str | None
-
-    def _workspace_path(r: ResolvedMemoryAgent) -> Path:
-        if not r.workspace_dir:
-            raise ToolError("workspace directory not configured.")
-        return Path(r.workspace_dir)
-
-    def _resolve_memory_path(workspace_dir: Path, path: str) -> Path:
-        mem_path = workspace_dir / path
-        try:
-            mem_path.resolve().relative_to(workspace_dir.resolve())
-        except ValueError as exc:
-            raise ToolError("path traversal not allowed.") from exc
-        return mem_path
-
-    def _validate_memory_save_target(path: str, mode: str) -> None:
-        if not _is_memory_save_path(path):
-            raise ToolError(
-                "invalid memory path. Use a memory source file: MEMORY.md or memory/**/*.md."
-            )
-        if path == "MEMORY.md" and mode != "replace":
-            raise ToolError(
-                "MEMORY.md must use mode='replace'. "
-                "Read it first, then write the full updated content."
-            )
-
     def _allow_archive_memory_source() -> bool:
         config = _runtime().memory_config
         return bool(config and getattr(config, "index_captured_turns", False))
-
-    def _private_archive_error() -> str:
-        return (
-            "Error: memory archive is private turn-capture storage. Use durable memory "
-            "sources returned by memory_search. Enable index_captured_turns only when "
-            "raw captured turns are intentionally part of the product contract."
-        )
-
-    def _ensure_clean_memory_content(content: str, path: str) -> None:
-        threat = _scan_memory_content(content)
-        if threat:
-            logger.warning("memory_save.blocked", path=path, reason=threat)
-            raise ToolError(threat)
-
-    async def _maybe_prune(r: ResolvedMemoryAgent) -> None:
-        config = _runtime().memory_config
-        if config and getattr(config, "entry_ttl_days", 0) > 0 and r.memory_dir:
-            await _prune_expired_files(
-                r.memory_dir,
-                r.store,
-                config.entry_ttl_days,
-                workspace_dir=r.workspace_dir,
-            )
-
-    async def _enforce_size_limits(
-        r: ResolvedMemoryAgent,
-        workspace_dir: Path,
-        mem_path: Path,
-        content: str,
-        mode: str,
-    ) -> None:
-        config = _runtime().memory_config
-        if not config:
-            return
-
-        content_size_kb = len(content.encode("utf-8")) / 1024
-
-        max_file = getattr(config, "max_file_size_kb", 0)
-        if max_file > 0:
-            existing_size = mem_path.stat().st_size / 1024 if mem_path.exists() else 0
-            projected = (existing_size + content_size_kb) if mode != "replace" else content_size_kb
-            if projected > max_file:
-                raise ToolError(
-                    f"write would exceed per-file limit ({projected:.0f} KB > {max_file} KB)."
-                )
-
-        max_files = getattr(config, "max_files", 0)
-        if max_files > 0 and not mem_path.exists():
-            file_count = len(list(workspace_dir.rglob("*.md")))
-            if file_count >= max_files:
-                raise ToolError(f"max file count reached ({max_files}).")
-
-        max_total = getattr(config, "max_total_size_kb", 0)
-        if max_total > 0:
-            total_kb = (await r.store.total_size()) / 1024
-            if total_kb + content_size_kb > max_total:
-                raise ToolError(
-                    f"write would exceed total memory limit "
-                    f"({total_kb:.0f} + {content_size_kb:.0f} KB > {max_total} KB)."
-                )
-
-    def _snapshot_paths(workspace_dir: Path, plans: list[PlannedWrite]) -> list[FileSnapshot]:
-        seen: set[str] = set()
-        snapshots: list[FileSnapshot] = []
-        for plan in plans:
-            if plan.path in seen:
-                continue
-            seen.add(plan.path)
-            abs_path = _resolve_memory_path(workspace_dir, plan.path)
-            existed = abs_path.exists()
-            content = abs_path.read_text(encoding="utf-8") if existed else None
-            snapshots.append(
-                FileSnapshot(path=plan.path, abs_path=abs_path, existed=existed, content=content)
-            )
-        return snapshots
-
-    def _write_content(mem_path: Path, content: str, mode: str) -> None:
-        mem_path.parent.mkdir(parents=True, exist_ok=True)
-        if mode == "replace":
-            mem_path.write_text(content, encoding="utf-8")
-        elif mem_path.exists():
-            with open(mem_path, "a", encoding="utf-8") as handle:
-                handle.write("\n\n" + content)
-        else:
-            mem_path.write_text(content, encoding="utf-8")
-
-    async def _rollback_snapshots(
-        r: ResolvedMemoryAgent,
-        snapshots: list[FileSnapshot],
-        touched_paths: set[str],
-    ) -> str:
-        from opensquilla.memory.types import MemorySource
-
-        if not touched_paths:
-            return "no-op"
-
-        statuses: list[str] = []
-        for snapshot in snapshots:
-            if snapshot.path not in touched_paths:
-                continue
-            try:
-                if snapshot.existed:
-                    snapshot.abs_path.parent.mkdir(parents=True, exist_ok=True)
-                    snapshot.abs_path.write_text(snapshot.content or "", encoding="utf-8")
-                elif snapshot.abs_path.exists():
-                    snapshot.abs_path.unlink()
-            except Exception:
-                statuses.append("disk_failed")
-                continue
-
-            try:
-                if _is_raw_fallback_save_path(snapshot.path):
-                    # Raw-dump sidecar paths are never indexed (F2); rollback
-                    # only needs to restore disk content, which already
-                    # happened above.
-                    statuses.append("restored")
-                    continue
-                if snapshot.existed:
-                    await r.store.index_file(
-                        path=snapshot.path,
-                        content=snapshot.content or "",
-                        source=MemorySource.memory,
-                    )
-                else:
-                    await r.store.remove_file(snapshot.path)
-                statuses.append("restored")
-            except Exception:
-                statuses.append("index_stale")
-
-        if any(status == "disk_failed" for status in statuses):
-            return "disk_failed"
-        if any(status == "index_stale" for status in statuses):
-            return "index_stale"
-        return "restored"
-
-    def _raise_with_rollback_context(exc: Exception, rollback_status: str) -> None:
-        if rollback_status == "restored":
-            suffix = "changes rolled back."
-        elif rollback_status == "index_stale":
-            suffix = "on-disk state rolled back, but index may be stale."
-        elif rollback_status == "disk_failed":
-            suffix = "rollback failed; disk and index may be inconsistent."
-        else:
-            suffix = "operation failed."
-
-        message = f"{exc} ({suffix})"
-        if isinstance(exc, ToolError):
-            raise ToolError(message) from exc
-        raise RuntimeError(message) from exc
-
-    async def _apply_memory_writes(
-        r: ResolvedMemoryAgent,
-        plans: list[PlannedWrite],
-    ) -> dict[str, int]:
-        from opensquilla.memory.types import MemorySource
-
-        if not plans:
-            return {}
-
-        workspace_dir = _workspace_path(r)
-        await _maybe_prune(r)
-
-        snapshots = _snapshot_paths(workspace_dir, plans)
-        snapshot_map = {snapshot.path: snapshot for snapshot in snapshots}
-        touched_paths: set[str] = set()
-        chunks_by_path: dict[str, int] = {}
-
-        try:
-            for plan in plans:
-                mem_path = snapshot_map[plan.path].abs_path
-                _ensure_clean_memory_content(plan.content, plan.path)
-                await _enforce_size_limits(r, workspace_dir, mem_path, plan.content, plan.mode)
-                _write_content(mem_path, plan.content, plan.mode)
-                written_content = mem_path.read_text(encoding="utf-8")
-                touched_paths.add(plan.path)
-                is_raw_fallback = _is_raw_fallback_save_path(plan.path)
-                if is_raw_fallback:
-                    # Raw-dump fallback files live under ``memory/.raw_fallbacks/``
-                    # explicitly to escape retrieval. Skipping inline indexing
-                    # here matches the sync_manager dot-prefix exclusion so the
-                    # file never enters the store at write-time either. (F2)
-                    chunks_by_path[plan.path] = 0
-                else:
-                    chunks_by_path[plan.path] = await r.store.index_file(
-                        path=plan.path,
-                        content=written_content,
-                        source=MemorySource.memory,
-                    )
-            return chunks_by_path
-        except Exception as exc:
-            rollback_status = await _rollback_snapshots(r, snapshots, touched_paths)
-            if rollback_status == "no-op":
-                raise
-            _raise_with_rollback_context(exc, rollback_status)
-            raise RuntimeError("unreachable")
 
     @tool(
         name="memory_search",
@@ -711,11 +345,15 @@ def create_memory_tools(
             path = f"memory/{today}.md"
             mode = "append"
 
-        _validate_memory_save_target(path, mode)
-        chunks = await _apply_memory_writes(
-            r,
-            [PlannedWrite(path=path, content=content, mode=mode)],
-        )
+        try:
+            validate_memory_save_target(path, mode)
+            chunks = await apply_memory_writes(
+                r,
+                [PlannedMemoryWrite(path=path, content=content, mode=mode)],
+                memory_config=_runtime().memory_config,
+            )
+        except MemoryWriteError as exc:
+            raise ToolError(str(exc)) from exc
         # Notify snapshot refresh on successful write
         ctx = current_tool_context.get()
         _aid = (ctx.agent_id if ctx else None) or "main"
@@ -772,7 +410,7 @@ def create_memory_tools(
 
         allow_archive = _allow_archive_memory_source()
         if _is_memory_archive_path(path) and not allow_archive:
-            return _private_archive_error()
+            return private_archive_error()
         if not _is_memory_source_path(path, allow_archive=allow_archive):
             return "Error: path is not a memory source file. Use MEMORY.md or memory/*.md."
 
@@ -820,7 +458,7 @@ def create_memory_tools(
 
         allow_archive = _allow_archive_memory_source()
         if _is_memory_archive_path(path) and not allow_archive:
-            return _private_archive_error()
+            return private_archive_error()
         if not _is_memory_source_path(path, allow_archive=allow_archive):
             return "Error: path is not a memory source file. Use MEMORY.md or memory/*.md."
 

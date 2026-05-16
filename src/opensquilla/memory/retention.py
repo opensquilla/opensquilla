@@ -5,7 +5,7 @@ clean up the SQLite index".
 
 Used by:
 - ``MemorySyncManager._ttl_sweep_loop`` — periodic background sweep.
-- ``tools/builtin/memory_tools.py:_maybe_prune`` — in-line on ``memory_save``.
+- ``memory/tool_writes.py:_maybe_prune`` — in-line on ``memory_save``.
 """
 
 from __future__ import annotations

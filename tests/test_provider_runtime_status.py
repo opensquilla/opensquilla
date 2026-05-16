@@ -1,11 +1,38 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from opensquilla.provider.runtime_status import build_provider_status_report
+from opensquilla.provider.runtime_status import (
+    build_provider_status_payload,
+    build_provider_status_report,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+RPC_TOOLS = ROOT / "src/opensquilla/gateway/rpc_tools.py"
+
+
+def _top_level_functions(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _imports_from(path: Path) -> set[tuple[str, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                imports.add((node.module, alias.name))
+    return imports
 
 
 @dataclass(frozen=True)
@@ -23,6 +50,16 @@ class FailingModelSelector:
 
     async def list_models(self) -> list[dict[str, object]]:
         raise RuntimeError("catalog unavailable")
+
+
+class ListingModelSelector:
+    current_config = SimpleNamespace(provider="openrouter")
+
+    async def list_models(self) -> list[dict[str, object]]:
+        return [
+            {"provider": "openrouter", "id": "openrouter/model"},
+            {"provider": "ollama", "id": "ollama/model"},
+        ]
 
 
 def _config(
@@ -102,3 +139,65 @@ async def test_build_provider_status_report_probes_selector_errors() -> None:
     assert probe.status == "error"
     assert probe.count == 0
     assert probe.error == "catalog unavailable"
+
+
+@pytest.mark.asyncio
+async def test_build_provider_status_payload_owns_gateway_wire_shape() -> None:
+    payload = await build_provider_status_payload(
+        [
+            FakeStatusSpec(provider_id="openrouter"),
+            FakeStatusSpec(
+                provider_id="ollama",
+                env_key="",
+                requires_api_key=False,
+                default_base_url="",
+            ),
+        ],
+        provider_selector=ListingModelSelector(),
+        config=_config(api_key="secret-key", base_url="https://custom.example/v1"),
+        provider_filter="openrouter",
+        probe_models=True,
+        environ={},
+    )
+
+    assert payload == {
+        "activeProvider": "openrouter",
+        "providers": [
+            {
+                "providerId": "openrouter",
+                "active": True,
+                "configured": True,
+                "buildable": True,
+                "model": "openrouter/model",
+                "requiresApiKey": True,
+                "apiKeyConfigured": True,
+                "baseUrlConfigured": True,
+                "error": None,
+                "modelProbe": {
+                    "attempted": True,
+                    "status": "ok",
+                    "count": 1,
+                    "error": None,
+                },
+            }
+        ],
+        "count": 1,
+    }
+    assert "secret-key" not in repr(payload)
+
+
+def test_gateway_delegates_provider_status_wire_shape_to_provider_boundary() -> None:
+    imports = _imports_from(RPC_TOOLS)
+
+    assert (
+        "opensquilla.provider.runtime_status",
+        "build_provider_status_payload",
+    ) in imports
+    assert (
+        "opensquilla.provider.runtime_status",
+        "build_provider_status_report",
+    ) not in imports
+    assert ("opensquilla.provider.runtime_status", "ProviderStatusRow") not in imports
+    assert ("opensquilla.provider.runtime_status", "ProviderModelProbe") not in imports
+    assert "_provider_status_row_to_wire" not in _top_level_functions(RPC_TOOLS)
+    assert "_model_probe_to_wire" not in _top_level_functions(RPC_TOOLS)

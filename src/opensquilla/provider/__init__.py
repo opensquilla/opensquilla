@@ -34,8 +34,10 @@ from .runtime_status import (
     ProviderModelProbe,
     ProviderStatusReport,
     ProviderStatusRow,
+    build_provider_status_payload,
     build_provider_status_report,
     probe_provider_models,
+    provider_status_report_to_wire,
 )
 from .selector import (
     ModelSelector,
@@ -108,8 +110,10 @@ __all__ = [
     "ProviderModelProbe",
     "ProviderStatusReport",
     "ProviderStatusRow",
+    "build_provider_status_payload",
     "build_provider_status_report",
     "probe_provider_models",
+    "provider_status_report_to_wire",
     # Credentials
     "Credential",
     "CredentialPool",

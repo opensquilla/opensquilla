@@ -5,11 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
-from opensquilla.provider.runtime_status import (
-    ProviderModelProbe,
-    ProviderStatusRow,
-    build_provider_status_report,
-)
+from opensquilla.provider.runtime_status import build_provider_status_payload
 from opensquilla.search.execution import run_search_payload, search_runtime_status
 from opensquilla.search.runtime import get_active_provider
 from opensquilla.tools.policy import (
@@ -73,30 +69,6 @@ async def _handle_tools_search_provider(params: dict | None, ctx: RpcContext) ->
     return {"provider": get_active_provider()}
 
 
-def _model_probe_to_wire(probe: ProviderModelProbe) -> dict[str, Any]:
-    return {
-        "attempted": probe.attempted,
-        "status": probe.status,
-        "count": probe.count,
-        "error": probe.error,
-    }
-
-
-def _provider_status_row_to_wire(row: ProviderStatusRow) -> dict[str, Any]:
-    return {
-        "providerId": row.provider_id,
-        "active": row.active,
-        "configured": row.configured,
-        "buildable": row.buildable,
-        "model": row.model,
-        "requiresApiKey": row.requires_api_key,
-        "apiKeyConfigured": row.api_key_configured,
-        "baseUrlConfigured": row.base_url_configured,
-        "error": row.error,
-        "modelProbe": _model_probe_to_wire(row.model_probe),
-    }
-
-
 @_d.method("providers.status", scope="operator.read")
 async def _handle_providers_status(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     from opensquilla.onboarding.provider_specs import list_provider_setup_specs
@@ -106,15 +78,13 @@ async def _handle_providers_status(params: dict | None, ctx: RpcContext) -> dict
     provider_filter = (params or {}).get("provider")
     probe_models = bool((params or {}).get("probeModels", False))
 
-    report = await build_provider_status_report(
+    return await build_provider_status_payload(
         list_provider_setup_specs(),
         provider_selector=getattr(ctx, "provider_selector", None),
         config=getattr(ctx, "config", None),
         provider_filter=str(provider_filter) if provider_filter else None,
         probe_models=probe_models,
     )
-    rows = [_provider_status_row_to_wire(row) for row in report.rows]
-    return {"activeProvider": report.active_provider, "providers": rows, "count": len(rows)}
 
 
 @_d.method("search.status", scope="operator.read")

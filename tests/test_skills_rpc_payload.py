@@ -18,6 +18,7 @@ from opensquilla.skills.rpc_payload import (
     skill_to_rpc_payload,
     skill_uninstall_result_rpc_payload,
     skill_uninstall_unavailable_rpc_payload,
+    skills_bins_rpc_payload,
     skills_list_rpc_payload,
     skills_search_rpc_payload,
     skills_search_unavailable_rpc_payload,
@@ -169,6 +170,35 @@ def test_skills_list_status_and_get_payloads_handle_loader_boundary() -> None:
         skill_get_rpc_payload({"name": "planner"}, None)
     with pytest.raises(KeyError, match="Skill not found: missing"):
         skill_get_rpc_payload({"name": "missing"}, loader)
+
+
+def test_skills_bins_payload_collects_required_bins_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill = _skill(
+        metadata=SkillPlatformMeta(
+            requires=SkillRequires(
+                bins=["node", "python"],
+                any_bins=["uv", "node"],
+            )
+        )
+    )
+    loader = FakeLoader([skill, _skill(metadata=SkillPlatformMeta(requires=None))])
+    checked: list[str] = []
+
+    def fake_which(name: str) -> str | None:
+        checked.append(name)
+        return f"/usr/bin/{name}" if name in {"node", "uv"} else None
+
+    monkeypatch.setattr("opensquilla.skills.rpc_payload.shutil.which", fake_which)
+
+    assert skills_bins_rpc_payload(None) == {}
+    assert skills_bins_rpc_payload(loader) == {
+        "node": True,
+        "python": False,
+        "uv": True,
+    }
+    assert checked == ["node", "python", "uv"]
 
 
 def test_skills_search_payloads_preserve_wire_shape_and_installed_aliases() -> None:
@@ -331,6 +361,11 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
     )
     monkeypatch.setattr(
         rpc_skills,
+        "skills_bins_rpc_payload",
+        lambda actual_loader: {"node": actual_loader is loader},
+    )
+    monkeypatch.setattr(
+        rpc_skills,
         "skill_get_rpc_payload",
         lambda params, actual_loader: {"name": params["name"], "loader": actual_loader is loader},
     )
@@ -380,6 +415,7 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
     assert await rpc_skills._handle_skills_list(None, ctx) == {
         "skills": [{"name": "list", "loader": True}]
     }
+    assert await rpc_skills._handle_skills_bins(None, ctx) == {"node": True}
     assert await rpc_skills._handle_skills_get({"name": "planner"}, ctx) == {
         "name": "planner",
         "loader": True,
@@ -444,6 +480,12 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     imported_modules = {
         node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
     }
+    imported_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
     imported_helpers = {
         alias.name
         for node in ast.walk(tree)
@@ -472,6 +514,7 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     }
 
     assert "opensquilla.skills.eligibility" not in imported_modules
+    assert "shutil" not in imported_names
     assert {
         "skills_search_rpc_payload",
         "skills_search_unavailable_rpc_payload",
@@ -480,6 +523,7 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
         "skill_install_unavailable_rpc_payload",
         "skill_uninstall_result_rpc_payload",
         "skill_uninstall_unavailable_rpc_payload",
+        "skills_bins_rpc_payload",
         "skills_update_empty_results_rpc_payload",
         "skills_update_results_rpc_payload",
         "skills_update_unavailable_rpc_payload",
@@ -488,6 +532,24 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
         "skills_search_rpc_payload",
         "skills_search_unavailable_rpc_payload",
     }.issubset(handler_names)
+    bins_handler = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_skills_bins"
+    }
+    bins_handler_names = {
+        node.id
+        for handler in bins_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Name)
+    }
+    bins_direct_key_sets = {
+        tuple(key.value for key in node.keys if isinstance(key, ast.Constant))
+        for handler in bins_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Dict)
+    }
+    assert {"skills_bins_rpc_payload"}.issubset(bins_handler_names)
     install_handler = {
         node.name: node
         for node in tree.body
@@ -601,3 +663,4 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
         "message",
         "missing_still",
     ) not in deps_install_direct_key_sets
+    assert () not in bins_direct_key_sets

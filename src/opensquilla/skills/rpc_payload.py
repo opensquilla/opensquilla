@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Mapping
 from typing import Any
 
@@ -122,6 +123,24 @@ def skills_list_rpc_payload(loader: Any | None) -> dict[str, Any]:
     if loader is None:
         return {"skills": []}
     return {"skills": skills_status_rpc_payload(loader)}
+
+
+def skills_bins_rpc_payload(loader: Any | None) -> dict[str, bool]:
+    """Build the RPC wire payload for ``skills.bins``."""
+
+    if loader is None:
+        return {}
+
+    bins_status: dict[str, bool] = {}
+    for skill in loader.load_all():
+        meta = getattr(skill, "metadata", None)
+        requires = getattr(meta, "requires", None) if meta is not None else None
+        if requires is None:
+            continue
+        for bin_name in list(requires.bins) + list(requires.any_bins):
+            if bin_name not in bins_status:
+                bins_status[bin_name] = shutil.which(bin_name) is not None
+    return bins_status
 
 
 def skill_search_result_rpc_payload(result: Any, installed_names: set[str]) -> dict[str, Any]:
@@ -285,6 +304,7 @@ __all__ = [
     "skill_status_detail",
     "skill_status_from_report",
     "skill_to_rpc_payload",
+    "skills_bins_rpc_payload",
     "skills_list_rpc_payload",
     "skills_search_rpc_payload",
     "skills_search_unavailable_rpc_payload",

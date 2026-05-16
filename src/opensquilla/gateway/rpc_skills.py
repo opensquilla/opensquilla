@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import weakref
 from typing import Any
 
@@ -18,6 +17,7 @@ from opensquilla.skills.rpc_payload import (
     skill_missing_requirements_rpc_payload,
     skill_uninstall_result_rpc_payload,
     skill_uninstall_unavailable_rpc_payload,
+    skills_bins_rpc_payload,
     skills_list_rpc_payload,
     skills_search_rpc_payload,
     skills_search_unavailable_rpc_payload,
@@ -65,23 +65,7 @@ async def _handle_skills_list(params: dict | None, ctx: RpcContext) -> dict[str,
 @_d.method("skills.bins", scope="node")
 async def _handle_skills_bins(params: dict | None, ctx: RpcContext) -> dict[str, bool]:
     """Return the availability status of required bins across all skills."""
-    loader = _get_loader(ctx)
-    if loader is None:
-        return {}
-
-    bins_status: dict[str, bool] = {}
-    skills = loader.load_all()
-
-    for skill in skills:
-        if skill.metadata and skill.metadata.requires:
-            for bin_name in skill.metadata.requires.bins:
-                if bin_name not in bins_status:
-                    bins_status[bin_name] = shutil.which(bin_name) is not None
-            for bin_name in skill.metadata.requires.any_bins:
-                if bin_name not in bins_status:
-                    bins_status[bin_name] = shutil.which(bin_name) is not None
-
-    return bins_status
+    return skills_bins_rpc_payload(_get_loader(ctx))
 
 
 @_d.method("skills.get", scope="operator.read")

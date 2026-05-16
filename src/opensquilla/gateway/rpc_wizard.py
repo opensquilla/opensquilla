@@ -2,7 +2,7 @@
 
 These four handlers are the wire surface for the onboard wizard state
 machine. The heavy lifting — typed schemas, state transitions, validation
-— lives in :mod:`opensquilla.gateway.wizard`. This module is a thin translator
+— lives in :mod:`opensquilla.application.wizard`. This module is a thin translator
 between the JSON-over-RPC shape (camelCase field names) and the Python
 registry (snake_case attributes).
 
@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from opensquilla.application.wizard import get_wizard_registry
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
-from opensquilla.gateway.wizard import get_wizard_registry
 
 _d = get_dispatcher()
 

@@ -20,6 +20,16 @@ from .turn import (
     TurnRequest,
     TurnUseCase,
 )
+from .wizard import (
+    WIZARD_DEFINITIONS,
+    WizardField,
+    WizardFieldType,
+    WizardRegistry,
+    WizardSession,
+    WizardStep,
+    get_wizard_registry,
+    reset_wizard_registry,
+)
 
 __all__ = [
     "ApprovalQueue",
@@ -34,8 +44,16 @@ __all__ = [
     "ToolSurfaceBuilderPort",
     "TurnRequest",
     "TurnUseCase",
+    "WIZARD_DEFINITIONS",
+    "WizardField",
+    "WizardFieldType",
+    "WizardRegistry",
+    "WizardSession",
+    "WizardStep",
     "get_approval_queue",
     "get_intent_cache",
+    "get_wizard_registry",
     "reset_approval_queue",
     "reset_intent_cache",
+    "reset_wizard_registry",
 ]

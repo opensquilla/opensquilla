@@ -119,6 +119,10 @@ EXPECTED_RPC_METHOD_SCOPES = {
     "usage.cost": "operator.read",
     "usage.status": "operator.read",
     "wake": "operator.write",
+    "wizard.cancel": "operator.admin",
+    "wizard.next": "operator.admin",
+    "wizard.start": "operator.admin",
+    "wizard.status": "operator.admin",
 }
 
 

@@ -30,6 +30,7 @@ from opensquilla.gateway.task_runtime import TaskQueueFullError
 from opensquilla.gateway.uploads import set_upload_store
 from opensquilla.gateway.websocket import SubscriptionManager, get_registry
 from opensquilla.session.compaction import CompactionConfig
+from opensquilla.session.rpc_payload import session_agent_not_found_details
 
 _DEFAULT_PRINCIPAL = Principal(
     role="operator", scopes=frozenset(["operator.admin"]), is_owner=True, authenticated=True
@@ -389,6 +390,7 @@ class TestSessionsCreate:
 
         assert ("opensquilla.session.rpc_payload", "session_create_response") in imports
         assert ("opensquilla.session.rpc_payload", "session_create_stub_response") in imports
+        assert ("opensquilla.session.rpc_payload", "session_agent_not_found_details") in imports
         assert any(
             isinstance(node, ast.Name) and node.id == "session_create_response"
             for node in ast.walk(handler)
@@ -397,8 +399,18 @@ class TestSessionsCreate:
             isinstance(node, ast.Name) and node.id == "session_create_stub_response"
             for node in ast.walk(handler)
         )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_agent_not_found_details"
+            for node in ast.walk(handler)
+        )
+        direct_detail_key_sets = {
+            tuple(key.value for key in node.keys if isinstance(key, ast.Constant))
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Dict)
+        }
         assert "sessionId" not in handler_constants
         assert "seededMessage" not in handler_constants
+        assert ("agentId",) not in direct_detail_key_sets
 
     @pytest.mark.asyncio
     async def test_create_defaults(self, dispatcher, ctx_no_manager):
@@ -501,7 +513,7 @@ class TestSessionsCreate:
 
         assert res.ok is False
         assert res.error.code == "agent.not_found"
-        assert res.error.details == {"agentId": "ghost"}
+        assert res.error.details == session_agent_not_found_details("ghost")
 
     @pytest.mark.asyncio
     async def test_create_with_create_if_missing_does_not_create_agent(self, dispatcher):
@@ -529,7 +541,7 @@ class TestSessionsCreate:
 
         assert res.ok is False
         assert res.error.code == "agent.not_found"
-        assert res.error.details == {"agentId": "dragons"}
+        assert res.error.details == session_agent_not_found_details("dragons")
         assert cfg.agents == []
         assert session_manager._storage._sessions == {}
 

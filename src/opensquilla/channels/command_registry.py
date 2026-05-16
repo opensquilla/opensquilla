@@ -1,8 +1,7 @@
 """Channel-side slash-command dispatcher — adapter over the unified registry.
 
-``DEFAULT_COMMAND_REGISTRY`` is derived from
-:data:`opensquilla.engine.commands.DEFAULT_REGISTRY` rather than holding its
-own hard-coded command table. The ``CommandRegistry.match`` and ``dispatch``
+``DEFAULT_COMMAND_REGISTRY`` is derived from the shared slash-command registry
+rather than holding its own hard-coded command table. The ``CommandRegistry.match`` and ``dispatch``
 API is preserved for existing callers (``gateway/boot.py``,
 ``gateway/channel_dispatch.py``).
 
@@ -16,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from opensquilla.channels.types import OutgoingMessage
-from opensquilla.engine.commands import DEFAULT_REGISTRY, ParamsFactory, Surface
+from opensquilla.commands import DEFAULT_REGISTRY, ParamsFactory, Surface
 
 
 class CommandRegistry:

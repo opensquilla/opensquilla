@@ -12,7 +12,6 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("agents", "session"),
     ("application", "contracts"),
     ("channels", "contracts"),
-    ("channels", "engine"),
     ("channels", "session"),
     ("cli", "agents"),
     ("cli", "application"),

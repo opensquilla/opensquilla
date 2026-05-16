@@ -1,7 +1,7 @@
 """Slash-command registry for the chat REPL — TUI compat layer.
 
 This module is a thin TUI-surface adapter over
-:data:`opensquilla.engine.commands.DEFAULT_REGISTRY`. The public
+:data:`opensquilla.commands.DEFAULT_REGISTRY`. The public
 API (``SlashCommand`` shim, ``REGISTRY`` tuple, ``slash_words``,
 ``is_exit_command``, ``find_command``, ``render_help_table``) is preserved
 for backward compatibility with ``cli/repl/prompt.py`` and
@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from rich.markup import escape
 from rich.table import Table
 
-from opensquilla.engine.commands import DEFAULT_REGISTRY, CommandDef, Surface
+from opensquilla.commands import DEFAULT_REGISTRY, CommandDef, Surface
 
 
 @dataclass(frozen=True)

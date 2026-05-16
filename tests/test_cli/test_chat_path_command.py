@@ -10,7 +10,7 @@ from opensquilla.cli.chat_cmd import (
     _path_strategy_hint,
 )
 from opensquilla.cli.repl.commands import REGISTRY
-from opensquilla.engine.commands import DEFAULT_REGISTRY, Surface
+from opensquilla.commands import DEFAULT_REGISTRY, Surface
 
 
 def test_path_command_parses_quoted_path_with_prompt(tmp_path: Path) -> None:

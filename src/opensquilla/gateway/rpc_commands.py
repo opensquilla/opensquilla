@@ -1,6 +1,6 @@
 """Slash-command catalog RPC.
 
-Exposes :data:`opensquilla.engine.commands.DEFAULT_REGISTRY` to non-Python
+Exposes :data:`opensquilla.commands.DEFAULT_REGISTRY` to non-Python
 surfaces (initially the web frontend) so the slash-menu list comes from
 one source rather than being hardcoded per-surface. Read-only.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from opensquilla.engine.commands import DEFAULT_REGISTRY, CommandDef, Surface
+from opensquilla.commands import DEFAULT_REGISTRY, CommandDef, Surface
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 
 _d = get_dispatcher()

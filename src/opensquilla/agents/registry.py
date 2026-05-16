@@ -2,29 +2,19 @@
 
 from __future__ import annotations
 
-import os
-import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from opensquilla.agents.config import AgentEntryConfig
 from opensquilla.agents.scope import resolve_agent_workspace_dir
-from opensquilla.identity.bootstrap import (
-    CORE_BOOTSTRAP_TEMPLATE_FILENAMES,
-    ONE_SHOT_BOOTSTRAP_FILENAME,
-    ensure_agent_workspace,
+from opensquilla.agents.workspace_files import (
+    list_workspace_agent_files,
+    read_workspace_agent_file,
+    write_workspace_agent_file,
 )
+from opensquilla.identity.bootstrap import ensure_agent_workspace
 from opensquilla.session.keys import normalize_agent_id
-
-_WORKSPACE_AGENT_FILE_NAMES = (
-    *CORE_BOOTSTRAP_TEMPLATE_FILENAMES,
-    ONE_SHOT_BOOTSTRAP_FILENAME,
-    "MEMORY.md",
-    "memory.md",
-)
-_WORKSPACE_AGENT_FILE_NAME_SET = frozenset(_WORKSPACE_AGENT_FILE_NAMES)
-_ALLOWED_FILE_EXTENSIONS = frozenset({".md", ".txt", ".yaml", ".yml", ".j2"})
 
 
 class AgentRegistryConfig(Protocol):
@@ -134,33 +124,14 @@ class AgentRegistry:
         return resolve_agent_workspace_dir(agent_id, self.config)
 
     async def list_agent_files(self, agent_id: str) -> list[dict[str, Any]]:
-        root = self._workspace_root(agent_id)
-        return [self._workspace_file_entry(root, name) for name in _WORKSPACE_AGENT_FILE_NAMES]
+        return list_workspace_agent_files(self._workspace_root(agent_id))
 
     async def get_agent_file(self, agent_id: str, name: str) -> dict[str, Any]:
-        root = self._workspace_root(agent_id)
-        safe_name, path = self._resolve_workspace_agent_file(root, name)
-        content = self._read_workspace_agent_file(path)
+        safe_name, content = read_workspace_agent_file(self._workspace_root(agent_id), name)
         return {"name": safe_name, "content": content}
 
     async def set_agent_file(self, agent_id: str, name: str, content: Any) -> dict[str, Any]:
-        ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
-        if ext not in _ALLOWED_FILE_EXTENSIONS:
-            raise ValueError(
-                f"File extension not allowed: {ext}. Allowed: {sorted(_ALLOWED_FILE_EXTENSIONS)}"
-            )
-        root = self._workspace_root(agent_id)
-        safe_name, path = self._resolve_workspace_agent_file(root, name)
-        text = content if isinstance(content, str) else str(content)
-        data = text.encode("utf-8")
-        fd = self._open_workspace_agent_file_for_write(path)
-        try:
-            self._validate_safe_file_stat(os.fstat(fd))
-            os.ftruncate(fd, 0)
-            os.write(fd, data)
-        finally:
-            os.close(fd)
-        return {"name": safe_name, "path": safe_name, "size": len(data)}
+        return write_workspace_agent_file(self._workspace_root(agent_id), name, content)
 
     def _find_index(self, agent_id: str) -> int:
         for index, entry in enumerate(self.config.agents):
@@ -245,91 +216,3 @@ class AgentRegistry:
     def _workspace_root(self, agent_id: str) -> Path:
         normalized = normalize_agent_id(agent_id)
         return ensure_agent_workspace(self.get_agent_workspace(normalized)).workspace_dir
-
-    @staticmethod
-    def _workspace_file_entry(root: Path, name: str) -> dict[str, Any]:
-        path = root / name
-        entry: dict[str, Any] = {
-            "name": name,
-            "path": name,
-            "exists": False,
-            "missing": True,
-            "status": "missing",
-        }
-        try:
-            file_stat = path.lstat()
-        except FileNotFoundError:
-            return entry
-        entry.update({"exists": True, "missing": False})
-        if stat.S_ISLNK(file_stat.st_mode):
-            entry.update({"status": "unsafe", "unsafeReason": "symlink"})
-            return entry
-        if not stat.S_ISREG(file_stat.st_mode):
-            entry.update({"status": "unsafe", "unsafeReason": "not-regular-file"})
-            return entry
-        if getattr(file_stat, "st_nlink", 1) > 1:
-            entry.update({"status": "unsafe", "unsafeReason": "hardlink"})
-            return entry
-        entry.update({"status": "present", "size": file_stat.st_size})
-        return entry
-
-    @staticmethod
-    def _validate_workspace_file_name(name: str) -> str:
-        if not isinstance(name, str) or not name:
-            raise ValueError("params.name is required")
-        if name != Path(name).name or "/" in name or "\\" in name:
-            raise ValueError("workspace file name must not contain path separators")
-        if name not in _WORKSPACE_AGENT_FILE_NAME_SET:
-            raise ValueError(f"Unsupported workspace agent file: {name}")
-        return name
-
-    def _resolve_workspace_agent_file(self, root: Path, name: str) -> tuple[str, Path]:
-        safe_name = self._validate_workspace_file_name(name)
-        path = root / safe_name
-        try:
-            path.resolve(strict=False).relative_to(root.resolve())
-        except ValueError as exc:
-            raise ValueError("workspace file escapes workspace root") from exc
-        return safe_name, path
-
-    @staticmethod
-    def _validate_safe_file_stat(file_stat: os.stat_result) -> None:
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise ValueError("workspace agent file must be a regular file")
-        if getattr(file_stat, "st_nlink", 1) > 1:
-            raise ValueError("workspace agent file must not be hardlinked")
-
-    def _read_workspace_agent_file(self, path: Path) -> str:
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
-        try:
-            fd = os.open(path, os.O_RDONLY | nofollow)
-        except FileNotFoundError:
-            raise
-        except OSError as exc:
-            raise ValueError("workspace agent file must not be a symlink") from exc
-
-        try:
-            self._validate_safe_file_stat(os.fstat(fd))
-            with os.fdopen(fd, "r", encoding="utf-8") as handle:
-                fd = -1
-                return handle.read()
-        finally:
-            if fd != -1:
-                os.close(fd)
-
-    def _open_workspace_agent_file_for_write(self, path: Path) -> int:
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
-        try:
-            file_stat = path.lstat()
-        except FileNotFoundError:
-            try:
-                return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o600)
-            except FileExistsError:
-                file_stat = path.lstat()
-        if stat.S_ISLNK(file_stat.st_mode):
-            raise ValueError("workspace agent file must not be a symlink")
-        self._validate_safe_file_stat(file_stat)
-        try:
-            return os.open(path, os.O_WRONLY | nofollow)
-        except OSError as exc:
-            raise ValueError("workspace agent file must not be a symlink") from exc

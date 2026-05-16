@@ -95,7 +95,7 @@ def _sync_image_generation(config: Any) -> None:
 
 
 def _sync_search_provider(config: Any) -> None:
-    from opensquilla.tools.builtin.web import configure_search
+    from opensquilla.search.runtime import configure_search
 
     configure_search(
         provider_name=config.search_provider,

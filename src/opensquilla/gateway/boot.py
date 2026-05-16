@@ -227,7 +227,7 @@ class ServiceContainer:
     - tools.builtin.memory_tools (create_memory_tools)
     - tools.builtin.skill_tools (create_skill_tools)
     - tools.services (configure_tool_services)
-    - search.providers (configure_search)
+    - search.runtime (configure_search)
     Do not call build_services() twice in the same process without
     understanding these side effects.
     """
@@ -1325,7 +1325,7 @@ async def build_services(
         import opensquilla.search.providers.brave  # noqa: F401 — registers provider
         import opensquilla.search.providers.duckduckgo  # noqa: F401 — registers provider
         from opensquilla.search.registry import get_provider_spec
-        from opensquilla.tools.builtin.web import configure_search
+        from opensquilla.search.runtime import configure_search
 
         provider = config.search_provider
         search_api_key = config.search_api_key

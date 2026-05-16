@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -15,6 +14,7 @@ import httpx
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.sandbox.integration import sandboxed
+from opensquilla.search import runtime as search_runtime
 from opensquilla.search.types import SearchProviderError, SearchResult
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, UnsupportedURLSchemeError, current_tool_context
@@ -288,16 +288,6 @@ async def http_request(
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-# Active search provider name — set during boot
-_active_provider: str = "duckduckgo"
-_active_max_results: int = 5
-_active_search_proxy: str = ""
-_active_search_api_key: str = ""
-_active_search_use_env_proxy: bool = False
-_active_search_fallback_policy: str = "off"
-_active_search_diagnostics: bool = False
-
-
 def configure_search(
     provider_name: str,
     max_results: int = 5,
@@ -308,56 +298,44 @@ def configure_search(
     fallback_policy: str = "off",
     diagnostics: bool = False,
 ) -> None:
-    global _active_provider, _active_max_results, _active_search_proxy
-    global _active_search_api_key, _active_search_use_env_proxy, _active_search_fallback_policy
-    global _active_search_diagnostics
-    _active_provider = provider_name
-    _active_max_results = max_results
-    _active_search_api_key = api_key.strip()
-    _active_search_proxy = proxy.strip()
-    _active_search_use_env_proxy = bool(use_env_proxy)
-    _active_search_fallback_policy = (
-        fallback_policy if fallback_policy in {"off", "network"} else "off"
+    search_runtime.configure_search(
+        provider_name,
+        max_results=max_results,
+        api_key=api_key,
+        proxy=proxy,
+        use_env_proxy=use_env_proxy,
+        fallback_policy=fallback_policy,
+        diagnostics=diagnostics,
     )
-    _active_search_diagnostics = bool(diagnostics)
 
 
 def reset_search_runtime() -> None:
     """Restore process-wide search configuration to boot defaults."""
-    configure_search("duckduckgo")
+    search_runtime.reset_search_runtime()
 
 
 def get_active_provider() -> str:
-    return _active_provider
+    return search_runtime.get_active_provider()
 
 
 def is_search_api_key_configured(provider_name: str | None = None) -> bool:
-    provider = provider_name or _active_provider
-    if provider == _active_provider and _active_search_api_key:
-        return True
-    try:
-        from opensquilla.search.registry import get_provider_spec
-
-        spec = get_provider_spec(provider)
-    except Exception:
-        return False
-    return bool(spec.env_key and os.environ.get(spec.env_key))
+    return search_runtime.is_search_api_key_configured(provider_name)
 
 
 def get_search_proxy() -> str:
-    return _active_search_proxy
+    return search_runtime.get_search_proxy()
 
 
 def get_search_use_env_proxy() -> bool:
-    return _active_search_use_env_proxy
+    return search_runtime.get_search_use_env_proxy()
 
 
 def get_search_fallback_policy() -> str:
-    return _active_search_fallback_policy
+    return search_runtime.get_search_fallback_policy()
 
 
 def get_search_diagnostics() -> bool:
-    return _active_search_diagnostics
+    return search_runtime.get_search_diagnostics()
 
 
 def _format_search_error(provider_name: str, exc: Exception) -> tuple[str, str]:
@@ -377,15 +355,7 @@ def _format_search_error(provider_name: str, exc: Exception) -> tuple[str, str]:
 
 
 def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
-    kwargs: dict[str, object] = {
-        "proxy": _active_search_proxy,
-        "use_env_proxy": _active_search_use_env_proxy,
-    }
-    if provider_name == "brave" and _active_search_api_key:
-        kwargs["api_key"] = _active_search_api_key
-    if _active_search_diagnostics or provider_name == "duckduckgo":
-        kwargs["diagnostics"] = _active_search_diagnostics
-    return kwargs
+    return search_runtime.search_provider_kwargs(provider_name)
 
 
 def _ensure_builtin_search_providers() -> None:
@@ -421,7 +391,8 @@ def search_runtime_status(provider_name: str | None = None) -> dict:
     from opensquilla.search.registry import get_provider, get_provider_spec
 
     _ensure_builtin_search_providers()
-    provider = provider_name or _active_provider
+    runtime = search_runtime.current_search_runtime()
+    provider = provider_name or runtime.provider_name
     spec = get_provider_spec(provider)
     api_key_configured = is_search_api_key_configured(provider)
     configured = (not spec.requires_api_key) or api_key_configured
@@ -433,17 +404,17 @@ def search_runtime_status(provider_name: str | None = None) -> dict:
     except Exception as exc:  # noqa: BLE001 - diagnostic surface
         error = str(exc)
     return {
-        "activeProvider": _active_provider,
+        "activeProvider": runtime.provider_name,
         "provider": provider,
         "configured": configured,
         "runtimeSupported": spec.runtime_supported,
         "requiresApiKey": spec.requires_api_key,
         "apiKeyConfigured": api_key_configured,
-        "maxResults": _active_max_results,
-        "proxyConfigured": bool(_active_search_proxy),
-        "useEnvProxy": bool(_active_search_use_env_proxy),
-        "fallbackPolicy": _active_search_fallback_policy,
-        "diagnostics": bool(_active_search_diagnostics),
+        "maxResults": runtime.max_results,
+        "proxyConfigured": bool(runtime.proxy),
+        "useEnvProxy": bool(runtime.use_env_proxy),
+        "fallbackPolicy": runtime.fallback_policy,
+        "diagnostics": bool(runtime.diagnostics),
         "buildable": buildable,
         "error": error,
     }
@@ -458,7 +429,8 @@ async def run_web_search_payload(
     from opensquilla.search.registry import get_provider
 
     _ensure_builtin_search_providers()
-    provider_name = provider_name or _active_provider
+    runtime = search_runtime.current_search_runtime()
+    provider_name = provider_name or runtime.provider_name
     marker = _sensitive_body_marker(query)
     if marker is not None:
         return _search_failure_payload(
@@ -473,8 +445,8 @@ async def run_web_search_payload(
             retryable=False,
         )
 
-    limit = max_results or _active_max_results
-    attempts: list[dict[str, str]] | None = [] if _active_search_diagnostics else None
+    limit = max_results or runtime.max_results
+    attempts: list[dict[str, str]] | None = [] if runtime.diagnostics else None
     try:
         provider = get_provider(
             provider_name,
@@ -496,7 +468,7 @@ async def run_web_search_payload(
             )
 
         should_fallback = (
-            _active_search_fallback_policy == "network"
+            runtime.fallback_policy == "network"
             and provider_name != "duckduckgo"
             and classified is not None
             and classified.kind in {"timeout", "network"}

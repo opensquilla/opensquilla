@@ -6,8 +6,8 @@ import os
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.search.runtime import get_active_provider
 from opensquilla.tools.builtin.web import (
-    get_active_provider,
     run_web_search_payload,
     search_runtime_status,
 )

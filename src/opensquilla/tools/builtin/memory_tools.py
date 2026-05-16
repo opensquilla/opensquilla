@@ -24,11 +24,18 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Final, NamedTuple
+from typing import TYPE_CHECKING, Any, Final
 
 import structlog
 
+from opensquilla.memory.runtime import (
+    MemoryToolRuntime,
+    MemoryToolRuntimeError,
+    ResolvedMemoryAgent,
+    configure_memory_tools_runtime,
+    current_memory_tools_runtime,
+    resolve_memory_agent,
+)
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
 
@@ -80,7 +87,7 @@ async def _prune_expired_files(
     """In-line TTL prune used by ``memory_save``.
 
     Thin back-compat wrapper around ``memory/retention.py``. Callers
-    that hold a ``ResolvedAgent`` should pass ``workspace_dir`` so the
+    that hold a ``ResolvedMemoryAgent`` should pass ``workspace_dir`` so the
     helper builds store keys identical to the inline indexing path
     (``_apply_memory_writes`` indexes ``plan.path`` which is
     workspace-relative). Defaults to ``memory_dir.parent`` for legacy
@@ -361,57 +368,33 @@ def create_memory_tools(
     When dicts are provided, the active agent_id (from ToolContext via contextvar) selects
     the correct store, retriever, and memory directory at call time.
     """
-    # Normalize to dict form
-    if not isinstance(stores, dict):
-        stores = {"main": stores}
-    if not isinstance(retrievers, dict):
-        retrievers = {"main": retrievers}
+    configure_memory_tools_runtime(
+        stores,
+        retrievers,
+        memory_base=memory_base,
+        memory_dir=memory_dir,
+        memory_config=memory_config,
+        on_memory_write=on_memory_write,
+        memory_source=memory_source,
+        workspace_base=workspace_base,
+    )
 
-    class ResolvedAgent(NamedTuple):
-        store: LongTermMemoryStore
-        retriever: MemoryRetriever
-        memory_dir: str | None
-        workspace_dir: str | None
+    def _runtime() -> MemoryToolRuntime:
+        runtime = current_memory_tools_runtime()
+        if runtime is None:
+            raise ToolError("memory tools runtime not configured.")
+        return runtime
 
-    def _resolve() -> ResolvedAgent:
+    def _resolve() -> ResolvedMemoryAgent:
         """Pick the store/retriever/memory_dir/workspace_dir for the current agent_id."""
         ctx = current_tool_context.get()
-        from opensquilla.session.keys import normalize_agent_id
-
-        agent_id = normalize_agent_id((ctx.agent_id if ctx else None) or "main")
-
-        s = stores.get(agent_id, stores.get("main", next(iter(stores.values()))))
-        r = retrievers.get(agent_id, retrievers.get("main", next(iter(retrievers.values()))))
-
-        if memory_source not in {"state", "workspace"}:
-            raise ToolError("memory_source must be 'state' or 'workspace'.")
-
-        if memory_source == "workspace":
-            from opensquilla.agents.scope import resolve_agent_workspace_dir
-
-            if ctx and ctx.workspace_dir:
-                wd: str | None = str(Path(ctx.workspace_dir).expanduser().resolve())
-            elif workspace_base:
-                wd = str(
-                    resolve_agent_workspace_dir(
-                        agent_id,
-                        SimpleNamespace(workspace_dir=workspace_base),
-                    )
-                )
-            elif memory_base:
-                wd = str(resolve_agent_workspace_dir(agent_id))
-            else:
-                wd = memory_dir
-            md: str | None = str(Path(wd) / "memory") if wd else memory_dir
-        elif memory_base:
-            from opensquilla.agents.scope import resolve_agent_data_dir, resolve_agent_memory_dir
-
-            md = str(resolve_agent_memory_dir(agent_id, memory_base))
-            wd = str(resolve_agent_data_dir(agent_id, memory_base))
-        else:
-            md = memory_dir
-            wd = memory_dir  # fallback: use memory_dir as workspace in test/legacy mode
-        return ResolvedAgent(store=s, retriever=r, memory_dir=md, workspace_dir=wd)
+        try:
+            return resolve_memory_agent(
+                agent_id=(ctx.agent_id if ctx else None) or "main",
+                workspace_dir=ctx.workspace_dir if ctx else None,
+            )
+        except MemoryToolRuntimeError as exc:
+            raise ToolError(str(exc)) from exc
 
     @dataclass(frozen=True)
     class PlannedWrite:
@@ -426,7 +409,7 @@ def create_memory_tools(
         existed: bool
         content: str | None
 
-    def _workspace_path(r: ResolvedAgent) -> Path:
+    def _workspace_path(r: ResolvedMemoryAgent) -> Path:
         if not r.workspace_dir:
             raise ToolError("workspace directory not configured.")
         return Path(r.workspace_dir)
@@ -451,7 +434,8 @@ def create_memory_tools(
             )
 
     def _allow_archive_memory_source() -> bool:
-        return bool(memory_config and getattr(memory_config, "index_captured_turns", False))
+        config = _runtime().memory_config
+        return bool(config and getattr(config, "index_captured_turns", False))
 
     def _private_archive_error() -> str:
         return (
@@ -466,28 +450,30 @@ def create_memory_tools(
             logger.warning("memory_save.blocked", path=path, reason=threat)
             raise ToolError(threat)
 
-    async def _maybe_prune(r: ResolvedAgent) -> None:
-        if memory_config and getattr(memory_config, "entry_ttl_days", 0) > 0 and r.memory_dir:
+    async def _maybe_prune(r: ResolvedMemoryAgent) -> None:
+        config = _runtime().memory_config
+        if config and getattr(config, "entry_ttl_days", 0) > 0 and r.memory_dir:
             await _prune_expired_files(
                 r.memory_dir,
                 r.store,
-                memory_config.entry_ttl_days,
+                config.entry_ttl_days,
                 workspace_dir=r.workspace_dir,
             )
 
     async def _enforce_size_limits(
-        r: ResolvedAgent,
+        r: ResolvedMemoryAgent,
         workspace_dir: Path,
         mem_path: Path,
         content: str,
         mode: str,
     ) -> None:
-        if not memory_config:
+        config = _runtime().memory_config
+        if not config:
             return
 
         content_size_kb = len(content.encode("utf-8")) / 1024
 
-        max_file = getattr(memory_config, "max_file_size_kb", 0)
+        max_file = getattr(config, "max_file_size_kb", 0)
         if max_file > 0:
             existing_size = mem_path.stat().st_size / 1024 if mem_path.exists() else 0
             projected = (existing_size + content_size_kb) if mode != "replace" else content_size_kb
@@ -496,13 +482,13 @@ def create_memory_tools(
                     f"write would exceed per-file limit ({projected:.0f} KB > {max_file} KB)."
                 )
 
-        max_files = getattr(memory_config, "max_files", 0)
+        max_files = getattr(config, "max_files", 0)
         if max_files > 0 and not mem_path.exists():
             file_count = len(list(workspace_dir.rglob("*.md")))
             if file_count >= max_files:
                 raise ToolError(f"max file count reached ({max_files}).")
 
-        max_total = getattr(memory_config, "max_total_size_kb", 0)
+        max_total = getattr(config, "max_total_size_kb", 0)
         if max_total > 0:
             total_kb = (await r.store.total_size()) / 1024
             if total_kb + content_size_kb > max_total:
@@ -537,7 +523,7 @@ def create_memory_tools(
             mem_path.write_text(content, encoding="utf-8")
 
     async def _rollback_snapshots(
-        r: ResolvedAgent,
+        r: ResolvedMemoryAgent,
         snapshots: list[FileSnapshot],
         touched_paths: set[str],
     ) -> str:
@@ -600,7 +586,10 @@ def create_memory_tools(
             raise ToolError(message) from exc
         raise RuntimeError(message) from exc
 
-    async def _apply_memory_writes(r: ResolvedAgent, plans: list[PlannedWrite]) -> dict[str, int]:
+    async def _apply_memory_writes(
+        r: ResolvedMemoryAgent,
+        plans: list[PlannedWrite],
+    ) -> dict[str, int]:
         from opensquilla.memory.types import MemorySource
 
         if not plans:
@@ -728,10 +717,9 @@ def create_memory_tools(
             [PlannedWrite(path=path, content=content, mode=mode)],
         )
         # Notify snapshot refresh on successful write
-        if on_memory_write is not None:
-            ctx = current_tool_context.get()
-            _aid = (ctx.agent_id if ctx else None) or "main"
-            on_memory_write(_aid)
+        ctx = current_tool_context.get()
+        _aid = (ctx.agent_id if ctx else None) or "main"
+        _runtime().notify_memory_write(_aid)
         integrity = "ok" if chunks[path] > 0 else "missing_chunks"
         return f"Saved to {path} ({chunks[path]} chunks indexed; integrity={integrity})."
 

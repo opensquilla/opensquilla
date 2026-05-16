@@ -13,6 +13,16 @@ from .flush import SILENT_REPLY_TOKEN, MemoryFlushPlan, resolve_flush_plan, shou
 from .manager import MemoryManager, build_memory_managers
 from .meta import MemoryIndexMeta
 from .retrieval import MemoryRetriever
+from .runtime import (
+    MemoryToolRuntime,
+    MemoryToolRuntimeError,
+    ResolvedMemoryAgent,
+    configure_memory_tools_runtime,
+    current_memory_tools_runtime,
+    memory_tools_available,
+    reset_memory_tools_runtime,
+    resolve_memory_agent,
+)
 from .store import LongTermMemoryStore
 from .sync_manager import MemorySyncManager, SessionDeltaTracker
 from .sync_manager import MemorySyncManager as MemoryFileWatcher
@@ -35,6 +45,15 @@ __all__ = [
     # facade
     "MemoryManager",
     "build_memory_managers",
+    # runtime
+    "MemoryToolRuntime",
+    "MemoryToolRuntimeError",
+    "ResolvedMemoryAgent",
+    "configure_memory_tools_runtime",
+    "current_memory_tools_runtime",
+    "memory_tools_available",
+    "reset_memory_tools_runtime",
+    "resolve_memory_agent",
     # retrieval
     "MemoryRetriever",
     # embedding

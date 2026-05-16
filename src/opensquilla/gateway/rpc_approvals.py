@@ -6,9 +6,11 @@ from typing import Any
 
 from opensquilla.application.approval_queue import get_approval_queue
 from opensquilla.application.approval_rpc import (
+    approval_forget_rpc_payload,
     approval_request_rpc_payload,
     approval_resolve_rpc_payload,
     approval_settings_rpc_payload,
+    approval_snapshot_rpc_payload,
     approval_wait_decision_rpc_payload,
 )
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
@@ -99,16 +101,8 @@ async def _handle_exec_approval_snapshot(params: dict | None, ctx: RpcContext) -
     from opensquilla.application.intent_cache import get_intent_cache
 
     queue = get_approval_queue()
-    mode = queue.get_settings().mode
     cache = get_intent_cache()
-    return {
-        "mode": mode,
-        "intent_cache_size": len(cache._entries),  # noqa: SLF001 — diagnostic
-        "intent_cache_entries": [
-            {"kind": k, "target": t, "scope": scope}
-            for (k, t), (_expires, scope) in cache._entries.items()  # noqa: SLF001
-        ],
-    }
+    return approval_snapshot_rpc_payload(queue, cache)
 
 
 @_d.method("exec.approval.forget", scope="operator.approvals")
@@ -125,12 +119,7 @@ async def _handle_exec_approval_forget(params: dict | None, ctx: RpcContext) -> 
         target = params.get("target")
     else:
         target = None
-    if isinstance(target, str) and target.strip():
-        cache.forget(f"rm {target.strip()}")
-        cache.forget(target.strip())
-        return {"scope": "target", "target": target.strip()}
-    cache.clear()
-    return {"scope": "all"}
+    return approval_forget_rpc_payload(cache, target)
 
 
 @_d.method("exec.approval.resolve", scope="operator.approvals")

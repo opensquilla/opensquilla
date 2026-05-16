@@ -11,6 +11,7 @@ from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.skills.hub.deps import install_deps
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.rpc_payload import (
+    skill_deps_install_result_rpc_payload,
     skill_get_rpc_payload,
     skill_install_result_rpc_payload,
     skill_install_unavailable_rpc_payload,
@@ -241,12 +242,7 @@ async def _handle_skills_deps_install(params: dict | None, ctx: RpcContext) -> d
         r = results[0]
         missing_still = skill_missing_requirements_rpc_payload(skill)
 
-    return {
-        "success": r.success,
-        "kind": r.kind,
-        "message": r.message,
-        "missing_still": missing_still,
-    }
+    return skill_deps_install_result_rpc_payload(r, missing_still)
 
 
 # ---------------------------------------------------------------------------

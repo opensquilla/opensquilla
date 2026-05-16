@@ -10,6 +10,7 @@ import pytest
 from opensquilla.gateway import rpc_skills
 from opensquilla.skills.eligibility import EligibilityReport
 from opensquilla.skills.rpc_payload import (
+    skill_deps_install_result_rpc_payload,
     skill_get_rpc_payload,
     skill_install_result_rpc_payload,
     skill_install_unavailable_rpc_payload,
@@ -297,6 +298,20 @@ def test_skill_update_and_uninstall_payloads_preserve_wire_shape() -> None:
     }
 
 
+def test_skill_deps_install_payload_preserves_wire_shape() -> None:
+    result = SimpleNamespace(success=True, kind="brew", message="Installed node")
+
+    assert skill_deps_install_result_rpc_payload(
+        result,
+        {"bins": ["node"], "env": ["PLANNER_TOKEN"]},
+    ) == {
+        "success": True,
+        "kind": "brew",
+        "message": "Installed node",
+        "missing_still": {"bins": ["node"], "env": ["PLANNER_TOKEN"]},
+    }
+
+
 @pytest.mark.asyncio
 async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
     monkeypatch: pytest.MonkeyPatch,
@@ -349,6 +364,15 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
         "skill_uninstall_unavailable_rpc_payload",
         lambda message: {"success": False, "message": message, "delegated": True},
     )
+    monkeypatch.setattr(
+        rpc_skills,
+        "skill_deps_install_result_rpc_payload",
+        lambda result, missing_still: {
+            "kind": result.kind,
+            "missing_still": missing_still,
+            "delegated": True,
+        },
+    )
 
     assert await rpc_skills._handle_skills_status(None, ctx) == [
         {"name": "status", "loader": True}
@@ -368,6 +392,30 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
     assert await rpc_skills._handle_skills_install({"identifier": "planner"}, object()) == {
         "success": False,
         "message": "No skill loader configured",
+        "delegated": True,
+    }
+    deps_spec = SimpleNamespace(id="brew", os=[])
+    deps_skill = SimpleNamespace(metadata=SimpleNamespace(install=[deps_spec]))
+    deps_ctx = SimpleNamespace(
+        skill_loader=SimpleNamespace(get_by_name=lambda _name: deps_skill)
+    )
+
+    async def fake_install_deps(_specs: list[object]) -> list[SimpleNamespace]:
+        return [SimpleNamespace(success=True, kind="brew", message="installed")]
+
+    monkeypatch.setattr(rpc_skills, "install_deps", fake_install_deps)
+    monkeypatch.setattr(rpc_skills, "validate_skill_install_supported", lambda *_args: None)
+    monkeypatch.setattr(
+        rpc_skills,
+        "skill_missing_requirements_rpc_payload",
+        lambda _skill: {"bins": [], "env": []},
+    )
+    assert await rpc_skills._handle_skills_deps_install(
+        {"name": "planner", "install_id": "brew"},
+        deps_ctx,
+    ) == {
+        "kind": "brew",
+        "missing_still": {"bins": [], "env": []},
         "delegated": True,
     }
     monkeypatch.setattr(rpc_skills, "_get_default_installer", lambda: None)
@@ -427,6 +475,7 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     assert {
         "skills_search_rpc_payload",
         "skills_search_unavailable_rpc_payload",
+        "skill_deps_install_result_rpc_payload",
         "skill_install_result_rpc_payload",
         "skill_install_unavailable_rpc_payload",
         "skill_uninstall_result_rpc_payload",
@@ -503,6 +552,26 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
         "skill_uninstall_result_rpc_payload",
         "skill_uninstall_unavailable_rpc_payload",
     }.issubset(uninstall_handler_names)
+    deps_install_handler = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_skills_deps_install"
+    }
+    deps_install_handler_names = {
+        node.id
+        for handler in deps_install_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Name)
+    }
+    deps_install_direct_key_sets = {
+        tuple(key.value for key in node.keys if isinstance(key, ast.Constant))
+        for handler in deps_install_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Dict)
+    }
+    assert {"skill_deps_install_result_rpc_payload"}.issubset(
+        deps_install_handler_names
+    )
     assert "_skill_to_dict" not in top_level_functions
     assert "_status_from_report" not in top_level_functions
     assert "_status_detail" not in top_level_functions
@@ -526,3 +595,9 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     assert ("results",) not in update_direct_key_sets
     assert ("success", "message") not in uninstall_direct_key_sets
     assert ("success", "name", "message") not in uninstall_direct_key_sets
+    assert (
+        "success",
+        "kind",
+        "message",
+        "missing_still",
+    ) not in deps_install_direct_key_sets

@@ -12,7 +12,15 @@ from opensquilla.gateway.context_overflow import apply_context_overflow_policy
 from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
 from opensquilla.session.compaction import build_compaction_config_from_provider
 from opensquilla.session.keys import build_webchat_key, canonicalize_session_key
-from opensquilla.session.rpc_payload import chat_history_response
+from opensquilla.session.rpc_payload import (
+    chat_abort_response,
+    chat_abort_unavailable_response,
+    chat_history_response,
+    chat_inject_response,
+    chat_send_instant_accept_response,
+    chat_send_refusal_response,
+    chat_send_response,
+)
 
 _d = get_dispatcher()
 log = structlog.get_logger(__name__)
@@ -162,7 +170,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
     # turn. This matches the roundtrip the WebUI observes on first paint
     # before the sessions engine is attached.
     if ctx.session_manager is None:
-        return {"ok": True, "sessionKey": session_key, "instant_accept": True}
+        return chat_send_instant_accept_response(session_key)
 
     mgr = _require_chat_session_manager(ctx)
     intent = params.get("intent")
@@ -170,7 +178,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
     # Gate the turn on the configured context-overflow policy.
     refusal = await _enforce_context_overflow(ctx, session_key, message)
     if refusal is not None:
-        return {"ok": False, "sessionKey": session_key, **refusal}
+        return chat_send_refusal_response(session_key, refusal)
 
     if intent != "new_chat":
         # Ensure session exists — auto-create if needed
@@ -223,7 +231,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
         if source_key in params:
             send_params[target_key] = params[source_key]
     result = await _handle_sessions_send(send_params, ctx)
-    return {"ok": True, "sessionKey": session_key, **result}
+    return chat_send_response(session_key, result)
 
 
 @_d.method("chat.abort", scope="operator.write")
@@ -232,12 +240,12 @@ async def _handle_chat_abort(params: dict | None, ctx: RpcContext) -> dict:
     # Fresh-WebUI / smoke path: abort always returns an ok envelope keyed by
     # sessionKey, regardless of whether a live task exists to cancel.
     if ctx.session_manager is None:
-        return {"ok": True, "sessionKey": session_key, "aborted": False}
+        return chat_abort_unavailable_response(session_key)
     _require_chat_session_manager(ctx)
     from opensquilla.gateway.rpc_sessions import _handle_sessions_abort
 
     result = await _handle_sessions_abort({"key": session_key}, ctx)
-    return {"sessionKey": session_key, **result}
+    return chat_abort_response(session_key, result)
 
 
 @_d.method("chat.history", scope="operator.read")
@@ -275,4 +283,4 @@ async def _handle_chat_inject(params: dict | None, ctx: RpcContext) -> dict:
             raise KeyError(f"Session not found: {session_key}")
 
     await ctx.session_manager.append_message(session_key, role=role, content=params["content"])
-    return {"ok": True, "sessionKey": session_key}
+    return chat_inject_response(session_key)

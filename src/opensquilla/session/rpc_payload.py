@@ -191,6 +191,30 @@ def chat_history_response(
     return {"messages": messages}
 
 
+def chat_send_instant_accept_response(session_key: str) -> dict[str, Any]:
+    return {"ok": True, "sessionKey": session_key, "instant_accept": True}
+
+
+def chat_send_refusal_response(session_key: str, refusal: dict[str, Any]) -> dict[str, Any]:
+    return {"ok": False, "sessionKey": session_key, **refusal}
+
+
+def chat_send_response(session_key: str, result: dict[str, Any]) -> dict[str, Any]:
+    return {"ok": True, "sessionKey": session_key, **result}
+
+
+def chat_abort_unavailable_response(session_key: str) -> dict[str, Any]:
+    return {"ok": True, "sessionKey": session_key, "aborted": False}
+
+
+def chat_abort_response(session_key: str, result: dict[str, Any]) -> dict[str, Any]:
+    return {"sessionKey": session_key, **result}
+
+
+def chat_inject_response(session_key: str) -> dict[str, Any]:
+    return {"ok": True, "sessionKey": session_key}
+
+
 def normalize_terminal_event_payload(event_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     if event_name != "session.event.error":
         return payload
@@ -501,8 +525,14 @@ def session_abort_response(key: str, *, aborted: bool) -> dict[str, Any]:
 
 __all__ = [
     "active_task_summary",
+    "chat_abort_response",
+    "chat_abort_unavailable_response",
     "chat_history_message",
     "chat_history_response",
+    "chat_inject_response",
+    "chat_send_instant_accept_response",
+    "chat_send_refusal_response",
+    "chat_send_response",
     "enum_value",
     "last_task_summary",
     "messages_subscribe_response",

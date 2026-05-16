@@ -3,8 +3,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from opensquilla.session.rpc_payload import (
+    chat_abort_response,
+    chat_abort_unavailable_response,
     chat_history_message,
     chat_history_response,
+    chat_inject_response,
+    chat_send_instant_accept_response,
+    chat_send_refusal_response,
+    chat_send_response,
     messages_subscribe_response,
     normalize_terminal_event_payload,
     session_abort_response,
@@ -232,6 +238,43 @@ def test_chat_history_message_recovers_content_block_text_and_skips_tool_only() 
 
     assert chat_history_message(text_entry)["text"] == "hello\nworld"
     assert chat_history_message(tool_entry) is None
+
+
+def test_chat_send_response_helpers_own_wire_shapes() -> None:
+    session_key = "agent:main:webchat:abc123"
+
+    assert chat_send_instant_accept_response(session_key) == {
+        "ok": True,
+        "sessionKey": session_key,
+        "instant_accept": True,
+    }
+    assert chat_send_refusal_response(session_key, {"reason": "context_overflow"}) == {
+        "ok": False,
+        "sessionKey": session_key,
+        "reason": "context_overflow",
+    }
+    assert chat_send_response(session_key, {"status": "accepted", "task_id": "task-1"}) == {
+        "ok": True,
+        "sessionKey": session_key,
+        "status": "accepted",
+        "task_id": "task-1",
+    }
+
+
+def test_chat_abort_and_inject_response_helpers_own_wire_shapes() -> None:
+    session_key = "agent:main:webchat:abc123"
+
+    assert chat_abort_unavailable_response(session_key) == {
+        "ok": True,
+        "sessionKey": session_key,
+        "aborted": False,
+    }
+    assert chat_abort_response(session_key, {"aborted": True, "key": session_key}) == {
+        "sessionKey": session_key,
+        "aborted": True,
+        "key": session_key,
+    }
+    assert chat_inject_response(session_key) == {"ok": True, "sessionKey": session_key}
 
 
 def test_normalize_terminal_event_payload_preserves_non_error_events() -> None:

@@ -68,7 +68,7 @@ class QQChannelConfig(BaseModel):
     branch (which currently passes only ``name``) keeps working until a
     follow-up wires the real entry fields, populating ``app_id`` and
     ``app_secret`` from
-    :class:`opensquilla.gateway.config.QQChannelEntry`.
+    :class:`opensquilla.channels.entries.QQChannelEntry`.
     """
 
     name: str = "qq"

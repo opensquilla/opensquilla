@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _COMMON_ENTRY_FIELDS = frozenset({"name", "type", "enabled", "agent_id"})
-_INTERNAL = frozenset({"manager", "registry", "transports", "types"})
+_INTERNAL = frozenset({"entries", "manager", "registry", "transports", "types"})
 _PLAIN_TEXT_MARKDOWN_HINT = (
     "This channel renders Markdown markers as literal text. Reply in plain text: "
     "avoid Markdown headings, bold/italic markers, tables, and fenced code unless "
@@ -173,12 +173,12 @@ def _resolve_entry_model(module_name: str, module: Any) -> type[BaseModel] | Non
     if local is not None and issubclass(local, BaseModel):
         return local
 
-    gateway_config = importlib.import_module("opensquilla.gateway.config")
-    for obj in vars(gateway_config).values():
+    channel_entries = importlib.import_module("opensquilla.channels.entries")
+    for obj in vars(channel_entries).values():
         if (
             isinstance(obj, type)
             and issubclass(obj, BaseModel)
-            and obj.__module__ == gateway_config.__name__
+            and obj.__module__ == channel_entries.__name__
             and obj.__name__.endswith("ChannelEntry")
             and obj.model_fields.get("type") is not None
             and obj.model_fields["type"].default == module_name

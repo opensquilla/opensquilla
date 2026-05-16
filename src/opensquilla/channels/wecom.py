@@ -81,7 +81,7 @@ class WeComChannelConfig(BaseModel):
     branch (which currently passes only ``name``) keeps working until a
     follow-up wires the real entry fields, populating ``corp_id``,
     ``corp_secret``, ``agent_id_int``, ``token``, and ``encoding_aes_key``
-    from :class:`opensquilla.gateway.config.WeComChannelEntry`.
+    from :class:`opensquilla.channels.entries.WeComChannelEntry`.
     """
 
     name: str = "wecom"

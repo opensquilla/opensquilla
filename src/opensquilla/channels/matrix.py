@@ -74,7 +74,7 @@ SESSION_SCHEMA_VERSION = 1
 class MatrixChannelConfig(BaseModel):
     """Pydantic config for the Matrix channel adapter.
 
-    Mirrors :class:`opensquilla.gateway.config.MatrixChannelEntry` so the
+    Mirrors :class:`opensquilla.channels.entries.MatrixChannelEntry` so the
     gateway-level entry can be lifted directly into adapter config. All
     fields except ``name`` carry safe defaults so config parsing can still
     construct a minimal-arity adapter for contract tests.

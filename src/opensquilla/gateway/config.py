@@ -23,6 +23,39 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from opensquilla.channels.entries import (
+    ChannelConfigEntry as ChannelConfigEntry,
+)
+from opensquilla.channels.entries import (
+    ConfiguredChannelEntry as ConfiguredChannelEntry,
+)
+from opensquilla.channels.entries import (
+    DingTalkChannelEntry as DingTalkChannelEntry,
+)
+from opensquilla.channels.entries import (
+    DiscordChannelEntry as DiscordChannelEntry,
+)
+from opensquilla.channels.entries import (
+    FeishuChannelEntry as FeishuChannelEntry,
+)
+from opensquilla.channels.entries import (
+    MatrixChannelEntry as MatrixChannelEntry,
+)
+from opensquilla.channels.entries import (
+    MSTeamsChannelEntry as MSTeamsChannelEntry,
+)
+from opensquilla.channels.entries import (
+    QQChannelEntry as QQChannelEntry,
+)
+from opensquilla.channels.entries import (
+    SlackChannelEntry as SlackChannelEntry,
+)
+from opensquilla.channels.entries import (
+    TelegramChannelEntry as TelegramChannelEntry,
+)
+from opensquilla.channels.entries import (
+    WeComChannelEntry as WeComChannelEntry,
+)
 from opensquilla.paths import default_opensquilla_home
 from opensquilla.sandbox.config import SandboxSettings
 
@@ -1152,148 +1185,6 @@ class ImageGenerationConfig(BaseSettings):
     providers: ImageGenerationProvidersConfig = Field(
         default_factory=ImageGenerationProvidersConfig
     )
-
-
-# ---------------------------------------------------------------------------
-# Channel config (BaseModel — no env-var binding, validated at TOML load)
-# Names use *Entry suffix to avoid shadowing adapter-level *ChannelConfig.
-# ---------------------------------------------------------------------------
-
-
-class ConfiguredChannelEntry(BaseModel):
-    """Common fields shared by gateway-managed channel entries."""
-
-    name: str
-    type: str
-    enabled: bool = True
-    agent_id: str = "main"
-    debounce_window_s: float = 0.0
-    status_reactions_enabled: bool = False
-
-    @field_validator("debounce_window_s")
-    @classmethod
-    def _validate_debounce_window(cls, value: float) -> float:
-        if value != 0.0 and not 0.1 <= value <= 30.0:
-            raise ValueError("debounce_window_s must be 0 or in [0.1, 30.0]")
-        return value
-
-
-class SlackChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a Slack channel."""
-
-    type: Literal["slack"] = "slack"
-    token: str
-    slack_channel_id: str = ""
-    signing_secret: str | None = None
-    reply_in_thread: bool = False
-
-
-class FeishuChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a Feishu (Lark) channel."""
-
-    type: Literal["feishu"] = "feishu"
-    status_reactions_enabled: bool = True
-    app_id: str
-    app_secret: str
-    encrypt_key: str = ""
-    verification_token: str = ""
-    default_chat_id: str = ""
-    webhook_path: str = "/feishu/events"
-    api_base: str = "https://open.feishu.cn/open-apis"
-    connection_mode: Literal["webhook", "websocket"] = "websocket"
-    domain: Literal["feishu", "lark"] = "feishu"
-
-
-class DiscordChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a Discord channel."""
-
-    type: Literal["discord"] = "discord"
-    token: str
-    application_id: str = ""
-    default_channel_id: str = ""
-    gateway_url: str = "wss://gateway.discord.gg/?v=10&encoding=json"
-    intents: int = 33281
-
-
-class DingTalkChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a DingTalk (钉钉) channel."""
-
-    type: Literal["dingtalk"] = "dingtalk"
-    client_id: str
-    client_secret: str
-
-
-class WeComChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a WeCom (企业微信) corp-app channel."""
-
-    type: Literal["wecom"] = "wecom"
-    corp_id: str
-    corp_secret: str
-    agent_id_int: int
-    token: str
-    encoding_aes_key: str
-    webhook_path: str = "/wecom/events"
-    api_base: str = "https://qyapi.weixin.qq.com"
-
-
-class QQChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a QQ Bot channel."""
-
-    type: Literal["qq"] = "qq"
-    app_id: str
-    app_secret: str
-
-
-class MSTeamsChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for an MS Teams channel."""
-
-    type: Literal["msteams"] = "msteams"
-    app_id: str
-    app_password: str
-    webhook_path: str = "/msteams/messages"
-
-
-class MatrixChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a Matrix channel."""
-
-    type: Literal["matrix"] = "matrix"
-    homeserver_url: str
-    user_id: str
-    password: str = ""
-    access_token: str = ""
-    device_id: str = ""
-    encryption: Literal["off", "required", "best_effort"] = "off"
-
-
-class TelegramChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a Telegram Bot API channel."""
-
-    type: Literal["telegram"] = "telegram"
-    token: str
-    default_chat_id: str = ""
-    api_base: str = "https://api.telegram.org"
-    transport_name: Literal["polling", "webhook"] = "polling"
-    webhook_path: str = "/telegram/events"
-    webhook_url: str = ""
-    webhook_secret_token: str = ""
-    drop_pending_updates: bool = False
-    poll_timeout_s: int = 30
-    poll_limit: int = 100
-    poll_idle_sleep_s: float = 0.1
-
-    @model_validator(mode="after")
-    def _validate_webhook_auth(self) -> TelegramChannelEntry:
-        if self.transport_name == "webhook":
-            if not self.webhook_url:
-                raise ValueError("webhook_url is required for telegram webhook mode")
-            if not self.webhook_secret_token:
-                raise ValueError(
-                    "webhook_secret_token is required for telegram webhook mode"
-                )
-        return self
-
-
-ChannelConfigEntry = ConfiguredChannelEntry
 
 
 class ChannelsConfig(BaseModel):

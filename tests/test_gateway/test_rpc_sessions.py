@@ -1282,9 +1282,14 @@ class TestSessionsReset:
             if isinstance(node, ast.Dict)
         }
 
+        assert ("opensquilla.session.rpc_payload", "session_flush_error_details") in imports
         assert ("opensquilla.session.rpc_payload", "session_flush_unavailable_details") in imports
         assert ("opensquilla.session.rpc_payload", "session_permission_denied_details") in imports
         assert ("opensquilla.session.rpc_payload", "session_reset_response") in imports
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_flush_error_details"
+            for node in ast.walk(handler)
+        )
         assert any(
             isinstance(node, ast.Name) and node.id == "session_flush_unavailable_details"
             for node in ast.walk(handler)
@@ -1307,6 +1312,7 @@ class TestSessionsReset:
         )
         assert ("key", "session_id") not in dict_key_sets
         assert ("key", "session_id", "reason", "message_count") not in dict_key_sets
+        assert ("flush_receipt", "key", "session_id") not in dict_key_sets
 
     @pytest.mark.asyncio
     async def test_reset_not_found(self, dispatcher, ctx_with_sessions):
@@ -1354,6 +1360,29 @@ class TestSessionsReset:
             "key": session.session_key,
             "session_id": session.session_id,
         }
+
+    @pytest.mark.asyncio
+    async def test_reset_flush_disk_error_returns_session_boundary_details(
+        self, dispatcher, session
+    ):
+        manager = _TranscriptSessionManager([session], [SimpleNamespace(content="hi")])
+        flush_service = SimpleNamespace(execute=AsyncMock(side_effect=RuntimeError("disk no")))
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            scopes=["operator.write"],
+        )
+
+        res = await dispatcher.dispatch("r1", "sessions.reset", {"key": session.session_key}, ctx)
+
+        assert res.ok is False
+        assert res.error.code == "flush_disk_error"
+        assert res.error.details["key"] == session.session_key
+        assert res.error.details["session_id"] == session.session_id
+        receipt = res.error.details["flush_receipt"]
+        assert receipt["mode"] == "error"
+        assert receipt["message_count"] == 1
+        assert receipt["error"] == "disk no"
 
 
 class TestSessionsDelete:

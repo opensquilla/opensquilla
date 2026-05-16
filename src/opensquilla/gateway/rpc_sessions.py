@@ -1197,11 +1197,7 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
             raise RpcHandlerError(
                 code="flush_disk_error",
                 message=f"Reset aborted: flush failed ({receipt.error})",
-                details={
-                    "flush_receipt": receipt.to_dict(),
-                    "key": key,
-                    "session_id": previous_session_id,
-                },
+                details=session_flush_error_details(key, previous_session_id, receipt),
             ) from exc
 
         # ``flush_service.execute`` can return ``mode="error"`` (no raise) when
@@ -1211,11 +1207,7 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
             raise RpcHandlerError(
                 code="flush_disk_error",
                 message=f"Reset aborted: flush failed ({receipt.error or 'unknown error'})",
-                details={
-                    "flush_receipt": receipt.to_dict(),
-                    "key": key,
-                    "session_id": previous_session_id,
-                },
+                details=session_flush_error_details(key, previous_session_id, receipt),
             )
 
         updated, rotated = await ctx.session_manager.apply_intent(key, SessionIntent.RESET_SAME_KEY)

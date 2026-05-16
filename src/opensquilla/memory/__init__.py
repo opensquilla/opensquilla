@@ -23,9 +23,23 @@ from .runtime import (
     reset_memory_tools_runtime,
     resolve_memory_agent,
 )
+from .source_paths import (
+    is_memory_archive_path,
+    is_memory_save_path,
+    is_memory_source_path,
+    is_raw_fallback_save_path,
+    private_archive_error,
+)
 from .store import LongTermMemoryStore
 from .sync_manager import MemorySyncManager, SessionDeltaTracker
 from .sync_manager import MemorySyncManager as MemoryFileWatcher
+from .tool_writes import (
+    MemoryWriteError,
+    PlannedMemoryWrite,
+    apply_memory_writes,
+    scan_memory_content,
+    validate_memory_save_target,
+)
 from .types import (
     MemorySearchOpts,
     MemorySearchResult,
@@ -54,6 +68,18 @@ __all__ = [
     "memory_tools_available",
     "reset_memory_tools_runtime",
     "resolve_memory_agent",
+    # source paths
+    "is_memory_archive_path",
+    "is_memory_save_path",
+    "is_memory_source_path",
+    "is_raw_fallback_save_path",
+    "private_archive_error",
+    # tool writes
+    "MemoryWriteError",
+    "PlannedMemoryWrite",
+    "apply_memory_writes",
+    "scan_memory_content",
+    "validate_memory_save_target",
     # retrieval
     "MemoryRetriever",
     # embedding

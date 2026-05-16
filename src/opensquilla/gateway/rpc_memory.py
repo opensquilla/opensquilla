@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
+from opensquilla.memory.source_paths import (
+    is_memory_archive_path,
+    is_memory_source_path,
+)
 from opensquilla.memory.types import MemorySearchOpts, SearchIntent
 from opensquilla.session.keys import normalize_agent_id
-from opensquilla.tools.builtin.memory_tools import (
-    _is_memory_archive_path,
-    _is_memory_source_path,
-)
 
 _d = get_dispatcher()
 
@@ -88,7 +88,7 @@ def _memory_source_rows(root: Path) -> list[dict[str, Any]]:
             rel = resolved_file.relative_to(resolved_root).as_posix()
         except ValueError:
             continue
-        if rel in seen or not _is_memory_source_path(rel, allow_archive=False):
+        if rel in seen or not is_memory_source_path(rel, allow_archive=False):
             continue
         stat = resolved_file.stat()
         with resolved_file.open("r", encoding="utf-8", errors="replace") as handle:
@@ -145,9 +145,9 @@ def _memory_root(manager: Any) -> Path:
 def _validate_memory_path(path: str, *, allow_archive: bool) -> None:
     if not path.strip():
         raise ValueError("params.path is required")
-    if _is_memory_archive_path(path) and not allow_archive:
+    if is_memory_archive_path(path) and not allow_archive:
         raise ValueError("memory archive is private turn-capture storage")
-    if not _is_memory_source_path(path, allow_archive=allow_archive):
+    if not is_memory_source_path(path, allow_archive=allow_archive):
         raise ValueError("params.path must be MEMORY.md or memory/*.md")
 
 

@@ -9,7 +9,10 @@ from opensquilla.skills.hub.defaults import (
     get_default_skill_installer,
     get_default_skill_router,
 )
-from opensquilla.skills.hub.deps import install_skill_dependency
+from opensquilla.skills.hub.deps import (
+    install_loaded_skill_dependency,
+    skill_deps_install_request,
+)
 from opensquilla.skills.hub.lockfile import installed_skill_names
 from opensquilla.skills.hub.operations import (
     install_skill,
@@ -19,7 +22,6 @@ from opensquilla.skills.hub.operations import (
     uninstall_skill,
     update_skills,
 )
-from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.rpc_payload import (
     skill_deps_install_result_rpc_payload,
     skill_get_rpc_payload,
@@ -40,7 +42,7 @@ from opensquilla.skills.rpc_payload import (
 _d = get_dispatcher()
 
 
-def _get_loader(ctx: RpcContext) -> SkillLoader | None:
+def _get_loader(ctx: RpcContext) -> Any | None:
     return getattr(ctx, "skill_loader", None)
 
 
@@ -158,26 +160,14 @@ async def _handle_skills_uninstall(params: dict | None, ctx: RpcContext) -> dict
 async def _handle_skills_deps_install(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     """Install runtime dependencies for an already-loaded skill.
 
-    The skills boundary owns install-spec lookup, platform validation, per-spec
-    serialization, and post-install missing-requirement reporting.
+    The skills boundary owns request parsing, loaded-skill lookup,
+    install-spec lookup, platform validation, per-spec serialization, and
+    post-install missing-requirement reporting.
     """
-    if not isinstance(params, dict):
-        raise ValueError("params must be a dict")
-    if "name" not in params:
-        raise ValueError("params.name is required")
-    if "install_id" not in params:
-        raise ValueError("params.install_id is required")
-
-    name = params["name"]
-    install_id = params["install_id"]
-    loader = _get_loader(ctx)
-    if loader is None:
-        raise KeyError("No skill loader available")
-    skill = loader.get_by_name(name)
-    if skill is None:
-        raise KeyError(f"Skill not found: {name}")
-
-    outcome = await install_skill_dependency(skill, name=name, install_id=install_id)
+    outcome = await install_loaded_skill_dependency(
+        _get_loader(ctx),
+        skill_deps_install_request(params),
+    )
     return skill_deps_install_result_rpc_payload(outcome.result, outcome.missing_still)
 
 

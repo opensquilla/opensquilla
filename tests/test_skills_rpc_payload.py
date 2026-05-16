@@ -466,21 +466,15 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
         "message": "No skill loader configured",
         "delegated": True,
     }
-    deps_spec = SimpleNamespace(id="brew", os=[])
-    deps_skill = SimpleNamespace(metadata=SimpleNamespace(install=[deps_spec]))
-    deps_ctx = SimpleNamespace(
-        skill_loader=SimpleNamespace(get_by_name=lambda _name: deps_skill)
-    )
+    deps_loader = SimpleNamespace()
+    deps_ctx = SimpleNamespace(skill_loader=deps_loader)
 
-    async def fake_install_skill_dependency(
-        actual_skill: object,
-        *,
-        name: str,
-        install_id: str,
+    async def fake_install_loaded_skill_dependency(
+        actual_loader: object,
+        request: object,
     ) -> SimpleNamespace:
-        assert actual_skill is deps_skill
-        assert name == "planner"
-        assert install_id == "brew"
+        assert actual_loader is deps_loader
+        assert request == ("deps", {"name": "planner", "install_id": "brew"})
         return SimpleNamespace(
             result=SimpleNamespace(success=True, kind="brew", message="installed"),
             missing_still={"bins": [], "env": []},
@@ -488,8 +482,13 @@ async def test_gateway_delegates_skill_rpc_payloads_to_skills_boundary(
 
     monkeypatch.setattr(
         rpc_skills,
-        "install_skill_dependency",
-        fake_install_skill_dependency,
+        "skill_deps_install_request",
+        lambda params: ("deps", params),
+    )
+    monkeypatch.setattr(
+        rpc_skills,
+        "install_loaded_skill_dependency",
+        fake_install_loaded_skill_dependency,
     )
     assert await rpc_skills._handle_skills_deps_install(
         {"name": "planner", "install_id": "brew"},
@@ -649,6 +648,7 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     assert "opensquilla.skills.hub.router" not in imported_modules
     assert "opensquilla.skills.hub.defaults" in imported_modules
     assert "opensquilla.skills.hub.lockfile" in imported_modules
+    assert "opensquilla.skills.loader" not in imported_modules
     assert "asyncio" not in imported_names
     assert "shutil" not in imported_names
     assert "weakref" not in imported_names
@@ -803,10 +803,26 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
         for node in ast.walk(handler)
         if isinstance(node, ast.Dict)
     }
+    deps_install_handler_attrs = {
+        node.attr
+        for handler in deps_install_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Attribute)
+    }
+    deps_install_handler_constants = {
+        node.value
+        for handler in deps_install_handler.values()
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Constant)
+    }
     assert {
-        "install_skill_dependency",
+        "install_loaded_skill_dependency",
+        "skill_deps_install_request",
         "skill_deps_install_result_rpc_payload",
     }.issubset(deps_install_handler_names)
+    assert "get_by_name" not in deps_install_handler_attrs
+    assert "name" not in deps_install_handler_constants
+    assert "install_id" not in deps_install_handler_constants
     assert "install_deps" not in deps_install_handler_names
     assert "validate_skill_install_supported" not in deps_install_handler_names
     assert "skill_missing_requirements_rpc_payload" not in deps_install_handler_names

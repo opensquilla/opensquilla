@@ -39,6 +39,14 @@ class SkillDepsInstallOutcome:
     missing_still: dict[str, list[str]]
 
 
+@dataclass(frozen=True)
+class SkillDepsInstallRequest:
+    """Validated request to install one dependency spec for a loaded skill."""
+
+    name: Any
+    install_id: Any
+
+
 _deps_locks: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
     weakref.WeakValueDictionary()
 )
@@ -206,6 +214,21 @@ def skill_missing_requirements(skill: Any) -> dict[str, list[str]]:
     }
 
 
+def skill_deps_install_request(params: dict[str, Any] | None) -> SkillDepsInstallRequest:
+    """Return a dependency install request from RPC params."""
+
+    if not isinstance(params, dict):
+        raise ValueError("params must be a dict")
+    if "name" not in params:
+        raise ValueError("params.name is required")
+    if "install_id" not in params:
+        raise ValueError("params.install_id is required")
+    return SkillDepsInstallRequest(
+        name=params["name"],
+        install_id=params["install_id"],
+    )
+
+
 async def install_skill_dependency(
     skill: Any,
     *,
@@ -223,3 +246,21 @@ async def install_skill_dependency(
             result=results[0],
             missing_still=skill_missing_requirements(skill),
         )
+
+
+async def install_loaded_skill_dependency(
+    loader: Any | None,
+    request: SkillDepsInstallRequest,
+) -> SkillDepsInstallOutcome:
+    """Install one dependency spec by resolving the loaded skill from a loader."""
+
+    if loader is None:
+        raise KeyError("No skill loader available")
+    skill = loader.get_by_name(request.name)
+    if skill is None:
+        raise KeyError(f"Skill not found: {request.name}")
+    return await install_skill_dependency(
+        skill,
+        name=request.name,
+        install_id=request.install_id,
+    )

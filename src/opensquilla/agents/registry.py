@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -31,6 +32,9 @@ class AgentRegistryConfig(Protocol):
     config_path: str | None
 
 
+AgentConfigPersister = Callable[..., Any]
+
+
 class AgentRegistry:
     """Durable agent registry backed by a config object's ``agents`` list."""
 
@@ -39,10 +43,12 @@ class AgentRegistry:
         config: AgentRegistryConfig,
         *,
         config_path: str | Path | None = None,
+        config_persister: AgentConfigPersister | None = None,
         persist_changes: bool = True,
     ) -> None:
         self.config = config
         self.config_path = config_path
+        self.config_persister = config_persister
         self.persist_changes = persist_changes
 
     async def list_agents(self, *, include_builtin: bool = True) -> list[dict[str, Any]]:
@@ -182,9 +188,10 @@ class AgentRegistry:
     async def _persist(self) -> None:
         if not self.persist_changes:
             return
-        from opensquilla.onboarding.config_store import persist_config
+        if self.config_persister is None:
+            raise RuntimeError("AgentRegistry persistence requires a config_persister")
 
-        persist_config(
+        self.config_persister(
             cast(Any, self.config),
             path=self.config_path or self.config.config_path,
             restart_required=True,

@@ -1086,8 +1086,9 @@ async def build_services(
 
     # ── Agent registry (built early so SessionManager can resolve agent configs) ─
     from opensquilla.agents.registry import AgentRegistry
+    from opensquilla.onboarding.config_store import persist_config
 
-    agent_registry = AgentRegistry(config)
+    agent_registry = AgentRegistry(config, config_persister=persist_config)
 
     # ── Session manager ─────────────────────────────────────────────
     if session_manager is None:

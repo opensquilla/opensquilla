@@ -32,6 +32,41 @@ async def test_registry_create_and_delete_mutates_config_without_persisting() ->
 
 
 @pytest.mark.asyncio
+async def test_registry_persists_through_injected_persister(tmp_path) -> None:
+    cfg = GatewayConfig()
+    calls = []
+
+    def persist_config(config, **kwargs):
+        calls.append((config, kwargs))
+
+    registry = AgentRegistry(
+        cfg,
+        config_path=tmp_path / "config.toml",
+        config_persister=persist_config,
+    )
+
+    await registry.create_agent(agent_id="Ops Team", model="openai/test")
+
+    assert calls == [
+        (
+            cfg,
+            {
+                "path": tmp_path / "config.toml",
+                "restart_required": True,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_registry_requires_persister_when_persistence_enabled() -> None:
+    registry = AgentRegistry(GatewayConfig())
+
+    with pytest.raises(RuntimeError, match="config_persister"):
+        await registry.create_agent(agent_id="ops")
+
+
+@pytest.mark.asyncio
 async def test_registry_rejects_builtin_main_mutation() -> None:
     registry = AgentRegistry(GatewayConfig(), persist_changes=False)
 

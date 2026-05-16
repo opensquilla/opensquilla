@@ -9,7 +9,6 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "opensquilla"
 
 APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("agents", "identity"),
-    ("agents", "onboarding"),
     ("agents", "session"),
     ("application", "contracts"),
     ("channels", "contracts"),

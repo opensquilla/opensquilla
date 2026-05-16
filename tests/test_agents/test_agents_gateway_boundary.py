@@ -17,12 +17,13 @@ def _module_imports(path: Path) -> set[str]:
     return imports
 
 
-def test_agents_package_does_not_import_gateway_modules() -> None:
+def test_agents_package_does_not_import_gateway_or_onboarding_modules() -> None:
+    forbidden_prefixes = ("opensquilla.gateway", "opensquilla.onboarding")
     imported_modules = {
         module
         for path in AGENTS_ROOT.rglob("*.py")
         for module in _module_imports(path)
-        if module == "opensquilla.gateway" or module.startswith("opensquilla.gateway.")
+        if any(module == prefix or module.startswith(f"{prefix}.") for prefix in forbidden_prefixes)
     }
 
     assert imported_modules == set()

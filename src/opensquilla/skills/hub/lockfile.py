@@ -7,6 +7,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from opensquilla.paths import default_opensquilla_home
+
 
 @dataclass
 class LockEntry:
@@ -80,6 +82,25 @@ class Lockfile:
 
     def get(self, name: str) -> LockEntry | None:
         return self.installed.get(name)
+
+
+def default_skill_lockfile_path() -> Path:
+    """Return the default Community skill lockfile path."""
+
+    return default_opensquilla_home() / "skills-lock.json"
+
+
+def installed_skill_names(lockfile_path: Path | None = None) -> set[str]:
+    """Return skill names recorded in the Community install lockfile.
+
+    The lockfile is the authoritative "installed via Community source" record.
+    Bundled or workspace skills with colliding names should not be flagged as
+    installed from a Community source. Missing or corrupt lockfiles return an
+    empty set.
+    """
+
+    path = lockfile_path if lockfile_path is not None else default_skill_lockfile_path()
+    return set(Lockfile.load(path).installed.keys())
 
 
 def compute_sha256(directory: Path) -> str:

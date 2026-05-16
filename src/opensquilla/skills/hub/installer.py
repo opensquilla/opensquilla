@@ -11,7 +11,12 @@ from pathlib import Path
 import structlog
 
 from opensquilla.paths import default_opensquilla_home
-from opensquilla.skills.hub.lockfile import LockEntry, Lockfile, compute_sha256
+from opensquilla.skills.hub.lockfile import (
+    LockEntry,
+    Lockfile,
+    compute_sha256,
+    default_skill_lockfile_path,
+)
 from opensquilla.skills.hub.router import SourceRouter
 from opensquilla.skills.hub.scanner import ScanResult, scan_skill_bundle
 from opensquilla.skills.paths import default_managed_skills_dir
@@ -28,10 +33,6 @@ def _default_managed_dir() -> Path:
 
 def _default_quarantine_dir() -> Path:
     return default_opensquilla_home() / "quarantine"
-
-
-def _default_lockfile() -> Path:
-    return default_opensquilla_home() / "skills-lock.json"
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -68,7 +69,9 @@ class SkillInstaller:
         self._quarantine_dir = (
             quarantine_dir if quarantine_dir is not None else _default_quarantine_dir()
         )
-        self._lockfile_path = lockfile_path if lockfile_path is not None else _default_lockfile()
+        self._lockfile_path = (
+            lockfile_path if lockfile_path is not None else default_skill_lockfile_path()
+        )
 
     async def install(
         self,

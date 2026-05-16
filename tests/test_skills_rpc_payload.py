@@ -253,6 +253,42 @@ def test_skills_search_payloads_preserve_wire_shape_and_installed_aliases() -> N
     }
 
 
+@pytest.mark.asyncio
+async def test_gateway_search_reads_installed_names_from_skills_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRouter:
+        async def search(
+            self,
+            query: str,
+            limit: int,
+            source_id: str | None,
+        ) -> list[SimpleNamespace]:
+            assert query == "plan"
+            assert limit == 3
+            assert source_id is None
+            return [
+                SimpleNamespace(
+                    name="Display Planner",
+                    description="Plan work",
+                    version="1.2.3",
+                    author="Tests",
+                    source_id="clawhub",
+                    trust_level="community",
+                    identifier="planner",
+                )
+            ]
+
+    monkeypatch.setattr(rpc_skills, "installed_skill_names", lambda: {"planner"})
+
+    payload = await rpc_skills._handle_skills_search(
+        {"query": "plan", "limit": 3},
+        SimpleNamespace(_skill_router=FakeRouter()),
+    )
+
+    assert payload["results"][0]["installed"] is True
+
+
 def test_skill_install_payloads_preserve_wire_shape_and_scan_details() -> None:
     result = SimpleNamespace(
         success=True,
@@ -521,12 +557,15 @@ def test_gateway_rpc_skills_keeps_payload_logic_out_of_gateway_boundary() -> Non
     }
 
     assert "opensquilla.skills.eligibility" not in imported_modules
+    assert "opensquilla.paths" not in imported_modules
     assert "opensquilla.skills.hub.clawhub" not in imported_modules
     assert "opensquilla.skills.hub.github" not in imported_modules
     assert "opensquilla.skills.hub.installer" not in imported_modules
     assert "opensquilla.skills.hub.router" not in imported_modules
     assert "opensquilla.skills.hub.defaults" in imported_modules
+    assert "opensquilla.skills.hub.lockfile" in imported_modules
     assert "shutil" not in imported_names
+    assert "_installed_names" not in top_level_functions
     assert "_default_router" not in top_level_assigns
     assert "_default_installer" not in top_level_assigns
     assert {

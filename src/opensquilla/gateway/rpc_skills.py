@@ -12,6 +12,7 @@ from opensquilla.skills.hub.defaults import (
     get_default_skill_router,
 )
 from opensquilla.skills.hub.deps import install_deps
+from opensquilla.skills.hub.lockfile import installed_skill_names
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.rpc_payload import (
     skill_deps_install_result_rpc_payload,
@@ -78,20 +79,6 @@ async def _handle_skills_get(params: dict | None, ctx: RpcContext) -> dict[str, 
     return skill_get_rpc_payload(params, _get_loader(ctx))
 
 
-def _installed_names() -> set[str]:
-    """Return the set of skill names currently recorded in the lockfile.
-
-    Lockfile is the authoritative "installed via Community source" record —
-    bundled or workspace skills with colliding names won't be mis-flagged
-    as installed-from-ClawHub. Missing/corrupt lockfile returns an empty
-    set (treat everything as not-yet-installed).
-    """
-    from opensquilla.paths import default_opensquilla_home
-    from opensquilla.skills.hub.lockfile import Lockfile
-
-    return set(Lockfile.load(default_opensquilla_home() / "skills-lock.json").installed.keys())
-
-
 @_d.method("skills.search", scope="operator.read")
 async def _handle_skills_search(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     """Search for skills across Community sources."""
@@ -113,13 +100,7 @@ async def _handle_skills_search(params: dict | None, ctx: RpcContext) -> dict[st
     if source_id is not None and not isinstance(source_id, str):
         source_id = None
     results = await router.search(query, limit=limit, source_id=source_id)
-    installed = _installed_names()
-    # Lockfile keys are the installer's name — which for ClawHub is the
-    # slug (``identifier``), not the human-readable ``displayName`` a
-    # source may return as ``SkillMeta.name``. Check both so we catch
-    # either convention; a future source that matches on name directly
-    # still works.
-    return skills_search_rpc_payload(results, installed)
+    return skills_search_rpc_payload(results, installed_skill_names())
 
 
 def _invalidate_loader(ctx: RpcContext) -> None:

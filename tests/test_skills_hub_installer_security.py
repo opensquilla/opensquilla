@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from opensquilla.skills.hub.installer import SkillInstaller
-from opensquilla.skills.hub.lockfile import LockEntry, Lockfile
+from opensquilla.skills.hub.lockfile import LockEntry, Lockfile, installed_skill_names
 from opensquilla.skills.hub.source import SkillBundle, SkillMeta
 
 
@@ -33,6 +33,23 @@ def _bundle(
         },
         meta=meta,
     )
+
+
+def test_installed_skill_names_reads_lockfile_keys_and_tolerates_bad_files(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "skills-lock.json"
+    lockfile = Lockfile()
+    lockfile.add("demo", LockEntry(source="clawhub", identifier="demo"))
+    lockfile.add("writer", LockEntry(source="github", identifier="acme/writer"))
+    lockfile.save(lock_path)
+
+    corrupt_path = tmp_path / "corrupt-lock.json"
+    corrupt_path.write_text("{not-json", encoding="utf-8")
+
+    assert installed_skill_names(lock_path) == {"demo", "writer"}
+    assert installed_skill_names(tmp_path / "missing-lock.json") == set()
+    assert installed_skill_names(corrupt_path) == set()
 
 
 @pytest.mark.asyncio

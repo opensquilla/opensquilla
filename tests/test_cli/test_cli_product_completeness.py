@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from typer.testing import CliRunner
@@ -196,6 +198,52 @@ def test_skills_view_and_update_use_gateway_rpc(monkeypatch):
     assert json.loads(update.stdout)["results"][0]["success"] is True
     assert ("skills.get", {"name": "planner"}) in fake.calls
     assert ("skills.update", {"name": "planner"}) in fake.calls
+
+
+def test_skills_search_delegates_to_hub_search_boundary(monkeypatch):
+    from opensquilla.cli import skills_cmd
+
+    @dataclass(frozen=True)
+    class SearchResult:
+        name: str
+        description: str
+        version: str
+        author: str
+        source_id: str
+        trust_level: str
+        identifier: str
+
+    async def fake_search_skills(router: object, request: object) -> SimpleNamespace:
+        assert router is None
+        assert request == ("search", {"query": "plan", "limit": 20})
+        return SimpleNamespace(
+            results=[
+                SearchResult(
+                    name="Planner",
+                    description="Plan work",
+                    version="1.0.0",
+                    author="Tests",
+                    source_id="clawhub",
+                    trust_level="community",
+                    identifier="planner",
+                )
+            ],
+            unavailable=False,
+        )
+
+    monkeypatch.setattr(
+        skills_cmd,
+        "skill_search_request",
+        lambda params: ("search", params),
+    )
+    monkeypatch.setattr(skills_cmd, "search_skills", fake_search_skills)
+
+    result = runner.invoke(app, ["skills", "search", "plan", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload[0]["name"] == "Planner"
+    assert payload[0]["source_id"] == "clawhub"
 
 
 def test_skills_update_all_exits_nonzero_on_partial_failure(monkeypatch):

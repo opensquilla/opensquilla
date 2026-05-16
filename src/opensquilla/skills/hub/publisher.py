@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -18,6 +20,30 @@ class PublishResult:
     success: bool
     message: str = ""
     skill_name: str = ""
+
+
+@dataclass(frozen=True)
+class SkillPublishRequest:
+    """Validated request to validate or publish a Community skill."""
+
+    skill_dir: Path
+    target_repo: str | None = None
+
+
+def skill_publish_request(params: Mapping[str, Any] | None) -> SkillPublishRequest:
+    """Build a publish operation request from command or RPC params."""
+
+    if not isinstance(params, Mapping) or "skill_dir" not in params:
+        raise ValueError("params.skill_dir is required")
+
+    target_repo = params.get("target_repo", params.get("repo"))
+    if target_repo is not None and not isinstance(target_repo, str):
+        target_repo = None
+
+    return SkillPublishRequest(
+        skill_dir=Path(str(params["skill_dir"])),
+        target_repo=target_repo,
+    )
 
 
 def validate_skill_dir(skill_dir: Path) -> list[str]:
@@ -131,3 +157,9 @@ async def publish_skill(
         )
     except Exception as exc:
         return PublishResult(success=False, message=f"Publish failed: {exc}")
+
+
+async def publish_skill_from_request(request: SkillPublishRequest) -> PublishResult:
+    """Run the publish workflow from a validated operation request."""
+
+    return await publish_skill(request.skill_dir, target_repo=request.target_repo)

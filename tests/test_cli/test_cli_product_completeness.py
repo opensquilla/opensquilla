@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -506,6 +507,103 @@ def test_cli_skills_tap_does_not_construct_taps_manager() -> None:
         isinstance(node, ast.Name) and node.id == "TapsManager"
         for node in ast.walk(tree)
     )
+
+
+def test_skills_publish_delegates_to_hub_publish_request(monkeypatch):
+    from opensquilla.cli import skills_cmd
+
+    calls: list[tuple[str, object]] = []
+
+    def fake_skill_publish_request(params: object) -> object:
+        calls.append(("request", params))
+        return ("publish", params)
+
+    async def fake_publish_skill_from_request(request: object) -> SimpleNamespace:
+        calls.append(("publish", request))
+        return SimpleNamespace(success=True, message="validated")
+
+    monkeypatch.setattr(
+        skills_cmd,
+        "skill_publish_request",
+        fake_skill_publish_request,
+    )
+    monkeypatch.setattr(
+        skills_cmd,
+        "publish_skill_from_request",
+        fake_publish_skill_from_request,
+    )
+
+    result = runner.invoke(
+        app,
+        ["skills", "publish", "/tmp/demo-skill", "--repo", "acme/skills"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "validated" in result.stdout
+    assert calls == [
+        (
+            "request",
+            {"skill_dir": "/tmp/demo-skill", "target_repo": "acme/skills"},
+        ),
+        (
+            "publish",
+            ("publish", {"skill_dir": "/tmp/demo-skill", "target_repo": "acme/skills"}),
+        ),
+    ]
+
+
+def test_cli_skills_publish_does_not_import_publish_skill_directly() -> None:
+    from opensquilla.cli import skills_cmd
+
+    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    publisher_imports = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.skills.hub.publisher"
+        for alias in node.names
+    }
+
+    assert "publish_skill" not in publisher_imports
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "publish_skill"
+        for node in ast.walk(tree)
+    )
+
+
+def test_skill_publish_request_builds_publish_request(tmp_path: Path) -> None:
+    from opensquilla.skills.hub.publisher import skill_publish_request
+
+    request = skill_publish_request(
+        {"skill_dir": tmp_path / "demo-skill", "repo": "acme/skills"}
+    )
+
+    assert request.skill_dir == tmp_path / "demo-skill"
+    assert request.target_repo == "acme/skills"
+
+
+def test_publish_skill_from_request_delegates(monkeypatch, tmp_path: Path) -> None:
+    from opensquilla.skills.hub import publisher
+
+    calls: list[tuple[Path, str | None]] = []
+
+    async def fake_publish_skill(skill_dir: Path, target_repo: str | None = None):
+        calls.append((skill_dir, target_repo))
+        return publisher.PublishResult(success=True, message="ok", skill_name="demo")
+
+    monkeypatch.setattr(publisher, "publish_skill", fake_publish_skill)
+
+    result = asyncio.run(
+        publisher.publish_skill_from_request(
+            publisher.SkillPublishRequest(
+                skill_dir=tmp_path / "demo-skill",
+                target_repo="acme/skills",
+            )
+        )
+    )
+
+    assert result.success is True
+    assert calls == [(tmp_path / "demo-skill", "acme/skills")]
 
 
 def test_skills_install_fallback_exposes_github_source_without_token(monkeypatch):

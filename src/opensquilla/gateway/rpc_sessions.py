@@ -31,6 +31,7 @@ from opensquilla.session.rpc_payload import (
     messages_subscribe_response,
     normalize_terminal_event_payload,
     session_abort_response,
+    session_agent_not_found_details,
     session_compact_response,
     session_context_compact_response,
     session_create_response,
@@ -503,7 +504,7 @@ async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
         raise RpcHandlerError(
             "agent.not_found",
             f"Agent '{agent_id}' does not exist",
-            details={"agentId": agent_id},
+            details=session_agent_not_found_details(agent_id),
         )
 
     if ctx.session_manager is None:

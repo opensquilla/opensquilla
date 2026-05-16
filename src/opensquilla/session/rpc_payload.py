@@ -314,6 +314,10 @@ def session_create_response(session: Any, *, seeded_message: bool = False) -> di
     return response
 
 
+def session_agent_not_found_details(agent_id: str) -> dict[str, Any]:
+    return {"agentId": agent_id}
+
+
 def session_patch_response(key: str, updated_fields: list[str]) -> dict[str, Any]:
     return {"key": key, "updated": updated_fields}
 

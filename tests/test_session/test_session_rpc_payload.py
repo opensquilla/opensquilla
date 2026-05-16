@@ -6,6 +6,7 @@ from opensquilla.session.rpc_payload import (
     messages_subscribe_response,
     normalize_terminal_event_payload,
     session_abort_response,
+    session_agent_not_found_details,
     session_compact_response,
     session_context_compact_response,
     session_create_response,
@@ -333,6 +334,10 @@ def test_session_create_response_owns_created_session_wire_shape() -> None:
         "sessionId": "abc123",
         "seededMessage": True,
     }
+
+
+def test_session_agent_not_found_details_owns_create_error_wire_shape() -> None:
+    assert session_agent_not_found_details("ghost") == {"agentId": "ghost"}
 
 
 def test_session_patch_response_owns_wire_shape() -> None:

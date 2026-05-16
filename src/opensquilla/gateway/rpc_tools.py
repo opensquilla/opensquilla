@@ -11,11 +11,8 @@ from opensquilla.provider.runtime_status import (
     ProviderStatusRow,
     build_provider_status_report,
 )
+from opensquilla.search.execution import run_search_payload, search_runtime_status
 from opensquilla.search.runtime import get_active_provider
-from opensquilla.tools.builtin.web import (
-    run_web_search_payload,
-    search_runtime_status,
-)
 from opensquilla.tools.policy import ToolSurfaceCapabilities
 from opensquilla.tools.registry import get_default_registry
 
@@ -156,7 +153,7 @@ async def _handle_search_query(params: dict | None, ctx: RpcContext) -> dict[str
     provider_name = str(provider) if provider else None
     if provider_name:
         search_runtime_status(provider_name)
-    payload = await run_web_search_payload(
+    payload = await run_search_payload(
         query,
         _query_limit(params),
         provider_name=provider_name,

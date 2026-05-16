@@ -23,6 +23,8 @@ def _top_level_names(path: Path) -> set[str]:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     names.add(target.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
     return names
 
 
@@ -50,6 +52,19 @@ def test_web_tool_does_not_own_search_runtime_state() -> None:
     } & top_level_names
 
 
+def test_web_tool_does_not_own_search_execution() -> None:
+    top_level_names = _top_level_names(WEB_TOOL)
+
+    assert not {
+        "_classify_search_error",
+        "_format_search_error",
+        "_search_error_payload",
+        "_search_payload",
+        "_search_success_payload",
+    } & top_level_names
+    assert ("opensquilla.search.execution", "run_search_payload") in _imports_from(WEB_TOOL)
+
+
 def test_gateway_configures_search_runtime_boundary() -> None:
     forbidden = ("opensquilla.tools.builtin.web", "configure_search")
 
@@ -62,6 +77,14 @@ def test_gateway_configures_search_runtime_boundary() -> None:
 def test_gateway_reads_search_provider_from_runtime_boundary() -> None:
     assert ("opensquilla.tools.builtin.web", "get_active_provider") not in _imports_from(RPC_TOOLS)
     assert ("opensquilla.search.runtime", "get_active_provider") in _imports_from(RPC_TOOLS)
+
+
+def test_gateway_runs_search_queries_through_search_boundary() -> None:
+    forbidden = ("opensquilla.tools.builtin.web", "run_web_search_payload")
+
+    assert forbidden not in _imports_from(RPC_TOOLS)
+    assert ("opensquilla.search.execution", "run_search_payload") in _imports_from(RPC_TOOLS)
+    assert ("opensquilla.search.execution", "search_runtime_status") in _imports_from(RPC_TOOLS)
 
 
 def test_web_compat_wrappers_delegate_to_search_runtime() -> None:

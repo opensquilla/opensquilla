@@ -182,11 +182,14 @@ async def web_fetch(
 ) -> str:
     # --- SSRF guard ---
     _check_ssrf(url)
-    from opensquilla.tools.builtin.web import _sensitive_body_block, _sensitive_url_marker
+    from opensquilla.safety.sensitive_payloads import (
+        sensitive_body_block,
+        sensitive_url_marker,
+    )
 
-    marker = _sensitive_url_marker(url)
+    marker = sensitive_url_marker(url)
     if marker is not None:
-        return _sensitive_body_block("web_fetch", marker)
+        return sensitive_body_block("web_fetch", marker)
 
     effective_max_chars = _resolve_effective_max_chars(max_chars)
 
@@ -215,7 +218,7 @@ async def web_fetch(
             current_url = url
             for _redirect_count in range(_MAX_REDIRECTS + 1):
                 _check_ssrf(current_url)
-                marker = _sensitive_url_marker(current_url)
+                marker = sensitive_url_marker(current_url)
                 if marker is not None:
                     raise ValueError("Blocked redirect URL containing sensitive data")
 

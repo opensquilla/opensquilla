@@ -160,9 +160,9 @@ def _sensitive_media_path_block(tool_name: str, resolved: Path, original_path: s
 
 
 def _sensitive_media_url_block(tool_name: str, url: str) -> dict | None:
-    from opensquilla.tools.builtin.web import _sensitive_url_marker
+    from opensquilla.safety.sensitive_payloads import sensitive_url_marker
 
-    marker = _sensitive_url_marker(url)
+    marker = sensitive_url_marker(url)
     if marker is None:
         return None
     return {

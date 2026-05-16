@@ -24,6 +24,7 @@ from opensquilla.safety import (
     injection_guard,
     permission_matrix,
     sandbox,
+    sensitive_payloads,
     tool_tiers,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "injection_guard",
     "permission_matrix",
     "sandbox",
+    "sensitive_payloads",
     "tool_tiers",
 ]

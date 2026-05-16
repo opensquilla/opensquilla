@@ -1,5 +1,6 @@
 """Web search abstraction layer."""
 
+from opensquilla.search.execution import run_search_payload, search_runtime_status
 from opensquilla.search.registry import get_provider, register_provider
 from opensquilla.search.runtime import (
     SearchRuntimeConfig,
@@ -27,4 +28,6 @@ __all__ = [
     "get_provider",
     "register_provider",
     "reset_search_runtime",
+    "run_search_payload",
+    "search_runtime_status",
 ]

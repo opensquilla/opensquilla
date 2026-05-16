@@ -5,17 +5,33 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import urlparse
 
 import httpx
 
 from opensquilla.env import trust_env as _trust_env
+from opensquilla.safety.sensitive_payloads import (
+    sensitive_body_block as _sensitive_body_block,
+)
+from opensquilla.safety.sensitive_payloads import (
+    sensitive_body_marker as _sensitive_body_marker,
+)
+from opensquilla.safety.sensitive_payloads import (
+    sensitive_headers_marker as _sensitive_headers_marker,
+)
+from opensquilla.safety.sensitive_payloads import (
+    sensitive_url_marker as _sensitive_url_marker,
+)
 from opensquilla.sandbox.integration import sandboxed
 from opensquilla.search import runtime as search_runtime
-from opensquilla.search.types import SearchProviderError, SearchResult
+from opensquilla.search.execution import (
+    run_search_payload,
+)
+from opensquilla.search.execution import (
+    search_runtime_status as _search_runtime_status,
+)
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, UnsupportedURLSchemeError, current_tool_context
 
@@ -26,86 +42,11 @@ def _validate_http_url(url: str) -> None:
         raise UnsupportedURLSchemeError(url)
 
 
-_SECRET_KEY_PATTERN = (
-    r"API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|"
-    r"ACCESS[_-]?KEY|AUTHORIZATION|BEARER"
-)
-_SECRET_NAME_RE = re.compile(_SECRET_KEY_PATTERN, re.IGNORECASE)
-_SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?im)(?:^|[\s\"'{,])(?:\d+\t)?"
-    rf"[A-Z0-9_]*(?:{_SECRET_KEY_PATTERN})[A-Z0-9_]*\s*[:=]"
-)
-_SECRET_JSON_KEY_RE = re.compile(
-    rf"(?im)(?:^|[\s{{,])['\"][^'\"\n]{{0,80}}(?:{_SECRET_KEY_PATTERN})"
-    r"[^'\"\n]{0,80}['\"]\s*:"
-)
-_PEM_PRIVATE_KEY_RE = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
-    re.IGNORECASE,
-)
-_PASSWD_ENTRY_RE = re.compile(r"(?m)^(?:\d+\t)?[a-z_][a-z0-9_-]*:x?:\d+:\d+:")
 _SENSITIVE_HTTP_METHODS = {"POST", "PUT", "PATCH"}
 _TEXT_BODY_LIMIT = 10_000
 _BINARY_BODY_LIMIT = 1_000_000
 _LARGE_RESPONSE_SAVE_THRESHOLD = 50_000
 _FETCH_DIR_NAME = ".fetch"
-
-
-def _sensitive_body_marker(body: str | None) -> str | None:
-    if not body:
-        return None
-    if _PEM_PRIVATE_KEY_RE.search(body):
-        return "private_key"
-    if _PASSWD_ENTRY_RE.search(body):
-        return "passwd_entry"
-    if _SECRET_ASSIGNMENT_RE.search(body):
-        return "secret_assignment"
-    if _SECRET_JSON_KEY_RE.search(body):
-        return "secret_json_key"
-    return None
-
-
-def _sensitive_url_marker(url: str) -> str | None:
-    parsed = urlparse(url)
-    for segment in parsed.path.split("/"):
-        if _sensitive_body_marker(segment) is not None:
-            return "sensitive_url_path"
-    if not parsed.query:
-        return None
-    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-        if _sensitive_body_marker(f"{key}={value}") is not None:
-            return "sensitive_query"
-    return None
-
-
-def _sensitive_headers_marker(headers: dict[str, str] | None) -> str | None:
-    if not headers:
-        return None
-    for key, value in headers.items():
-        normalized_key = key.strip()
-        if _SECRET_NAME_RE.search(normalized_key):
-            return "sensitive_header"
-        if _sensitive_body_marker(f"{normalized_key}={value}") is not None:
-            return "sensitive_header"
-        if normalized_key.lower() in {"authorization", "cookie", "proxy-authorization"}:
-            return "sensitive_header"
-    return None
-
-
-def _sensitive_body_block(tool_name: str, marker: str) -> str:
-    payload = {
-        "status": "blocked",
-        "reason": "sensitive_payload",
-        "tool": tool_name,
-        "sensitive_payload": marker,
-        "message": (
-            "Refusing to send an HTTP request body that appears to contain "
-            "secrets or host account data. Remove the sensitive content or use "
-            "an explicit operator-approved transfer path."
-        ),
-        "retryable": False,
-    }
-    return json.dumps(payload, ensure_ascii=False)
 
 
 def _is_text_response_content_type(content_type: str) -> bool:
@@ -220,11 +161,6 @@ async def http_request(
         if marker is not None:
             return _sensitive_body_block("http_request", marker)
 
-    try:
-        import httpx
-    except ImportError:
-        return "[error] httpx not installed. Run: pip install httpx"
-
     content: bytes | None = body.encode() if body else None
 
     async with httpx.AsyncClient(timeout=timeout, trust_env=_trust_env()) as client:
@@ -338,86 +274,12 @@ def get_search_diagnostics() -> bool:
     return search_runtime.get_search_diagnostics()
 
 
-def _format_search_error(provider_name: str, exc: Exception) -> tuple[str, str]:
-    error_class = type(exc).__name__
-    raw = str(exc).strip()
-    if raw:
-        return error_class, raw
-    if error_class == "ConnectTimeout":
-        return (
-            error_class,
-            (
-                f"{provider_name} search request timed out. Configure search_proxy "
-                "or switch search_provider to duckduckgo."
-            ),
-        )
-    return error_class, f"{provider_name} search failed with {error_class}."
-
-
 def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
     return search_runtime.search_provider_kwargs(provider_name)
 
 
-def _ensure_builtin_search_providers() -> None:
-    import opensquilla.search.providers.brave  # noqa: F401
-    import opensquilla.search.providers.duckduckgo  # noqa: F401
-
-
-def _search_success_payload(payload: dict) -> dict:
-    result = dict(payload)
-    result["ok"] = True
-    if "fallback_from" in result:
-        result["fallbackFrom"] = result["fallback_from"]
-    return result
-
-
-def _search_failure_payload(payload: dict, *, retryable: bool = False) -> dict:
-    result = dict(payload)
-    message = str(result.get("error") or "")
-    error_kind = str(result.get("error_kind") or "unknown")
-    error_class = str(result.get("error_class") or "")
-    result["ok"] = False
-    result["errorMessage"] = message
-    result["error"] = {
-        "kind": error_kind,
-        "class": error_class,
-        "message": message,
-        "retryable": retryable,
-    }
-    return result
-
-
-def search_runtime_status(provider_name: str | None = None) -> dict:
-    from opensquilla.search.registry import get_provider, get_provider_spec
-
-    _ensure_builtin_search_providers()
-    runtime = search_runtime.current_search_runtime()
-    provider = provider_name or runtime.provider_name
-    spec = get_provider_spec(provider)
-    api_key_configured = is_search_api_key_configured(provider)
-    configured = (not spec.requires_api_key) or api_key_configured
-    error: str | None = None
-    buildable = False
-    try:
-        get_provider(provider, **_search_provider_kwargs(provider))
-        buildable = True
-    except Exception as exc:  # noqa: BLE001 - diagnostic surface
-        error = str(exc)
-    return {
-        "activeProvider": runtime.provider_name,
-        "provider": provider,
-        "configured": configured,
-        "runtimeSupported": spec.runtime_supported,
-        "requiresApiKey": spec.requires_api_key,
-        "apiKeyConfigured": api_key_configured,
-        "maxResults": runtime.max_results,
-        "proxyConfigured": bool(runtime.proxy),
-        "useEnvProxy": bool(runtime.use_env_proxy),
-        "fallbackPolicy": runtime.fallback_policy,
-        "diagnostics": bool(runtime.diagnostics),
-        "buildable": buildable,
-        "error": error,
-    }
+def search_runtime_status(provider_name: str | None = None) -> dict[str, Any]:
+    return _search_runtime_status(provider_name)
 
 
 async def run_web_search_payload(
@@ -425,152 +287,12 @@ async def run_web_search_payload(
     max_results: int | None = None,
     *,
     provider_name: str | None = None,
-) -> dict:
-    from opensquilla.search.registry import get_provider
-
-    _ensure_builtin_search_providers()
-    runtime = search_runtime.current_search_runtime()
-    provider_name = provider_name or runtime.provider_name
-    marker = _sensitive_body_marker(query)
-    if marker is not None:
-        return _search_failure_payload(
-            {
-                "query": "[redacted]",
-                "provider": provider_name,
-                "results": [],
-                "error_class": "SensitiveInput",
-                "error": _sensitive_body_block("web_search", marker),
-                "error_kind": "invalid_request",
-            },
-            retryable=False,
-        )
-
-    limit = max_results or runtime.max_results
-    attempts: list[dict[str, str]] | None = [] if runtime.diagnostics else None
-    try:
-        provider = get_provider(
-            provider_name,
-            **_search_provider_kwargs(provider_name),
-        )
-        results = await provider.search(query, max_results=limit)
-        if attempts is not None:
-            attempts.append({"provider": provider_name, "status": "success"})
-        return _search_success_payload(_search_payload(query, provider_name, results))
-    except Exception as exc:
-        classified = _classify_search_error(provider_name, exc)
-        if attempts is not None:
-            attempts.append(
-                {
-                    "provider": provider_name,
-                    "status": "error",
-                    "error_kind": classified.kind if classified else "unknown",
-                }
-            )
-
-        should_fallback = (
-            runtime.fallback_policy == "network"
-            and provider_name != "duckduckgo"
-            and classified is not None
-            and classified.kind in {"timeout", "network"}
-        )
-        if should_fallback:
-            try:
-                fallback_provider = get_provider(
-                    "duckduckgo",
-                    **_search_provider_kwargs("duckduckgo"),
-                )
-                results = await fallback_provider.search(query, max_results=limit)
-                if attempts is not None:
-                    attempts.append({"provider": "duckduckgo", "status": "success"})
-                return _search_success_payload(
-                    _search_payload(
-                        query,
-                        "duckduckgo",
-                        fallback_from=provider_name,
-                        attempts=attempts,
-                        results=results,
-                    )
-                )
-            except Exception as fallback_exc:
-                if attempts is not None:
-                    fallback_classified = _classify_search_error("duckduckgo", fallback_exc)
-                    attempts.append(
-                        {
-                            "provider": "duckduckgo",
-                            "status": "error",
-                            "error_kind": (
-                                fallback_classified.kind if fallback_classified else "unknown"
-                            ),
-                        }
-                    )
-
-        return _search_failure_payload(
-            _search_error_payload(query, provider_name, exc, attempts=attempts),
-            retryable=bool(classified and classified.retryable),
-        )
-
-
-def _classify_search_error(provider_name: str, exc: Exception) -> SearchProviderError | None:
-    if isinstance(exc, SearchProviderError):
-        return exc
-    if isinstance(exc, httpx.TimeoutException):
-        return SearchProviderError(
-            provider=provider_name,
-            kind="timeout",
-            message=str(exc) or "Search request timed out.",
-            retryable=True,
-        )
-    if isinstance(exc, httpx.NetworkError):
-        return SearchProviderError(
-            provider=provider_name,
-            kind="network",
-            message=str(exc) or "Search network request failed.",
-            retryable=True,
-        )
-    return None
-
-
-def _search_payload(
-    query: str,
-    provider_name: str,
-    results: list[SearchResult],
-    *,
-    fallback_from: str = "",
-    attempts: list[dict[str, str]] | None = None,
-) -> dict:
-    payload = {
-        "query": query,
-        "provider": provider_name,
-        "results": [{"title": r.title, "url": r.url, "snippet": r.snippet} for r in results],
-    }
-    if fallback_from:
-        payload["fallback_from"] = fallback_from
-    if attempts is not None:
-        payload["attempts"] = attempts
-    return payload
-
-
-def _search_error_payload(
-    query: str,
-    provider_name: str,
-    exc: Exception,
-    *,
-    attempts: list[dict[str, str]] | None = None,
-) -> dict:
-    error_class, error_message = _format_search_error(provider_name, exc)
-    payload: dict[str, Any] = {
-        "query": query,
-        "provider": provider_name,
-        "results": [],
-        "error_class": error_class,
-        "error": error_message,
-    }
-    classified = _classify_search_error(provider_name, exc)
-    if classified is not None:
-        payload["error_kind"] = classified.kind
-    if attempts is not None:
-        payload["attempts"] = attempts
-    return payload
+) -> dict[str, Any]:
+    return await run_search_payload(
+        query,
+        max_results,
+        provider_name=provider_name,
+    )
 
 
 @tool(

@@ -173,21 +173,21 @@ def _sensitive_shell_block(
             ensure_ascii=False,
         )
 
-    from opensquilla.tools.builtin.web import (
-        _sensitive_body_block,
-        _sensitive_body_marker,
-        _sensitive_url_marker,
+    from opensquilla.safety.sensitive_payloads import (
+        sensitive_body_block,
+        sensitive_body_marker,
+        sensitive_url_marker,
     )
 
     for token in checked_text.split():
         stripped = token.strip("'\"")
         if stripped.startswith(("http://", "https://")):
-            marker = _sensitive_url_marker(stripped)
+            marker = sensitive_url_marker(stripped)
             if marker is not None:
-                return _sensitive_body_block(tool_name, marker)
-    marker = _sensitive_body_marker(checked_text)
+                return sensitive_body_block(tool_name, marker)
+    marker = sensitive_body_marker(checked_text)
     if marker is not None:
-        return _sensitive_body_block(tool_name, marker)
+        return sensitive_body_block(tool_name, marker)
     return None
 
 

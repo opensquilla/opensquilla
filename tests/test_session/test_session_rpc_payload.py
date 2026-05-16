@@ -12,6 +12,7 @@ from opensquilla.session.rpc_payload import (
     session_patch_response,
     session_preview_last_message,
     session_preview_row,
+    session_reset_response,
     session_resolve_response,
     task_state_summary,
 )
@@ -276,4 +277,42 @@ def test_session_delete_response_owns_wire_shape() -> None:
     ) == {
         "deleted": ["agent:main:webchat:abc123"],
         "errors": ["agent:main:webchat:missing: not found"],
+    }
+
+
+def test_session_reset_response_owns_kill_switch_wire_shape() -> None:
+    assert session_reset_response(
+        "agent:main:webchat:abc123",
+        True,
+        "old-session",
+        "new-session",
+        epoch=3,
+    ) == {
+        "key": "agent:main:webchat:abc123",
+        "reset": True,
+        "rotated": True,
+        "previous_session_id": "old-session",
+        "session_id": "new-session",
+        "epoch": 3,
+    }
+
+
+def test_session_reset_response_owns_flush_wire_shape() -> None:
+    receipt = SimpleNamespace(to_dict=lambda: {"mode": "skipped", "message_count": 0})
+
+    assert session_reset_response(
+        "agent:main:webchat:abc123",
+        True,
+        "old-session",
+        "new-session",
+        epoch=4,
+        receipt=receipt,
+    ) == {
+        "key": "agent:main:webchat:abc123",
+        "reset": True,
+        "rotated": True,
+        "previous_session_id": "old-session",
+        "session_id": "new-session",
+        "epoch": 4,
+        "flush_receipt": {"mode": "skipped", "message_count": 0},
     }

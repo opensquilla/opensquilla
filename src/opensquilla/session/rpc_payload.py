@@ -280,6 +280,28 @@ def session_delete_response(deleted: list[str], errors: list[str]) -> dict[str, 
     return {"deleted": deleted, "errors": errors}
 
 
+def session_reset_response(
+    key: str,
+    rotated: bool,
+    previous_session_id: str,
+    session_id: str,
+    *,
+    epoch: int = 0,
+    receipt: Any | None = None,
+) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "key": key,
+        "reset": True,
+        "rotated": rotated,
+        "previous_session_id": previous_session_id,
+        "session_id": session_id,
+        "epoch": epoch,
+    }
+    if receipt is not None:
+        response["flush_receipt"] = receipt.to_dict()
+    return response
+
+
 __all__ = [
     "active_task_summary",
     "enum_value",
@@ -293,6 +315,7 @@ __all__ = [
     "session_patch_response",
     "session_preview_last_message",
     "session_preview_row",
+    "session_reset_response",
     "session_resolve_response",
     "session_source_metadata",
     "sorted_task_rows",

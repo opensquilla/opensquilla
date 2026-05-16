@@ -1075,6 +1075,35 @@ class TestSessionsReset:
         assert runtime.cancel_calls == 1
         assert runtime.cancelled is False
 
+    def test_gateway_reset_delegates_payload_to_session_boundary(self):
+        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imports = {
+            (node.module, alias.name)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        handler = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_sessions_reset"
+        )
+
+        assert ("opensquilla.session.rpc_payload", "session_reset_response") in imports
+        assert not any(
+            isinstance(node, ast.FunctionDef) and node.name == "_reset_response"
+            for node in tree.body
+        )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_reset_response"
+            for node in ast.walk(handler)
+        )
+        assert not any(
+            isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)
+            for node in ast.walk(handler)
+        )
+
     @pytest.mark.asyncio
     async def test_reset_not_found(self, dispatcher, ctx_with_sessions):
         res = await dispatcher.dispatch(

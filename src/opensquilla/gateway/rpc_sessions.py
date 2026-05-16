@@ -36,6 +36,7 @@ from opensquilla.session.rpc_payload import (
     session_list_row,
     session_patch_response,
     session_preview_row,
+    session_reset_response,
     session_resolve_response,
 )
 
@@ -1109,14 +1110,13 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
 
         updated, rotated = await ctx.session_manager.apply_intent(key, SessionIntent.RESET_SAME_KEY)
         new_epoch = await _increment_and_emit_epoch(ctx, storage, key)
-        return {
-            "key": key,
-            "reset": True,
-            "rotated": rotated,
-            "previous_session_id": previous_session_id,
-            "session_id": updated.session_id,
-            "epoch": new_epoch,
-        }
+        return session_reset_response(
+            key,
+            rotated,
+            previous_session_id,
+            updated.session_id,
+            epoch=new_epoch,
+        )
 
     registry = get_agent_task_registry()
     active = registry.get(key)
@@ -1157,13 +1157,13 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
                 raw_reason=None,
                 error=None,
             )
-            return _reset_response(
+            return session_reset_response(
                 key,
                 rotated,
                 previous_session_id,
                 updated.session_id,
-                receipt,
-                new_epoch,
+                receipt=receipt,
+                epoch=new_epoch,
             )
 
         try:
@@ -1211,13 +1211,13 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
 
         updated, rotated = await ctx.session_manager.apply_intent(key, SessionIntent.RESET_SAME_KEY)
         new_epoch = await _increment_and_emit_epoch(ctx, storage, key)
-        return _reset_response(
+        return session_reset_response(
             key,
             rotated,
             previous_session_id,
             updated.session_id,
-            receipt,
-            new_epoch,
+            receipt=receipt,
+            epoch=new_epoch,
         )
 
     if lock is None:
@@ -1267,26 +1267,6 @@ async def _increment_and_emit_epoch(
             new_epoch=new_epoch,
         )
     return new_epoch
-
-
-def _reset_response(
-    key: str,
-    rotated: bool,
-    previous_session_id: str,
-    session_id: str,
-    receipt: Any,
-    epoch: int = 0,
-) -> dict[str, Any]:
-    return {
-        "key": key,
-        "reset": True,
-        "rotated": rotated,
-        "previous_session_id": previous_session_id,
-        "session_id": session_id,
-        "epoch": epoch,
-        "flush_receipt": receipt.to_dict(),
-    }
-
 
 @_d.method("sessions.delete", scope="operator.admin")
 async def _handle_sessions_delete(params: dict | None, ctx: RpcContext) -> dict:

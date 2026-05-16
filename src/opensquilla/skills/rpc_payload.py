@@ -175,6 +175,44 @@ def skill_install_result_rpc_payload(result: Any) -> dict[str, Any]:
     return payload
 
 
+def _skill_result_rpc_payload(result: Any) -> dict[str, Any]:
+    return {
+        "success": result.success,
+        "name": result.name,
+        "message": result.message,
+    }
+
+
+def skills_update_empty_results_rpc_payload(message: str) -> dict[str, Any]:
+    """Build an empty results RPC wire payload for failed ``skills.update``."""
+
+    return {"results": [], "success": False, "message": message}
+
+
+def skills_update_unavailable_rpc_payload(message: str) -> dict[str, Any]:
+    """Build the unavailable RPC wire payload for ``skills.update``."""
+
+    return {"success": False, "message": message}
+
+
+def skills_update_results_rpc_payload(results: list[Any]) -> dict[str, Any]:
+    """Build the RPC wire payload for ``skills.update`` results."""
+
+    return {"results": [_skill_result_rpc_payload(result) for result in results]}
+
+
+def skill_uninstall_unavailable_rpc_payload(message: str) -> dict[str, Any]:
+    """Build the unavailable RPC wire payload for ``skills.uninstall``."""
+
+    return {"success": False, "message": message}
+
+
+def skill_uninstall_result_rpc_payload(result: Any) -> dict[str, Any]:
+    """Build the RPC wire payload for ``skills.uninstall`` results."""
+
+    return _skill_result_rpc_payload(result)
+
+
 def skill_get_rpc_payload(params: Mapping[str, Any] | None, loader: Any | None) -> dict[str, Any]:
     """Build the RPC wire payload for ``skills.get``."""
 
@@ -225,6 +263,8 @@ __all__ = [
     "skill_get_rpc_payload",
     "skill_install_result_rpc_payload",
     "skill_install_unavailable_rpc_payload",
+    "skill_uninstall_result_rpc_payload",
+    "skill_uninstall_unavailable_rpc_payload",
     "skill_search_result_rpc_payload",
     "skill_missing_requirements_rpc_payload",
     "skill_status_detail",
@@ -234,5 +274,8 @@ __all__ = [
     "skills_search_rpc_payload",
     "skills_search_unavailable_rpc_payload",
     "skills_status_rpc_payload",
+    "skills_update_empty_results_rpc_payload",
+    "skills_update_results_rpc_payload",
+    "skills_update_unavailable_rpc_payload",
     "validate_skill_install_supported",
 ]

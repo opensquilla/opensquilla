@@ -50,9 +50,11 @@ def stub_manager():
     mgr = _StubSessionManager()
     sessions_tool.set_session_manager(mgr)
     sessions_tool.set_task_runtime(None)
+    sessions_tool.set_spawn_group_closer(None)
     yield mgr
     sessions_tool.set_session_manager(None)
     sessions_tool.set_task_runtime(None)
+    sessions_tool.set_spawn_group_closer(None)
 
 
 @pytest.mark.asyncio

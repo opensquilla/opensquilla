@@ -1099,14 +1099,19 @@ async def build_services(
         await storage.connect()
         session_manager = SessionManager(storage, agent_registry=agent_registry)
 
-    # Wire session manager into tool layer (like set_scheduler, set_gateway_config)
+    # Wire session services into the tool layer.
+    from opensquilla.gateway.subagent_announce import close_subagent_spawn_group
     from opensquilla.tools.builtin.sessions import (
         set_gateway_config as _set_sessions_gateway_config,
     )
-    from opensquilla.tools.builtin.sessions import set_session_manager
+    from opensquilla.tools.builtin.sessions import (
+        set_session_manager,
+        set_spawn_group_closer,
+    )
 
     set_session_manager(session_manager)
     _set_sessions_gateway_config(config)
+    set_spawn_group_closer(close_subagent_spawn_group)
 
     # Wire agent registry into the agents_list tool surface.
     from opensquilla.tools.builtin.agents import set_agent_registry as _set_agent_registry_tool

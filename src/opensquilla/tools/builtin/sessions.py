@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 
 import structlog
 
 from opensquilla.agents.limits import MAX_SPAWN_DEPTH
-from opensquilla.gateway.routing import build_subagent_route_envelope
 from opensquilla.session.keys import build_subagent_session_key, parse_agent_id
+from opensquilla.session.subagent_routing import build_subagent_route_envelope
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
 
@@ -72,30 +73,37 @@ def _normalize_subagent_task_for_execution(task: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Setter-injected session manager (gateway boot calls set_session_manager)
+# Setter-injected services wired by the composition layer.
 # ---------------------------------------------------------------------------
 
 _session_manager = None
 _task_runtime = None
 _gateway_config: object | None = None
+_spawn_group_closer: Callable[..., Awaitable[bool]] | None = None
 
 
 def set_session_manager(mgr: object) -> None:
-    """Inject the SessionManager instance (called from gateway boot)."""
+    """Inject the SessionManager instance."""
     global _session_manager
     _session_manager = mgr
 
 
 def set_task_runtime(runtime: object | None) -> None:
-    """Inject the TaskRuntime instance (called from gateway boot)."""
+    """Inject the TaskRuntime instance."""
     global _task_runtime
     _task_runtime = runtime
 
 
 def set_gateway_config(config: object | None) -> None:
-    """Inject the GatewayConfig instance (called from gateway boot)."""
+    """Inject the runtime configuration object."""
     global _gateway_config
     _gateway_config = config
+
+
+def set_spawn_group_closer(closer: Callable[..., Awaitable[bool]] | None) -> None:
+    """Inject the parent wake callback used by sessions_yield."""
+    global _spawn_group_closer
+    _spawn_group_closer = closer
 
 
 def session_manager_available() -> bool:
@@ -622,14 +630,13 @@ async def sessions_yield(
             except ToolError:
                 pass
             else:
-                from opensquilla.gateway.subagent_announce import close_subagent_spawn_group
-
-                await close_subagent_spawn_group(
-                    ctx.session_key,
-                    ctx.task_id,
-                    session_manager=mgr,
-                    task_runtime=runtime,
-                )
+                if _spawn_group_closer is not None:
+                    await _spawn_group_closer(
+                        ctx.session_key,
+                        ctx.task_id,
+                        session_manager=mgr,
+                        task_runtime=runtime,
+                    )
         yield_payload: dict[str, object] = {
             "status": "yielded",
             "waited": False,

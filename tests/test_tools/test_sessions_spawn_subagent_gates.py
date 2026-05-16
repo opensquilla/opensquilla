@@ -105,12 +105,14 @@ def _ctx(session_key: str = "agent:caller:main", agent_id: str = "caller") -> To
 def _wire_stubs(request):
     # Default no-op config; tests overwrite as needed.
     sessions_tool.set_gateway_config(_ConfigurableConfig())
+    sessions_tool.set_spawn_group_closer(None)
 
     yield
 
     sessions_tool.set_session_manager(None)
     sessions_tool.set_task_runtime(None)
     sessions_tool.set_gateway_config(None)
+    sessions_tool.set_spawn_group_closer(None)
 
 
 # ── allow_agents ────────────────────────────────────────────────────────

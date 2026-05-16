@@ -146,6 +146,7 @@ def _ctx() -> ToolContext:
 @pytest.fixture(autouse=True)
 def _wire(request):
     sessions_tool.set_gateway_config(_ConfigurableConfig())
+    sessions_tool.set_spawn_group_closer(None)
     # Drop any spawn locks left over from previous tests so each run starts
     # with a clean per-parent lock map.
     sessions_tool._spawn_locks.clear()
@@ -153,6 +154,7 @@ def _wire(request):
     sessions_tool.set_session_manager(None)
     sessions_tool.set_task_runtime(None)
     sessions_tool.set_gateway_config(None)
+    sessions_tool.set_spawn_group_closer(None)
     sessions_tool._spawn_locks.clear()
 
 

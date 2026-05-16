@@ -388,16 +388,18 @@ def _interaction_mode(value: InteractionMode | str) -> InteractionMode:
 
 
 def _caller_kind(source_kind: SourceKind) -> CallerKind:
-    match source_kind:
-        case SourceKind.WEB:
+    source_value = getattr(source_kind, "value", source_kind)
+    match str(source_value):
+        case SourceKind.WEB.value:
             return CallerKind.WEB
-        case SourceKind.CLI:
+        case SourceKind.CLI.value:
             return CallerKind.CLI
-        case SourceKind.CHANNEL:
+        case SourceKind.CHANNEL.value:
             return CallerKind.CHANNEL
-        case SourceKind.CRON:
+        case SourceKind.CRON.value:
             return CallerKind.CRON
-        case SourceKind.SUBAGENT:
+        case SourceKind.SUBAGENT.value:
             return CallerKind.SUBAGENT
-        case SourceKind.SYSTEM:
+        case SourceKind.SYSTEM.value:
             return CallerKind.AGENT
+    raise ValueError(f"Unsupported route source kind: {source_kind!r}")

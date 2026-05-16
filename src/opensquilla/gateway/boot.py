@@ -226,7 +226,8 @@ class ServiceContainer:
     WARNING: build_services() mutates module-level state:
     - provider.image_generation_runtime (configure_image_generation)
     - memory.runtime (configure_memory_tools_runtime via create_memory_tools)
-    - skills.runtime (configure_skill_loader via create_skill_tools)
+    - skills.runtime
+      (create_configured_skill_loader + configure_skill_loader via create_skill_tools)
     - tools.services (configure_tool_services)
     - search.runtime (configure_search)
     Do not call build_services() twice in the same process without
@@ -1252,32 +1253,16 @@ async def build_services(
     # ── Skill loader (boot order 19) ────────────────────────────────
     skill_loader = None
     try:
-        from opensquilla.skills.loader import SkillLoader
-        from opensquilla.skills.paths import resolve_skill_layer_dirs
+        from opensquilla.skills.runtime import create_configured_skill_loader
 
-        workspace_root_raw = getattr(config, "workspace_dir", None)
-        workspace_root = Path(workspace_root_raw) if workspace_root_raw else None
-        workspace_override = (
-            Path(config.skills.workspace_dir) if config.skills.workspace_dir else None
+        skill_setup = create_configured_skill_loader(
+            config.skills,
+            workspace_dir=getattr(config, "workspace_dir", None),
         )
-        layer_dirs = resolve_skill_layer_dirs(
-            allow_bundled=config.skills.allow_bundled,
-            workspace_root=workspace_root,
-            workspace_override=workspace_override,
-            managed_override=config.skills.managed_dir,
-            extra_dirs=[Path(d) for d in config.skills.extra_dirs],
-        )
-        skill_loader = SkillLoader(
-            bundled_dir=layer_dirs.bundled_dir,
-            workspace_dir=layer_dirs.workspace_dir,
-            managed_dir=layer_dirs.managed_dir,
-            personal_agents_dir=layer_dirs.personal_agents_dir,
-            project_agents_dir=layer_dirs.project_agents_dir,
-            extra_dirs=layer_dirs.extra_dirs,
-        )
+        skill_loader = skill_setup.loader
         log.info(
             "build_services.skill_loader_initialized",
-            bundled_dir=str(layer_dirs.bundled_dir),
+            bundled_dir=str(skill_setup.layer_dirs.bundled_dir),
         )
 
         # Register skill_list and skill_view tools

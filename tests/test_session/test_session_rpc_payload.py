@@ -8,6 +8,7 @@ from opensquilla.session.rpc_payload import (
     session_create_response,
     session_create_stub_response,
     session_list_row,
+    session_patch_response,
     session_preview_last_message,
     session_preview_row,
     session_resolve_response,
@@ -257,4 +258,11 @@ def test_session_create_response_owns_created_session_wire_shape() -> None:
         "key": "agent:ops:cli:abc123",
         "sessionId": "abc123",
         "seededMessage": True,
+    }
+
+
+def test_session_patch_response_owns_wire_shape() -> None:
+    assert session_patch_response("agent:main:webchat:abc123", ["displayName"]) == {
+        "key": "agent:main:webchat:abc123",
+        "updated": ["displayName"],
     }

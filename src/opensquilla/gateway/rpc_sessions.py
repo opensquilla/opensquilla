@@ -33,6 +33,7 @@ from opensquilla.session.rpc_payload import (
     session_create_response,
     session_create_stub_response,
     session_list_row,
+    session_patch_response,
     session_preview_row,
     session_resolve_response,
 )
@@ -1030,7 +1031,7 @@ async def _handle_sessions_patch(params: dict | None, ctx: RpcContext) -> dict:
             if upsert is not None:
                 await upsert(session)
 
-    return {"key": key, "updated": updated_fields}
+    return session_patch_response(key, updated_fields)
 
 
 @_d.method("sessions.reset", scope="operator.write")

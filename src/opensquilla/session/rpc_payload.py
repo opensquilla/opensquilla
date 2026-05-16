@@ -272,6 +272,10 @@ def session_create_response(session: Any, *, seeded_message: bool = False) -> di
     return response
 
 
+def session_patch_response(key: str, updated_fields: list[str]) -> dict[str, Any]:
+    return {"key": key, "updated": updated_fields}
+
+
 __all__ = [
     "active_task_summary",
     "enum_value",
@@ -281,6 +285,7 @@ __all__ = [
     "session_create_response",
     "session_create_stub_response",
     "session_list_row",
+    "session_patch_response",
     "session_preview_last_message",
     "session_preview_row",
     "session_resolve_response",

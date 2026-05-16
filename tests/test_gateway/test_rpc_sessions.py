@@ -1102,6 +1102,29 @@ class TestSessionsDelete:
         assert res.payload["deleted"] == []
         assert len(res.payload["errors"]) == 1
 
+    def test_gateway_delete_delegates_payload_to_session_boundary(self):
+        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imports = {
+            (node.module, alias.name)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        handler = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_sessions_delete"
+        )
+        return_value = next(
+            node.value for node in ast.walk(handler) if isinstance(node, ast.Return)
+        )
+
+        assert ("opensquilla.session.rpc_payload", "session_delete_response") in imports
+        assert isinstance(return_value, ast.Call)
+        assert isinstance(return_value.func, ast.Name)
+        assert return_value.func.id == "session_delete_response"
+
 
 class TestSessionsCompact:
     @pytest.mark.asyncio

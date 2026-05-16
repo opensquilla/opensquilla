@@ -276,6 +276,10 @@ def session_patch_response(key: str, updated_fields: list[str]) -> dict[str, Any
     return {"key": key, "updated": updated_fields}
 
 
+def session_delete_response(deleted: list[str], errors: list[str]) -> dict[str, Any]:
+    return {"deleted": deleted, "errors": errors}
+
+
 __all__ = [
     "active_task_summary",
     "enum_value",
@@ -284,6 +288,7 @@ __all__ = [
     "normalize_terminal_event_payload",
     "session_create_response",
     "session_create_stub_response",
+    "session_delete_response",
     "session_list_row",
     "session_patch_response",
     "session_preview_last_message",

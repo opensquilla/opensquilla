@@ -8,6 +8,7 @@ from opensquilla.session.rpc_payload import (
     session_list_row,
     session_preview_last_message,
     session_preview_row,
+    session_resolve_response,
     task_state_summary,
 )
 
@@ -209,3 +210,25 @@ def test_session_preview_last_message_truncates_and_skips_non_chat_entries() -> 
     ]
 
     assert session_preview_last_message(transcript) == "a" * 120
+
+
+def test_session_resolve_response_owns_wire_shape() -> None:
+    session = SimpleNamespace(
+        session_key="agent:main:webchat:abc123",
+        session_id="abc123",
+        status="running",
+        agent_id="main",
+        model="gpt-test",
+        created_at=1000,
+        updated_at=2000,
+    )
+
+    assert session_resolve_response(session) == {
+        "session_key": "agent:main:webchat:abc123",
+        "session_id": "abc123",
+        "status": "running",
+        "agent_id": "main",
+        "model": "gpt-test",
+        "created_at": 1000,
+        "updated_at": 2000,
+    }

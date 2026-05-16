@@ -241,6 +241,18 @@ def session_preview_row(
     }
 
 
+def session_resolve_response(session: Any) -> dict[str, Any]:
+    return {
+        "session_key": session.session_key,
+        "session_id": session.session_id,
+        "status": session.status,
+        "agent_id": session.agent_id,
+        "model": getattr(session, "model", None),
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
+    }
+
+
 __all__ = [
     "active_task_summary",
     "enum_value",
@@ -250,6 +262,7 @@ __all__ = [
     "session_list_row",
     "session_preview_last_message",
     "session_preview_row",
+    "session_resolve_response",
     "session_source_metadata",
     "sorted_task_rows",
     "task_run_status",

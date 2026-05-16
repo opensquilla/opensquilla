@@ -32,6 +32,7 @@ from opensquilla.session.rpc_payload import (
     normalize_terminal_event_payload,
     session_list_row,
     session_preview_row,
+    session_resolve_response,
 )
 
 _d = get_dispatcher()
@@ -1603,12 +1604,4 @@ async def _handle_sessions_resolve(params: dict | None, ctx: RpcContext) -> dict
 
     session = await _resolve_session_node(storage, key)
 
-    return {
-        "session_key": session.session_key,
-        "session_id": session.session_id,
-        "status": session.status,
-        "agent_id": session.agent_id,
-        "model": getattr(session, "model", None),
-        "created_at": session.created_at,
-        "updated_at": session.updated_at,
-    }
+    return session_resolve_response(session)

@@ -1448,6 +1448,32 @@ class TestSessionsResolve:
         assert res.ok is True
         assert res.payload["session_key"] == session.session_key
 
+    def test_gateway_resolve_delegates_payload_to_session_boundary(self):
+        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imports = {
+            (node.module, alias.name)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        handler = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_sessions_resolve"
+        )
+        handler_constants = {
+            node.value for node in ast.walk(handler) if isinstance(node, ast.Constant)
+        }
+
+        assert ("opensquilla.session.rpc_payload", "session_resolve_response") in imports
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_resolve_response"
+            for node in ast.walk(handler)
+        )
+        assert "session_key" not in handler_constants
+        assert "updated_at" not in handler_constants
+
     @pytest.mark.asyncio
     async def test_resolve_by_session_id(self, dispatcher):
         session = FakeSession(session_key="agent:default:abc123", session_id="abc123")

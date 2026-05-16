@@ -9,7 +9,11 @@ from .failures import (
     classify_provider_error,
     decide_recovery_action,
 )
-from .model_listing import ProviderModelRow, list_provider_model_rows
+from .model_listing import (
+    ProviderModelRow,
+    list_provider_model_rows,
+    list_provider_models_rpc_payload,
+)
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .protocol import (
@@ -108,6 +112,7 @@ __all__ = [
     "build_provider_from_config",
     "ProviderModelRow",
     "list_provider_model_rows",
+    "list_provider_models_rpc_payload",
     "ProviderModelProbe",
     "ProviderStatusReport",
     "ProviderStatusRow",

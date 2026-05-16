@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -40,6 +41,43 @@ async def list_provider_model_rows(
         rows = [row for row in rows if required.issubset(set(row.capabilities))]
 
     return rows
+
+
+def _models_list_rpc_params(params: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if params is None:
+        return {}
+    if not isinstance(params, Mapping):
+        raise ValueError("params must be an object")
+    return params
+
+
+async def list_provider_models_rpc_payload(
+    provider_selector: Any | None,
+    params: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Build the RPC wire payload for a provider model listing request."""
+
+    raw = _models_list_rpc_params(params)
+    rows = await list_provider_model_rows(
+        provider_selector,
+        provider_filter=cast(str | None, raw.get("provider")),
+        capabilities_filter=cast(list[str] | None, raw.get("capabilities")),
+    )
+    return [_model_row_to_wire(row) for row in rows]
+
+
+def _model_row_to_wire(row: ProviderModelRow) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "provider": row.provider,
+        "contextWindow": row.context_window,
+        "capabilities": list(row.capabilities),
+        "pricing": {
+            "inputPer1k": row.input_cost_per_1k,
+            "outputPer1k": row.output_cost_per_1k,
+        },
+    }
 
 
 def _model_info_payload(model: Any) -> dict[str, Any]:

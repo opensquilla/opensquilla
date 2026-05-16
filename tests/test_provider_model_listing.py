@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.provider import ModelInfo
-from opensquilla.provider.model_listing import list_provider_model_rows
+from opensquilla.provider.model_listing import (
+    list_provider_model_rows,
+    list_provider_models_rpc_payload,
+)
 
 
 class FakeModelSelector:
@@ -72,6 +75,52 @@ async def test_list_provider_model_rows_filters_provider_and_capabilities() -> N
     )
 
     assert [row.id for row in rows] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_list_provider_models_rpc_payload_preserves_wire_shape_and_filters() -> None:
+    selector = FakeModelSelector(
+        [
+            {
+                "provider": "openrouter",
+                "model_id": "a",
+                "display_name": "A",
+                "context_window": 123,
+                "supports_tools": True,
+                "input_cost_per_1k": 0.1,
+                "output_cost_per_1k": 0.2,
+            },
+            {"provider": "ollama", "model_id": "b", "supports_tools": True},
+        ]
+    )
+
+    payload = await list_provider_models_rpc_payload(
+        selector,
+        {"provider": "openrouter", "capabilities": ["tools"]},
+    )
+
+    assert payload == [
+        {
+            "id": "a",
+            "name": "A",
+            "provider": "openrouter",
+            "contextWindow": 123,
+            "capabilities": ["chat", "tools"],
+            "pricing": {
+                "inputPer1k": 0.1,
+                "outputPer1k": 0.2,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_provider_models_rpc_payload_validates_request_shape() -> None:
+    with pytest.raises(ValueError, match="params must be an object"):
+        await list_provider_models_rpc_payload(
+            FakeModelSelector([]),
+            "bad-params",  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.asyncio

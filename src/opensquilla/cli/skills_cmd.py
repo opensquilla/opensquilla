@@ -17,6 +17,7 @@ from opensquilla.cli.gateway_rpc import (
 )
 from opensquilla.cli.output import emit_error, print_json
 from opensquilla.cli.skills_rows import load_skill_rows
+from opensquilla.cli.skills_search_rows import search_skill_rows
 from opensquilla.cli.ui import console
 from opensquilla.skills.hub.operations import (
     add_tap,
@@ -26,10 +27,8 @@ from opensquilla.skills.hub.operations import (
     remove_tap,
     run_skill_install_operation,
     run_skill_uninstall_operation,
-    search_skills,
     skill_install_request,
     skill_publish_request,
-    skill_search_request,
     skill_uninstall_request,
     tap_add_request,
     tap_remove_request,
@@ -148,14 +147,10 @@ def skills_search(
     """Search for skills across Community sources."""
 
     async def _search() -> None:
-        outcome = await search_skills(
-            None,
-            skill_search_request({"query": query, "limit": 20}),
-        )
-        results = outcome.results
+        results = await search_skill_rows(query)
 
         if json_output:
-            print_json([asdict(result) for result in results])
+            print_json(results)
             return
 
         if not results:
@@ -169,7 +164,12 @@ def skills_search(
         table.add_column("Description")
 
         for r in results:
-            table.add_row(r.name, r.source_id, r.trust_level, r.description[:60])
+            table.add_row(
+                str(r["name"]),
+                str(r["source_id"]),
+                str(r["trust_level"]),
+                str(r["description"])[:60],
+            )
         console.print(table)
 
     asyncio.run(_search())

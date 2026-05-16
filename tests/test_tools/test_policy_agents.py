@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
-from opensquilla.gateway.routing import build_cron_route_envelope, tool_context_from_envelope
+from opensquilla.scheduler.routing import build_cron_route_envelope, tool_context_from_envelope
 from opensquilla.scheduler.types import CronJob
 from opensquilla.tools.policy import apply_tool_policy_from_config
 from opensquilla.tools.types import (

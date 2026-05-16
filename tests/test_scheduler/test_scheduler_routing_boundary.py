@@ -8,8 +8,7 @@ def test_gateway_routing_imports_stay_behind_scheduler_adapter() -> None:
     offenders = [
         str(path)
         for path in scheduler_root.glob("*.py")
-        if path.name != "routing.py"
-        and "opensquilla.gateway.routing" in path.read_text(encoding="utf-8")
+        if "opensquilla.gateway.routing" in path.read_text(encoding="utf-8")
     ]
 
     assert offenders == []

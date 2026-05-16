@@ -78,7 +78,6 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("scheduler", "channels"),
     ("scheduler", "compat"),
     ("scheduler", "engine"),
-    ("scheduler", "gateway"),
     ("scheduler", "session"),
     ("scheduler", "tools"),
     ("session", "compat"),

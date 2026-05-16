@@ -135,10 +135,37 @@ def normalize_terminal_event_payload(event_name: str, payload: dict[str, Any]) -
 
 
 def session_send_accepted_response(key: str, *, task_id: str | None = None) -> dict[str, Any]:
-    payload = {"status": "accepted", "key": key}
+    payload: dict[str, Any] = {"status": "accepted", "key": key}
     if task_id is not None:
         payload["task_id"] = task_id
     return payload
+
+
+def session_send_queue_full_details(
+    *,
+    session_key: str,
+    max_pending: int,
+    rollback_message_id: Any,
+) -> dict[str, Any]:
+    return {
+        "session_key": session_key,
+        "max_pending": max_pending,
+        "rollback_message_id": rollback_message_id,
+    }
+
+
+def session_send_queue_full_dirty_details(
+    *,
+    session_key: str,
+    max_pending: int,
+    orphan_message_id: Any,
+) -> dict[str, Any]:
+    return {
+        "session_key": session_key,
+        "max_pending": max_pending,
+        "orphan_message_id": orphan_message_id,
+        "remediation": "client must dedup by message_id before retry",
+    }
 
 
 def session_source_metadata(session: Any) -> dict[str, Any]:
@@ -377,6 +404,8 @@ __all__ = [
     "session_reset_response",
     "session_resolve_response",
     "session_send_accepted_response",
+    "session_send_queue_full_details",
+    "session_send_queue_full_dirty_details",
     "session_source_metadata",
     "sorted_task_rows",
     "task_run_status",

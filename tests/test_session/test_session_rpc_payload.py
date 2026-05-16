@@ -20,6 +20,8 @@ from opensquilla.session.rpc_payload import (
     session_reset_response,
     session_resolve_response,
     session_send_accepted_response,
+    session_send_queue_full_details,
+    session_send_queue_full_dirty_details,
     task_state_summary,
 )
 
@@ -198,6 +200,28 @@ def test_session_send_accepted_response_owns_wire_shape() -> None:
         "status": "accepted",
         "key": "agent:main:webchat:abc123",
         "task_id": "task-123",
+    }
+
+
+def test_session_send_queue_full_details_own_wire_shape() -> None:
+    assert session_send_queue_full_details(
+        session_key="agent:main:webchat:abc123",
+        max_pending=2,
+        rollback_message_id="msg-1",
+    ) == {
+        "session_key": "agent:main:webchat:abc123",
+        "max_pending": 2,
+        "rollback_message_id": "msg-1",
+    }
+    assert session_send_queue_full_dirty_details(
+        session_key="agent:main:webchat:abc123",
+        max_pending=2,
+        orphan_message_id="msg-1",
+    ) == {
+        "session_key": "agent:main:webchat:abc123",
+        "max_pending": 2,
+        "orphan_message_id": "msg-1",
+        "remediation": "client must dedup by message_id before retry",
     }
 
 

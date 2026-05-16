@@ -26,6 +26,7 @@ from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.session_streams import get_session_streams
+from opensquilla.gateway.task_runtime import TaskQueueFullError
 from opensquilla.gateway.uploads import set_upload_store
 from opensquilla.gateway.websocket import SubscriptionManager, get_registry
 from opensquilla.session.compaction import CompactionConfig
@@ -285,6 +286,30 @@ class _RecordingTurnRunner:
     async def run(self, message: str, session_key: str, **kwargs):
         self.run_calls.append({"message": message, "session_key": session_key, **kwargs})
         yield DoneEvent()
+
+
+class _QueueFullRuntime:
+    def __init__(self, *, session_key: str, max_pending: int) -> None:
+        self.session_key = session_key
+        self.max_pending = max_pending
+
+    async def enqueue(self, *args, **kwargs):
+        raise TaskQueueFullError(session_key=self.session_key, max_pending=self.max_pending)
+
+
+class _RollbackSessionManager(FakeSessionManager):
+    def __init__(self, sessions: list[FakeSession], *, rollback_ok: bool) -> None:
+        super().__init__(sessions)
+        self.rollback_ok = rollback_ok
+        self.remove_message_calls: list[tuple[str, str]] = []
+
+    async def append_message(self, key: str, role: str = "user", content: str = ""):
+        self.created_messages.append((key, role, content))
+        return SimpleNamespace(content=content, message_id="msg-1")
+
+    async def remove_message(self, key: str, message_id: str) -> bool:
+        self.remove_message_calls.append((key, message_id))
+        return self.rollback_ok
 
 
 class _FakeUploadStore:
@@ -720,14 +745,93 @@ class TestSessionsSend:
 
         assert ("opensquilla.session.rpc_payload", "normalize_terminal_event_payload") in imports
         assert ("opensquilla.session.rpc_payload", "session_send_accepted_response") in imports
+        assert ("opensquilla.session.rpc_payload", "session_send_queue_full_details") in imports
+        assert (
+            "opensquilla.session.rpc_payload",
+            "session_send_queue_full_dirty_details",
+        ) in imports
         assert any(
             isinstance(node, ast.Name) and node.id == "session_send_accepted_response"
             for node in ast.walk(handler)
         )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_send_queue_full_details"
+            for node in ast.walk(handler)
+        )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "session_send_queue_full_dirty_details"
+            for node in ast.walk(handler)
+        )
         assert ("status", "key") not in dict_key_sets
         assert ("status", "key", "task_id") not in dict_key_sets
+        assert ("session_key", "max_pending", "rollback_message_id") not in dict_key_sets
+        assert (
+            "session_key",
+            "max_pending",
+            "orphan_message_id",
+            "remediation",
+        ) not in dict_key_sets
         assert "_normalize_terminal_event_payload" not in top_level_functions
         assert ("opensquilla.session.terminal_reply", "build_terminal_reply") not in imports
+
+    @pytest.mark.asyncio
+    async def test_send_queue_full_rolls_back_and_returns_retryable_details(
+        self,
+        dispatcher,
+        session,
+    ):
+        manager = _RollbackSessionManager([session], rollback_ok=True)
+        ctx = make_ctx(
+            session_manager=manager,
+            task_runtime=_QueueFullRuntime(session_key=session.session_key, max_pending=2),
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {"key": session.session_key, "message": "queued"},
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "QUEUE_FULL"
+        assert res.error.retryable is True
+        assert res.error.details == {
+            "session_key": session.session_key,
+            "max_pending": 2,
+            "rollback_message_id": "msg-1",
+        }
+        assert manager.remove_message_calls == [(session.session_key, "msg-1")]
+
+    @pytest.mark.asyncio
+    async def test_send_queue_full_dirty_returns_orphan_details(
+        self,
+        dispatcher,
+        session,
+    ):
+        manager = _RollbackSessionManager([session], rollback_ok=False)
+        ctx = make_ctx(
+            session_manager=manager,
+            task_runtime=_QueueFullRuntime(session_key=session.session_key, max_pending=2),
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {"key": session.session_key, "message": "queued"},
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "QUEUE_FULL_DIRTY"
+        assert res.error.retryable is False
+        assert res.error.details == {
+            "session_key": session.session_key,
+            "max_pending": 2,
+            "orphan_message_id": "msg-1",
+            "remediation": "client must dedup by message_id before retry",
+        }
+        assert manager.remove_message_calls == [(session.session_key, "msg-1")]
 
     @pytest.mark.asyncio
     async def test_send_reset_same_key_intent_applies_before_append(

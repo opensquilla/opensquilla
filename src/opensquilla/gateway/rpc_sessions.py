@@ -44,6 +44,8 @@ from opensquilla.session.rpc_payload import (
     session_reset_response,
     session_resolve_response,
     session_send_accepted_response,
+    session_send_queue_full_details,
+    session_send_queue_full_dirty_details,
 )
 
 _d = get_dispatcher()
@@ -727,11 +729,11 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 raise RpcHandlerError(
                     "QUEUE_FULL",
                     "The session task queue is full. Try again after queued work completes.",
-                    details={
-                        "session_key": exc.session_key,
-                        "max_pending": exc.max_pending,
-                        "rollback_message_id": orphan_id,
-                    },
+                    details=session_send_queue_full_details(
+                        session_key=exc.session_key,
+                        max_pending=exc.max_pending,
+                        rollback_message_id=orphan_id,
+                    ),
                     retryable=True,
                 ) from exc
             raise RpcHandlerError(
@@ -742,12 +744,11 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                     "an orphan message; clients must dedup by orphan_message_id "
                     "before retrying."
                 ),
-                details={
-                    "session_key": exc.session_key,
-                    "max_pending": exc.max_pending,
-                    "orphan_message_id": orphan_id,
-                    "remediation": "client must dedup by message_id before retry",
-                },
+                details=session_send_queue_full_dirty_details(
+                    session_key=exc.session_key,
+                    max_pending=exc.max_pending,
+                    orphan_message_id=orphan_id,
+                ),
                 retryable=False,
             ) from exc
         # Eviction hook: turn was accepted into the runtime,

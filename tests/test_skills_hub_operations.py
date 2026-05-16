@@ -388,10 +388,19 @@ async def test_skill_management_workflows_handle_availability_and_invalidation()
         skill_uninstall_request({"name": "planner"}),
         installer_factory=lambda: None,
     )
+    local_installer = FakeInstaller()
+    install_without_loader = await run_skill_install_operation(
+        None,
+        skill_install_request({"identifier": "planner"}),
+        installer_factory=lambda: local_installer,
+        require_loader=False,
+    )
 
     assert missing_loader.unavailable_message == "No skill loader configured"
     assert missing_installer.unavailable_message == "No skill installer configured"
     assert install_outcome.result is not None
+    assert install_without_loader.result is not None
+    assert install_without_loader.result.success is True
     assert update_outcome.unavailable_message == ""
     assert uninstall_outcome.result is not None
     assert update_missing_loader.unavailable_message == "No skill loader configured"

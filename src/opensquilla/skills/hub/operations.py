@@ -314,10 +314,11 @@ async def run_skill_install_operation(
     request: SkillInstallRequest,
     *,
     installer_factory: SkillInstallerFactory | None = None,
+    require_loader: bool = True,
 ) -> SkillInstallOutcome:
     """Run ``skills.install`` with availability checks and cache invalidation."""
 
-    if loader is None:
+    if require_loader and loader is None:
         return SkillInstallOutcome(unavailable_message="No skill loader configured")
     installer = _resolve_installer_factory(installer_factory)()
     if installer is None:

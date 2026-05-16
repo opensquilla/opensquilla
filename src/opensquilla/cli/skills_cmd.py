@@ -19,12 +19,12 @@ from opensquilla.cli.output import emit_error, print_json
 from opensquilla.cli.ui import console
 from opensquilla.skills.hub.operations import (
     add_tap,
-    default_skill_installer_factory,
     default_taps_manager_factory,
-    install_skill,
     list_taps,
     publish_skill_from_request,
     remove_tap,
+    run_skill_install_operation,
+    run_skill_uninstall_operation,
     search_skills,
     skill_install_request,
     skill_publish_request,
@@ -32,7 +32,6 @@ from opensquilla.skills.hub.operations import (
     skill_uninstall_request,
     tap_add_request,
     tap_remove_request,
-    uninstall_skill,
 )
 
 skills_app = typer.Typer(help="Skill management - list, search, install, uninstall.")
@@ -330,24 +329,33 @@ def skills_install(
             )
             return
 
-        installer = default_skill_installer_factory()
-        if installer is None:
+        if not json_output:
+            console.print(f"Installing '{identifier}' from {source}...")
+        outcome = await run_skill_install_operation(
+            None,
+            skill_install_request(
+                {"identifier": identifier, "source": source, "force": force}
+            ),
+            require_loader=False,
+        )
+        if outcome.unavailable_message:
             _emit_skill_mutation_result(
-                {"success": False, "message": "No skill installer configured"},
+                {"success": False, "message": outcome.unavailable_message},
                 json_output=json_output,
                 success_label="Installed",
                 fallback_name=identifier,
             )
             return
 
-        if not json_output:
-            console.print(f"Installing '{identifier}' from {source}...")
-        result = await install_skill(
-            installer,
-            skill_install_request(
-                {"identifier": identifier, "source": source, "force": force}
-            ),
-        )
+        result = outcome.result
+        if result is None:
+            _emit_skill_mutation_result(
+                {"success": False, "message": "No skill install result returned"},
+                json_output=json_output,
+                success_label="Installed",
+                fallback_name=identifier,
+            )
+            return
 
         if json_output:
             print_json(_install_result_payload(result))
@@ -391,20 +399,28 @@ def skills_uninstall(
             )
             return
 
-        installer = default_skill_installer_factory()
-        if installer is None:
+        outcome = await run_skill_uninstall_operation(
+            None,
+            skill_uninstall_request({"name": name}),
+        )
+        if outcome.unavailable_message:
             _emit_skill_mutation_result(
-                {"success": False, "message": "No skill installer configured"},
+                {"success": False, "message": outcome.unavailable_message},
                 json_output=json_output,
                 success_label="Uninstalled",
                 fallback_name=name,
             )
             return
 
-        result = await uninstall_skill(
-            installer,
-            skill_uninstall_request({"name": name}),
-        )
+        result = outcome.result
+        if result is None:
+            _emit_skill_mutation_result(
+                {"success": False, "message": "No skill uninstall result returned"},
+                json_output=json_output,
+                success_label="Uninstalled",
+                fallback_name=name,
+            )
+            return
 
         if json_output:
             print_json(_install_result_payload(result))

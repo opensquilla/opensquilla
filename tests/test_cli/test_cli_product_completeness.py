@@ -353,30 +353,42 @@ def test_skills_install_and_uninstall_fallback_delegates_to_hub_operations(
         path: str | None = None
         scan: object | None = None
 
-    installer = object()
     calls: list[tuple[str, object]] = []
 
-    def fake_installer_factory() -> object:
-        calls.append(("factory", None))
-        return installer
-
-    async def fake_install_skill(actual_installer: object, request: object) -> LocalResult:
-        assert actual_installer is installer
+    async def fake_run_skill_install_operation(
+        loader: object,
+        request: object,
+        **kwargs: object,
+    ) -> SimpleNamespace:
+        assert loader is None
+        assert kwargs == {"require_loader": False}
         calls.append(("install", request))
-        return LocalResult(True, "planner", "installed", "/tmp/planner")
+        return SimpleNamespace(
+            result=LocalResult(True, "planner", "installed", "/tmp/planner"),
+            unavailable_message="",
+        )
 
-    async def fake_uninstall_skill(actual_installer: object, request: object) -> LocalResult:
-        assert actual_installer is installer
+    async def fake_run_skill_uninstall_operation(
+        loader: object,
+        request: object,
+    ) -> SimpleNamespace:
+        assert loader is None
         calls.append(("uninstall", request))
-        return LocalResult(True, "planner", "removed")
+        return SimpleNamespace(
+            result=LocalResult(True, "planner", "removed"),
+            unavailable_message="",
+        )
 
     monkeypatch.setattr(
         skills_cmd,
-        "default_skill_installer_factory",
-        fake_installer_factory,
+        "run_skill_install_operation",
+        fake_run_skill_install_operation,
     )
-    monkeypatch.setattr(skills_cmd, "install_skill", fake_install_skill)
-    monkeypatch.setattr(skills_cmd, "uninstall_skill", fake_uninstall_skill)
+    monkeypatch.setattr(
+        skills_cmd,
+        "run_skill_uninstall_operation",
+        fake_run_skill_uninstall_operation,
+    )
     monkeypatch.setattr(
         skills_cmd,
         "skill_install_request",
@@ -399,12 +411,10 @@ def test_skills_install_and_uninstall_fallback_delegates_to_hub_operations(
     assert uninstall.exit_code == 0, uninstall.stdout
     assert json.loads(uninstall.stdout)["message"] == "removed"
     assert calls == [
-        ("factory", None),
         (
             "install",
             ("install", {"identifier": "planner", "source": "github", "force": True}),
         ),
-        ("factory", None),
         ("uninstall", ("uninstall", {"name": "planner"})),
     ]
 
@@ -419,6 +429,25 @@ def test_cli_skills_does_not_import_hub_defaults() -> None:
 
     assert "opensquilla.skills.hub.defaults" not in imported_modules
     assert "opensquilla.skills.hub.search" not in imported_modules
+
+
+def test_cli_skills_install_fallback_uses_operation_workflows() -> None:
+    from opensquilla.cli import skills_cmd
+
+    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    imported_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.skills.hub.operations"
+        for alias in node.names
+    }
+
+    assert "run_skill_install_operation" in imported_names
+    assert "run_skill_uninstall_operation" in imported_names
+    assert "default_skill_installer_factory" not in imported_names
+    assert "install_skill" not in imported_names
+    assert "uninstall_skill" not in imported_names
 
 
 def test_skills_tap_commands_delegate_to_hub_tap_operations(monkeypatch):

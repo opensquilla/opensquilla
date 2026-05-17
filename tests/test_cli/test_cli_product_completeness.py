@@ -878,10 +878,55 @@ def test_cli_skills_async_runner_uses_workflow_boundary() -> None:
     assert len(workflow_asyncio_run_calls) == 4
 
 
-def test_cli_skills_search_does_not_import_hub_search_operation_details() -> None:
-    from opensquilla.cli import skills_cmd, skills_search_workflows
+def test_cli_skills_commands_use_workflow_facade_boundary() -> None:
+    from opensquilla.cli import skills_cmd, skills_workflows
 
     cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    facade_tree = ast.parse(Path(skills_workflows.__file__).read_text(encoding="utf-8"))
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom) and node.module != "__future__"
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_workflows"
+        for alias in node.names
+    }
+    facade_modules = {
+        node.module for node in ast.walk(facade_tree) if isinstance(node, ast.ImportFrom)
+    }
+
+    assert cmd_workflow_names == {
+        "add_skill_tap_for_cli",
+        "install_skill_for_cli_command",
+        "list_skill_taps_for_cli",
+        "list_skills_for_cli",
+        "publish_skill_for_cli_command",
+        "remove_skill_tap_for_cli",
+        "search_skills_for_cli_command",
+        "uninstall_skill_for_cli_command",
+        "update_gateway_skills_for_cli",
+        "view_gateway_skill_for_cli",
+    }
+    assert cmd_direct_modules == {"opensquilla.cli.skills_workflows"}
+    assert {
+        "opensquilla.cli.skills_gateway_workflows",
+        "opensquilla.cli.skills_list_workflows",
+        "opensquilla.cli.skills_mutation_workflows",
+        "opensquilla.cli.skills_publish_workflows",
+        "opensquilla.cli.skills_search_workflows",
+        "opensquilla.cli.skills_tap_workflows",
+    }.issubset(facade_modules)
+
+
+def test_cli_skills_search_does_not_import_hub_search_operation_details() -> None:
+    from opensquilla.cli import skills_cmd, skills_search_workflows, skills_workflows
+
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    facade_tree = ast.parse(Path(skills_workflows.__file__).read_text(encoding="utf-8"))
     workflow_tree = ast.parse(
         Path(skills_search_workflows.__file__).read_text(encoding="utf-8")
     )
@@ -896,6 +941,13 @@ def test_cli_skills_search_does_not_import_hub_search_operation_details() -> Non
         alias.name
         for node in ast.walk(cmd_tree)
         if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_workflows"
+        for alias in node.names
+    }
+    facade_workflow_names = {
+        alias.name
+        for node in ast.walk(facade_tree)
+        if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_search_workflows"
         for alias in node.names
     }
@@ -903,16 +955,19 @@ def test_cli_skills_search_does_not_import_hub_search_operation_details() -> Non
         node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
     }
 
-    assert imported_workflow_names == {"search_skills_for_cli_command"}
+    assert "search_skills_for_cli_command" in imported_workflow_names
+    assert facade_workflow_names == {"search_skills_for_cli_command"}
+    assert "opensquilla.cli.skills_search_workflows" not in cmd_direct_modules
     assert "opensquilla.cli.skills_search_rows" not in cmd_direct_modules
     assert "search_skills" not in imported_names
     assert "skill_search_request" not in imported_names
 
 
 def test_cli_skills_install_fallback_uses_local_mutation_boundary() -> None:
-    from opensquilla.cli import skills_cmd, skills_mutation_workflows
+    from opensquilla.cli import skills_cmd, skills_mutation_workflows, skills_workflows
 
     cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    facade_tree = ast.parse(Path(skills_workflows.__file__).read_text(encoding="utf-8"))
     workflow_tree = ast.parse(
         Path(skills_mutation_workflows.__file__).read_text(encoding="utf-8")
     )
@@ -934,6 +989,13 @@ def test_cli_skills_install_fallback_uses_local_mutation_boundary() -> None:
         alias.name
         for node in ast.walk(cmd_tree)
         if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_workflows"
+        for alias in node.names
+    }
+    facade_workflow_names = {
+        alias.name
+        for node in ast.walk(facade_tree)
+        if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_mutation_workflows"
         for alias in node.names
     }
@@ -941,10 +1003,13 @@ def test_cli_skills_install_fallback_uses_local_mutation_boundary() -> None:
         node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
     }
 
-    assert cmd_workflow_names == {
+    assert "install_skill_for_cli_command" in cmd_workflow_names
+    assert "uninstall_skill_for_cli_command" in cmd_workflow_names
+    assert facade_workflow_names == {
         "install_skill_for_cli_command",
         "uninstall_skill_for_cli_command",
     }
+    assert "opensquilla.cli.skills_mutation_workflows" not in cmd_direct_modules
     assert "opensquilla.cli.skills_local_mutations" not in cmd_direct_modules
     assert "run_local_skill_install" in imported_cli_names
     assert "run_local_skill_uninstall" in imported_cli_names
@@ -1010,9 +1075,10 @@ def test_cli_skills_install_gateway_mutations_use_cli_boundary() -> None:
 
 
 def test_cli_skills_gateway_queries_use_cli_boundary() -> None:
-    from opensquilla.cli import skills_cmd, skills_gateway_workflows
+    from opensquilla.cli import skills_cmd, skills_gateway_workflows, skills_workflows
 
     cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    facade_tree = ast.parse(Path(skills_workflows.__file__).read_text(encoding="utf-8"))
     workflow_tree = ast.parse(
         Path(skills_gateway_workflows.__file__).read_text(encoding="utf-8")
     )
@@ -1034,6 +1100,13 @@ def test_cli_skills_gateway_queries_use_cli_boundary() -> None:
         alias.name
         for node in ast.walk(cmd_tree)
         if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_workflows"
+        for alias in node.names
+    }
+    facade_workflow_names = {
+        alias.name
+        for node in ast.walk(facade_tree)
+        if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_gateway_workflows"
         for alias in node.names
     }
@@ -1052,11 +1125,14 @@ def test_cli_skills_gateway_queries_use_cli_boundary() -> None:
         and node.func.attr == "call"
     ]
 
-    assert imported_workflow_names == {
+    assert "update_gateway_skills_for_cli" in imported_workflow_names
+    assert "view_gateway_skill_for_cli" in imported_workflow_names
+    assert facade_workflow_names == {
         "update_gateway_skills_for_cli",
         "view_gateway_skill_for_cli",
     }
     assert imported_query_names == {"load_gateway_skill", "update_gateway_skills"}
+    assert "opensquilla.cli.skills_gateway_workflows" not in cmd_direct_modules
     assert "opensquilla.cli.skills_gateway_queries" not in cmd_direct_modules
     assert "run_gateway_sync" not in imported_gateway_names
     assert "run_gateway_sync" not in identifiers
@@ -1351,9 +1427,10 @@ def test_cli_skill_taps_use_hub_tap_operations(monkeypatch):
 
 
 def test_cli_skills_tap_does_not_import_taps_boundary() -> None:
-    from opensquilla.cli import skills_cmd, skills_tap_workflows
+    from opensquilla.cli import skills_cmd, skills_tap_workflows, skills_workflows
 
     cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    facade_tree = ast.parse(Path(skills_workflows.__file__).read_text(encoding="utf-8"))
     workflow_tree = ast.parse(
         Path(skills_tap_workflows.__file__).read_text(encoding="utf-8")
     )
@@ -1373,6 +1450,13 @@ def test_cli_skills_tap_does_not_import_taps_boundary() -> None:
         alias.name
         for node in ast.walk(cmd_tree)
         if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_workflows"
+        for alias in node.names
+    }
+    facade_workflow_names = {
+        alias.name
+        for node in ast.walk(facade_tree)
+        if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_tap_workflows"
         for alias in node.names
     }
@@ -1380,11 +1464,15 @@ def test_cli_skills_tap_does_not_import_taps_boundary() -> None:
         node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
     }
 
-    assert cmd_workflow_names == {
+    assert "add_skill_tap_for_cli" in cmd_workflow_names
+    assert "list_skill_taps_for_cli" in cmd_workflow_names
+    assert "remove_skill_tap_for_cli" in cmd_workflow_names
+    assert facade_workflow_names == {
         "add_skill_tap_for_cli",
         "list_skill_taps_for_cli",
         "remove_skill_tap_for_cli",
     }
+    assert "opensquilla.cli.skills_tap_workflows" not in cmd_direct_modules
     assert "opensquilla.cli.skills_taps" not in cmd_direct_modules
     assert "opensquilla.skills.hub.taps" not in imported_modules
     assert "default_taps_manager_factory" not in imported_names
@@ -1507,9 +1595,10 @@ def test_cli_skill_publish_uses_hub_operation_boundary(monkeypatch):
 
 
 def test_cli_skills_publish_does_not_import_publisher_boundary() -> None:
-    from opensquilla.cli import skills_cmd, skills_publish_workflows
+    from opensquilla.cli import skills_cmd, skills_publish_workflows, skills_workflows
 
     cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    facade_tree = ast.parse(Path(skills_workflows.__file__).read_text(encoding="utf-8"))
     workflow_tree = ast.parse(
         Path(skills_publish_workflows.__file__).read_text(encoding="utf-8")
     )
@@ -1529,6 +1618,13 @@ def test_cli_skills_publish_does_not_import_publisher_boundary() -> None:
         alias.name
         for node in ast.walk(cmd_tree)
         if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_workflows"
+        for alias in node.names
+    }
+    facade_workflow_names = {
+        alias.name
+        for node in ast.walk(facade_tree)
+        if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_publish_workflows"
         for alias in node.names
     }
@@ -1536,7 +1632,9 @@ def test_cli_skills_publish_does_not_import_publisher_boundary() -> None:
         node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
     }
 
-    assert cmd_workflow_names == {"publish_skill_for_cli_command"}
+    assert "publish_skill_for_cli_command" in cmd_workflow_names
+    assert facade_workflow_names == {"publish_skill_for_cli_command"}
+    assert "opensquilla.cli.skills_publish_workflows" not in cmd_direct_modules
     assert "opensquilla.cli.skills_publish" not in cmd_direct_modules
     assert "opensquilla.skills.hub.publisher" not in imported_modules
     assert "publish_skill_from_request" not in imported_names

@@ -33,6 +33,7 @@ from opensquilla.cli.chat_gateway_permissions_workflows import (
     handle_gateway_permissions_command,
     handle_permissions_command,
 )
+from opensquilla.cli.chat_gateway_status_workflows import handle_gateway_status_command
 from opensquilla.cli.chat_model_usage_workflows import (
     handle_cost_command,
     handle_model_command,
@@ -773,12 +774,7 @@ async def _handle_gateway_slash_command(
         return True
 
     if cmd in {"/status", "/session"}:
-        console.print(
-            f"[{ACCENT}]session[/] [dim]{state.session_key}[/dim]\n"
-            f"[{ACCENT}]model[/] [dim]{state.model or 'default'}[/dim]\n"
-            f"[{ACCENT}]permissions[/] [dim]{state.elevated or 'normal'}[/dim]"
-        )
-        return True
+        return handle_gateway_status_command(state)
 
     if parts := _slash_parts(cmd, "/sessions"):
         await handle_sessions_command(parts, client)

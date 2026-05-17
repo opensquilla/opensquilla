@@ -2652,6 +2652,108 @@ async def test_gateway_approvals_unknown_prefix_is_not_handled(monkeypatch) -> N
     assert fake.forget_approvals_calls == []
 
 
+def test_gateway_status_workflow_renders_session_model_and_permissions(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_gateway_status_workflows
+
+    state = ChatSessionState(
+        session_key="agent:main:abc123",
+        model="openai/test",
+        elevated="bypass",
+    )
+    buffer = io.StringIO()
+
+    monkeypatch.setattr(
+        chat_gateway_status_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = chat_gateway_status_workflows.handle_gateway_status_command(state)
+
+    assert handled is True
+    output = buffer.getvalue()
+    assert "session" in output
+    assert "agent:main:abc123" in output
+    assert "model" in output
+    assert "openai/test" in output
+    assert "permissions" in output
+    assert "bypass" in output
+
+
+def test_gateway_status_workflow_uses_defaults(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_status_workflows
+
+    state = ChatSessionState(session_key="agent:main:abc123")
+    buffer = io.StringIO()
+
+    monkeypatch.setattr(
+        chat_gateway_status_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = chat_gateway_status_workflows.handle_gateway_status_command(state)
+
+    assert handled is True
+    output = buffer.getvalue()
+    assert "agent:main:abc123" in output
+    assert "default" in output
+    assert "normal" in output
+
+
+@pytest.mark.asyncio
+async def test_gateway_session_command_uses_status_workflow(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_status_workflows
+
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(
+        session_key="agent:main:abc123",
+        model="openai/test",
+        elevated="full",
+    )
+    buffer = io.StringIO()
+
+    monkeypatch.setattr(
+        chat_gateway_status_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_cmd._handle_gateway_slash_command(
+        "/session",
+        state,
+        fake,
+        {"mode": "full"},
+    )
+
+    assert handled is True
+    output = buffer.getvalue()
+    assert "agent:main:abc123" in output
+    assert "openai/test" in output
+    assert "full" in output
+
+
+@pytest.mark.asyncio
+async def test_gateway_status_unknown_prefix_is_not_handled(monkeypatch) -> None:
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+
+    handled = await chat_cmd._handle_gateway_slash_command(
+        "/statusx",
+        state,
+        fake,
+        {"mode": None},
+    )
+
+    assert handled is False
+
+
 @pytest.mark.asyncio
 async def test_gateway_chat_does_not_forward_workspace_fields() -> None:
     from opensquilla.cli.gateway_client import GatewayClient
@@ -4224,6 +4326,47 @@ def test_chat_gateway_approvals_slash_uses_workflow_boundary() -> None:
     assert "Failed to query approvals:" not in slash_literals
     assert "cached intents (" not in slash_literals
     assert "handle_gateway_approvals_command" in workflow_defs
+
+
+def test_chat_gateway_status_slash_uses_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_status_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_status_workflows"
+        for alias in node.names
+    }
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    slash_literals = {
+        node.value
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {"handle_gateway_status_command"}
+    assert "handle_gateway_status_command" in slash_name_calls
+    assert "[{ACCENT}]permissions[/] [dim]{state.elevated or 'normal'}[/dim]" not in slash_literals
+    assert "handle_gateway_status_command" in workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

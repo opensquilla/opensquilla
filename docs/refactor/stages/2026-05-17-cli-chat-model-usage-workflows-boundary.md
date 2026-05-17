@@ -121,15 +121,15 @@ Move gateway chat model and usage slash workflows behind a dedicated CLI workflo
 - [x] Add focused behavior tests for `/model`, `/cost`, and `/usage`.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -155,15 +155,17 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
-- Integration merge:
+- Child commit: `923d246`
+- Integration merge: `185f1e2`
 - Verification evidence:
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `83bda1d`.
   - `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-cli-chat-model-usage-workflows-boundary` passed on branch `codex/refactor-cli-chat-model-usage-workflows-boundary` at `83bda1d`.
   - Red: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_chat_model_usage_slashes_use_workflow_boundary -q` failed as expected because `chat_model_usage_workflows.py` did not exist.
   - Green: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_chat_model_usage_slashes_use_workflow_boundary tests/test_cli/test_chat_cmd.py::test_gateway_slash_model_updates_session_model tests/test_cli/test_chat_cmd.py::test_gateway_slash_cost_and_usage_emit_usage_views -q` passed: 3 passed.
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_model_usage_workflows.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_cli_product_completeness.py -q` passed: 146 passed.
   - Child gate: `scripts/refactor_gate.sh` passed: ruff, mypy, whitespace, pytest 2310 passed / 8 skipped / 2 warnings, gateway smoke start/status/stop/status ok.
+  - Integration gate: `scripts/refactor_gate.sh` passed after merge `185f1e2`: ruff, mypy, whitespace, pytest 2312 passed / 6 skipped / 2 warnings, gateway smoke start/status/stop/status ok.
 - Residual risk:
   - Low. The slice preserves existing `/model`, `/cost`, and `/usage` formatting while moving ownership out of the dispatcher. The broad `_GatewayClientLike` protocol still remains in `chat_cmd.py` for future incremental narrowing.
 - Next recommended slice:

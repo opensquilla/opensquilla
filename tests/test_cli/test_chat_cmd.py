@@ -1248,6 +1248,13 @@ class _FakeGatewayClient:
             "agent_token_saving.tool_result_compression_mode": None,
             "agent_token_saving.tool_result_compression_summary_model": "cheap/model",
         }
+        self.approvals_snapshot_calls = 0
+        self.approvals_snapshot_payload: dict[str, object] = {
+            "mode": "prompt",
+            "intent_cache_entries": [],
+        }
+        self.approval_mode_calls: list[str] = []
+        self.forget_approvals_calls: list[str | None] = []
         self.list_models_calls = 0
         self.list_sessions_calls: list[int] = []
         self.delete_result: dict[str, object] = {"deleted": [], "errors": []}
@@ -1342,6 +1349,18 @@ class _FakeGatewayClient:
         self.config_patch_safe_calls.append(dict(patches))
         self.config_values.update(patches)
         return {"patched": list(patches)}
+
+    async def approvals_snapshot(self) -> dict[str, object]:
+        self.approvals_snapshot_calls += 1
+        return dict(self.approvals_snapshot_payload)
+
+    async def set_approval_mode(self, mode: str) -> dict[str, object]:
+        self.approval_mode_calls.append(mode)
+        return {"mode": mode}
+
+    async def forget_approvals(self, target: str | None = None) -> dict[str, object]:
+        self.forget_approvals_calls.append(target)
+        return {"target": target}
 
     async def send_message(self, session_key, message, attachments=None, elevated=None):
         self.send_calls.append(
@@ -2450,6 +2469,187 @@ async def test_gateway_forget_unknown_prefix_is_not_handled(monkeypatch) -> None
 
     assert handled is False
     assert forget_calls == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_approvals_workflow_renders_snapshot_entries(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_approvals_workflows
+
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    client = _FakeGatewayClient()
+    client.approvals_snapshot_payload = {
+        "mode": "auto-approve",
+        "intent_cache_entries": [
+            {"scope": "session", "kind": "shell", "target": "rm /tmp/a"},
+            {"scope": "workspace", "kind": "path", "target": "/tmp/b"},
+        ],
+    }
+    buffer = io.StringIO()
+
+    monkeypatch.setattr(
+        chat_gateway_approvals_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_gateway_approvals_workflows.handle_gateway_approvals_command(
+        "/approvals",
+        client=client,
+    )
+
+    assert handled is True
+    assert client.approvals_snapshot_calls == 1
+    output = buffer.getvalue()
+    assert "mode:" in output
+    assert "auto-approve" in output
+    assert "cached intents (2):" in output
+    assert "session" in output
+    assert "shell:rm /tmp/a" in output
+    assert "workspace" in output
+    assert "path:/tmp/b" in output
+
+
+@pytest.mark.asyncio
+async def test_gateway_approvals_workflow_reset_sets_prompt_and_clears_cache(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_gateway_approvals_workflows
+
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    client = _FakeGatewayClient()
+    buffer = io.StringIO()
+
+    monkeypatch.setattr(
+        chat_gateway_approvals_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_gateway_approvals_workflows.handle_gateway_approvals_command(
+        "/approvals reset",
+        client=client,
+    )
+
+    assert handled is True
+    assert client.approval_mode_calls == ["prompt"]
+    assert client.forget_approvals_calls == [None]
+    assert "Approval mode reset to prompt; server cache cleared." in buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_gateway_approvals_workflow_query_failure_prints_restart_hint(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_gateway_approvals_workflows
+
+    class BrokenClient(_FakeGatewayClient):
+        async def approvals_snapshot(self) -> dict[str, object]:
+            raise RuntimeError("old gateway")
+
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", BrokenClient)
+    client = BrokenClient()
+    buffer = io.StringIO()
+
+    monkeypatch.setattr(
+        chat_gateway_approvals_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_gateway_approvals_workflows.handle_gateway_approvals_command(
+        "/approvals",
+        client=client,
+    )
+
+    assert handled is True
+    output = buffer.getvalue()
+    assert "Failed to query approvals:" in output
+    assert "RuntimeError: old gateway" in output
+    assert "Older gateway? Restart it." in output
+
+
+@pytest.mark.asyncio
+async def test_gateway_approvals_workflow_reset_failure_prints_restart_hint(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_gateway_approvals_workflows
+
+    class BrokenClient(_FakeGatewayClient):
+        async def set_approval_mode(self, mode: str) -> dict[str, object]:
+            raise RuntimeError(f"cannot set {mode}")
+
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", BrokenClient)
+    client = BrokenClient()
+    buffer = io.StringIO()
+
+    monkeypatch.setattr(
+        chat_gateway_approvals_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_gateway_approvals_workflows.handle_gateway_approvals_command(
+        "/approvals reset",
+        client=client,
+    )
+
+    assert handled is True
+    output = buffer.getvalue()
+    assert "Failed to reset approvals:" in output
+    assert "RuntimeError: cannot set prompt" in output
+    assert "Restart the gateway if this is an older build." in output
+
+
+@pytest.mark.asyncio
+async def test_gateway_approvals_command_uses_workflow_boundary(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_approvals_workflows
+
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    buffer = io.StringIO()
+
+    monkeypatch.setattr(
+        chat_gateway_approvals_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_cmd._handle_gateway_slash_command(
+        "/approvals",
+        state,
+        fake,
+        {"mode": None},
+    )
+
+    assert handled is True
+    assert fake.approvals_snapshot_calls == 1
+    assert "cached intents (0):" in buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_gateway_approvals_unknown_prefix_is_not_handled(monkeypatch) -> None:
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+
+    handled = await chat_cmd._handle_gateway_slash_command(
+        "/approvalsx",
+        state,
+        fake,
+        {"mode": None},
+    )
+
+    assert handled is False
+    assert fake.approvals_snapshot_calls == 0
+    assert fake.approval_mode_calls == []
+    assert fake.forget_approvals_calls == []
 
 
 @pytest.mark.asyncio
@@ -3980,6 +4180,50 @@ def test_chat_gateway_forget_slash_uses_workflow_boundary() -> None:
     assert "All cached approvals cleared." not in slash_literals
     assert "Cached approval for" not in slash_literals
     assert "handle_gateway_forget_command" in workflow_defs
+
+
+def test_chat_gateway_approvals_slash_uses_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_approvals_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_approvals_workflows"
+        for alias in node.names
+    }
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    slash_literals = {
+        node.value
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {"handle_gateway_approvals_command"}
+    assert "handle_gateway_approvals_command" in slash_name_calls
+    assert "_handle_approvals_command" not in slash_name_calls
+    assert "Approval mode reset to prompt; server cache cleared." not in slash_literals
+    assert "Failed to query approvals:" not in slash_literals
+    assert "cached intents (" not in slash_literals
+    assert "handle_gateway_approvals_command" in workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

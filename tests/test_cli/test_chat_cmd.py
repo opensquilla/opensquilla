@@ -1494,6 +1494,44 @@ async def test_gateway_path_command_remote_rejects_before_send(
 
 
 @pytest.mark.asyncio
+async def test_gateway_file_command_uploads_and_sends_attachment(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    fake = _FakeGatewayClient()
+    uploads: list[dict[str, object]] = []
+
+    async def upload_file(path: Path, mime: str, name: str) -> str:
+        uploads.append({"path": path, "mime": mime, "name": name})
+        return "u-large-pdf"
+
+    fake.upload_file = upload_file  # type: ignore[attr-defined]
+    target = tmp_path / "large.pdf"
+    target.write_bytes(b"%PDF-1.4\n" + b"a" * (3 * 1024 * 1024))
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+
+    handled = await chat_cmd._handle_gateway_slash_command(
+        f"/file {target} summarize", state, fake, {"mode": "always"}
+    )
+
+    assert handled is True
+    assert uploads == [{"path": target, "mime": "application/pdf", "name": "large.pdf"}]
+    assert len(fake.send_calls) == 1
+    assert fake.send_calls[0]["message"] == "summarize"
+    assert fake.send_calls[0]["attachments"] == [
+        {
+            "type": "application/pdf",
+            "file_uuid": "u-large-pdf",
+            "name": "large.pdf",
+            "mime": "application/pdf",
+        }
+    ]
+    assert fake.send_calls[0]["elevated"] == "always"
+
+
+@pytest.mark.asyncio
 async def test_gateway_path_workflow_streams_prompt_without_upload_and_updates_state() -> None:
     from opensquilla.cli import chat_gateway_path_workflows
 
@@ -1804,6 +1842,207 @@ async def test_gateway_image_workflow_renders_prompt_errors(monkeypatch) -> None
 
     assert handled is True
     assert "Unsupported format: bmp" in buffer.getvalue()
+    assert state.transcript.to_markdown() == ""
+
+
+@pytest.mark.asyncio
+async def test_gateway_file_workflow_streams_with_attachments_and_updates_state() -> None:
+    from opensquilla.cli import chat_gateway_file_workflows
+
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    client = object()
+    elevated_state = {"mode": "always"}
+    attachments = [
+        {
+            "type": "application/pdf",
+            "file_uuid": "u-large-pdf",
+            "name": "large.pdf",
+            "mime": "application/pdf",
+        }
+    ]
+    calls: list[dict[str, object]] = []
+
+    async def file_prompt_and_attachments(
+        command: str,
+        *,
+        upload_callable: object | None = None,
+    ) -> tuple[str, list[dict[str, object]]]:
+        assert command == "/file /tmp/large.pdf summarize"
+        assert upload_callable is not None
+        return "summarize", attachments
+
+    async def stream_response(
+        gateway_client: object,
+        session_key: str,
+        prompt: str,
+        elevated: dict[str, str | None],
+        **kwargs: object,
+    ) -> TurnResult:
+        calls.append(
+            {
+                "client": gateway_client,
+                "session_key": session_key,
+                "prompt": prompt,
+                "elevated": elevated,
+                "kwargs": kwargs,
+            }
+        )
+        return TurnResult(
+            text="file gateway reply",
+            usage=UsageSummary(input_tokens=5, output_tokens=9, cost_usd=0.017),
+        )
+
+    handled = await chat_gateway_file_workflows.handle_gateway_file_command(
+        "/file /tmp/large.pdf summarize",
+        ["/file", "/tmp/large.pdf summarize"],
+        state,
+        client=client,
+        elevated_state=elevated_state,
+        stream_response=stream_response,
+        async_file_prompt_and_attachments=file_prompt_and_attachments,
+    )
+
+    assert handled is True
+    assert calls == [
+        {
+            "client": client,
+            "session_key": "agent:main:abc123",
+            "prompt": "summarize",
+            "elevated": elevated_state,
+            "kwargs": {"attachments": attachments},
+        }
+    ]
+    transcript = state.transcript.to_markdown()
+    assert "summarize" in transcript
+    assert "file gateway reply" in transcript
+    assert state.usage.render() == "14 tok (5 in / 9 out) · cache 0 · $0.017000"
+
+
+@pytest.mark.asyncio
+async def test_gateway_file_workflow_prints_usage_without_path(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_file_workflows
+
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    buffer = io.StringIO()
+
+    async def stream_response(*args: object, **kwargs: object) -> TurnResult:
+        raise AssertionError("stream_response must not run without a path")
+
+    async def file_prompt_and_attachments(
+        command: str,
+        *,
+        upload_callable: object | None = None,
+    ) -> tuple[str, list[dict[str, object]]]:
+        raise AssertionError("async_file_prompt_and_attachments must not run without a path")
+
+    monkeypatch.setattr(
+        chat_gateway_file_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_gateway_file_workflows.handle_gateway_file_command(
+        "/file",
+        ["/file"],
+        state,
+        client=object(),
+        elevated_state={"mode": None},
+        stream_response=stream_response,
+        async_file_prompt_and_attachments=file_prompt_and_attachments,
+    )
+
+    assert handled is True
+    assert "Usage: /file <path> [prompt]" in buffer.getvalue()
+    assert state.transcript.to_markdown() == ""
+
+
+@pytest.mark.asyncio
+async def test_gateway_file_workflow_forwards_upload_bridge() -> None:
+    from opensquilla.cli import chat_gateway_file_workflows
+
+    class Client:
+        def __init__(self) -> None:
+            self.uploads: list[dict[str, object]] = []
+
+        async def upload_file(self, path: Path, mime: str, name: str) -> str:
+            self.uploads.append({"path": path, "mime": mime, "name": name})
+            return "u-bridge"
+
+    client = Client()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    upload_path = Path("/tmp/big.pdf")
+
+    async def file_prompt_and_attachments(
+        command: str,
+        *,
+        upload_callable: object | None = None,
+    ) -> tuple[str, list[dict[str, object]]]:
+        assert command == "/file /tmp/big.pdf"
+        assert callable(upload_callable)
+        file_uuid = await upload_callable(upload_path, "application/pdf", "big.pdf")
+        return "Read this file", [{"type": "application/pdf", "file_uuid": file_uuid}]
+
+    async def stream_response(
+        gateway_client: object,
+        session_key: str,
+        prompt: str,
+        elevated: dict[str, str | None],
+        **kwargs: object,
+    ) -> TurnResult:
+        return TurnResult(text="ok")
+
+    handled = await chat_gateway_file_workflows.handle_gateway_file_command(
+        "/file /tmp/big.pdf",
+        ["/file", "/tmp/big.pdf"],
+        state,
+        client=client,
+        elevated_state={"mode": None},
+        stream_response=stream_response,
+        async_file_prompt_and_attachments=file_prompt_and_attachments,
+    )
+
+    assert handled is True
+    assert client.uploads == [
+        {"path": upload_path, "mime": "application/pdf", "name": "big.pdf"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_file_workflow_renders_prompt_errors(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_file_workflows
+
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    buffer = io.StringIO()
+
+    async def file_prompt_and_attachments(
+        command: str,
+        *,
+        upload_callable: object | None = None,
+    ) -> tuple[str, list[dict[str, object]]]:
+        assert command == "/file too-large.pdf"
+        raise ValueError("PDF limit exceeded: too-large.pdf")
+
+    async def stream_response(*args: object, **kwargs: object) -> TurnResult:
+        raise AssertionError("stream_response must not run after a prompt error")
+
+    monkeypatch.setattr(
+        chat_gateway_file_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_gateway_file_workflows.handle_gateway_file_command(
+        "/file too-large.pdf",
+        ["/file", "too-large.pdf"],
+        state,
+        client=object(),
+        elevated_state={"mode": None},
+        stream_response=stream_response,
+        async_file_prompt_and_attachments=file_prompt_and_attachments,
+    )
+
+    assert handled is True
+    assert "PDF limit exceeded: too-large.pdf" in buffer.getvalue()
     assert state.transcript.to_markdown() == ""
 
 
@@ -3197,6 +3436,54 @@ def test_chat_gateway_path_slash_uses_workflow_boundary() -> None:
     assert "_gateway_client_is_local" not in slash_name_calls
     assert "Usage: /path <path> [prompt]" not in slash_literals
     assert "handle_gateway_path_command" in workflow_defs
+
+
+def test_chat_gateway_file_slash_uses_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_file_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_file_workflows"
+        for alias in node.names
+    }
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    slash_attr_calls = {
+        node.func.attr
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    slash_literals = {
+        node.value
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {"handle_gateway_file_command"}
+    assert "handle_gateway_file_command" in slash_name_calls
+    assert "_async_file_prompt_and_attachments" not in slash_name_calls
+    assert "upload_file" not in slash_attr_calls
+    assert "Usage: /file <path> [prompt]" not in slash_literals
+    assert "handle_gateway_file_command" in workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

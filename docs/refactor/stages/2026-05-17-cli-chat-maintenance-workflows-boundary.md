@@ -30,6 +30,7 @@ Move gateway chat session maintenance slash workflows behind a dedicated CLI wor
 - AGENTS.md files in scope before user-requested root creation: only `src/opensquilla/identity/templates/bootstrap/AGENTS.md`, not under this stage's target files.
 - Root AGENTS decision: user observed the project root has no `AGENTS.md`; this stage creates a root `AGENTS.md` with public-safe project instructions for future agents. This does not explain the parallel spawn failures, whose observed error was `agent thread limit reached`.
 - Ignore decision: `.gitignore` ignored `AGENTS.md` while only unignoring `src/opensquilla/identity/templates/bootstrap/AGENTS.md`; this stage explicitly unignores `/AGENTS.md` so the project-level instruction file can be tracked.
+- Branch scope: user confirmed the refactor is happening on the non-main integration branch, so the `.gitignore` change is isolated to the refactor branch until the whole refactor line is intentionally merged or proposed upstream.
 - Files inspected:
   - `AGENTS.md` absence at repository root
   - `docs/refactor/overall-plan.md`
@@ -149,15 +150,15 @@ Move gateway chat session maintenance slash workflows behind a dedicated CLI wor
 - [x] Update existing tests to patch the new workflow console/output boundary where needed.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -183,8 +184,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
-- Integration merge:
+- Child commit: `22681a4` (`codex/refactor-cli-chat-maintenance-workflows-boundary`)
+- Integration merge: `805b987` (`codex/refactor-architecture`)
 - Verification evidence:
   - Child preflight: `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-cli-chat-maintenance-workflows-boundary` passed.
   - Red check: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_chat_session_maintenance_slashes_use_workflow_boundary -q` failed before implementation because `chat_session_maintenance_workflows.py` did not exist.
@@ -193,5 +194,7 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_cli_product_completeness.py -q` passed with 143 tests.
   - Root AGENTS tracking check: `git check-ignore -v AGENTS.md || true && git ls-files --others --exclude-standard AGENTS.md` showed `.gitignore:29:!/AGENTS.md` and `AGENTS.md` as trackable.
   - Child gate: `scripts/refactor_gate.sh` completed ruff, mypy, diff check, full pytest (`2307 passed, 8 skipped`), and gateway smoke successfully.
+  - Integration preflight after merge: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` showed `./AGENTS.md` and `./src/opensquilla/identity/templates/bootstrap/AGENTS.md` in AGENTS scope.
+  - Integration gate: `scripts/refactor_gate.sh` on merge commit `805b987` completed ruff, mypy, diff check, full pytest (`2309 passed, 6 skipped`), and gateway smoke successfully.
 - Residual risk: Low. The slice moves only interactive chat maintenance slash workflows and preserves reset/compact RPC calls, state reset behavior, and output text. Root `AGENTS.md` is intentionally public-safe and tracked by a root-only `.gitignore` unignore.
 - Next recommended slice: Move `/model`, `/cost`, and `/usage` slash commands behind focused chat model/usage workflow boundaries after this slice is merged and re-gated on integration.

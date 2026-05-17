@@ -7,9 +7,12 @@ from dataclasses import asdict
 from typing import Any
 
 import typer
-from rich.table import Table
 
 from opensquilla.cli.output import print_json
+from opensquilla.cli.skills_catalog_presenters import (
+    emit_skill_rows,
+    emit_skill_search_results,
+)
 from opensquilla.cli.skills_gateway_mutations import try_gateway_skill_mutation
 from opensquilla.cli.skills_gateway_presenters import (
     emit_gateway_skill_update,
@@ -74,28 +77,7 @@ def skills_list(
 ) -> None:
     """List all installed/available skills."""
     rows = load_skill_rows()
-    if json_output:
-        print_json(rows)
-        return
-
-    table = Table(title=f"Skills ({len(rows)})")
-    table.add_column("Name", style="cyan")
-    table.add_column("Layer")
-    table.add_column("Eligible")
-    table.add_column("Description")
-
-    for row in rows:
-        table.add_row(
-            row["name"],
-            row["layer"],
-            "[green]yes[/]" if row["eligible"] else "[dim]no[/]",
-            (
-                row["description"][:60] + "..."
-                if len(row["description"]) > 60
-                else row["description"]
-            ),
-        )
-    console.print(table)
+    emit_skill_rows(rows, json_output=json_output)
 
 
 @skills_app.command("search")
@@ -107,29 +89,7 @@ def skills_search(
 
     async def _search() -> None:
         results = await search_skill_rows(query)
-
-        if json_output:
-            print_json(results)
-            return
-
-        if not results:
-            console.print(f"[dim]No results for '{query}'[/]")
-            return
-
-        table = Table(title=f"Search: {query}")
-        table.add_column("Name", style="cyan")
-        table.add_column("Source")
-        table.add_column("Trust")
-        table.add_column("Description")
-
-        for r in results:
-            table.add_row(
-                str(r["name"]),
-                str(r["source_id"]),
-                str(r["trust_level"]),
-                str(r["description"])[:60],
-            )
-        console.print(table)
+        emit_skill_search_results(query, results, json_output=json_output)
 
     asyncio.run(_search())
 

@@ -249,6 +249,29 @@ def test_cli_skill_gateway_presenter_exits_on_update_failure(capsys):
     assert json.loads(capsys.readouterr().out)["results"][0]["name"] == "planner"
 
 
+def test_cli_skill_catalog_presenters_emit_json(capsys):
+    from opensquilla.cli.skills_catalog_presenters import (
+        emit_skill_rows,
+        emit_skill_search_results,
+    )
+
+    rows = [
+        {
+            "name": "planner",
+            "layer": "bundled",
+            "eligible": True,
+            "description": "Plan work",
+        }
+    ]
+
+    emit_skill_rows(rows, json_output=True)
+    emit_skill_search_results("plan", rows, json_output=True)
+
+    output = capsys.readouterr().out.strip().splitlines()
+    assert json.loads(output[0])[0]["name"] == "planner"
+    assert json.loads(output[1])[0]["description"] == "Plan work"
+
+
 def test_skills_search_delegates_to_cli_search_rows_boundary(monkeypatch):
     from opensquilla.cli import skills_cmd
 
@@ -874,6 +897,36 @@ def test_cli_skills_gateway_presenters_use_cli_boundary() -> None:
     assert "file_path" not in constants
     assert "base_dir" not in constants
     assert "homepage" not in constants
+
+
+def test_cli_skills_catalog_presenters_use_cli_boundary() -> None:
+    from opensquilla.cli import skills_cmd
+
+    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    imported_modules = {
+        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+    }
+    imported_presenter_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_catalog_presenters"
+        for alias in node.names
+    }
+    identifiers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    constants = {
+        node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+    }
+
+    assert imported_presenter_names == {
+        "emit_skill_rows",
+        "emit_skill_search_results",
+    }
+    assert "rich.table" not in imported_modules
+    assert "Table" not in identifiers
+    assert "Skills (" not in constants
+    assert "Search: " not in constants
+    assert "No results for '" not in constants
 
 
 def test_skills_tap_commands_delegate_to_cli_tap_boundary(monkeypatch):

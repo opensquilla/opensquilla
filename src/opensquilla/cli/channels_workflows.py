@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from opensquilla.cli.channels_config_mutations import add_channel_to_config
 from opensquilla.cli.channels_config_queries import (
     load_configured_channel_entries,
     resolve_channel_config_path,
@@ -16,10 +17,14 @@ from opensquilla.cli.channels_gateway_queries import (
 from opensquilla.cli.channels_presenters import (
     emit_channel_action_result,
     emit_channel_catalog_error,
+    emit_channel_config_error,
     emit_channel_config_path,
+    emit_channel_restart_notice,
+    emit_channel_saved,
     emit_channel_status,
     emit_channel_type_description,
     emit_channel_types,
+    emit_channel_verification_next_step,
     emit_configured_channels,
 )
 from opensquilla.cli.gateway_rpc import confirm_or_exit
@@ -47,6 +52,38 @@ def list_configured_channels_for_cli(
         emit_channel_config_path(target, source=source)
     entries = load_configured_channel_entries(target)
     emit_configured_channels(entries, config_path=target, json_output=json_output)
+
+
+def add_channel_for_cli(
+    type_name: str,
+    *,
+    name: str,
+    token: str,
+    enabled: bool,
+    agent_id: str,
+    fields: list[str],
+    config_path: Path | None,
+) -> None:
+    """Add or update a configured channel for the CLI."""
+
+    target, source = resolve_channel_config_path(config_path)
+    emit_channel_config_path(target, source=source)
+    try:
+        persist = add_channel_to_config(
+            type_name,
+            name=name,
+            token=token,
+            enabled=enabled,
+            agent_id=agent_id,
+            fields=fields,
+            config_path=target,
+        )
+    except (ValueError, KeyError) as exc:
+        emit_channel_config_error(exc)
+
+    emit_channel_saved(name, type_name, backup_path=persist.backup_path)
+    emit_channel_restart_notice()
+    emit_channel_verification_next_step(name)
 
 
 def describe_channel_type_for_cli(type_name: str, *, json_output: bool) -> None:

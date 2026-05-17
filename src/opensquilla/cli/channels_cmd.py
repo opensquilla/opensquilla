@@ -12,6 +12,7 @@ from opensquilla.cli.channel_fields import (
     parse_channel_field_pairs,
 )
 from opensquilla.cli.channels_workflows import (
+    add_channel_for_cli,
     describe_channel_type_for_cli,
     list_channel_types_for_cli,
     list_configured_channels_for_cli,
@@ -114,29 +115,15 @@ def channels_add(
     config_path: Path | None = typer.Option(None, "--config"),
 ) -> None:
     """Add or update a channel entry."""
-    target = _resolve_and_announce(config_path)
-    payload: dict[str, Any] = {
-        "type": type_name,
-        "name": name,
-        "enabled": enabled,
-        "agent_id": agent_id,
-    }
-    apply_channel_token(payload, type_name, token)
-    payload.update(parse_channel_field_pairs(fields, type_name))
-
-    cfg = load_config(target)
-    try:
-        result = upsert_channel(cfg, entry_payload=payload)
-    except (ValueError, KeyError) as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2) from exc
-
-    persist = persist_config(result.config, path=target, restart_required=True)
-    typer.echo(f"Channel saved: {name} ({type_name})")
-    if persist.backup_path:
-        typer.echo(f"Backup: {persist.backup_path}")
-    _print_restart_notice()
-    _print_channel_verification_next_step(name)
+    add_channel_for_cli(
+        type_name,
+        name=name,
+        token=token,
+        enabled=enabled,
+        agent_id=agent_id,
+        fields=fields,
+        config_path=config_path,
+    )
 
 
 @channels_app.command("remove")

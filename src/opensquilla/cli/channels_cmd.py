@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import typer
 
-from opensquilla.cli.channel_fields import (
-    apply_channel_token,
-    parse_channel_field_pairs,
-)
 from opensquilla.cli.channels_workflows import (
     add_channel_for_cli,
     describe_channel_type_for_cli,
+    edit_channel_for_cli,
     list_channel_types_for_cli,
     list_configured_channels_for_cli,
     logout_channel_for_cli,
@@ -28,7 +24,6 @@ from opensquilla.onboarding.config_store import (
 from opensquilla.onboarding.mutations import (
     remove_channel,
     set_channel_enabled,
-    upsert_channel,
 )
 
 channels_app = typer.Typer(help="Manage messaging channels.")
@@ -41,11 +36,6 @@ def _print_restart_notice() -> None:
         "already-loaded adapter).",
         fg=typer.colors.YELLOW,
     )
-
-
-def _print_channel_verification_next_step(name: str) -> None:
-    typer.echo("Next: opensquilla gateway restart")
-    typer.echo(f"Verify: uv run opensquilla channels status {name} --json")
 
 
 _SOURCE_LABEL = {
@@ -189,46 +179,14 @@ def channels_edit(
     config_path: Path | None = typer.Option(None, "--config"),
 ) -> None:
     """Edit an existing channel; blank fields keep current values."""
-    target = _resolve_and_announce(config_path)
-    cfg = load_config(target)
-    existing = next(
-        (
-            e.model_dump(mode="python")
-            for e in cfg.channels.channels
-            if e.name == name
-        ),
-        None,
+    edit_channel_for_cli(
+        name,
+        token=token,
+        enabled=enabled,
+        agent_id=agent_id,
+        fields=fields,
+        config_path=config_path,
     )
-    if existing is None:
-        typer.secho(f"Error: no channel named {name!r}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2)
-    type_name = existing["type"]
-
-    overrides: dict[str, Any] = {"type": type_name, "name": name}
-    if enabled is not None:
-        overrides["enabled"] = enabled
-    if agent_id:
-        overrides["agent_id"] = agent_id
-    apply_channel_token(overrides, type_name, token)
-    overrides.update(parse_channel_field_pairs(fields, type_name))
-    # Patch semantics: every field not explicitly overridden retains its
-    # existing value. upsert_channel's secret-merge guards against blanks
-    # in the add path; this seeding handles non-secret partial updates
-    # in the edit path.
-    payload = {**existing, **overrides}
-
-    try:
-        result = upsert_channel(cfg, entry_payload=payload)
-    except (ValueError, KeyError) as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2) from exc
-
-    persist = persist_config(result.config, path=target, restart_required=True)
-    typer.echo(f"Channel updated: {name} ({type_name})")
-    if persist.backup_path:
-        typer.echo(f"Backup: {persist.backup_path}")
-    _print_restart_notice()
-    _print_channel_verification_next_step(name)
 
 
 @channels_app.command("types")

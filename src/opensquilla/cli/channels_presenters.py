@@ -192,6 +192,19 @@ def emit_channel_saved(
         typer.echo(f"Backup: {backup_path}")
 
 
+def emit_channel_updated(
+    name: str,
+    type_name: str,
+    *,
+    backup_path: object | None,
+) -> None:
+    """Emit successful channel update output."""
+
+    typer.echo(f"Channel updated: {name} ({type_name})")
+    if backup_path:
+        typer.echo(f"Backup: {backup_path}")
+
+
 def emit_channel_restart_notice() -> None:
     """Emit the config-change gateway restart notice."""
 

@@ -2145,6 +2145,7 @@ def test_cli_channels_catalog_uses_workflow_boundary() -> None:
     assert cmd_workflow_names == {
         "add_channel_for_cli",
         "describe_channel_type_for_cli",
+        "edit_channel_for_cli",
         "list_configured_channels_for_cli",
         "list_channel_types_for_cli",
         "logout_channel_for_cli",
@@ -2163,6 +2164,7 @@ def test_cli_channels_catalog_uses_workflow_boundary() -> None:
         "emit_channel_status",
         "emit_channel_type_description",
         "emit_channel_types",
+        "emit_channel_updated",
         "emit_channel_verification_next_step",
         "emit_configured_channels",
     }
@@ -2274,7 +2276,7 @@ def test_cli_channels_add_uses_workflow_boundary() -> None:
     }
 
     assert "add_channel_for_cli" in cmd_workflow_names
-    assert workflow_mutation_names == {"add_channel_to_config"}
+    assert "add_channel_to_config" in workflow_mutation_names
     assert "resolve_channel_config_path" in workflow_query_names
     assert {
         "emit_channel_config_error",
@@ -2300,6 +2302,120 @@ def test_cli_channels_add_uses_workflow_boundary() -> None:
     )
     assert not (
         add_identifiers
+        & {
+            "apply_channel_token",
+            "parse_channel_field_pairs",
+            "load_config",
+            "persist_config",
+            "upsert_channel",
+            "secho",
+            "Exit",
+        }
+    )
+
+
+def test_cli_channels_edit_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        channels_cmd,
+        channels_config_mutations,
+        channels_presenters,
+        channels_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(channels_cmd.__file__).read_text(encoding="utf-8"))
+    mutation_tree = ast.parse(
+        Path(channels_config_mutations.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(
+        Path(channels_presenters.__file__).read_text(encoding="utf-8")
+    )
+    workflow_tree = ast.parse(
+        Path(channels_workflows.__file__).read_text(encoding="utf-8")
+    )
+
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_workflows"
+        for alias in node.names
+    }
+    workflow_mutation_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_config_mutations"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_config_queries"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_presenters"
+        for alias in node.names
+    }
+    mutation_field_names = {
+        alias.name
+        for node in ast.walk(mutation_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channel_fields"
+        for alias in node.names
+    }
+    mutation_config_names = {
+        alias.name
+        for node in ast.walk(mutation_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.config_store"
+        for alias in node.names
+    }
+    mutation_onboarding_names = {
+        alias.name
+        for node in ast.walk(mutation_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.mutations"
+        for alias in node.names
+    }
+    presenter_function_names = {
+        node.name for node in ast.walk(presenter_tree) if isinstance(node, ast.FunctionDef)
+    }
+    channels_edit = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "channels_edit"
+    )
+    edit_identifiers = {
+        node.id for node in ast.walk(channels_edit) if isinstance(node, ast.Name)
+    }
+
+    assert "edit_channel_for_cli" in cmd_workflow_names
+    assert "edit_channel_in_config" in workflow_mutation_names
+    assert "resolve_channel_config_path" in workflow_query_names
+    assert {
+        "emit_channel_config_error",
+        "emit_channel_config_path",
+        "emit_channel_restart_notice",
+        "emit_channel_updated",
+        "emit_channel_verification_next_step",
+    } <= workflow_presenter_names
+    assert mutation_field_names == {"apply_channel_token", "parse_channel_field_pairs"}
+    assert mutation_config_names == {"PersistResult", "load_config", "persist_config"}
+    assert mutation_onboarding_names == {"upsert_channel"}
+    assert "emit_channel_updated" in presenter_function_names
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "edit_channel_for_cli"
+        for node in ast.walk(channels_edit)
+    )
+    assert not (
+        edit_identifiers
         & {
             "apply_channel_token",
             "parse_channel_field_pairs",

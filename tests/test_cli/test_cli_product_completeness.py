@@ -3114,6 +3114,175 @@ def test_cli_providers_configure_uses_workflow_boundary() -> None:
     )
 
 
+def test_cli_search_commands_use_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        search_cmd,
+        search_config_mutations,
+        search_gateway_queries,
+        search_presenters,
+        search_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(search_cmd.__file__).read_text(encoding="utf-8"))
+    mutation_tree = ast.parse(
+        Path(search_config_mutations.__file__).read_text(encoding="utf-8")
+    )
+    query_tree = ast.parse(
+        Path(search_gateway_queries.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(
+        Path(search_presenters.__file__).read_text(encoding="utf-8")
+    )
+    workflow_tree = ast.parse(
+        Path(search_workflows.__file__).read_text(encoding="utf-8")
+    )
+
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("opensquilla.")
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.search_workflows"
+        for alias in node.names
+    }
+    workflow_mutation_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.search_config_mutations"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.search_gateway_queries"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.search_presenters"
+        for alias in node.names
+    }
+    workflow_onboarding_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module in {
+            "opensquilla.onboarding.next_steps",
+            "opensquilla.onboarding.search_specs",
+        }
+        for alias in node.names
+    }
+    mutation_config_names = {
+        alias.name
+        for node in ast.walk(mutation_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.config_store"
+        for alias in node.names
+    }
+    mutation_onboarding_names = {
+        alias.name
+        for node in ast.walk(mutation_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.mutations"
+        for alias in node.names
+    }
+    query_rpc_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.gateway_rpc"
+        for alias in node.names
+    }
+    presenter_output_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    command_calls = {
+        node.func.id
+        for function_name in {
+            "search_list",
+            "search_status",
+            "search_query",
+            "search_configure",
+        }
+        for command in ast.walk(cmd_tree)
+        if isinstance(command, ast.FunctionDef) and command.name == function_name
+        for node in ast.walk(command)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    cmd_identifiers = {
+        node.id
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.Name)
+    }
+
+    assert cmd_workflow_names == {
+        "configure_search_provider_for_cli",
+        "list_search_providers_for_cli",
+        "query_search_for_cli",
+        "show_search_status_for_cli",
+    }
+    assert cmd_direct_modules == {"opensquilla.cli.search_workflows"}
+    assert workflow_mutation_names == {"configure_search_provider_in_config"}
+    assert workflow_query_names == {"load_search_status", "run_search_query"}
+    assert {
+        "emit_search_configure_error",
+        "emit_search_provider_catalog_payload",
+        "emit_search_provider_configured",
+        "emit_search_provider_setup_specs",
+        "emit_search_query_result",
+        "emit_search_status",
+    } <= workflow_presenter_names
+    assert workflow_onboarding_names == {
+        "env_reference_warnings",
+        "list_search_provider_setup_specs",
+        "search_provider_catalog_payload",
+    }
+    assert mutation_config_names == {
+        "PersistResult",
+        "default_config_path",
+        "load_config",
+        "persist_config",
+    }
+    assert mutation_onboarding_names == {"upsert_search_provider"}
+    assert query_rpc_names == {"run_gateway_sync"}
+    assert presenter_output_names == {"print_json"}
+    assert {
+        "configure_search_provider_for_cli",
+        "list_search_providers_for_cli",
+        "query_search_for_cli",
+        "show_search_status_for_cli",
+    } <= command_calls
+    assert not (
+        cmd_identifiers
+        & {
+            "run_gateway_sync",
+            "print_json",
+            "Console",
+            "Table",
+            "default_config_path",
+            "load_config",
+            "persist_config",
+            "upsert_search_provider",
+            "env_reference_warnings",
+            "client",
+        }
+    )
+
+
 def test_search_query_json_exits_nonzero_on_diagnostic_failure(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {

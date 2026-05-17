@@ -2274,6 +2274,113 @@ def test_cli_providers_status_uses_workflow_boundary() -> None:
     )
 
 
+def test_cli_providers_configure_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        providers_cmd,
+        providers_config_mutations,
+        providers_presenters,
+        providers_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(providers_cmd.__file__).read_text(encoding="utf-8"))
+    mutation_tree = ast.parse(
+        Path(providers_config_mutations.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(
+        Path(providers_presenters.__file__).read_text(encoding="utf-8")
+    )
+    workflow_tree = ast.parse(
+        Path(providers_workflows.__file__).read_text(encoding="utf-8")
+    )
+
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("opensquilla.")
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.providers_workflows"
+        for alias in node.names
+    }
+    workflow_mutation_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.providers_config_mutations"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.providers_presenters"
+        for alias in node.names
+    }
+    mutation_config_names = {
+        alias.name
+        for node in ast.walk(mutation_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.config_store"
+        for alias in node.names
+    }
+    mutation_onboarding_names = {
+        alias.name
+        for node in ast.walk(mutation_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.mutations"
+        for alias in node.names
+    }
+    presenter_function_names = {
+        node.name for node in ast.walk(presenter_tree) if isinstance(node, ast.FunctionDef)
+    }
+    providers_configure = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "providers_configure"
+    )
+    configure_identifiers = {
+        node.id for node in ast.walk(providers_configure) if isinstance(node, ast.Name)
+    }
+
+    assert "configure_provider_for_cli" in cmd_workflow_names
+    assert "opensquilla.onboarding.config_store" not in cmd_direct_modules
+    assert "opensquilla.onboarding.mutations" not in cmd_direct_modules
+    assert workflow_mutation_names == {"configure_provider_in_config"}
+    assert "emit_provider_configure_error" in workflow_presenter_names
+    assert "emit_provider_configured" in workflow_presenter_names
+    assert mutation_config_names == {
+        "PersistResult",
+        "default_config_path",
+        "load_config",
+        "persist_config",
+    }
+    assert mutation_onboarding_names == {"upsert_llm_provider"}
+    assert "emit_provider_configure_error" in presenter_function_names
+    assert "emit_provider_configured" in presenter_function_names
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "configure_provider_for_cli"
+        for node in ast.walk(providers_configure)
+    )
+    assert not (
+        configure_identifiers
+        & {
+            "default_config_path",
+            "load_config",
+            "persist_config",
+            "upsert_llm_provider",
+            "secho",
+            "Exit",
+        }
+    )
+
+
 def test_search_query_json_exits_nonzero_on_diagnostic_failure(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {

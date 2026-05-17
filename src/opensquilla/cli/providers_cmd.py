@@ -7,15 +7,10 @@ from pathlib import Path
 import typer
 
 from opensquilla.cli.providers_workflows import (
+    configure_provider_for_cli,
     list_providers_for_cli,
     show_provider_status_for_cli,
 )
-from opensquilla.onboarding.config_store import (
-    default_config_path,
-    load_config,
-    persist_config,
-)
-from opensquilla.onboarding.mutations import upsert_llm_provider
 
 providers_app = typer.Typer(help="Configure and inspect LLM providers.")
 
@@ -58,25 +53,11 @@ def providers_configure(
     ),
 ) -> None:
     """Configure the active LLM provider."""
-    target = config_path or default_config_path()
-    cfg = load_config(target)
-    try:
-        result = upsert_llm_provider(
-            cfg,
-            provider_id=provider,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            proxy=proxy,
-        )
-    except (ValueError, KeyError) as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2) from exc
-
-    persist = persist_config(
-        result.config, path=target, restart_required=result.restart_required
+    configure_provider_for_cli(
+        provider,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        proxy=proxy,
+        config_path=config_path,
     )
-    typer.echo(f"Provider configured: {provider}")
-    typer.echo(f"Config: {persist.path}")
-    if persist.backup_path:
-        typer.echo(f"Backup: {persist.backup_path}")

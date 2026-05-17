@@ -25,9 +25,11 @@ from opensquilla.cli import attachments as _cli_attachments
 from opensquilla.cli.chat_gateway_approvals_workflows import (
     handle_gateway_approvals_command,
 )
+from opensquilla.cli.chat_gateway_exact_route_workflows import (
+    handle_gateway_exact_route_command,
+)
 from opensquilla.cli.chat_gateway_file_workflows import handle_gateway_file_command
 from opensquilla.cli.chat_gateway_forget_workflows import handle_gateway_forget_command
-from opensquilla.cli.chat_gateway_help_workflows import handle_gateway_help_command
 from opensquilla.cli.chat_gateway_image_workflows import handle_gateway_image_command
 from opensquilla.cli.chat_gateway_models_workflows import handle_gateway_models_command
 from opensquilla.cli.chat_gateway_path_workflows import handle_gateway_path_command
@@ -37,17 +39,8 @@ from opensquilla.cli.chat_gateway_permissions_workflows import (
 )
 from opensquilla.cli.chat_gateway_sessions_workflows import handle_gateway_sessions_command
 from opensquilla.cli.chat_gateway_slash_routes import match_gateway_slash_route
-from opensquilla.cli.chat_gateway_status_workflows import handle_gateway_status_command
-from opensquilla.cli.chat_gateway_usage_workflows import (
-    handle_gateway_cost_command,
-    handle_gateway_usage_command,
-)
 from opensquilla.cli.chat_model_usage_workflows import (
     handle_model_command,
-)
-from opensquilla.cli.chat_session_maintenance_workflows import (
-    handle_clear_session_command,
-    handle_compact_session_command,
 )
 from opensquilla.cli.chat_session_workflows import (
     handle_delete_session_command,
@@ -774,16 +767,12 @@ async def _handle_gateway_slash_command(
     route_name = route_match.name
     parts = route_match.parts
 
-    if route_name == "help":
-        handle_gateway_help_command()
+    if await handle_gateway_exact_route_command(route_name, state, client):
         return True
 
     if route_name == "new":
         await handle_new_session_command(parts, state, client)
         return True
-
-    if route_name == "status":
-        return handle_gateway_status_command(state)
 
     if route_name == "sessions":
         await handle_gateway_sessions_command(parts, client)
@@ -797,28 +786,12 @@ async def _handle_gateway_slash_command(
         await handle_delete_session_command(cmd, parts, client)
         return True
 
-    if route_name == "clear":
-        await handle_clear_session_command(state, client)
-        return True
-
-    if route_name == "compact":
-        await handle_compact_session_command(state, client)
-        return True
-
     if route_name == "models":
         await handle_gateway_models_command(parts, client)
         return True
 
     if route_name == "model":
         await handle_model_command(parts, state, client)
-        return True
-
-    if route_name == "cost":
-        handle_gateway_cost_command(state)
-        return True
-
-    if route_name == "usage":
-        await handle_gateway_usage_command(client)
         return True
 
     if route_name == "tool_compress":

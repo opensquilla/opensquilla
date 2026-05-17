@@ -955,36 +955,54 @@ def test_cli_skills_install_gateway_mutations_use_cli_boundary() -> None:
 
 
 def test_cli_skills_gateway_queries_use_cli_boundary() -> None:
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_cmd, skills_gateway_workflows
 
-    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(
+        Path(skills_gateway_workflows.__file__).read_text(encoding="utf-8")
+    )
     imported_gateway_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.gateway_rpc"
         for alias in node.names
     }
     imported_query_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_gateway_queries"
         for alias in node.names
     }
-    identifiers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    imported_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_gateway_workflows"
+        for alias in node.names
+    }
+    cmd_direct_modules = {
+        node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
+    }
+    identifiers = {node.id for node in ast.walk(cmd_tree) if isinstance(node, ast.Name)}
     constants = {
-        node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+        node.value for node in ast.walk(cmd_tree) if isinstance(node, ast.Constant)
     }
     client_calls = [
         node
-        for node in ast.walk(tree)
+        for node in ast.walk(cmd_tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "call"
     ]
 
+    assert imported_workflow_names == {
+        "update_gateway_skills_for_cli",
+        "view_gateway_skill_for_cli",
+    }
     assert imported_query_names == {"load_gateway_skill", "update_gateway_skills"}
+    assert "opensquilla.cli.skills_gateway_queries" not in cmd_direct_modules
     assert "run_gateway_sync" not in imported_gateway_names
     assert "run_gateway_sync" not in identifiers
     assert "skills.get" not in constants
@@ -993,28 +1011,32 @@ def test_cli_skills_gateway_queries_use_cli_boundary() -> None:
 
 
 def test_cli_skills_gateway_presenters_use_cli_boundary() -> None:
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_cmd, skills_gateway_workflows
 
-    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(
+        Path(skills_gateway_workflows.__file__).read_text(encoding="utf-8")
+    )
     imported_modules = {
-        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
     }
     imported_presenter_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_gateway_presenters"
         for alias in node.names
     }
-    identifiers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    identifiers = {node.id for node in ast.walk(cmd_tree) if isinstance(node, ast.Name)}
     constants = {
-        node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+        node.value for node in ast.walk(cmd_tree) if isinstance(node, ast.Constant)
     }
 
     assert imported_presenter_names == {
         "emit_gateway_skill_update",
         "emit_gateway_skill_view",
     }
+    assert "opensquilla.cli.skills_gateway_presenters" not in imported_modules
     assert "rich.panel" not in imported_modules
     assert "Panel" not in identifiers
     assert "Skill updates" not in constants

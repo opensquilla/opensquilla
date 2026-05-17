@@ -6,13 +6,9 @@ import asyncio
 
 import typer
 
-from opensquilla.cli.skills_gateway_presenters import (
-    emit_gateway_skill_update,
-    emit_gateway_skill_view,
-)
-from opensquilla.cli.skills_gateway_queries import (
-    load_gateway_skill,
-    update_gateway_skills,
+from opensquilla.cli.skills_gateway_workflows import (
+    update_gateway_skills_for_cli,
+    view_gateway_skill_for_cli,
 )
 from opensquilla.cli.skills_list_workflows import list_skills_for_cli
 from opensquilla.cli.skills_mutation_workflows import (
@@ -57,9 +53,7 @@ def skills_view(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Inspect a single skill from the running gateway."""
-
-    payload = load_gateway_skill(name, json_output=json_output)
-    emit_gateway_skill_view(payload, fallback_name=name, json_output=json_output)
+    view_gateway_skill_for_cli(name, json_output=json_output)
 
 
 @skills_app.command("update")
@@ -72,8 +66,11 @@ def skills_update(
     if bool(name) == all_skills:
         raise typer.BadParameter("provide exactly one of NAME or --all")
 
-    payload = update_gateway_skills(name, all_skills=all_skills, json_output=json_output)
-    emit_gateway_skill_update(payload, json_output=json_output)
+    update_gateway_skills_for_cli(
+        name,
+        all_skills=all_skills,
+        json_output=json_output,
+    )
 
 
 @skills_app.command("install")

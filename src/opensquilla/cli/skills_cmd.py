@@ -26,13 +26,11 @@ from opensquilla.cli.skills_publish import publish_skill_for_cli
 from opensquilla.cli.skills_publish_presenters import emit_skill_publish_result
 from opensquilla.cli.skills_rows import load_skill_rows
 from opensquilla.cli.skills_search_rows import search_skill_rows
-from opensquilla.cli.skills_tap_presenters import (
-    emit_skill_tap_added,
-    emit_skill_tap_error,
-    emit_skill_tap_removed,
-    emit_skill_taps,
+from opensquilla.cli.skills_tap_workflows import (
+    add_skill_tap_for_cli,
+    list_skill_taps_for_cli,
+    remove_skill_tap_for_cli,
 )
-from opensquilla.cli.skills_taps import add_skill_tap, list_skill_taps, remove_skill_tap
 
 skills_app = typer.Typer(help="Skill management - list, search, install, uninstall.")
 
@@ -135,24 +133,19 @@ skills_app.add_typer(tap_app, name="tap")
 @tap_app.command("add")
 def tap_add(owner_repo: str = typer.Argument(..., help="GitHub owner/repo")) -> None:
     """Add a custom skill source tap."""
-    try:
-        tap = add_skill_tap(owner_repo)
-        emit_skill_tap_added(tap)
-    except ValueError as e:
-        emit_skill_tap_error(e)
+    add_skill_tap_for_cli(owner_repo)
 
 
 @tap_app.command("list")
 def tap_list() -> None:
     """List registered taps."""
-    taps = list_skill_taps()
-    emit_skill_taps(taps)
+    list_skill_taps_for_cli()
 
 
 @tap_app.command("remove")
 def tap_remove(owner_repo: str = typer.Argument(..., help="GitHub owner/repo")) -> None:
     """Remove a tap."""
-    emit_skill_tap_removed(owner_repo, removed=remove_skill_tap(owner_repo))
+    remove_skill_tap_for_cli(owner_repo)
 
 
 # ── Publish command ───────────────────────────────────────────────────────

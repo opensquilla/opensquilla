@@ -1100,7 +1100,7 @@ def test_cli_skills_mutation_presenters_use_cli_boundary() -> None:
 
 
 def test_skills_tap_commands_delegate_to_cli_tap_boundary(monkeypatch):
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_tap_workflows
 
     calls: list[tuple[str, object]] = []
 
@@ -1122,9 +1122,13 @@ def test_skills_tap_commands_delegate_to_cli_tap_boundary(monkeypatch):
         calls.append(("remove", owner_repo))
         return True
 
-    monkeypatch.setattr(skills_cmd, "add_skill_tap", fake_add_skill_tap)
-    monkeypatch.setattr(skills_cmd, "list_skill_taps", fake_list_skill_taps)
-    monkeypatch.setattr(skills_cmd, "remove_skill_tap", fake_remove_skill_tap)
+    monkeypatch.setattr(skills_tap_workflows, "add_skill_tap", fake_add_skill_tap)
+    monkeypatch.setattr(skills_tap_workflows, "list_skill_taps", fake_list_skill_taps)
+    monkeypatch.setattr(
+        skills_tap_workflows,
+        "remove_skill_tap",
+        fake_remove_skill_tap,
+    )
 
     add = runner.invoke(app, ["skills", "tap", "add", "acme/tap"])
     listed = runner.invoke(app, ["skills", "tap", "list"])
@@ -1216,20 +1220,41 @@ def test_cli_skill_taps_use_hub_tap_operations(monkeypatch):
 
 
 def test_cli_skills_tap_does_not_import_taps_boundary() -> None:
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_cmd, skills_tap_workflows
 
-    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(
+        Path(skills_tap_workflows.__file__).read_text(encoding="utf-8")
+    )
     imported_modules = {
-        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        node.module
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
     }
     imported_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.skills.hub.operations"
         for alias in node.names
     }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_tap_workflows"
+        for alias in node.names
+    }
+    cmd_direct_modules = {
+        node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
+    }
 
+    assert cmd_workflow_names == {
+        "add_skill_tap_for_cli",
+        "list_skill_taps_for_cli",
+        "remove_skill_tap_for_cli",
+    }
+    assert "opensquilla.cli.skills_taps" not in cmd_direct_modules
     assert "opensquilla.skills.hub.taps" not in imported_modules
     assert "default_taps_manager_factory" not in imported_names
     assert "add_tap" not in imported_names
@@ -1239,25 +1264,34 @@ def test_cli_skills_tap_does_not_import_taps_boundary() -> None:
     assert "tap_remove_request" not in imported_names
     assert not any(
         isinstance(node, ast.Name) and node.id == "TapsManager"
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
     )
 
 
 def test_cli_skills_tap_presenters_use_cli_boundary() -> None:
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_cmd, skills_tap_workflows
 
-    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(
+        Path(skills_tap_workflows.__file__).read_text(encoding="utf-8")
+    )
     imported_presenter_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_tap_presenters"
         for alias in node.names
     }
+    cmd_direct_modules = {
+        node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
+    }
     constants = {
-        node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+        node.value
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.Constant)
     }
 
+    assert "opensquilla.cli.skills_tap_presenters" not in cmd_direct_modules
     assert imported_presenter_names == {
         "emit_skill_tap_added",
         "emit_skill_tap_error",

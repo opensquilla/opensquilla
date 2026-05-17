@@ -127,15 +127,15 @@ Extract gateway exact/no-argument route execution into a dedicated boundary with
 - [x] Implement the smallest behavior-compatible change.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -161,8 +161,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit: pending
-- Integration merge:
+- Child commit: `ac9c408` (`Move gateway chat exact routes behind executor boundary`)
+- Integration merge: `0bc49e1` (`Merge CLI chat gateway exact route executor boundary`)
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-cli-chat-gateway-exact-route-executor-boundary` passed on branch `codex/refactor-cli-chat-gateway-exact-route-executor-boundary` at `cca2b44`.
   - Spawn fallback: `spawn_agent` availability check failed with `collab spawn failed: agent thread limit reached`; continued sequentially per root `AGENTS.md`.
@@ -171,6 +171,9 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_gateway_exact_route_workflows.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_cli_product_completeness.py -q` passed, `218 passed in 1.80s`.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 474 source files; whitespace passed; pytest passed with `2382 passed, 8 skipped, 2 warnings in 54.81s`; gateway smoke start/status/stop passed on `127.0.0.1:63985`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `cca2b44`.
+  - Integration merge: `git merge --no-ff codex/refactor-cli-chat-gateway-exact-route-executor-boundary` produced merge commit `0bc49e1`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 474 source files; whitespace passed; pytest passed with `2384 passed, 6 skipped, 2 warnings in 26.12s`; gateway smoke start/status/stop passed on `127.0.0.1:64137`.
 - Residual risk:
   - Low. Exact route execution now delegates through a focused executor, while route matching and prefix command wiring remain unchanged.
 - Next recommended slice:

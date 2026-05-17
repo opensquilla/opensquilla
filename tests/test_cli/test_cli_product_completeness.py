@@ -1334,7 +1334,7 @@ def test_cli_skills_tap_presenters_use_cli_boundary() -> None:
 
 
 def test_skills_publish_delegates_to_cli_publish_boundary(monkeypatch):
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_publish_workflows
 
     calls: list[tuple[str, object]] = []
 
@@ -1346,7 +1346,7 @@ def test_skills_publish_delegates_to_cli_publish_boundary(monkeypatch):
         return SimpleNamespace(success=True, message="validated")
 
     monkeypatch.setattr(
-        skills_cmd,
+        skills_publish_workflows,
         "publish_skill_for_cli",
         fake_publish_skill_for_cli,
     )
@@ -1405,48 +1405,76 @@ def test_cli_skill_publish_uses_hub_operation_boundary(monkeypatch):
 
 
 def test_cli_skills_publish_does_not_import_publisher_boundary() -> None:
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_cmd, skills_publish_workflows
 
-    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(
+        Path(skills_publish_workflows.__file__).read_text(encoding="utf-8")
+    )
     imported_modules = {
-        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        node.module
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
     }
     imported_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.skills.hub.operations"
         for alias in node.names
     }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_publish_workflows"
+        for alias in node.names
+    }
+    cmd_direct_modules = {
+        node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
+    }
 
+    assert cmd_workflow_names == {"publish_skill_for_cli_command"}
+    assert "opensquilla.cli.skills_publish" not in cmd_direct_modules
     assert "opensquilla.skills.hub.publisher" not in imported_modules
     assert "publish_skill_from_request" not in imported_names
     assert "skill_publish_request" not in imported_names
     assert not any(
         isinstance(node, ast.Name) and node.id == "publish_skill"
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
     )
 
 
 def test_cli_skills_publish_presenters_use_cli_boundary() -> None:
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_cmd, skills_publish_workflows
 
-    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(
+        Path(skills_publish_workflows.__file__).read_text(encoding="utf-8")
+    )
     imported_modules = {
-        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
     }
     imported_presenter_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_publish_presenters"
         for alias in node.names
     }
+    cmd_direct_modules = {
+        node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
+    }
     constants = {
-        node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+        node.value
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.Constant)
     }
 
     assert "opensquilla.cli.ui" not in imported_modules
+    assert "opensquilla.cli.skills_publish_presenters" not in cmd_direct_modules
     assert imported_presenter_names == {"emit_skill_publish_result"}
     assert "OK:" not in constants
     assert "Failed:" not in constants

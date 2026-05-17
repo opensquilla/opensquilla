@@ -21,8 +21,7 @@ from opensquilla.cli.skills_mutation_workflows import (
     install_skill_for_cli,
     uninstall_skill_for_cli,
 )
-from opensquilla.cli.skills_publish import publish_skill_for_cli
-from opensquilla.cli.skills_publish_presenters import emit_skill_publish_result
+from opensquilla.cli.skills_publish_workflows import publish_skill_for_cli_command
 from opensquilla.cli.skills_rows import load_skill_rows
 from opensquilla.cli.skills_search_workflows import search_skills_for_cli
 from opensquilla.cli.skills_tap_workflows import (
@@ -157,7 +156,6 @@ def skills_publish(
     """Validate and publish a skill to a repository."""
 
     async def _publish() -> None:
-        result = await publish_skill_for_cli(skill_dir, repo)
-        emit_skill_publish_result(result)
+        await publish_skill_for_cli_command(skill_dir, repo)
 
     asyncio.run(_publish())

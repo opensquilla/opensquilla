@@ -3695,6 +3695,103 @@ def test_chat_gateway_help_uses_workflow_boundary() -> None:
     assert {"console", "render_help_table"} <= workflow_imported_names
 
 
+def test_gateway_slash_routes_preserve_order_and_matching_contract() -> None:
+    from opensquilla.cli import chat_gateway_slash_routes
+
+    assert [route.name for route in chat_gateway_slash_routes.GATEWAY_SLASH_ROUTES] == [
+        "help",
+        "new",
+        "status",
+        "sessions",
+        "resume",
+        "delete",
+        "clear",
+        "compact",
+        "models",
+        "model",
+        "cost",
+        "usage",
+        "tool_compress",
+        "save",
+        "image",
+        "path",
+        "file",
+        "permissions",
+        "forget",
+        "approvals",
+    ]
+
+    cases = {
+        "/help": ("help", "/help", ["/help"]),
+        "/new": ("new", "/new", ["/new"]),
+        "/new title": ("new", "/new", ["/new", "title"]),
+        "/status": ("status", "/status", ["/status"]),
+        "/session": ("status", "/session", ["/session"]),
+        "/sessions 3": ("sessions", "/sessions", ["/sessions", "3"]),
+        "/models": ("models", "/models", ["/models"]),
+        "/model openai/test": ("model", "/model", ["/model", "openai/test"]),
+        "/permissions status": ("permissions", "/permissions", ["/permissions", "status"]),
+        "/elevated bypass": ("permissions", "/elevated", ["/elevated", "bypass"]),
+        "/forget /tmp/a": ("forget", "/forget", ["/forget", "/tmp/a"]),
+        "/approvals reset": ("approvals", "/approvals", ["/approvals", "reset"]),
+    }
+    for command, (route_name, matched_command, parts) in cases.items():
+        match = chat_gateway_slash_routes.match_gateway_slash_route(command)
+        assert match is not None
+        assert match.name == route_name
+        assert match.command == matched_command
+        assert match.parts == parts
+
+    for command in [
+        "",
+        "/newer",
+        "/sessionsx",
+        "/modelsx",
+        "/modelx",
+        "/forgetful",
+        "/permissionsx",
+        "/elevatedx",
+        "/statusx",
+    ]:
+        assert chat_gateway_slash_routes.match_gateway_slash_route(command) is None
+
+
+def test_gateway_slash_dispatch_uses_route_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_slash_routes.py")
+
+    assert workflow_path.exists()
+
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_route_imports = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_slash_routes"
+        for alias in node.names
+    }
+    handler_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    handler_attr_calls = {
+        node.func.attr
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert chat_route_imports == {"match_gateway_slash_route"}
+    assert "match_gateway_slash_route" in handler_name_calls
+    assert "_slash_parts" not in handler_name_calls
+    assert "_slash_parts_any" not in handler_name_calls
+    assert "startswith" not in handler_attr_calls
+
+
 def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_session_workflows.py")

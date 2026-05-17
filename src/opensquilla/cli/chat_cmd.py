@@ -36,6 +36,7 @@ from opensquilla.cli.chat_gateway_permissions_workflows import (
     handle_permissions_command,
 )
 from opensquilla.cli.chat_gateway_sessions_workflows import handle_gateway_sessions_command
+from opensquilla.cli.chat_gateway_slash_routes import match_gateway_slash_route
 from opensquilla.cli.chat_gateway_status_workflows import handle_gateway_status_command
 from opensquilla.cli.chat_gateway_usage_workflows import (
     handle_gateway_cost_command,
@@ -766,62 +767,69 @@ async def _handle_gateway_slash_command(
 ) -> bool:
     """Handle gateway-mode slash commands. Returns False for unknown commands."""
 
-    if cmd == "/help":
+    route_match = match_gateway_slash_route(cmd)
+    if route_match is None:
+        return False
+
+    route_name = route_match.name
+    parts = route_match.parts
+
+    if route_name == "help":
         handle_gateway_help_command()
         return True
 
-    if parts := _slash_parts(cmd, "/new"):
+    if route_name == "new":
         await handle_new_session_command(parts, state, client)
         return True
 
-    if cmd in {"/status", "/session"}:
+    if route_name == "status":
         return handle_gateway_status_command(state)
 
-    if parts := _slash_parts(cmd, "/sessions"):
+    if route_name == "sessions":
         await handle_gateway_sessions_command(parts, client)
         return True
 
-    if parts := _slash_parts(cmd, "/resume"):
+    if route_name == "resume":
         await handle_resume_session_command(cmd, parts, state, client)
         return True
 
-    if parts := _slash_parts(cmd, "/delete"):
+    if route_name == "delete":
         await handle_delete_session_command(cmd, parts, client)
         return True
 
-    if cmd in {"/clear", "/reset"}:
+    if route_name == "clear":
         await handle_clear_session_command(state, client)
         return True
 
-    if cmd == "/compact":
+    if route_name == "compact":
         await handle_compact_session_command(state, client)
         return True
 
-    if parts := _slash_parts(cmd, "/models"):
+    if route_name == "models":
         await handle_gateway_models_command(parts, client)
         return True
 
-    if parts := _slash_parts(cmd, "/model"):
+    if route_name == "model":
         await handle_model_command(parts, state, client)
         return True
 
-    if cmd == "/cost":
+    if route_name == "cost":
         handle_gateway_cost_command(state)
         return True
 
-    if cmd == "/usage":
+    if route_name == "usage":
         await handle_gateway_usage_command(client)
         return True
 
-    if _slash_parts(cmd, "/tool-compress"):
+    if route_name == "tool_compress":
         await handle_tool_compress_command(cmd, client=client)
         return True
 
-    if _slash_parts(cmd, "/save"):
+    if route_name == "save":
         await save_gateway_transcript_command(cmd, state, client)
         return True
 
-    if parts := _slash_parts(cmd, "/image"):
+    if route_name == "image":
         await handle_gateway_image_command(
             cmd,
             parts,
@@ -833,7 +841,7 @@ async def _handle_gateway_slash_command(
         )
         return True
 
-    if parts := _slash_parts(cmd, "/path"):
+    if route_name == "path":
         await handle_gateway_path_command(
             cmd,
             parts,
@@ -847,7 +855,7 @@ async def _handle_gateway_slash_command(
         )
         return True
 
-    if parts := _slash_parts(cmd, "/file"):
+    if route_name == "file":
         await handle_gateway_file_command(
             cmd,
             parts,
@@ -859,7 +867,7 @@ async def _handle_gateway_slash_command(
         )
         return True
 
-    if _slash_parts_any(cmd, "/permissions", "/elevated"):
+    if route_name == "permissions":
         await handle_gateway_permissions_command(
             cmd,
             state,
@@ -869,7 +877,7 @@ async def _handle_gateway_slash_command(
         )
         return True
 
-    if cmd == "/forget" or cmd.startswith("/forget "):
+    if route_name == "forget":
         await handle_gateway_forget_command(
             cmd,
             client=client,
@@ -877,7 +885,7 @@ async def _handle_gateway_slash_command(
         )
         return True
 
-    if cmd == "/approvals" or cmd.startswith("/approvals "):
+    if route_name == "approvals":
         await handle_gateway_approvals_command(cmd, client)
         return True
 

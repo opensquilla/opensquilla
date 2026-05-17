@@ -2145,11 +2145,16 @@ def test_cli_channels_catalog_uses_workflow_boundary() -> None:
     assert cmd_workflow_names == {
         "describe_channel_type_for_cli",
         "list_channel_types_for_cli",
+        "logout_channel_for_cli",
+        "restart_channel_for_cli",
+        "show_channel_status_for_cli",
     }
     assert "opensquilla.onboarding.channel_specs" not in cmd_direct_modules
     assert workflow_spec_names == {"get_channel_setup_spec", "list_channel_setup_specs"}
     assert workflow_presenter_names == {
+        "emit_channel_action_result",
         "emit_channel_catalog_error",
+        "emit_channel_status",
         "emit_channel_type_description",
         "emit_channel_types",
     }
@@ -2177,6 +2182,129 @@ def test_cli_channels_catalog_uses_workflow_boundary() -> None:
             "print_json",
             "secho",
         }
+    )
+
+
+def test_cli_channels_runtime_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        channels_cmd,
+        channels_gateway_queries,
+        channels_presenters,
+        channels_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(channels_cmd.__file__).read_text(encoding="utf-8"))
+    query_tree = ast.parse(
+        Path(channels_gateway_queries.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(
+        Path(channels_presenters.__file__).read_text(encoding="utf-8")
+    )
+    workflow_tree = ast.parse(
+        Path(channels_workflows.__file__).read_text(encoding="utf-8")
+    )
+
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("opensquilla.")
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_workflows"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_gateway_queries"
+        for alias in node.names
+    }
+    workflow_gateway_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.gateway_rpc"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_presenters"
+        for alias in node.names
+    }
+    query_rpc_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.gateway_rpc"
+        for alias in node.names
+    }
+    presenter_output_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    runtime_commands = [
+        next(
+            node
+            for node in ast.walk(cmd_tree)
+            if isinstance(node, ast.FunctionDef) and node.name == command_name
+        )
+        for command_name in ("channels_status", "channels_restart", "channels_logout")
+    ]
+    runtime_identifiers = {
+        node.id
+        for command in runtime_commands
+        for node in ast.walk(command)
+        if isinstance(node, ast.Name)
+    }
+
+    assert {
+        "logout_channel_for_cli",
+        "restart_channel_for_cli",
+        "show_channel_status_for_cli",
+    } <= cmd_workflow_names
+    assert "opensquilla.cli.gateway_rpc" not in cmd_direct_modules
+    assert workflow_query_names == {
+        "load_channel_status",
+        "logout_channel",
+        "restart_channel",
+    }
+    assert workflow_gateway_names == {"confirm_or_exit"}
+    assert {
+        "emit_channel_action_result",
+        "emit_channel_status",
+    } <= workflow_presenter_names
+    assert query_rpc_names == {"run_gateway_sync"}
+    assert presenter_output_names == {"print_json"}
+    for command, workflow_name in zip(
+        runtime_commands,
+        (
+            "show_channel_status_for_cli",
+            "restart_channel_for_cli",
+            "logout_channel_for_cli",
+        ),
+        strict=True,
+    ):
+        assert any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == workflow_name
+            for node in ast.walk(command)
+        )
+        assert not any(isinstance(node, ast.AsyncFunctionDef) for node in ast.walk(command))
+    assert not (
+        runtime_identifiers
+        & {"run_gateway_sync", "print_json", "confirm_or_exit", "client", "Console", "Table"}
     )
 
 

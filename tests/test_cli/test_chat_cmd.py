@@ -466,6 +466,55 @@ async def test_standalone_status_commands_emit_without_turnrunner_calls(monkeypa
     assert run_messages == []
 
 
+@pytest.mark.asyncio
+async def test_standalone_new_command_updates_next_turn_session(monkeypatch) -> None:
+    services = _FakeServices()
+    inputs = iter(["/new Research Notes", "hello", "/quit"])
+    run_calls: list[dict[str, object]] = []
+
+    class FakeTurnRunner:
+        def __init__(self, **kwargs) -> None:
+            return None
+
+        async def run(self, message: str, session_key: str, **kwargs):
+            run_calls.append(
+                {
+                    "message": message,
+                    "session_key": session_key,
+                    "tool_context": kwargs.get("tool_context"),
+                    "model": kwargs.get("model"),
+                }
+            )
+            yield DoneEvent()
+
+    async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
+        return next(inputs)
+
+    async def fake_build_services() -> _FakeServices:
+        return services
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.build_services", fake_build_services)
+    monkeypatch.setattr(chat_cmd, "prompt_user", fake_prompt_user)
+
+    await chat_cmd._standalone_repl(
+        model="openrouter/test",
+        session_id="standalone:test",
+    )
+
+    assert len(services.session_manager.get_or_create_calls) == 2
+    assert services.session_manager.get_or_create_calls[0] == {
+        "session_key": "standalone:test",
+        "agent_id": "main",
+    }
+    new_session_key = services.session_manager.get_or_create_calls[1]["session_key"]
+    assert new_session_key.startswith("agent:main:standalone:")
+    assert run_calls[0]["message"] == "hello"
+    assert run_calls[0]["session_key"] == new_session_key
+    assert run_calls[0]["model"] == "openrouter/test"
+    assert getattr(run_calls[0]["tool_context"], "session_key") == new_session_key
+
+
 def test_chat_workspace_strict_resolution_matches_agent_precedence(
     monkeypatch,
     tmp_path,
@@ -1496,6 +1545,51 @@ def test_standalone_status_workflow_emits_session_model_and_models_notice(
 
 
 @pytest.mark.asyncio
+async def test_standalone_new_workflow_creates_session_state_and_tool_context(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_standalone_session_workflows
+
+    session_manager = _FakeSessionManager()
+    built_keys: list[str] = []
+    buffer = io.StringIO()
+
+    def fake_uuid4() -> object:
+        return SimpleNamespace(hex="cafebabe12345678")
+
+    def build_tool_context(session_key: str) -> dict[str, str]:
+        built_keys.append(session_key)
+        return {"session_key": session_key}
+
+    monkeypatch.setattr(chat_standalone_session_workflows, "uuid4", fake_uuid4)
+    monkeypatch.setattr(
+        chat_standalone_session_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    session_key, tool_context, state = (
+        await chat_standalone_session_workflows.handle_standalone_new_command(
+            ["/new", "Research Notes"],
+            session_manager=session_manager,
+            build_tool_context=build_tool_context,
+            model="openrouter/test",
+        )
+    )
+
+    assert session_key == "agent:main:standalone:cafebabe"
+    assert built_keys == [session_key]
+    assert tool_context == {"session_key": session_key}
+    assert state == ChatSessionState(session_key=session_key, model="openrouter/test")
+    assert session_manager.get_or_create_calls == [
+        {"session_key": session_key, "agent_id": "main"}
+    ]
+    output = buffer.getvalue()
+    assert "Started new session (Research Notes):" in output
+    assert session_key in output
+
+
+@pytest.mark.asyncio
 async def test_gateway_slash_tool_compress_toggles_config(monkeypatch) -> None:
     _FakeGatewayClient.instances.clear()
     monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
@@ -2082,6 +2176,50 @@ def test_chat_standalone_status_slashes_use_workflow_boundary() -> None:
         "handle_standalone_models_command",
         "handle_standalone_status_command",
     } <= workflow_defs
+
+
+def test_chat_standalone_new_slash_uses_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_session_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    standalone_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_standalone_session_workflows"
+        for alias in node.names
+    }
+    standalone_name_calls = {
+        node.func.id
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    standalone_literals = {
+        node.value
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {"handle_standalone_new_command"}
+    assert "handle_standalone_new_command" in standalone_name_calls
+    assert not any(
+        literal.startswith("[green]Started new session")
+        for literal in standalone_literals
+    )
+    assert "handle_standalone_new_command" in workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

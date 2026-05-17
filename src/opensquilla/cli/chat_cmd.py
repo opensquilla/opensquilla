@@ -44,6 +44,9 @@ from opensquilla.cli.chat_standalone_model_cost_workflows import (
     handle_standalone_cost_command,
     handle_standalone_model_command,
 )
+from opensquilla.cli.chat_standalone_session_workflows import (
+    handle_standalone_new_command,
+)
 from opensquilla.cli.chat_standalone_status_workflows import (
     handle_standalone_models_command,
     handle_standalone_status_command,
@@ -568,13 +571,12 @@ async def _standalone_repl(
                     console.print(render_help_table())
                     continue
                 if parts := _slash_parts(stripped, "/new"):
-                    session_key = f"agent:main:standalone:{uuid4().hex[:8]}"
-                    await session_manager.get_or_create(session_key, agent_id="main")
-                    tool_ctx = _build_tool_ctx(session_key)
-                    state = ChatSessionState(session_key=session_key, model=model)
-                    title = parts[1].strip() if len(parts) > 1 else None
-                    label = f" ({title})" if title else ""
-                    console.print(f"[green]Started new session{label}:[/green] {session_key}")
+                    session_key, tool_ctx, state = await handle_standalone_new_command(
+                        parts,
+                        session_manager=session_manager,
+                        build_tool_context=_build_tool_ctx,
+                        model=model,
+                    )
                     continue
                 if stripped in {"/status", "/session"}:
                     handle_standalone_status_command(state)

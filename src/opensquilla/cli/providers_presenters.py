@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from rich.console import Console
 from rich.table import Table
 
@@ -34,5 +36,32 @@ def emit_provider_setup_specs(specs: list[ProviderSetupSpec]) -> None:
             "yes" if spec.requires_api_key else "no",
             "yes" if spec.requires_base_url else "no",
             spec.default_base_url or "-",
+        )
+    console.print(table)
+
+
+def emit_provider_status(payload: dict[str, Any], *, json_output: bool) -> None:
+    """Emit provider status diagnostics."""
+
+    if json_output:
+        print_json(payload)
+        return
+
+    console = Console(width=180, force_terminal=False)
+    table = Table(title="Provider status")
+    table.add_column("provider", no_wrap=True)
+    table.add_column("active", no_wrap=True)
+    table.add_column("configured", no_wrap=True)
+    table.add_column("buildable", no_wrap=True)
+    table.add_column("model")
+    table.add_column("error")
+    for row in payload.get("providers", []):
+        table.add_row(
+            str(row.get("providerId") or ""),
+            "yes" if row.get("active") else "no",
+            "yes" if row.get("configured") else "no",
+            "yes" if row.get("buildable") else "no",
+            str(row.get("model") or ""),
+            str(row.get("error") or ""),
         )
     console.print(table)

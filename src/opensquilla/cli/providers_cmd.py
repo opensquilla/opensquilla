@@ -5,12 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
-from rich.console import Console
-from rich.table import Table
 
-from opensquilla.cli.gateway_rpc import run_gateway_sync
-from opensquilla.cli.output import print_json
-from opensquilla.cli.providers_workflows import list_providers_for_cli
+from opensquilla.cli.providers_workflows import (
+    list_providers_for_cli,
+    show_provider_status_for_cli,
+)
 from opensquilla.onboarding.config_store import (
     default_config_path,
     load_config,
@@ -40,36 +39,11 @@ def providers_status(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show runtime provider diagnostics from the running gateway."""
-
-    async def _run(client):
-        params: dict[str, object] = {"probeModels": probe_models}
-        if provider:
-            params["provider"] = provider
-        return await client.call("providers.status", params)
-
-    payload = run_gateway_sync(_run, json_output=json_output)
-    if json_output:
-        print_json(payload)
-        return
-
-    console = Console(width=180, force_terminal=False)
-    table = Table(title="Provider status")
-    table.add_column("provider", no_wrap=True)
-    table.add_column("active", no_wrap=True)
-    table.add_column("configured", no_wrap=True)
-    table.add_column("buildable", no_wrap=True)
-    table.add_column("model")
-    table.add_column("error")
-    for row in payload.get("providers", []):
-        table.add_row(
-            str(row.get("providerId") or ""),
-            "yes" if row.get("active") else "no",
-            "yes" if row.get("configured") else "no",
-            "yes" if row.get("buildable") else "no",
-            str(row.get("model") or ""),
-            str(row.get("error") or ""),
-        )
-    console.print(table)
+    show_provider_status_for_cli(
+        provider,
+        probe_models=probe_models,
+        json_output=json_output,
+    )
 
 
 @providers_app.command("configure")

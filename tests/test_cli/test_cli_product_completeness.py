@@ -2184,6 +2184,96 @@ def test_cli_providers_list_uses_workflow_boundary() -> None:
     )
 
 
+def test_cli_providers_status_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        providers_cmd,
+        providers_gateway_queries,
+        providers_presenters,
+        providers_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(providers_cmd.__file__).read_text(encoding="utf-8"))
+    query_tree = ast.parse(
+        Path(providers_gateway_queries.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(
+        Path(providers_presenters.__file__).read_text(encoding="utf-8")
+    )
+    workflow_tree = ast.parse(
+        Path(providers_workflows.__file__).read_text(encoding="utf-8")
+    )
+
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("opensquilla.")
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.providers_workflows"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.providers_gateway_queries"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.providers_presenters"
+        for alias in node.names
+    }
+    query_rpc_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.gateway_rpc"
+        for alias in node.names
+    }
+    presenter_output_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    providers_status = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "providers_status"
+    )
+    status_identifiers = {
+        node.id for node in ast.walk(providers_status) if isinstance(node, ast.Name)
+    }
+
+    assert "show_provider_status_for_cli" in cmd_workflow_names
+    assert "opensquilla.cli.gateway_rpc" not in cmd_direct_modules
+    assert "opensquilla.cli.output" not in cmd_direct_modules
+    assert workflow_query_names == {"load_provider_status"}
+    assert "emit_provider_status" in workflow_presenter_names
+    assert query_rpc_names == {"run_gateway_sync"}
+    assert presenter_output_names == {"print_json"}
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "show_provider_status_for_cli"
+        for node in ast.walk(providers_status)
+    )
+    assert not any(isinstance(node, ast.AsyncFunctionDef) for node in ast.walk(providers_status))
+    assert not (
+        status_identifiers
+        & {"run_gateway_sync", "print_json", "Console", "Table", "client"}
+    )
+
+
 def test_search_query_json_exits_nonzero_on_diagnostic_failure(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {

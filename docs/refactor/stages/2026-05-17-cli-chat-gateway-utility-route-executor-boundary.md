@@ -124,15 +124,15 @@ Extract gateway utility route execution into a focused boundary without changing
 - [x] Implement the smallest behavior-compatible change.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -158,16 +158,20 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit: pending
-- Integration merge:
+- Child commit: `8a7da35` (`Move gateway chat utility routes behind executor boundary`)
+- Integration merge: `5a5af84` (`Merge CLI chat gateway utility route executor boundary`)
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-cli-chat-gateway-utility-route-executor-boundary` passed on branch `codex/refactor-cli-chat-gateway-utility-route-executor-boundary` at `d5b72ff`.
   - Spawn fallback: `spawn_agent` availability check failed with `collab spawn failed: agent thread limit reached`; continued sequentially per root `AGENTS.md`.
+  - Post-resume spawn recheck: `spawn_agent` availability check again failed with `collab spawn failed: agent thread limit reached`; historical child agents were shutdown, but the session-level limit still blocked a new probe.
   - Red: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_gateway_utility_routes_use_executor_boundary -q` failed as expected because `chat_gateway_utility_route_workflows.py` did not exist.
   - Focused green: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_gateway_utility_routes_use_executor_boundary tests/test_cli/test_chat_cmd.py::test_gateway_utility_route_executor_delegates_known_routes tests/test_cli/test_chat_cmd.py::test_gateway_slash_tool_compress_toggles_config tests/test_cli/test_chat_cmd.py::test_gateway_slash_tool_compress_status_reads_config tests/test_cli/test_chat_cmd.py::test_gateway_slash_save_exports_persisted_history tests/test_cli/test_chat_cmd.py::test_gateway_slash_unknown_prefix_is_not_handled -q` passed, `6 passed in 0.62s`.
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_gateway_utility_route_workflows.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_cli_product_completeness.py -q` passed, `224 passed in 2.41s`.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 477 source files; whitespace passed; pytest passed with `2388 passed, 8 skipped, 2 warnings in 46.77s`; gateway smoke start/status/stop passed on `127.0.0.1:49814`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `d5b72ff`.
+  - Integration merge: `git merge --no-ff codex/refactor-cli-chat-gateway-utility-route-executor-boundary` produced merge commit `5a5af84`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 477 source files; whitespace passed; pytest passed with `2390 passed, 6 skipped, 2 warnings in 26.67s`; gateway smoke start/status/stop passed on `127.0.0.1:50149`.
 - Residual risk:
   - Low. This slice only moves utility route-family dispatch into a thin executor; existing tool compression and transcript export helpers still own behavior, and standalone `/save` remains unchanged.
 - Next recommended slice:

@@ -544,6 +544,107 @@ async def test_standalone_path_workflow_rejects_unexpected_attachments(
 
 
 @pytest.mark.asyncio
+async def test_standalone_image_workflow_runs_image_command_and_updates_state() -> None:
+    from opensquilla.cli import chat_standalone_image_workflows
+
+    state = ChatSessionState(session_key="standalone:test", model="openrouter/test")
+    turn_runner = object()
+    tool_context = object()
+    services = object()
+    calls: list[dict[str, object]] = []
+
+    async def run_image_command(
+        runner: object,
+        session_key: str,
+        context: object,
+        command: str,
+        **kwargs: object,
+    ) -> TurnResult:
+        calls.append(
+            {
+                "runner": runner,
+                "session_key": session_key,
+                "context": context,
+                "command": command,
+                "kwargs": kwargs,
+            }
+        )
+        return TurnResult(
+            text="image reply",
+            usage=UsageSummary(input_tokens=7, output_tokens=11, cost_usd=0.021),
+        )
+
+    def prompt_from_command(command: str) -> str:
+        assert command == "/image /tmp/chart.png describe chart"
+        return "describe chart"
+
+    handled = await chat_standalone_image_workflows.handle_standalone_image_command(
+        "/image /tmp/chart.png describe chart",
+        ["/image", "/tmp/chart.png describe chart"],
+        state,
+        turn_runner=turn_runner,
+        tool_context=tool_context,
+        services=services,
+        model="openrouter/test",
+        timeout=3.5,
+        run_image_command=run_image_command,
+        image_prompt_from_command=prompt_from_command,
+    )
+
+    assert handled is True
+    assert calls == [
+        {
+            "runner": turn_runner,
+            "session_key": "standalone:test",
+            "context": tool_context,
+            "command": "/image /tmp/chart.png describe chart",
+            "kwargs": {
+                "model": "openrouter/test",
+                "svc": services,
+                "timeout": 3.5,
+            },
+        }
+    ]
+    transcript = state.transcript.to_markdown()
+    assert "describe chart" in transcript
+    assert "image reply" in transcript
+    assert state.usage.render() == "18 tok (7 in / 11 out) · cache 0 · $0.021000"
+
+
+@pytest.mark.asyncio
+async def test_standalone_image_workflow_prints_usage_without_path(monkeypatch) -> None:
+    from opensquilla.cli import chat_standalone_image_workflows
+
+    state = ChatSessionState(session_key="standalone:test", model="openrouter/test")
+    buffer = io.StringIO()
+
+    async def run_image_command(*args: object, **kwargs: object) -> TurnResult:
+        raise AssertionError("run_image_command must not run without a path")
+
+    monkeypatch.setattr(
+        chat_standalone_image_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_standalone_image_workflows.handle_standalone_image_command(
+        "/image",
+        ["/image"],
+        state,
+        turn_runner=object(),
+        tool_context=object(),
+        services=object(),
+        model="openrouter/test",
+        timeout=None,
+        run_image_command=run_image_command,
+    )
+
+    assert handled is True
+    assert "Usage: /image <path> [prompt]" in buffer.getvalue()
+    assert state.transcript.to_markdown() == ""
+
+
+@pytest.mark.asyncio
 async def test_standalone_model_command_updates_next_turn_model(monkeypatch) -> None:
     captured: dict[str, object] = {}
     inputs = iter(["/model anthropic/claude-sonnet-4", "hello", "/quit"])
@@ -2652,6 +2753,49 @@ def test_chat_standalone_path_slash_uses_workflow_boundary() -> None:
     assert "Usage: /path <path> [prompt]" not in standalone_literals
     assert "/path must not create attachments." not in standalone_literals
     assert "handle_standalone_path_command" in workflow_defs
+
+
+def test_chat_standalone_image_slash_uses_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_image_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    standalone_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_standalone_image_workflows"
+        for alias in node.names
+    }
+    standalone_name_calls = {
+        node.func.id
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    standalone_literals = {
+        node.value
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {"handle_standalone_image_command"}
+    assert "handle_standalone_image_command" in standalone_name_calls
+    assert "_handle_image_command_turnrunner" not in standalone_name_calls
+    assert "_image_prompt_from_command" not in standalone_name_calls
+    assert "Usage: /image <path> [prompt]" not in standalone_literals
+    assert "handle_standalone_image_command" in workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

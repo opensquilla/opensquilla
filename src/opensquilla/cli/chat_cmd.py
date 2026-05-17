@@ -40,6 +40,7 @@ from opensquilla.cli.chat_slash_workflows import (
     handle_models_command,
     handle_sessions_command,
 )
+from opensquilla.cli.chat_standalone_image_workflows import handle_standalone_image_command
 from opensquilla.cli.chat_standalone_model_cost_workflows import (
     handle_standalone_cost_command,
     handle_standalone_model_command,
@@ -614,21 +615,18 @@ async def _standalone_repl(
                     save_transcript_command(stripped, state)
                     continue
                 if parts := _slash_parts(stripped, "/image"):
-                    if len(parts) == 1 or not parts[1].strip():
-                        console.print("[red]Usage: /image <path> [prompt][/red]")
-                        continue
-                    result = await _handle_image_command_turnrunner(
-                        turn_runner,
-                        session_key,
-                        tool_ctx,
+                    await handle_standalone_image_command(
                         stripped,
+                        parts,
+                        state,
+                        turn_runner=turn_runner,
+                        tool_context=tool_ctx,
+                        services=svc,
                         model=model,
-                        svc=svc,
                         timeout=timeout,
+                        run_image_command=_handle_image_command_turnrunner,
+                        image_prompt_from_command=_image_prompt_from_command,
                     )
-                    state.transcript.add("user", _image_prompt_from_command(stripped))
-                    state.transcript.add("assistant", result.text)
-                    state.usage.add(result.usage)
                     continue
                 if parts := _slash_parts(stripped, "/path"):
                     await handle_standalone_path_command(

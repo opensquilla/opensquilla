@@ -114,15 +114,15 @@
 - [x] Update existing tests to monkeypatch workflow dependencies at the workflow boundary.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -148,8 +148,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
-- Integration merge:
+- Child commit: `d46526f` (`codex/refactor-cli-chat-workflows-boundary`)
+- Integration merge: `775fa15` (`codex/refactor-architecture`)
 - Verification evidence:
   - Child preflight: `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-cli-chat-workflows-boundary` passed.
   - Red check: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_chat_slash_readonly_lists_use_workflow_boundary -q` failed before implementation because the workflow boundary file did not exist.
@@ -157,5 +157,6 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched checks: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_slash_workflows.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_cli_product_completeness.py -q` passed with 141 tests.
   - Child gate: `scripts/refactor_gate.sh` completed ruff, mypy, diff check, full pytest, and gateway smoke successfully.
+  - Integration gate: `scripts/refactor_gate.sh` on merge commit `775fa15` completed ruff, mypy, diff check, full pytest (`2307 passed, 6 skipped`), and gateway smoke successfully.
 - Residual risk: Low. The slice only moves `/sessions` and `/models` read-only workflows behind a new CLI boundary and keeps the dispatcher behavior stable.
 - Next recommended slice: Move the remaining stateful session slash commands (`/new`, `/resume`, `/delete`) behind a separate session workflow boundary after this slice is merged and re-gated on integration.

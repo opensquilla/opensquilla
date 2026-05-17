@@ -3,7 +3,9 @@
 > For agentic workers: this plan is the durable control surface for the long-running
 > architecture refactor. Before starting any implementation slice, use
 > `superpowers:using-git-worktrees`, `superpowers:writing-plans`,
-> `superpowers:test-driven-development`, and
+> `superpowers:test-driven-development`,
+> `superpowers:dispatching-parallel-agents` when a slice has independent
+> subdomains, and
 > `superpowers:verification-before-completion`.
 
 ## Goal
@@ -29,13 +31,31 @@ observe-only for this refactor line.
    modules.
 5. Start each implementation slice with a stage plan derived from
    `docs/refactor/stage-template.md`.
-6. Write a failing test before implementation when the slice changes code or
+6. Split independent subdomains across multiple agents when it will speed up
+   refactoring without shared-file conflicts. The main thread owns the overall
+   architecture boundary, worktree/branch coordination, integration, conflict
+   review, and final gate.
+7. Write a failing test before implementation when the slice changes code or
    executable behavior.
-7. Commit child work only after local verification passes.
-8. Merge child work into integration with `git merge --no-ff`.
-9. Rerun the integration gate after each merge.
-10. Do not mark the long-running goal complete until a requirement-by-requirement
+8. Commit child work only after local verification passes.
+9. Merge child work into integration with `git merge --no-ff`.
+10. Rerun the integration gate after each merge.
+11. Do not mark the long-running goal complete until a requirement-by-requirement
     completion audit proves the full objective is satisfied.
+
+## Parallel Agent Policy
+
+- Use multi-agent parallelism for slices with 2+ independent problem domains,
+  such as separate CLI commands, unrelated gateway RPC surfaces, separate
+  provider adapters, or independent test failures.
+- Assign one agent per domain with narrow scope, explicit file/module ownership,
+  constraints, and an expected summary of current-state findings and changes.
+- Do not parallelize related failures, shared-state refactors, or changes likely
+  to edit the same files unless the main thread first splits ownership cleanly.
+- Agents produce evidence and focused changes; the main thread reviews summaries,
+  checks for conflicts, merges work, and runs the complete refactor gate.
+- If the runtime agent limit is reached, record that in the stage plan and
+  continue sequentially rather than weakening the slice boundary.
 
 ## Current Architecture Map
 
@@ -148,12 +168,14 @@ observe-only for this refactor line.
    `git worktree add ../opensquilla-refactor-<slice> -b codex/refactor-<slice>`.
 3. Generate or copy a stage plan from `docs/refactor/stage-template.md`.
 4. Use `superpowers:writing-plans` to turn the stage into concrete tasks.
-5. Use `superpowers:test-driven-development` for code or executable behavior.
-6. Run focused tests, then `scripts/refactor_gate.sh`.
-7. Commit with the required co-author trailer.
-8. Merge into integration with `git merge --no-ff`.
-9. Run `scripts/refactor_gate.sh` again from integration.
-10. Record child hash, integration hash, verification output, and next slice.
+5. Identify independent subdomains and dispatch parallel agents where useful;
+   otherwise record why the slice is single-threaded.
+6. Use `superpowers:test-driven-development` for code or executable behavior.
+7. Run focused tests, then `scripts/refactor_gate.sh`.
+8. Commit with the required co-author trailer.
+9. Merge into integration with `git merge --no-ff`.
+10. Run `scripts/refactor_gate.sh` again from integration.
+11. Record child hash, integration hash, verification output, and next slice.
 
 ## Standard Gate
 

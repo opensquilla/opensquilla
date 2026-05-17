@@ -13,12 +13,12 @@ from opensquilla.cli.channel_fields import (
     apply_channel_token,
     parse_channel_field_pairs,
 )
+from opensquilla.cli.channels_workflows import (
+    describe_channel_type_for_cli,
+    list_channel_types_for_cli,
+)
 from opensquilla.cli.gateway_rpc import confirm_or_exit, run_gateway_sync
 from opensquilla.cli.output import print_json
-from opensquilla.onboarding.channel_specs import (
-    get_channel_setup_spec,
-    list_channel_setup_specs,
-)
 from opensquilla.onboarding.config_store import (
     load_config,
     persist_config,
@@ -366,32 +366,7 @@ def channels_types(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """List supported channel types."""
-    specs = list_channel_setup_specs()
-    if json_output:
-        print_json([
-            {
-                "type": s.type,
-                "label": s.label,
-                "transport": s.transport,
-                "requires_public_url": s.requires_public_url,
-                "dependency_extra": s.dependency_extra,
-            }
-            for s in specs
-        ])
-        return
-    table = Table(title="Supported channel types")
-    table.add_column("type", no_wrap=True)
-    table.add_column("label")
-    table.add_column("transport", no_wrap=True)
-    table.add_column("public URL", no_wrap=True)
-    table.add_column("extras", no_wrap=True)
-    for s in specs:
-        table.add_row(
-            s.type, s.label, s.transport,
-            "yes" if s.requires_public_url else "no",
-            s.dependency_extra or "—",
-        )
-    Console(width=140, force_terminal=False).print(table)
+    list_channel_types_for_cli(json_output=json_output)
 
 
 @channels_app.command("describe")
@@ -400,57 +375,4 @@ def channels_describe(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show the field schema, transport, and docs hint for a channel type."""
-    try:
-        spec = get_channel_setup_spec(type_name)
-    except KeyError as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2) from exc
-
-    if json_output:
-        print_json({
-            "type": spec.type,
-            "label": spec.label,
-            "description": spec.description,
-            "transport": spec.transport,
-            "requires_public_url": spec.requires_public_url,
-            "dependency_extra": spec.dependency_extra,
-            "restart_required": spec.restart_required,
-            "docs_hint": spec.docs_hint,
-            "fields": [
-                {
-                    "name": f.name, "label": f.label, "type": f.field_type,
-                    "required": f.required, "default": f.default,
-                    "choices": list(f.choices), "secret": f.secret,
-                    "description": f.description,
-                }
-                for f in spec.fields
-            ],
-        })
-        return
-
-    console = Console(width=160, force_terminal=False)
-    typer.echo(f"{spec.label} ({spec.type})")
-    typer.echo(spec.description)
-    typer.echo(
-        f"transport={spec.transport}  "
-        f"public_url={'yes' if spec.requires_public_url else 'no'}  "
-        f"extras={spec.dependency_extra or '—'}  "
-        f"docs={spec.docs_hint}"
-    )
-    table = Table(title="Fields")
-    table.add_column("name", no_wrap=True)
-    table.add_column("type", no_wrap=True)
-    table.add_column("required", no_wrap=True)
-    table.add_column("secret", no_wrap=True)
-    table.add_column("default")
-    table.add_column("choices")
-    for f in spec.fields:
-        table.add_row(
-            f.name,
-            f.field_type,
-            "yes" if f.required else "no",
-            "yes" if f.secret else "no",
-            "" if f.default is None else str(f.default),
-            ",".join(f.choices) if f.choices else "—",
-        )
-    console.print(table)
+    describe_channel_type_for_cli(type_name, json_output=json_output)

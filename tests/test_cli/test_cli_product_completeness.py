@@ -338,6 +338,19 @@ def test_cli_skill_tap_presenters_emit_tap_states(capsys):
     assert "Not found" in output
 
 
+def test_cli_skill_publish_presenter_emits_success_and_failure(capsys):
+    from opensquilla.cli.skills_publish_presenters import emit_skill_publish_result
+
+    emit_skill_publish_result(SimpleNamespace(success=True, message="validated"))
+    emit_skill_publish_result(SimpleNamespace(success=False, message="missing manifest"))
+
+    output = capsys.readouterr().out
+    assert "OK" in output
+    assert "validated" in output
+    assert "Failed" in output
+    assert "missing manifest" in output
+
+
 def test_skills_search_delegates_to_cli_search_rows_boundary(monkeypatch):
     from opensquilla.cli import skills_cmd
 
@@ -1309,6 +1322,30 @@ def test_cli_skills_publish_does_not_import_publisher_boundary() -> None:
         isinstance(node, ast.Name) and node.id == "publish_skill"
         for node in ast.walk(tree)
     )
+
+
+def test_cli_skills_publish_presenters_use_cli_boundary() -> None:
+    from opensquilla.cli import skills_cmd
+
+    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    imported_modules = {
+        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+    }
+    imported_presenter_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_publish_presenters"
+        for alias in node.names
+    }
+    constants = {
+        node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+    }
+
+    assert "opensquilla.cli.ui" not in imported_modules
+    assert imported_presenter_names == {"emit_skill_publish_result"}
+    assert "OK:" not in constants
+    assert "Failed:" not in constants
 
 
 def test_skill_publish_request_builds_publish_request(tmp_path: Path) -> None:

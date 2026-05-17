@@ -32,6 +32,7 @@ from opensquilla.cli.skills_mutation_presenters import (
     emit_skill_mutation_payload,
 )
 from opensquilla.cli.skills_publish import publish_skill_for_cli
+from opensquilla.cli.skills_publish_presenters import emit_skill_publish_result
 from opensquilla.cli.skills_rows import load_skill_rows
 from opensquilla.cli.skills_search_rows import search_skill_rows
 from opensquilla.cli.skills_tap_presenters import (
@@ -41,7 +42,6 @@ from opensquilla.cli.skills_tap_presenters import (
     emit_skill_taps,
 )
 from opensquilla.cli.skills_taps import add_skill_tap, list_skill_taps, remove_skill_tap
-from opensquilla.cli.ui import console
 
 skills_app = typer.Typer(help="Skill management - list, search, install, uninstall.")
 
@@ -244,9 +244,6 @@ def skills_publish(
 
     async def _publish() -> None:
         result = await publish_skill_for_cli(skill_dir, repo)
-        if result.success:
-            console.print(f"[green]OK:[/] {result.message}")
-        else:
-            console.print(f"[red]Failed:[/] {result.message}")
+        emit_skill_publish_result(result)
 
     asyncio.run(_publish())

@@ -6,9 +6,6 @@ import asyncio
 
 import typer
 
-from opensquilla.cli.skills_catalog_presenters import (
-    emit_skill_rows,
-)
 from opensquilla.cli.skills_gateway_presenters import (
     emit_gateway_skill_update,
     emit_gateway_skill_view,
@@ -17,12 +14,12 @@ from opensquilla.cli.skills_gateway_queries import (
     load_gateway_skill,
     update_gateway_skills,
 )
+from opensquilla.cli.skills_list_workflows import list_skills_for_cli
 from opensquilla.cli.skills_mutation_workflows import (
     install_skill_for_cli,
     uninstall_skill_for_cli,
 )
 from opensquilla.cli.skills_publish_workflows import publish_skill_for_cli_command
-from opensquilla.cli.skills_rows import load_skill_rows
 from opensquilla.cli.skills_search_workflows import search_skills_for_cli
 from opensquilla.cli.skills_tap_workflows import (
     add_skill_tap_for_cli,
@@ -38,8 +35,7 @@ def skills_list(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """List all installed/available skills."""
-    rows = load_skill_rows()
-    emit_skill_rows(rows, json_output=json_output)
+    list_skills_for_cli(json_output=json_output)
 
 
 @skills_app.command("search")

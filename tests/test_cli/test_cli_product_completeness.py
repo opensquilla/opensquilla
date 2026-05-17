@@ -448,7 +448,7 @@ def test_cli_skill_search_rows_use_hub_operation_boundary(monkeypatch):
 
 
 def test_skills_list_delegates_to_cli_rows_boundary(monkeypatch):
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_list_workflows
 
     calls: list[str] = []
 
@@ -477,7 +477,7 @@ def test_skills_list_delegates_to_cli_rows_boundary(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(skills_cmd, "load_skill_rows", fake_load_skill_rows)
+    monkeypatch.setattr(skills_list_workflows, "load_skill_rows", fake_load_skill_rows)
 
     result = runner.invoke(app, ["skills", "list", "--json"])
 
@@ -1024,9 +1024,16 @@ def test_cli_skills_gateway_presenters_use_cli_boundary() -> None:
 
 
 def test_cli_skills_catalog_presenters_use_cli_boundary() -> None:
-    from opensquilla.cli import skills_cmd, skills_search_workflows
+    from opensquilla.cli import (
+        skills_cmd,
+        skills_list_workflows,
+        skills_search_workflows,
+    )
 
     cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    list_workflow_tree = ast.parse(
+        Path(skills_list_workflows.__file__).read_text(encoding="utf-8")
+    )
     workflow_tree = ast.parse(
         Path(skills_search_workflows.__file__).read_text(encoding="utf-8")
     )
@@ -1042,6 +1049,20 @@ def test_cli_skills_catalog_presenters_use_cli_boundary() -> None:
         and node.module == "opensquilla.cli.skills_catalog_presenters"
         for alias in node.names
     }
+    list_workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(list_workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_catalog_presenters"
+        for alias in node.names
+    }
+    list_workflow_row_names = {
+        alias.name
+        for node in ast.walk(list_workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_rows"
+        for alias in node.names
+    }
     workflow_presenter_names = {
         alias.name
         for node in ast.walk(workflow_tree)
@@ -1054,8 +1075,12 @@ def test_cli_skills_catalog_presenters_use_cli_boundary() -> None:
         node.value for node in ast.walk(cmd_tree) if isinstance(node, ast.Constant)
     }
 
-    assert imported_presenter_names == {"emit_skill_rows"}
+    assert imported_presenter_names == set()
+    assert list_workflow_presenter_names == {"emit_skill_rows"}
+    assert list_workflow_row_names == {"load_skill_rows"}
     assert workflow_presenter_names == {"emit_skill_search_results"}
+    assert "opensquilla.cli.skills_catalog_presenters" not in imported_modules
+    assert "opensquilla.cli.skills_rows" not in imported_modules
     assert "rich.table" not in imported_modules
     assert "Table" not in identifiers
     assert "Skills (" not in constants

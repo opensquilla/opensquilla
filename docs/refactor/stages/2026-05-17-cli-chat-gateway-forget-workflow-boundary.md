@@ -121,15 +121,15 @@ Move gateway `/forget` behind a dedicated workflow boundary without changing suc
 - [x] Update `chat_cmd.py` gateway dispatch and compatibility wrapper to delegate `/forget`.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -155,8 +155,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
-- Integration merge:
+- Child commit: `79f7c0b`
+- Integration merge: `ee44e30`
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-cli-chat-gateway-forget-workflow-boundary` passed on branch `codex/refactor-cli-chat-gateway-forget-workflow-boundary` at `cae920d`.
   - Red: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_chat_gateway_forget_slash_uses_workflow_boundary -q` failed as expected because `chat_gateway_forget_workflows.py` did not exist.
@@ -164,6 +164,9 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_gateway_forget_workflows.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_chat_cmd_approval.py tests/test_cli/test_cli_product_completeness.py -q` passed: 200 passed.
   - Child gate: `scripts/refactor_gate.sh` passed: ruff, mypy, whitespace, pytest 2362 passed / 8 skipped / 2 warnings, gateway smoke start/status/stop/status ok.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `cae920d`.
+  - Integration merge: `git merge --no-ff codex/refactor-cli-chat-gateway-forget-workflow-boundary` produced merge commit `ee44e30`.
+  - Integration gate: `scripts/refactor_gate.sh` passed: ruff, mypy, whitespace, pytest 2364 passed / 6 skipped / 2 warnings, gateway smoke start/status/stop/status ok.
 - Residual risk:
   - Low. The slice only extracts gateway `/forget` command parsing and success rendering; server-side approval cache clearing, RPC behavior, and `/approvals` diagnostics remain in place.
 - Next recommended slice:

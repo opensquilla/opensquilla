@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -13,19 +14,46 @@ from opensquilla.cli.url_utils import normalize_gateway_url
 
 @dataclass(frozen=True)
 class SessionGatewayUnavailable:
-    """Gateway connection failed before the resume lookup could run."""
+    """Gateway connection failed before the session lookup could run."""
 
     message: str
 
 
 @dataclass(frozen=True)
 class SessionGatewayActionFailed:
-    """Gateway rejected the resume lookup."""
+    """Gateway rejected the session lookup."""
 
     message: str
 
 
 SessionResumeResolution = str | SessionGatewayUnavailable | SessionGatewayActionFailed
+
+
+async def _run_legacy_gateway_action[T](
+    action: Callable[[Any], Awaitable[T]],
+) -> T | SessionGatewayUnavailable | SessionGatewayActionFailed:
+    from opensquilla.cli.gateway_client import GatewayClient, GatewayRPCError
+
+    client = GatewayClient()
+    try:
+        await client.connect(
+            normalize_gateway_url(
+                os.environ.get("OPENSQUILLA_GATEWAY_URL", "ws://localhost:18790/ws")
+            )
+        )
+        return await action(client)
+    except SystemExit as exc:
+        return SessionGatewayUnavailable(str(exc))
+    except GatewayRPCError as exc:
+        return SessionGatewayActionFailed(str(exc))
+    finally:
+        await client.close()
+
+
+def _run_legacy_gateway_sync[T](
+    action: Callable[[Any], Awaitable[T]],
+) -> T | SessionGatewayUnavailable | SessionGatewayActionFailed:
+    return asyncio.run(_run_legacy_gateway_action(action))
 
 
 def list_sessions_from_gateway(*, limit: int, json_output: bool) -> dict[str, Any]:
@@ -63,26 +91,26 @@ def load_session_preview_from_gateway(
 def resolve_session_key_from_gateway(session_id: str) -> SessionResumeResolution:
     """Resolve a session key while preserving resume's legacy error behavior."""
 
-    async def _run() -> SessionResumeResolution:
-        from opensquilla.cli.gateway_client import GatewayClient, GatewayRPCError
+    async def _run(client: Any) -> str:
+        resolved = cast(dict[str, Any], await client.resolve_session(session_id))
+        return _resolved_key(resolved, session_id)
 
-        client = GatewayClient()
-        try:
-            await client.connect(
-                normalize_gateway_url(
-                    os.environ.get("OPENSQUILLA_GATEWAY_URL", "ws://localhost:18790/ws")
-                )
-            )
-            resolved = cast(dict[str, Any], await client.resolve_session(session_id))
-            return _resolved_key(resolved, session_id)
-        except SystemExit as exc:
-            return SessionGatewayUnavailable(str(exc))
-        except GatewayRPCError as exc:
-            return SessionGatewayActionFailed(str(exc))
-        finally:
-            await client.close()
+    return _run_legacy_gateway_sync(_run)
 
-    return asyncio.run(_run())
+
+def load_session_export_from_gateway(
+    session_id: str,
+) -> dict[str, Any] | SessionGatewayUnavailable | SessionGatewayActionFailed:
+    """Load resolved session metadata, preview, and history for export."""
+
+    async def _run(client: Any) -> dict[str, Any]:
+        resolved = cast(dict[str, Any], await client.resolve_session(session_id))
+        key = _resolved_key(resolved, session_id)
+        preview = cast(dict[str, Any], await client.preview_sessions(keys=[key]))
+        history = cast(dict[str, Any], await client.session_history(key, limit=1000))
+        return {"resolved": resolved, "preview": preview, "history": history}
+
+    return _run_legacy_gateway_sync(_run)
 
 
 def abort_session_from_gateway(

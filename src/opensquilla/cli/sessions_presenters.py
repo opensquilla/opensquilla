@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from pathlib import Path
+from typing import Any, NoReturn
 
 import typer
 from rich.table import Table
 
 from opensquilla.cli.output import print_json
+from opensquilla.cli.repl.session_state import messages_to_markdown
 from opensquilla.cli.ui import console, error_panel
 
 
@@ -102,6 +105,83 @@ def emit_session_resume_error(message: str) -> None:
     """Emit resume's gateway action failure message."""
 
     console.print(error_panel(message))
+
+
+def emit_session_export_format_error() -> NoReturn:
+    """Emit invalid export format and exit with validation status."""
+
+    console.print("[red]--format must be md or json[/red]")
+    raise typer.Exit(2)
+
+
+def emit_session_export_unavailable(message: str) -> None:
+    """Emit export's gateway-unavailable message."""
+
+    if message:
+        console.print(f"[dim]{message}[/dim]")
+    console.print("[dim]Session export requires a running gateway.[/dim]")
+
+
+def emit_session_export_error(message: str) -> None:
+    """Emit export's gateway action failure message."""
+
+    console.print(error_panel(message))
+
+
+def emit_session_export_empty() -> None:
+    """Emit empty export payload message."""
+
+    console.print("[red]Session export returned no data.[/red]")
+
+
+def _render_session_export_markdown(payload: dict[str, Any], *, session_id: str) -> str:
+    resolved = payload.get("resolved", {})
+    if not isinstance(resolved, dict):
+        resolved = {}
+    key = _resolved_key(resolved, session_id)
+    preview_payload = payload.get("preview", {})
+    previews = preview_payload.get("previews", []) if isinstance(preview_payload, dict) else []
+    preview = previews[0] if previews else {}
+    if not isinstance(preview, dict):
+        preview = {}
+    history_payload = payload.get("history", {})
+    messages = history_payload.get("messages", []) if isinstance(history_payload, dict) else []
+    transcript = messages_to_markdown(messages) if isinstance(messages, list) else ""
+    if not transcript.strip():
+        transcript = f"## Preview\n\n{preview.get('lastMessage', '')}\n"
+    return (
+        f"# Session {key}\n\n"
+        f"- Status: {resolved.get('status', '')}\n"
+        f"- Model: {resolved.get('model') or ''}\n"
+        f"- Updated: {resolved.get('updated_at', '')}\n\n"
+        f"{transcript}"
+    )
+
+
+def write_session_export(
+    payload: dict[str, Any],
+    *,
+    session_id: str,
+    output: Path | None,
+    format: str,
+) -> Path:
+    """Write a session export payload to disk and return the target path."""
+
+    target = output or Path(f"{session_id.replace(':', '-')}.{format}")
+    if format == "json":
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        target.write_text(
+            _render_session_export_markdown(payload, session_id=session_id),
+            encoding="utf-8",
+        )
+    return target
+
+
+def emit_session_exported(target: Path) -> None:
+    """Emit successful session export output."""
+
+    console.print(f"[green]Exported:[/green] {target}")
 
 
 def emit_session_abort(

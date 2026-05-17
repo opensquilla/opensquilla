@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -13,6 +14,7 @@ from opensquilla.cli.sessions_gateway_queries import (
     abort_session_from_gateway,
     delete_session_from_gateway,
     list_sessions_from_gateway,
+    load_session_export_from_gateway,
     load_session_preview_from_gateway,
     resolve_session_key_from_gateway,
 )
@@ -20,10 +22,16 @@ from opensquilla.cli.sessions_presenters import (
     confirm_session_delete,
     emit_session_abort,
     emit_session_delete,
+    emit_session_export_empty,
+    emit_session_export_error,
+    emit_session_export_format_error,
+    emit_session_export_unavailable,
+    emit_session_exported,
     emit_session_preview,
     emit_session_resume_error,
     emit_session_resume_unavailable,
     emit_sessions_list,
+    write_session_export,
 )
 
 
@@ -146,6 +154,32 @@ def resume_session_for_cli(session_id: str) -> None:
     from opensquilla.cli.chat_cmd import run_chat
 
     run_chat(session_id=result)
+
+
+def export_session_for_cli(
+    session_id: str,
+    *,
+    output: Path | None,
+    format: str,
+) -> None:
+    """Load, write, and emit a session export for the CLI."""
+
+    if format not in {"md", "json"}:
+        emit_session_export_format_error()
+
+    payload = load_session_export_from_gateway(session_id)
+    if isinstance(payload, SessionGatewayUnavailable):
+        emit_session_export_unavailable(payload.message)
+        return
+    if isinstance(payload, SessionGatewayActionFailed):
+        emit_session_export_error(payload.message)
+        return
+    if payload is None:
+        emit_session_export_empty()
+        return
+
+    target = write_session_export(payload, session_id=session_id, output=output, format=format)
+    emit_session_exported(target)
 
 
 def abort_session_for_cli(session_id: str, *, json_output: bool) -> None:

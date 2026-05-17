@@ -2,53 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-import os
 from pathlib import Path
-from typing import Any
 
 import typer
 
-from opensquilla.cli.repl.session_state import messages_to_markdown
 from opensquilla.cli.sessions_workflows import (
     abort_session_for_cli,
     delete_session_for_cli,
+    export_session_for_cli,
     list_sessions_for_cli,
     resume_session_for_cli,
     show_session_for_cli,
 )
-from opensquilla.cli.ui import console, error_panel
-from opensquilla.cli.url_utils import normalize_gateway_url
 
 app = typer.Typer(help="Manage chat sessions.")
-
-_CLIENT_UNAVAILABLE = object()
-_ACTION_FAILED = object()
-
-
-def _resolved_key(payload: dict[str, Any], fallback: str) -> str:
-    value = payload.get("session_key") or payload.get("key") or fallback
-    return str(value)
-
-
-async def _with_client(action):
-    from opensquilla.cli.gateway_client import GatewayClient, GatewayRPCError
-
-    client = GatewayClient()
-    try:
-        await client.connect(
-            normalize_gateway_url(os.environ.get("OPENSQUILLA_GATEWAY_URL", "ws://localhost:18790/ws"))
-        )
-        return await action(client)
-    except SystemExit as exc:
-        console.print(f"[dim]{exc}[/dim]")
-        return _CLIENT_UNAVAILABLE
-    except GatewayRPCError as exc:
-        console.print(error_panel(str(exc)))
-        return _ACTION_FAILED
-    finally:
-        await client.close()
 
 
 @app.command("list")
@@ -115,44 +82,4 @@ def sessions_export(
     Uses the existing chat.history RPC for persisted transcript messages and
     falls back to session preview when no messages are available.
     """
-    if format not in {"md", "json"}:
-        console.print("[red]--format must be md or json[/red]")
-        raise typer.Exit(2)
-
-    async def _run(client):
-        resolved = await client.resolve_session(session_id)
-        key = _resolved_key(resolved, session_id)
-        preview = await client.preview_sessions(keys=[key])
-        history = await client.session_history(key, limit=1000)
-        return {"resolved": resolved, "preview": preview, "history": history}
-
-    result: dict[str, Any] | None = asyncio.run(_with_client(_run))
-    if result is _CLIENT_UNAVAILABLE:
-        console.print("[dim]Session export requires a running gateway.[/dim]")
-        return
-    if result is _ACTION_FAILED:
-        return
-    if result is None:
-        console.print("[red]Session export returned no data.[/red]")
-        return
-    target = output or Path(f"{session_id.replace(':', '-')}.{format}")
-    if format == "json":
-        target.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    else:
-        resolved = result.get("resolved", {})
-        key = _resolved_key(resolved, session_id)
-        previews = result.get("preview", {}).get("previews", [])
-        preview = previews[0] if previews else {}
-        messages = result.get("history", {}).get("messages", [])
-        transcript = messages_to_markdown(messages) if isinstance(messages, list) else ""
-        if not transcript.strip():
-            transcript = f"## Preview\n\n{preview.get('lastMessage', '')}\n"
-        body = (
-            f"# Session {key}\n\n"
-            f"- Status: {resolved.get('status', '')}\n"
-            f"- Model: {resolved.get('model') or ''}\n"
-            f"- Updated: {resolved.get('updated_at', '')}\n\n"
-            f"{transcript}"
-        )
-        target.write_text(body, encoding="utf-8")
-    console.print(f"[green]Exported:[/green] {target}")
+    export_session_for_cli(session_id, output=output, format=format)

@@ -67,6 +67,10 @@ class FakeGatewayClient:
         type(self).calls.append(("sessions.delete", {"keys": keys}))
         return type(self).rpc_payloads.get("sessions.delete", {"deleted": keys})
 
+    async def session_history(self, session_key: str, limit: int = 1000) -> dict[str, Any]:
+        type(self).calls.append(("chat.history", {"sessionKey": session_key, "limit": limit}))
+        return type(self).rpc_payloads.get("chat.history", {"messages": []})
+
     async def usage_cost(self) -> dict[str, Any]:
         type(self).calls.append(("usage.cost", {}))
         return type(self).cost_payload
@@ -2507,6 +2511,189 @@ def test_cli_sessions_resume_uses_workflow_boundary() -> None:
             "console",
             "result",
             "run_chat",
+        }
+    )
+
+
+def test_sessions_export_json_resolves_preview_history_and_writes(tmp_path, monkeypatch):
+    fake = _install_fake_gateway(monkeypatch)
+    fake.rpc_payloads = {
+        "sessions.resolve": {
+            "key": "agent:main:abc",
+            "session_id": "abc",
+            "status": "done",
+            "model": "gpt-test",
+        },
+        "sessions.preview": {
+            "previews": [{"key": "agent:main:abc", "lastMessage": "preview"}],
+        },
+        "chat.history": {
+            "messages": [{"role": "assistant", "text": "persisted transcript"}],
+        },
+    }
+    target = tmp_path / "session.json"
+
+    result = runner.invoke(
+        app,
+        ["sessions", "export", "abc", "--format", "json", "--output", str(target)],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Exported:" in result.stdout
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["resolved"]["key"] == "agent:main:abc"
+    assert payload["history"]["messages"][0]["text"] == "persisted transcript"
+    assert ("sessions.resolve", {"key": "abc"}) in fake.calls
+    assert ("sessions.preview", {"keys": ["agent:main:abc"], "limit": 50}) in fake.calls
+    assert ("chat.history", {"sessionKey": "agent:main:abc", "limit": 1000}) in fake.calls
+
+
+def test_sessions_export_markdown_uses_history_messages(tmp_path, monkeypatch):
+    fake = _install_fake_gateway(monkeypatch)
+    fake.rpc_payloads = {
+        "sessions.resolve": {
+            "key": "agent:main:abc",
+            "status": "done",
+            "model": "gpt-test",
+            "updated_at": "2026-05-17T00:00:00Z",
+        },
+        "sessions.preview": {
+            "previews": [{"key": "agent:main:abc", "lastMessage": "preview only"}],
+        },
+        "chat.history": {
+            "messages": [
+                {"role": "user", "text": "hello"},
+                {"role": "assistant", "content": "hi there"},
+            ],
+        },
+    }
+    target = tmp_path / "session.md"
+
+    result = runner.invoke(app, ["sessions", "export", "abc", "-o", str(target)])
+
+    assert result.exit_code == 0, result.stdout
+    body = target.read_text(encoding="utf-8")
+    assert "# Session agent:main:abc" in body
+    assert "- Status: done" in body
+    assert "- Model: gpt-test" in body
+    assert "## You\n\nhello" in body
+    assert "## Assistant\n\nhi there" in body
+    assert "preview only" not in body
+
+
+def test_sessions_export_gateway_unavailable_keeps_legacy_message(tmp_path, monkeypatch):
+    _install_fake_gateway(monkeypatch, FailingConnectGatewayClient)
+    target = tmp_path / "session.md"
+
+    result = runner.invoke(app, ["sessions", "export", "abc", "-o", str(target)])
+
+    assert result.exit_code == 0
+    assert "gateway offline" in result.stdout
+    assert "Session export requires a running gateway." in result.stdout
+    assert not target.exists()
+
+
+def test_sessions_export_invalid_format_does_not_connect(monkeypatch):
+    fake = _install_fake_gateway(monkeypatch)
+
+    result = runner.invoke(app, ["sessions", "export", "abc", "--format", "txt"])
+
+    assert result.exit_code == 2
+    assert "--format must be md or json" in result.stdout
+    assert fake.calls == []
+
+
+def test_cli_sessions_export_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        sessions_cmd,
+        sessions_presenters,
+        sessions_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(sessions_cmd.__file__).read_text(encoding="utf-8"))
+    presenter_tree = ast.parse(Path(sessions_presenters.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(Path(sessions_workflows.__file__).read_text(encoding="utf-8"))
+
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("opensquilla.")
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_workflows"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_gateway_queries"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_presenters"
+        for alias in node.names
+    }
+    presenter_repl_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.repl.session_state"
+        for alias in node.names
+    }
+    sessions_export = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "sessions_export"
+    )
+    command_calls = {
+        node.func.id
+        for node in ast.walk(sessions_export)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    command_identifiers = {
+        node.id for node in ast.walk(sessions_export) if isinstance(node, ast.Name)
+    }
+
+    assert "export_session_for_cli" in cmd_workflow_names
+    assert "load_session_export_from_gateway" in workflow_query_names
+    assert "SessionGatewayUnavailable" in workflow_query_names
+    assert "SessionGatewayActionFailed" in workflow_query_names
+    assert "emit_session_export_format_error" in workflow_presenter_names
+    assert "emit_session_export_unavailable" in workflow_presenter_names
+    assert "emit_session_export_error" in workflow_presenter_names
+    assert "emit_session_export_empty" in workflow_presenter_names
+    assert "write_session_export" in workflow_presenter_names
+    assert "emit_session_exported" in workflow_presenter_names
+    assert presenter_repl_names == {"messages_to_markdown"}
+    assert "opensquilla.cli.repl.session_state" not in cmd_direct_modules
+    assert "opensquilla.cli.ui" not in cmd_direct_modules
+    assert "opensquilla.cli.url_utils" not in cmd_direct_modules
+    assert "export_session_for_cli" in command_calls
+    assert not any(isinstance(node, ast.AsyncFunctionDef) for node in ast.walk(sessions_export))
+    assert not (
+        command_identifiers
+        & {
+            "_ACTION_FAILED",
+            "_CLIENT_UNAVAILABLE",
+            "_resolved_key",
+            "_with_client",
+            "asyncio",
+            "console",
+            "history",
+            "json",
+            "messages_to_markdown",
+            "preview",
+            "result",
+            "target",
         }
     )
 

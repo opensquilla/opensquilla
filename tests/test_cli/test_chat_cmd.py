@@ -3552,16 +3552,21 @@ def test_chat_slash_tables_use_presenter_boundary() -> None:
 
 def test_chat_gateway_readonly_lists_use_focused_workflow_boundaries() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    session_route_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_session_route_workflows.py"
+    )
     sessions_workflow_path = Path(chat_cmd.__file__).with_name(
         "chat_gateway_sessions_workflows.py"
     )
     models_workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_models_workflows.py")
     compatibility_path = Path(chat_cmd.__file__).with_name("chat_slash_workflows.py")
 
+    assert session_route_path.exists()
     assert sessions_workflow_path.exists()
     assert models_workflow_path.exists()
     assert compatibility_path.exists()
 
+    session_route_tree = ast.parse(session_route_path.read_text(encoding="utf-8"))
     sessions_workflow_tree = ast.parse(sessions_workflow_path.read_text(encoding="utf-8"))
     models_workflow_tree = ast.parse(models_workflow_path.read_text(encoding="utf-8"))
     compatibility_tree = ast.parse(compatibility_path.read_text(encoding="utf-8"))
@@ -3597,6 +3602,13 @@ def test_chat_gateway_readonly_lists_use_focused_workflow_boundaries() -> None:
         for node in ast.walk(models_workflow_tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+    session_route_imports = {
+        (node.module, alias.name)
+        for node in ast.walk(session_route_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        for alias in node.names
+    }
     compatibility_defs = {
         node.name
         for node in ast.walk(compatibility_tree)
@@ -3623,13 +3635,17 @@ def test_chat_gateway_readonly_lists_use_focused_workflow_boundaries() -> None:
     }
 
     assert (
-        "opensquilla.cli.chat_gateway_sessions_workflows",
-        "handle_gateway_sessions_command",
+        "opensquilla.cli.chat_gateway_session_route_workflows",
+        "handle_gateway_session_route_command",
     ) in chat_workflow_imports
     assert (
         "opensquilla.cli.chat_gateway_models_workflows",
         "handle_gateway_models_command",
     ) in chat_workflow_imports
+    assert (
+        "opensquilla.cli.chat_gateway_sessions_workflows",
+        "handle_gateway_sessions_command",
+    ) in session_route_imports
     assert not any(
         module == "opensquilla.cli.chat_slash_workflows"
         for module, _name in chat_workflow_imports
@@ -3945,11 +3961,15 @@ async def test_gateway_exact_route_executor_delegates_known_routes(monkeypatch) 
     assert calls == ["help", "status", "clear", "compact", "cost", "usage"]
 
 
-def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
+def test_gateway_session_routes_use_executor_boundary() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
-    workflow_path = Path(chat_cmd.__file__).with_name("chat_session_workflows.py")
+    workflow_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_session_route_workflows.py"
+    )
 
     assert workflow_path.exists()
+
+    from opensquilla.cli import chat_gateway_session_route_workflows
 
     workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
     slash_handler = next(
@@ -3961,8 +3981,168 @@ def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
         alias.name
         for node in ast.walk(chat_tree)
         if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_session_route_workflows"
+        for alias in node.names
+    }
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    workflow_imports = {
+        (node.module, alias.name)
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        for alias in node.names
+    }
+    session_handler_calls = {
+        "handle_new_session_command",
+        "handle_gateway_sessions_command",
+        "handle_resume_session_command",
+        "handle_delete_session_command",
+    }
+
+    assert chat_workflow_names == {"handle_gateway_session_route_command"}
+    assert "handle_gateway_session_route_command" in slash_name_calls
+    assert slash_name_calls.isdisjoint(session_handler_calls)
+    assert "handle_gateway_session_route_command" in workflow_defs
+    assert {
+        ("opensquilla.cli.chat_session_workflows", "handle_new_session_command"),
+        ("opensquilla.cli.chat_gateway_sessions_workflows", "handle_gateway_sessions_command"),
+        ("opensquilla.cli.chat_session_workflows", "handle_resume_session_command"),
+        ("opensquilla.cli.chat_session_workflows", "handle_delete_session_command"),
+    } <= workflow_imports
+    assert chat_gateway_session_route_workflows.GATEWAY_SESSION_ROUTE_NAMES == frozenset(
+        {"new", "sessions", "resume", "delete"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_session_route_executor_delegates_known_routes(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_session_route_workflows
+
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    calls: list[tuple[str, str, list[str]]] = []
+
+    async def fake_new(parts: list[str], seen_state: ChatSessionState, seen_client: object) -> None:
+        assert seen_state is state
+        assert seen_client is fake
+        calls.append(("new", "", parts))
+
+    async def fake_sessions(parts: list[str], seen_client: object) -> None:
+        assert seen_client is fake
+        calls.append(("sessions", "", parts))
+
+    async def fake_resume(
+        command: str,
+        parts: list[str],
+        seen_state: ChatSessionState,
+        seen_client: object,
+    ) -> None:
+        assert seen_state is state
+        assert seen_client is fake
+        calls.append(("resume", command, parts))
+
+    async def fake_delete(command: str, parts: list[str], seen_client: object) -> None:
+        assert seen_client is fake
+        calls.append(("delete", command, parts))
+
+    monkeypatch.setattr(
+        chat_gateway_session_route_workflows,
+        "handle_new_session_command",
+        fake_new,
+    )
+    monkeypatch.setattr(
+        chat_gateway_session_route_workflows,
+        "handle_gateway_sessions_command",
+        fake_sessions,
+    )
+    monkeypatch.setattr(
+        chat_gateway_session_route_workflows,
+        "handle_resume_session_command",
+        fake_resume,
+    )
+    monkeypatch.setattr(
+        chat_gateway_session_route_workflows,
+        "handle_delete_session_command",
+        fake_delete,
+    )
+
+    cases = [
+        ("new", "/new Research", ["/new", "Research"]),
+        ("sessions", "/sessions 3", ["/sessions", "3"]),
+        ("resume", "/resume abc", ["/resume", "abc"]),
+        ("delete", "/delete abc", ["/delete", "abc"]),
+    ]
+    for route_name, command, parts in cases:
+        handled = await chat_gateway_session_route_workflows.handle_gateway_session_route_command(
+            route_name,
+            command,
+            parts,
+            state,
+            fake,
+        )
+        assert handled is True
+
+    unhandled = await chat_gateway_session_route_workflows.handle_gateway_session_route_command(
+        "models",
+        "/models",
+        ["/models"],
+        state,
+        fake,
+    )
+
+    assert unhandled is False
+    assert calls == [
+        ("new", "", ["/new", "Research"]),
+        ("sessions", "", ["/sessions", "3"]),
+        ("resume", "/resume abc", ["/resume", "abc"]),
+        ("delete", "/delete abc", ["/delete", "abc"]),
+    ]
+
+
+def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_session_workflows.py")
+    executor_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_session_route_workflows.py"
+    )
+
+    assert workflow_path.exists()
+    assert executor_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    executor_tree = ast.parse(executor_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_session_route_workflows"
+        for alias in node.names
+    }
+    executor_workflow_names = {
+        alias.name
+        for node in ast.walk(executor_tree)
+        if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.chat_session_workflows"
         for alias in node.names
+    }
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     handler_gateway_calls = {
         node.func.attr
@@ -3975,11 +4155,15 @@ def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
-    assert chat_workflow_names == {
+    assert chat_workflow_names == {"handle_gateway_session_route_command"}
+    assert {
         "handle_delete_session_command",
         "handle_new_session_command",
         "handle_resume_session_command",
-    }
+    } <= executor_workflow_names
+    assert "handle_delete_session_command" not in slash_name_calls
+    assert "handle_new_session_command" not in slash_name_calls
+    assert "handle_resume_session_command" not in slash_name_calls
     assert "create_session" not in handler_gateway_calls
     assert "resolve_session" not in handler_gateway_calls
     assert "delete_sessions" not in handler_gateway_calls

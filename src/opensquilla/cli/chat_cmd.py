@@ -37,15 +37,12 @@ from opensquilla.cli.chat_gateway_permissions_workflows import (
     handle_gateway_permissions_command,
     handle_permissions_command,
 )
-from opensquilla.cli.chat_gateway_sessions_workflows import handle_gateway_sessions_command
+from opensquilla.cli.chat_gateway_session_route_workflows import (
+    handle_gateway_session_route_command,
+)
 from opensquilla.cli.chat_gateway_slash_routes import match_gateway_slash_route
 from opensquilla.cli.chat_model_usage_workflows import (
     handle_model_command,
-)
-from opensquilla.cli.chat_session_workflows import (
-    handle_delete_session_command,
-    handle_new_session_command,
-    handle_resume_session_command,
 )
 from opensquilla.cli.chat_standalone_image_workflows import handle_standalone_image_command
 from opensquilla.cli.chat_standalone_model_cost_workflows import (
@@ -770,20 +767,7 @@ async def _handle_gateway_slash_command(
     if await handle_gateway_exact_route_command(route_name, state, client):
         return True
 
-    if route_name == "new":
-        await handle_new_session_command(parts, state, client)
-        return True
-
-    if route_name == "sessions":
-        await handle_gateway_sessions_command(parts, client)
-        return True
-
-    if route_name == "resume":
-        await handle_resume_session_command(cmd, parts, state, client)
-        return True
-
-    if route_name == "delete":
-        await handle_delete_session_command(cmd, parts, client)
+    if await handle_gateway_session_route_command(route_name, cmd, parts, state, client):
         return True
 
     if route_name == "models":

@@ -10,7 +10,6 @@ from opensquilla.cli.skills_catalog_presenters import (
     emit_skill_rows,
     emit_skill_search_results,
 )
-from opensquilla.cli.skills_gateway_mutations import try_gateway_skill_mutation
 from opensquilla.cli.skills_gateway_presenters import (
     emit_gateway_skill_update,
     emit_gateway_skill_view,
@@ -19,17 +18,9 @@ from opensquilla.cli.skills_gateway_queries import (
     load_gateway_skill,
     update_gateway_skills,
 )
-from opensquilla.cli.skills_local_mutations import (
-    run_local_skill_install,
-    run_local_skill_uninstall,
-)
-from opensquilla.cli.skills_mutation_presenters import (
-    emit_failed_skill_mutation,
-    emit_local_skill_install_result,
-    emit_local_skill_install_start,
-    emit_local_skill_uninstall_result,
-    emit_missing_skill_mutation_result,
-    emit_skill_mutation_payload,
+from opensquilla.cli.skills_mutation_workflows import (
+    install_skill_for_cli,
+    uninstall_skill_for_cli,
 )
 from opensquilla.cli.skills_publish import publish_skill_for_cli
 from opensquilla.cli.skills_publish_presenters import emit_skill_publish_result
@@ -112,46 +103,12 @@ def skills_install(
     """Install a skill from a Community source."""
 
     async def _install() -> None:
-        payload = await try_gateway_skill_mutation(
-            "skills.install",
-            {"identifier": identifier, "source": source, "force": force},
-            json_output=json_output,
-        )
-        if payload is not None:
-            emit_skill_mutation_payload(
-                payload,
-                json_output=json_output,
-                success_label="Installed",
-                fallback_name=identifier,
-            )
-            return
-
-        emit_local_skill_install_start(identifier, source, json_output=json_output)
-        outcome = await run_local_skill_install(
+        await install_skill_for_cli(
             identifier,
             source=source,
             force=force,
+            json_output=json_output,
         )
-        if outcome.unavailable_message:
-            emit_failed_skill_mutation(
-                outcome.unavailable_message,
-                json_output=json_output,
-                success_label="Installed",
-                fallback_name=identifier,
-            )
-            return
-
-        result = outcome.result
-        if result is None:
-            emit_missing_skill_mutation_result(
-                "install",
-                json_output=json_output,
-                success_label="Installed",
-                fallback_name=identifier,
-            )
-            return
-
-        emit_local_skill_install_result(result, json_output=json_output)
 
     asyncio.run(_install())
 
@@ -164,41 +121,7 @@ def skills_uninstall(
     """Uninstall a managed skill."""
 
     async def _uninstall() -> None:
-        payload = await try_gateway_skill_mutation(
-            "skills.uninstall",
-            {"name": name},
-            json_output=json_output,
-        )
-        if payload is not None:
-            emit_skill_mutation_payload(
-                payload,
-                json_output=json_output,
-                success_label="Uninstalled",
-                fallback_name=name,
-            )
-            return
-
-        outcome = await run_local_skill_uninstall(name)
-        if outcome.unavailable_message:
-            emit_failed_skill_mutation(
-                outcome.unavailable_message,
-                json_output=json_output,
-                success_label="Uninstalled",
-                fallback_name=name,
-            )
-            return
-
-        result = outcome.result
-        if result is None:
-            emit_missing_skill_mutation_result(
-                "uninstall",
-                json_output=json_output,
-                success_label="Uninstalled",
-                fallback_name=name,
-            )
-            return
-
-        emit_local_skill_uninstall_result(result, json_output=json_output)
+        await uninstall_skill_for_cli(name, json_output=json_output)
 
     asyncio.run(_uninstall())
 

@@ -667,7 +667,7 @@ def test_skills_install_and_uninstall_fallback_delegates_to_local_mutations(
     monkeypatch,
 ):
     _install_fake_gateway(monkeypatch, FailingConnectGatewayClient)
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_mutation_workflows
 
     @dataclass(frozen=True)
     class LocalResult:
@@ -701,12 +701,12 @@ def test_skills_install_and_uninstall_fallback_delegates_to_local_mutations(
         )
 
     monkeypatch.setattr(
-        skills_cmd,
+        skills_mutation_workflows,
         "run_local_skill_install",
         fake_run_local_skill_install,
     )
     monkeypatch.setattr(
-        skills_cmd,
+        skills_mutation_workflows,
         "run_local_skill_uninstall",
         fake_run_local_skill_uninstall,
     )
@@ -839,24 +839,39 @@ def test_cli_skills_search_does_not_import_hub_search_operation_details() -> Non
 
 
 def test_cli_skills_install_fallback_uses_local_mutation_boundary() -> None:
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_cmd, skills_mutation_workflows
 
-    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(
+        Path(skills_mutation_workflows.__file__).read_text(encoding="utf-8")
+    )
     imported_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.skills.hub.operations"
         for alias in node.names
     }
     imported_cli_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_local_mutations"
         for alias in node.names
     }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_mutation_workflows"
+        for alias in node.names
+    }
+    cmd_direct_modules = {
+        node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
+    }
 
+    assert cmd_workflow_names == {"install_skill_for_cli", "uninstall_skill_for_cli"}
+    assert "opensquilla.cli.skills_local_mutations" not in cmd_direct_modules
     assert "run_local_skill_install" in imported_cli_names
     assert "run_local_skill_uninstall" in imported_cli_names
     assert "run_skill_install_operation" not in imported_names
@@ -869,37 +884,48 @@ def test_cli_skills_install_fallback_uses_local_mutation_boundary() -> None:
 
 
 def test_cli_skills_install_gateway_mutations_use_cli_boundary() -> None:
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_cmd, skills_mutation_workflows
 
-    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(
+        Path(skills_mutation_workflows.__file__).read_text(encoding="utf-8")
+    )
     imported_gateway_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.gateway_rpc"
         for alias in node.names
     }
     imported_output_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.output"
         for alias in node.names
     }
     imported_mutation_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_gateway_mutations"
         for alias in node.names
     }
-    identifiers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    cmd_direct_modules = {
+        node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
+    }
+    identifiers = {
+        node.id for node in ast.walk(workflow_tree) if isinstance(node, ast.Name)
+    }
     function_names = {
-        node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+        node.name for node in ast.walk(workflow_tree) if isinstance(node, ast.FunctionDef)
     } | {
-        node.name for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.AsyncFunctionDef)
     }
 
+    assert "opensquilla.cli.skills_gateway_mutations" not in cmd_direct_modules
     assert "try_gateway_skill_mutation" in imported_mutation_names
     assert "default_gateway_url" not in imported_gateway_names
     assert "rpc_error_exit_code" not in imported_gateway_names
@@ -1009,36 +1035,51 @@ def test_cli_skills_catalog_presenters_use_cli_boundary() -> None:
 
 
 def test_cli_skills_mutation_presenters_use_cli_boundary() -> None:
-    from opensquilla.cli import skills_cmd
+    from opensquilla.cli import skills_cmd, skills_mutation_workflows
 
-    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(
+        Path(skills_mutation_workflows.__file__).read_text(encoding="utf-8")
+    )
     imported_modules = {
-        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        node.module
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
     }
     imported_output_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.output"
         for alias in node.names
     }
     imported_presenter_names = {
         alias.name
-        for node in ast.walk(tree)
+        for node in ast.walk(workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.skills_mutation_presenters"
         for alias in node.names
     }
-    identifiers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    cmd_direct_modules = {
+        node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
+    }
+    identifiers = {
+        node.id for node in ast.walk(workflow_tree) if isinstance(node, ast.Name)
+    }
     function_names = {
-        node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+        node.name for node in ast.walk(workflow_tree) if isinstance(node, ast.FunctionDef)
     } | {
-        node.name for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.AsyncFunctionDef)
     }
     constants = {
-        node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+        node.value
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.Constant)
     }
 
+    assert "opensquilla.cli.skills_mutation_presenters" not in cmd_direct_modules
     assert imported_presenter_names == {
         "emit_failed_skill_mutation",
         "emit_local_skill_install_result",

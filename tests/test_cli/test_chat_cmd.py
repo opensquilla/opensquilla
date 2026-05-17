@@ -435,6 +435,37 @@ async def test_standalone_model_command_updates_next_turn_model(monkeypatch) -> 
     assert captured["model"] == "anthropic/claude-sonnet-4"
 
 
+@pytest.mark.asyncio
+async def test_standalone_status_commands_emit_without_turnrunner_calls(monkeypatch) -> None:
+    run_messages: list[str] = []
+    inputs = iter(["/status", "/session", "/models", "/quit"])
+
+    class FakeTurnRunner:
+        def __init__(self, **kwargs) -> None:
+            return None
+
+        async def run(self, message: str, session_key: str, **kwargs):
+            run_messages.append(message)
+            yield DoneEvent()
+
+    async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
+        return next(inputs)
+
+    async def fake_build_services() -> _FakeServices:
+        return _FakeServices()
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.build_services", fake_build_services)
+    monkeypatch.setattr(chat_cmd, "prompt_user", fake_prompt_user)
+
+    await chat_cmd._standalone_repl(
+        model="openrouter/test",
+        session_id="standalone:test",
+    )
+
+    assert run_messages == []
+
+
 def test_chat_workspace_strict_resolution_matches_agent_precedence(
     monkeypatch,
     tmp_path,
@@ -1440,6 +1471,30 @@ def test_standalone_model_cost_workflow_updates_state_and_emits_usage(monkeypatc
     assert "$0.012300" in output
 
 
+def test_standalone_status_workflow_emits_session_model_and_models_notice(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_standalone_status_workflows
+
+    state = ChatSessionState(session_key="standalone:test", model=None)
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        chat_standalone_status_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    chat_standalone_status_workflows.handle_standalone_status_command(state)
+    chat_standalone_status_workflows.handle_standalone_models_command()
+
+    output = buffer.getvalue()
+    assert "session" in output
+    assert "standalone:test" in output
+    assert "model" in output
+    assert "default" in output
+    assert "/models requires gateway mode." in output
+
+
 @pytest.mark.asyncio
 async def test_gateway_slash_tool_compress_toggles_config(monkeypatch) -> None:
     _FakeGatewayClient.instances.clear()
@@ -1984,6 +2039,48 @@ def test_chat_standalone_model_cost_slashes_use_workflow_boundary() -> None:
     assert {
         "handle_standalone_cost_command",
         "handle_standalone_model_command",
+    } <= workflow_defs
+
+
+def test_chat_standalone_status_slashes_use_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_status_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    standalone_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_standalone_status_workflows"
+        for alias in node.names
+    }
+    standalone_literals = {
+        node.value
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {
+        "handle_standalone_models_command",
+        "handle_standalone_status_command",
+    }
+    assert "[yellow]/models requires gateway mode.[/yellow]" not in standalone_literals
+    assert "model[/] [dim]" not in standalone_literals
+    assert {
+        "handle_standalone_models_command",
+        "handle_standalone_status_command",
     } <= workflow_defs
 
 

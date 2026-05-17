@@ -44,6 +44,10 @@ from opensquilla.cli.chat_standalone_model_cost_workflows import (
     handle_standalone_cost_command,
     handle_standalone_model_command,
 )
+from opensquilla.cli.chat_standalone_status_workflows import (
+    handle_standalone_models_command,
+    handle_standalone_status_command,
+)
 from opensquilla.cli.chat_tool_compression_workflows import handle_tool_compress_command
 from opensquilla.cli.chat_transcript_exports import (
     save_gateway_transcript_command,
@@ -573,13 +577,10 @@ async def _standalone_repl(
                     console.print(f"[green]Started new session{label}:[/green] {session_key}")
                     continue
                 if stripped in {"/status", "/session"}:
-                    console.print(
-                        f"[{ACCENT}]session[/] [dim]{state.session_key}[/dim]\n"
-                        f"[{ACCENT}]model[/] [dim]{state.model or 'default'}[/dim]"
-                    )
+                    handle_standalone_status_command(state)
                     continue
                 if stripped == "/models":
-                    console.print("[yellow]/models requires gateway mode.[/yellow]")
+                    handle_standalone_models_command()
                     continue
                 if parts := _slash_parts(stripped, "/model"):
                     updated_model = handle_standalone_model_command(parts, state)

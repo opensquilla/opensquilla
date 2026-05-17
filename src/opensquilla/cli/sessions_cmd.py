@@ -10,10 +10,9 @@ from typing import Any
 
 import typer
 
-from opensquilla.cli.gateway_rpc import run_gateway_sync
-from opensquilla.cli.output import print_json
 from opensquilla.cli.repl.session_state import messages_to_markdown
 from opensquilla.cli.sessions_workflows import (
+    abort_session_for_cli,
     list_sessions_for_cli,
     show_session_for_cli,
 )
@@ -102,22 +101,7 @@ def sessions_abort(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Abort a running session turn."""
-
-    async def _run(client):
-        resolved = await client.resolve_session(session_id)
-        key = _resolved_key(resolved, session_id)
-        result = await client.abort_session(key)
-        if isinstance(result, dict):
-            return {"resolved": resolved, **result}
-        return {"resolved": resolved, "result": result}
-
-    payload = run_gateway_sync(_run, json_output=json_output)
-    if json_output:
-        print_json(payload)
-        return
-    key = payload.get("key") or session_id
-    aborted = bool(payload.get("aborted", False))
-    console.print(f"{'Aborted' if aborted else 'No running task for'} session {key!r}")
+    abort_session_for_cli(session_id, json_output=json_output)
 
 
 @app.command("delete")

@@ -37,3 +37,21 @@ def load_session_preview_from_gateway(
         return {"resolved": resolved, "preview": preview}
 
     return cast(dict[str, Any], run_gateway_sync(_run, json_output=json_output))
+
+
+def abort_session_from_gateway(
+    session_id: str,
+    *,
+    json_output: bool,
+) -> dict[str, Any]:
+    """Resolve and abort a session through the running gateway."""
+
+    async def _run(client: Any) -> dict[str, Any]:
+        resolved = cast(dict[str, Any], await client.resolve_session(session_id))
+        key = _resolved_key(resolved, session_id)
+        result = await client.abort_session(key)
+        if isinstance(result, dict):
+            return {"resolved": resolved, **result}
+        return {"resolved": resolved, "result": result}
+
+    return cast(dict[str, Any], run_gateway_sync(_run, json_output=json_output))

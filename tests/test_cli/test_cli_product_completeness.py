@@ -2402,6 +2402,90 @@ def test_sessions_abort_resolves_then_aborts(monkeypatch):
     assert ("sessions.abort", {"key": "agent:main:abc"}) in fake.calls
 
 
+def test_cli_sessions_abort_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        sessions_cmd,
+        sessions_gateway_queries,
+        sessions_presenters,
+        sessions_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(sessions_cmd.__file__).read_text(encoding="utf-8"))
+    query_tree = ast.parse(
+        Path(sessions_gateway_queries.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(Path(sessions_presenters.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(Path(sessions_workflows.__file__).read_text(encoding="utf-8"))
+
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_workflows"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_gateway_queries"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_presenters"
+        for alias in node.names
+    }
+    query_rpc_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.gateway_rpc"
+        for alias in node.names
+    }
+    presenter_output_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    sessions_abort = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "sessions_abort"
+    )
+    command_calls = {
+        node.func.id
+        for node in ast.walk(sessions_abort)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    command_identifiers = {
+        node.id for node in ast.walk(sessions_abort) if isinstance(node, ast.Name)
+    }
+
+    assert "abort_session_for_cli" in cmd_workflow_names
+    assert "abort_session_from_gateway" in workflow_query_names
+    assert "emit_session_abort" in workflow_presenter_names
+    assert query_rpc_names == {"run_gateway_sync"}
+    assert presenter_output_names == {"print_json"}
+    assert "abort_session_for_cli" in command_calls
+    assert not any(isinstance(node, ast.AsyncFunctionDef) for node in ast.walk(sessions_abort))
+    assert not (
+        command_identifiers
+        & {
+            "_resolved_key",
+            "console",
+            "payload",
+            "print_json",
+            "resolved",
+            "run_gateway_sync",
+        }
+    )
+
+
 def test_memory_status_json_reuses_doctor_rpc(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {

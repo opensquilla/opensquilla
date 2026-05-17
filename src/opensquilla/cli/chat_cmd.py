@@ -31,7 +31,9 @@ from opensquilla.cli.chat_gateway_exact_route_workflows import (
 from opensquilla.cli.chat_gateway_file_workflows import handle_gateway_file_command
 from opensquilla.cli.chat_gateway_forget_workflows import handle_gateway_forget_command
 from opensquilla.cli.chat_gateway_image_workflows import handle_gateway_image_command
-from opensquilla.cli.chat_gateway_models_workflows import handle_gateway_models_command
+from opensquilla.cli.chat_gateway_model_route_workflows import (
+    handle_gateway_model_route_command,
+)
 from opensquilla.cli.chat_gateway_path_workflows import handle_gateway_path_command
 from opensquilla.cli.chat_gateway_permissions_workflows import (
     handle_gateway_permissions_command,
@@ -41,9 +43,6 @@ from opensquilla.cli.chat_gateway_session_route_workflows import (
     handle_gateway_session_route_command,
 )
 from opensquilla.cli.chat_gateway_slash_routes import match_gateway_slash_route
-from opensquilla.cli.chat_model_usage_workflows import (
-    handle_model_command,
-)
 from opensquilla.cli.chat_standalone_image_workflows import handle_standalone_image_command
 from opensquilla.cli.chat_standalone_model_cost_workflows import (
     handle_standalone_cost_command,
@@ -770,12 +769,7 @@ async def _handle_gateway_slash_command(
     if await handle_gateway_session_route_command(route_name, cmd, parts, state, client):
         return True
 
-    if route_name == "models":
-        await handle_gateway_models_command(parts, client)
-        return True
-
-    if route_name == "model":
-        await handle_model_command(parts, state, client)
+    if await handle_gateway_model_route_command(route_name, parts, state, client):
         return True
 
     if route_name == "tool_compress":

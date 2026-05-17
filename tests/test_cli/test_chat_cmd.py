@@ -3555,6 +3555,9 @@ def test_chat_gateway_readonly_lists_use_focused_workflow_boundaries() -> None:
     session_route_path = Path(chat_cmd.__file__).with_name(
         "chat_gateway_session_route_workflows.py"
     )
+    model_route_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_model_route_workflows.py"
+    )
     sessions_workflow_path = Path(chat_cmd.__file__).with_name(
         "chat_gateway_sessions_workflows.py"
     )
@@ -3562,17 +3565,26 @@ def test_chat_gateway_readonly_lists_use_focused_workflow_boundaries() -> None:
     compatibility_path = Path(chat_cmd.__file__).with_name("chat_slash_workflows.py")
 
     assert session_route_path.exists()
+    assert model_route_path.exists()
     assert sessions_workflow_path.exists()
     assert models_workflow_path.exists()
     assert compatibility_path.exists()
 
     session_route_tree = ast.parse(session_route_path.read_text(encoding="utf-8"))
+    model_route_tree = ast.parse(model_route_path.read_text(encoding="utf-8"))
     sessions_workflow_tree = ast.parse(sessions_workflow_path.read_text(encoding="utf-8"))
     models_workflow_tree = ast.parse(models_workflow_path.read_text(encoding="utf-8"))
     compatibility_tree = ast.parse(compatibility_path.read_text(encoding="utf-8"))
     chat_workflow_imports = {
         (node.module, alias.name)
         for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        for alias in node.names
+    }
+    model_route_imports = {
+        (node.module, alias.name)
+        for node in ast.walk(model_route_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module is not None
         for alias in node.names
@@ -3639,13 +3651,17 @@ def test_chat_gateway_readonly_lists_use_focused_workflow_boundaries() -> None:
         "handle_gateway_session_route_command",
     ) in chat_workflow_imports
     assert (
-        "opensquilla.cli.chat_gateway_models_workflows",
-        "handle_gateway_models_command",
+        "opensquilla.cli.chat_gateway_model_route_workflows",
+        "handle_gateway_model_route_command",
     ) in chat_workflow_imports
     assert (
         "opensquilla.cli.chat_gateway_sessions_workflows",
         "handle_gateway_sessions_command",
     ) in session_route_imports
+    assert (
+        "opensquilla.cli.chat_gateway_models_workflows",
+        "handle_gateway_models_command",
+    ) in model_route_imports
     assert not any(
         module == "opensquilla.cli.chat_slash_workflows"
         for module, _name in chat_workflow_imports
@@ -4108,6 +4124,120 @@ async def test_gateway_session_route_executor_delegates_known_routes(monkeypatch
     ]
 
 
+def test_gateway_model_routes_use_executor_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_model_route_workflows.py"
+    )
+
+    assert workflow_path.exists()
+
+    from opensquilla.cli import chat_gateway_model_route_workflows
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_model_route_workflows"
+        for alias in node.names
+    }
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    workflow_imports = {
+        (node.module, alias.name)
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        for alias in node.names
+    }
+
+    assert chat_workflow_names == {"handle_gateway_model_route_command"}
+    assert "handle_gateway_model_route_command" in slash_name_calls
+    assert "handle_gateway_models_command" not in slash_name_calls
+    assert "handle_model_command" not in slash_name_calls
+    assert "handle_gateway_model_route_command" in workflow_defs
+    assert {
+        ("opensquilla.cli.chat_gateway_models_workflows", "handle_gateway_models_command"),
+        ("opensquilla.cli.chat_model_usage_workflows", "handle_model_command"),
+    } <= workflow_imports
+    assert chat_gateway_model_route_workflows.GATEWAY_MODEL_ROUTE_NAMES == frozenset(
+        {"models", "model"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_model_route_executor_delegates_known_routes(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_model_route_workflows
+
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    calls: list[tuple[str, list[str]]] = []
+
+    async def fake_models(parts: list[str], seen_client: object) -> None:
+        assert seen_client is fake
+        calls.append(("models", parts))
+
+    async def fake_model(
+        parts: list[str],
+        seen_state: ChatSessionState,
+        seen_client: object,
+    ) -> None:
+        assert seen_state is state
+        assert seen_client is fake
+        calls.append(("model", parts))
+
+    monkeypatch.setattr(
+        chat_gateway_model_route_workflows,
+        "handle_gateway_models_command",
+        fake_models,
+    )
+    monkeypatch.setattr(
+        chat_gateway_model_route_workflows,
+        "handle_model_command",
+        fake_model,
+    )
+
+    cases = [
+        ("models", ["/models"]),
+        ("model", ["/model", "openai/test"]),
+    ]
+    for route_name, parts in cases:
+        handled = await chat_gateway_model_route_workflows.handle_gateway_model_route_command(
+            route_name,
+            parts,
+            state,
+            fake,
+        )
+        assert handled is True
+
+    unhandled = await chat_gateway_model_route_workflows.handle_gateway_model_route_command(
+        "tool_compress",
+        ["/tool-compress"],
+        state,
+        fake,
+    )
+
+    assert unhandled is False
+    assert calls == [
+        ("models", ["/models"]),
+        ("model", ["/model", "openai/test"]),
+    ]
+
+
 def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_session_workflows.py")
@@ -4236,10 +4366,15 @@ def test_chat_session_maintenance_slashes_use_workflow_boundary() -> None:
 def test_chat_model_usage_slashes_use_workflow_boundary() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_model_usage_workflows.py")
+    executor_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_model_route_workflows.py"
+    )
 
     assert workflow_path.exists()
+    assert executor_path.exists()
 
     workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    executor_tree = ast.parse(executor_path.read_text(encoding="utf-8"))
     slash_handler = next(
         node
         for node in ast.walk(chat_tree)
@@ -4249,8 +4384,20 @@ def test_chat_model_usage_slashes_use_workflow_boundary() -> None:
         alias.name
         for node in ast.walk(chat_tree)
         if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_model_route_workflows"
+        for alias in node.names
+    }
+    executor_workflow_names = {
+        alias.name
+        for node in ast.walk(executor_tree)
+        if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.chat_model_usage_workflows"
         for alias in node.names
+    }
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     handler_gateway_calls = {
         node.func.attr
@@ -4270,7 +4417,9 @@ def test_chat_model_usage_slashes_use_workflow_boundary() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
-    assert chat_workflow_names == {"handle_model_command"}
+    assert chat_workflow_names == {"handle_gateway_model_route_command"}
+    assert executor_workflow_names == {"handle_model_command", "ModelUsageClient"}
+    assert "handle_model_command" not in slash_name_calls
     assert "patch_session" not in handler_gateway_calls
     assert "usage_status" not in handler_gateway_calls
     assert handler_usage_render_calls == []

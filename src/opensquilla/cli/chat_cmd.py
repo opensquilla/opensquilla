@@ -34,10 +34,12 @@ from opensquilla.cli.chat_gateway_permissions_workflows import (
     handle_permissions_command,
 )
 from opensquilla.cli.chat_gateway_status_workflows import handle_gateway_status_command
+from opensquilla.cli.chat_gateway_usage_workflows import (
+    handle_gateway_cost_command,
+    handle_gateway_usage_command,
+)
 from opensquilla.cli.chat_model_usage_workflows import (
-    handle_cost_command,
     handle_model_command,
-    handle_usage_command,
 )
 from opensquilla.cli.chat_session_maintenance_workflows import (
     handle_clear_session_command,
@@ -805,11 +807,11 @@ async def _handle_gateway_slash_command(
         return True
 
     if cmd == "/cost":
-        handle_cost_command(state)
+        handle_gateway_cost_command(state)
         return True
 
     if cmd == "/usage":
-        await handle_usage_command(client)
+        await handle_gateway_usage_command(client)
         return True
 
     if _slash_parts(cmd, "/tool-compress"):

@@ -2960,7 +2960,7 @@ async def test_gateway_slash_model_updates_session_model(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_gateway_slash_cost_and_usage_emit_usage_views(monkeypatch) -> None:
-    from opensquilla.cli import chat_model_usage_workflows
+    from opensquilla.cli import chat_gateway_usage_workflows
 
     _FakeGatewayClient.instances.clear()
     monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
@@ -2971,7 +2971,7 @@ async def test_gateway_slash_cost_and_usage_emit_usage_views(monkeypatch) -> Non
     )
     buffer = io.StringIO()
     monkeypatch.setattr(
-        chat_model_usage_workflows,
+        chat_gateway_usage_workflows,
         "console",
         Console(file=buffer, force_terminal=False, width=100, highlight=False),
     )
@@ -2992,6 +2992,31 @@ async def test_gateway_slash_cost_and_usage_emit_usage_views(monkeypatch) -> Non
     assert "aggregate usage:" in output
     assert "12,345 tok" in output
     assert "$0.045679" in output
+
+
+@pytest.mark.asyncio
+async def test_gateway_usage_unknown_prefixes_are_not_handled(monkeypatch) -> None:
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+
+    handled_cost = await chat_cmd._handle_gateway_slash_command(
+        "/costs",
+        state,
+        fake,
+        {"mode": None},
+    )
+    handled_usage = await chat_cmd._handle_gateway_slash_command(
+        "/usagex",
+        state,
+        fake,
+        {"mode": None},
+    )
+
+    assert handled_cost is False
+    assert handled_usage is False
+    assert fake.usage_status_calls == 0
 
 
 def test_standalone_model_cost_workflow_updates_state_and_emits_usage(monkeypatch) -> None:
@@ -3691,15 +3716,59 @@ def test_chat_model_usage_slashes_use_workflow_boundary() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
-    assert chat_workflow_names == {
-        "handle_cost_command",
-        "handle_model_command",
-        "handle_usage_command",
-    }
+    assert chat_workflow_names == {"handle_model_command"}
     assert "patch_session" not in handler_gateway_calls
     assert "usage_status" not in handler_gateway_calls
     assert handler_usage_render_calls == []
-    assert {"handle_cost_command", "handle_model_command", "handle_usage_command"} <= workflow_defs
+    assert "handle_model_command" in workflow_defs
+    assert "handle_cost_command" not in workflow_defs
+    assert "handle_usage_command" not in workflow_defs
+
+
+def test_chat_gateway_usage_slashes_use_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_usage_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_usage_workflows"
+        for alias in node.names
+    }
+    handler_gateway_calls = {
+        node.func.attr
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    handler_usage_render_calls = [
+        node
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "render"
+    ]
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {
+        "handle_gateway_cost_command",
+        "handle_gateway_usage_command",
+    }
+    assert "usage_status" not in handler_gateway_calls
+    assert handler_usage_render_calls == []
+    assert {"handle_gateway_cost_command", "handle_gateway_usage_command"} <= workflow_defs
 
 
 def test_chat_tool_compress_slashes_use_workflow_boundary() -> None:

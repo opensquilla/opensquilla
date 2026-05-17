@@ -22,6 +22,7 @@ import typer
 from rich.panel import Panel
 
 from opensquilla.cli import attachments as _cli_attachments
+from opensquilla.cli.chat_gateway_image_workflows import handle_gateway_image_command
 from opensquilla.cli.chat_model_usage_workflows import (
     handle_cost_command,
     handle_model_command,
@@ -814,24 +815,15 @@ async def _handle_gateway_slash_command(
         return True
 
     if parts := _slash_parts(cmd, "/image"):
-        if len(parts) == 1 or not parts[1].strip():
-            console.print("[red]Usage: /image <path> [prompt][/red]")
-            return True
-        try:
-            prompt, attachments = _image_prompt_and_attachments(cmd)
-        except ValueError as exc:
-            console.print(error_panel(str(exc)))
-            return True
-        result = await _stream_response_gateway(
-            client,
-            state.session_key,
-            prompt,
-            elevated_state,
-            attachments=attachments,
+        await handle_gateway_image_command(
+            cmd,
+            parts,
+            state,
+            client=client,
+            elevated_state=elevated_state,
+            stream_response=_stream_response_gateway,
+            image_prompt_and_attachments=_image_prompt_and_attachments,
         )
-        state.transcript.add("user", prompt)
-        state.transcript.add("assistant", result.text)
-        state.usage.add(result.usage)
         return True
 
     if parts := _slash_parts(cmd, "/path"):

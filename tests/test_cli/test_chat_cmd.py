@@ -1492,6 +1492,136 @@ async def test_gateway_path_command_remote_rejects_before_send(
 
 
 @pytest.mark.asyncio
+async def test_gateway_image_workflow_streams_with_attachments_and_updates_state() -> None:
+    from opensquilla.cli import chat_gateway_image_workflows
+
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    client = object()
+    elevated_state = {"mode": "always"}
+    attachments = [{"type": "image/png", "data": "ZmFrZQ==", "name": "chart.png"}]
+    calls: list[dict[str, object]] = []
+
+    def prompt_and_attachments(command: str) -> tuple[str, list[dict[str, str]]]:
+        assert command == "/image /tmp/chart.png describe chart"
+        return "describe chart", attachments
+
+    async def stream_response(
+        gateway_client: object,
+        session_key: str,
+        prompt: str,
+        elevated: dict[str, str | None],
+        **kwargs: object,
+    ) -> TurnResult:
+        calls.append(
+            {
+                "client": gateway_client,
+                "session_key": session_key,
+                "prompt": prompt,
+                "elevated": elevated,
+                "kwargs": kwargs,
+            }
+        )
+        return TurnResult(
+            text="image gateway reply",
+            usage=UsageSummary(input_tokens=9, output_tokens=13, cost_usd=0.034),
+        )
+
+    handled = await chat_gateway_image_workflows.handle_gateway_image_command(
+        "/image /tmp/chart.png describe chart",
+        ["/image", "/tmp/chart.png describe chart"],
+        state,
+        client=client,
+        elevated_state=elevated_state,
+        stream_response=stream_response,
+        image_prompt_and_attachments=prompt_and_attachments,
+    )
+
+    assert handled is True
+    assert calls == [
+        {
+            "client": client,
+            "session_key": "agent:main:abc123",
+            "prompt": "describe chart",
+            "elevated": elevated_state,
+            "kwargs": {"attachments": attachments},
+        }
+    ]
+    transcript = state.transcript.to_markdown()
+    assert "describe chart" in transcript
+    assert "image gateway reply" in transcript
+    assert state.usage.render() == "22 tok (9 in / 13 out) · cache 0 · $0.034000"
+
+
+@pytest.mark.asyncio
+async def test_gateway_image_workflow_prints_usage_without_path(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_image_workflows
+
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    buffer = io.StringIO()
+
+    async def stream_response(*args: object, **kwargs: object) -> TurnResult:
+        raise AssertionError("stream_response must not run without a path")
+
+    def prompt_and_attachments(command: str) -> tuple[str, list[dict[str, str]]]:
+        raise AssertionError("image_prompt_and_attachments must not run without a path")
+
+    monkeypatch.setattr(
+        chat_gateway_image_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_gateway_image_workflows.handle_gateway_image_command(
+        "/image",
+        ["/image"],
+        state,
+        client=object(),
+        elevated_state={"mode": None},
+        stream_response=stream_response,
+        image_prompt_and_attachments=prompt_and_attachments,
+    )
+
+    assert handled is True
+    assert "Usage: /image <path> [prompt]" in buffer.getvalue()
+    assert state.transcript.to_markdown() == ""
+
+
+@pytest.mark.asyncio
+async def test_gateway_image_workflow_renders_prompt_errors(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_image_workflows
+
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    buffer = io.StringIO()
+
+    def prompt_and_attachments(command: str) -> tuple[str, list[dict[str, str]]]:
+        assert command == "/image missing.bmp"
+        raise ValueError("Unsupported format: bmp. Use png/jpg/gif/webp")
+
+    async def stream_response(*args: object, **kwargs: object) -> TurnResult:
+        raise AssertionError("stream_response must not run after a prompt error")
+
+    monkeypatch.setattr(
+        chat_gateway_image_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_gateway_image_workflows.handle_gateway_image_command(
+        "/image missing.bmp",
+        ["/image", "missing.bmp"],
+        state,
+        client=object(),
+        elevated_state={"mode": None},
+        stream_response=stream_response,
+        image_prompt_and_attachments=prompt_and_attachments,
+    )
+
+    assert handled is True
+    assert "Unsupported format: bmp" in buffer.getvalue()
+    assert state.transcript.to_markdown() == ""
+
+
+@pytest.mark.asyncio
 async def test_gateway_chat_does_not_forward_workspace_fields() -> None:
     from opensquilla.cli.gateway_client import GatewayClient
 
@@ -2796,6 +2926,48 @@ def test_chat_standalone_image_slash_uses_workflow_boundary() -> None:
     assert "_image_prompt_from_command" not in standalone_name_calls
     assert "Usage: /image <path> [prompt]" not in standalone_literals
     assert "handle_standalone_image_command" in workflow_defs
+
+
+def test_chat_gateway_image_slash_uses_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_image_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_image_workflows"
+        for alias in node.names
+    }
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    slash_literals = {
+        node.value
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {"handle_gateway_image_command"}
+    assert "handle_gateway_image_command" in slash_name_calls
+    assert "_image_prompt_and_attachments" not in slash_name_calls
+    assert "Usage: /image <path> [prompt]" not in slash_literals
+    assert "handle_gateway_image_command" in workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

@@ -11,6 +11,13 @@ from rich.table import Table
 from opensquilla.cli.output import print_json
 from opensquilla.onboarding.channel_specs import ChannelSetupSpec
 
+_SOURCE_LABEL = {
+    "explicit": "from --config",
+    "env": "from OPENSQUILLA_GATEWAY_CONFIG_PATH",
+    "cwd": "found in cwd",
+    "home": "default in $HOME",
+}
+
 
 def emit_channel_types(
     specs: list[ChannelSetupSpec],
@@ -115,6 +122,54 @@ def emit_channel_catalog_error(exc: Exception) -> NoReturn:
 
     typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
     raise typer.Exit(code=2) from exc
+
+
+def emit_channel_config_path(config_path: object, *, source: str) -> None:
+    """Emit the resolved channel config path."""
+
+    typer.secho(
+        f"Config: {config_path} ({_SOURCE_LABEL[source]})",
+        fg=typer.colors.CYAN,
+    )
+
+
+def emit_configured_channels(
+    entries: list[dict[str, Any]],
+    *,
+    config_path: object,
+    json_output: bool,
+) -> None:
+    """Emit configured channel entries."""
+
+    if json_output:
+        print_json(entries)
+        return
+
+    if not entries:
+        typer.echo("0 channels configured.")
+        return
+
+    console = Console(width=200, force_terminal=False)
+    table = Table(title=f"Channels in {config_path}")
+    table.add_column("name", no_wrap=True)
+    table.add_column("type", no_wrap=True)
+    table.add_column("enabled", no_wrap=True)
+    table.add_column("agent_id", no_wrap=True)
+    table.add_column("details")
+    for entry in entries:
+        details = ", ".join(
+            f"{key}={value}"
+            for key, value in entry.items()
+            if key not in {"name", "type", "enabled", "agent_id"}
+        )
+        table.add_row(
+            entry["name"],
+            entry["type"],
+            str(entry.get("enabled", True)),
+            entry.get("agent_id", "main"),
+            details,
+        )
+    console.print(table)
 
 
 def emit_channel_status(

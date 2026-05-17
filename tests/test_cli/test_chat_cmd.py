@@ -1659,6 +1659,89 @@ async def test_standalone_clear_workflow_aborts_when_flush_guard_fails() -> None
 
 
 @pytest.mark.asyncio
+async def test_standalone_compact_workflow_compacts_with_provider_config(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_standalone_session_workflows
+
+    services = _FakeServices()
+    services.provider_selector = _FakeProviderSelector()
+    services.config = SimpleNamespace(
+        context_budget_tokens=1234,
+        compaction=SimpleNamespace(enabled=True, model=None, timeout_seconds=12.5),
+    )
+    state = ChatSessionState(session_key="standalone:test", model="openrouter/test")
+    flush_calls: list[dict[str, object]] = []
+    buffer = io.StringIO()
+
+    async def flush_before_rewrite(svc: object, session_key: str, *, operation: str) -> bool:
+        flush_calls.append({"svc": svc, "session_key": session_key, "operation": operation})
+        return True
+
+    monkeypatch.setattr(
+        chat_standalone_session_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_standalone_session_workflows.handle_standalone_compact_command(
+        state,
+        services=services,
+        model="openrouter/test",
+        flush_before_rewrite=flush_before_rewrite,
+        resolve_compaction_provider=chat_cmd._resolve_compaction_provider,
+    )
+
+    assert handled is True
+    assert flush_calls == [
+        {"svc": services, "session_key": "standalone:test", "operation": "Compact"}
+    ]
+    assert len(services.session_manager.compact_calls) == 1
+    session_key, context_window, config = services.session_manager.compact_calls[0]
+    assert session_key == "standalone:test"
+    assert context_window == 1234
+    assert isinstance(config, CompactionConfig)
+    assert config.api_key == "cli-provider-key"
+    assert config.model == "openrouter/test"
+    assert config.base_url == "https://openrouter.ai/api/v1"
+    assert config.timeout_seconds == 12.5
+    output = buffer.getvalue()
+    assert "compacted" in output
+    assert "summary 7 chars" in output
+
+
+@pytest.mark.asyncio
+async def test_standalone_compact_workflow_warns_without_session_manager(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_standalone_session_workflows
+
+    services = SimpleNamespace(session_manager=None, config=None, provider_selector=None)
+    state = ChatSessionState(session_key="standalone:test", model="openrouter/test")
+    buffer = io.StringIO()
+
+    async def flush_before_rewrite(svc: object, session_key: str, *, operation: str) -> bool:
+        raise AssertionError("flush must not run when no session manager is available")
+
+    monkeypatch.setattr(
+        chat_standalone_session_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_standalone_session_workflows.handle_standalone_compact_command(
+        state,
+        services=services,
+        model="openrouter/test",
+        flush_before_rewrite=flush_before_rewrite,
+        resolve_compaction_provider=chat_cmd._resolve_compaction_provider,
+    )
+
+    assert handled is False
+    assert "No session manager available." in buffer.getvalue()
+
+
+@pytest.mark.asyncio
 async def test_gateway_slash_tool_compress_toggles_config(monkeypatch) -> None:
     _FakeGatewayClient.instances.clear()
     monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
@@ -2326,13 +2409,63 @@ def test_chat_standalone_clear_slash_uses_workflow_boundary() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
-    assert chat_workflow_names == {
-        "handle_standalone_clear_command",
-        "handle_standalone_new_command",
-    }
+    assert "handle_standalone_clear_command" in chat_workflow_names
+    assert "handle_standalone_new_command" in chat_workflow_names
     assert "handle_standalone_clear_command" in workflow_defs
     assert "truncate" not in standalone_attr_calls
     assert not any("]cleared[/]" in literal for literal in standalone_literals)
+
+
+def test_chat_standalone_compact_slash_uses_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_session_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    standalone_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_standalone_session_workflows"
+        for alias in node.names
+    }
+    standalone_name_calls = {
+        node.func.id
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    standalone_attr_calls = {
+        node.func.attr
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    standalone_literals = {
+        node.value
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {
+        "handle_standalone_clear_command",
+        "handle_standalone_compact_command",
+        "handle_standalone_new_command",
+    }
+    assert "handle_standalone_compact_command" in standalone_name_calls
+    assert "handle_standalone_compact_command" in workflow_defs
+    assert "compact" not in standalone_attr_calls
+    assert not any("]compacted[/]" in literal for literal in standalone_literals)
+    assert not any("]compact skipped[/]" in literal for literal in standalone_literals)
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

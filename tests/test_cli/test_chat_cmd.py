@@ -23,7 +23,7 @@ from opensquilla.cli import (
 )
 from opensquilla.cli.main import app
 from opensquilla.cli.repl.session_state import ChatSessionState
-from opensquilla.cli.repl.stream import UsageSummary
+from opensquilla.cli.repl.stream import TurnResult, UsageSummary
 from opensquilla.engine.types import ArtifactEvent, DoneEvent, TextDeltaEvent
 from opensquilla.session.compaction import CompactionConfig
 from opensquilla.tools.types import CallerKind, ToolContext
@@ -398,6 +398,149 @@ async def test_standalone_path_command_runs_as_plain_message(
     assert "inspect" in captured["message"]
     assert str(target.resolve(strict=False)) in captured["message"]
     assert "attachments" not in captured["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_standalone_path_workflow_streams_prompt_without_attachments(
+    tmp_path,
+) -> None:
+    from opensquilla.cli import chat_standalone_path_workflows
+
+    target = tmp_path / "large.log"
+    target.write_text("hello\n", encoding="utf-8")
+    state = ChatSessionState(session_key="standalone:test", model="openrouter/test")
+    turn_runner = object()
+    tool_context = object()
+    services = object()
+    calls: list[dict[str, object]] = []
+
+    async def stream_response(
+        runner: object,
+        session_key: str,
+        context: object,
+        prompt: str,
+        **kwargs: object,
+    ) -> TurnResult:
+        calls.append(
+            {
+                "runner": runner,
+                "session_key": session_key,
+                "context": context,
+                "prompt": prompt,
+                "kwargs": kwargs,
+            }
+        )
+        return TurnResult(
+            text="path reply",
+            usage=UsageSummary(
+                input_tokens=4,
+                output_tokens=6,
+                cached_tokens=2,
+                cost_usd=0.0123,
+            ),
+        )
+
+    handled = await chat_standalone_path_workflows.handle_standalone_path_command(
+        f"/path {target} inspect",
+        ["/path", f"{target} inspect"],
+        state,
+        turn_runner=turn_runner,
+        tool_context=tool_context,
+        services=services,
+        model="openrouter/test",
+        timeout=12.5,
+        stream_response=stream_response,
+    )
+
+    assert handled is True
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["runner"] is turn_runner
+    assert call["session_key"] == "standalone:test"
+    assert call["context"] is tool_context
+    assert "inspect" in call["prompt"]
+    assert str(target.resolve(strict=False)) in call["prompt"]
+    assert call["kwargs"] == {
+        "model": "openrouter/test",
+        "svc": services,
+        "timeout": 12.5,
+    }
+    assert "attachments" not in call["kwargs"]
+    assert state.transcript.to_markdown().count("path reply") == 1
+    assert state.usage.render() == "10 tok (4 in / 6 out) · cache 2 · $0.012300"
+
+
+@pytest.mark.asyncio
+async def test_standalone_path_workflow_prints_usage_without_path(monkeypatch) -> None:
+    from opensquilla.cli import chat_standalone_path_workflows
+
+    state = ChatSessionState(session_key="standalone:test", model="openrouter/test")
+    buffer = io.StringIO()
+
+    async def stream_response(*args: object, **kwargs: object) -> TurnResult:
+        raise AssertionError("stream_response must not run without a path")
+
+    monkeypatch.setattr(
+        chat_standalone_path_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_standalone_path_workflows.handle_standalone_path_command(
+        "/path",
+        ["/path"],
+        state,
+        turn_runner=object(),
+        tool_context=object(),
+        services=object(),
+        model="openrouter/test",
+        timeout=None,
+        stream_response=stream_response,
+    )
+
+    assert handled is True
+    assert "Usage: /path <path> [prompt]" in buffer.getvalue()
+    assert state.transcript.to_markdown() == ""
+
+
+@pytest.mark.asyncio
+async def test_standalone_path_workflow_rejects_unexpected_attachments(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_standalone_path_workflows
+
+    state = ChatSessionState(session_key="standalone:test", model="openrouter/test")
+    buffer = io.StringIO()
+
+    async def stream_response(*args: object, **kwargs: object) -> TurnResult:
+        raise AssertionError("stream_response must not run when /path returns attachments")
+
+    def prompt_and_attachments(command: str) -> tuple[str, list[dict[str, object]]]:
+        assert command == "/path /tmp/example.txt inspect"
+        return "prompt", [{"kind": "unexpected"}]
+
+    monkeypatch.setattr(
+        chat_standalone_path_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_standalone_path_workflows.handle_standalone_path_command(
+        "/path /tmp/example.txt inspect",
+        ["/path", "/tmp/example.txt inspect"],
+        state,
+        turn_runner=object(),
+        tool_context=object(),
+        services=object(),
+        model="openrouter/test",
+        timeout=None,
+        stream_response=stream_response,
+        path_prompt_and_attachments=prompt_and_attachments,
+    )
+
+    assert handled is True
+    assert "/path must not create attachments." in buffer.getvalue()
+    assert state.transcript.to_markdown() == ""
 
 
 @pytest.mark.asyncio
@@ -2466,6 +2609,49 @@ def test_chat_standalone_compact_slash_uses_workflow_boundary() -> None:
     assert "compact" not in standalone_attr_calls
     assert not any("]compacted[/]" in literal for literal in standalone_literals)
     assert not any("]compact skipped[/]" in literal for literal in standalone_literals)
+
+
+def test_chat_standalone_path_slash_uses_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_path_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    standalone_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_standalone_path_workflows"
+        for alias in node.names
+    }
+    standalone_name_calls = {
+        node.func.id
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    standalone_literals = {
+        node.value
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {"handle_standalone_path_command"}
+    assert "handle_standalone_path_command" in standalone_name_calls
+    assert "_path_prompt_and_attachments" not in standalone_name_calls
+    assert "Usage: /path <path> [prompt]" not in standalone_literals
+    assert "/path must not create attachments." not in standalone_literals
+    assert "handle_standalone_path_command" in workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

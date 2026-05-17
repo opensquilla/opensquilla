@@ -116,6 +116,147 @@ def test_catalog_list_json_surfaces(tmp_path: Path, monkeypatch):
     assert "***" in channels.stdout
 
 
+def test_cli_agents_commands_use_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        agents_cmd,
+        agents_config_mutations,
+        agents_config_queries,
+        agents_presenters,
+        agents_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(agents_cmd.__file__).read_text(encoding="utf-8"))
+    mutation_tree = ast.parse(
+        Path(agents_config_mutations.__file__).read_text(encoding="utf-8")
+    )
+    query_tree = ast.parse(
+        Path(agents_config_queries.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(
+        Path(agents_presenters.__file__).read_text(encoding="utf-8")
+    )
+    workflow_tree = ast.parse(
+        Path(agents_workflows.__file__).read_text(encoding="utf-8")
+    )
+
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("opensquilla.")
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.agents_workflows"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.agents_config_queries"
+        for alias in node.names
+    }
+    workflow_mutation_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.agents_config_mutations"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.agents_presenters"
+        for alias in node.names
+    }
+    query_config_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.config_store"
+        for alias in node.names
+    }
+    mutation_config_names = {
+        alias.name
+        for node in ast.walk(mutation_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.config_store"
+        for alias in node.names
+    }
+    mutation_session_names = {
+        alias.name
+        for node in ast.walk(mutation_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.session.keys"
+        for alias in node.names
+    }
+    presenter_output_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    command_calls = {
+        node.func.id
+        for function_name in {"agents_list", "agents_add", "agents_delete"}
+        for command in ast.walk(cmd_tree)
+        if isinstance(command, ast.FunctionDef) and command.name == function_name
+        for node in ast.walk(command)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    cmd_identifiers = {
+        node.id
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.Name)
+    }
+
+    assert cmd_workflow_names == {
+        "add_agent_for_cli",
+        "delete_agent_for_cli",
+        "list_agents_for_cli",
+    }
+    assert cmd_direct_modules == {"opensquilla.cli.agents_workflows"}
+    assert workflow_query_names == {"list_configured_agents", "load_agent_registry"}
+    assert workflow_mutation_names == {
+        "create_agent_in_config",
+        "delete_agent_from_config",
+    }
+    assert {
+        "confirm_agent_delete",
+        "emit_agent_config_error",
+        "emit_agent_deleted",
+        "emit_agent_saved",
+        "emit_agents",
+    } <= workflow_presenter_names
+    assert query_config_names == {"default_config_path", "load_config"}
+    assert mutation_config_names == {"PersistResult", "persist_config"}
+    assert mutation_session_names == {"normalize_agent_id"}
+    assert presenter_output_names == {"print_json"}
+    assert {"add_agent_for_cli", "delete_agent_for_cli", "list_agents_for_cli"} <= command_calls
+    assert not (
+        cmd_identifiers
+        & {
+            "AgentRegistry",
+            "Console",
+            "Table",
+            "default_config_path",
+            "load_config",
+            "persist_config",
+            "normalize_agent_id",
+            "asyncio",
+            "json",
+            "redirect_stdout",
+            "StringIO",
+        }
+    )
+
+
 def test_models_list_json_uses_gateway_client(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.model_rows = [

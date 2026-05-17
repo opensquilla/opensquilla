@@ -87,3 +87,20 @@ def emit_session_preview(
     last_message = str(preview.get("lastMessage") or "")
     if last_message:
         console.print(last_message)
+
+
+def emit_session_abort(
+    payload: dict[str, Any],
+    *,
+    session_id: str,
+    json_output: bool,
+) -> None:
+    """Emit session abort result."""
+
+    if json_output:
+        print_json(payload)
+        return
+
+    key = payload.get("key") or session_id
+    aborted = bool(payload.get("aborted", False))
+    console.print(f"{'Aborted' if aborted else 'No running task for'} session {key!r}")

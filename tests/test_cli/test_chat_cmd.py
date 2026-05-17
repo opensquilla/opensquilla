@@ -5012,12 +5012,19 @@ def test_chat_standalone_image_slash_uses_workflow_boundary() -> None:
     assert "handle_standalone_image_command" in workflow_defs
 
 
-def test_chat_gateway_image_slash_uses_workflow_boundary() -> None:
+def test_gateway_image_route_uses_executor_boundary() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    executor_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_image_route_workflows.py"
+    )
     workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_image_workflows.py")
 
+    assert executor_path.exists()
     assert workflow_path.exists()
 
+    from opensquilla.cli import chat_gateway_image_route_workflows
+
+    executor_tree = ast.parse(executor_path.read_text(encoding="utf-8"))
     workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
     slash_handler = next(
         node
@@ -5027,6 +5034,13 @@ def test_chat_gateway_image_slash_uses_workflow_boundary() -> None:
     chat_workflow_names = {
         alias.name
         for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_image_route_workflows"
+        for alias in node.names
+    }
+    executor_workflow_names = {
+        alias.name
+        for node in ast.walk(executor_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.chat_gateway_image_workflows"
         for alias in node.names
@@ -5046,12 +5060,105 @@ def test_chat_gateway_image_slash_uses_workflow_boundary() -> None:
         for node in ast.walk(workflow_tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+    executor_defs = {
+        node.name
+        for node in ast.walk(executor_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
 
-    assert chat_workflow_names == {"handle_gateway_image_command"}
-    assert "handle_gateway_image_command" in slash_name_calls
+    assert chat_workflow_names == {"handle_gateway_image_route_command"}
+    assert "handle_gateway_image_route_command" in slash_name_calls
+    assert "handle_gateway_image_command" not in slash_name_calls
     assert "_image_prompt_and_attachments" not in slash_name_calls
     assert "Usage: /image <path> [prompt]" not in slash_literals
+    assert "handle_gateway_image_route_command" in executor_defs
+    assert "handle_gateway_image_command" in executor_workflow_names
     assert "handle_gateway_image_command" in workflow_defs
+    assert chat_gateway_image_route_workflows.GATEWAY_IMAGE_ROUTE_NAMES == frozenset(
+        {"image"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_image_route_executor_delegates_known_route(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_gateway_image_route_workflows
+
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    elevated_state = {"mode": "always"}
+    calls: list[dict[str, object]] = []
+
+    async def fake_image(
+        command: str,
+        parts: list[str],
+        seen_state: ChatSessionState,
+        *,
+        client: object,
+        elevated_state: dict[str, str | None],
+        stream_response: object,
+        image_prompt_and_attachments: object,
+    ) -> bool:
+        calls.append(
+            {
+                "command": command,
+                "parts": parts,
+                "state": seen_state,
+                "client": client,
+                "elevated_state": elevated_state,
+                "stream_response": stream_response,
+                "image_prompt_and_attachments": image_prompt_and_attachments,
+            }
+        )
+        return True
+
+    async def stream_response(*args: object, **kwargs: object) -> TurnResult:
+        raise AssertionError("stream_response is passed through, not called here")
+
+    def prompt_builder(command: str) -> tuple[str, list[dict[str, str]]]:
+        raise AssertionError("prompt_builder is passed through, not called here")
+
+    monkeypatch.setattr(
+        chat_gateway_image_route_workflows,
+        "handle_gateway_image_command",
+        fake_image,
+    )
+
+    handled = await chat_gateway_image_route_workflows.handle_gateway_image_route_command(
+        "image",
+        "/image /tmp/chart.png describe chart",
+        ["/image", "/tmp/chart.png describe chart"],
+        state,
+        client=fake,
+        elevated_state=elevated_state,
+        stream_response=stream_response,
+        image_prompt_and_attachments=prompt_builder,
+    )
+    unhandled = await chat_gateway_image_route_workflows.handle_gateway_image_route_command(
+        "path",
+        "/path /tmp/chart.png",
+        ["/path", "/tmp/chart.png"],
+        state,
+        client=fake,
+        elevated_state=elevated_state,
+        stream_response=stream_response,
+        image_prompt_and_attachments=prompt_builder,
+    )
+
+    assert handled is True
+    assert unhandled is False
+    assert calls == [
+        {
+            "command": "/image /tmp/chart.png describe chart",
+            "parts": ["/image", "/tmp/chart.png describe chart"],
+            "state": state,
+            "client": fake,
+            "elevated_state": elevated_state,
+            "stream_response": stream_response,
+            "image_prompt_and_attachments": prompt_builder,
+        }
+    ]
 
 
 def test_chat_gateway_path_slash_uses_workflow_boundary() -> None:

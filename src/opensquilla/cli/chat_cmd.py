@@ -30,7 +30,9 @@ from opensquilla.cli.chat_gateway_exact_route_workflows import (
 )
 from opensquilla.cli.chat_gateway_file_workflows import handle_gateway_file_command
 from opensquilla.cli.chat_gateway_forget_workflows import handle_gateway_forget_command
-from opensquilla.cli.chat_gateway_image_workflows import handle_gateway_image_command
+from opensquilla.cli.chat_gateway_image_route_workflows import (
+    handle_gateway_image_route_command,
+)
 from opensquilla.cli.chat_gateway_model_route_workflows import (
     handle_gateway_model_route_command,
 )
@@ -775,16 +777,16 @@ async def _handle_gateway_slash_command(
     if await handle_gateway_utility_route_command(route_name, cmd, state, client):
         return True
 
-    if route_name == "image":
-        await handle_gateway_image_command(
-            cmd,
-            parts,
-            state,
-            client=client,
-            elevated_state=elevated_state,
-            stream_response=_stream_response_gateway,
-            image_prompt_and_attachments=_image_prompt_and_attachments,
-        )
+    if await handle_gateway_image_route_command(
+        route_name,
+        cmd,
+        parts,
+        state,
+        client=client,
+        elevated_state=elevated_state,
+        stream_response=_stream_response_gateway,
+        image_prompt_and_attachments=_image_prompt_and_attachments,
+    ):
         return True
 
     if route_name == "path":

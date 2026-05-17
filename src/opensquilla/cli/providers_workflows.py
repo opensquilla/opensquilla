@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from opensquilla.cli.providers_config_mutations import configure_provider_in_config
 from opensquilla.cli.providers_gateway_queries import load_provider_status
 from opensquilla.cli.providers_presenters import (
     emit_provider_catalog_payload,
+    emit_provider_configure_error,
+    emit_provider_configured,
     emit_provider_setup_specs,
     emit_provider_status,
 )
@@ -38,3 +43,33 @@ def show_provider_status_for_cli(
         json_output=json_output,
     )
     emit_provider_status(payload, json_output=json_output)
+
+
+def configure_provider_for_cli(
+    provider: str,
+    *,
+    model: str,
+    api_key: str,
+    base_url: str,
+    proxy: str,
+    config_path: Path | None,
+) -> None:
+    """Configure the active LLM provider for the CLI."""
+
+    try:
+        persist = configure_provider_in_config(
+            provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            proxy=proxy,
+            config_path=config_path,
+        )
+    except (ValueError, KeyError) as exc:
+        emit_provider_configure_error(exc)
+
+    emit_provider_configured(
+        provider,
+        config_path=persist.path,
+        backup_path=persist.backup_path,
+    )

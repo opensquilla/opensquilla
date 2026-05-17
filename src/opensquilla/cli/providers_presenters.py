@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, NoReturn
 
+import typer
 from rich.console import Console
 from rich.table import Table
 
@@ -65,3 +67,24 @@ def emit_provider_status(payload: dict[str, Any], *, json_output: bool) -> None:
             str(row.get("error") or ""),
         )
     console.print(table)
+
+
+def emit_provider_configured(
+    provider: str,
+    *,
+    config_path: Path,
+    backup_path: Path | None,
+) -> None:
+    """Emit successful provider configuration output."""
+
+    typer.echo(f"Provider configured: {provider}")
+    typer.echo(f"Config: {config_path}")
+    if backup_path:
+        typer.echo(f"Backup: {backup_path}")
+
+
+def emit_provider_configure_error(exc: Exception) -> NoReturn:
+    """Emit provider configuration errors and exit with CLI validation status."""
+
+    typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+    raise typer.Exit(code=2) from exc

@@ -2047,6 +2047,243 @@ async def test_gateway_file_workflow_renders_prompt_errors(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_permissions_workflow_delegates_and_syncs_chat_state() -> None:
+    from opensquilla.cli import chat_gateway_permissions_workflows
+
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    elevated_state = {"mode": None}
+    client = object()
+    calls: list[dict[str, object]] = []
+
+    async def permissions_command(
+        command: str,
+        mode_state: dict[str, str | None],
+        *,
+        client: object | None = None,
+        forget_server_approvals: object | None = None,
+    ) -> None:
+        calls.append(
+            {
+                "command": command,
+                "mode_state": mode_state,
+                "client": client,
+                "forget_server_approvals": forget_server_approvals,
+            }
+        )
+        mode_state["mode"] = "bypass"
+
+    async def forget_server_approvals(
+        client: object | None,
+        target: str | None = None,
+    ) -> bool:
+        raise AssertionError("delegated permissions_command owns approval clearing")
+
+    handled = await chat_gateway_permissions_workflows.handle_gateway_permissions_command(
+        "/permissions bypass",
+        state,
+        elevated_state,
+        client=client,
+        permissions_command=permissions_command,
+        forget_server_approvals=forget_server_approvals,
+    )
+
+    assert handled is True
+    assert state.elevated == "bypass"
+    assert elevated_state["mode"] == "bypass"
+    assert calls == [
+        {
+            "command": "/permissions bypass",
+            "mode_state": elevated_state,
+            "client": client,
+            "forget_server_approvals": forget_server_approvals,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_permissions_workflow_status_prints_current_without_revoking(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_gateway_permissions_workflows
+
+    mode_state = {"mode": "full"}
+    buffer = io.StringIO()
+
+    async def forget_server_approvals(
+        client: object | None,
+        target: str | None = None,
+    ) -> bool:
+        raise AssertionError("status must not clear cached approvals")
+
+    monkeypatch.setattr(
+        chat_gateway_permissions_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    await chat_gateway_permissions_workflows.handle_permissions_command(
+        "/permissions status",
+        mode_state,
+        client=object(),
+        forget_server_approvals=forget_server_approvals,
+    )
+
+    assert mode_state == {"mode": "full"}
+    assert "permissions:" in buffer.getvalue()
+    assert "full" in buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_permissions_workflow_unknown_mode_prints_usage_without_mutating(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_gateway_permissions_workflows
+
+    mode_state = {"mode": "on"}
+    buffer = io.StringIO()
+
+    async def forget_server_approvals(
+        client: object | None,
+        target: str | None = None,
+    ) -> bool:
+        raise AssertionError("unknown mode must not clear cached approvals")
+
+    monkeypatch.setattr(
+        chat_gateway_permissions_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    await chat_gateway_permissions_workflows.handle_permissions_command(
+        "/permissions maybe",
+        mode_state,
+        client=object(),
+        forget_server_approvals=forget_server_approvals,
+    )
+
+    output = buffer.getvalue()
+    assert mode_state == {"mode": "on"}
+    assert "Unknown permissions mode:" in output
+    assert "Usage: /permissions on | off | bypass | full | status" in output
+
+
+@pytest.mark.asyncio
+async def test_permissions_workflow_on_sets_mode_and_revokes_cache(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_permissions_workflows
+
+    mode_state = {"mode": None}
+    client = object()
+    forget_calls: list[tuple[object | None, str | None]] = []
+    buffer = io.StringIO()
+
+    async def forget_server_approvals(
+        client_arg: object | None,
+        target: str | None = None,
+    ) -> bool:
+        forget_calls.append((client_arg, target))
+        return True
+
+    monkeypatch.setattr(
+        chat_gateway_permissions_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    await chat_gateway_permissions_workflows.handle_permissions_command(
+        "/elevated on",
+        mode_state,
+        client=client,
+        forget_server_approvals=forget_server_approvals,
+    )
+
+    assert mode_state == {"mode": "on"}
+    assert forget_calls == [(client, None)]
+    output = buffer.getvalue()
+    assert "permissions: on" in output
+    assert "Cached approvals revoked." in output
+
+
+@pytest.mark.asyncio
+async def test_permissions_workflow_off_resets_gateway_queue_and_revokes_cache(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli import chat_gateway_permissions_workflows
+
+    class Client:
+        def __init__(self) -> None:
+            self.set_calls: list[str] = []
+
+        async def set_approval_mode(self, mode: str) -> dict[str, object]:
+            self.set_calls.append(mode)
+            return {"mode": mode}
+
+    mode_state = {"mode": "full"}
+    client = Client()
+    forget_calls: list[tuple[object | None, str | None]] = []
+    buffer = io.StringIO()
+
+    async def forget_server_approvals(
+        client_arg: object | None,
+        target: str | None = None,
+    ) -> bool:
+        forget_calls.append((client_arg, target))
+        return True
+
+    monkeypatch.setattr(
+        chat_gateway_permissions_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    await chat_gateway_permissions_workflows.handle_permissions_command(
+        "/permissions off",
+        mode_state,
+        client=client,
+        forget_server_approvals=forget_server_approvals,
+    )
+
+    assert mode_state == {"mode": None}
+    assert forget_calls == [(client, None)]
+    assert client.set_calls == ["prompt"]
+    output = buffer.getvalue()
+    assert "permissions: off" in output
+    assert "Queue mode reset to prompt." in output
+    assert "Cached approvals" in output
+    assert "revoked." in output
+
+
+@pytest.mark.asyncio
+async def test_gateway_permissions_command_updates_chat_state(monkeypatch) -> None:
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    elevated_state = {"mode": None}
+    forget_calls: list[tuple[object | None, str | None]] = []
+
+    async def forget_server_approvals(
+        client: object | None,
+        target: str | None = None,
+    ) -> bool:
+        forget_calls.append((client, target))
+        return True
+
+    monkeypatch.setattr(chat_cmd, "_forget_server_approvals", forget_server_approvals)
+
+    handled = await chat_cmd._handle_gateway_slash_command(
+        "/permissions bypass",
+        state,
+        fake,
+        elevated_state,
+    )
+
+    assert handled is True
+    assert elevated_state == {"mode": "bypass"}
+    assert state.elevated == "bypass"
+    assert forget_calls == [(fake, None)]
+
+
+@pytest.mark.asyncio
 async def test_gateway_chat_does_not_forward_workspace_fields() -> None:
     from opensquilla.cli.gateway_client import GatewayClient
 
@@ -3484,6 +3721,53 @@ def test_chat_gateway_file_slash_uses_workflow_boundary() -> None:
     assert "upload_file" not in slash_attr_calls
     assert "Usage: /file <path> [prompt]" not in slash_literals
     assert "handle_gateway_file_command" in workflow_defs
+
+
+def test_chat_gateway_permissions_slash_uses_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_permissions_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_permissions_workflows"
+        for alias in node.names
+    }
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    slash_literals = {
+        node.value
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {
+        "handle_gateway_permissions_command",
+        "handle_permissions_command",
+    }
+    assert "handle_gateway_permissions_command" in slash_name_calls
+    assert "_handle_elevated_command" not in slash_name_calls
+    assert "Usage: /permissions on | off | bypass | full | status" not in slash_literals
+    assert "Unknown permissions mode:" not in slash_literals
+    assert "handle_gateway_permissions_command" in workflow_defs
+    assert "handle_permissions_command" in workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

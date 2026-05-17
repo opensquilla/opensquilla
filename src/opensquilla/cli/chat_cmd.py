@@ -25,6 +25,10 @@ from opensquilla.cli import attachments as _cli_attachments
 from opensquilla.cli.chat_gateway_file_workflows import handle_gateway_file_command
 from opensquilla.cli.chat_gateway_image_workflows import handle_gateway_image_command
 from opensquilla.cli.chat_gateway_path_workflows import handle_gateway_path_command
+from opensquilla.cli.chat_gateway_permissions_workflows import (
+    handle_gateway_permissions_command,
+    handle_permissions_command,
+)
 from opensquilla.cli.chat_model_usage_workflows import (
     handle_cost_command,
     handle_model_command,
@@ -855,8 +859,13 @@ async def _handle_gateway_slash_command(
         return True
 
     if _slash_parts_any(cmd, "/permissions", "/elevated"):
-        await _handle_elevated_command(cmd, elevated_state, client)
-        state.elevated = elevated_state.get("mode")
+        await handle_gateway_permissions_command(
+            cmd,
+            state,
+            elevated_state,
+            client=client,
+            forget_server_approvals=_forget_server_approvals,
+        )
         return True
 
     if cmd == "/forget" or cmd.startswith("/forget "):
@@ -1057,79 +1066,14 @@ async def _handle_elevated_command(
     state: dict[str, str | None],
     client: object | None = None,
 ) -> None:
-    """Interpret ``/permissions`` / ``/elevated`` and mutate state in place.
+    """Compatibility wrapper for the shared permissions interpreter."""
 
-    Any mode change is treated as an explicit user action (top priority) and
-    wipes the intent-cache so earlier ``allow-always`` grants don't leak into
-    the new mode. ``status`` is pure-read and leaves state untouched.
-
-    Modes:
-
-    * ``off``     — default sandboxed execution (approval required)
-    * ``on``      — exec on host, approvals still required
-    * ``bypass``  — exec on host, approvals auto-granted, sensitive paths still blocked
-    * ``full``    — exec on host, approvals auto-granted, sensitive paths bypassed
-    """
-    parts = cmd.split()
-    arg = parts[1].lower() if len(parts) > 1 else "status"
-    if arg == "status":
-        current = state["mode"] or "off (sandboxed)"
-        console.print(f"[cyan]permissions:[/cyan] {current}")
-        return
-
-    known = {"off": None, "on": "on", "bypass": "bypass", "full": "full"}
-    if arg not in known:
-        console.print(f"[red]Unknown permissions mode:[/red] {arg}")
-        console.print("Usage: /permissions on | off | bypass | full | status")
-        return
-
-    state["mode"] = known[arg]
-    # Top-priority: explicit mode switch resets the approval trust state.
-    cleared = await _forget_server_approvals(client)
-    # `off` is the "go back to cautious" transition — also drop any stale
-    # queue-level auto-approve setting the operator might have left behind.
-    queue_mode_reset_warning = ""
-    if arg == "off":
-        if client is not None:
-            from opensquilla.cli.gateway_client import GatewayClient
-
-            assert isinstance(client, GatewayClient)
-            try:
-                await client.set_approval_mode("prompt")
-            except Exception as exc:
-                queue_mode_reset_warning = (
-                    f" [bold red]WARNING: queue mode not reset "
-                    f"({type(exc).__name__}: {exc}).[/bold red]"
-                )
-        else:
-            from opensquilla.application.approval_queue import get_approval_queue
-
-            get_approval_queue().set_settings(mode="prompt")
-    revoked_suffix = (
-        "Cached approvals revoked."
-        if cleared
-        else "[bold red]WARNING: cached approvals NOT revoked (see error above).[/bold red]"
+    await handle_permissions_command(
+        cmd,
+        state,
+        client=client,
+        forget_server_approvals=_forget_server_approvals,
     )
-
-    if arg == "off":
-        console.print(
-            f"[cyan]permissions: off[/cyan] — exec runs inside the sandbox. "
-            f"Queue mode reset to prompt. {revoked_suffix}{queue_mode_reset_warning}"
-        )
-    elif arg == "on":
-        console.print(
-            f"[yellow]permissions: on[/yellow] — exec on host, approvals required. {revoked_suffix}"
-        )
-    elif arg == "bypass":
-        console.print(
-            f"[red]permissions: bypass[/red] — exec on host, approvals auto-granted. "
-            f"Sensitive paths (~/.ssh, /etc, ...) still hard-blocked. {revoked_suffix}"
-        )
-    else:  # full
-        console.print(
-            f"[red]permissions: full[/red] — exec on host, approvals skipped, "
-            f"sensitive paths bypassed. Trusted operators only. {revoked_suffix}"
-        )
 
 
 def _render_gateway_task_group_status(

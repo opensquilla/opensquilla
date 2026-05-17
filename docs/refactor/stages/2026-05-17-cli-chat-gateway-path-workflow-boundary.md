@@ -133,15 +133,15 @@ Move gateway `/path` behind a dedicated workflow boundary without changing local
 - [x] Update `chat_cmd.py` gateway dispatch to delegate `/path`.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -167,8 +167,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
-- Integration merge:
+- Child commit: `29f5fbe`
+- Integration merge: `6741b1c`
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-cli-chat-gateway-path-workflow-boundary` passed on branch `codex/refactor-cli-chat-gateway-path-workflow-boundary` at `34920f6`.
   - Red: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_chat_gateway_path_slash_uses_workflow_boundary -q` failed as expected because `chat_gateway_path_workflows.py` did not exist.
@@ -177,5 +177,10 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_chat_path_command.py tests/test_cli/test_cli_product_completeness.py -q` passed: 202 passed.
   - Whitespace: `git diff --check` passed.
   - Child gate: `scripts/refactor_gate.sh` passed: ruff, mypy, whitespace, pytest 2343 passed / 8 skipped / 2 warnings, gateway smoke start/status/stop/status ok.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `34920f6`.
+  - Integration merge: `git merge --no-ff codex/refactor-cli-chat-gateway-path-workflow-boundary` produced merge commit `6741b1c`.
+  - Integration gate: `scripts/refactor_gate.sh` passed: ruff, mypy, whitespace, pytest 2345 passed / 6 skipped / 2 warnings, gateway smoke start/status/stop/status ok.
 - Residual risk:
+  - Low. The slice only extracts gateway `/path` orchestration; standalone `/path`, gateway `/image`, gateway `/file`, and the shared local-path prompt helper remain in place.
 - Next recommended slice:
+  - Continue reducing `_handle_gateway_slash_command` by extracting gateway `/file` into a focused workflow boundary while preserving upload bridge behavior and attachment payloads.

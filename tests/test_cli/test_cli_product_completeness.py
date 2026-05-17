@@ -2079,6 +2079,107 @@ def test_channels_status_and_logout_use_existing_rpcs(monkeypatch):
     assert ("channels.logout", {"name": "slack"}) in fake.calls
 
 
+def test_cli_channels_catalog_uses_workflow_boundary() -> None:
+    from opensquilla.cli import channels_cmd, channels_presenters, channels_workflows
+
+    cmd_tree = ast.parse(Path(channels_cmd.__file__).read_text(encoding="utf-8"))
+    presenter_tree = ast.parse(
+        Path(channels_presenters.__file__).read_text(encoding="utf-8")
+    )
+    workflow_tree = ast.parse(
+        Path(channels_workflows.__file__).read_text(encoding="utf-8")
+    )
+
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("opensquilla.")
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_workflows"
+        for alias in node.names
+    }
+    workflow_spec_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.channel_specs"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_presenters"
+        for alias in node.names
+    }
+    presenter_output_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    channels_types = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "channels_types"
+    )
+    channels_describe = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "channels_describe"
+    )
+    catalog_command_identifiers = {
+        node.id
+        for command in (channels_types, channels_describe)
+        for node in ast.walk(command)
+        if isinstance(node, ast.Name)
+    }
+
+    assert cmd_workflow_names == {
+        "describe_channel_type_for_cli",
+        "list_channel_types_for_cli",
+    }
+    assert "opensquilla.onboarding.channel_specs" not in cmd_direct_modules
+    assert workflow_spec_names == {"get_channel_setup_spec", "list_channel_setup_specs"}
+    assert workflow_presenter_names == {
+        "emit_channel_catalog_error",
+        "emit_channel_type_description",
+        "emit_channel_types",
+    }
+    assert presenter_output_names == {"print_json"}
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "list_channel_types_for_cli"
+        for node in ast.walk(channels_types)
+    )
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "describe_channel_type_for_cli"
+        for node in ast.walk(channels_describe)
+    )
+    assert not (
+        catalog_command_identifiers
+        & {
+            "Console",
+            "Table",
+            "KeyError",
+            "get_channel_setup_spec",
+            "list_channel_setup_specs",
+            "print_json",
+            "secho",
+        }
+    )
+
+
 def test_cost_json_returns_gateway_payload(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.cost_payload = {

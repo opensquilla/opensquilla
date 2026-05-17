@@ -23,6 +23,7 @@ from opensquilla.cli import (
 )
 from opensquilla.cli.main import app
 from opensquilla.cli.repl.session_state import ChatSessionState
+from opensquilla.cli.repl.stream import UsageSummary
 from opensquilla.engine.types import ArtifactEvent, DoneEvent, TextDeltaEvent
 from opensquilla.session.compaction import CompactionConfig
 from opensquilla.tools.types import CallerKind, ToolContext
@@ -875,6 +876,12 @@ class _FakeGatewayClient:
         self.abort_calls: list[str] = []
         self.reset_calls: list[str] = []
         self.compact_calls: list[dict[str, object]] = []
+        self.patch_session_calls: list[dict[str, object]] = []
+        self.usage_status_calls = 0
+        self.usage_status_payload: dict[str, object] = {
+            "totalTokens": 12345,
+            "totalCostUsd": 0.0456789,
+        }
         self.config_get_calls: list[str | None] = []
         self.config_patch_safe_calls: list[dict[str, object]] = []
         self.config_values: dict[str, object] = {
@@ -957,6 +964,14 @@ class _FakeGatewayClient:
             "mode": "summary",
             "summary_len": 37,
         }
+
+    async def patch_session(self, key: str, **fields: object) -> dict[str, object]:
+        self.patch_session_calls.append({"key": key, "fields": dict(fields)})
+        return {"patched": dict(fields)}
+
+    async def usage_status(self) -> dict[str, object]:
+        self.usage_status_calls += 1
+        return dict(self.usage_status_payload)
 
     async def get_config(self, path: str | None = None) -> object:
         self.config_get_calls.append(path)
@@ -1288,6 +1303,73 @@ async def test_gateway_slash_compact_calls_session_rpc(monkeypatch) -> None:
 
     assert handled is True
     assert fake.compact_calls == [{"session_key": "agent:main:abc123"}]
+
+
+@pytest.mark.asyncio
+async def test_gateway_slash_model_updates_session_model(monkeypatch) -> None:
+    from opensquilla.cli import chat_model_usage_workflows
+
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/old")
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        chat_model_usage_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_cmd._handle_gateway_slash_command(
+        "/model anthropic/claude-sonnet-4", state, fake, {"mode": None}
+    )
+
+    assert handled is True
+    assert fake.patch_session_calls == [
+        {
+            "key": "agent:main:abc123",
+            "fields": {"model": "anthropic/claude-sonnet-4"},
+        }
+    ]
+    assert state.model == "anthropic/claude-sonnet-4"
+    assert "model:" in buffer.getvalue()
+    assert "anthropic/claude-sonnet-4" in buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_gateway_slash_cost_and_usage_emit_usage_views(monkeypatch) -> None:
+    from opensquilla.cli import chat_model_usage_workflows
+
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    state.usage.add(
+        UsageSummary(input_tokens=12, output_tokens=34, cached_tokens=5, cost_usd=0.0123)
+    )
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        chat_model_usage_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled_cost = await chat_cmd._handle_gateway_slash_command(
+        "/cost", state, fake, {"mode": None}
+    )
+    handled_usage = await chat_cmd._handle_gateway_slash_command(
+        "/usage", state, fake, {"mode": None}
+    )
+
+    assert handled_cost is True
+    assert handled_usage is True
+    assert fake.usage_status_calls == 1
+    output = buffer.getvalue()
+    assert "46 tok (12 in / 34 out)" in output
+    assert "$0.012300" in output
+    assert "aggregate usage:" in output
+    assert "12,345 tok" in output
+    assert "$0.045679" in output
 
 
 @pytest.mark.asyncio
@@ -1644,6 +1726,54 @@ def test_chat_session_maintenance_slashes_use_workflow_boundary() -> None:
     assert "reset_session" not in handler_gateway_calls
     assert "compact_session" not in handler_gateway_calls
     assert {"handle_clear_session_command", "handle_compact_session_command"} <= workflow_defs
+
+
+def test_chat_model_usage_slashes_use_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_model_usage_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_model_usage_workflows"
+        for alias in node.names
+    }
+    handler_gateway_calls = {
+        node.func.attr
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    handler_usage_render_calls = [
+        node
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "render"
+    ]
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {
+        "handle_cost_command",
+        "handle_model_command",
+        "handle_usage_command",
+    }
+    assert "patch_session" not in handler_gateway_calls
+    assert "usage_status" not in handler_gateway_calls
+    assert handler_usage_render_calls == []
+    assert {"handle_cost_command", "handle_model_command", "handle_usage_command"} <= workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

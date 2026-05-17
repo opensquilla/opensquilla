@@ -22,6 +22,11 @@ import typer
 from rich.panel import Panel
 
 from opensquilla.cli import attachments as _cli_attachments
+from opensquilla.cli.chat_model_usage_workflows import (
+    handle_cost_command,
+    handle_model_command,
+    handle_usage_command,
+)
 from opensquilla.cli.chat_session_maintenance_workflows import (
     handle_clear_session_command,
     handle_compact_session_command,
@@ -835,26 +840,15 @@ async def _handle_gateway_slash_command(
         return True
 
     if parts := _slash_parts(cmd, "/model"):
-        if len(parts) == 1:
-            console.print(f"[dim]model={state.model or 'default'}[/dim]")
-        else:
-            new_model = parts[1].strip()
-            await client.patch_session(state.session_key, model=new_model)
-            state.model = new_model
-            console.print(f"[green]model:[/green] {new_model}")
+        await handle_model_command(parts, state, client)
         return True
 
     if cmd == "/cost":
-        console.print(state.usage.render())
+        handle_cost_command(state)
         return True
 
     if cmd == "/usage":
-        payload = await client.usage_status()
-        console.print(
-            "[dim]aggregate usage: "
-            f"{payload.get('totalTokens', 0):,} tok · "
-            f"${float(payload.get('totalCostUsd', 0.0) or 0.0):.6f}[/dim]"
-        )
+        await handle_usage_command(client)
         return True
 
     if _slash_parts(cmd, "/tool-compress"):

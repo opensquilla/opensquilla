@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import typer
 from rich.table import Table
 
 from opensquilla.cli.output import print_json
@@ -104,3 +105,16 @@ def emit_session_abort(
     key = payload.get("key") or session_id
     aborted = bool(payload.get("aborted", False))
     console.print(f"{'Aborted' if aborted else 'No running task for'} session {key!r}")
+
+
+def confirm_session_delete(session_id: str, *, yes: bool) -> None:
+    """Confirm destructive session deletion unless already approved."""
+
+    if not yes:
+        typer.confirm(f"Delete session {session_id!r}?", abort=True)
+
+
+def emit_session_delete(payload: dict[str, Any]) -> None:
+    """Emit session deletion result."""
+
+    console.print_json(data=payload)

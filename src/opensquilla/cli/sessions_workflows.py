@@ -7,8 +7,14 @@ from typing import Any
 
 import typer
 
-from opensquilla.cli.sessions_gateway_queries import list_sessions_from_gateway
-from opensquilla.cli.sessions_presenters import emit_sessions_list
+from opensquilla.cli.sessions_gateway_queries import (
+    list_sessions_from_gateway,
+    load_session_preview_from_gateway,
+)
+from opensquilla.cli.sessions_presenters import (
+    emit_session_preview,
+    emit_sessions_list,
+)
 
 
 def _parse_since(value: str | None) -> datetime | None:
@@ -107,3 +113,10 @@ def list_sessions_for_cli(
         since=since_dt,
     )
     emit_sessions_list(payload, rows, json_output=json_output)
+
+
+def show_session_for_cli(session_id: str, *, json_output: bool) -> None:
+    """Load and emit a single session preview for the CLI."""
+
+    payload = load_session_preview_from_gateway(session_id, json_output=json_output)
+    emit_session_preview(payload, session_id=session_id, json_output=json_output)

@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Any
 
 import typer
-from rich.table import Table
 
 from opensquilla.cli.gateway_rpc import run_gateway_sync
 from opensquilla.cli.output import print_json
 from opensquilla.cli.repl.session_state import messages_to_markdown
-from opensquilla.cli.sessions_workflows import list_sessions_for_cli
+from opensquilla.cli.sessions_workflows import (
+    list_sessions_for_cli,
+    show_session_for_cli,
+)
 from opensquilla.cli.ui import console, error_panel
 from opensquilla.cli.url_utils import normalize_gateway_url
 
@@ -74,39 +76,7 @@ def sessions_show(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show details of a specific session."""
-
-    async def _run(client):
-        resolved = await client.resolve_session(session_id)
-        preview = await client.preview_sessions(keys=[_resolved_key(resolved, session_id)])
-        return {"resolved": resolved, "preview": preview}
-
-    result = run_gateway_sync(_run, json_output=json_output)
-    if json_output:
-        print_json(result)
-        return
-
-    resolved = result.get("resolved", {}) if isinstance(result, dict) else {}
-    previews = result.get("preview", {}).get("previews", []) if isinstance(result, dict) else []
-    preview = previews[0] if previews else {}
-    key = _resolved_key(resolved, session_id)
-    table = Table(title=f"Session {key}", show_header=True, header_style="bold cyan")
-    table.add_column("Field", style="cyan")
-    table.add_column("Value")
-    for field, value in (
-        ("session_key", key),
-        ("session_id", resolved.get("session_id")),
-        ("agent_id", resolved.get("agent_id")),
-        ("status", resolved.get("status")),
-        ("model", resolved.get("model")),
-        ("updated_at", resolved.get("updated_at") or preview.get("updatedAt")),
-        ("title", preview.get("title")),
-    ):
-        if value not in (None, ""):
-            table.add_row(field, str(value))
-    console.print(table)
-    last_message = str(preview.get("lastMessage") or "")
-    if last_message:
-        console.print(last_message)
+    show_session_for_cli(session_id, json_output=json_output)
 
 
 @app.command("resume")

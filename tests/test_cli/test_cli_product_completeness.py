@@ -2238,9 +2238,9 @@ def test_cli_sessions_list_uses_workflow_boundary() -> None:
         node.id for node in ast.walk(sessions_list) if isinstance(node, ast.Name)
     }
 
-    assert cmd_workflow_names == {"list_sessions_for_cli"}
-    assert workflow_query_names == {"list_sessions_from_gateway"}
-    assert workflow_presenter_names == {"emit_sessions_list"}
+    assert "list_sessions_for_cli" in cmd_workflow_names
+    assert "list_sessions_from_gateway" in workflow_query_names
+    assert "emit_sessions_list" in workflow_presenter_names
     assert query_rpc_names == {"run_gateway_sync"}
     assert presenter_output_names == {"print_json"}
     assert "list_sessions_for_cli" in command_calls
@@ -2289,6 +2289,91 @@ def test_sessions_show_json_resolves_and_previews(monkeypatch):
     assert payload["preview"]["previews"][0]["lastMessage"] == "latest"
     assert ("sessions.resolve", {"key": "abc"}) in fake.calls
     assert ("sessions.preview", {"keys": ["agent:main:abc"], "limit": 50}) in fake.calls
+
+
+def test_cli_sessions_show_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        sessions_cmd,
+        sessions_gateway_queries,
+        sessions_presenters,
+        sessions_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(sessions_cmd.__file__).read_text(encoding="utf-8"))
+    query_tree = ast.parse(
+        Path(sessions_gateway_queries.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(Path(sessions_presenters.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(Path(sessions_workflows.__file__).read_text(encoding="utf-8"))
+
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_workflows"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_gateway_queries"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_presenters"
+        for alias in node.names
+    }
+    query_rpc_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.gateway_rpc"
+        for alias in node.names
+    }
+    presenter_output_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    sessions_show = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "sessions_show"
+    )
+    command_calls = {
+        node.func.id
+        for node in ast.walk(sessions_show)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    command_identifiers = {
+        node.id for node in ast.walk(sessions_show) if isinstance(node, ast.Name)
+    }
+
+    assert "show_session_for_cli" in cmd_workflow_names
+    assert "load_session_preview_from_gateway" in workflow_query_names
+    assert "emit_session_preview" in workflow_presenter_names
+    assert query_rpc_names == {"run_gateway_sync"}
+    assert presenter_output_names == {"print_json"}
+    assert "show_session_for_cli" in command_calls
+    assert not any(isinstance(node, ast.AsyncFunctionDef) for node in ast.walk(sessions_show))
+    assert not (
+        command_identifiers
+        & {
+            "_resolved_key",
+            "console",
+            "preview",
+            "print_json",
+            "resolved",
+            "run_gateway_sync",
+            "Table",
+        }
+    )
 
 
 def test_sessions_show_json_errors_go_to_stderr(monkeypatch):

@@ -40,3 +40,50 @@ def emit_sessions_list(
             str(row.get("message_count") or row.get("entry_count") or 0),
         )
     console.print(table)
+
+
+def _resolved_key(payload: dict[str, Any], fallback: str) -> str:
+    value = payload.get("session_key") or payload.get("key") or fallback
+    return str(value)
+
+
+def emit_session_preview(
+    payload: dict[str, Any],
+    *,
+    session_id: str,
+    json_output: bool,
+) -> None:
+    """Emit resolved session metadata and preview."""
+
+    if json_output:
+        print_json(payload)
+        return
+
+    resolved = payload.get("resolved", {})
+    if not isinstance(resolved, dict):
+        resolved = {}
+    preview_payload = payload.get("preview", {})
+    previews = preview_payload.get("previews", []) if isinstance(preview_payload, dict) else []
+    preview = previews[0] if previews else {}
+    if not isinstance(preview, dict):
+        preview = {}
+
+    key = _resolved_key(resolved, session_id)
+    table = Table(title=f"Session {key}", show_header=True, header_style="bold cyan")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    for field, value in (
+        ("session_key", key),
+        ("session_id", resolved.get("session_id")),
+        ("agent_id", resolved.get("agent_id")),
+        ("status", resolved.get("status")),
+        ("model", resolved.get("model")),
+        ("updated_at", resolved.get("updated_at") or preview.get("updatedAt")),
+        ("title", preview.get("title")),
+    ):
+        if value not in (None, ""):
+            table.add_row(field, str(value))
+    console.print(table)
+    last_message = str(preview.get("lastMessage") or "")
+    if last_message:
+        console.print(last_message)

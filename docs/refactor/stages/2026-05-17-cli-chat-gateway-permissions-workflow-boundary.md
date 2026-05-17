@@ -124,15 +124,15 @@ Move gateway `/permissions` and `/elevated` behind a dedicated workflow boundary
 - [x] Update `chat_cmd.py` gateway dispatch and compatibility wrapper.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -158,8 +158,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
-- Integration merge:
+- Child commit: `52ef086`
+- Integration merge: `b1e6ed6`
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-cli-chat-gateway-permissions-workflow-boundary` passed on branch `codex/refactor-cli-chat-gateway-permissions-workflow-boundary` at `5fa1454`.
   - Red: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_chat_gateway_permissions_slash_uses_workflow_boundary -q` failed as expected because `chat_gateway_permissions_workflows.py` did not exist.
@@ -167,5 +167,10 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_gateway_permissions_workflows.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_chat_cmd_approval.py tests/test_cli/test_cli_product_completeness.py -q` passed: 194 passed.
   - Child gate: `scripts/refactor_gate.sh` passed: ruff, mypy, whitespace, pytest 2356 passed / 8 skipped / 2 warnings, gateway smoke start/status/stop/status ok.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `5fa1454`.
+  - Integration merge: `git merge --no-ff codex/refactor-cli-chat-gateway-permissions-workflow-boundary` produced merge commit `b1e6ed6`.
+  - Integration gate: `scripts/refactor_gate.sh` passed: ruff, mypy, whitespace, pytest 2358 passed / 6 skipped / 2 warnings, gateway smoke start/status/stop/status ok.
 - Residual risk:
+  - Low. The slice moves permissions-mode interpretation into a workflow module while keeping `_forget_server_approvals` in place for `/forget` and preserving the compatibility wrapper.
 - Next recommended slice:
+  - Continue reducing `chat_cmd.py` by extracting gateway `/forget` handling into a focused workflow boundary, preserving targeted and full approval-cache clearing behavior.

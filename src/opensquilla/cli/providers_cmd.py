@@ -10,16 +10,13 @@ from rich.table import Table
 
 from opensquilla.cli.gateway_rpc import run_gateway_sync
 from opensquilla.cli.output import print_json
+from opensquilla.cli.providers_workflows import list_providers_for_cli
 from opensquilla.onboarding.config_store import (
     default_config_path,
     load_config,
     persist_config,
 )
 from opensquilla.onboarding.mutations import upsert_llm_provider
-from opensquilla.onboarding.provider_specs import (
-    list_provider_setup_specs,
-    provider_catalog_payload,
-)
 
 providers_app = typer.Typer(help="Configure and inspect LLM providers.")
 
@@ -29,28 +26,7 @@ def providers_list(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """List all known providers (supported and disabled)."""
-    if json_output:
-        print_json(provider_catalog_payload())
-        return
-
-    console = Console(width=200, force_terminal=False)
-    table = Table(title="Providers")
-    table.add_column("provider", no_wrap=True)
-    table.add_column("label", no_wrap=True)
-    table.add_column("runtime", no_wrap=True)
-    table.add_column("requires key", no_wrap=True)
-    table.add_column("requires base url", no_wrap=True)
-    table.add_column("default base url")
-    for s in list_provider_setup_specs():
-        table.add_row(
-            s.provider_id,
-            s.label,
-            "supported" if s.runtime_supported else "unsupported (disabled)",
-            "yes" if s.requires_api_key else "no",
-            "yes" if s.requires_base_url else "no",
-            s.default_base_url or "-",
-        )
-    console.print(table)
+    list_providers_for_cli(json_output=json_output)
 
 
 @providers_app.command("status")

@@ -2130,6 +2130,60 @@ def test_provider_and_search_diagnostics_use_gateway_rpcs(monkeypatch):
     ) in fake.calls
 
 
+def test_cli_providers_list_uses_workflow_boundary() -> None:
+    from opensquilla.cli import providers_cmd, providers_workflows
+
+    cmd_tree = ast.parse(Path(providers_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(
+        Path(providers_workflows.__file__).read_text(encoding="utf-8")
+    )
+
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("opensquilla.")
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.providers_workflows"
+        for alias in node.names
+    }
+    providers_list = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "providers_list"
+    )
+    provider_specs_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.provider_specs"
+        for alias in node.names
+    }
+
+    assert "list_providers_for_cli" in cmd_workflow_names
+    assert "opensquilla.onboarding.provider_specs" not in cmd_direct_modules
+    assert provider_specs_names == {
+        "list_provider_setup_specs",
+        "provider_catalog_payload",
+    }
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "list_providers_for_cli"
+        for node in ast.walk(providers_list)
+    )
+    assert not any(
+        isinstance(node, ast.Name)
+        and node.id in {"provider_catalog_payload", "list_provider_setup_specs"}
+        for node in ast.walk(providers_list)
+    )
+
+
 def test_search_query_json_exits_nonzero_on_diagnostic_failure(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {

@@ -46,6 +46,7 @@ from opensquilla.cli.chat_standalone_model_cost_workflows import (
 )
 from opensquilla.cli.chat_standalone_session_workflows import (
     handle_standalone_clear_command,
+    handle_standalone_compact_command,
     handle_standalone_new_command,
 )
 from opensquilla.cli.chat_standalone_status_workflows import (
@@ -62,10 +63,6 @@ from opensquilla.cli.repl.prompt import prompt_approval, prompt_user
 from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.cli.repl.stream import StreamingRenderer, TurnResult, UsageSummary
 from opensquilla.cli.ui import ACCENT, console, error_panel
-from opensquilla.session.compaction import (
-    build_compaction_config_from_provider,
-    call_compact_with_optional_config,
-)
 from opensquilla.session.terminal_reply import build_terminal_reply
 
 _CLI_ALLOWED_FILE_MIMES = _cli_attachments.CLI_ALLOWED_FILE_MIMES
@@ -604,42 +601,13 @@ async def _standalone_repl(
                     )
                     continue
                 if stripped == "/compact":
-                    if svc.session_manager is not None:
-                        safe_to_compact = await _flush_before_standalone_rewrite(
-                            svc,
-                            session_key,
-                            operation="Compact",
-                        )
-                        if not safe_to_compact:
-                            continue
-                        context_window = (
-                            getattr(svc.config, "context_budget_tokens", 100_000)
-                            if svc.config is not None
-                            else 100_000
-                        )
-                        compaction_config = build_compaction_config_from_provider(
-                            _resolve_compaction_provider(svc.provider_selector, model),
-                            model_override=model,
-                            compaction_config=getattr(svc.config, "compaction", None),
-                        )
-                        summary = await call_compact_with_optional_config(
-                            svc.session_manager.compact,
-                            session_key,
-                            context_window,
-                            compaction_config,
-                        )
-                        if summary:
-                            console.print(
-                                f"[{ACCENT}]compacted[/] "
-                                f"[dim]summary {len(summary)} chars[/dim]"
-                            )
-                        else:
-                            console.print(
-                                f"[{ACCENT}]compact skipped[/] "
-                                "[dim]context already within budget[/dim]"
-                            )
-                    else:
-                        console.print("[yellow]No session manager available.[/yellow]")
+                    await handle_standalone_compact_command(
+                        state,
+                        services=svc,
+                        model=model,
+                        flush_before_rewrite=_flush_before_standalone_rewrite,
+                        resolve_compaction_provider=_resolve_compaction_provider,
+                    )
                     continue
                 if _slash_parts(stripped, "/save"):
                     save_transcript_command(stripped, state)

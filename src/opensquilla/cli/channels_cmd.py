@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import typer
-from rich.console import Console
-from rich.table import Table
 
 from opensquilla.cli.channel_fields import (
     apply_channel_token,
@@ -16,18 +14,17 @@ from opensquilla.cli.channel_fields import (
 from opensquilla.cli.channels_workflows import (
     describe_channel_type_for_cli,
     list_channel_types_for_cli,
+    list_configured_channels_for_cli,
     logout_channel_for_cli,
     restart_channel_for_cli,
     show_channel_status_for_cli,
 )
-from opensquilla.cli.output import print_json
 from opensquilla.onboarding.config_store import (
     load_config,
     persist_config,
     resolve_config_path,
 )
 from opensquilla.onboarding.mutations import (
-    list_channel_entries,
     remove_channel,
     set_channel_enabled,
     upsert_channel,
@@ -67,49 +64,12 @@ def _resolve_and_announce(config_path: Path | None) -> Path:
     return target
 
 
-def _render_channels_table(entries: list[dict[str, Any]], *, title: str) -> None:
-    if not entries:
-        typer.echo("0 channels configured.")
-        return
-    console = Console(width=200, force_terminal=False)
-    table = Table(title=title)
-    table.add_column("name", no_wrap=True)
-    table.add_column("type", no_wrap=True)
-    table.add_column("enabled", no_wrap=True)
-    table.add_column("agent_id", no_wrap=True)
-    table.add_column("details")
-    for e in entries:
-        details = ", ".join(
-            f"{k}={v}"
-            for k, v in e.items()
-            if k not in {"name", "type", "enabled", "agent_id"}
-        )
-        table.add_row(
-            e["name"],
-            e["type"],
-            str(e.get("enabled", True)),
-            e.get("agent_id", "main"),
-            details,
-        )
-    console.print(table)
-
-
 @channels_app.command("list")
 def channels_list(
     config_path: Path | None = typer.Option(None, "--config"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    target = (
-        resolve_config_path(config_path)[0]
-        if json_output
-        else _resolve_and_announce(config_path)
-    )
-    cfg = load_config(target)
-    entries = list_channel_entries(cfg)
-    if json_output:
-        print_json(entries)
-        return
-    _render_channels_table(entries, title=f"Channels in {target}")
+    list_configured_channels_for_cli(config_path, json_output=json_output)
 
 
 @channels_app.command("status")

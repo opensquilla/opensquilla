@@ -2144,6 +2144,7 @@ def test_cli_channels_catalog_uses_workflow_boundary() -> None:
 
     assert cmd_workflow_names == {
         "describe_channel_type_for_cli",
+        "list_configured_channels_for_cli",
         "list_channel_types_for_cli",
         "logout_channel_for_cli",
         "restart_channel_for_cli",
@@ -2154,9 +2155,11 @@ def test_cli_channels_catalog_uses_workflow_boundary() -> None:
     assert workflow_presenter_names == {
         "emit_channel_action_result",
         "emit_channel_catalog_error",
+        "emit_channel_config_path",
         "emit_channel_status",
         "emit_channel_type_description",
         "emit_channel_types",
+        "emit_configured_channels",
     }
     assert presenter_output_names == {"print_json"}
     assert any(
@@ -2181,6 +2184,109 @@ def test_cli_channels_catalog_uses_workflow_boundary() -> None:
             "list_channel_setup_specs",
             "print_json",
             "secho",
+        }
+    )
+
+
+def test_cli_channels_list_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        channels_cmd,
+        channels_config_queries,
+        channels_presenters,
+        channels_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(channels_cmd.__file__).read_text(encoding="utf-8"))
+    query_tree = ast.parse(
+        Path(channels_config_queries.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(
+        Path(channels_presenters.__file__).read_text(encoding="utf-8")
+    )
+    workflow_tree = ast.parse(
+        Path(channels_workflows.__file__).read_text(encoding="utf-8")
+    )
+
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_workflows"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_config_queries"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.channels_presenters"
+        for alias in node.names
+    }
+    query_config_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.config_store"
+        for alias in node.names
+    }
+    query_mutation_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.onboarding.mutations"
+        for alias in node.names
+    }
+    presenter_output_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    channels_list = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "channels_list"
+    )
+    list_identifiers = {
+        node.id for node in ast.walk(channels_list) if isinstance(node, ast.Name)
+    }
+
+    assert "list_configured_channels_for_cli" in cmd_workflow_names
+    assert workflow_query_names == {
+        "load_configured_channel_entries",
+        "resolve_channel_config_path",
+    }
+    assert {
+        "emit_channel_config_path",
+        "emit_configured_channels",
+    } <= workflow_presenter_names
+    assert query_config_names == {"load_config", "resolve_config_path"}
+    assert query_mutation_names == {"list_channel_entries"}
+    assert presenter_output_names == {"print_json"}
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "list_configured_channels_for_cli"
+        for node in ast.walk(channels_list)
+    )
+    assert not (
+        list_identifiers
+        & {
+            "Console",
+            "Table",
+            "_render_channels_table",
+            "_resolve_and_announce",
+            "list_channel_entries",
+            "load_config",
+            "print_json",
+            "resolve_config_path",
         }
     )
 

@@ -1607,6 +1607,45 @@ def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
     } <= workflow_defs
 
 
+def test_chat_session_maintenance_slashes_use_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_session_maintenance_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_session_maintenance_workflows"
+        for alias in node.names
+    }
+    handler_gateway_calls = {
+        node.func.attr
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {
+        "handle_clear_session_command",
+        "handle_compact_session_command",
+    }
+    assert "reset_session" not in handler_gateway_calls
+    assert "compact_session" not in handler_gateway_calls
+    assert {"handle_clear_session_command", "handle_compact_session_command"} <= workflow_defs
+
+
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:
     buffer = io.StringIO()
     monkeypatch.setattr(

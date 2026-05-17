@@ -22,6 +22,10 @@ import typer
 from rich.panel import Panel
 
 from opensquilla.cli import attachments as _cli_attachments
+from opensquilla.cli.chat_session_maintenance_workflows import (
+    handle_clear_session_command,
+    handle_compact_session_command,
+)
 from opensquilla.cli.chat_session_workflows import (
     handle_delete_session_command,
     handle_new_session_command,
@@ -819,24 +823,11 @@ async def _handle_gateway_slash_command(
         return True
 
     if cmd in {"/clear", "/reset"}:
-        await client.reset_session(state.session_key)
-        state.transcript.clear()
-        state.usage.reset()
-        console.print(f"[{ACCENT}]cleared[/] [dim]{state.session_key}[/dim]")
+        await handle_clear_session_command(state, client)
         return True
 
     if cmd == "/compact":
-        payload = await client.compact_session(state.session_key)
-        if payload.get("compacted"):
-            console.print(
-                f"[{ACCENT}]compacted[/] "
-                f"[dim]summary {payload.get('summary_len', 0)} chars[/dim]"
-            )
-        else:
-            console.print(
-                f"[{ACCENT}]compact skipped[/] "
-                "[dim]context already within budget[/dim]"
-            )
+        await handle_compact_session_command(state, client)
         return True
 
     if parts := _slash_parts(cmd, "/models"):

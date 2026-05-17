@@ -313,6 +313,31 @@ def test_cli_skill_mutation_presenters_emit_local_json_without_empty_scan(capsys
     assert "scan" not in uninstall_payload
 
 
+def test_cli_skill_tap_presenters_emit_tap_states(capsys):
+    from opensquilla.cli.skills_tap_presenters import (
+        emit_skill_tap_added,
+        emit_skill_tap_removed,
+        emit_skill_taps,
+    )
+
+    tap = SimpleNamespace(
+        full_name="acme/tap",
+        url="https://example.test/acme/tap",
+        added_at="2026-05-17T00:00:00Z",
+    )
+
+    emit_skill_tap_added(tap)
+    emit_skill_taps([tap])
+    emit_skill_tap_removed("acme/tap", removed=True)
+    emit_skill_tap_removed("missing/tap", removed=False)
+
+    output = capsys.readouterr().out
+    assert "Added tap" in output
+    assert "acme/tap" in output
+    assert "Removed" in output
+    assert "Not found" in output
+
+
 def test_skills_search_delegates_to_cli_search_rows_boundary(monkeypatch):
     from opensquilla.cli import skills_cmd
 
@@ -1162,6 +1187,33 @@ def test_cli_skills_tap_does_not_import_taps_boundary() -> None:
         isinstance(node, ast.Name) and node.id == "TapsManager"
         for node in ast.walk(tree)
     )
+
+
+def test_cli_skills_tap_presenters_use_cli_boundary() -> None:
+    from opensquilla.cli import skills_cmd
+
+    tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    imported_presenter_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.skills_tap_presenters"
+        for alias in node.names
+    }
+    constants = {
+        node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+    }
+
+    assert imported_presenter_names == {
+        "emit_skill_tap_added",
+        "emit_skill_tap_error",
+        "emit_skill_tap_removed",
+        "emit_skill_taps",
+    }
+    assert "Added tap:" not in constants
+    assert "No taps registered." not in constants
+    assert "Removed:" not in constants
+    assert "Not found:" not in constants
 
 
 def test_skills_publish_delegates_to_cli_publish_boundary(monkeypatch):

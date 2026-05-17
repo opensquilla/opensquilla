@@ -1437,6 +1437,8 @@ async def test_gateway_slash_tool_compress_status_reads_config(monkeypatch) -> N
 
 @pytest.mark.asyncio
 async def test_standalone_tool_compress_toggles_config() -> None:
+    from opensquilla.cli import chat_tool_compression_workflows
+
     config = SimpleNamespace(
         agent_token_saving=SimpleNamespace(
             tool_result_compression_enabled=True,
@@ -1445,19 +1447,67 @@ async def test_standalone_tool_compress_toggles_config() -> None:
         )
     )
 
-    await chat_cmd._handle_tool_compress_command("/tool-compress off", config=config)
+    await chat_tool_compression_workflows.handle_tool_compress_command(
+        "/tool-compress off", config=config
+    )
     assert config.agent_token_saving.tool_result_compression_enabled is False
     assert config.agent_token_saving.tool_result_compression_mode == "off"
 
-    await chat_cmd._handle_tool_compress_command("/tool-compress status", config=config)
+    await chat_tool_compression_workflows.handle_tool_compress_command(
+        "/tool-compress status", config=config
+    )
     assert config.agent_token_saving.tool_result_compression_enabled is False
 
-    await chat_cmd._handle_tool_compress_command("/tool-compress summarize", config=config)
+    await chat_tool_compression_workflows.handle_tool_compress_command(
+        "/tool-compress summarize", config=config
+    )
     assert config.agent_token_saving.tool_result_compression_enabled is True
     assert config.agent_token_saving.tool_result_compression_mode == "summarize"
 
-    await chat_cmd._handle_tool_compress_command("/tool-compress on", config=config)
+    await chat_tool_compression_workflows.handle_tool_compress_command(
+        "/tool-compress on", config=config
+    )
     assert config.agent_token_saving.tool_result_compression_mode == "truncate"
+
+
+@pytest.mark.asyncio
+async def test_tool_compress_workflow_emits_status_and_usage_messages(monkeypatch) -> None:
+    from opensquilla.cli import chat_tool_compression_workflows
+
+    config = SimpleNamespace(
+        agent_token_saving=SimpleNamespace(
+            tool_result_compression_enabled=True,
+            tool_result_compression_mode=None,
+            tool_result_compression_summary_model="cheap/model",
+        )
+    )
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        chat_tool_compression_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    await chat_tool_compression_workflows.handle_tool_compress_command(
+        "/tool-compress status", config=config
+    )
+    await chat_tool_compression_workflows.handle_tool_compress_command(
+        "/tool-compress summarize", config=config
+    )
+    await chat_tool_compression_workflows.handle_tool_compress_command(
+        "/tool-compress wat", config=config
+    )
+    await chat_tool_compression_workflows.handle_tool_compress_command(
+        "/tool-compress status", config=SimpleNamespace()
+    )
+
+    output = buffer.getvalue()
+    assert "tool result compression:" in output
+    assert "TRUNCATE" in output
+    assert "SUMMARIZE" in output
+    assert "model=cheap/model" in output
+    assert "Usage: /tool-compress" in output
+    assert "Tool result compression config is unavailable." in output
 
 
 @pytest.mark.asyncio
@@ -1774,6 +1824,50 @@ def test_chat_model_usage_slashes_use_workflow_boundary() -> None:
     assert "usage_status" not in handler_gateway_calls
     assert handler_usage_render_calls == []
     assert {"handle_cost_command", "handle_model_command", "handle_usage_command"} <= workflow_defs
+
+
+def test_chat_tool_compress_slashes_use_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_tool_compression_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_tool_compression_workflows"
+        for alias in node.names
+    }
+    chat_defs = {
+        node.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    chat_name_calls = {
+        node.func.id
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    chat_literals = {
+        node.value
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {"handle_tool_compress_command"}
+    assert "_handle_tool_compress_command" not in chat_defs
+    assert "_handle_tool_compress_command" not in chat_name_calls
+    assert "agent_token_saving.tool_result_compression_enabled" not in chat_literals
+    assert "agent_token_saving.tool_result_compression_mode" not in chat_literals
+    assert "agent_token_saving.tool_result_compression_summary_model" not in chat_literals
+    assert "handle_tool_compress_command" in workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

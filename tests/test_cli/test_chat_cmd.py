@@ -400,6 +400,41 @@ async def test_standalone_path_command_runs_as_plain_message(
     assert "attachments" not in captured["kwargs"]
 
 
+@pytest.mark.asyncio
+async def test_standalone_model_command_updates_next_turn_model(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    inputs = iter(["/model anthropic/claude-sonnet-4", "hello", "/quit"])
+
+    class FakeTurnRunner:
+        def __init__(self, **kwargs) -> None:
+            return None
+
+        async def run(self, message: str, session_key: str, **kwargs):
+            captured["message"] = message
+            captured["session_key"] = session_key
+            captured["model"] = kwargs.get("model")
+            yield DoneEvent()
+
+    async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
+        return next(inputs)
+
+    async def fake_build_services() -> _FakeServices:
+        return _FakeServices()
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.build_services", fake_build_services)
+    monkeypatch.setattr(chat_cmd, "prompt_user", fake_prompt_user)
+
+    await chat_cmd._standalone_repl(
+        model="openrouter/old",
+        session_id="standalone:test",
+    )
+
+    assert captured["message"] == "hello"
+    assert captured["session_key"] == "standalone:test"
+    assert captured["model"] == "anthropic/claude-sonnet-4"
+
+
 def test_chat_workspace_strict_resolution_matches_agent_precedence(
     monkeypatch,
     tmp_path,
@@ -1372,6 +1407,39 @@ async def test_gateway_slash_cost_and_usage_emit_usage_views(monkeypatch) -> Non
     assert "$0.045679" in output
 
 
+def test_standalone_model_cost_workflow_updates_state_and_emits_usage(monkeypatch) -> None:
+    from opensquilla.cli import chat_standalone_model_cost_workflows
+
+    state = ChatSessionState(session_key="standalone:test", model="openrouter/old")
+    state.usage.add(
+        UsageSummary(input_tokens=12, output_tokens=34, cached_tokens=5, cost_usd=0.0123)
+    )
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        chat_standalone_model_cost_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    unchanged = chat_standalone_model_cost_workflows.handle_standalone_model_command(
+        ["/model"], state
+    )
+    updated = chat_standalone_model_cost_workflows.handle_standalone_model_command(
+        ["/model", "anthropic/claude-sonnet-4"], state
+    )
+    chat_standalone_model_cost_workflows.handle_standalone_cost_command(state)
+
+    assert unchanged is None
+    assert updated == "anthropic/claude-sonnet-4"
+    assert state.model == "anthropic/claude-sonnet-4"
+    output = buffer.getvalue()
+    assert "model=openrouter/old" in output
+    assert "model:" in output
+    assert "anthropic/claude-sonnet-4" in output
+    assert "46 tok (12 in / 34 out)" in output
+    assert "$0.012300" in output
+
+
 @pytest.mark.asyncio
 async def test_gateway_slash_tool_compress_toggles_config(monkeypatch) -> None:
     _FakeGatewayClient.instances.clear()
@@ -1868,6 +1936,55 @@ def test_chat_tool_compress_slashes_use_workflow_boundary() -> None:
     assert "agent_token_saving.tool_result_compression_mode" not in chat_literals
     assert "agent_token_saving.tool_result_compression_summary_model" not in chat_literals
     assert "handle_tool_compress_command" in workflow_defs
+
+
+def test_chat_standalone_model_cost_slashes_use_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name(
+        "chat_standalone_model_cost_workflows.py"
+    )
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    standalone_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_standalone_model_cost_workflows"
+        for alias in node.names
+    }
+    standalone_attr_calls = {
+        node.func.attr
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    standalone_literals = {
+        node.value
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {
+        "handle_standalone_cost_command",
+        "handle_standalone_model_command",
+    }
+    assert "render" not in standalone_attr_calls
+    assert "[green]model:[/green] {model}" not in standalone_literals
+    assert {
+        "handle_standalone_cost_command",
+        "handle_standalone_model_command",
+    } <= workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

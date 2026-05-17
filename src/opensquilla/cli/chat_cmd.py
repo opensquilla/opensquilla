@@ -40,6 +40,10 @@ from opensquilla.cli.chat_slash_workflows import (
     handle_models_command,
     handle_sessions_command,
 )
+from opensquilla.cli.chat_standalone_model_cost_workflows import (
+    handle_standalone_cost_command,
+    handle_standalone_model_command,
+)
 from opensquilla.cli.chat_tool_compression_workflows import handle_tool_compress_command
 from opensquilla.cli.chat_transcript_exports import (
     save_gateway_transcript_command,
@@ -578,15 +582,12 @@ async def _standalone_repl(
                     console.print("[yellow]/models requires gateway mode.[/yellow]")
                     continue
                 if parts := _slash_parts(stripped, "/model"):
-                    if len(parts) == 1:
-                        console.print(f"[dim]model={state.model or 'default'}[/dim]")
-                    else:
-                        model = parts[1].strip()
-                        state.model = model
-                        console.print(f"[green]model:[/green] {model}")
+                    updated_model = handle_standalone_model_command(parts, state)
+                    if updated_model is not None:
+                        model = updated_model
                     continue
                 if stripped == "/cost":
-                    console.print(state.usage.render())
+                    handle_standalone_cost_command(state)
                     continue
                 if _slash_parts(stripped, "/tool-compress"):
                     await handle_tool_compress_command(stripped, config=svc.config)

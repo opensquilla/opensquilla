@@ -124,6 +124,13 @@ def emit_channel_catalog_error(exc: Exception) -> NoReturn:
     raise typer.Exit(code=2) from exc
 
 
+def emit_channel_config_error(exc: Exception) -> NoReturn:
+    """Emit channel configuration errors and exit with validation status."""
+
+    typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+    raise typer.Exit(code=2) from exc
+
+
 def emit_channel_config_path(config_path: object, *, source: str) -> None:
     """Emit the resolved channel config path."""
 
@@ -170,6 +177,37 @@ def emit_configured_channels(
             details,
         )
     console.print(table)
+
+
+def emit_channel_saved(
+    name: str,
+    type_name: str,
+    *,
+    backup_path: object | None,
+) -> None:
+    """Emit successful channel save output."""
+
+    typer.echo(f"Channel saved: {name} ({type_name})")
+    if backup_path:
+        typer.echo(f"Backup: {backup_path}")
+
+
+def emit_channel_restart_notice() -> None:
+    """Emit the config-change gateway restart notice."""
+
+    typer.secho(
+        "Restart the gateway PROCESS to apply (this is not the same as "
+        "'opensquilla channels restart <name>', which only restarts an "
+        "already-loaded adapter).",
+        fg=typer.colors.YELLOW,
+    )
+
+
+def emit_channel_verification_next_step(name: str) -> None:
+    """Emit the next verification step after a channel config mutation."""
+
+    typer.echo("Next: opensquilla gateway restart")
+    typer.echo(f"Verify: uv run opensquilla channels status {name} --json")
 
 
 def emit_channel_status(

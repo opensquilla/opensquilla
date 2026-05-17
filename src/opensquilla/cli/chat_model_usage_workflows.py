@@ -1,4 +1,4 @@
-"""Model and usage slash-command workflows for interactive gateway chat."""
+"""Model slash-command workflow for interactive gateway chat."""
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ from opensquilla.cli.ui import console
 
 class ModelUsageClient(Protocol):
     async def patch_session(self, key: str, **fields: Any) -> dict[str, Any]: ...
-
-    async def usage_status(self) -> dict[str, Any]: ...
 
 
 async def handle_model_command(
@@ -29,20 +27,3 @@ async def handle_model_command(
     await client.patch_session(state.session_key, model=new_model)
     state.model = new_model
     console.print(f"[green]model:[/green] {new_model}")
-
-
-def handle_cost_command(state: ChatSessionState) -> None:
-    """Handle the gateway chat /cost command."""
-
-    console.print(state.usage.render())
-
-
-async def handle_usage_command(client: ModelUsageClient) -> None:
-    """Handle the gateway chat /usage command."""
-
-    payload = await client.usage_status()
-    console.print(
-        "[dim]aggregate usage: "
-        f"{payload.get('totalTokens', 0):,} tok · "
-        f"${float(payload.get('totalCostUsd', 0.0) or 0.0):.6f}[/dim]"
-    )

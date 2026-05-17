@@ -22,6 +22,11 @@ import typer
 from rich.panel import Panel
 
 from opensquilla.cli import attachments as _cli_attachments
+from opensquilla.cli.chat_session_workflows import (
+    handle_delete_session_command,
+    handle_new_session_command,
+    handle_resume_session_command,
+)
 from opensquilla.cli.chat_slash_workflows import (
     handle_models_command,
     handle_sessions_command,
@@ -790,13 +795,7 @@ async def _handle_gateway_slash_command(
         return True
 
     if parts := _slash_parts(cmd, "/new"):
-        title = parts[1].strip() if len(parts) > 1 else None
-        session_key = await client.create_session(model=state.model, display_name=title)
-        state.session_key = session_key
-        state.transcript.clear()
-        state.usage.reset()
-        label = f" ({title})" if title else ""
-        console.print(f"[green]Started new session{label}:[/green] {session_key}")
+        await handle_new_session_command(parts, state, client)
         return True
 
     if cmd in {"/status", "/session"}:
@@ -812,34 +811,11 @@ async def _handle_gateway_slash_command(
         return True
 
     if parts := _slash_parts(cmd, "/resume"):
-        if len(parts) == 1 or not parts[1].strip():
-            console.print("[red]Usage: /resume <id>[/red]")
-            return True
-        target = cmd.split(maxsplit=1)[1].strip()
-        payload = await client.resolve_session(target)
-        state.session_key = payload.get("session_key") or payload.get("key") or target
-        state.model = payload.get("model") or state.model
-        state.transcript.clear()
-        state.usage.reset()
-        console.print(f"[green]Resumed session:[/green] {state.session_key}")
+        await handle_resume_session_command(cmd, parts, state, client)
         return True
 
     if parts := _slash_parts(cmd, "/delete"):
-        if len(parts) == 1 or not parts[1].strip():
-            console.print("[red]Usage: /delete <id>[/red]")
-            return True
-        target = cmd.split(maxsplit=1)[1].strip()
-        resolved = await client.resolve_session(target)
-        session_key = resolved.get("session_key") or resolved.get("key") or target
-        payload = await client.delete_sessions([session_key])
-        errors = [str(item) for item in payload.get("errors") or []]
-        deleted = [str(item) for item in payload.get("deleted") or []]
-        if errors:
-            console.print(error_panel("\n".join(errors), title="Delete failed"))
-        elif deleted:
-            console.print(f"[yellow]Deleted session:[/yellow] {deleted[0]}")
-        else:
-            console.print(error_panel("No session was deleted.", title="Delete failed"))
+        await handle_delete_session_command(cmd, parts, client)
         return True
 
     if cmd in {"/clear", "/reset"}:

@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from opensquilla.cli import (
     chat_cmd,
     chat_presenters,
+    chat_session_workflows,
     chat_slash_workflows,
     chat_transcript_exports,
 )
@@ -1387,7 +1388,7 @@ async def test_gateway_slash_delete_resolves_and_reports_errors(monkeypatch) -> 
     state = ChatSessionState(session_key="agent:main:current", model="openai/test")
     buffer = io.StringIO()
     monkeypatch.setattr(
-        chat_cmd,
+        chat_session_workflows,
         "console",
         Console(file=buffer, force_terminal=False, width=100, highlight=False),
     )
@@ -1559,6 +1560,51 @@ def test_chat_slash_readonly_lists_use_workflow_boundary() -> None:
     assert "list_models" not in chat_gateway_calls
     assert {"handle_models_command", "handle_sessions_command"} <= workflow_defs
     assert workflow_presenter_names == {"emit_chat_models_table", "emit_chat_sessions_table"}
+
+
+def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_session_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_session_workflows"
+        for alias in node.names
+    }
+    handler_gateway_calls = {
+        node.func.attr
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_workflow_names == {
+        "handle_delete_session_command",
+        "handle_new_session_command",
+        "handle_resume_session_command",
+    }
+    assert "create_session" not in handler_gateway_calls
+    assert "resolve_session" not in handler_gateway_calls
+    assert "delete_sessions" not in handler_gateway_calls
+    assert {
+        "handle_delete_session_command",
+        "handle_new_session_command",
+        "handle_resume_session_command",
+    } <= workflow_defs
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:

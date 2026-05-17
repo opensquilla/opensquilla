@@ -1,8 +1,8 @@
-"""CLI presenters for channel catalog output."""
+"""CLI presenters for channel output."""
 
 from __future__ import annotations
 
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import typer
 from rich.console import Console
@@ -115,3 +115,76 @@ def emit_channel_catalog_error(exc: Exception) -> NoReturn:
 
     typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
     raise typer.Exit(code=2) from exc
+
+
+def emit_channel_status(
+    payload: dict[str, Any],
+    *,
+    name: str | None,
+    json_output: bool,
+) -> None:
+    """Emit runtime channel status."""
+
+    if name:
+        payload = {"channels": _filter_channel_status_rows(payload, name)}
+
+    if json_output:
+        print_json(payload)
+        return
+
+    _emit_channel_status_table(payload)
+
+
+def emit_channel_action_result(
+    payload: dict[str, Any],
+    *,
+    action_label: str,
+    fallback_channel: str,
+    json_output: bool,
+) -> None:
+    """Emit the result of a live channel action."""
+
+    if json_output:
+        print_json(payload)
+        return
+
+    typer.echo(f"Channel {action_label}: {payload.get('channel', fallback_channel)}")
+
+
+def _emit_channel_status_table(payload: dict[str, Any]) -> None:
+    rows = _filter_channel_status_rows(payload, None)
+    table = Table(title="Channel status", show_header=True, header_style="bold cyan")
+    table.add_column("Name")
+    table.add_column("Type")
+    table.add_column("Status")
+    table.add_column("Connected")
+    table.add_column("Enabled")
+    table.add_column("Configured")
+    table.add_column("Restart attempts", justify="right")
+    for row in rows:
+        table.add_row(
+            str(row.get("name") or ""),
+            str(row.get("type") or ""),
+            str(row.get("status") or ""),
+            str(row.get("connected") or False),
+            str(row.get("enabled") or False),
+            str(row.get("configured") or False),
+            str(row.get("restart_attempts") or 0),
+        )
+    Console(width=180, force_terminal=False).print(table)
+
+
+def _filter_channel_status_rows(
+    payload: dict[str, Any],
+    name: str | None,
+) -> list[dict[str, Any]]:
+    rows = payload.get("channels", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+    if not name:
+        return [row for row in rows if isinstance(row, dict)]
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict) and str(row.get("name") or "") == name
+    ]

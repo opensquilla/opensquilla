@@ -16,8 +16,10 @@ from opensquilla.cli.channel_fields import (
 from opensquilla.cli.channels_workflows import (
     describe_channel_type_for_cli,
     list_channel_types_for_cli,
+    logout_channel_for_cli,
+    restart_channel_for_cli,
+    show_channel_status_for_cli,
 )
-from opensquilla.cli.gateway_rpc import confirm_or_exit, run_gateway_sync
 from opensquilla.cli.output import print_json
 from opensquilla.onboarding.config_store import (
     load_config,
@@ -92,42 +94,6 @@ def _render_channels_table(entries: list[dict[str, Any]], *, title: str) -> None
     console.print(table)
 
 
-def _render_status_table(payload: dict[str, Any], *, name: str | None = None) -> None:
-    rows = _filter_status_rows(payload, name)
-    table = Table(title="Channel status", show_header=True, header_style="bold cyan")
-    table.add_column("Name")
-    table.add_column("Type")
-    table.add_column("Status")
-    table.add_column("Connected")
-    table.add_column("Enabled")
-    table.add_column("Configured")
-    table.add_column("Restart attempts", justify="right")
-    for row in rows:
-        table.add_row(
-            str(row.get("name") or ""),
-            str(row.get("type") or ""),
-            str(row.get("status") or ""),
-            str(row.get("connected") or False),
-            str(row.get("enabled") or False),
-            str(row.get("configured") or False),
-            str(row.get("restart_attempts") or 0),
-        )
-    Console(width=180, force_terminal=False).print(table)
-
-
-def _filter_status_rows(payload: dict[str, Any], name: str | None) -> list[dict[str, Any]]:
-    rows = payload.get("channels", []) if isinstance(payload, dict) else []
-    if not isinstance(rows, list):
-        return []
-    if not name:
-        return [row for row in rows if isinstance(row, dict)]
-    return [
-        row
-        for row in rows
-        if isinstance(row, dict) and str(row.get("name") or "") == name
-    ]
-
-
 @channels_app.command("list")
 def channels_list(
     config_path: Path | None = typer.Option(None, "--config"),
@@ -152,22 +118,7 @@ def channels_status(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show runtime channel status from the running gateway."""
-
-    async def _run(client):
-        return await client.call("channels.status", {})
-
-    payload = run_gateway_sync(_run, json_output=json_output)
-    if name:
-        filtered = {"channels": _filter_status_rows(payload, name)}
-        if json_output:
-            print_json(filtered)
-            return
-        _render_status_table(filtered, name=name)
-        return
-    if json_output:
-        print_json(payload)
-        return
-    _render_status_table(payload)
+    show_channel_status_for_cli(name, json_output=json_output)
 
 
 @channels_app.command("restart")
@@ -177,21 +128,7 @@ def channels_restart(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Restart a live messaging channel."""
-
-    confirm_or_exit(
-        f"Restart channel {name!r}? Message delivery may be interrupted.",
-        yes=yes,
-        json_output=json_output,
-    )
-
-    async def _run(client):
-        return await client.call("channels.restart", {"name": name})
-
-    payload = run_gateway_sync(_run, json_output=json_output)
-    if json_output:
-        print_json(payload)
-        return
-    typer.echo(f"Channel restarted: {payload.get('channel', name)}")
+    restart_channel_for_cli(name, yes=yes, json_output=json_output)
 
 
 @channels_app.command("logout")
@@ -201,21 +138,7 @@ def channels_logout(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Log out and disconnect a live messaging channel."""
-
-    confirm_or_exit(
-        f"Log out channel {name!r}? Live channel session state will be dropped.",
-        yes=yes,
-        json_output=json_output,
-    )
-
-    async def _run(client):
-        return await client.call("channels.logout", {"name": name})
-
-    payload = run_gateway_sync(_run, json_output=json_output)
-    if json_output:
-        print_json(payload)
-        return
-    typer.echo(f"Channel logged out: {payload.get('channel', name)}")
+    logout_channel_for_cli(name, yes=yes, json_output=json_output)
 
 
 @channels_app.command("add")

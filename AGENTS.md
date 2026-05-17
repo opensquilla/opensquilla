@@ -21,6 +21,9 @@ overrides them.
 - For the active architecture refactor, use the integration branch
   `codex/refactor-architecture` and create one isolated child git worktree per
   independently mergeable slice.
+- The root `AGENTS.md` is intentionally tracked on the refactor line. If it
+  appears absent, verify that you are in a refactor worktree rather than the
+  main checkout before creating another copy.
 - Start each slice from `docs/refactor/stage-template.md` and record current
   audit evidence, boundary decisions, TDD commands, verification, hashes, and
   the next recommended slice under `docs/refactor/stages/`.

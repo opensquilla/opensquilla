@@ -17,6 +17,9 @@ opensquilla.toml
 *.sqlite-wal
 .DS_Store
 .*/
+# Local git worktrees for agent/refactor slices.
+.worktrees/
+worktrees/
 !.github/
 !.github/workflows/
 !.github/workflows/*.yml

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import io
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -12,7 +14,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from opensquilla.cli import chat_cmd
+from opensquilla.cli import chat_cmd, chat_transcript_exports
 from opensquilla.cli.main import app
 from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.engine.types import ArtifactEvent, DoneEvent, TextDeltaEvent
@@ -1402,6 +1404,61 @@ async def test_gateway_slash_save_exports_persisted_history(monkeypatch, tmp_pat
     assert "persisted hello" in text
     assert "## Assistant" in text
     assert "persisted reply" in text
+
+
+def test_standalone_save_transcript_writes_memory_transcript(tmp_path) -> None:
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    state.transcript.add("user", "local hello")
+    state.transcript.add("assistant", "local reply")
+    output = tmp_path / "standalone.md"
+
+    chat_transcript_exports.save_transcript_command(f"/save {output}", state)
+
+    text = output.read_text(encoding="utf-8")
+    assert "## You" in text
+    assert "local hello" in text
+    assert "## Assistant" in text
+    assert "local reply" in text
+
+
+def test_chat_save_transcript_uses_export_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    export_tree = ast.parse(Path(chat_transcript_exports.__file__).read_text(encoding="utf-8"))
+
+    chat_export_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_transcript_exports"
+        for alias in node.names
+    }
+    chat_repl_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.repl.session_state"
+        for alias in node.names
+    }
+    export_repl_names = {
+        alias.name
+        for node in ast.walk(export_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.repl.session_state"
+        for alias in node.names
+    }
+    chat_defs = {
+        node.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    chat_identifiers = {node.id for node in ast.walk(chat_tree) if isinstance(node, ast.Name)}
+
+    assert chat_export_names == {"save_gateway_transcript_command", "save_transcript_command"}
+    assert chat_repl_names == {"ChatSessionState"}
+    assert export_repl_names == {"ChatSessionState", "messages_to_markdown"}
+    assert "_save_transcript_command" not in chat_defs
+    assert "_save_gateway_transcript_command" not in chat_defs
+    assert "messages_to_markdown" not in chat_identifiers
 
 
 @pytest.mark.asyncio

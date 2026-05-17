@@ -23,9 +23,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from opensquilla.cli import attachments as _cli_attachments
+from opensquilla.cli.chat_transcript_exports import (
+    save_gateway_transcript_command,
+    save_transcript_command,
+)
 from opensquilla.cli.repl.commands import is_exit_command, render_help_table
 from opensquilla.cli.repl.prompt import prompt_approval, prompt_user
-from opensquilla.cli.repl.session_state import ChatSessionState, messages_to_markdown
+from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.cli.repl.stream import StreamingRenderer, TurnResult, UsageSummary
 from opensquilla.cli.ui import ACCENT, console, error_panel
 from opensquilla.session.compaction import (
@@ -117,6 +121,8 @@ class _GatewayClientLike(Protocol):
     ) -> Any: ...
 
     async def abort_session(self, key: str) -> dict[str, Any]: ...
+
+    async def session_history(self, session_key: str, limit: int = 1000) -> dict[str, Any]: ...
 
 
 def _optional_positive_config_float(config_source: Any, attr: str, default: float) -> float | None:
@@ -620,7 +626,7 @@ async def _standalone_repl(
                         console.print("[yellow]No session manager available.[/yellow]")
                     continue
                 if _slash_parts(stripped, "/save"):
-                    _save_transcript_command(stripped, state)
+                    save_transcript_command(stripped, state)
                     continue
                 if parts := _slash_parts(stripped, "/image"):
                     if len(parts) == 1 or not parts[1].strip():
@@ -898,7 +904,7 @@ async def _handle_gateway_slash_command(
         return True
 
     if _slash_parts(cmd, "/save"):
-        await _save_gateway_transcript_command(cmd, state, client)
+        await save_gateway_transcript_command(cmd, state, client)
         return True
 
     if parts := _slash_parts(cmd, "/image"):
@@ -1078,39 +1084,6 @@ def _print_models_table(rows: list[dict[str, Any]]) -> None:
             ", ".join(str(v) for v in row.get("capabilities") or []),
         )
     console.print(table)
-
-
-def _save_transcript_command(cmd: str, state: ChatSessionState) -> None:
-    parts = cmd.split(maxsplit=1)
-    if len(parts) > 1:
-        target = Path(parts[1]).expanduser()
-    else:
-        suffix = state.session_key.replace(":", "-")
-        target = Path(f"opensquilla-chat-{suffix}.md")
-    target.write_text(state.transcript.to_markdown(), encoding="utf-8")
-    console.print(f"[green]Saved transcript:[/green] {target}")
-
-
-async def _save_gateway_transcript_command(
-    cmd: str, state: ChatSessionState, client: object
-) -> None:
-    from opensquilla.cli.gateway_client import GatewayClient
-
-    assert isinstance(client, GatewayClient)
-    parts = cmd.split(maxsplit=1)
-    if len(parts) > 1:
-        target = Path(parts[1]).expanduser()
-    else:
-        suffix = state.session_key.replace(":", "-")
-        target = Path(f"opensquilla-chat-{suffix}.md")
-
-    history = await client.session_history(state.session_key, limit=1000)
-    messages = history.get("messages") or []
-    markdown = messages_to_markdown(messages) if isinstance(messages, list) else ""
-    if not markdown.strip():
-        markdown = state.transcript.to_markdown()
-    target.write_text(markdown, encoding="utf-8")
-    console.print(f"[green]Saved transcript:[/green] {target}")
 
 
 def _image_prompt_from_command(command: str) -> str:

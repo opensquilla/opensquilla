@@ -125,15 +125,15 @@ Move stateful gateway chat session lifecycle slash command workflows behind a de
 - [x] Update existing tests to patch the new workflow console/output boundary where needed.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -159,8 +159,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
-- Integration merge:
+- Child commit: `76d6da4` (`codex/refactor-cli-chat-session-workflows-boundary`)
+- Integration merge: `18d1b05` (`codex/refactor-architecture`)
 - Verification evidence:
   - Child preflight: `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-cli-chat-session-workflows-boundary` passed.
   - Red check: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_chat_stateful_session_slashes_use_workflow_boundary -q` failed before implementation because `chat_session_workflows.py` did not exist.
@@ -168,5 +168,6 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched checks: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_session_workflows.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_cli_product_completeness.py -q` passed with 142 tests.
   - Child gate: `scripts/refactor_gate.sh` completed ruff, mypy, diff check, full pytest (`2306 passed, 8 skipped`), and gateway smoke successfully.
+  - Integration gate: `scripts/refactor_gate.sh` on merge commit `18d1b05` completed ruff, mypy, diff check, full pytest (`2308 passed, 6 skipped`), and gateway smoke successfully.
 - Residual risk: Low. The slice moves only stateful interactive chat session lifecycle slash workflows and keeps command parsing, output strings, gateway calls, and state reset behavior compatible.
 - Next recommended slice: Move `/clear` and `/compact` session maintenance slash commands behind a dedicated workflow boundary after this slice is merged and re-gated on integration.

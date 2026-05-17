@@ -15,13 +15,16 @@ import os
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 from uuid import uuid4
 
 import typer
 from rich.panel import Panel
 
 from opensquilla.cli import attachments as _cli_attachments
+from opensquilla.cli.chat_gateway_approvals_workflows import (
+    handle_gateway_approvals_command,
+)
 from opensquilla.cli.chat_gateway_file_workflows import handle_gateway_file_command
 from opensquilla.cli.chat_gateway_forget_workflows import handle_gateway_forget_command
 from opensquilla.cli.chat_gateway_image_workflows import handle_gateway_image_command
@@ -878,7 +881,7 @@ async def _handle_gateway_slash_command(
         return True
 
     if cmd == "/approvals" or cmd.startswith("/approvals "):
-        await _handle_approvals_command(cmd, client)
+        await handle_gateway_approvals_command(cmd, client)
         return True
 
     return False
@@ -984,65 +987,8 @@ async def _forget_server_approvals(client: object | None, target: str | None = N
 
 
 async def _handle_approvals_command(cmd: str, client: object | None = None) -> None:
-    """Diagnostic view / reset for the approval queue.
-
-    * ``/approvals``        — show the current mode and cached intent entries.
-    * ``/approvals reset``  — reset queue mode to ``prompt`` + clear cache.
-    """
-    parts = cmd.split()
-    arg = parts[1].lower() if len(parts) > 1 else "status"
-
-    if client is None:
-        from opensquilla.application.approval_queue import get_approval_queue
-        from opensquilla.application.intent_cache import get_intent_cache
-
-        queue = get_approval_queue()
-        cache = get_intent_cache()
-        if arg == "reset":
-            queue.set_settings(mode="prompt")
-            cache.clear()
-            console.print("[cyan]Approval mode reset to prompt; cache cleared.[/cyan]")
-            return
-        entries = [
-            f"  [dim]{scope}[/dim] {k}:{t}"
-            for (k, t), (_exp, scope) in cache._entries.items()  # noqa: SLF001
-        ]
-        console.print(f"[cyan]mode:[/cyan] {queue.get_settings().mode}")
-        console.print(f"[cyan]cached intents ({len(entries)}):[/cyan]")
-        for line in entries or ["  [dim](none)[/dim]"]:
-            console.print(line)
-        return
-
-    from opensquilla.cli.gateway_client import GatewayClient
-
-    assert isinstance(client, GatewayClient)
-
-    if arg == "reset":
-        try:
-            await client.set_approval_mode("prompt")
-            await client.forget_approvals()
-            console.print("[cyan]Approval mode reset to prompt; server cache cleared.[/cyan]")
-        except Exception as exc:
-            console.print(f"[red]Failed to reset approvals:[/red] {type(exc).__name__}: {exc}")
-            console.print("[red]Restart the gateway if this is an older build.[/red]")
-        return
-
-    try:
-        snap = await client.approvals_snapshot()
-    except Exception as exc:
-        console.print(f"[red]Failed to query approvals:[/red] {type(exc).__name__}: {exc}")
-        console.print("[red]Older gateway? Restart it.[/red]")
-        return
-    console.print(f"[cyan]mode:[/cyan] {snap.get('mode')}")
-    raw_entries = snap.get("intent_cache_entries")
-    approval_entries = (
-        cast(list[dict[str, Any]], raw_entries) if isinstance(raw_entries, list) else []
-    )
-    console.print(f"[cyan]cached intents ({len(approval_entries)}):[/cyan]")
-    if not approval_entries:
-        console.print("  [dim](none)[/dim]")
-    for e in approval_entries:
-        console.print(f"  [dim]{e.get('scope')}[/dim] {e.get('kind')}:{e.get('target')}")
+    """Compatibility wrapper for approval queue diagnostics."""
+    await handle_gateway_approvals_command(cmd, client)
 
 
 async def _handle_forget_command(cmd: str, client: object | None = None) -> None:

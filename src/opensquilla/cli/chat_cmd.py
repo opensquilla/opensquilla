@@ -44,6 +44,7 @@ from opensquilla.cli.chat_standalone_model_cost_workflows import (
     handle_standalone_cost_command,
     handle_standalone_model_command,
 )
+from opensquilla.cli.chat_standalone_path_workflows import handle_standalone_path_command
 from opensquilla.cli.chat_standalone_session_workflows import (
     handle_standalone_clear_command,
     handle_standalone_compact_command,
@@ -630,29 +631,17 @@ async def _standalone_repl(
                     state.usage.add(result.usage)
                     continue
                 if parts := _slash_parts(stripped, "/path"):
-                    if len(parts) == 1 or not parts[1].strip():
-                        console.print("[red]Usage: /path <path> [prompt][/red]")
-                        continue
-                    try:
-                        prompt, attachments = _path_prompt_and_attachments(stripped)
-                    except ValueError as exc:
-                        console.print(error_panel(str(exc)))
-                        continue
-                    if attachments:
-                        console.print(error_panel("/path must not create attachments."))
-                        continue
-                    result = await _stream_response_turnrunner(
-                        turn_runner,
-                        session_key,
-                        tool_ctx,
-                        prompt,
+                    await handle_standalone_path_command(
+                        stripped,
+                        parts,
+                        state,
+                        turn_runner=turn_runner,
+                        tool_context=tool_ctx,
+                        services=svc,
                         model=model,
-                        svc=svc,
                         timeout=timeout,
+                        stream_response=_stream_response_turnrunner,
                     )
-                    state.transcript.add("user", prompt)
-                    state.transcript.add("assistant", result.text)
-                    state.usage.add(result.usage)
                     continue
                 console.print("[red]Unknown command.[/red] [dim]Use /help.[/dim]")
                 continue

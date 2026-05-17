@@ -43,6 +43,9 @@ from opensquilla.cli.chat_gateway_session_route_workflows import (
     handle_gateway_session_route_command,
 )
 from opensquilla.cli.chat_gateway_slash_routes import match_gateway_slash_route
+from opensquilla.cli.chat_gateway_utility_route_workflows import (
+    handle_gateway_utility_route_command,
+)
 from opensquilla.cli.chat_standalone_image_workflows import handle_standalone_image_command
 from opensquilla.cli.chat_standalone_model_cost_workflows import (
     handle_standalone_cost_command,
@@ -59,10 +62,7 @@ from opensquilla.cli.chat_standalone_status_workflows import (
     handle_standalone_status_command,
 )
 from opensquilla.cli.chat_tool_compression_workflows import handle_tool_compress_command
-from opensquilla.cli.chat_transcript_exports import (
-    save_gateway_transcript_command,
-    save_transcript_command,
-)
+from opensquilla.cli.chat_transcript_exports import save_transcript_command
 from opensquilla.cli.repl.commands import is_exit_command, render_help_table
 from opensquilla.cli.repl.prompt import prompt_approval, prompt_user
 from opensquilla.cli.repl.session_state import ChatSessionState
@@ -772,12 +772,7 @@ async def _handle_gateway_slash_command(
     if await handle_gateway_model_route_command(route_name, parts, state, client):
         return True
 
-    if route_name == "tool_compress":
-        await handle_tool_compress_command(cmd, client=client)
-        return True
-
-    if route_name == "save":
-        await save_gateway_transcript_command(cmd, state, client)
+    if await handle_gateway_utility_route_command(route_name, cmd, state, client):
         return True
 
     if route_name == "image":

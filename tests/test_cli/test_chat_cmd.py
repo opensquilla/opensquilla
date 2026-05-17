@@ -3476,11 +3476,31 @@ def test_standalone_save_transcript_writes_memory_transcript(tmp_path) -> None:
 
 def test_chat_save_transcript_uses_export_boundary() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    utility_route_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_utility_route_workflows.py"
+    )
     export_tree = ast.parse(Path(chat_transcript_exports.__file__).read_text(encoding="utf-8"))
 
+    assert utility_route_path.exists()
+
+    utility_route_tree = ast.parse(utility_route_path.read_text(encoding="utf-8"))
     chat_export_names = {
         alias.name
         for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_transcript_exports"
+        for alias in node.names
+    }
+    chat_utility_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_utility_route_workflows"
+        for alias in node.names
+    }
+    utility_export_names = {
+        alias.name
+        for node in ast.walk(utility_route_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.chat_transcript_exports"
         for alias in node.names
@@ -3506,7 +3526,9 @@ def test_chat_save_transcript_uses_export_boundary() -> None:
     }
     chat_identifiers = {node.id for node in ast.walk(chat_tree) if isinstance(node, ast.Name)}
 
-    assert chat_export_names == {"save_gateway_transcript_command", "save_transcript_command"}
+    assert chat_export_names == {"save_transcript_command"}
+    assert chat_utility_names == {"handle_gateway_utility_route_command"}
+    assert utility_export_names == {"SessionHistoryClient", "save_gateway_transcript_command"}
     assert chat_repl_names == {"ChatSessionState"}
     assert export_repl_names == {"ChatSessionState", "messages_to_markdown"}
     assert "_save_transcript_command" not in chat_defs
@@ -4238,6 +4260,119 @@ async def test_gateway_model_route_executor_delegates_known_routes(monkeypatch) 
     ]
 
 
+def test_gateway_utility_routes_use_executor_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_utility_route_workflows.py"
+    )
+
+    assert workflow_path.exists()
+
+    from opensquilla.cli import chat_gateway_utility_route_workflows
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_utility_route_workflows"
+        for alias in node.names
+    }
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    workflow_imports = {
+        (node.module, alias.name)
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        for alias in node.names
+    }
+
+    assert chat_workflow_names == {"handle_gateway_utility_route_command"}
+    assert "handle_gateway_utility_route_command" in slash_name_calls
+    assert "handle_tool_compress_command" not in slash_name_calls
+    assert "save_gateway_transcript_command" not in slash_name_calls
+    assert "handle_gateway_utility_route_command" in workflow_defs
+    assert {
+        ("opensquilla.cli.chat_tool_compression_workflows", "handle_tool_compress_command"),
+        ("opensquilla.cli.chat_transcript_exports", "save_gateway_transcript_command"),
+    } <= workflow_imports
+    assert chat_gateway_utility_route_workflows.GATEWAY_UTILITY_ROUTE_NAMES == frozenset(
+        {"tool_compress", "save"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_utility_route_executor_delegates_known_routes(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_utility_route_workflows
+
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    calls: list[tuple[str, str]] = []
+
+    async def fake_tool_compress(command: str, **kwargs: object) -> None:
+        assert kwargs == {"client": fake}
+        calls.append(("tool_compress", command))
+
+    async def fake_save(
+        command: str,
+        seen_state: ChatSessionState,
+        seen_client: object,
+    ) -> None:
+        assert seen_state is state
+        assert seen_client is fake
+        calls.append(("save", command))
+
+    monkeypatch.setattr(
+        chat_gateway_utility_route_workflows,
+        "handle_tool_compress_command",
+        fake_tool_compress,
+    )
+    monkeypatch.setattr(
+        chat_gateway_utility_route_workflows,
+        "save_gateway_transcript_command",
+        fake_save,
+    )
+
+    for route_name, command in [
+        ("tool_compress", "/tool-compress status"),
+        ("save", "/save out.md"),
+    ]:
+        handled = await chat_gateway_utility_route_workflows.handle_gateway_utility_route_command(
+            route_name,
+            command,
+            state,
+            fake,
+        )
+        assert handled is True
+
+    unhandled = await chat_gateway_utility_route_workflows.handle_gateway_utility_route_command(
+        "image",
+        "/image chart.png",
+        state,
+        fake,
+    )
+
+    assert unhandled is False
+    assert calls == [
+        ("tool_compress", "/tool-compress status"),
+        ("save", "/save out.md"),
+    ]
+
+
 def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_session_workflows.py")
@@ -4497,16 +4632,38 @@ def test_chat_gateway_usage_slashes_use_workflow_boundary() -> None:
 def test_chat_tool_compress_slashes_use_workflow_boundary() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_tool_compression_workflows.py")
+    executor_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_utility_route_workflows.py"
+    )
 
     assert workflow_path.exists()
+    assert executor_path.exists()
 
     workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    executor_tree = ast.parse(executor_path.read_text(encoding="utf-8"))
     chat_workflow_names = {
         alias.name
         for node in ast.walk(chat_tree)
         if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_utility_route_workflows"
+        for alias in node.names
+    }
+    executor_workflow_names = {
+        alias.name
+        for node in ast.walk(executor_tree)
+        if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.chat_tool_compression_workflows"
         for alias in node.names
+    }
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    slash_name_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     chat_defs = {
         node.name
@@ -4529,9 +4686,11 @@ def test_chat_tool_compress_slashes_use_workflow_boundary() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
-    assert chat_workflow_names == {"handle_tool_compress_command"}
+    assert chat_workflow_names == {"handle_gateway_utility_route_command"}
+    assert executor_workflow_names == {"handle_tool_compress_command"}
     assert "_handle_tool_compress_command" not in chat_defs
     assert "_handle_tool_compress_command" not in chat_name_calls
+    assert "handle_tool_compress_command" not in slash_name_calls
     assert "agent_token_saving.tool_result_compression_enabled" not in chat_literals
     assert "agent_token_saving.tool_result_compression_mode" not in chat_literals
     assert "agent_token_saving.tool_result_compression_summary_model" not in chat_literals

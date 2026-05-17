@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from opensquilla.cli.skills_gateway_mutations import try_gateway_skill_mutation
 from opensquilla.cli.skills_local_mutations import (
     run_local_skill_install,
@@ -15,6 +17,31 @@ from opensquilla.cli.skills_mutation_presenters import (
     emit_missing_skill_mutation_result,
     emit_skill_mutation_payload,
 )
+
+
+def install_skill_for_cli_command(
+    identifier: str,
+    *,
+    source: str,
+    force: bool,
+    json_output: bool,
+) -> None:
+    """Run a skill install workflow from a synchronous CLI command."""
+
+    asyncio.run(
+        install_skill_for_cli(
+            identifier,
+            source=source,
+            force=force,
+            json_output=json_output,
+        )
+    )
+
+
+def uninstall_skill_for_cli_command(name: str, *, json_output: bool) -> None:
+    """Run a skill uninstall workflow from a synchronous CLI command."""
+
+    asyncio.run(uninstall_skill_for_cli(name, json_output=json_output))
 
 
 async def install_skill_for_cli(

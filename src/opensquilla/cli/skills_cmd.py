@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import typer
 
 from opensquilla.cli.skills_gateway_workflows import (
@@ -12,11 +10,11 @@ from opensquilla.cli.skills_gateway_workflows import (
 )
 from opensquilla.cli.skills_list_workflows import list_skills_for_cli
 from opensquilla.cli.skills_mutation_workflows import (
-    install_skill_for_cli,
-    uninstall_skill_for_cli,
+    install_skill_for_cli_command,
+    uninstall_skill_for_cli_command,
 )
 from opensquilla.cli.skills_publish_workflows import publish_skill_for_cli_command
-from opensquilla.cli.skills_search_workflows import search_skills_for_cli
+from opensquilla.cli.skills_search_workflows import search_skills_for_cli_command
 from opensquilla.cli.skills_tap_workflows import (
     add_skill_tap_for_cli,
     list_skill_taps_for_cli,
@@ -40,11 +38,7 @@ def skills_search(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Search for skills across Community sources."""
-
-    async def _search() -> None:
-        await search_skills_for_cli(query, json_output=json_output)
-
-    asyncio.run(_search())
+    search_skills_for_cli_command(query, json_output=json_output)
 
 
 @skills_app.command("view")
@@ -89,16 +83,12 @@ def skills_install(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Install a skill from a Community source."""
-
-    async def _install() -> None:
-        await install_skill_for_cli(
-            identifier,
-            source=source,
-            force=force,
-            json_output=json_output,
-        )
-
-    asyncio.run(_install())
+    install_skill_for_cli_command(
+        identifier,
+        source=source,
+        force=force,
+        json_output=json_output,
+    )
 
 
 @skills_app.command("uninstall")
@@ -107,11 +97,7 @@ def skills_uninstall(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Uninstall a managed skill."""
-
-    async def _uninstall() -> None:
-        await uninstall_skill_for_cli(name, json_output=json_output)
-
-    asyncio.run(_uninstall())
+    uninstall_skill_for_cli_command(name, json_output=json_output)
 
 
 # ── Tap sub-commands ──────────────────────────────────────────────────────
@@ -147,8 +133,4 @@ def skills_publish(
     repo: str | None = typer.Option(None, "--repo", "-r", help="Target repo (owner/repo) for PR"),
 ) -> None:
     """Validate and publish a skill to a repository."""
-
-    async def _publish() -> None:
-        await publish_skill_for_cli_command(skill_dir, repo)
-
-    asyncio.run(_publish())
+    publish_skill_for_cli_command(skill_dir, repo)

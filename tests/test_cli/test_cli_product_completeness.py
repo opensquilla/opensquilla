@@ -826,6 +826,58 @@ def test_cli_skills_does_not_import_hub_defaults() -> None:
     assert "opensquilla.skills.runtime" not in imported_modules
 
 
+def test_cli_skills_async_runner_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        skills_cmd,
+        skills_mutation_workflows,
+        skills_publish_workflows,
+        skills_search_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(skills_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_trees = [
+        ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        for module in (
+            skills_search_workflows,
+            skills_mutation_workflows,
+            skills_publish_workflows,
+        )
+    ]
+    cmd_imported_modules = {
+        node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
+    }
+    cmd_import_names = {
+        alias.name for node in ast.walk(cmd_tree) if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    cmd_identifiers = {
+        node.id for node in ast.walk(cmd_tree) if isinstance(node, ast.Name)
+    }
+    workflow_import_names = {
+        alias.name
+        for tree in workflow_trees
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    workflow_asyncio_run_calls = [
+        node
+        for tree in workflow_trees
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "asyncio"
+        and node.func.attr == "run"
+    ]
+
+    assert "asyncio" not in cmd_import_names
+    assert "asyncio" not in cmd_imported_modules
+    assert "asyncio" not in cmd_identifiers
+    assert "asyncio" in workflow_import_names
+    assert len(workflow_asyncio_run_calls) == 4
+
+
 def test_cli_skills_search_does_not_import_hub_search_operation_details() -> None:
     from opensquilla.cli import skills_cmd, skills_search_workflows
 
@@ -851,7 +903,7 @@ def test_cli_skills_search_does_not_import_hub_search_operation_details() -> Non
         node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
     }
 
-    assert imported_workflow_names == {"search_skills_for_cli"}
+    assert imported_workflow_names == {"search_skills_for_cli_command"}
     assert "opensquilla.cli.skills_search_rows" not in cmd_direct_modules
     assert "search_skills" not in imported_names
     assert "skill_search_request" not in imported_names
@@ -889,7 +941,10 @@ def test_cli_skills_install_fallback_uses_local_mutation_boundary() -> None:
         node.module for node in ast.walk(cmd_tree) if isinstance(node, ast.ImportFrom)
     }
 
-    assert cmd_workflow_names == {"install_skill_for_cli", "uninstall_skill_for_cli"}
+    assert cmd_workflow_names == {
+        "install_skill_for_cli_command",
+        "uninstall_skill_for_cli_command",
+    }
     assert "opensquilla.cli.skills_local_mutations" not in cmd_direct_modules
     assert "run_local_skill_install" in imported_cli_names
     assert "run_local_skill_uninstall" in imported_cli_names

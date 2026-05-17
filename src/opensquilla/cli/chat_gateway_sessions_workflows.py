@@ -1,0 +1,29 @@
+"""Gateway session list slash-command workflow for interactive chat."""
+
+from __future__ import annotations
+
+from typing import Any, Protocol
+
+from opensquilla.cli.chat_presenters import emit_chat_sessions_table
+from opensquilla.cli.ui import console
+
+
+class GatewaySessionListClient(Protocol):
+    async def list_sessions(self, limit: int = 50) -> dict[str, Any]: ...
+
+
+async def handle_gateway_sessions_command(
+    parts: list[str],
+    client: GatewaySessionListClient,
+) -> None:
+    """Handle the gateway chat /sessions command."""
+
+    limit = 10
+    if len(parts) > 1:
+        try:
+            limit = int(parts[1])
+        except ValueError:
+            console.print("[red]Usage: /sessions [limit][/red]")
+            return
+    payload = await client.list_sessions(limit=limit)
+    emit_chat_sessions_table(payload.get("sessions", []))

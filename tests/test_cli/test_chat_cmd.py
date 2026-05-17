@@ -3550,18 +3550,26 @@ def test_chat_slash_tables_use_presenter_boundary() -> None:
     assert "rich.table" in presenter_imported_modules
 
 
-def test_chat_slash_readonly_lists_use_workflow_boundary() -> None:
+def test_chat_gateway_readonly_lists_use_focused_workflow_boundaries() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
-    workflow_path = Path(chat_cmd.__file__).with_name("chat_slash_workflows.py")
+    sessions_workflow_path = Path(chat_cmd.__file__).with_name(
+        "chat_gateway_sessions_workflows.py"
+    )
+    models_workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_models_workflows.py")
+    compatibility_path = Path(chat_cmd.__file__).with_name("chat_slash_workflows.py")
 
-    assert workflow_path.exists()
+    assert sessions_workflow_path.exists()
+    assert models_workflow_path.exists()
+    assert compatibility_path.exists()
 
-    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
-    chat_workflow_names = {
-        alias.name
+    sessions_workflow_tree = ast.parse(sessions_workflow_path.read_text(encoding="utf-8"))
+    models_workflow_tree = ast.parse(models_workflow_path.read_text(encoding="utf-8"))
+    compatibility_tree = ast.parse(compatibility_path.read_text(encoding="utf-8"))
+    chat_workflow_imports = {
+        (node.module, alias.name)
         for node in ast.walk(chat_tree)
         if isinstance(node, ast.ImportFrom)
-        and node.module == "opensquilla.cli.chat_slash_workflows"
+        and node.module is not None
         for alias in node.names
     }
     chat_presenter_modules = {
@@ -3574,25 +3582,75 @@ def test_chat_slash_readonly_lists_use_workflow_boundary() -> None:
         for node in ast.walk(chat_tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    workflow_defs = {
+    chat_direct_presenter_calls = {
+        node.func.id
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    sessions_workflow_defs = {
         node.name
-        for node in ast.walk(workflow_tree)
+        for node in ast.walk(sessions_workflow_tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    workflow_presenter_names = {
+    models_workflow_defs = {
+        node.name
+        for node in ast.walk(models_workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    compatibility_defs = {
+        node.name
+        for node in ast.walk(compatibility_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    compatibility_imported_modules = {
+        node.module
+        for node in ast.walk(compatibility_tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    sessions_presenter_names = {
         alias.name
-        for node in ast.walk(workflow_tree)
+        for node in ast.walk(sessions_workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_presenters"
+        for alias in node.names
+    }
+    models_presenter_names = {
+        alias.name
+        for node in ast.walk(models_workflow_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.chat_presenters"
         for alias in node.names
     }
 
-    assert chat_workflow_names == {"handle_models_command", "handle_sessions_command"}
+    assert (
+        "opensquilla.cli.chat_gateway_sessions_workflows",
+        "handle_gateway_sessions_command",
+    ) in chat_workflow_imports
+    assert (
+        "opensquilla.cli.chat_gateway_models_workflows",
+        "handle_gateway_models_command",
+    ) in chat_workflow_imports
+    assert not any(
+        module == "opensquilla.cli.chat_slash_workflows"
+        for module, _name in chat_workflow_imports
+    )
     assert "opensquilla.cli.chat_presenters" not in chat_presenter_modules
     assert "list_sessions" not in chat_gateway_calls
     assert "list_models" not in chat_gateway_calls
-    assert {"handle_models_command", "handle_sessions_command"} <= workflow_defs
-    assert workflow_presenter_names == {"emit_chat_models_table", "emit_chat_sessions_table"}
+    assert "emit_chat_sessions_table" not in chat_direct_presenter_calls
+    assert "emit_chat_models_table" not in chat_direct_presenter_calls
+    assert "handle_gateway_sessions_command" in sessions_workflow_defs
+    assert "handle_gateway_models_command" in models_workflow_defs
+    assert "handle_sessions_command" not in compatibility_defs
+    assert "handle_models_command" not in compatibility_defs
+    assert sessions_presenter_names == {"emit_chat_sessions_table"}
+    assert models_presenter_names == {"emit_chat_models_table"}
+    assert "opensquilla.cli.chat_gateway_sessions_workflows" in compatibility_imported_modules
+    assert "opensquilla.cli.chat_gateway_models_workflows" in compatibility_imported_modules
+    assert chat_slash_workflows.handle_sessions_command.__name__ == (
+        "handle_gateway_sessions_command"
+    )
+    assert chat_slash_workflows.handle_models_command.__name__ == "handle_gateway_models_command"
 
 
 def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
@@ -4467,6 +4525,8 @@ def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_gateway_slash_sessions_uses_presenter_boundary(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_sessions_workflows
+
     _FakeGatewayClient.instances.clear()
     monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
     fake = _FakeGatewayClient()
@@ -4476,7 +4536,7 @@ async def test_gateway_slash_sessions_uses_presenter_boundary(monkeypatch) -> No
     def fake_emit(rows: list[dict[str, object]]) -> None:
         rendered.append(rows)
 
-    monkeypatch.setattr(chat_slash_workflows, "emit_chat_sessions_table", fake_emit)
+    monkeypatch.setattr(chat_gateway_sessions_workflows, "emit_chat_sessions_table", fake_emit)
 
     handled = await chat_cmd._handle_gateway_slash_command(
         "/sessions 3", state, fake, {"mode": None}
@@ -4498,6 +4558,8 @@ async def test_gateway_slash_sessions_uses_presenter_boundary(monkeypatch) -> No
 
 @pytest.mark.asyncio
 async def test_gateway_slash_models_does_not_hit_model_prefix(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_models_workflows
+
     _FakeGatewayClient.instances.clear()
     monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
     fake = _FakeGatewayClient()
@@ -4507,7 +4569,7 @@ async def test_gateway_slash_models_does_not_hit_model_prefix(monkeypatch) -> No
     def fake_emit(rows: list[dict[str, object]]) -> None:
         rendered.append(rows)
 
-    monkeypatch.setattr(chat_slash_workflows, "emit_chat_models_table", fake_emit)
+    monkeypatch.setattr(chat_gateway_models_workflows, "emit_chat_models_table", fake_emit)
 
     handled = await chat_cmd._handle_gateway_slash_command("/models", state, fake, {"mode": None})
 

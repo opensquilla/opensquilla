@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from rich.table import Table
 from opensquilla.cli.gateway_rpc import run_gateway_sync
 from opensquilla.cli.output import print_json
 from opensquilla.cli.repl.session_state import messages_to_markdown
+from opensquilla.cli.sessions_workflows import list_sessions_for_cli
 from opensquilla.cli.ui import console, error_panel
 from opensquilla.cli.url_utils import normalize_gateway_url
 
@@ -27,80 +27,6 @@ _ACTION_FAILED = object()
 def _resolved_key(payload: dict[str, Any], fallback: str) -> str:
     value = payload.get("session_key") or payload.get("key") or fallback
     return str(value)
-
-
-def _parse_since(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    raw = value.strip()
-    if not raw:
-        return None
-    try:
-        if raw.isdigit():
-            number = float(int(raw))
-            if number > 10_000_000_000:
-                number = number / 1000
-            return datetime.fromtimestamp(number, tz=UTC)
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed
-    except ValueError as exc:
-        raise typer.BadParameter("--since must be an ISO date/datetime or epoch timestamp") from exc
-
-
-def _row_datetime(row: dict[str, Any]) -> datetime | None:
-    value = row.get("updated_at", row.get("updatedAt"))
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        timestamp = float(value)
-        if timestamp > 10_000_000_000:
-            timestamp = timestamp / 1000
-        return datetime.fromtimestamp(timestamp, tz=UTC)
-    if isinstance(value, str):
-        try:
-            if value.isdigit():
-                return _parse_since(value)
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            return parsed
-        except ValueError:
-            return None
-    return None
-
-
-def _filter_sessions(
-    rows: list[dict[str, Any]],
-    *,
-    agent: str | None,
-    status: str | None,
-    channel: str | None,
-    since: datetime | None,
-) -> list[dict[str, Any]]:
-    filtered: list[dict[str, Any]] = []
-    for row in rows:
-        if agent and str(row.get("agent_id") or row.get("agentId") or "") != agent:
-            continue
-        if status and str(row.get("status") or "").lower() != status.lower():
-            continue
-        if channel:
-            channel_values = {
-                str(row.get("channel") or ""),
-                str(row.get("last_channel") or ""),
-                str(row.get("lastChannel") or ""),
-                str(row.get("source_channel") or ""),
-                str(row.get("sourceChannel") or ""),
-            }
-            if channel not in channel_values:
-                continue
-        if since:
-            updated = _row_datetime(row)
-            if updated is None or updated < since:
-                continue
-        filtered.append(row)
-    return filtered
 
 
 async def _with_client(action):
@@ -132,42 +58,14 @@ def sessions_list(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """List recent sessions."""
-    since_dt = _parse_since(since)
-
-    async def _run(client):
-        return await client.list_sessions(limit=limit)
-
-    result = run_gateway_sync(_run, json_output=json_output)
-    raw_rows = result.get("sessions", []) if isinstance(result, dict) else []
-    rows = _filter_sessions(
-        [row for row in raw_rows if isinstance(row, dict)],
+    list_sessions_for_cli(
+        limit=limit,
         agent=agent,
         status=status,
         channel=channel,
-        since=since_dt,
+        since=since,
+        json_output=json_output,
     )
-    if json_output:
-        payload = dict(result) if isinstance(result, dict) else {}
-        payload["sessions"] = rows
-        payload["count"] = len(rows)
-        print_json(payload)
-        return
-
-    table = Table(title="Sessions", show_header=True, header_style="bold cyan")
-    table.add_column("Key")
-    table.add_column("Agent")
-    table.add_column("Status")
-    table.add_column("Model")
-    table.add_column("Messages", justify="right")
-    for row in rows:
-        table.add_row(
-            str(row.get("key") or ""),
-            str(row.get("agent_id") or row.get("agentId") or ""),
-            str(row.get("status") or ""),
-            str(row.get("model") or ""),
-            str(row.get("message_count") or row.get("entry_count") or 0),
-        )
-    console.print(table)
 
 
 @app.command("show")

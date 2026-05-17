@@ -2174,6 +2174,91 @@ def test_sessions_list_json_filters_client_side(monkeypatch):
     assert payload["sessions"][0]["key"] == "a"
 
 
+def test_cli_sessions_list_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        sessions_cmd,
+        sessions_gateway_queries,
+        sessions_presenters,
+        sessions_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(sessions_cmd.__file__).read_text(encoding="utf-8"))
+    query_tree = ast.parse(
+        Path(sessions_gateway_queries.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(Path(sessions_presenters.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(Path(sessions_workflows.__file__).read_text(encoding="utf-8"))
+
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_workflows"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_gateway_queries"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.sessions_presenters"
+        for alias in node.names
+    }
+    query_rpc_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.gateway_rpc"
+        for alias in node.names
+    }
+    presenter_output_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    sessions_list = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "sessions_list"
+    )
+    command_calls = {
+        node.func.id
+        for node in ast.walk(sessions_list)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    command_identifiers = {
+        node.id for node in ast.walk(sessions_list) if isinstance(node, ast.Name)
+    }
+
+    assert cmd_workflow_names == {"list_sessions_for_cli"}
+    assert workflow_query_names == {"list_sessions_from_gateway"}
+    assert workflow_presenter_names == {"emit_sessions_list"}
+    assert query_rpc_names == {"run_gateway_sync"}
+    assert presenter_output_names == {"print_json"}
+    assert "list_sessions_for_cli" in command_calls
+    assert not any(isinstance(node, ast.AsyncFunctionDef) for node in ast.walk(sessions_list))
+    assert not (
+        command_identifiers
+        & {
+            "_filter_sessions",
+            "_parse_since",
+            "console",
+            "print_json",
+            "raw_rows",
+            "run_gateway_sync",
+            "Table",
+        }
+    )
+
+
 def test_sessions_show_json_resolves_and_previews(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {

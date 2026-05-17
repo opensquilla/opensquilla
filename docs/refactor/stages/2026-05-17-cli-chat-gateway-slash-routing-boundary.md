@@ -118,15 +118,15 @@ Extract gateway slash route matching and route ordering from `chat_cmd.py` witho
 - [x] Update `chat_cmd.py` gateway slash dispatcher to use `match_gateway_slash_route`.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -152,8 +152,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
-- Integration merge:
+- Child commit: `a389c1a` (`Move gateway chat slash matching behind route boundary`)
+- Integration merge: `0bf77de` (`Merge CLI chat gateway slash routing boundary`)
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-cli-chat-gateway-slash-routing-boundary` passed on branch `codex/refactor-cli-chat-gateway-slash-routing-boundary` at `d8b8f41`.
   - Spawn fallback: `spawn_agent` availability check failed with `collab spawn failed: agent thread limit reached`; continued sequentially per root `AGENTS.md`.
@@ -162,5 +162,8 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_gateway_slash_routes.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_cli_product_completeness.py -q` passed, `216 passed in 2.38s`.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 473 source files; whitespace passed; pytest passed with `2380 passed, 8 skipped, 2 warnings in 49.26s`; gateway smoke start/status/stop passed on `127.0.0.1:62961`.
-- Residual risk:
-- Next recommended slice:
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `d8b8f41`.
+  - Integration merge: `git merge --no-ff codex/refactor-cli-chat-gateway-slash-routing-boundary` produced merge commit `0bf77de`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 473 source files; whitespace passed; pytest passed with `2382 passed, 6 skipped, 2 warnings in 26.22s`; gateway smoke start/status/stop passed on `127.0.0.1:63141`.
+- Residual risk: Low. The slice moves route matching and route order into a pure boundary while leaving handler invocation in `chat_cmd.py`; behavior tests cover exact aliases, prefix matching, `/models` before `/model`, and unknown-prefix rejection. No independent subagent review was possible because `spawn_agent` remained unavailable due to the current thread limit.
+- Next recommended slice: Move gateway slash handler execution from the long `route_name` branch chain into a focused executor module or command table one route family at a time, starting with exact no-argument routes (`/help`, `/status`, `/clear`, `/compact`, `/cost`, `/usage`) to keep behavior risk small.

@@ -3160,6 +3160,130 @@ def test_cost_json_returns_gateway_payload(monkeypatch):
     assert ("usage.cost", {}) in fake.calls
 
 
+def test_cost_by_model_json_groups_gateway_payload(monkeypatch):
+    fake = _install_fake_gateway(monkeypatch)
+    fake.cost_payload = {
+        "breakdown": [
+            {
+                "session": "s1",
+                "model": "m",
+                "input_tokens": 1,
+                "output_tokens": 2,
+                "cost_usd": 0.125,
+            },
+            {
+                "sessionKey": "s2",
+                "model": "m",
+                "inputTokens": 3,
+                "outputTokens": 4,
+                "costUsd": 0.25,
+            },
+        ],
+        "totalCostUsd": 0.375,
+    }
+
+    result = runner.invoke(app, ["cost", "--by-model", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    assert json.loads(result.stdout) == {
+        "byModel": [
+            {
+                "model": "m",
+                "inputTokens": 4,
+                "outputTokens": 6,
+                "costUsd": 0.375,
+            }
+        ],
+        "totalCostUsd": 0.375,
+    }
+    assert ("usage.cost", {}) in fake.calls
+
+
+def test_cli_cost_uses_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        cost_cmd,
+        cost_gateway_queries,
+        cost_presenters,
+        cost_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(cost_cmd.__file__).read_text(encoding="utf-8"))
+    query_tree = ast.parse(
+        Path(cost_gateway_queries.__file__).read_text(encoding="utf-8")
+    )
+    presenter_tree = ast.parse(Path(cost_presenters.__file__).read_text(encoding="utf-8"))
+    workflow_tree = ast.parse(Path(cost_workflows.__file__).read_text(encoding="utf-8"))
+
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("opensquilla.")
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.cost_workflows"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.cost_gateway_queries"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.cost_presenters"
+        for alias in node.names
+    }
+    query_rpc_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.gateway_rpc"
+        for alias in node.names
+    }
+    presenter_output_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.output"
+        for alias in node.names
+    }
+    cost_command = next(
+        node
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "cost"
+    )
+    command_calls = {
+        node.func.id
+        for node in ast.walk(cost_command)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    command_identifiers = {
+        node.id for node in ast.walk(cost_command) if isinstance(node, ast.Name)
+    }
+
+    assert cmd_workflow_names == {"show_usage_cost_for_cli"}
+    assert cmd_direct_modules == {"opensquilla.cli.cost_workflows"}
+    assert workflow_query_names == {"load_usage_cost_from_gateway"}
+    assert workflow_presenter_names == {"emit_usage_cost"}
+    assert query_rpc_names == {"run_gateway_sync"}
+    assert presenter_output_names == {"print_json"}
+    assert "show_usage_cost_for_cli" in command_calls
+    assert not any(isinstance(node, ast.AsyncFunctionDef) for node in ast.walk(cost_command))
+    assert not (
+        command_identifiers
+        & {"run_gateway_sync", "print_json", "console", "Table", "defaultdict", "cast", "client"}
+    )
+
+
 def test_provider_and_search_diagnostics_use_gateway_rpcs(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {

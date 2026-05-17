@@ -308,6 +308,109 @@ def test_config_get_explicit_config_path_wins(tmp_path: Path):
     assert "explicit/model" in result.stdout
 
 
+def test_cli_config_commands_use_workflow_boundary() -> None:
+    from opensquilla.cli import (
+        config_cmd,
+        config_presenters,
+        config_queries,
+        config_workflows,
+    )
+
+    cmd_tree = ast.parse(Path(config_cmd.__file__).read_text(encoding="utf-8"))
+    query_tree = ast.parse(Path(config_queries.__file__).read_text(encoding="utf-8"))
+    presenter_tree = ast.parse(
+        Path(config_presenters.__file__).read_text(encoding="utf-8")
+    )
+    workflow_tree = ast.parse(
+        Path(config_workflows.__file__).read_text(encoding="utf-8")
+    )
+
+    cmd_direct_modules = {
+        node.module
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("opensquilla.")
+    }
+    cmd_workflow_names = {
+        alias.name
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.config_workflows"
+        for alias in node.names
+    }
+    workflow_query_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.config_queries"
+        for alias in node.names
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.config_presenters"
+        for alias in node.names
+    }
+    query_gateway_names = {
+        alias.name
+        for node in ast.walk(query_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.gateway.config"
+        for alias in node.names
+    }
+    presenter_ui_names = {
+        alias.name
+        for node in ast.walk(presenter_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.ui"
+        for alias in node.names
+    }
+    command_calls = {
+        node.func.id
+        for function_name in {"config_get", "config_set"}
+        for command in ast.walk(cmd_tree)
+        if isinstance(command, ast.FunctionDef) and command.name == function_name
+        for node in ast.walk(command)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    cmd_identifiers = {
+        node.id
+        for node in ast.walk(cmd_tree)
+        if isinstance(node, ast.Name)
+    }
+
+    assert cmd_workflow_names == {"get_config_for_cli", "set_config_for_cli"}
+    assert cmd_direct_modules == {"opensquilla.cli.config_workflows"}
+    assert workflow_query_names == {
+        "is_missing_config_value",
+        "load_public_config",
+        "lookup_config_value",
+    }
+    assert workflow_presenter_names == {
+        "emit_config_export_hint",
+        "emit_config_table",
+        "emit_config_value",
+        "emit_missing_config_key",
+    }
+    assert query_gateway_names == {"GatewayConfig"}
+    assert presenter_ui_names == {"console"}
+    assert {"get_config_for_cli", "set_config_for_cli"} <= command_calls
+    assert not (
+        cmd_identifiers
+        & {
+            "GatewayConfig",
+            "console",
+            "Table",
+            "escape",
+            "os",
+            "_get_key",
+            "_add_flat",
+        }
+    )
+
+
 def test_gateway_json_errors_go_to_stderr(monkeypatch):
     _install_fake_gateway(monkeypatch, FailingConnectGatewayClient)
 

@@ -65,3 +65,15 @@ def test_refactor_hook_scripts_help_without_side_effects() -> None:
 
         assert result.returncode == 0
         assert "Usage:" in result.stdout
+
+
+def test_refactor_control_assets_do_not_embed_local_user_paths() -> None:
+    for path in (
+        "docs/refactor/overall-plan.md",
+        "docs/refactor/stage-template.md",
+        "scripts/refactor_stage_init.sh",
+    ):
+        text = _read(path)
+
+        assert "/Users/" not in text
+        assert "/home/" not in text

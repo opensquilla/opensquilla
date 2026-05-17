@@ -25,7 +25,7 @@ if [[ -z "$slice" ]]; then
 fi
 
 branch="${2:-codex/refactor-$slice}"
-worktree="${3:-/Users/cwan0785/opensquilla-refactor-$slice}"
+worktree="${3:-../opensquilla-refactor-$slice}"
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"

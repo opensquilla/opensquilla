@@ -12,9 +12,9 @@ Progressively refactor OpenSquilla with isolated worktrees, narrow integration
 slices, complete quality gates, and user-facing compatibility preserved at every
 stage.
 
-The active integration branch is `codex/refactor-architecture` in
-`/Users/cwan0785/opensquilla-refactor-integration`. The main checkout at
-`/Users/cwan0785/opensquilla` is observe-only for this refactor line.
+The active integration branch is `codex/refactor-architecture`. Keep the
+integration worktree separate from the main checkout. The main checkout is
+observe-only for this refactor line.
 
 ## Operating Rules
 
@@ -145,7 +145,7 @@ The active integration branch is `codex/refactor-architecture` in
 1. Run `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture`
    in the integration worktree.
 2. Create a child branch and worktree:
-   `git worktree add /Users/cwan0785/opensquilla-refactor-<slice> -b codex/refactor-<slice>`.
+   `git worktree add ../opensquilla-refactor-<slice> -b codex/refactor-<slice>`.
 3. Generate or copy a stage plan from `docs/refactor/stage-template.md`.
 4. Use `superpowers:writing-plans` to turn the stage into concrete tasks.
 5. Use `superpowers:test-driven-development` for code or executable behavior.

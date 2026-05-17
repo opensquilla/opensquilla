@@ -9,11 +9,14 @@ import typer
 
 from opensquilla.cli.sessions_gateway_queries import (
     abort_session_from_gateway,
+    delete_session_from_gateway,
     list_sessions_from_gateway,
     load_session_preview_from_gateway,
 )
 from opensquilla.cli.sessions_presenters import (
+    confirm_session_delete,
     emit_session_abort,
+    emit_session_delete,
     emit_session_preview,
     emit_sessions_list,
 )
@@ -129,3 +132,11 @@ def abort_session_for_cli(session_id: str, *, json_output: bool) -> None:
 
     payload = abort_session_from_gateway(session_id, json_output=json_output)
     emit_session_abort(payload, session_id=session_id, json_output=json_output)
+
+
+def delete_session_for_cli(session_id: str, *, yes: bool) -> None:
+    """Confirm, delete, and emit a session deletion result for the CLI."""
+
+    confirm_session_delete(session_id, yes=yes)
+    payload = delete_session_from_gateway(session_id)
+    emit_session_delete(payload)

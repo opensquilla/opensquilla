@@ -13,6 +13,7 @@ import typer
 from opensquilla.cli.repl.session_state import messages_to_markdown
 from opensquilla.cli.sessions_workflows import (
     abort_session_for_cli,
+    delete_session_for_cli,
     list_sessions_for_cli,
     show_session_for_cli,
 )
@@ -110,23 +111,7 @@ def sessions_delete(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
     """Delete a session."""
-    if not yes:
-        confirmed = typer.confirm(f"Delete session {session_id!r}?")
-        if not confirmed:
-            raise typer.Abort()
-
-    async def _run(client):
-        resolved = await client.resolve_session(session_id)
-        key = _resolved_key(resolved, session_id)
-        return await client.delete_sessions([key])
-
-    result = asyncio.run(_with_client(_run))
-    if result is _CLIENT_UNAVAILABLE:
-        console.print("[dim]Session deletion requires a running gateway.[/dim]")
-        return
-    if result is _ACTION_FAILED:
-        return
-    console.print_json(data=result)
+    delete_session_for_cli(session_id, yes=yes)
 
 
 @app.command("export")

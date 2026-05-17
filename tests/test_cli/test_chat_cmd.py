@@ -3653,6 +3653,48 @@ def test_chat_gateway_readonly_lists_use_focused_workflow_boundaries() -> None:
     assert chat_slash_workflows.handle_models_command.__name__ == "handle_gateway_models_command"
 
 
+def test_chat_gateway_help_uses_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_gateway_help_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    slash_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_gateway_slash_command"
+    )
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_gateway_help_workflows"
+        for alias in node.names
+    }
+    handler_direct_help_calls = {
+        node.func.id
+        for node in ast.walk(slash_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    workflow_imported_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+
+    assert chat_workflow_names == {"handle_gateway_help_command"}
+    assert "render_help_table" not in handler_direct_help_calls
+    assert "handle_gateway_help_command" in workflow_defs
+    assert {"console", "render_help_table"} <= workflow_imported_names
+
+
 def test_chat_stateful_session_slashes_use_workflow_boundary() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_session_workflows.py")
@@ -4521,6 +4563,37 @@ def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:
     assert "running" in output
     assert "openai/test" in output
     assert "2" in output
+
+
+@pytest.mark.asyncio
+async def test_gateway_slash_help_renders_help_table(monkeypatch) -> None:
+    from opensquilla.cli import chat_gateway_help_workflows
+
+    _FakeGatewayClient.instances.clear()
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    fake = _FakeGatewayClient()
+    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        chat_gateway_help_workflows,
+        "console",
+        Console(file=buffer, force_terminal=False, width=100, highlight=False),
+    )
+
+    handled = await chat_cmd._handle_gateway_slash_command(
+        "/help",
+        state,
+        fake,
+        {"mode": None},
+    )
+
+    output = buffer.getvalue()
+    assert handled is True
+    assert "OpenSquilla Chat Commands" in output
+    assert "/help" in output
+    assert "agent:main:abc123" == state.session_key
+    assert fake.list_sessions_calls == []
+    assert fake.list_models_calls == 0
 
 
 @pytest.mark.asyncio

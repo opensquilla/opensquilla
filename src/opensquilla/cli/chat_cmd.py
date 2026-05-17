@@ -27,6 +27,7 @@ from opensquilla.cli.chat_gateway_approvals_workflows import (
 )
 from opensquilla.cli.chat_gateway_file_workflows import handle_gateway_file_command
 from opensquilla.cli.chat_gateway_forget_workflows import handle_gateway_forget_command
+from opensquilla.cli.chat_gateway_help_workflows import handle_gateway_help_command
 from opensquilla.cli.chat_gateway_image_workflows import handle_gateway_image_command
 from opensquilla.cli.chat_gateway_models_workflows import handle_gateway_models_command
 from opensquilla.cli.chat_gateway_path_workflows import handle_gateway_path_command
@@ -766,7 +767,7 @@ async def _handle_gateway_slash_command(
     """Handle gateway-mode slash commands. Returns False for unknown commands."""
 
     if cmd == "/help":
-        console.print(render_help_table())
+        handle_gateway_help_command()
         return True
 
     if parts := _slash_parts(cmd, "/new"):

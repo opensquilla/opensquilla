@@ -14,7 +14,12 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from opensquilla.cli import chat_cmd, chat_presenters, chat_transcript_exports
+from opensquilla.cli import (
+    chat_cmd,
+    chat_presenters,
+    chat_slash_workflows,
+    chat_transcript_exports,
+)
 from opensquilla.cli.main import app
 from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.engine.types import ArtifactEvent, DoneEvent, TextDeltaEvent
@@ -1482,13 +1487,6 @@ def test_chat_slash_tables_use_presenter_boundary() -> None:
     assert presenter_path.exists()
 
     presenter_tree = ast.parse(presenter_path.read_text(encoding="utf-8"))
-    chat_presenter_names = {
-        alias.name
-        for node in ast.walk(chat_tree)
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "opensquilla.cli.chat_presenters"
-        for alias in node.names
-    }
     chat_defs = {
         node.name
         for node in ast.walk(chat_tree)
@@ -1510,12 +1508,57 @@ def test_chat_slash_tables_use_presenter_boundary() -> None:
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
 
-    assert chat_presenter_names == {"emit_chat_models_table", "emit_chat_sessions_table"}
     assert "_print_sessions_table" not in chat_defs
     assert "_print_models_table" not in chat_defs
+    assert "opensquilla.cli.chat_presenters" not in chat_imported_modules
     assert "rich.table" not in chat_imported_modules
     assert {"emit_chat_models_table", "emit_chat_sessions_table"} <= presenter_defs
     assert "rich.table" in presenter_imported_modules
+
+
+def test_chat_slash_readonly_lists_use_workflow_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    workflow_path = Path(chat_cmd.__file__).with_name("chat_slash_workflows.py")
+
+    assert workflow_path.exists()
+
+    workflow_tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    chat_workflow_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_slash_workflows"
+        for alias in node.names
+    }
+    chat_presenter_modules = {
+        node.module
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    chat_gateway_calls = {
+        node.func.attr
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    workflow_defs = {
+        node.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    workflow_presenter_names = {
+        alias.name
+        for node in ast.walk(workflow_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_presenters"
+        for alias in node.names
+    }
+
+    assert chat_workflow_names == {"handle_models_command", "handle_sessions_command"}
+    assert "opensquilla.cli.chat_presenters" not in chat_presenter_modules
+    assert "list_sessions" not in chat_gateway_calls
+    assert "list_models" not in chat_gateway_calls
+    assert {"handle_models_command", "handle_sessions_command"} <= workflow_defs
+    assert workflow_presenter_names == {"emit_chat_models_table", "emit_chat_sessions_table"}
 
 
 def test_chat_session_presenter_renders_gateway_rows(monkeypatch) -> None:
@@ -1556,7 +1599,7 @@ async def test_gateway_slash_sessions_uses_presenter_boundary(monkeypatch) -> No
     def fake_emit(rows: list[dict[str, object]]) -> None:
         rendered.append(rows)
 
-    monkeypatch.setattr(chat_cmd, "emit_chat_sessions_table", fake_emit)
+    monkeypatch.setattr(chat_slash_workflows, "emit_chat_sessions_table", fake_emit)
 
     handled = await chat_cmd._handle_gateway_slash_command(
         "/sessions 3", state, fake, {"mode": None}
@@ -1587,7 +1630,7 @@ async def test_gateway_slash_models_does_not_hit_model_prefix(monkeypatch) -> No
     def fake_emit(rows: list[dict[str, object]]) -> None:
         rendered.append(rows)
 
-    monkeypatch.setattr(chat_cmd, "emit_chat_models_table", fake_emit)
+    monkeypatch.setattr(chat_slash_workflows, "emit_chat_models_table", fake_emit)
 
     handled = await chat_cmd._handle_gateway_slash_command("/models", state, fake, {"mode": None})
 

@@ -22,9 +22,9 @@ import typer
 from rich.panel import Panel
 
 from opensquilla.cli import attachments as _cli_attachments
-from opensquilla.cli.chat_presenters import (
-    emit_chat_models_table,
-    emit_chat_sessions_table,
+from opensquilla.cli.chat_slash_workflows import (
+    handle_models_command,
+    handle_sessions_command,
 )
 from opensquilla.cli.chat_transcript_exports import (
     save_gateway_transcript_command,
@@ -808,15 +808,7 @@ async def _handle_gateway_slash_command(
         return True
 
     if parts := _slash_parts(cmd, "/sessions"):
-        limit = 10
-        if len(parts) > 1:
-            try:
-                limit = int(parts[1])
-            except ValueError:
-                console.print("[red]Usage: /sessions [limit][/red]")
-                return True
-        payload = await client.list_sessions(limit=limit)
-        emit_chat_sessions_table(payload.get("sessions", []))
+        await handle_sessions_command(parts, client)
         return True
 
     if parts := _slash_parts(cmd, "/resume"):
@@ -872,11 +864,7 @@ async def _handle_gateway_slash_command(
         return True
 
     if parts := _slash_parts(cmd, "/models"):
-        if len(parts) > 1:
-            console.print("[red]Usage: /models[/red]")
-            return True
-        models = await client.list_models()
-        emit_chat_models_table(models)
+        await handle_models_command(parts, client)
         return True
 
     if parts := _slash_parts(cmd, "/model"):

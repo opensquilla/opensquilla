@@ -120,15 +120,15 @@ Move standalone chat `/new` behind a dedicated CLI workflow boundary without cha
 - [x] Update `chat_cmd.py` standalone dispatch to delegate `/new`.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -154,8 +154,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
-- Integration merge:
+- Child commit: `bbe9c93`
+- Integration merge: `f7bee3f`
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-cli-chat-standalone-new-workflow-boundary` passed on branch `codex/refactor-cli-chat-standalone-new-workflow-boundary` at `57c4e82`.
   - Red: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_chat_standalone_new_slash_uses_workflow_boundary -q` failed as expected because `chat_standalone_session_workflows.py` did not exist.
@@ -163,6 +163,10 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_standalone_session_workflows.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_cli_product_completeness.py -q` passed: 157 passed.
   - Child gate: `scripts/refactor_gate.sh` passed: ruff, mypy, whitespace, pytest 2321 passed / 8 skipped / 2 warnings, gateway smoke start/status/stop/status ok.
+  - Stage close: `scripts/refactor_stage_close.sh` passed on child commit `bbe9c93`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `57c4e82`.
+  - Integration merge: `git merge --no-ff codex/refactor-cli-chat-standalone-new-workflow-boundary` produced merge commit `f7bee3f`.
+  - Integration gate: `scripts/refactor_gate.sh` passed: ruff, mypy, whitespace, pytest 2323 passed / 6 skipped / 2 warnings, gateway smoke start/status/stop/status ok.
 - Residual risk:
   - Low. The slice only moves standalone `/new` session creation and display formatting while keeping dispatch ordering in `_standalone_repl`.
 - Next recommended slice:

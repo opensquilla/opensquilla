@@ -137,9 +137,9 @@ Extract the remaining non-core onboarding RPC domains from `rpc_onboarding.py` w
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -165,8 +165,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `b68e6bd Split onboarding RPC domain boundaries`.
+- Integration merge: `98f9abf Merge onboarding domain boundaries`.
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-onboarding-domain-boundaries` passed on branch `codex/refactor-onboarding-domain-boundaries` at `c26d15b`.
   - Red: `uv run --extra dev pytest tests/test_gateway/test_rpc_onboarding_domain_boundaries.py -q` failed as expected with `3 failed` because the four domain modules did not exist, `rpc/__init__.py` did not import them, and search runtime sync was still owned by `rpc_onboarding.py`.
@@ -178,6 +178,9 @@ Co-authored-by: Codex <noreply@openai.com>
   - Search runtime boundary retest: `uv run --extra dev pytest tests/test_search/test_search_runtime_boundary.py::test_gateway_configures_search_runtime_boundary tests/test_gateway/test_rpc_onboarding_domain_boundaries.py::test_search_runtime_sync_is_owned_by_search_onboarding_boundary -q` passed, `2 passed in 0.30s`.
   - Final child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 500 source files; whitespace passed; pytest passed with `2427 passed, 8 skipped, 2 warnings in 25.51s`; gateway smoke start/status/stop passed on `127.0.0.1:63650`.
   - Child release hygiene staged retest: `uv run --extra dev pytest tests/test_public_release_hygiene.py::test_tracked_public_files_do_not_contain_real_secret_shapes_or_local_paths -q` passed, `1 passed in 0.37s`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `98f9abf`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 500 source files; whitespace passed; pytest passed with `2429 passed, 6 skipped, 2 warnings in 26.17s`; gateway smoke start/status/stop passed on `127.0.0.1:64010`.
+  - Cleanup policy: one active child worktree for this slice, removed after the integration record commit; future slices should keep this integration-plus-single-active-child pattern and avoid accumulating temporary directories.
 - Residual risk:
   - Low. This slice moves RPC registrations into sibling modules only; public method names/scopes and domain behavior remain covered by focused onboarding tests, public surface baseline, static setup view tests, and the full gate.
 - Next recommended slice:

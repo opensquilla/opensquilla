@@ -1,11 +1,40 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from opensquilla.skills.hub import operations as hub_operations
+import opensquilla.skills.hub.search as hub_search_module
 from opensquilla.skills.hub.search import search_skills, skill_search_request
+
+
+def test_hub_search_module_owns_search_request_and_runtime_boundary() -> None:
+    tree = ast.parse(Path(hub_search_module.__file__).read_text(encoding="utf-8"))
+
+    top_level_classes = {
+        node.name for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    top_level_functions = {
+        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    imports_from_operations = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.skills.hub.operations"
+        for alias in node.names
+    }
+
+    assert {"SkillSearchRequest", "SkillSearchOutcome"}.issubset(top_level_classes)
+    assert {"skill_search_request", "search_skills"}.issubset(top_level_functions)
+    assert not {
+        "SkillSearchRequest",
+        "SkillSearchOutcome",
+        "skill_search_request",
+        "search_skills",
+    } & imports_from_operations
 
 
 def test_skill_search_request_validates_defaults_and_source_filter() -> None:
@@ -59,7 +88,7 @@ async def test_search_skills_delegates_to_router_and_reads_installed_names(
             assert source_id == "github"
             return [SimpleNamespace(identifier="planner")]
 
-    monkeypatch.setattr(hub_operations, "installed_skill_names", lambda: {"planner"})
+    monkeypatch.setattr(hub_search_module, "installed_skill_names", lambda: {"planner"})
 
     outcome = await search_skills(
         FakeRouter(),
@@ -88,7 +117,7 @@ async def test_search_skills_uses_default_router_when_context_router_missing(
             assert source_id is None
             return [SimpleNamespace(identifier="planner")]
 
-    monkeypatch.setattr(hub_operations, "installed_skill_names", lambda: {"planner"})
+    monkeypatch.setattr(hub_search_module, "installed_skill_names", lambda: {"planner"})
 
     outcome = await search_skills(
         None,

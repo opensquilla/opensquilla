@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import opensquilla.provider.runtime_status as runtime_status
 from opensquilla.provider.runtime_status import (
     build_provider_status_payload,
     build_provider_status_report,
@@ -98,6 +100,39 @@ async def test_build_provider_status_report_resolves_configured_active_provider(
     assert row.api_key_configured is True
     assert row.base_url_configured is True
     assert row.model_probe.status == "skipped"
+    assert "secret-key" not in repr(report)
+
+
+@pytest.mark.asyncio
+async def test_build_provider_status_report_from_domain_query_separates_rpc_params() -> None:
+    query_type = getattr(runtime_status, "ProviderStatusQuery", None)
+    assert query_type is not None
+    assert {field.name for field in dataclasses.fields(query_type)} == {
+        "provider_filter",
+        "probe_models",
+    }
+
+    query = query_type(provider_filter="openrouter", probe_models=True)
+    report = await runtime_status.build_provider_status_report_for_query(
+        [
+            FakeStatusSpec(provider_id="openrouter"),
+            FakeStatusSpec(
+                provider_id="ollama",
+                env_key="",
+                requires_api_key=False,
+                default_base_url="",
+            ),
+        ],
+        query,
+        provider_selector=ListingModelSelector(),
+        config=_config(api_key="secret-key", base_url="https://custom.example/v1"),
+        environ={},
+    )
+
+    assert report.active_provider == "openrouter"
+    assert [row.provider_id for row in report.rows] == ["openrouter"]
+    assert report.rows[0].model_probe.status == "ok"
+    assert report.rows[0].model_probe.count == 1
     assert "secret-key" not in repr(report)
 
 

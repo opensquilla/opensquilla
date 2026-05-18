@@ -183,29 +183,31 @@ const SessionsView = (() => {
       if (m) agents.add(m[1]);
     });
 
-    wrap.innerHTML = `
-      <div class="stat stat--hero">
-        <div class="stat-label">Total sessions</div>
-        <div class="stat-value">${total}</div>
-        <div class="stat-hint">${running} running · ${done} done · ${errored} errored</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Active</div>
-        <div class="stat-value">
-          ${running}${running ? '<span class="dot ok"></span>' : ''}
-        </div>
-        <div class="stat-hint">${running ? 'live conversations' : 'none active'}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Messages</div>
-        <div class="stat-value mono">${totalMessages.toLocaleString()}</div>
-        <div class="stat-hint">across all sessions</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Storage</div>
-        <div class="stat-value mono">${_fmtBytes(totalSize)}</div>
-        <div class="stat-hint">${agents.size} agent${agents.size === 1 ? '' : 's'}</div>
-      </div>`;
+    wrap.innerHTML = [
+      UI.statCard({
+        label: 'Total sessions',
+        value: total,
+        hint: `${running} running · ${done} done · ${errored} errored`,
+        hero: true,
+      }),
+      UI.statCard({
+        label: 'Active',
+        value: `${running}${running ? '<span class="dot ok"></span>' : ''}`,
+        hint: running ? 'live conversations' : 'none active',
+      }),
+      UI.statCard({
+        label: 'Messages',
+        value: totalMessages.toLocaleString(),
+        hint: 'across all sessions',
+        mono: true,
+      }),
+      UI.statCard({
+        label: 'Storage',
+        value: _fmtBytes(totalSize),
+        hint: `${agents.size} agent${agents.size === 1 ? '' : 's'}`,
+        mono: true,
+      }),
+    ].join('');
   }
 
   function _renderTable() {

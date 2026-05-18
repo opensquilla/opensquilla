@@ -100,22 +100,25 @@ const AgentsView = (() => {
     const models = new Set();
     _agents.forEach(a => { if (a.model) models.add(a.model); });
 
-    wrap.innerHTML = `
-      <div class="stat stat--hero">
-        <div class="stat-label">Total agents</div>
-        <div class="stat-value">${total}</div>
-        <div class="stat-hint">${builtins ? `${builtins} built-in` : ''}${builtins && customs ? ' · ' : ''}${customs ? `${customs} custom` : ''}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Models in use</div>
-        <div class="stat-value mono">${models.size || '—'}</div>
-        <div class="stat-hint">${models.size ? 'distinct models' : 'unset'}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Tools wired</div>
-        <div class="stat-value">${tools}</div>
-        <div class="stat-hint">across all agents</div>
-      </div>`;
+    wrap.innerHTML = [
+      UI.statCard({
+        label: 'Total agents',
+        value: total,
+        hint: `${builtins ? `${builtins} built-in` : ''}${builtins && customs ? ' · ' : ''}${customs ? `${customs} custom` : ''}`,
+        hero: true,
+      }),
+      UI.statCard({
+        label: 'Models in use',
+        value: models.size || '—',
+        hint: models.size ? 'distinct models' : 'unset',
+        mono: true,
+      }),
+      UI.statCard({
+        label: 'Tools wired',
+        value: tools,
+        hint: 'across all agents',
+      }),
+    ].join('');
   }
 
   function _renderCards() {

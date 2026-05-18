@@ -955,6 +955,56 @@ async def test_standalone_repl_uses_exact_slash_tokens(monkeypatch) -> None:
     assert run_calls == []
 
 
+def test_standalone_slash_routes_preserve_current_command_surface() -> None:
+    from opensquilla.cli.chat_standalone_slash_routes import (
+        STANDALONE_SLASH_ROUTE_NAMES,
+        match_standalone_slash_route,
+    )
+
+    expected_names = frozenset(
+        {
+            "help",
+            "new",
+            "status",
+            "models",
+            "model",
+            "cost",
+            "tool_compress",
+            "clear",
+            "compact",
+            "save",
+            "image",
+            "path",
+        }
+    )
+    assert STANDALONE_SLASH_ROUTE_NAMES == expected_names
+
+    cases = [
+        ("/help", "help", ["/help"]),
+        ("/new project", "new", ["/new", "project"]),
+        ("/status", "status", ["/status"]),
+        ("/session", "status", ["/session"]),
+        ("/models", "models", ["/models"]),
+        ("/model openai/gpt-test", "model", ["/model", "openai/gpt-test"]),
+        ("/cost", "cost", ["/cost"]),
+        ("/tool-compress status", "tool_compress", ["/tool-compress", "status"]),
+        ("/clear", "clear", ["/clear"]),
+        ("/reset", "clear", ["/reset"]),
+        ("/compact", "compact", ["/compact"]),
+        ("/save out.md", "save", ["/save", "out.md"]),
+        ("/image cat.png describe", "image", ["/image", "cat.png describe"]),
+        ("/path repo/file.py summarize", "path", ["/path", "repo/file.py summarize"]),
+    ]
+    for command, route_name, parts in cases:
+        match = match_standalone_slash_route(command)
+        assert match is not None
+        assert match.name == route_name
+        assert match.parts == parts
+
+    for unsupported in ["/newer", "/models extra", "/file doc.pdf", "/usage", "/sessions"]:
+        assert match_standalone_slash_route(unsupported) is None
+
+
 @pytest.mark.asyncio
 async def test_standalone_slash_compact_passes_provider_config(monkeypatch) -> None:
     services = _FakeServices()
@@ -5010,6 +5060,60 @@ def test_chat_standalone_image_slash_uses_workflow_boundary() -> None:
     assert "_image_prompt_from_command" not in standalone_name_calls
     assert "Usage: /image <path> [prompt]" not in standalone_literals
     assert "handle_standalone_image_command" in workflow_defs
+
+
+def test_chat_standalone_slash_matching_uses_route_boundary() -> None:
+    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    route_path = Path(chat_cmd.__file__).with_name("chat_standalone_slash_routes.py")
+
+    assert route_path.exists()
+
+    from opensquilla.cli import chat_standalone_slash_routes
+
+    route_tree = ast.parse(route_path.read_text(encoding="utf-8"))
+    standalone_handler = next(
+        node
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+    )
+    chat_route_names = {
+        alias.name
+        for node in ast.walk(chat_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "opensquilla.cli.chat_standalone_slash_routes"
+        for alias in node.names
+    }
+    standalone_name_calls = {
+        node.func.id
+        for node in ast.walk(standalone_handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    route_defs = {
+        node.name
+        for node in ast.walk(route_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert chat_route_names == {"match_standalone_slash_route"}
+    assert "match_standalone_slash_route" in standalone_name_calls
+    assert "_slash_parts" not in standalone_name_calls
+    assert "match_standalone_slash_route" in route_defs
+    assert chat_standalone_slash_routes.STANDALONE_SLASH_ROUTE_NAMES == frozenset(
+        {
+            "help",
+            "new",
+            "status",
+            "models",
+            "model",
+            "cost",
+            "tool_compress",
+            "clear",
+            "compact",
+            "save",
+            "image",
+            "path",
+        }
+    )
 
 
 def test_gateway_image_route_uses_executor_boundary() -> None:

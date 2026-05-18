@@ -62,6 +62,7 @@ from opensquilla.cli.chat_standalone_session_workflows import (
     handle_standalone_compact_command,
     handle_standalone_new_command,
 )
+from opensquilla.cli.chat_standalone_slash_routes import match_standalone_slash_route
 from opensquilla.cli.chat_standalone_status_workflows import (
     handle_standalone_models_command,
     handle_standalone_status_command,
@@ -575,10 +576,18 @@ async def _standalone_repl(
                 continue
 
             if stripped.startswith("/"):
-                if stripped == "/help":
+                route_match = match_standalone_slash_route(stripped)
+                if route_match is None:
+                    console.print("[red]Unknown command.[/red] [dim]Use /help.[/dim]")
+                    continue
+
+                route_name = route_match.name
+                parts = route_match.parts
+
+                if route_name == "help":
                     console.print(render_help_table())
                     continue
-                if parts := _slash_parts(stripped, "/new"):
+                if route_name == "new":
                     session_key, tool_ctx, state = await handle_standalone_new_command(
                         parts,
                         session_manager=session_manager,
@@ -586,31 +595,31 @@ async def _standalone_repl(
                         model=model,
                     )
                     continue
-                if stripped in {"/status", "/session"}:
+                if route_name == "status":
                     handle_standalone_status_command(state)
                     continue
-                if stripped == "/models":
+                if route_name == "models":
                     handle_standalone_models_command()
                     continue
-                if parts := _slash_parts(stripped, "/model"):
+                if route_name == "model":
                     updated_model = handle_standalone_model_command(parts, state)
                     if updated_model is not None:
                         model = updated_model
                     continue
-                if stripped == "/cost":
+                if route_name == "cost":
                     handle_standalone_cost_command(state)
                     continue
-                if _slash_parts(stripped, "/tool-compress"):
+                if route_name == "tool_compress":
                     await handle_tool_compress_command(stripped, config=svc.config)
                     continue
-                if stripped in {"/clear", "/reset"}:
+                if route_name == "clear":
                     await handle_standalone_clear_command(
                         state,
                         services=svc,
                         flush_before_rewrite=_flush_before_standalone_rewrite,
                     )
                     continue
-                if stripped == "/compact":
+                if route_name == "compact":
                     await handle_standalone_compact_command(
                         state,
                         services=svc,
@@ -619,10 +628,10 @@ async def _standalone_repl(
                         resolve_compaction_provider=_resolve_compaction_provider,
                     )
                     continue
-                if _slash_parts(stripped, "/save"):
+                if route_name == "save":
                     save_transcript_command(stripped, state)
                     continue
-                if parts := _slash_parts(stripped, "/image"):
+                if route_name == "image":
                     await handle_standalone_image_command(
                         stripped,
                         parts,
@@ -636,7 +645,7 @@ async def _standalone_repl(
                         image_prompt_from_command=_image_prompt_from_command,
                     )
                     continue
-                if parts := _slash_parts(stripped, "/path"):
+                if route_name == "path":
                     await handle_standalone_path_command(
                         stripped,
                         parts,

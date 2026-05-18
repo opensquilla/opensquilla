@@ -351,7 +351,7 @@ async def prompt_approval_inline(*, surface: Surface, approval_panel: str) -> st
         # No outer Application is running for this surface; run the fresh
         # one-shot session directly. This still avoids re-entering any
         # cached ``PromptSession`` so the legacy re-entry bug cannot recur.
-        fresh = PromptSession(message=approval_panel)
+        fresh: PromptSession[str] = PromptSession(message=approval_panel)
         try:
             value = await fresh.prompt_async()
         except (EOFError, KeyboardInterrupt):
@@ -361,9 +361,9 @@ async def prompt_approval_inline(*, surface: Surface, approval_panel: str) -> st
     chat_app.set_approval_in_flight(True)
     try:
         async with in_terminal():
-            fresh = PromptSession(message=approval_panel)
+            terminal_fresh: PromptSession[str] = PromptSession(message=approval_panel)
             try:
-                answer = await fresh.prompt_async()
+                answer = await terminal_fresh.prompt_async()
             except (EOFError, KeyboardInterrupt):
                 return "d"
             return (answer or "").strip().lower()

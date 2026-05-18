@@ -30,11 +30,11 @@ def _sanitized_failure_fields(payload: dict[str, Any]) -> tuple[str | None, str 
     if is_context_payload_too_large(terminal_payload):
         error_class, error_message = sanitize_agent_error(terminal_payload)
         return error_class, error_message
-    error_class = payload.get("error_class")
-    error_message = payload.get("error_message")
+    error_class_raw = payload.get("error_class")
+    error_message_raw = payload.get("error_message")
     return (
-        error_class if isinstance(error_class, str) and error_class else None,
-        error_message if isinstance(error_message, str) and error_message else None,
+        error_class_raw if isinstance(error_class_raw, str) and error_class_raw else None,
+        error_message_raw if isinstance(error_message_raw, str) and error_message_raw else None,
     )
 
 

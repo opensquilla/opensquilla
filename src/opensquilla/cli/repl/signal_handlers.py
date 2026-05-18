@@ -76,8 +76,11 @@ class _SigtstpGate:
         # Local imports / aliases keep the hot path small. We snapshot
         # the current handler so we can restore the gate after the
         # default disposition runs.
+        sig_tstp = getattr(signal, "SIGTSTP", None)
+        if sig_tstp is None:
+            return
         try:
-            previous = signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+            previous = signal.signal(sig_tstp, signal.SIG_DFL)
         except (OSError, ValueError):
             # Reinstall on the next install_chat_signal_handlers call;
             # nothing useful we can do here.
@@ -85,12 +88,12 @@ class _SigtstpGate:
         try:
             import os  # noqa: PLC0415 - lazy stdlib import
 
-            os.kill(os.getpid(), signal.SIGTSTP)
+            os.kill(os.getpid(), sig_tstp)
         finally:
             # Reinstall the gate so future deliveries are again routed
             # through this handler.
             try:
-                signal.signal(signal.SIGTSTP, previous)
+                signal.signal(sig_tstp, previous)
             except (OSError, ValueError):
                 pass
 

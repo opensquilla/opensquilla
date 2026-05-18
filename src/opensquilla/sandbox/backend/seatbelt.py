@@ -314,7 +314,7 @@ class SeatbeltBackend(Backend):
         _validate_request(request)
 
         tmp_ctx: tempfile.TemporaryDirectory[str] | None = None
-        profile_file: tempfile.NamedTemporaryFile[str] | None = None
+        profile_path: Path | None = None
         try:
             tmp_dir: Path | None = None
             if request.policy.tmp_writable:
@@ -322,20 +322,17 @@ class SeatbeltBackend(Backend):
                 tmp_dir = Path(tmp_ctx.name)
 
             profile = render_seatbelt_profile(request, tmp_dir=tmp_dir)
-            profile_file = tempfile.NamedTemporaryFile(
+            with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="utf-8",
                 prefix="opensquilla-seatbelt-",
                 suffix=".sb",
                 delete=False,
-            )
-            try:
+            ) as profile_file:
                 profile_file.write(profile)
                 profile_file.flush()
-            finally:
-                profile_file.close()
+                profile_path = Path(profile_file.name)
 
-            profile_path = Path(profile_file.name)
             argv = build_seatbelt_argv(request, profile_path, binary=self._binary)
             env = _env_for_policy(request.policy, request.env, tmp_dir=tmp_dir)
 
@@ -401,9 +398,9 @@ class SeatbeltBackend(Backend):
                 backend_notes=tuple(n.to_user_string() for n in notes),
             )
         finally:
-            if profile_file is not None:
+            if profile_path is not None:
                 with contextlib.suppress(OSError):
-                    os.unlink(profile_file.name)
+                    os.unlink(profile_path)
             if tmp_ctx is not None:
                 tmp_ctx.cleanup()
 

@@ -317,7 +317,7 @@ def build_tool_handler(
         scoped_budget_trackers[key] = (weakref.ref(effective_ctx), tracker)
         return tracker
 
-    async def _handler(tool_call: ToolCall) -> ToolResult:
+    async def _handler(tool_call: ToolCall) -> ToolResult:  # type: ignore[return]
         effective_ctx = current_tool_context.get() or ctx
         budget_policy = _resolve_budget_policy(effective_ctx)
 

@@ -10,7 +10,7 @@ import contextlib
 import hashlib
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -3779,7 +3779,7 @@ class Agent:
 
     @staticmethod
     def _is_provider_context_projection_reuse_result(result: ToolResult) -> bool:
-        status = result.execution_status or {}
+        status: Mapping[str, Any] = result.execution_status or {}
         return bool(
             result.is_error
             and isinstance(status, dict)

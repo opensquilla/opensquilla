@@ -46,8 +46,14 @@ overrides them.
 - Use multiple agents for independent subdomains when possible. Give each agent
   explicit file/module ownership and constraints, then have the main thread
   review, integrate, and run the full gate.
-- If agent spawning is unavailable or a thread limit is reached, record the
-  fallback in the stage plan and continue sequentially.
+- If same-thread `spawn_agent` is unavailable or a thread limit is reached, do
+  not silently shrink back to serial work. First use
+  `scripts/refactor_external_agent.sh` to run independent Codex CLI workers in
+  fixed sibling worktree slots such as `../opensquilla-refactor-agent-provider`
+  or `../opensquilla-refactor-agent-session`. Keep each worker on its own child
+  branch, give it explicit file/module ownership, and remove/prune the worktree
+  after its branch is merged. Record any remaining sequential fallback in the
+  stage plan only after the external-agent route is blocked too.
 
 ## Testing And Gates
 

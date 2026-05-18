@@ -77,8 +77,13 @@ observe-only for this refactor line.
   to edit the same files unless the main thread first splits ownership cleanly.
 - Agents produce evidence and focused changes; the main thread reviews summaries,
   checks for conflicts, merges work, and runs the complete refactor gate.
-- If the runtime agent limit is reached, record that in the stage plan and
-  continue sequentially rather than weakening the slice boundary.
+- If same-thread `spawn_agent` reaches a runtime limit, switch to external Codex
+  CLI workers before falling back to sequential work:
+  `scripts/refactor_external_agent.sh --slot <domain> --branch codex/refactor-<domain> --prompt <file>`.
+  Launch several workers as long-running foreground exec sessions and poll them
+  periodically; reserve `--background` for a persistent human shell. Use a small
+  fixed set of sibling worktree slots, keep ownership disjoint, and remove/prune
+  each worktree after its branch is merged.
 
 ## Current Architecture Map
 
@@ -192,8 +197,10 @@ observe-only for this refactor line.
 3. Generate or copy a stage plan from `docs/refactor/stage-template.md`.
 4. Use `superpowers:writing-plans` to turn the module-batch stage into concrete
    tasks and focused verification groups.
-5. Identify independent subdomains and dispatch parallel agents where useful;
-   otherwise record why the slice is single-threaded.
+5. Identify independent subdomains and dispatch parallel agents where useful.
+   Prefer same-thread `spawn_agent` when available; if it is blocked by runtime
+   limits, use `scripts/refactor_external_agent.sh` with fixed sibling slots
+   instead of shrinking immediately to sequential execution.
 6. Use `superpowers:test-driven-development` for code or executable behavior.
 7. Run focused tests, then `scripts/refactor_gate.sh`.
 8. Commit with the required co-author trailer.

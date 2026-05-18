@@ -1959,7 +1959,6 @@ class SessionFlushService:
                         session_key=session_key,
                         input_message_count=input_message_count,
                         selected_start_index=selected_start_index,
-                        full_transcript_requested=window == 0,
                         flush_max_chars=flush_max_chars,
                         segment_mode=segment_mode,
                         segment_max_chars=segment_max_chars,
@@ -2473,7 +2472,6 @@ class SessionFlushService:
         session_key: str = "",
         input_message_count: int | None = None,
         selected_start_index: int | None = None,
-        full_transcript_requested: bool = False,
         flush_max_chars: int | None = None,
         segment_mode: SegmentMode = "off",
         segment_max_chars: int | None = None,
@@ -2831,7 +2829,7 @@ class SessionFlushService:
             return cached
         _ctx_token = current_tool_context.set(_flush_tool_context(agent_id, source_name="raw-dump"))
         try:
-            await self._tool_handler(
+            result = await self._tool_handler(
                 ToolCall(
                     tool_use_id=f"flush-raw-{ts}",
                     tool_name="memory_save",
@@ -2840,6 +2838,36 @@ class SessionFlushService:
             )
         finally:
             current_tool_context.reset(_ctx_token)
+        if getattr(result, "is_error", False):
+            result_text = str(
+                getattr(result, "content", "memory_save failed") or "memory_save failed"
+            )
+            logger.error(
+                "session_flush.raw_fallback_save_failed",
+                extra={
+                    "reason": reason,
+                    "agent_id": agent_id,
+                    "session_key": session_key,
+                    "path": path,
+                    "error": result_text,
+                },
+            )
+            return FlushReceipt(
+                mode="error",
+                flushed_paths=[],
+                slug=None,
+                message_count=len(messages),
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                raw_reason=None,
+                error=f"raw fallback memory_save failed: {result_text}",
+                **error_payload,
+                **_receipt_audit_kwargs(
+                    excerpt,
+                    input_message_count=input_message_count or len(messages),
+                    selected_start_index=selected_start_index,
+                    prompt_char_count=len(body),
+                ),
+            )
         receipt = FlushReceipt(
             mode="raw",
             flushed_paths=[path],

@@ -52,7 +52,6 @@ class SearchIntent(StrEnum):
     """Intent label for a memory search, used for attribution and filtering."""
 
     TOOL = "tool"  # memory_search tool path
-    PREFETCH = "prefetch"  # auto-prefetch in runtime
     ADMIN = "admin"  # CLI / admin queries
 
 

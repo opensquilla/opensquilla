@@ -553,7 +553,7 @@ def build_task_runtime_run_kwargs(
     """Build kwargs for ``turn_runner.run`` from a ``TaskRun``.
 
     Pure helper extracted from ``_task_runtime_turn_handler`` so the
-    boot-level link of the recall-prefetch chain is directly
+    boot-level link of semantic message forwarding is directly
     testable: a regression that drops ``semantic_message`` forwarding
     here is caught by ``test_boot_task_runtime_kwargs.py`` without
     requiring a live gateway.

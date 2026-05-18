@@ -1370,7 +1370,6 @@ class TurnRunner:
                 run_kind=run_kind,
             ),
             captured_at=datetime.now(tz=UTC),
-            index_immediately=False,
             no_memory_capture=no_memory_capture,
         )
 

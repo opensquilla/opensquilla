@@ -240,3 +240,44 @@ async def test_session_flush_raw_fallback_deduplicates_same_transcript() -> None
     assert len(calls) == 1
     assert second.flushed_paths == first.flushed_paths
     assert second.raw_reason == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_session_flush_raw_fallback_tool_error_returns_error_receipt() -> None:
+    calls: list[ToolCall] = []
+
+    async def handler(call: ToolCall) -> ToolResult:
+        calls.append(call)
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="disk full",
+            is_error=True,
+        )
+
+    service = SessionFlushService(
+        provider_selector=lambda _agent_id: None,
+        tool_registry=SimpleNamespace(to_tool_definitions=lambda: []),
+        tool_handler=handler,
+    )
+    messages = [Message(role="user", content="same transcript")]
+
+    first = await service._raw_dump_fallback(
+        messages,
+        reason="timeout",
+        agent_id="main",
+        session_key="agent:main:webchat:s1",
+    )
+    second = await service._raw_dump_fallback(
+        messages,
+        reason="timeout",
+        agent_id="main",
+        session_key="agent:main:webchat:s1",
+    )
+
+    assert len(calls) == 2
+    assert first.mode == "error"
+    assert first.flushed_paths == []
+    assert first.raw_reason is None
+    assert first.error == "raw fallback memory_save failed: disk full"
+    assert second.mode == "error"

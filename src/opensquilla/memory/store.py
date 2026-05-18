@@ -784,18 +784,19 @@ class LongTermMemoryStore:
         assert self._db is not None
         blob = _float_list_to_blob(query_vec)
         try:
-            # sqlite-vec requires 'k = ?' in the WHERE clause of the virtual table
-            # query (not just LIMIT on the outer query). Use a subquery to satisfy
-            # this, then join with chunks to filter by model.
+            # sqlite-vec requires 'k = ?' in the virtual table WHERE clause
+            # rather than only a LIMIT on the outer query.
             async with self._db.execute(
                 """
                 SELECT v.id, v.distance
                 FROM chunks_vec v
+                JOIN chunks c ON c.id = v.id
                 WHERE v.embedding MATCH ?
                   AND k = ?
+                  AND c.model = ?
                 ORDER BY v.distance
                 """,
-                (blob, k),
+                (blob, k, model),
             ) as cur:
                 rows = await cur.fetchall()
                 # Convert distance to score (cosine distance 0=identical, 2=opposite)

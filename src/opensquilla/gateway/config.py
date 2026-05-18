@@ -259,6 +259,11 @@ _DEPRECATED_MEMORY_FIELDS: frozenset[str] = frozenset(
         "memory.multi_hop_score_threshold",
         "memory.recall_frequency",
         "memory.recall_top_k_default",
+        "memory.auto_recall_enabled",
+        "memory.prefetch_enabled",
+        "memory.prefetch_max_results",
+        "memory.prefetch_min_score",
+        "memory.prefetch_total_max_chars",
         "memory.semantic_chunking_enabled",
         "memory.eviction_policy",
         "memory.summary_model",
@@ -643,13 +648,6 @@ class MemoryConfig(BaseSettings):
     )
     capture_max_chars: int = 2000
     capture_roll_max_chars: int = Field(default=50_000, ge=0)
-    auto_recall_enabled: bool | None = None
-
-    # Per-turn auto prefetch (legacy field kept for compatibility)
-    prefetch_enabled: bool = False  # disabled by default for safe rollout
-    prefetch_max_results: int = 3
-    prefetch_min_score: float = 0.3
-    prefetch_total_max_chars: int = Field(default=1500, ge=0)
     daily_note_max_chars: int = Field(default=4000, ge=0)
     daily_notes_total_max_chars: int = Field(default=8000, ge=0)
 
@@ -1717,7 +1715,6 @@ class GatewayConfig(BaseSettings):
             "dream_input_slimming": self.memory.dream.input_slimming,
             "dream_preview_mode": str(self.memory.dream.preview_mode).lower(),
             "dream_auto_schedule": str(self.memory.dream.auto_schedule).lower(),
-            "prefetch_total_max_chars": str(self.memory.prefetch_total_max_chars),
             "daily_note_max_chars": str(self.memory.daily_note_max_chars),
             "daily_notes_total_max_chars": str(self.memory.daily_notes_total_max_chars),
             "auto_capture_enabled": str(self.memory.auto_capture_enabled).lower(),

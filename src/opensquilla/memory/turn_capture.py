@@ -199,7 +199,6 @@ class TurnCaptureService:
         assistant_text: str,
         source: dict[str, Any] | None = None,
         captured_at: datetime | None = None,
-        index_immediately: bool = True,
         no_memory_capture: bool = False,
     ) -> str | None:
         if no_memory_capture:

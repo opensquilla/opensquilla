@@ -11,6 +11,8 @@ from typing import Any
 
 import typer
 
+from opensquilla.session.compaction_lifecycle import flush_receipt_allows_destructive_compaction
+
 
 @dataclass(frozen=True)
 class MemoryFlushSessionResult:
@@ -106,11 +108,18 @@ def parse_non_negative(value: int, *, name: str) -> int:
     return value
 
 
+def _receipt_is_complete_flush(receipt: dict[str, Any]) -> bool:
+    return flush_receipt_allows_destructive_compaction(receipt)
+
+
 def _emit_text_result(result: MemoryFlushSessionResult, *, success: bool) -> None:
     receipt = result.flush_receipt
     usage = result.usage
+    mode = str(receipt.get("mode") or "?")
     if success:
         typer.secho(f"Session flushed: {result.key}", fg=typer.colors.GREEN)
+    elif mode == "raw":
+        typer.secho(f"Flush degraded to raw backup: {result.key}", fg=typer.colors.YELLOW)
     else:
         typer.secho(f"Flush failed: {result.key}", fg=typer.colors.RED)
     typer.echo(f"  Agent: {result.agent_id}")
@@ -118,11 +127,16 @@ def _emit_text_result(result: MemoryFlushSessionResult, *, success: bool) -> Non
     typer.echo(f"  Flush max chars: {result.flush_max_chars}")
     typer.echo(f"  Segment mode: {result.segment_mode}")
     typer.echo(f"  Segment max chars: {result.segment_max_chars}")
-    typer.echo(f"  Flush mode: {receipt.get('mode', '?')}")
+    typer.echo(f"  Flush mode: {mode}")
     typer.echo(f"  Usage cost: ${float(usage.get('cost_usd') or 0.0):.8f}")
     typer.echo(f"  Usage source: {usage.get('cost_source', 'none')}")
+    label = "Saved to" if success else "Backup path"
     for path in receipt.get("flushed_paths") or []:
-        typer.echo(f"  Saved to: {path}")
+        typer.echo(f"  {label}: {path}")
+    if mode == "raw":
+        typer.echo("  Warning: raw fallback is not searchable durable memory.", err=True)
+    if not success and mode == "llm" and not receipt.get("error"):
+        typer.echo("  Warning: LLM flush receipt is incomplete or degraded.", err=True)
     if receipt.get("error"):
         typer.echo(f"  Error: {receipt['error']}", err=True)
 
@@ -256,7 +270,7 @@ async def run_memory_flush_session(
         usage = dict(usage)
         usage["embedding"] = _consume_embedding_usage(svc, resolved_agent_id)
         result = MemoryFlushSessionResult(
-            ok=receipt_dict.get("mode") != "error",
+            ok=_receipt_is_complete_flush(receipt_dict),
             key=session_key,
             agent_id=resolved_agent_id,
             message_window=format_message_window(parsed_window),

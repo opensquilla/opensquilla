@@ -43,8 +43,8 @@ async def start_turn_via_runtime(
     ``_last_envelope_by_session`` cannot leak stale ingress markers into
     later proactive sends via ``TaskRuntime.send``.
 
-    ``semantic_message`` is the raw user text used as the memory prefetch
-    query when the runtime path needs to diverge from the persisted
+    ``semantic_message`` is the raw user text used by semantic runtime
+    processing when the runtime path needs to diverge from the persisted
     ``message`` (for example, transcript stamping after persistence).
     Forwarded only when set so legacy callers and mocks pre-dating the kwarg work.
 

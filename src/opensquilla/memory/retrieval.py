@@ -161,7 +161,7 @@ class MemoryRetriever:
         intent: SearchIntent = SearchIntent.TOOL,
     ) -> list[MemorySearchResult]:
         if self._sync_manager is not None:
-            await self._sync_manager.sync(reason="search")
+            await self._sync_manager.sync(reason=f"search:{intent.value}")
         opts = opts or MemorySearchOpts()
 
         raw_results, _mode = await self._store.search(
@@ -217,6 +217,8 @@ class MemoryRetriever:
             k_selected = _mmr_rerank(filtered, lam=self._mmr_lambda, k=opts.max_results)
         else:
             k_selected = filtered[: opts.max_results]
+        for result in k_selected:
+            result.metadata["search_intent"] = intent.value
         return k_selected
 
     async def close(self) -> None:

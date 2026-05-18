@@ -44,7 +44,7 @@ async def test_turn_capture_writes_state_turns_not_workspace_memory_archive(tmp_
 
 
 @pytest.mark.asyncio
-async def test_turn_capture_accepts_index_immediately_without_memory_store(tmp_path):
+async def test_turn_capture_writes_raw_turn_without_memory_store(tmp_path):
     service = TurnCaptureService(
         workspace_dir=tmp_path / "workspace",
         turns_dir=tmp_path / "state" / "agents" / "main" / "turns",
@@ -64,7 +64,6 @@ async def test_turn_capture_accepts_index_immediately_without_memory_store(tmp_p
         user_text="index toggle should not index raw turns",
         assistant_text="ignored",
         captured_at=datetime(2026, 5, 14, 3, 1, tzinfo=UTC),
-        index_immediately=True,
     )
 
 

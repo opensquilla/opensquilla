@@ -19,7 +19,7 @@ from opensquilla.gateway.config import GatewayConfig
 # Helpers
 # ---------------------------------------------------------------------------
 
-_ALL_16_DEPRECATED = {
+_ALL_DEPRECATED_MEMORY_FIELDS = {
     "memory.profile": "legacy_profile_value",
     "memory.cost.embedding_cache": "true",
     "memory.cost.rerank_cache": "false",
@@ -32,6 +32,11 @@ _ALL_16_DEPRECATED = {
     "memory.multi_hop_score_threshold": "0.7",
     "memory.recall_frequency": "always",
     "memory.recall_top_k_default": "10",
+    "memory.auto_recall_enabled": "true",
+    "memory.prefetch_enabled": "true",
+    "memory.prefetch_max_results": "3",
+    "memory.prefetch_min_score": "0.3",
+    "memory.prefetch_total_max_chars": "1500",
     "memory.semantic_chunking_enabled": "true",
     "memory.eviction_policy": "lru",
     "memory.summary_model": "gpt-4o-mini",
@@ -40,11 +45,11 @@ _ALL_16_DEPRECATED = {
 
 
 def _build_toml_with_deprecated(tmp_path: Path) -> Path:
-    """Write a minimal config.toml that contains all 16 deprecated fields."""
+    """Write a minimal config.toml that contains all deprecated fields."""
     lines = ["[memory]\n"]
     cost_lines = ["[memory.cost]\n"]
 
-    for dotted, val in _ALL_16_DEPRECATED.items():
+    for dotted, val in _ALL_DEPRECATED_MEMORY_FIELDS.items():
         parts = dotted.split(".")
         if parts[1] == "cost":
             leaf = parts[2]
@@ -63,8 +68,8 @@ def _build_toml_with_deprecated(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_load_with_all_16_deprecated_fields_does_not_raise(tmp_path: Path) -> None:
-    """GatewayConfig.load() must succeed even when all 16 deprecated memory
+def test_load_with_all_deprecated_fields_does_not_raise(tmp_path: Path) -> None:
+    """GatewayConfig.load() must succeed even when deprecated memory
     fields are present in the config file."""
     toml_path = _build_toml_with_deprecated(tmp_path)
     cfg = GatewayConfig.load(toml_path)
@@ -101,7 +106,7 @@ def test_aggregate_deprecation_warning_emitted_once_per_process(
     )
     msg = str(deprecation_warnings[0].message)
     assert "memory" in msg.lower()
-    assert "16 legacy memory.* config field(s) ignored" in msg
+    assert f"{len(_ALL_DEPRECATED_MEMORY_FIELDS)} legacy memory.* config field(s) ignored" in msg
     assert "0.2.0" in msg
 
 
@@ -136,7 +141,8 @@ def test_log_file_written_with_per_field_detail(
 
     log_file = log_files[-1]
     lines = [ln for ln in log_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert len(lines) == 16, f"Expected 16 log lines, got {len(lines)}"
+    expected_count = len(_ALL_DEPRECATED_MEMORY_FIELDS)
+    assert len(lines) == expected_count, f"Expected {expected_count} log lines, got {len(lines)}"
 
     for line in lines:
         entry = json.loads(line)

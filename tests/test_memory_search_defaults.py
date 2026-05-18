@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from opensquilla.memory.retrieval import MemoryRetriever
 from opensquilla.memory.types import MemorySearchResult, MemorySource, SearchIntent
 from opensquilla.tools.builtin.memory_tools import create_memory_tools
 from opensquilla.tools.registry import ToolRegistry
@@ -30,6 +31,33 @@ class _FakeRetriever:
                 text="alpha",
             )
         ]
+
+
+class _FakeStore:
+    async def search(self, **_kwargs):
+        return (
+            [
+                MemorySearchResult(
+                    chunk_id="chunk-1",
+                    path="MEMORY.md",
+                    source=MemorySource.memory,
+                    start_line=1,
+                    end_line=1,
+                    snippet="alpha",
+                    score=0.9,
+                    text="alpha",
+                )
+            ],
+            "fts_only",
+        )
+
+
+class _FakeSyncManager:
+    def __init__(self) -> None:
+        self.reasons: list[str] = []
+
+    async def sync(self, *, reason: str) -> None:
+        self.reasons.append(reason)
 
 
 @pytest.mark.asyncio
@@ -72,6 +100,20 @@ async def test_memory_search_tool_allows_explicit_min_score_override(tmp_path):
     _query, opts, _intent = retriever.calls[0]
     assert opts.max_results == 4
     assert opts.min_score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_memory_retriever_applies_search_intent_to_sync_and_results():
+    sync_manager = _FakeSyncManager()
+    retriever = MemoryRetriever(
+        _FakeStore(),  # type: ignore[arg-type]
+        sync_manager=sync_manager,
+    )
+
+    results = await retriever.search("alpha", intent=SearchIntent.ADMIN)
+
+    assert sync_manager.reasons == ["search:admin"]
+    assert results[0].metadata["search_intent"] == "admin"
 
 
 def test_memory_tool_descriptions_name_nested_memory_sources(tmp_path):

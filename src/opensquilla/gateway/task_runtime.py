@@ -91,7 +91,7 @@ class TaskRun:
     # ``_last_envelope_by_session`` cannot leak stale ingress markers into
     # later runtime sends (e.g. ``TaskRuntime.send`` reusing the cache).
     ingress_pipeline_steps: tuple[Any, ...] = ()
-    # Raw user text used as the memory prefetch query when the runtime path
+    # Raw user text used by semantic runtime processing when the runtime path
     # needs to diverge from ``message``. Channels
     # set this to the pre-stamping content; web/CLI leave it ``None`` so
     # ``TurnRunner.run`` falls back to ``message`` as the semantic input.

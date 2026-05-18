@@ -32,6 +32,28 @@ def _assert_lexical_guarantee(result: MemorySearchResult) -> None:
     )
 
 
+class _RecordingVectorCursor:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc_info):
+        return None
+
+    async def fetchall(self):
+        return [("wanted", 0.0)]
+
+
+class _RecordingVectorDb:
+    def __init__(self) -> None:
+        self.sql = ""
+        self.params = ()
+
+    def execute(self, sql, params):
+        self.sql = sql
+        self.params = params
+        return _RecordingVectorCursor()
+
+
 @pytest.mark.asyncio
 async def test_fts_search_tags_relaxed_keyword_hits_when_default_threshold_drops_all():
     store = LongTermMemoryStore(
@@ -50,6 +72,23 @@ async def test_fts_search_tags_relaxed_keyword_hits_when_default_threshold_drops
         _assert_relaxed_keyword_match(results[0])
     finally:
         await store._db.close()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_vector_search_filters_by_embedding_model():
+    store = LongTermMemoryStore(
+        ":memory:",
+        embedding_provider=NullEmbeddingProvider(),
+    )
+    db = _RecordingVectorDb()
+    store._db = db  # type: ignore[assignment]
+
+    results = await store._vector_search([0.0], 3, "model-a")
+
+    assert results == [("wanted", 1.0)]
+    assert "JOIN chunks c ON c.id = v.id" in db.sql
+    assert "AND c.model = ?" in db.sql
+    assert db.params[1:] == (3, "model-a")
 
 
 @pytest.mark.asyncio

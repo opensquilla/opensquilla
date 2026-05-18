@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
-from opensquilla.search.execution import (
+from opensquilla.search.rpc_payload import (
     search_provider_payload,
     search_query_rpc_payload,
     search_status_rpc_payload,

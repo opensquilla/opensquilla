@@ -71,7 +71,6 @@ def test_session_management_module_owns_create_patch_implementation() -> None:
 def test_rpc_sessions_management_handlers_delegate_to_boundary() -> None:
     sessions_tree = _tree(RPC_SESSIONS)
     imports = _imports_from(sessions_tree)
-    functions = _top_level_functions(sessions_tree)
     handlers = _top_level_async_functions(sessions_tree)
 
     assert ("opensquilla.gateway", "rpc_session_management") in imports
@@ -94,15 +93,7 @@ def test_rpc_sessions_management_handlers_delegate_to_boundary() -> None:
         assert len(calls) == 1
         assert len(returns) == 1
 
-    assert "_session_turn_model" in functions
-    turn_model_calls = [
-        node
-        for node in ast.walk(functions["_session_turn_model"])
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "session_turn_model"
-    ]
-    assert len(turn_model_calls) == 1
+    assert "_session_turn_model" not in _top_level_functions(sessions_tree)
 
     direct_payload_imports = {
         ("opensquilla.session.rpc_payload", "session_agent_not_found_details"),

@@ -346,7 +346,7 @@ async def test_concurrent_stale_writes_all_rejected(storage):
 
 @pytest.mark.asyncio
 async def test_epoch_in_event_payload(storage):
-    """_emit_to_subscribers injects 'epoch' into session.event.* payloads.
+    """emit_to_session_subscribers injects 'epoch' into session.event.* payloads.
 
     Uses a minimal fake ctx with real SessionStorage so that get_epoch()
     returns the live value and confirms it appears in the payload sent to
@@ -354,7 +354,7 @@ async def test_epoch_in_event_payload(storage):
     """
     from types import SimpleNamespace
 
-    from opensquilla.gateway.rpc_sessions import _emit_to_subscribers
+    from opensquilla.gateway.rpc_session_events import emit_to_session_subscribers
 
     node = await _make_session(storage)
     key = node.session_key
@@ -401,7 +401,7 @@ async def test_epoch_in_event_payload(storage):
 
     _ws_module.get_registry = _patched_registry
     try:
-        await _emit_to_subscribers(
+        await emit_to_session_subscribers(
             fake_ctx, key, "session.event.text_delta", {"text": "hello"}
         )
     finally:

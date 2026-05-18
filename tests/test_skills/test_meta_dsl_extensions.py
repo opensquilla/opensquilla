@@ -134,3 +134,40 @@ async def test_skill_exec_assemble_writes_template_files_before_exec(
     assert final.step_outputs["a"].strip() == "value=42"
     # The assembled file should have survived on disk.
     assert target.read_text().strip() == "value=42"
+
+
+@pytest.mark.asyncio
+async def test_skill_exec_stdin_non_string_raises_gracefully(tmp_path: Path) -> None:
+    """entrypoint.stdin of a non-string type makes the step fail cleanly."""
+    skill = SkillSpec(
+        name="bad-stdin-skill",
+        description="d",
+        layer=SkillLayer.BUNDLED,
+        always=False,
+        triggers=[],
+        content="x",
+        kind="skill",
+        base_dir=str(tmp_path),
+        entrypoint={
+            "command": "python -c 'pass'",
+            "args": [],
+            "stdin": 42,  # integer — invalid
+            "parse": "text",
+        },
+    )
+    plan_spec = _meta_spec([{"id": "q", "kind": "skill_exec", "skill": "bad-stdin-skill"}])
+    plan = parse_meta_plan(plan_spec)
+    assert plan is not None
+
+    async def runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("no sub-Agent")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(agent_runner=runner, skill_loader=_Loader([skill]))
+    final: MetaResult | None = None
+    async for ev in orch.iter_events(MetaMatch(plan=plan, inputs={})):
+        if isinstance(ev, MetaResult):
+            final = ev
+
+    assert final is not None and final.ok is False
+    assert "string template" in (final.error or "")

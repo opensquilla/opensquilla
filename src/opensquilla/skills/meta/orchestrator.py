@@ -922,7 +922,13 @@ class MetaOrchestrator:
         stdin_bytes: bytes | None = None
         if isinstance(stdin_raw, str) and stdin_raw:
             stdin_text = _render(stdin_raw.replace("{baseDir}", base_dir))
-            stdin_bytes = stdin_text.encode("utf-8")
+            try:
+                stdin_bytes = stdin_text.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.stdin rendered to text that "
+                    f"cannot be encoded as UTF-8: {exc}",
+                ) from exc
         elif stdin_raw not in (None, ""):
             raise RuntimeError(
                 f"step {step.id!r}: entrypoint.stdin must be a string template",

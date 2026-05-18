@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -95,3 +96,30 @@ def test_paper_refbib_stub_emits_bibtex_from_stdin_json(tmp_path: Path) -> None:
     assert "docs.python.org" in bib
     # stdout mirrors the file for easy piping/inspection.
     assert "@misc{ref1," in result.stdout
+
+
+def test_latex_compile_produces_pdf(tmp_path: Path) -> None:
+    pytest = __import__("pytest")
+    if shutil.which("xelatex") is None:
+        pytest.skip("xelatex not installed")
+
+    tex = tmp_path / "paper.tex"
+    tex.write_text(
+        r"""\documentclass{article}
+\begin{document}
+Hello, world.
+\end{document}
+""",
+        encoding="utf-8",
+    )
+    script = BUNDLED / "latex-compile" / "scripts" / "compile.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), str(tex)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    pdf = tmp_path / "paper.pdf"
+    assert pdf.is_file()
+    assert pdf.read_bytes()[:4] == b"%PDF"
+    assert "WROTE" in proc.stdout

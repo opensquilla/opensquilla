@@ -305,12 +305,12 @@ Co-authored-by: Codex <noreply@openai.com>
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
   - Removed:
-    - `/Users/cwan0785/opensquilla-refactor-active`
-    - `/Users/cwan0785/opensquilla-refactor-agent-session-read`
-    - `/Users/cwan0785/opensquilla-refactor-agent-runtime-facade`
+    - `../opensquilla-refactor-active`
+    - `../opensquilla-refactor-agent-session-read`
+    - `../opensquilla-refactor-agent-runtime-facade`
   - `git worktree list --porcelain` verified no extra
     `opensquilla-refactor-*` worktrees remain beyond
-    `/Users/cwan0785/opensquilla-refactor-integration`.
+    `../opensquilla-refactor-integration`.
 
 ## Child gate
 
@@ -364,12 +364,12 @@ Co-authored-by: Codex <noreply@openai.com>
 - Cleanup evidence:
   - Worker PIDs `63174` and `63175` were no longer present.
   - Removed active child and worker worktrees:
-    `/Users/cwan0785/opensquilla-refactor-active`,
-    `/Users/cwan0785/opensquilla-refactor-agent-session-read`, and
-    `/Users/cwan0785/opensquilla-refactor-agent-runtime-facade`.
+    `../opensquilla-refactor-active`,
+    `../opensquilla-refactor-agent-session-read`, and
+    `../opensquilla-refactor-agent-runtime-facade`.
   - Ran `git worktree prune`.
   - `git worktree list --porcelain` shows the refactor line only has
-    `/Users/cwan0785/opensquilla-refactor-integration`.
+    `../opensquilla-refactor-integration`.
 - Residual risk: no blocking risk observed; session read helpers moved to the
   session domain and runtime state test observability now uses a read-only
   snapshot facade while keeping compatibility paths.

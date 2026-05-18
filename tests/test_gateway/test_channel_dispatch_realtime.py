@@ -12,6 +12,7 @@ from opensquilla.artifacts import ArtifactStore
 from opensquilla.channels.stream_policy import resolve_channel_stream_policy
 from opensquilla.channels.types import Attachment, IncomingMessage, OutgoingMessage
 from opensquilla.engine.types import ArtifactEvent, DoneEvent, TextDeltaEvent
+from opensquilla.gateway import channel_dispatch
 from opensquilla.gateway.attachment_ingest import (
     MAX_STAGED_PDF_BYTES,
     MAX_TOTAL_ATTACHMENT_BYTES,
@@ -27,8 +28,8 @@ from opensquilla.gateway.channel_dispatch import (
     _ingest_channel_message_attachments,
     _run_turn_batch_path,
     _run_turn_with_streaming,
-    _RuntimeChannelStreamRelay,
 )
+from opensquilla.gateway.channel_streaming import RuntimeChannelStreamRelay
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
 from opensquilla.gateway.routing import build_channel_route_envelope
 from opensquilla.safety.permission_matrix import Principal, is_tool_allowed
@@ -90,6 +91,10 @@ def test_channel_stream_policy_uses_typing_placeholder_without_stream_editing() 
     assert policy.mode == "typing_final"
     assert policy.relay_stream is False
     assert policy.typing_keepalive is True
+
+
+def test_channel_dispatch_preserves_runtime_stream_relay_compat_alias() -> None:
+    assert channel_dispatch._RuntimeChannelStreamRelay is RuntimeChannelStreamRelay
 
 
 def test_channel_stream_policy_allows_adapter_final_only_override() -> None:
@@ -540,7 +545,7 @@ async def test_runtime_channel_stream_relay_emits_artifact_fallback() -> None:
             return None
 
     channel = StreamingChannel()
-    relay = _RuntimeChannelStreamRelay.maybe_start(channel, _message(), FakeTaskRuntime())
+    relay = RuntimeChannelStreamRelay.maybe_start(channel, _message(), FakeTaskRuntime())
 
     assert relay is not None
 
@@ -573,7 +578,7 @@ async def test_runtime_channel_stream_relay_appends_artifact_fallback_to_text() 
             return None
 
     channel = StreamingChannel()
-    relay = _RuntimeChannelStreamRelay.maybe_start(channel, _message(), FakeTaskRuntime())
+    relay = RuntimeChannelStreamRelay.maybe_start(channel, _message(), FakeTaskRuntime())
 
     assert relay is not None
 
@@ -628,7 +633,7 @@ async def test_runtime_channel_stream_relay_sends_artifact_with_adapter_upload(
 
     config = SimpleNamespace(attachments=SimpleNamespace(media_root=str(tmp_path)))
     channel = StreamingFileChannel()
-    relay = _RuntimeChannelStreamRelay.maybe_start(
+    relay = RuntimeChannelStreamRelay.maybe_start(
         channel,
         _message(),
         FakeTaskRuntime(),
@@ -738,7 +743,7 @@ async def test_runtime_channel_stream_relay_does_not_redeliver_transcript_artifa
     config = SimpleNamespace(attachments=SimpleNamespace(media_root=str(tmp_path)))
     channel = StreamingFileChannel()
     runtime = FakeTaskRuntime()
-    relay = _RuntimeChannelStreamRelay.maybe_start(
+    relay = RuntimeChannelStreamRelay.maybe_start(
         channel,
         _message(),
         runtime,

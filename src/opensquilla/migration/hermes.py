@@ -14,6 +14,7 @@ from typing import Any, Literal
 import yaml
 
 from opensquilla.gateway.config import ChannelsConfig, GatewayConfig, MCPServerEntry
+from opensquilla.migration.env_file import merge_env_lines
 from opensquilla.onboarding.config_store import load_config, persist_config
 from opensquilla.paths import default_opensquilla_home
 
@@ -886,15 +887,15 @@ class HermesMigrator:
         # pre-existing opensquilla MCP servers the user had configured.
         imported: list[MCPServerEntry] = []
         for name, raw in servers.items():
-            entry: dict[str, Any] = {"name": name}
+            payload: dict[str, Any] = {"name": name}
             for key in ("command", "args", "env", "url"):
                 if key in raw:
-                    entry[key] = raw[key]
-            if entry.get("url") and not entry.get("command"):
-                entry["transport"] = "sse"
-            elif entry.get("command"):
-                entry["transport"] = "stdio"
-            imported.append(MCPServerEntry.model_validate(entry))
+                    payload[key] = raw[key]
+            if payload.get("url") and not payload.get("command"):
+                payload["transport"] = "sse"
+            elif payload.get("command"):
+                payload["transport"] = "stdio"
+            imported.append(MCPServerEntry.model_validate(payload))
         cfg = self._config()
         existing_servers = list(cfg.mcp.servers)
         existing_by_name = {s.name: idx for idx, s in enumerate(existing_servers)}
@@ -1044,35 +1045,15 @@ class HermesMigrator:
             return
         env_path = self.home / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
-        # Dedupe by key when writing back. The previous implementation blindly
-        # appended every additions row each run, so repeated `--migrate-secrets`
-        # invocations grew the .env with duplicate entries unboundedly.
         existing_lines = (
-            env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+            env_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if env_path.exists()
+            else []
         )
-
-        def _line_key(text: str) -> str | None:
-            stripped = text.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                return None
-            if stripped.startswith("export "):
-                stripped = stripped[len("export "):].lstrip()
-            key, _, _ = stripped.partition("=")
-            return key.strip()
-
-        merged_lines: list[str] = []
-        consumed: set[str] = set()
-        for line in existing_lines:
-            key = _line_key(line)
-            if key is not None and key in self._env_additions:
-                merged_lines.append(f"{key}={self._env_additions[key]}")
-                consumed.add(key)
-            else:
-                merged_lines.append(line)
-        for key, value in sorted(self._env_additions.items()):
-            if key not in consumed:
-                merged_lines.append(f"{key}={value}")
-        env_path.write_text("\n".join(merged_lines).rstrip() + "\n", encoding="utf-8")
+        env_path.write_text(
+            "\n".join(merge_env_lines(existing_lines, self._env_additions)) + "\n",
+            encoding="utf-8",
+        )
 
     def _write_config(self) -> None:
         if self.options.apply and self._config_changed and self._config_obj is not None:

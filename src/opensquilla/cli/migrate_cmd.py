@@ -7,7 +7,7 @@ import io
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 
@@ -161,8 +161,8 @@ def _run_one_migration(
 
     if json_output:
         with contextlib.redirect_stdout(io.StringIO()):
-            return migrator.migrate()
-    return migrator.migrate()
+            return cast(dict[str, Any], migrator.migrate())
+    return cast(dict[str, Any], migrator.migrate())
 
 
 @migrate_app.callback()
@@ -283,7 +283,7 @@ def migrate_root(
         # Multiple sources, no explicit filter. TTY: prompt. Non-TTY: list and exit.
         stdin_is_tty = _stdin_is_tty()
         if not stdin_is_tty or json_output:
-            payload = {
+            selection_payload: dict[str, Any] = {
                 "detected": [
                     {"name": name, "path": str(path)} for name, path in detected
                 ],
@@ -294,9 +294,9 @@ def migrate_root(
                 ),
             }
             if json_output:
-                typer.echo(json.dumps(payload, ensure_ascii=False))
+                typer.echo(json.dumps(selection_payload, ensure_ascii=False))
             else:
-                console.print(payload["message"])
+                console.print(selection_payload["message"])
                 console.print("[dim]Detected sources:[/dim]")
                 for name, path in detected:
                     console.print(f"  - {name}: {path}")

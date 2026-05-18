@@ -25,6 +25,7 @@ from opensquilla.gateway.config import (
     GatewayConfig,
     MCPServerEntry,
 )
+from opensquilla.migration.env_file import merge_env_lines
 from opensquilla.onboarding.config_store import load_config, persist_config
 from opensquilla.paths import default_opensquilla_home
 
@@ -119,8 +120,17 @@ PROVIDER_ENV_KEYS = {
     "deepseek": "DEEPSEEK_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "zai": "ZAI_API_KEY",
+    "zhipu": "ZAI_API_KEY",
     "minimax": "MINIMAX_API_KEY",
 }
+
+
+def _normalize_provider_id(provider: str) -> str:
+    normalized = provider.strip().lower()
+    if normalized == "zai":
+        return "zhipu"
+    return normalized
+
 
 ARCHIVE_CONFIG_KEYS = {
     "plugins": "plugins-config.json",
@@ -271,6 +281,8 @@ def _load_env_file(path: Path) -> dict[str, str]:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
         key, value = line.split("=", 1)
         values[key.strip().lstrip("\ufeff")] = value.strip().strip('"').strip("'")
     return values
@@ -318,7 +330,7 @@ def _provider_from_model(model: str) -> str | None:
     if normalized.startswith("gemini"):
         return "gemini"
     if normalized.startswith("zai/") or normalized.startswith("glm-"):
-        return "zai"
+        return "zhipu"
     if normalized.startswith("minimax") or normalized.startswith("minimax/"):
         return "minimax"
     return None
@@ -330,11 +342,15 @@ def _model_for_opensquilla_provider(model: str, provider: str | None) -> tuple[s
         native = model.split("/", 1)[1].strip()
         if native:
             return native, {"source_model": model, "normalized_provider_prefix": "openrouter"}
+    if provider == "zhipu" and model.lower().startswith("zai/"):
+        native = model.split("/", 1)[1].strip()
+        if native:
+            return native, {"source_model": model, "normalized_provider_prefix": "zai"}
     return model, {}
 
 
 def _env_key_for_provider(provider: str) -> str | None:
-    return PROVIDER_ENV_KEYS.get(provider.strip().lower())
+    return PROVIDER_ENV_KEYS.get(_normalize_provider_id(provider))
 
 
 def _string_list(value: Any) -> list[str]:
@@ -1320,19 +1336,64 @@ class OpenClawMigrator:
         model, normalize_details = _model_for_opensquilla_provider(model, provider)
         model_details.update(normalize_details)
         cfg = self._config_obj()
-        cfg.llm.model = model
+        details = {"model": model, **model_details}
+        should_write_model = True
         if provider:
-            cfg.llm.provider = provider
             env_key = _env_key_for_provider(provider)
-            if env_key and self.options.migrate_secrets:
+            existing_profile = getattr(
+                getattr(cfg, "squilla_router", None), "tier_profile", None
+            )
+            normalized_profile = (existing_profile or "").strip().lower()
+            normalized_provider = provider.strip().lower()
+            tier_profile_conflicts = bool(
+                existing_profile
+                and normalized_profile != normalized_provider
+            )
+            if env_key and not tier_profile_conflicts:
+                cfg.llm.provider = provider
+            elif env_key and tier_profile_conflicts:
+                preserved = cfg.llm.provider
+                preserved_model = cfg.llm.model
+                should_write_model = False
+                details["tier_profile_conflict"] = existing_profile
+                details["llm_provider_left_unchanged"] = preserved
+                details["llm_model_left_unchanged"] = preserved_model
+                details["skipped_model"] = model
+                details["manual_steps"] = [
+                    (
+                        f"OpenClaw model config implies provider={provider!r} "
+                        f"and model={model!r}, but squilla_router.tier_profile "
+                        f"is currently {existing_profile!r}. OpenSquilla "
+                        "requires the provider and tier profile to match. "
+                        f"llm.provider and llm.model were left as {preserved!r} "
+                        f"and {preserved_model!r}. To switch providers, either "
+                        "clear squilla_router.tier_profile or set provider, "
+                        "model, and tier profile explicitly with "
+                        "`opensquilla config set`."
+                    )
+                ]
+            else:
+                preserved = cfg.llm.provider
+                details["unrecognized_provider"] = provider
+                details["llm_provider_left_unchanged"] = preserved
+                details["manual_steps"] = [
+                    (
+                        f"OpenClaw model config implies provider={provider!r}, which "
+                        "has no OpenSquilla equivalent. llm.provider was left as "
+                        f"{preserved!r}."
+                    )
+                ]
+            if env_key and self.options.migrate_secrets and not tier_profile_conflicts:
                 cfg.llm.api_key_env = env_key
+        if should_write_model:
+            cfg.llm.model = model
         self._config_changed = True
         self._record(
             "model-config",
             self.source / "openclaw.json",
             self.config_path or cfg.config_path,
             "migrated" if self.options.apply else "planned",
-            details={"model": model, **model_details},
+            details=details,
         )
 
     def _resolve_default_model(self, config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -1608,7 +1669,7 @@ class OpenClawMigrator:
             for provider, raw in providers.items():
                 if not isinstance(raw, dict):
                     continue
-                provider_name = str(provider).strip().lower()
+                provider_name = _normalize_provider_id(str(provider))
                 key = _env_key_for_provider(provider_name)
                 if not key:
                     continue
@@ -1949,9 +2010,12 @@ class OpenClawMigrator:
             return
         env_path = self.home / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
-        existing = _load_env_file(env_path)
-        existing.update(self._env_additions)
-        lines = [f"{key}={value}" for key, value in sorted(existing.items())]
+        existing_lines = (
+            env_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if env_path.exists()
+            else []
+        )
+        lines = merge_env_lines(existing_lines, self._env_additions)
         env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         try:
             os.chmod(env_path, 0o600)

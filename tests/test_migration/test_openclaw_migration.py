@@ -6,6 +6,7 @@ from pathlib import Path
 
 from opensquilla.engine.context import load_context_files
 from opensquilla.migration.openclaw import MigrationOptions, OpenClawMigrator
+from opensquilla.provider.selector import build_provider
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.types import SkillLayer
 
@@ -519,6 +520,169 @@ def test_provider_keys_can_migrate_from_provider_config_when_opted_in(
     assert item["details"]["source_model"] == "openrouter/deepseek/deepseek-v3.1"
     assert item["details"]["normalized_provider_prefix"] == "openrouter"
     assert "sk-or-from-config" not in json.dumps(secret_report)
+
+
+def test_zai_and_glm_models_migrate_to_zhipu_provider(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = _make_source(tmp_path)
+    config = json.loads((source / "openclaw.json").read_text(encoding="utf-8"))
+    config["agents"]["defaults"]["model"] = "zai/glm-4.5"
+    config["models"] = {
+        "providers": {
+            "zai": {
+                "apiKey": "sk-zai-secret",
+                "baseUrl": "https://zhipu.example.test/api/paas/v4",
+            }
+        }
+    }
+    (source / "openclaw.json").write_text(json.dumps(config), encoding="utf-8")
+    home = tmp_path / "opensquilla-home"
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    OpenClawMigrator(
+        MigrationOptions(
+            source=source,
+            config_path=config_path,
+            apply=True,
+            migrate_secrets=True,
+        )
+    ).migrate()
+
+    persisted = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["llm"]["provider"] == "zhipu"
+    assert persisted["llm"]["model"] == "glm-4.5"
+    assert persisted["llm"]["api_key_env"] == "ZAI_API_KEY"
+    assert persisted["llm"]["base_url"] == "https://zhipu.example.test/api/paas/v4"
+    build_provider(persisted["llm"]["provider"], persisted["llm"]["model"])
+
+
+def test_model_provider_conflict_with_existing_tier_profile_is_reported(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = _make_source(tmp_path)
+    config = json.loads((source / "openclaw.json").read_text(encoding="utf-8"))
+    config["agents"]["defaults"]["model"] = "anthropic/claude-3-5-sonnet"
+    (source / "openclaw.json").write_text(json.dumps(config), encoding="utf-8")
+    home = tmp_path / "opensquilla-home"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[llm]",
+                'provider = "openrouter"',
+                'model = "deepseek/deepseek-v4-flash"',
+                "",
+                "[squilla_router]",
+                "enabled = true",
+                'tier_profile = "openrouter"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    report = OpenClawMigrator(
+        MigrationOptions(source=source, config_path=config_path, apply=True)
+    ).migrate()
+
+    persisted = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["llm"]["provider"] == "openrouter"
+    assert persisted["llm"]["model"] == "deepseek/deepseek-v4-flash"
+    assert persisted["squilla_router"]["tier_profile"] == "openrouter"
+    item = next(item for item in report["items"] if item["kind"] == "model-config")
+    assert item["details"]["tier_profile_conflict"] == "openrouter"
+    assert item["details"]["llm_provider_left_unchanged"] == "openrouter"
+    assert item["details"]["llm_model_left_unchanged"] == "deepseek/deepseek-v4-flash"
+    assert item["details"]["skipped_model"] == "anthropic/claude-3-5-sonnet"
+    assert item["details"]["manual_steps"]
+
+
+def test_model_provider_conflict_with_direct_provider_preserves_model(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = _make_source(tmp_path)
+    config = json.loads((source / "openclaw.json").read_text(encoding="utf-8"))
+    config["agents"]["defaults"]["model"] = "anthropic/claude-3-5-sonnet"
+    (source / "openclaw.json").write_text(json.dumps(config), encoding="utf-8")
+    home = tmp_path / "opensquilla-home"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[llm]",
+                'provider = "deepseek"',
+                'model = "deepseek-v4-flash"',
+                "",
+                "[squilla_router]",
+                "enabled = true",
+                'tier_profile = "deepseek"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    report = OpenClawMigrator(
+        MigrationOptions(source=source, config_path=config_path, apply=True)
+    ).migrate()
+
+    persisted = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["llm"]["provider"] == "deepseek"
+    assert persisted["llm"]["model"] == "deepseek-v4-flash"
+    item = next(item for item in report["items"] if item["kind"] == "model-config")
+    assert item["details"]["tier_profile_conflict"] == "deepseek"
+    assert item["details"]["llm_model_left_unchanged"] == "deepseek-v4-flash"
+    assert item["details"]["skipped_model"] == "anthropic/claude-3-5-sonnet"
+
+
+def test_env_secret_migration_preserves_existing_lines_and_dedupes_keys(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = _make_source(tmp_path)
+    config = json.loads((source / "openclaw.json").read_text(encoding="utf-8"))
+    config["agents"]["defaults"]["model"] = "openrouter/deepseek/deepseek-v3.1"
+    (source / "openclaw.json").write_text(json.dumps(config), encoding="utf-8")
+    (source / ".env").write_text("OPENROUTER_API_KEY=sk-new\n", encoding="utf-8")
+    home = tmp_path / "opensquilla-home"
+    env_path = home / ".env"
+    env_path.parent.mkdir(parents=True)
+    env_path.write_text(
+        "\n".join(
+            [
+                "# existing operator note",
+                "",
+                "UNRELATED=value",
+                "export OPENROUTER_API_KEY=sk-old",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    OpenClawMigrator(
+        MigrationOptions(
+            source=source,
+            config_path=tmp_path / "config.toml",
+            apply=True,
+            migrate_secrets=True,
+        )
+    ).migrate()
+
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "# existing operator note" in env_text
+    assert "UNRELATED=value" in env_text
+    assert "OPENROUTER_API_KEY=sk-new" in env_text
+    assert "sk-old" not in env_text
+    assert env_text.count("OPENROUTER_API_KEY=") == 1
 
 
 def test_memory_migration_deduplicates_and_archives_overflow(

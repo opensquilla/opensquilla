@@ -67,8 +67,9 @@ from opensquilla.cli.chat_standalone_status_workflows import (
     handle_standalone_models_command,
     handle_standalone_status_command,
 )
-from opensquilla.cli.chat_tool_compression_workflows import handle_tool_compress_command
-from opensquilla.cli.chat_transcript_exports import save_transcript_command
+from opensquilla.cli.chat_standalone_utility_route_workflows import (
+    handle_standalone_utility_route_command,
+)
 from opensquilla.cli.repl.commands import is_exit_command, render_help_table
 from opensquilla.cli.repl.prompt import prompt_approval, prompt_user
 from opensquilla.cli.repl.session_state import ChatSessionState
@@ -609,8 +610,12 @@ async def _standalone_repl(
                 if route_name == "cost":
                     handle_standalone_cost_command(state)
                     continue
-                if route_name == "tool_compress":
-                    await handle_tool_compress_command(stripped, config=svc.config)
+                if await handle_standalone_utility_route_command(
+                    route_name,
+                    stripped,
+                    state,
+                    config=svc.config,
+                ):
                     continue
                 if route_name == "clear":
                     await handle_standalone_clear_command(
@@ -627,9 +632,6 @@ async def _standalone_repl(
                         flush_before_rewrite=_flush_before_standalone_rewrite,
                         resolve_compaction_provider=_resolve_compaction_provider,
                     )
-                    continue
-                if route_name == "save":
-                    save_transcript_command(stripped, state)
                     continue
                 if route_name == "image":
                     await handle_standalone_image_command(

@@ -11,6 +11,7 @@ from typing import Any
 import structlog
 
 from opensquilla.gateway import attachment_ingest as _attachment_ingest
+from opensquilla.gateway import rpc_session_events as _session_events
 from opensquilla.gateway import rpc_session_send_inputs as _session_send_inputs
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, RpcUnavailableError, get_dispatcher
@@ -28,10 +29,8 @@ from opensquilla.gateway.rpc_session_send_inputs import (
 )
 from opensquilla.gateway.rpc_session_turn_runtime import enqueue_session_turn_via_runtime
 from opensquilla.gateway.session_services import (
-    get_session_epoch,
     get_session_lock,
     get_session_storage,
-    set_session_epoch,
 )
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.paths import media_root_from_config
@@ -138,16 +137,7 @@ def _optional_positive_timeout(config: Any, attr: str, default: float) -> float 
 
 
 def _optional_stream_seq(params: dict | None) -> int | None:
-    if not isinstance(params, dict):
-        return None
-    raw = params.get("since_stream_seq", params.get("sinceStreamSeq"))
-    if raw is None:
-        return None
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return max(0, value)
+    return _session_events.optional_stream_seq(params)
 
 
 def _buffer_session_event(
@@ -155,9 +145,7 @@ def _buffer_session_event(
     event_name: str,
     payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    if event_name.startswith("session.event."):
-        return get_session_streams().record(session_key, event_name, payload)
-    return dict(payload or {})
+    return _session_events.buffer_session_event(session_key, event_name, payload)
 
 
 async def _resolve_attachments(
@@ -742,49 +730,13 @@ async def _emit_to_subscribers(
     event_name: str,
     payload: dict,
 ) -> None:
-    """Send an event to all connections subscribed to a session's messages."""
-    from opensquilla.gateway.websocket import get_registry
-
-    # Inject current epoch into session.event.* and sessions.changed
-    # payloads so the frontend _isStaleEpoch guard can filter pre-reset frames.
-    # Read from the in-process cache on SessionManager (populated by reset path) to
-    # avoid a DB SELECT on every high-frequency event such as text_delta.
-    if event_name.startswith("session.event.") or event_name == "sessions.changed":
-        session_manager = getattr(ctx, "session_manager", None)
-        cached_epoch = get_session_epoch(session_manager, session_key)
-        if cached_epoch is not None:
-            payload = {**payload, "epoch": cached_epoch}
-        else:
-            storage = get_session_storage(session_manager)
-            if storage is not None and hasattr(storage, "get_epoch"):
-                try:
-                    epoch = await storage.get_epoch(session_key)
-                    # Populate cache for subsequent emits.
-                    set_session_epoch(session_manager, session_key, epoch)
-                    payload = {**payload, "epoch": epoch}
-                except Exception:
-                    pass  # best-effort; never block event delivery
-
-    send_payload = _buffer_session_event(session_key, event_name, payload)
-
-    sub_mgr = getattr(ctx, "subscription_manager", None)
-    if sub_mgr is None:
-        return
-
-    registry = get_registry()
-    conn_ids = sub_mgr.get_message_subscribers(session_key)
-
-    # For session-level events, also include session subscribers
-    if event_name.startswith("sessions."):
-        conn_ids = conn_ids | sub_mgr.get_session_subscribers()
-
-    for conn_id in conn_ids:
-        conn = registry.get(conn_id)
-        if conn is not None:
-            try:
-                await conn.send_event(event_name, send_payload)
-            except Exception:
-                log.warning("emit.send_failed", conn_id=conn_id, event=event_name)
+    await _session_events.emit_to_session_subscribers(
+        ctx,
+        session_key,
+        event_name,
+        payload,
+        logger=log,
+    )
 
 
 @_d.method("sessions.abort", scope="operator.write")
@@ -1051,42 +1003,13 @@ async def _increment_and_emit_epoch(
     storage: Any,
     session_key: str,
 ) -> int:
-    """Atomically increment epoch and broadcast session.epoch_changed to WS subscribers.
+    return await _session_events.increment_and_emit_epoch(
+        ctx,
+        storage,
+        session_key,
+        logger=log,
+    )
 
-    increment_epoch commits the UPDATE before returning, so new_epoch
-    is durable before we attempt the WS emit.  If the emit fails the epoch is
-    still committed — WS delivery is best-effort and the client will re-sync on
-    reconnect.
-    """
-    increment_fn = getattr(storage, "increment_epoch", None)
-    if not callable(increment_fn):
-        return 0
-    try:
-        # Durable commit happens inside increment_epoch before it returns.
-        new_epoch = int(await increment_fn(session_key))
-    except Exception:
-        log.warning("sessions.reset.epoch_increment_failed", session_key=session_key)
-        return 0
-    # Invalidate / update the in-process epoch cache so subsequent _emit_to_subscribers
-    # calls read the new epoch without hitting the DB.
-    session_manager = getattr(ctx, "session_manager", None)
-    set_session_epoch(session_manager, session_key, new_epoch)
-    # Emit after the storage commit — failure here is non-fatal; epoch is already
-    # persisted and the client will re-sync on next reconnect.
-    try:
-        await _emit_to_subscribers(
-            ctx,
-            session_key,
-            "session.epoch_changed",
-            {"key": session_key, "epoch": new_epoch},
-        )
-    except Exception:
-        log.warning(
-            "sessions.reset.epoch_emit_failed",
-            session_key=session_key,
-            new_epoch=new_epoch,
-        )
-    return new_epoch
 
 @_d.method("sessions.delete", scope="operator.admin")
 async def _handle_sessions_delete(params: dict | None, ctx: RpcContext) -> dict:

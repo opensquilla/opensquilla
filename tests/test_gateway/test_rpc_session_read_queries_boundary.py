@@ -43,7 +43,6 @@ def test_session_read_queries_module_owns_read_query_implementation() -> None:
 
     read_tree = _tree(RPC_SESSION_READ_QUERIES)
     read_async_functions = _top_level_async_functions(read_tree)
-    read_functions = _top_level_functions(read_tree)
     read_imports = _imports_from(read_tree)
 
     assert {
@@ -58,8 +57,9 @@ def test_session_read_queries_module_owns_read_query_implementation() -> None:
         "handle_sessions_preview",
         "handle_sessions_resolve",
     } <= read_async_functions.keys()
-    assert {"require_session_key"} <= read_functions.keys()
+    assert "require_session_key" not in _top_level_functions(read_tree)
     assert {
+        ("opensquilla.session.management_service", "require_session_key"),
         ("opensquilla.session.rpc_payload", "messages_subscribe_response"),
         ("opensquilla.session.rpc_payload", "session_list_response"),
         ("opensquilla.session.rpc_payload", "session_list_row"),

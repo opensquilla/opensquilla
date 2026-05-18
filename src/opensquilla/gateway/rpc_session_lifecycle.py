@@ -16,7 +16,8 @@ from opensquilla.gateway.rpc_compaction_inputs import (
 )
 from opensquilla.memory.session_flush import FlushReceipt
 from opensquilla.session.compaction import call_compact_with_optional_config
-from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
+from opensquilla.session.keys import normalize_agent_id
+from opensquilla.session.management_service import require_session_key
 from opensquilla.session.models import SessionIntent
 from opensquilla.session.rpc_payload import (
     session_abort_response,
@@ -38,15 +39,6 @@ _ACTIVE_TASK_STATUSES = frozenset({"queued", "running"})
 EpochEmitter = Callable[[RpcContext, Any, str], Awaitable[int]]
 EventEmitter = Callable[[RpcContext, str, str, dict], Awaitable[None]]
 ResetDrain = Callable[[Any, str], Awaitable[None]]
-
-
-def require_session_key(params: dict | None) -> str:
-    if not isinstance(params, dict) or "key" not in params:
-        raise ValueError("params.key is required")
-    key = params["key"]
-    if not isinstance(key, str):
-        raise ValueError("params.key must be a string")
-    return canonicalize_session_key(key)
 
 
 def _task_status_value(status: Any) -> str:

@@ -57,6 +57,20 @@ def test_session_package_owns_management_service_implementation() -> None:
     ) in _imports_from(GATEWAY / "rpc_session_send.py")
 
 
+def test_session_package_owns_session_key_parameter_normalization() -> None:
+    gateway_modules = [
+        GATEWAY / "rpc_session_lifecycle.py",
+        GATEWAY / "rpc_session_read_queries.py",
+        GATEWAY / "rpc_session_send.py",
+    ]
+    for path in gateway_modules:
+        assert (
+            "opensquilla.session.management_service",
+            "require_session_key",
+        ) in _imports_from(path)
+        assert "require_session_key" not in _top_level_defs(path), path
+
+
 def test_session_package_owns_runtime_service_accessors() -> None:
     assert SESSION_SERVICES.is_file()
     assert {

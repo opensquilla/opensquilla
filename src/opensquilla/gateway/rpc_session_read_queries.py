@@ -11,6 +11,7 @@ from opensquilla.gateway import rpc_session_events as _session_events
 from opensquilla.gateway.rpc import RpcContext
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.session.keys import canonicalize_session_key
+from opensquilla.session.management_service import require_session_key
 from opensquilla.session.rpc_payload import (
     messages_subscribe_response,
     session_list_response,
@@ -22,15 +23,6 @@ from opensquilla.session.rpc_payload import (
 from opensquilla.session.services import get_session_storage
 
 log = structlog.get_logger(__name__)
-
-
-def require_session_key(params: dict | None) -> str:
-    if not isinstance(params, dict) or "key" not in params:
-        raise ValueError("params.key is required")
-    key = params["key"]
-    if not isinstance(key, str):
-        raise ValueError("params.key must be a string")
-    return canonicalize_session_key(key)
 
 
 async def list_task_rows(ctx: RpcContext, storage: Any | None, session_key: str) -> list[Any]:

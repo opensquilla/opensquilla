@@ -15,8 +15,9 @@ from pathlib import Path
 
 from opensquilla.sandbox.integration import gate_action, get_runtime, run_under_backend
 from opensquilla.sandbox.types import DenialResult, SandboxRequest
+from opensquilla.tools.builtin import filesystem
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import ToolError, current_tool_context
+from opensquilla.tools.types import ToolError
 
 # Destructive Python patterns that must go through the same approval flow as
 # shell warnlist hits. Catches the "agent pivots from `rm` to `os.remove()`"
@@ -293,13 +294,10 @@ async def execute_code(
 
     timeout = max(1.0, min(float(timeout), _MAX_TIMEOUT))
 
-    ctx = current_tool_context.get()
     runtime = get_runtime()
     sandbox_enabled = bool(runtime is not None and runtime.effective.sandbox_enabled)
     python_bin = _resolve_python_bin(sandbox_enabled=sandbox_enabled)
-    workspace = (
-        Path(ctx.workspace_dir).expanduser().resolve() if ctx and ctx.workspace_dir else None
-    )
+    workspace = filesystem._resolve_workdir(None)
     cleanup_dir: str | None = None
     if workspace is not None:
         workspace.mkdir(parents=True, exist_ok=True)

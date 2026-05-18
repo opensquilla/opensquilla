@@ -9,6 +9,7 @@ composition can rely on them.
 from __future__ import annotations
 
 import csv
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -60,3 +61,37 @@ def test_paper_plot_stub_produces_pdf(tmp_path: Path) -> None:
     assert out.is_file()
     # Sanity-check the PDF magic header.
     assert out.read_bytes()[:4] == b"%PDF"
+
+
+def test_paper_refbib_stub_emits_bibtex_from_stdin_json(tmp_path: Path) -> None:
+    payload = {
+        "query": "asyncio",
+        "results": [
+            {
+                "title": "asyncio docs",
+                "url": "https://docs.python.org/3/library/asyncio.html",
+                "snippet": "Asynchronous I/O.",
+            },
+            {
+                "title": "Real Python on asyncio",
+                "url": "https://realpython.com/async-io-python/",
+                "snippet": "Hands-on walkthrough.",
+            },
+        ],
+    }
+    out = tmp_path / "references.bib"
+    script = BUNDLED / "paper-refbib-stub" / "scripts" / "json_to_bib.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--out", str(out)],
+        input=json.dumps(payload),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert out.is_file()
+    bib = out.read_text(encoding="utf-8")
+    assert "@misc{ref1," in bib
+    assert "@misc{ref2," in bib
+    assert "docs.python.org" in bib
+    # stdout mirrors the file for easy piping/inspection.
+    assert "@misc{ref1," in result.stdout

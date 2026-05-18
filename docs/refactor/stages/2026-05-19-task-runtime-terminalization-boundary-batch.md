@@ -300,9 +300,11 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 
 ### Task 6: Integration Branch Merge And Cleanup
 
-- [ ] Merge child into integration with `git merge --no-ff codex/refactor-task-runtime-terminalization-boundary-batch`.
-- [ ] Run full integration `scripts/refactor_gate.sh`.
-- [ ] Update this completion record with worker commits, child hash, integration hash, verification output, residual risk, and next recommended slice.
+- [x] Merge child into integration with `git merge --no-ff codex/refactor-task-runtime-terminalization-boundary-batch`.
+  - Merge commit: `3c140c6` (`Merge task runtime terminalization boundary batch`).
+- [x] Run full integration `scripts/refactor_gate.sh`.
+  - Passed: ruff, mypy, whitespace, pytest `2590 passed, 6 skipped, 2 warnings`, gateway smoke on `127.0.0.1:52835`.
+- [x] Update this completion record with worker commits, child hash, integration hash, verification output, residual risk, and next recommended slice.
 - [ ] Commit the stage record update on integration with the required co-author trailer.
 - [ ] Remove `../opensquilla-refactor-active` and external worker worktrees:
   - `../opensquilla-refactor-agent-task-runtime-records`
@@ -344,7 +346,9 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - `bd472cc` (`Merge task runtime terminal boundary worker`).
   - `56fd20a` (`Merge task runtime scheduler boundary worker`).
   - `489faeb` (`Resolve task runtime boundary import ordering`).
+  - `d831acc` (`Record task runtime terminalization child verification`).
 - Integration merge:
+  - `3c140c6` (`Merge task runtime terminalization boundary batch`).
 - Verification evidence:
   - Worker `task-runtime-records` RED: `uv run --extra dev pytest tests/test_gateway/test_task_runtime_records_boundary.py -q` failed as expected with `ModuleNotFoundError: No module named 'opensquilla.gateway.task_runtime_records'`.
   - Worker `task-runtime-terminal` RED: `uv run --extra dev pytest tests/test_gateway/test_task_runtime_terminal_boundary.py -q` failed as expected with `ModuleNotFoundError: No module named 'opensquilla.gateway.task_runtime_terminal'`.
@@ -360,6 +364,7 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - Main mypy: success, no issues found in 537 source files.
   - Main `git diff --check`: clean.
   - Child full gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 537 source files; whitespace passed; pytest `2588 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
+  - Integration full gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 537 source files; whitespace passed; pytest `2590 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
 - Cleanup evidence:
 - Residual risk:
   - Low to medium. Task runtime orchestration remains in `TaskRuntime`, while records, terminal payload/subagent completion helpers, and scheduler state now have explicit owning modules. Compatibility imports remain on `opensquilla.gateway.task_runtime`, and scheduler-owned state is still exposed via compatibility properties for existing tests. Future slices should avoid removing those compatibility properties until downstream/import-surface checks are broadened.

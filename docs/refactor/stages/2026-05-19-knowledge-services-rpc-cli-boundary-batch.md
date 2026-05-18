@@ -265,12 +265,22 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 
 ### Task 5: Worker `search-runtime-cli-boundary`
 
-- [ ] Create an independent worker worktree/branch.
-- [ ] Write RED boundary tests for search runtime/provider/RPC/CLI ownership.
-- [ ] Run the worker RED command and record the expected failure.
-- [ ] Implement one behavior-compatible search boundary move.
-- [ ] Run worker focused tests and touched-file ruff.
-- [ ] Commit with the required co-author trailer.
+- [x] Create an independent worker worktree/branch.
+  - Evidence: verified `pwd` as `/Users/cwan0785/opensquilla-refactor-agent-search-runtime-cli` and branch as `codex/refactor-search-runtime-cli-boundary-batch`.
+- [x] Write RED boundary tests for search runtime/provider/RPC/CLI ownership.
+  - Evidence: added `tests/test_search/test_search_runtime_boundary.py::test_search_rpc_payload_boundary_owns_request_and_wire_shape` requiring `opensquilla.search.rpc_payload` to own RPC request/wire helpers.
+- [x] Run the worker RED command and record the expected failure.
+  - RED command: `uv run --extra dev pytest tests/test_search/test_search_runtime_boundary.py -q`
+  - Expected failure: `SEARCH_RPC_PAYLOAD.exists()` was false and `src/opensquilla/gateway/rpc_search.py` still imported RPC payload helpers from `opensquilla.search.execution`.
+- [x] Implement one behavior-compatible search boundary move.
+  - Evidence: created `src/opensquilla/search/rpc_payload.py` for search provider/status/query RPC request parsing and wire payload shaping; kept provider execution and fallback behavior in `src/opensquilla/search/execution.py`; preserved compatibility re-exports from `opensquilla.search.execution`.
+- [x] Run worker focused tests and touched-file ruff.
+  - GREEN command: `uv run --extra dev pytest tests/test_search tests/test_cli/test_search_cmd.py tests/test_onboarding/test_search_specs.py tests/test_skill_multi_search_engine.py -q`
+  - GREEN result: `30 passed in 0.69s`.
+  - Ruff command: `uv run --extra dev ruff check src/opensquilla/search src/opensquilla/gateway/rpc_search.py src/opensquilla/cli/search_cmd.py src/opensquilla/cli/search_gateway_queries.py src/opensquilla/cli/search_workflows.py src/opensquilla/cli/search_presenters.py tests/test_search tests/test_cli/test_search_cmd.py tests/test_onboarding/test_search_specs.py tests/test_skill_multi_search_engine.py`
+  - Ruff result: `All checks passed!`.
+- [x] Commit with the required co-author trailer.
+  - Evidence: worker branch HEAD includes the search boundary refactor commit with `Co-authored-by: Codex <noreply@openai.com>`.
 
 ### Task 6: Main Integration Review
 
@@ -319,8 +329,13 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 ## Completion Record
 
 - Worker commits:
+  - `search-runtime-cli-boundary`: branch HEAD on `codex/refactor-search-runtime-cli-boundary-batch`; final worker handoff reports the exact hash.
 - Child integration commits:
 - Integration merge:
 - Verification evidence:
+  - `search-runtime-cli-boundary` RED: `uv run --extra dev pytest tests/test_search/test_search_runtime_boundary.py -q` failed as expected because the new `search.rpc_payload` boundary did not exist and `rpc_search.py` still imported from `search.execution`.
+  - `search-runtime-cli-boundary` GREEN: `uv run --extra dev pytest tests/test_search tests/test_cli/test_search_cmd.py tests/test_onboarding/test_search_specs.py tests/test_skill_multi_search_engine.py -q` -> `30 passed in 0.69s`.
+  - `search-runtime-cli-boundary` ruff: touched-file command above -> `All checks passed!`.
 - Residual risk:
+  - `search-runtime-cli-boundary`: only focused search/CLI/onboarding/multi-search coverage run in this worker; full child and integration gates remain with the main integration thread.
 - Next recommended slice:

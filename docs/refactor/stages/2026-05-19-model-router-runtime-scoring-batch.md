@@ -254,7 +254,7 @@ Co-authored-by: Codex <noreply@openai.com>
 - [x] Merge child into integration with `git merge --no-ff`.
 - [x] Run `scripts/refactor_gate.sh` in integration.
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`, run
+- [x] Remove `../opensquilla-refactor-active`, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
 
@@ -304,6 +304,7 @@ Co-authored-by: Codex <noreply@openai.com>
 
 - Child commit: `645c998` (`Refactor model router runtime scoring boundaries`)
 - Integration merge: `0e87da7` (`Merge model router runtime scoring batch`)
+- Integration gate record: `31abce8` (`Record model router runtime scoring integration gate`)
 - Verification evidence:
   - Baseline before edits:
     `91 passed, 2 skipped` for router/pricing/history/runtime focused suite.
@@ -346,3 +347,9 @@ Co-authored-by: Codex <noreply@openai.com>
     `session/subagent_routing.py`, `scheduler/routing.py`, and
     `gateway/routing.py`, or move to the next provider/session boundary if that
     has clearer ownership.
+- Cleanup:
+  - Removed `../opensquilla-refactor-active`.
+  - Ran `git worktree prune`.
+  - Deleted merged child branch `codex/refactor-model-router-runtime-scoring-batch`.
+  - Verified `ls -d /Users/cwan0785/opensquilla-refactor-*` lists only
+    `/Users/cwan0785/opensquilla-refactor-integration`.

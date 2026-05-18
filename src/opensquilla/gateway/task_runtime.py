@@ -29,12 +29,15 @@ from typing import Any, cast
 import structlog
 
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
+from opensquilla.gateway.task_runtime_execution import (
+    TaskRuntimeExecutionCallbacks,
+    execute_task_lifecycle,
+)
 from opensquilla.gateway.task_runtime_records import (
     EventEmitter,
     TaskHandle,
     TaskHandler,
     TaskQueueFullError,
-    TaskRun,
     TaskStreamEventSink,
     TerminalListener,
 )
@@ -484,95 +487,15 @@ class TaskRuntime:
     async def _execute(self, task: _RuntimeTask) -> None:
         session_key = task.envelope.session_key
         lock = self._session_locks.setdefault(session_key, asyncio.Lock())
-        try:
-            async with lock:
-                # Signal to TurnRunner.run() that this Task already holds the
-                # session lock so run() can skip re-acquisition without using
-                # lock.locked() (which cannot distinguish owners across tasks).
-                from opensquilla.engine.runtime import _SESSION_LOCK_OWNER
-
-                _current_task = asyncio.current_task()
-                _prev_map = _SESSION_LOCK_OWNER.get(None)
-                _new_map: dict[int, Any] = dict(_prev_map or {})
-                if _current_task is not None:
-                    _new_map[id(lock)] = _current_task
-                _owner_token = _SESSION_LOCK_OWNER.set(_new_map)
-                try:
-                    if task.cancel_requested:
-                        _emit_metric(
-                            "turn_cancellations_total",
-                            value=1,
-                            reason="user_cancel",
-                            session_key=task.envelope.session_key,
-                        )
-                        await self._mark_terminal(
-                            task,
-                            AgentTaskStatus.CANCELLED,
-                            terminal_reason="cancelled_before_start",
-                        )
-                        return
-                    await self._wait_for_subagent_slot(task)
-                    acquired = False
-                    try:
-                        await self._acquire_fair_slot(task)
-                        acquired = True
-                        run = TaskRun(
-                            task_id=task.task_id,
-                            envelope=task.envelope,
-                            message=task.message,
-                            attachments=task.attachments,
-                            queue_mode=task.queue_mode,
-                            run_kind=task.run_kind,
-                            no_memory_capture=task.no_memory_capture,
-                            ingress_pipeline_steps=task.ingress_pipeline_steps,
-                            semantic_message=task.semantic_message,
-                            stream_event_sink=task.stream_event_sink,
-                        )
-                        await self._turn_handler(run)
-                        await self._mark_terminal(
-                            task,
-                            AgentTaskStatus.SUCCEEDED,
-                            terminal_reason="completed",
-                        )
-                    finally:
-                        if acquired:
-                            await self._release_slot(task)
-                finally:
-                    _SESSION_LOCK_OWNER.reset(_owner_token)
-        except asyncio.CancelledError:
-            _emit_metric(
-                "turn_cancellations_total",
-                value=1,
-                reason="interrupt",
-                session_key=task.envelope.session_key,
-            )
-            await self._mark_terminal(
-                task,
-                AgentTaskStatus.CANCELLED,
-                terminal_reason="cancelled",
-            )
-        except TimeoutError as exc:
-            _emit_metric(
-                "turn_cancellations_total",
-                value=1,
-                reason="timeout",
-                session_key=task.envelope.session_key,
-            )
-            await self._mark_terminal(
-                task,
-                AgentTaskStatus.TIMEOUT,
-                terminal_reason="timeout",
-                error_class=type(exc).__name__,
-                error_message=str(exc),
-            )
-        except Exception as exc:  # noqa: BLE001 - runtime ledger records the class.
-            await self._mark_terminal(
-                task,
-                AgentTaskStatus.FAILED,
-                terminal_reason="error",
-                error_class=type(exc).__name__,
-                error_message=str(exc),
-            )
+        callbacks = TaskRuntimeExecutionCallbacks(
+            wait_for_subagent_slot=self._wait_for_subagent_slot,
+            acquire_fair_slot=self._acquire_fair_slot,
+            release_slot=self._release_slot,
+            mark_terminal=self._mark_terminal,
+            turn_handler=self._turn_handler,
+            emit_metric=_emit_metric,
+        )
+        await execute_task_lifecycle(task=task, session_lock=lock, callbacks=callbacks)
 
     async def _acquire_fair_slot(self, task: _RuntimeTask) -> None:
         await self._scheduler.acquire_fair_slot(

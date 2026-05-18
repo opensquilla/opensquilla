@@ -121,15 +121,15 @@ Move Gateway provider selector construction and sync materialization into the ex
 - [x] Implement the smallest behavior-compatible boundary move.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -155,8 +155,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `eb7df2f`
+- Integration merge: `aab5643`
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-gateway-provider-runtime-boundary` passed on branch `codex/refactor-gateway-provider-runtime-boundary` at `827c41d`.
   - Red: `uv run --extra dev pytest tests/test_gateway/test_provider_runtime_sync_boundary.py tests/test_gateway/test_boot_provider_env.py tests/test_gateway/test_rpc_onboarding.py::test_provider_configure_syncs_env_key_to_provider_selector -q` failed as expected with an import error because `build_provider_selector_from_runtime` did not exist in `gateway/provider_runtime_sync.py`.
@@ -165,6 +165,9 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/gateway/boot.py src/opensquilla/gateway/provider_runtime_sync.py src/opensquilla/gateway/rpc_onboarding.py tests/test_gateway/test_provider_runtime_sync_boundary.py` passed after ruff normalized the new test import block.
   - Whitespace: `git diff --check` passed.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 490 source files; whitespace passed; pytest passed with `2411 passed, 8 skipped, 2 warnings in 53.01s`; gateway smoke start/status/stop passed on `127.0.0.1:62762`.
+  - Integration preflight: `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `827c41d`.
+  - Integration merge: `git merge --no-ff codex/refactor-gateway-provider-runtime-boundary` produced merge commit `aab5643`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 490 source files; whitespace passed; pytest passed with `2413 passed, 6 skipped, 2 warnings in 27.02s`; gateway smoke start/status/stop passed on `127.0.0.1:62928`.
 - Residual risk:
   - Low. This slice moves provider selector materialization to an existing Gateway boundary; effective runtime resolution, provider selector behavior, provider backends, RPC method names, and persisted config semantics remain unchanged and are covered by focused onboarding/boot tests plus the full gate.
 - Next recommended slice:

@@ -136,15 +136,15 @@ Separate Gateway session management service behavior from RPC adapter modules wi
 - [x] Implement the smallest behavior-compatible service boundary move.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -170,8 +170,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `66df5e94d8a5c1b418f6c4a167908ff6fe77e852`.
+- Integration merge: `bad75c335c742d3d6ba037e99b45c1bd3ac1a1e4`.
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-gateway-session-management-service-boundary` passed on branch `codex/refactor-gateway-session-management-service-boundary` at `3cbdf28`.
   - Red: `uv run --extra dev pytest tests/test_gateway/test_session_management_service_boundary.py tests/test_gateway/test_rpc_sessions.py::TestSessionsCreate tests/test_gateway/test_rpc_sessions.py::TestSessionsPatch tests/test_gateway/test_rpc_sessions.py::TestSessionsSend::test_send_uses_agent_registry_model_when_session_model_missing -q` failed as expected with `2 failed, 17 passed in 2.93s`; failures showed `session_management_service.py` was missing and `rpc_session_send.py` still imported from the RPC management module.
@@ -181,6 +181,7 @@ Co-authored-by: Codex <noreply@openai.com>
   - Release hygiene spot check: `uv run --extra dev pytest tests/test_public_release_hygiene.py::test_tracked_public_files_do_not_contain_real_secret_shapes_or_local_paths -q` passed with `1 passed in 0.32s`.
   - Whitespace: `git diff --check` passed.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 505 source files; whitespace passed; pytest passed with `2441 passed, 8 skipped, 2 warnings in 48.90s`; gateway smoke start/status/stop passed on port `50806`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 505 source files; whitespace passed; pytest passed with `2443 passed, 6 skipped, 2 warnings in 26.90s`; gateway smoke start/status/stop passed on port `50944`.
 - Residual risk:
   - Low. This slice only moves existing create/patch/model-default behavior behind a service module and keeps RPC method registration, payload builders, registry fail-open behavior, and send model-selection tests green.
 - Next recommended slice:

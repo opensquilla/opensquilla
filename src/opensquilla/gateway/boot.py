@@ -224,7 +224,7 @@ class ServiceContainer:
 
     WARNING: build_services() mutates module-level state:
     - provider.image_generation_runtime (configure_image_generation)
-    - memory.runtime (configure_memory_tools_runtime via create_memory_tools)
+    - memory.runtime (configure_memory_tools_runtime via memory.gateway_runtime)
     - skills.runtime
       (create_configured_skill_loader + configure_skill_loader via create_skill_tools)
     - tools.services (configure_tool_services)
@@ -1140,41 +1140,21 @@ async def build_services(
     memory_watchers: list[Any] = []
     _turn_runner_ref: list = []
     try:
-        from opensquilla.memory.manager import build_memory_managers
-        from opensquilla.tools.builtin.memory_tools import create_memory_tools
+        from opensquilla.memory.gateway_runtime import build_memory_gateway_runtime
 
         agent_ids = _configured_agent_ids(config, extra_agent_ids)
-        memory_managers = await build_memory_managers(config, agent_ids)
-
-        # Derive legacy per-tier views from the managers. These remain in
-        # `ServiceContainer` until Step 1B migrates downstream consumers
-        # (TurnRunner, CLI, memory_tools) onto `memory_managers` directly.
-        memory_stores = {aid: m.store for aid, m in memory_managers.items()}
-        memory_retrievers = {aid: m.retriever for aid, m in memory_managers.items()}
-        memory_sync_managers = {aid: m.sync_manager for aid, m in memory_managers.items()}
-        turn_capture_services = {aid: m.turn_capture for aid, m in memory_managers.items()}
-        memory_watchers = [m.sync_manager for m in memory_managers.values()]
-
-        # Deferred callback: TurnRunner doesn't exist yet, so we capture a
-        # mutable list ref that start_gateway_server() will populate later.
-        def _on_memory_write(agent_id: str) -> None:
-            if _turn_runner_ref:
-                _turn_runner_ref[0].refresh_memory_snapshot(agent_id)
-
-        if memory_stores and memory_retrievers:
-            create_memory_tools(
-                stores=memory_stores,
-                retrievers=memory_retrievers,
-                memory_base=config.state_dir,
-                registry=tool_registry,
-                memory_source=getattr(config.memory, "source", "state"),
-                on_memory_write=_on_memory_write,
-                memory_config=config.memory,
-                workspace_base=config.workspace_dir
-                if getattr(config.memory, "source", "state") == "workspace"
-                else None,
-            )
-            log.info("build_services.memory_tools_registered", agents=list(memory_stores))
+        memory_runtime = await build_memory_gateway_runtime(
+            config=config,
+            tool_registry=tool_registry,
+            agent_ids=agent_ids,
+            turn_runner_ref=_turn_runner_ref,
+        )
+        memory_managers = memory_runtime.memory_managers
+        memory_stores = memory_runtime.memory_stores
+        memory_retrievers = memory_runtime.memory_retrievers
+        memory_sync_managers = memory_runtime.memory_sync_managers
+        turn_capture_services = memory_runtime.turn_capture_services
+        memory_watchers = memory_runtime.memory_watchers
     except Exception as e:
         log.warning("build_services.memory_tools_failed", error=str(e))
 

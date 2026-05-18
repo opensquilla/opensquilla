@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import builtins
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,9 @@ from opensquilla.onboarding.mutations import upsert_channel
 from opensquilla.scheduler.types import CronJob, JobStatus
 from opensquilla.tools.registry import ToolRegistry
 
+ROOT = Path(__file__).resolve().parents[2]
+BOOT = ROOT / "src/opensquilla/gateway/boot.py"
+
 
 class _FakeDreamScheduler:
     def __init__(self, jobs: list[CronJob] | None = None) -> None:
@@ -43,6 +47,33 @@ class _FakeDreamScheduler:
         for job in self.jobs:
             if job.id == job_id:
                 job.status = JobStatus.PAUSED
+
+
+def _imports_from(path: Path) -> set[tuple[str, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {
+        (node.module, alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+
+
+def test_gateway_boot_delegates_memory_runtime_to_memory_boundary() -> None:
+    imports = _imports_from(BOOT)
+
+    assert (
+        "opensquilla.memory.gateway_runtime",
+        "build_memory_gateway_runtime",
+    ) in imports
+    assert (
+        "opensquilla.tools.builtin.memory_tools",
+        "create_memory_tools",
+    ) not in imports
+    assert (
+        "opensquilla.memory.manager",
+        "build_memory_managers",
+    ) not in imports
 
 
 def test_build_turn_runner_from_services_wires_memory_services(
@@ -389,6 +420,91 @@ async def test_build_services_fails_fast_for_explicit_remote_memory_without_key(
 
     with pytest.raises(ValueError, match="memory.embedding.remote.api_key"):
         await build_services(config=config)
+
+
+@pytest.mark.asyncio
+async def test_build_services_memory_gateway_runtime_failure_is_fail_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warnings: list[dict[str, Any]] = []
+
+    async def fake_build_provider_runtime_services(
+        _config: GatewayConfig,
+        *,
+        provider_selector: Any,
+    ) -> Any:
+        return SimpleNamespace(
+            provider_selector=provider_selector or object(),
+            model_catalog=object(),
+        )
+
+    async def fail_memory_runtime(**_kwargs: Any) -> Any:
+        raise RuntimeError("memory runtime unavailable")
+
+    class FakeJobStore:
+        async def open(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    class FakeSchedulerEngine:
+        def __init__(self, *, store: Any, **_kwargs: Any) -> None:
+            self._store = store
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "opensquilla.sandbox.integration.configure_runtime",
+        lambda *args, **kwargs: SimpleNamespace(
+            effective=SimpleNamespace(as_dict=lambda: {})
+        ),
+    )
+    monkeypatch.setattr(
+        "opensquilla.gateway.provider_bootstrap.build_provider_runtime_services",
+        fake_build_provider_runtime_services,
+    )
+    monkeypatch.setattr(
+        "opensquilla.memory.gateway_runtime.build_memory_gateway_runtime",
+        fail_memory_runtime,
+    )
+    monkeypatch.setattr("opensquilla.scheduler.JobStore", lambda **_kwargs: FakeJobStore())
+    monkeypatch.setattr("opensquilla.scheduler.SchedulerEngine", FakeSchedulerEngine)
+    monkeypatch.setattr(
+        "opensquilla.gateway.boot.log.warning",
+        lambda event, **kwargs: warnings.append({"event": event, **kwargs}),
+    )
+
+    services = await build_services(
+        config=GatewayConfig(
+            state_dir=str(tmp_path / "state"),
+            workspace_dir=str(tmp_path / "workspace"),
+            channels={"channels": []},
+        ),
+        session_manager=SimpleNamespace(),
+        provider_selector=object(),
+        tool_registry=ToolRegistry(),
+        usage_tracker=object(),
+    )
+
+    try:
+        assert services.memory_managers == {}
+        assert services.memory_stores == {}
+        assert services.memory_retrievers == {}
+        assert services.memory_sync_managers == {}
+        assert services.turn_capture_services == {}
+        assert services.memory_watchers == []
+        assert {
+            "event": "build_services.memory_tools_failed",
+            "error": "memory runtime unavailable",
+        } in warnings
+    finally:
+        await services.close()
 
 
 def test_configured_agent_ids_include_enabled_registry_agents_and_channels() -> None:

@@ -10,9 +10,12 @@ from typing import Any
 import pytest
 
 from opensquilla.gateway.routing import tool_context_from_envelope
-from opensquilla.session.subagent_routing import build_subagent_route_envelope
+from opensquilla.session.subagent_routing import (
+    SubagentSourceKind,
+    build_subagent_route_envelope,
+)
 from opensquilla.tools.builtin import sessions as sessions_tool
-from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext, current_tool_context
 
 SESSIONS_TOOL = (
     Path(__file__).resolve().parents[2]
@@ -61,9 +64,44 @@ def test_session_subagent_envelope_maps_to_subagent_tool_context() -> None:
     ctx = tool_context_from_envelope(envelope)
 
     assert ctx.caller_kind is CallerKind.SUBAGENT
+    assert ctx.interaction_mode is InteractionMode.UNATTENDED
     assert ctx.session_key == "agent:worker:child"
     assert ctx.agent_id == "worker"
     assert ctx.subagent_depth == 1
+    assert ctx.source_kind == "subagent"
+    assert ctx.source_name == "subagent"
+
+
+def test_session_subagent_envelope_uses_neutral_route_contract() -> None:
+    envelope = build_subagent_route_envelope(
+        session_key="agent:worker:child",
+        parent_session_key="agent:main:parent",
+        agent_id="worker",
+        run_id="run-child",
+        parent_task_id="task-parent",
+        spawn_depth=2,
+        origin="test_spawn",
+    )
+
+    assert envelope.source_kind is SubagentSourceKind.SUBAGENT
+    assert envelope.source_kind.value == "subagent"
+    assert envelope.interaction_mode == "unattended"
+    assert envelope.metadata == {
+        "parent_session_key": "agent:main:parent",
+        "run_id": "run-child",
+        "parent_task_id": "task-parent",
+        "spawn_depth": 2,
+        "origin": "test_spawn",
+    }
+    assert envelope.input_provenance == {
+        "kind": "subagent_task",
+        "parent_session_key": "agent:main:parent",
+        "run_id": "run-child",
+        "parent_task_id": "task-parent",
+    }
+    assert envelope.channel_type == "subagent"
+    assert envelope.channel_name == "subagent"
+    assert envelope.channel_id == "run-child"
 
 
 @pytest.mark.asyncio

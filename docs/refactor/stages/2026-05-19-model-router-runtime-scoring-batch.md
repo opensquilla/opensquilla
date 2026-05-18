@@ -351,5 +351,5 @@ Co-authored-by: Codex <noreply@openai.com>
   - Removed `../opensquilla-refactor-active`.
   - Ran `git worktree prune`.
   - Deleted merged child branch `codex/refactor-model-router-runtime-scoring-batch`.
-  - Verified `ls -d /Users/cwan0785/opensquilla-refactor-*` lists only
-    `/Users/cwan0785/opensquilla-refactor-integration`.
+  - Verified the sibling `opensquilla-refactor-*` worktree listing contains only
+    the integration worktree.

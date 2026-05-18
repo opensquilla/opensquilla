@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from opensquilla.runtime import routing as runtime_routing
 from opensquilla.session.keys import normalize_agent_id, parse_agent_id
 from opensquilla.tools.policy import apply_tool_policy_layer
 from opensquilla.tools.types import (
@@ -59,16 +60,7 @@ class CronRouteEnvelope:
 
     def delivery_fields(self) -> dict[str, Any]:
         """Return session routing fields derived from the reply target."""
-        target = self.reply_target
-        if target is None or target.kind != "channel":
-            return {}
-        return {
-            "last_channel": target.channel_name,
-            "last_to": target.to,
-            "last_account_id": target.account_id,
-            "last_thread_id": target.thread_id,
-            "delivery_context": dict(self.delivery_context),
-        }
+        return runtime_routing.delivery_fields_from_route(self)
 
     def tool_context(
         self,
@@ -156,15 +148,12 @@ def tool_context_from_envelope(
     workspace_strict: bool = False,
 ) -> ToolContext:
     """Build the runtime ToolContext from a scheduler route envelope."""
-    interaction_mode = (
-        envelope.interaction_mode
-        if isinstance(envelope.interaction_mode, InteractionMode)
-        else InteractionMode(str(envelope.interaction_mode))
-    )
     ctx = ToolContext(
         is_owner=is_owner,
         caller_kind=CallerKind.CRON,
-        interaction_mode=interaction_mode,
+        interaction_mode=InteractionMode(
+            runtime_routing.interaction_mode_value(envelope.interaction_mode)
+        ),
         agent_id=envelope.agent_id,
         workspace_dir=workspace_dir,
         workspace_strict=workspace_strict,
@@ -172,7 +161,7 @@ def tool_context_from_envelope(
         channel_kind=envelope.channel_name or envelope.channel_type,
         channel_id=envelope.channel_id,
         sender_id=envelope.sender_id,
-        source_kind=envelope.source_kind.value,
+        source_kind=runtime_routing.source_kind_value(envelope.source_kind),
         source_name=envelope.source_name,
         allowed_tools=set(CRON_AGENT_ALLOW),
         denied_tools=set(CRON_AGENT_DENY),

@@ -36,7 +36,6 @@ from opensquilla.asyncio_utils import create_background_task
 from opensquilla.engine.usage import UsageTracker as _UsageTracker
 from opensquilla.gateway.app import create_gateway_app
 from opensquilla.gateway.config import GatewayConfig, is_public_bind
-from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
 from opensquilla.gateway.rpc import get_dispatcher
 from opensquilla.gateway.session_services import get_session_storage
 from opensquilla.gateway.session_streams import get_session_streams
@@ -1118,77 +1117,21 @@ async def build_services(
         agent_registry=agent_registry,
     )
 
-    # ── Provider selector ───────────────────────────────────────────
-    llm_runtime = resolve_llm_runtime_config(config)
-    api_key = llm_runtime.api_key
-    resolved_base = llm_runtime.base_url
-    proxy = llm_runtime.proxy
-    if provider_selector is None:
-        if api_key:
-            from opensquilla.gateway.provider_runtime_sync import (
-                build_provider_selector_from_runtime,
-            )
+    # ── Provider runtime ────────────────────────────────────────────
+    from opensquilla.gateway.provider_bootstrap import build_provider_runtime_services
 
-            if resolved_base.endswith("/v1"):
-                resolved_base = resolved_base[:-3]
-            provider_selector = build_provider_selector_from_runtime(
-                llm_runtime,
-                base_url=resolved_base,
-            )
-            log.info(
-                "build_services.provider_ready",
-                provider=llm_runtime.provider,
-                model=llm_runtime.model,
-            )
-
-    # ── Model catalog (boot order: after provider selector) ──────────
-    # Keep a catalog for every provider so direct-provider runtime paths still
-    # get static fallback capabilities (for example DeepSeek v4 thinking
-    # replay) even when only OpenRouter performs a remote model-list fetch.
-    from opensquilla.provider.model_catalog import ModelCatalog
-
-    model_catalog = ModelCatalog()
-    if api_key and config.llm.provider == "openrouter":
-        try:
-            await asyncio.wait_for(
-                model_catalog.fetch_openrouter(api_key, resolved_base, proxy),
-                timeout=5.0,
-            )
-            log.info("build_services.model_catalog_ready", count=len(model_catalog))
-        except Exception as e:
-            log.warning("build_services.model_catalog_failed", error=str(e))
-
-        try:
-            from opensquilla.engine.pricing import refresh_live_prices
-
-            pricing_models = {str(config.llm.model)} if config.llm.model else set()
-            router_cfg = getattr(config, "squilla_router", None)
-            if router_cfg is not None:
-                for tier_cfg in getattr(router_cfg, "tiers", {}).values():
-                    model_id = tier_cfg.get("model") if isinstance(tier_cfg, dict) else None
-                    if model_id:
-                        pricing_models.add(str(model_id))
-            await asyncio.to_thread(
-                refresh_live_prices,
-                pricing_models,
-                f"{resolved_base.rstrip('/')}/v1",
-            )
-            log.info("build_services.pricing_cache_ready", count=len(pricing_models))
-        except Exception as e:
-            log.warning("build_services.pricing_cache_failed", error=str(e))
+    provider_runtime_services = await build_provider_runtime_services(
+        config,
+        provider_selector=provider_selector,
+    )
+    provider_selector = provider_runtime_services.provider_selector
+    model_catalog = provider_runtime_services.model_catalog
 
     # ── Tool registry ───────────────────────────────────────────────
     if tool_registry is None:
         from opensquilla.tools.registry import get_default_registry
 
         tool_registry = get_default_registry()
-
-    try:
-        from opensquilla.provider.image_generation_runtime import configure_image_generation
-
-        configure_image_generation(config.image_generation, llm_config=config.llm)
-    except Exception as e:
-        log.warning("build_services.image_generation_config_failed", error=str(e))
 
     # ── Memory tools (boot order 18) — per-agent stores ──────────────
     # Pre-bind to empty defaults so the ServiceContainer init below and

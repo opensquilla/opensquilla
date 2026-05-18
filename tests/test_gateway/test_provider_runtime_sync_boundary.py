@@ -14,6 +14,7 @@ GATEWAY = ROOT / "src/opensquilla/gateway"
 BOOT = GATEWAY / "boot.py"
 RPC_ONBOARDING = GATEWAY / "rpc_onboarding.py"
 PROVIDER_RUNTIME_SYNC = GATEWAY / "provider_runtime_sync.py"
+PROVIDER_BOOTSTRAP = GATEWAY / "provider_bootstrap.py"
 
 
 class _CapturingSelector:
@@ -47,6 +48,8 @@ def test_provider_runtime_sync_owns_gateway_selector_materialization() -> None:
     boot_imports = _imports_from(BOOT)
     onboarding_imports = _imports_from(RPC_ONBOARDING)
     boundary_imports = _imports_from(PROVIDER_RUNTIME_SYNC)
+    assert PROVIDER_BOOTSTRAP.exists()
+    bootstrap_imports = _imports_from(PROVIDER_BOOTSTRAP)
 
     provider_config_symbols = {
         ("opensquilla.provider.selector", "ProviderConfig"),
@@ -63,14 +66,18 @@ def test_provider_runtime_sync_owns_gateway_selector_materialization() -> None:
         onboarding_imports
     )
     assert (
-        "opensquilla.gateway.provider_runtime_sync",
-        "build_provider_selector_from_runtime",
+        "opensquilla.gateway.provider_bootstrap",
+        "build_provider_runtime_services",
     ) in boot_imports
     assert (
         "opensquilla.gateway.provider_runtime_sync",
         "sync_provider_selector",
     ) in onboarding_imports
     assert provider_selector_symbols <= boundary_imports
+    assert (
+        "opensquilla.gateway.provider_runtime_sync",
+        "build_provider_selector_from_runtime",
+    ) in bootstrap_imports
     assert "build_provider_selector_from_runtime" in _function_names(
         PROVIDER_RUNTIME_SYNC
     )

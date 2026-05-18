@@ -141,15 +141,15 @@ Separate runtime capability detection and runtime denylist resolution from decla
 - [x] Implement the smallest behavior-compatible runtime-surface boundary move.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -175,8 +175,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `5a40af702f6efbe475afa353b2757eb45925f032` (`5a40af7`, `Extract tool policy runtime surface boundary`).
+- Integration merge: `b7b157d5d385389f16170fd16be963014860b7df` (`b7b157d`, `Merge tools policy runtime surface boundary`).
 - Verification evidence:
 - Red: `uv run --extra dev pytest tests/test_tools/test_policy_runtime_boundary.py -q` failed as expected during collection with `ModuleNotFoundError: No module named 'opensquilla.tools.policy_runtime'`.
 - Focused green: `uv run --extra dev pytest tests/test_tools/test_policy_runtime_boundary.py tests/test_tools/test_policy_agents.py tests/test_tools/test_registry_visibility.py tests/test_gateway/test_routing_interaction_mode.py tests/test_provider_image_generation_runtime_boundary.py -q` passed with `29 passed in 0.56s`.
@@ -186,5 +186,8 @@ Co-authored-by: Codex <noreply@openai.com>
 - Architecture import contract spot check: `uv run --extra dev pytest tests/test_ci/test_architecture_import_contracts.py::test_package_imports_do_not_add_new_edges tests/test_tools/test_policy_runtime_boundary.py tests/test_provider_image_generation_runtime_boundary.py::test_gateway_reads_image_generation_capability_from_runtime_boundary -q` passed with `6 passed in 0.91s`.
 - Whitespace: `git diff --check` passed.
 - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 509 source files; whitespace passed; pytest passed with `2454 passed, 8 skipped, 2 warnings in 46.19s`; gateway smoke start/status/stop passed on port `53619`.
-- Residual risk:
-- Next recommended slice:
+- Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed at `b7b157d`.
+- Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 509 source files; whitespace passed; pytest passed with `2456 passed, 6 skipped, 2 warnings in 26.23s`; gateway smoke start/status/stop passed on port `53917`.
+- Directory hygiene target: remove `../opensquilla-refactor-active` after this record commit, then run `git worktree prune` and verify no extra `opensquilla-refactor-*` worktrees remain beyond integration.
+- Residual risk: compatibility imports from `opensquilla.tools.policy` are intentionally preserved, so future slices should avoid removing them until public release checks and downstream import audits explicitly allow it.
+- Next recommended slice: extract the remaining tool dispatch/execution service boundary at module scale, covering builtin tool loading, dispatch envelopes, sandbox hints, and filesystem/media gateway tests in one larger slice instead of another tiny symbol move.

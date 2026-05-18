@@ -164,6 +164,86 @@ async def test_failing_step_cancels_sibling() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failure_closes_sibling_brackets() -> None:
+    """Every yielded ToolUseStart for a meta-step has a matching ToolResult.
+
+    Concretely: when two siblings A/B both emit ToolUseStartEvents and A
+    fails while B is still sleeping, the orchestrator must emit a
+    ToolResultEvent for B carrying ``is_error=True`` and a "cancelled"
+    message so the WebUI does not leak an open in-progress card.
+    """
+    spec = _meta_spec(
+        [
+            {"id": "a", "skill": "skill_a", "with": {}},
+            {"id": "b", "skill": "skill_b", "with": {}},
+        ],
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+
+    b_running = asyncio.Event()
+
+    async def runner(system_prompt: str, _u: str) -> AsyncIterator[AgentEvent]:
+        if "SKILL_A" in system_prompt:
+            # Make sure B has emitted its ToolUseStart before A fails — we
+            # want to exercise the path where the outer loop yielded both
+            # starts already.
+            await asyncio.wait_for(b_running.wait(), timeout=2.0)
+            raise RuntimeError("a blew up mid-flight")
+        # B emits a TextDelta (forces _run_one to enter the streaming
+        # body so its ToolUseStart has been pushed) then signals A and
+        # sleeps. The sleep is interruptible so cancellation lands.
+        yield TextDeltaEvent(text="b: starting")
+        b_running.set()
+        try:
+            await asyncio.sleep(5.0)
+        except asyncio.CancelledError:
+            raise
+        yield TextDeltaEvent(text="b: should not arrive")
+        yield DoneEvent(text="")
+
+    orch = MetaOrchestrator(
+        agent_runner=runner,
+        skill_loader=_FakeLoader([_skill("skill_a"), _skill("skill_b")]),
+    )
+
+    starts: dict[str, ToolUseStartEvent] = {}
+    results: dict[str, ToolResultEvent] = {}
+    final: MetaResult | None = None
+    async for ev in orch.iter_events(MetaMatch(plan=plan, inputs={})):
+        if isinstance(ev, MetaResult):
+            final = ev
+        elif isinstance(ev, ToolUseStartEvent) and ev.tool_name.startswith(
+            "meta-step:",
+        ):
+            starts[ev.tool_use_id] = ev
+        elif isinstance(ev, ToolResultEvent) and ev.tool_name.startswith(
+            "meta-step:",
+        ):
+            # Keep the FIRST result we see per id — a real ToolResult
+            # from the failing task should not be overwritten by a
+            # synthetic one (and the orchestrator should not emit two
+            # results for the same start anyway).
+            results.setdefault(ev.tool_use_id, ev)
+
+    assert final is not None and final.ok is False
+    # Close-bracket invariant: every start has a matching result with
+    # the same tool_use_id.
+    assert set(starts.keys()) == set(results.keys()), (
+        f"unbalanced brackets: starts={set(starts.keys())} "
+        f"results={set(results.keys())}"
+    )
+    # Both meta-step:a and meta-step:b must be present.
+    assert "meta_step_a" in starts
+    assert "meta_step_b" in starts
+
+    # Sibling B (cancelled) must carry is_error=True and a "cancelled" hint.
+    b_result = results["meta_step_b"]
+    assert b_result.is_error is True
+    assert "cancel" in str(b_result.result).lower()
+
+
+@pytest.mark.asyncio
 async def test_linear_dag_event_order_preserved() -> None:
     """A→B→C chain keeps deterministic event ordering."""
     spec = _meta_spec(

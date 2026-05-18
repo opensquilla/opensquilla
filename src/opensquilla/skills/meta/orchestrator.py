@@ -1,9 +1,12 @@
-"""MetaOrchestrator — run a MetaPlan as a sequence of one-shot sub-Agents.
+"""MetaOrchestrator — run a MetaPlan as a fleet of one-shot sub-Agents.
 
-MVP semantics
--------------
-* Steps execute in topological order; the MVP does NOT exploit parallelism
-  even when the DAG allows it (future M7).
+Scheduler semantics
+-------------------
+* Steps run on a DAG-parallel scheduler (M7): every step whose
+  ``depends_on`` set has been satisfied is dispatched concurrently as its
+  own ``asyncio.Task``. Events from sibling tasks interleave in arrival
+  order, but per-step ordering is preserved
+  (``ToolUseStartEvent → [skill_view + nested events] → ToolResultEvent``).
 * Each step gets its own sub-Agent: same provider, same tool surface as the
   parent turn, but with the composed Skill's body as the system prompt.
 * ``with_args`` is rendered via a tiny restricted Jinja environment
@@ -12,14 +15,19 @@ MVP semantics
 * The sub-Agent's ``TextDeltaEvent`` payloads are concatenated; the final
   assistant text becomes the step's output and is available to downstream
   steps as ``outputs.<step_id>``.
-* Any exception during a step short-circuits with ``MetaResult.ok=False``
-  and the caller (``TurnRunner``) is expected to fall back to a normal
-  turn with ``fallback_body`` + ``step_outputs`` injected as context.
+* Any exception during a step short-circuits the whole plan: in-flight
+  sibling tasks are cancelled, synthetic ``ToolResultEvent`` close-bracket
+  frames are emitted for every step whose ``ToolUseStartEvent`` was already
+  forwarded (so the UI never sees a dangling in-progress card), and one
+  terminal ``MetaResult(ok=False)`` is yielded. ``TurnRunner`` is expected
+  to fall back to a normal turn with ``fallback_body`` + ``step_outputs``
+  injected as context.
 
-What the MVP intentionally skips (see docs/proposals/meta-skills/MECHANISM.md
-§20 for the future work): input-side taint provenance, sub-turn sandbox
-narrowing, large_outputs/artifact_ref, retries, when conditions, parallel
-batches, persistence to ``meta_skill_runs``, separate operator WS channel.
+What the orchestrator intentionally skips (see
+docs/proposals/meta-skills/MECHANISM.md §20 for the future work):
+input-side taint provenance, sub-turn sandbox narrowing,
+large_outputs/artifact_ref, retries, when conditions, persistence to
+``meta_skill_runs``, separate operator WS channel.
 """
 
 from __future__ import annotations
@@ -495,6 +503,23 @@ class MetaOrchestrator:
 
         failure: Exception | None = None
         failed_step_id: str | None = None
+        # Step IDs whose ToolUseStartEvent we have already forwarded to the
+        # caller but whose matching ToolResultEvent has not yet been yielded.
+        # On failure we use this set to emit synthetic close-bracket frames
+        # for every still-open step, so the UI never sees a dangling
+        # in-progress tool-call card.
+        seen_starts: set[str] = set()
+
+        def _track_yielded(ev: AgentEvent, sid: str) -> None:
+            if isinstance(ev, ToolUseStartEvent) and ev.tool_name.startswith(
+                "meta-step:",
+            ):
+                seen_starts.add(sid)
+            elif isinstance(ev, ToolResultEvent) and ev.tool_name.startswith(
+                "meta-step:",
+            ):
+                seen_starts.discard(sid)
+
         try:
             while running or not event_queue.empty():
                 step_id, item = await event_queue.get()
@@ -509,25 +534,67 @@ class MetaOrchestrator:
                 if isinstance(item, Exception):
                     failure = item
                     failed_step_id = step_id
+                    seen_starts.discard(step_id)  # failed step's result already yielded
                     running.pop(step_id, None)
                     for tid, t in list(running.items()):
                         if not t.done():
                             t.cancel()
-                    # Drain remaining queue events so any in-flight
-                    # cancellation paths can publish their final
-                    # ToolResult or get awaited cleanly below.
                     break
                 if isinstance(item, MetaResult):
                     # Defensive — _run_one never publishes MetaResult.
                     continue
+                if isinstance(item, AgentEvent):
+                    _track_yielded(item, step_id)
                 yield item
-        finally:
+        except BaseException:
+            # Generator was closed early (GeneratorExit / task cancellation)
+            # or an unexpected error bubbled out of the loop body. Clean up
+            # any in-flight sibling tasks so we don't leak them. We
+            # intentionally do NOT emit synthetic close-brackets here — the
+            # consumer is no longer listening.
             for t in running.values():
                 if not t.done():
                     t.cancel()
             for t in running.values():
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
+            raise
+
+        # On failure: cancelled siblings may have published real
+        # ToolResultEvent close-brackets to the queue just before their
+        # cancellation took effect. Drain non-blockingly and forward any
+        # such results so the UI sees the authentic outcome rather than a
+        # synthetic placeholder. Anything still un-closed afterwards gets
+        # a synthetic cancellation frame so the UI always sees a balanced
+        # ToolUseStart/ToolResult pair per step.
+        if failure is not None:
+            for t in running.values():
+                if not t.done():
+                    t.cancel()
+            for t in running.values():
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await t
+            while not event_queue.empty():
+                try:
+                    step_id, item = event_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if isinstance(item, ToolResultEvent) and item.tool_name.startswith(
+                    "meta-step:",
+                ):
+                    _track_yielded(item, step_id)
+                    yield item
+            for orphan_id in sorted(seen_starts):
+                yield ToolResultEvent(
+                    tool_use_id=f"meta_step_{orphan_id}",
+                    tool_name=f"meta-step:{orphan_id}",
+                    result="cancelled due to sibling step failure",
+                    is_error=True,
+                    arguments={
+                        "step": orphan_id,
+                        "cancelled_by": failed_step_id,
+                    },
+                )
 
         if failure is not None:
             yield MetaResult(

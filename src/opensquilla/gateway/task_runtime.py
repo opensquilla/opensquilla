@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any, cast
 
 import structlog
@@ -31,6 +31,7 @@ import structlog
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
 from opensquilla.gateway.task_runtime_records import (
     EventEmitter,
+    RuntimeTask as _RuntimeTask,
     TaskHandle,
     TaskHandler,
     TaskQueueFullError,
@@ -38,12 +39,13 @@ from opensquilla.gateway.task_runtime_records import (
     TaskStreamEventSink,
     TerminalListener,
 )
-from opensquilla.gateway.task_runtime_records import (
-    RuntimeTask as _RuntimeTask,
+from opensquilla.gateway.task_runtime_terminal import (
+    SubagentCompletionEvent,
+    build_task_terminal_payload,
+    notify_subagent_terminal,
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
 from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus
-from opensquilla.session.terminal_reply import build_terminal_reply
 
 log = structlog.get_logger(__name__)
 
@@ -76,40 +78,6 @@ TERMINAL_STATUSES = frozenset(
     }
 )
 
-@dataclass(frozen=True)
-class SubagentCompletionEvent:
-    """Terminal event for a runtime-backed subagent task."""
-
-    parent_session_key: str
-    child_session_key: str
-    task_id: str
-    status: AgentTaskStatus
-    terminal_reason: str
-    agent_id: str | None = None
-    parent_task_id: str | None = None
-    error_class: str | None = None
-    error_message: str | None = None
-
-    def to_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "type": "subagent_completion",
-            "parent_session_key": self.parent_session_key,
-            "child_session_key": self.child_session_key,
-            "task_id": self.task_id,
-            "status": self.status.value,
-            "terminal_reason": self.terminal_reason,
-        }
-        if self.agent_id:
-            payload["agent_id"] = self.agent_id
-        if self.parent_task_id:
-            payload["parent_task_id"] = self.parent_task_id
-        if self.error_class:
-            payload["error_class"] = self.error_class
-        if self.error_message:
-            payload["error_message"] = self.error_message
-        if self.status != AgentTaskStatus.SUCCEEDED:
-            payload["terminal_message"] = build_terminal_reply(payload)
-        return payload
 
 class TaskRuntime:
     """Serialize same-session turns while allowing cross-session concurrency.
@@ -788,25 +756,27 @@ class TaskRuntime:
             error_class=error_class,
             error_message=error_message,
         )
-        payload: dict[str, Any] = {
+        payload = {
             "task_id": task.task_id,
-            "terminal_reason": terminal_reason,
+            **build_task_terminal_payload(
+                status,
+                terminal_reason=terminal_reason,
+                error_class=error_class,
+                error_message=error_message,
+            ),
         }
-        if status != AgentTaskStatus.SUCCEEDED:
-            payload["terminal_message"] = build_terminal_reply(
-                {
-                    "status": status,
-                    "terminal_reason": terminal_reason,
-                    "error_class": error_class,
-                    "error_message": error_message,
-                }
-            )
         await self._emit(task.envelope.session_key, f"task.{status.value}", payload)
         task.done.set()
-        await self._notify_subagent_terminal(
-            task,
-            status,
+        await notify_subagent_terminal(
+            self._terminal_listener,
+            run_kind=task.run_kind,
+            parent_session_key=task.envelope.metadata.get("parent_session_key"),
+            child_session_key=task.envelope.session_key,
+            task_id=task.task_id,
+            status=status,
             terminal_reason=terminal_reason,
+            agent_id=task.envelope.agent_id,
+            parent_task_id=task.envelope.metadata.get("parent_task_id"),
             error_class=error_class,
             error_message=error_message,
         )
@@ -838,37 +808,6 @@ class TaskRuntime:
         if self._event_emitter is None:
             return
         await self._event_emitter(session_key, event_name, payload)
-
-    async def _notify_subagent_terminal(
-        self,
-        task: _RuntimeTask,
-        status: AgentTaskStatus,
-        *,
-        terminal_reason: str,
-        error_class: str | None = None,
-        error_message: str | None = None,
-    ) -> None:
-        if self._terminal_listener is None or task.run_kind != "subagent":
-            return
-        parent_session_key = task.envelope.metadata.get("parent_session_key")
-        if not isinstance(parent_session_key, str) or not parent_session_key:
-            return
-        event = SubagentCompletionEvent(
-            parent_session_key=parent_session_key,
-            child_session_key=task.envelope.session_key,
-            task_id=task.task_id,
-            status=status,
-            terminal_reason=terminal_reason,
-            agent_id=task.envelope.agent_id,
-            parent_task_id=task.envelope.metadata.get("parent_task_id"),
-            error_class=error_class,
-            error_message=error_message,
-        )
-        try:
-            await self._terminal_listener(event)
-        except Exception:
-            return
-
 
 def _loop_time_ms() -> int:
     return int(asyncio.get_running_loop().time() * 1000)

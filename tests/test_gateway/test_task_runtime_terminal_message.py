@@ -9,7 +9,13 @@ import pytest
 from opensquilla.engine.types import ErrorEvent
 from opensquilla.gateway.boot import _emit_task_runtime_stream_events
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
-from opensquilla.gateway.task_runtime import SubagentCompletionEvent, TaskRuntime
+from opensquilla.gateway.task_runtime import (
+    SubagentCompletionEvent as CompatibilitySubagentCompletionEvent,
+)
+from opensquilla.gateway.task_runtime import (
+    TaskRuntime,
+)
+from opensquilla.gateway.task_runtime_terminal import SubagentCompletionEvent
 from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus
 
 
@@ -64,6 +70,10 @@ def _make_runtime(
         event_emitter=event_emitter,
         terminal_listener=terminal_listener,
     )
+
+
+def test_subagent_completion_event_compatibility_alias_matches_terminal_owner() -> None:
+    assert CompatibilitySubagentCompletionEvent is SubagentCompletionEvent
 
 
 @pytest.mark.asyncio

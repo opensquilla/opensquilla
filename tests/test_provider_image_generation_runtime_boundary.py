@@ -17,6 +17,7 @@ RPC_ONBOARDING = ROOT / "src/opensquilla/gateway/rpc_onboarding.py"
 PROVIDER_RUNTIME_SYNC = ROOT / "src/opensquilla/gateway/provider_runtime_sync.py"
 RPC_TOOLS = ROOT / "src/opensquilla/gateway/rpc_tools.py"
 TOOLS_POLICY = ROOT / "src/opensquilla/tools/policy.py"
+TOOLS_POLICY_RUNTIME = ROOT / "src/opensquilla/tools/policy_runtime.py"
 TOOLS_REGISTRY = ROOT / "src/opensquilla/tools/registry.py"
 TOOLS_RPC_PAYLOAD = ROOT / "src/opensquilla/tools/rpc_payload.py"
 
@@ -96,6 +97,10 @@ def test_gateway_reads_image_generation_capability_from_runtime_boundary() -> No
         "tool_surface_capabilities_from_runtime",
     ) not in _imports_from(RPC_TOOLS)
     assert (
+        "opensquilla.tools.policy",
+        "tool_surface_capabilities_from_runtime",
+    ) not in _imports_from(TOOLS_RPC_PAYLOAD)
+    assert (
         "opensquilla.tools.rpc_payload",
         "tools_catalog_payload",
     ) in _imports_from(RPC_TOOLS)
@@ -104,13 +109,17 @@ def test_gateway_reads_image_generation_capability_from_runtime_boundary() -> No
         "tools_effective_payload",
     ) in _imports_from(RPC_TOOLS)
     assert (
-        "opensquilla.tools.policy",
+        "opensquilla.tools.policy_runtime",
         "tool_surface_capabilities_from_runtime",
     ) in _imports_from(TOOLS_RPC_PAYLOAD)
     assert (
         "opensquilla.provider.image_generation_runtime",
         "image_generation_available",
-    ) in _imports_from(TOOLS_POLICY)
+    ) not in _imports_from(TOOLS_POLICY)
+    assert (
+        "opensquilla.provider.image_generation_runtime",
+        "image_generation_available",
+    ) in _imports_from(TOOLS_POLICY_RUNTIME)
     assert (
         "opensquilla.tools.builtin.media",
         "image_generation_available",
@@ -121,7 +130,11 @@ def test_tools_policy_owns_image_generation_capability_detection() -> None:
     assert (
         "opensquilla.provider.image_generation_runtime",
         "image_generation_available",
-    ) in _imports_from(TOOLS_POLICY)
+    ) not in _imports_from(TOOLS_POLICY)
+    assert (
+        "opensquilla.provider.image_generation_runtime",
+        "image_generation_available",
+    ) in _imports_from(TOOLS_POLICY_RUNTIME)
 
 
 def test_media_compat_wrappers_delegate_to_image_runtime() -> None:

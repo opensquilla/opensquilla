@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from opensquilla.tools.policy import (
+from opensquilla.tools.policy_runtime import (
     ToolSurfaceCapabilities,
     tool_surface_capabilities_from_runtime,
 )

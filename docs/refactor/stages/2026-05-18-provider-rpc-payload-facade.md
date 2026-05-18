@@ -142,15 +142,15 @@ Consolidate provider status and model-list Gateway RPC wire adaptation into a Ga
 - [x] Implement the smallest behavior-compatible facade move.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -176,8 +176,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `2b12449 Move provider RPC payloads behind gateway facade`.
+- Integration merge: `9661c35 Merge provider RPC payload facade`.
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-provider-rpc-payload-facade` passed on branch `codex/refactor-provider-rpc-payload-facade` at `87db738`.
   - Red: `uv run --extra dev pytest tests/test_gateway/test_provider_rpc_payload_facade.py -q` failed as expected during collection with `ModuleNotFoundError: No module named 'opensquilla.gateway.provider_rpc_payloads'`.
@@ -190,6 +190,10 @@ Co-authored-by: Codex <noreply@openai.com>
   - Architecture retest: `uv run --extra dev pytest tests/test_ci/test_architecture_import_contracts.py::test_package_imports_do_not_add_new_edges tests/test_gateway/test_provider_rpc_payload_facade.py tests/test_provider_runtime_status.py tests/test_provider_model_listing.py -q` passed, `16 passed in 0.92s`.
   - Expanded focused retest: `uv run --extra dev pytest tests/test_gateway/test_provider_rpc_payload_facade.py tests/test_gateway/test_rpc_models.py tests/test_gateway/test_rpc_domain_modules.py tests/test_gateway/test_rpc_product_cli_gaps.py tests/test_gateway/test_rpc_tools_visibility.py tests/test_gateway/test_rpc_public_surface_baseline.py tests/test_provider_runtime_status.py tests/test_provider_model_listing.py tests/test_provider_factory.py tests/test_provider_model_catalog.py tests/test_ci/test_architecture_import_contracts.py -q` passed, `54 passed in 2.06s`.
   - Final child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 501 source files; whitespace passed; pytest passed with `2431 passed, 8 skipped, 2 warnings in 25.29s`; gateway smoke start/status/stop passed on `127.0.0.1:64712`.
+  - Child release hygiene staged retest: `uv run --extra dev pytest tests/test_public_release_hygiene.py::test_tracked_public_files_do_not_contain_real_secret_shapes_or_local_paths -q` passed, `1 passed in 0.30s`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `87db738`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 501 source files; whitespace passed; pytest passed with `2433 passed, 6 skipped, 2 warnings in 26.56s`; gateway smoke start/status/stop passed on `127.0.0.1:64897`.
+  - Cleanup policy: this slice used the fixed active child worktree path and removes it after the integration record commit so temporary directories do not accumulate.
 - Residual risk:
   - Low. Public RPC payloads are covered by the new Gateway facade tests, existing RPC model tests, provider compatibility tests, public surface baseline, architecture import contract, and full child gate. Provider compatibility wrappers intentionally mirror the payload shape without creating a reverse Provider-to-Gateway dependency.
 - Next recommended slice:

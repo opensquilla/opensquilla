@@ -154,6 +154,28 @@ def _check_size_policy(path: Path, mime: str) -> int:
     return size
 
 
+def _parse_path_prompt(command: str, prefix: str, usage: str) -> tuple[Path, str]:
+    rest = command[len(prefix) :].strip()
+    if not rest:
+        raise ValueError(usage)
+
+    if rest[0] in {'"', "'"}:
+        quote = rest[0]
+        end = rest.find(quote, 1)
+        if end == -1:
+            raise ValueError(f"{usage} (unclosed quote)")
+        token = rest[1:end]
+        prompt = rest[end + 1 :].strip()
+    else:
+        parts = rest.split(None, 1)
+        token = parts[0]
+        prompt = parts[1] if len(parts) > 1 else ""
+
+    if not token:
+        raise ValueError(usage)
+    return Path(token).expanduser(), prompt
+
+
 def build_file_attachment(
     path: str | Path,
     *,
@@ -221,11 +243,8 @@ def file_prompt_and_attachments(
     *,
     upload_callable: UploadCallable | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    parts = command[len("/file ") :].strip().split(None, 1)
-    if not parts:
-        raise ValueError("Usage: /file <path> [prompt]")
-    path = Path(parts[0]).expanduser()
-    prompt = parts[1] if len(parts) > 1 else "Read this file"
+    path, prompt = _parse_path_prompt(command, "/file ", "Usage: /file <path> [prompt]")
+    prompt = prompt or "Read this file"
     return prompt, [build_file_attachment(path, upload_callable=upload_callable)]
 
 
@@ -234,11 +253,8 @@ async def async_file_prompt_and_attachments(
     *,
     upload_callable: AsyncUploadCallable | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    parts = command[len("/file ") :].strip().split(None, 1)
-    if not parts:
-        raise ValueError("Usage: /file <path> [prompt]")
-    path = Path(parts[0]).expanduser()
-    prompt = parts[1] if len(parts) > 1 else "Read this file"
+    path, prompt = _parse_path_prompt(command, "/file ", "Usage: /file <path> [prompt]")
+    prompt = prompt or "Read this file"
     return prompt, [await build_file_attachment_async(path, upload_callable=upload_callable)]
 
 
@@ -247,17 +263,13 @@ def attachments_from_paths(paths: list[str] | tuple[str, ...]) -> list[dict[str,
 
 
 def image_prompt_from_command(command: str) -> str:
-    parts = command[len("/image ") :].strip().split(None, 1)
-    return parts[1] if len(parts) > 1 else "Describe this image"
+    _path, prompt = _parse_path_prompt(command, "/image ", "Usage: /image <path> [prompt]")
+    return prompt or "Describe this image"
 
 
 def image_prompt_and_attachments(command: str) -> tuple[str, list[dict[str, str]]]:
-    parts = command[len("/image ") :].strip().split(None, 1)
-    if not parts:
-        raise ValueError("Usage: /image <path> [prompt]")
-
-    path = Path(parts[0]).expanduser()
-    prompt = parts[1] if len(parts) > 1 else "Describe this image"
+    path, prompt = _parse_path_prompt(command, "/image ", "Usage: /image <path> [prompt]")
+    prompt = prompt or "Describe this image"
     _ensure_existing_file(path)
 
     ext = path.suffix.lower().lstrip(".")

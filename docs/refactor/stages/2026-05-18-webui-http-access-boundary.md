@@ -131,9 +131,9 @@ Centralize the Web UI browser HTTP access surface in one module-level boundary i
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -159,8 +159,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `250c9a1` (`Extract Web UI HTTP access boundary`)
+- Integration merge: `99493dd` (`Merge Web UI HTTP access boundary`)
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-webui-http-access-boundary` passed on branch `codex/refactor-webui-http-access-boundary` at `0f4ab87`.
   - Red: `uv run --extra dev pytest tests/test_gateway/test_webui_http_access_static.py tests/test_gateway/test_chat_static_assets.py::test_chat_upload_uses_app_auth_token_accessor tests/test_gateway/test_chat_view_static.py::test_chat_renders_live_and_historical_artifacts_as_header_auth_downloads -q` failed as expected with missing `static/js/http_access.js`, missing boundary file, and chat still owning download/upload fetch behavior.
@@ -171,6 +171,9 @@ Co-authored-by: Codex <noreply@openai.com>
   - Whitespace: `git diff --check` passed.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 488 source files; whitespace passed; pytest passed with `2406 passed, 8 skipped, 2 warnings in 55.96s`; gateway smoke start/status/stop passed on `127.0.0.1:60013`.
   - Browser smoke: local gateway started on `127.0.0.1:60071`; Playwright opened `/control/chat` and `/control/approvals`, both pages rendered with title `OpenSquilla Control`, status showed `Connected`, and console messages at warning level reported `Errors: 0, Warnings: 0`; gateway then stopped and status returned `not_started`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `0f4ab87`.
+  - Integration merge: `git merge --no-ff codex/refactor-webui-http-access-boundary` produced merge commit `99493dd`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 488 source files; whitespace passed; pytest passed with `2408 passed, 6 skipped, 2 warnings in 27.35s`; gateway smoke start/status/stop passed on `127.0.0.1:60335`.
 - Residual risk:
   - Low to medium. The slice centralizes HTTP access and preserves endpoint URLs, status handling, same-origin credentials, staged upload multipart bodies, and artifact session headers. The main remaining risk is browser-only behavior around the lazy `App.getAuthToken()` bridge, covered by Playwright load smoke but not by a dedicated JavaScript unit harness.
 - Next recommended slice:

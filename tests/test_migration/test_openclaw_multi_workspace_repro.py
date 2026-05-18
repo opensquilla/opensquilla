@@ -119,6 +119,11 @@ def test_memory_report_lists_all_read_sources(tmp_path, monkeypatch):
 
     item = next(i for i in report["items"] if i["kind"] == "memory")
     sources = item["details"]["read_sources"]
-    assert any(s.endswith("workspace-w4/memory/2026-05-04.md") for s in sources)
-    assert any(s.endswith("workspace-w4/memory/2026-05-05.md") for s in sources)
+    normalized_sources = [s.replace("\\", "/") for s in sources]
+    assert any(
+        s.endswith("workspace-w4/memory/2026-05-04.md") for s in normalized_sources
+    )
+    assert any(
+        s.endswith("workspace-w4/memory/2026-05-05.md") for s in normalized_sources
+    )
     assert len(sources) == 2

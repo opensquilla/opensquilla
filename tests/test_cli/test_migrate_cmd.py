@@ -11,6 +11,11 @@ from opensquilla.cli.main import app
 runner = CliRunner()
 
 
+def _set_fake_home(monkeypatch, home: Path) -> None:
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+
 def _make_source(root: Path) -> Path:
     source = root / ".openclaw"
     workspace = source / "workspace"
@@ -213,7 +218,7 @@ def test_migrate_auto_detect_no_source_reports_nothing(
 ) -> None:
     home = tmp_path / "fake_home"
     home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
+    _set_fake_home(monkeypatch, home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "opensquilla"))
 
     result = runner.invoke(app, ["migrate", "--json"])
@@ -231,7 +236,7 @@ def test_migrate_auto_detect_single_source_auto_picks(
     home = tmp_path / "fake_home"
     home.mkdir()
     _seed_hermes(home)
-    monkeypatch.setenv("HOME", str(home))
+    _set_fake_home(monkeypatch, home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "opensquilla"))
 
     result = runner.invoke(app, ["migrate", "--apply", "--json"])
@@ -252,7 +257,7 @@ def test_migrate_auto_detect_multiple_sources_non_tty_lists_and_exits(
     home.mkdir()
     _seed_openclaw(home)
     _seed_hermes(home)
-    monkeypatch.setenv("HOME", str(home))
+    _set_fake_home(monkeypatch, home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "opensquilla"))
 
     result = runner.invoke(app, ["migrate", "--json"])
@@ -271,7 +276,7 @@ def test_migrate_auto_detect_source_filter_runs_only_selected(
     home.mkdir()
     _seed_openclaw(home)
     _seed_hermes(home)
-    monkeypatch.setenv("HOME", str(home))
+    _set_fake_home(monkeypatch, home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "opensquilla"))
 
     result = runner.invoke(
@@ -291,7 +296,7 @@ def test_migrate_auto_detect_source_filter_runs_both_in_order(
     home.mkdir()
     _seed_openclaw(home)
     _seed_hermes(home)
-    monkeypatch.setenv("HOME", str(home))
+    _set_fake_home(monkeypatch, home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "opensquilla"))
 
     result = runner.invoke(
@@ -314,7 +319,7 @@ def test_migrate_auto_detect_rejects_unknown_source_name(
     home = tmp_path / "fake_home"
     home.mkdir()
     _seed_openclaw(home)
-    monkeypatch.setenv("HOME", str(home))
+    _set_fake_home(monkeypatch, home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "opensquilla"))
 
     result = runner.invoke(app, ["migrate", "--source", "bogus", "--json"])
@@ -331,7 +336,7 @@ def test_migrate_auto_detect_rejects_requested_but_undetected_source(
     home = tmp_path / "fake_home"
     home.mkdir()
     _seed_openclaw(home)
-    monkeypatch.setenv("HOME", str(home))
+    _set_fake_home(monkeypatch, home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "opensquilla"))
 
     result = runner.invoke(app, ["migrate", "--source", "hermes", "--json"])
@@ -355,7 +360,7 @@ def test_migrate_auto_detect_tty_prompt_path_is_invoked(
     _seed_openclaw(home)
     _seed_hermes(home)
     state = tmp_path / "opensquilla"
-    monkeypatch.setenv("HOME", str(home))
+    _set_fake_home(monkeypatch, home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(state))
 
     from opensquilla.cli import migrate_cmd
@@ -393,7 +398,7 @@ def test_migrate_auto_detect_validates_all_selected_before_running_any(
     _seed_openclaw(home)
     _seed_hermes(home)
     state = tmp_path / "opensquilla"
-    monkeypatch.setenv("HOME", str(home))
+    _set_fake_home(monkeypatch, home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(state))
 
     result = runner.invoke(
@@ -423,7 +428,7 @@ def test_migrate_auto_detect_tty_prompt_cancellation_exits_cleanly(
     home.mkdir()
     _seed_openclaw(home)
     _seed_hermes(home)
-    monkeypatch.setenv("HOME", str(home))
+    _set_fake_home(monkeypatch, home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "opensquilla"))
 
     from opensquilla.cli import migrate_cmd

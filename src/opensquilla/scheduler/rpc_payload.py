@@ -130,6 +130,217 @@ def tool_policy_to_wire(policy: Any) -> dict[str, Any]:
     }
 
 
+def reply_target_snapshot_from_envelope(envelope: Any) -> Any | None:
+    target = getattr(envelope, "reply_target", None)
+    if target is None or getattr(target, "kind", None) != "channel":
+        return None
+    from opensquilla.scheduler.types import ReplyTargetSnapshot
+
+    return ReplyTargetSnapshot(
+        channel_name=getattr(target, "channel_name", "") or "",
+        channel_type=getattr(target, "channel_type", "") or "",
+        to=getattr(target, "to", "") or "",
+        account_id=getattr(target, "account_id", "") or "",
+        thread_id=getattr(target, "thread_id", "") or "",
+        request_id=getattr(envelope, "session_id", None),
+    )
+
+
+def require_cron_add_params(params: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(params, dict):
+        raise ValueError("params required: expression, text")
+    if "expression" not in params:
+        raise ValueError("params.expression is required")
+    return params
+
+
+async def build_cron_add_job_kwargs(
+    params: dict[str, Any] | None,
+    *,
+    session_storage: Any | None = None,
+    originating_reply_target: Any | None = None,
+) -> dict[str, Any]:
+    params = require_cron_add_params(params)
+
+    session_target = resolve_session_target(params)
+    payload_kind_name, payload = build_cron_payload(
+        params,
+        session_target,
+        require_text=True,
+    )
+    text = payload_text(payload, session_target)
+    target_session_key = resolve_target_session_key(params, session_target)
+    origin_session_key = resolve_origin_session_key(params, session_target)
+    delivery_raw = params.get("delivery")
+    ensure_delivery_supported(session_target=session_target, delivery_raw=delivery_raw)
+    user_overrides = parse_delivery_overrides(delivery_raw)
+    delivery = None
+
+    if session_storage is not None and session_target != SessionTarget.MAIN:
+        try:
+            from opensquilla.scheduler.delivery import infer_delivery
+
+            delivery = await infer_delivery(
+                session_storage=session_storage,
+                session_key=origin_session_key,
+                user_overrides=user_overrides,
+            )
+        except Exception:
+            pass
+    if user_overrides is not None and delivery is None:
+        from opensquilla.scheduler.types import DeliveryConfig, DeliveryMode
+
+        delivery = DeliveryConfig(
+            mode=DeliveryMode.CHANNEL,
+            channel_name=user_overrides["channel_name"],
+            channel_id=user_overrides["channel_id"],
+            account_id=user_overrides["account_id"],
+            thread_id=user_overrides["thread_id"],
+        )
+    elif (
+        session_target != SessionTarget.MAIN
+        and user_overrides is None
+        and originating_reply_target is not None
+    ):
+        from opensquilla.scheduler.types import DeliveryConfig
+
+        delivery = delivery or DeliveryConfig()
+        delivery.originating_reply_target = originating_reply_target
+
+    return {
+        "name": params.get("name") or text,
+        "schedule_raw": params.get("schedule") or params["expression"],
+        "handler_key": "system_event" if payload_kind_name == SYSTEM_EVENT_KIND else "agent_run",
+        "payload": payload,
+        "session_target": session_target,
+        "session_key": target_session_key,
+        "timeout_seconds": float(params.get("timeout", 600)),
+        "wake_mode": resolve_wake_mode(params),
+        "delivery": delivery,
+        "origin_session_key": origin_session_key,
+        "tool_policy": tool_policy_from_params(params),
+    }
+
+
+def build_cron_update_patch(params: dict[str, Any], current_job: Any) -> dict[str, Any]:
+    from opensquilla.scheduler.types import DeliveryConfig
+
+    patch: dict[str, Any] = {}
+    if "name" in params:
+        patch["name"] = params["name"]
+
+    if "expression" in params or "schedule" in params:
+        patch["schedule_raw"] = params.get("schedule") or params.get("expression")
+
+    payload_related = any(
+        key in params
+        for key in (
+            "text",
+            "prompt",
+            "message",
+            "payloadKind",
+            "agentId",
+            "sessionTarget",
+            "targetSessionKey",
+            "target_session_key",
+            "originSessionKey",
+            "sessionKey",
+            "session_key",
+        )
+    )
+    if payload_related:
+        current_text = payload_text(current_job.payload, current_job.session_target)
+        merged_params = {
+            "text": params.get(
+                "text",
+                params.get("prompt", params.get("message", current_text)),
+            ),
+            "payloadKind": params.get(
+                "payloadKind",
+                payload_kind(current_job.payload, current_job.session_target),
+            ),
+            "agentId": params.get("agentId", payload_agent_id(current_job.payload)),
+            "sessionTarget": params.get(
+                "sessionTarget",
+                getattr(current_job.session_target, "value", str(current_job.session_target)),
+            ),
+            "originSessionKey": params.get(
+                "originSessionKey",
+                params.get(
+                    "sessionKey",
+                    params.get("session_key", current_job.origin_session_key),
+                ),
+            ),
+        }
+        session_target = resolve_session_target(merged_params)
+        if session_target == SessionTarget.MAIN:
+            merged_params["targetSessionKey"] = params.get(
+                "targetSessionKey",
+                params.get(
+                    "target_session_key",
+                    params.get(
+                        "sessionKey",
+                        params.get("session_key", current_job.session_key),
+                    ),
+                ),
+            )
+        else:
+            merged_params["targetSessionKey"] = params.get(
+                "targetSessionKey",
+                params.get("target_session_key", current_job.session_key),
+            )
+        payload_kind_name, payload = build_cron_payload(
+            merged_params,
+            session_target,
+            require_text=False,
+        )
+        patch["handler_key"] = (
+            "system_event" if payload_kind_name == SYSTEM_EVENT_KIND else "agent_run"
+        )
+        patch["payload"] = payload
+        patch["session_target"] = session_target
+        patch["session_key"] = resolve_target_session_key(merged_params, session_target)
+        patch["origin_session_key"] = resolve_origin_session_key(
+            merged_params,
+            session_target,
+        )
+        if session_target == SessionTarget.MAIN and "delivery" not in params:
+            patch["delivery"] = DeliveryConfig()
+
+    if "timeout" in params:
+        patch["timeout_seconds"] = float(params["timeout"])
+
+    if "wakeMode" in params or "wake_mode" in params:
+        patch["wake_mode"] = resolve_wake_mode(
+            params,
+            getattr(current_job, "wake_mode", "now"),
+        )
+
+    if "delivery" in params:
+        delivery_raw = params.get("delivery")
+        effective_target = patch.get("session_target", current_job.session_target)
+        ensure_delivery_supported(session_target=effective_target, delivery_raw=delivery_raw)
+        if isinstance(delivery_raw, dict) and delivery_raw.get("mode") == "none":
+            patch["delivery"] = DeliveryConfig()
+        elif isinstance(delivery_raw, dict) and delivery_raw.get("channelName"):
+            current_delivery = current_job.delivery or DeliveryConfig()
+            delivery_cls = type(current_delivery)
+            mode_cls = type(current_delivery.mode)
+            patch["delivery"] = delivery_cls(
+                mode=mode_cls.CHANNEL,
+                channel_name=delivery_raw["channelName"],
+                channel_id=delivery_raw.get("channelId", ""),
+                account_id=delivery_raw.get("accountId", ""),
+                thread_id=delivery_raw.get("threadId", ""),
+                ws_topic=current_delivery.ws_topic,
+            )
+
+    if "toolPolicy" in params or "tool_policy" in params:
+        patch["tool_policy"] = tool_policy_from_params(params)
+
+    return patch
+
+
 def manual_run_to_wire(result: Any) -> dict[str, Any]:
     status = getattr(result, "status", "")
     status_str = status.value if hasattr(status, "value") else str(status)
@@ -309,6 +520,8 @@ def build_cron_payload(
 __all__ = [
     "as_string_list",
     "build_cron_payload",
+    "build_cron_add_job_kwargs",
+    "build_cron_update_patch",
     "cron_job_to_wire",
     "cron_run_to_wire",
     "cron_subscription_error_response",
@@ -319,6 +532,8 @@ __all__ = [
     "manual_run_to_wire",
     "normalize_tool_policy",
     "parse_delivery_overrides",
+    "reply_target_snapshot_from_envelope",
+    "require_cron_add_params",
     "resolve_origin_session_key",
     "resolve_session_target",
     "resolve_target_session_key",

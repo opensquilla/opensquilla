@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import opensquilla.scheduler.rpc_payload as cron_rpc_payload
 from opensquilla.scheduler.payloads import AGENT_TURN_KIND
 from opensquilla.scheduler.rpc_payload import (
     cron_job_to_wire,
@@ -132,4 +133,49 @@ def test_tool_policy_from_params_normalizes_camelcase_aliases() -> None:
         "allow": ["session_status"],
         "also_allow": ["memory_search"],
         "deny": ["web_fetch"],
+    }
+
+
+def test_scheduler_rpc_payload_owns_update_patch_assembly_for_cron_jobs() -> None:
+    helper = getattr(cron_rpc_payload, "build_cron_update_patch", None)
+    assert helper is not None
+
+    current_job = CronJob(
+        id="drink",
+        name="Drink",
+        payload={"kind": AGENT_TURN_KIND, "task": "drink water", "agent_id": "main"},
+        session_target=SessionTarget.CURRENT,
+        session_key="agent:main:webchat:abc123",
+        origin_session_key="agent:main:webchat:abc123",
+        tool_policy={"profile": "default"},
+    )
+
+    patch = helper(
+        {
+            "id": "drink",
+            "text": "drink more water",
+            "toolPolicy": {
+                "profile": "minimal",
+                "alsoAllow": ["memory_search"],
+                "deny": "web_fetch",
+            },
+        },
+        current_job,
+    )
+
+    assert patch == {
+        "handler_key": "agent_run",
+        "payload": {
+            "kind": AGENT_TURN_KIND,
+            "task": "drink more water",
+            "agent_id": "main",
+        },
+        "session_target": SessionTarget.CURRENT,
+        "session_key": "agent:main:webchat:abc123",
+        "origin_session_key": "agent:main:webchat:abc123",
+        "tool_policy": {
+            "profile": "minimal",
+            "also_allow": ["memory_search"],
+            "deny": ["web_fetch"],
+        },
     }

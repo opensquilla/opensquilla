@@ -303,6 +303,31 @@ def test_gateway_rpc_cron_delegates_wire_payloads_to_scheduler_boundary() -> Non
     assert "_tool_policy_to_wire" not in top_level_functions
 
 
+def test_gateway_rpc_cron_delegates_request_assembly_to_scheduler_boundary() -> None:
+    source = Path(rpc_cron.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imports = {
+        (node.module, alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+    call_names = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert {
+        ("opensquilla.scheduler.rpc_payload", "build_cron_add_job_kwargs"),
+        ("opensquilla.scheduler.rpc_payload", "build_cron_update_patch"),
+        ("opensquilla.scheduler.rpc_payload", "reply_target_snapshot_from_envelope"),
+    }.issubset(imports)
+    assert ("opensquilla.scheduler.types", "DeliveryConfig") not in imports
+    assert ("opensquilla.scheduler.rpc_payload", "build_cron_payload") not in imports
+    assert "DeliveryConfig" not in call_names
+
+
 @pytest.mark.asyncio
 async def test_rpc_cron_subscribe_and_unsubscribe_topic_responses() -> None:
     subscription_manager = _FakeSubscriptionManager()

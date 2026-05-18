@@ -278,6 +278,18 @@ do not revert unrelated changes, and stop rather than editing outside ownership.
     `run_with_session_lock`.
   - Worker C RED fails because background flush completion/backoff semantics are
     not fully covered or preserved.
+- Actual RED evidence:
+  - Worker A:
+    `uv run --extra dev pytest tests/test_engine/test_preflight_compaction.py tests/test_engine/test_t3_upgrade_compaction.py -q`
+    failed as expected with two `ModuleNotFoundError` failures for
+    `opensquilla.engine.preflight_compaction`.
+  - Worker B:
+    `uv run --extra dev pytest tests/test_gateway/test_rpc_sessions.py::TestSessionsReset tests/test_gateway/test_rpc_session_lifecycle_boundary.py -q`
+    failed as expected with two new reset-lock tests because no-flush reset ran
+    transcript preservation while the session lock was held.
+  - Worker C:
+    `uv run --extra dev pytest tests/test_memory_flush.py -q` failed as
+    expected with three new background-flush tests failing.
 - Behavior compatibility coverage:
   - Engine preflight/T3 tests, memory flush tests, gateway reset tests, and
     boundary AST tests.
@@ -286,6 +298,11 @@ do not revert unrelated changes, and stop rather than editing outside ownership.
     together for shared flush semantics.
 - Focused green command:
   - `uv run --extra dev pytest tests/test_engine/test_preflight_compaction.py tests/test_engine/test_t3_upgrade_compaction.py tests/test_memory_flush.py tests/test_gateway/test_rpc_sessions.py::TestSessionsReset tests/test_gateway/test_rpc_session_lifecycle_boundary.py -q`
+- Focused green result:
+  - Main-thread combined focused command passed with `75 passed`.
+  - Worker A focused command passed with `57 passed`.
+  - Worker B focused command passed with `12 passed`.
+  - Worker C focused command passed with `6 passed`.
 - Additional touched-file checks:
   - `uv run --extra dev ruff check src/opensquilla/engine/preflight_compaction.py src/opensquilla/engine/runtime.py src/opensquilla/engine/agent.py src/opensquilla/gateway/rpc_session_lifecycle.py tests/test_engine/test_preflight_compaction.py tests/test_engine/test_t3_upgrade_compaction.py tests/test_memory_flush.py tests/test_gateway/test_rpc_sessions.py tests/test_gateway/test_rpc_session_lifecycle_boundary.py`
   - `uv run --extra dev mypy src/opensquilla/engine/preflight_compaction.py src/opensquilla/engine/runtime.py src/opensquilla/engine/agent.py src/opensquilla/gateway/rpc_session_lifecycle.py --show-error-codes`
@@ -314,13 +331,13 @@ do not revert unrelated changes, and stop rather than editing outside ownership.
 - [x] Create fixed child worktree `../opensquilla-refactor-active`.
 - [x] Run child preflight.
 - [x] Run baseline focused command and record result.
-- [ ] Dispatch Worker A, Worker B, and Worker C with explicit ownership and TDD
+- [x] Dispatch Worker A, Worker B, and Worker C with explicit ownership and TDD
       RED/GREEN.
-- [ ] Review each worker diff for public behavior compatibility, ownership
+- [x] Review each worker diff for public behavior compatibility, ownership
       violations, and shared flush semantic conflicts.
-- [ ] Run combined focused GREEN.
-- [ ] Run touched-file Ruff, mypy, and `git diff --check`.
-- [ ] Run `scripts/refactor_gate.sh`.
+- [x] Run combined focused GREEN.
+- [x] Run touched-file Ruff, mypy, and `git diff --check`.
+- [x] Run `scripts/refactor_gate.sh`.
 - [ ] Commit with:
 
 ```text
@@ -341,6 +358,39 @@ Co-authored-by: Codex <noreply@openai.com>
 - `git diff --check`
 - `uv run --extra dev pytest`
 - gateway smoke through `scripts/refactor_gate.sh`
+- Result after worker commits: passed.
+  - Worker A reported full `scripts/refactor_gate.sh` passed.
+  - Pytest summary: `2575 passed, 8 skipped`.
+  - Main-thread touched checks also passed:
+    - Ruff: passed.
+    - Mypy: no issues in 4 source files.
+    - `git diff --check 9d8e4c0..HEAD`: clean.
+
+## Review evidence
+
+- Same-thread reviewer dispatch:
+  - Attempted spec and code-quality reviewer agents after worker commits.
+  - Both same-thread `spawn_agent` calls failed with `agent thread limit
+    reached`, so this stage used the documented external-agent fallback.
+- External spec reviewer:
+  - Ran in fixed review worktree `../opensquilla-refactor-agent-review-engine-session-flush-spec`.
+  - Finding: implementation had no blocking spec issues; only this stage record
+    still needed post-worker evidence updates.
+  - Confirmed T3 `flush_failed` fallback compatibility, T3 terminal-result
+    generic-preflight skip, no-flush reset lock serialization, background flush
+    backoff/logging coverage, and no out-of-scope file changes.
+- External code-quality reviewer:
+  - Ran in fixed review worktree `../opensquilla-refactor-agent-review-engine-session-flush-code`.
+  - Finding: no blocking code-quality issues.
+  - Reviewer-focused verification: `128 passed` for preflight, gateway reset,
+    and memory flush tests; reviewer ruff and diff-check passed.
+- Review worktree cleanup:
+  - Removed `../opensquilla-refactor-agent-review-engine-session-flush-spec`
+    and `../opensquilla-refactor-agent-review-engine-session-flush-code`.
+  - Deleted temporary review branches
+    `codex/refactor-review-engine-session-flush-spec` and
+    `codex/refactor-review-engine-session-flush-code`.
+  - Ran `git worktree prune` and verified neither review worktree remains.
 
 ## Integration gate
 
@@ -361,10 +411,23 @@ Co-authored-by: Codex <noreply@openai.com>
 ## Completion record
 
 - Child commit:
+- Worker commits:
+  - `ed511b7` (`Refine agent background flush completion`).
+  - `dc483e2` (`Serialize no-flush session reset`).
+  - `72a8f0e` (`Refactor engine preflight compaction boundary`).
 - Integration merge:
 - Verification evidence:
+- Baseline focused: `66 passed`.
+- Worker focused RED/GREEN evidence recorded above.
+- Combined focused: `75 passed`.
+- Touched Ruff/mypy/diff-check: passed.
+- Child `scripts/refactor_gate.sh`: passed with `2575 passed, 8 skipped`.
 - Residual risk:
-  - Pending implementation. Shared risk is around destructive compaction after
-    memory flush and background flush retry windows.
+  - Low to medium. The stage preserves current T3 `flush_failed` generic
+    fallback behavior. A later stage can make snapshot-aware compaction
+    persistence more explicit if the project decides to change the
+    `SessionManager.compact` DB-current behavior.
 - Next recommended slice:
-  - Pending worker review and full gate.
+  - After integration gate and cleanup, continue with either task-runtime
+    active-task terminalization ownership or a larger channel runtime dispatch
+    batch, depending on current `docs/refactor/overall-plan.md` priorities.

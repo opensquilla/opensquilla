@@ -242,22 +242,51 @@ coupling without touching `boot.py` or scheduler internals.
 
 - [x] Run `scripts/refactor_preflight.sh --allow-dirty`.
   - Result: preflight passed on active child worktree at `5a674c4`.
-- [ ] Commit this stage plan on the active child branch.
-- [ ] Create external worker worktrees from the active child branch.
-- [ ] Dispatch session read-query service worker.
-- [ ] Dispatch TaskRuntime facade/test-observability worker.
-- [ ] Session worker writes failing tests and records RED output.
-- [ ] Runtime worker writes failing tests and records RED output.
-- [ ] Session worker implements behavior-compatible read service and Gateway
+- [x] Commit this stage plan on the active child branch.
+  - Commit: `f538152` (`Plan session runtime facade boundary batch`).
+- [x] Create external worker worktrees from the active child branch.
+  - Worker worktrees: `../opensquilla-refactor-agent-session-read`,
+    `../opensquilla-refactor-agent-runtime-facade`.
+- [x] Dispatch session read-query service worker.
+- [x] Dispatch TaskRuntime facade/test-observability worker.
+- [x] Session worker writes failing tests and records RED output.
+  - RED command:
+    `uv run --extra dev pytest tests/test_session/test_session_read_service.py tests/test_gateway/test_rpc_session_read_queries_boundary.py tests/test_gateway/test_rpc_session_management_boundary.py -q`
+  - Expected failure observed: `ImportError: cannot import name 'read_service'
+    from 'opensquilla.session'`.
+- [x] Runtime worker writes failing tests and records RED output.
+  - RED command:
+    `uv run --extra dev pytest tests/test_gateway/test_task_runtime_facade_observability_boundary.py tests/test_gateway/test_task_runtime_terminal_cleanup.py tests/test_gateway/test_task_runtime_execution_boundary.py tests/test_gateway/test_background_completion.py -q`
+  - Expected failures observed: `TaskRuntime.snapshot_runtime_state()` missing
+    and new boundary test flagged direct private-state reads in behavior tests.
+- [x] Session worker implements behavior-compatible read service and Gateway
       error adapter decoupling.
-- [ ] Runtime worker implements snapshot/test-helper facade and migrates direct
+- [x] Runtime worker implements snapshot/test-helper facade and migrates direct
       private-state test reads.
-- [ ] Review session worker diff and verification.
-- [ ] Review runtime worker diff and verification.
-- [ ] Merge session worker into active child with `git merge --no-ff`.
-- [ ] Merge runtime worker into active child with `git merge --no-ff`.
-- [ ] Run focused green command and touched-file checks.
-- [ ] Run `scripts/refactor_gate.sh` in the active child worktree.
+- [x] Review session worker diff and verification.
+  - Worker commit: `64a64fa` (`Refactor session read services`).
+  - Worker focused GREEN: `22 passed in 0.64s`.
+  - Worker full gate: `2633 passed, 8 skipped`; ruff, mypy, whitespace, and
+    gateway smoke passed.
+- [x] Review runtime worker diff and verification.
+  - Worker commit: `7fe8847` (`Add TaskRuntime observability snapshot facade`).
+  - Worker focused GREEN: `24 passed`; extended focused GREEN: `30 passed`.
+  - Worker full gate: passed; ruff, mypy, whitespace, full pytest, and gateway
+    smoke completed successfully.
+- [x] Merge session worker into active child with `git merge --no-ff`.
+  - Merge commit: `9fc6fe6` (`Merge session read service boundary`).
+- [x] Merge runtime worker into active child with `git merge --no-ff`.
+  - Merge commit: `44b4e2b` (`Merge task runtime facade observability boundary`).
+- [x] Run focused green command and touched-file checks.
+  - Focused merged command: `52 passed in 10.88s`.
+  - Touched-file `ruff check`: passed.
+  - `uv run --extra dev mypy src/opensquilla --show-error-codes`: no issues in
+    546 source files; existing notes only.
+  - `git diff --check`: passed.
+- [x] Run `scripts/refactor_gate.sh` in the active child worktree.
+  - Result: ruff passed; mypy no issues in 546 source files; whitespace passed;
+    pytest `2635 passed, 8 skipped, 2 warnings in 55.60s`; gateway smoke
+    start/status/stop/status passed.
 - [ ] Commit child verification/stage record update with:
 
 ```text
@@ -296,13 +325,28 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Session worker commit:
-- Runtime worker commit:
+- Session worker commit: `64a64fa` (`Refactor session read services`).
+- Runtime worker commit: `7fe8847` (`Add TaskRuntime observability snapshot
+  facade`).
 - Child merge commits:
+  - `9fc6fe6` (`Merge session read service boundary`)
+  - `44b4e2b` (`Merge task runtime facade observability boundary`)
 - Child verification commit:
 - Integration merge:
 - Integration record:
 - Verification evidence:
+  - Worker RED/GREEN evidence recorded above.
+  - Merged focused command: `52 passed in 10.88s`.
+  - Touched-file `ruff check`: passed.
+  - `uv run --extra dev mypy src/opensquilla --show-error-codes`: no issues in
+    546 source files; existing notes only.
+  - `git diff --check`: passed.
+  - Active child `scripts/refactor_gate.sh`: ruff passed; mypy no issues in 546
+    source files; whitespace passed; pytest `2635 passed, 8 skipped, 2
+    warnings`; gateway smoke passed.
 - Cleanup evidence:
-- Residual risk:
-- Next recommended slice:
+- Residual risk: no blocking risk observed; session read helpers moved to the
+  session domain and runtime state test observability now uses a read-only
+  snapshot facade while keeping compatibility paths.
+- Next recommended slice: boot/service wiring remains viable but should be a
+  single-worker or main-thread-owned stage because it converges on `boot.py`.

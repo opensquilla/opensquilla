@@ -135,15 +135,15 @@ Separate declarative tool policy config/selector parsing from runtime tool-surfa
 - [x] Implement the smallest behavior-compatible policy config boundary move.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -169,8 +169,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `e22535c2f8ca547abd3799fff9425ada4ce2da26`.
+- Integration merge: `b13ce98bdf100f87ac78b3b28bfea5c9cfe4febb`.
 - Verification evidence:
 - Red: `uv run --extra dev pytest tests/test_tools/test_policy_config_boundary.py -q` failed as expected during collection with `ModuleNotFoundError: No module named 'opensquilla.tools.policy_config'`.
 - Focused green: `uv run --extra dev pytest tests/test_tools/test_policy_config_boundary.py tests/test_tools/test_policy_agents.py tests/test_tools/test_registry_visibility.py tests/test_gateway/test_routing_interaction_mode.py -q` passed with `23 passed in 1.14s`.
@@ -180,5 +180,10 @@ Co-authored-by: Codex <noreply@openai.com>
 - Architecture import contract spot check: `uv run --extra dev pytest tests/test_ci/test_architecture_import_contracts.py::test_package_imports_do_not_add_new_edges tests/test_tools/test_policy_config_boundary.py tests/test_tools/test_policy_agents.py -q` passed with `8 passed in 0.94s`.
 - Whitespace: `git diff --check` passed.
 - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 508 source files; whitespace passed; pytest passed with `2450 passed, 8 skipped, 2 warnings in 47.30s`; gateway smoke start/status/stop passed on port `53094`.
+- Release hygiene spot check after stage-doc update: `uv run --extra dev pytest tests/test_public_release_hygiene.py::test_tracked_public_files_do_not_contain_real_secret_shapes_or_local_paths -q` passed with `1 passed in 0.31s`.
+- Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `93921bb`.
+- Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 508 source files; whitespace passed; pytest passed with `2452 passed, 6 skipped, 2 warnings in 26.51s`; gateway smoke start/status/stop passed on port `53221`.
 - Residual risk:
+  - Low. The slice moves declarative policy parsing and selector math without changing public policy entrypoints, runtime capability denylists, cron hard-deny behavior, or `ToolPolicy` compatibility import.
 - Next recommended slice:
+  - Continue Tools/Sandbox cleanup by splitting runtime capability detection/denylists out of `tools/policy.py`, or shift to a Channels message-normalization boundary if tool policy has been sufficiently thinned for this pass.

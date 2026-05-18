@@ -1108,14 +1108,14 @@ const ChatView = (() => {
         : '';
     },
     taskTerminalAsSessionEvent(event, payload) {
-      if (event === 'task.cancelled') {
+      const status = _CHAT_VIEW_STATE.taskTerminalStatus(event);
+      if (!status || status === 'succeeded') return null;
+      if (status === 'cancelled') {
         return {
           event: 'session.event.done',
           payload: { ...(payload || {}), reason: 'aborted' },
         };
       }
-      if (!['task.failed', 'task.timeout', 'task.abandoned'].includes(event)) return null;
-      const status = event.replace('task.', '');
       const message = _CHAT_VIEW_STATE.taskTerminalMessage(status, payload);
       return {
         event: 'session.event.error',

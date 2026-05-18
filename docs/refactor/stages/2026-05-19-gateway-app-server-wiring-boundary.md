@@ -246,10 +246,13 @@ Co-authored-by: Codex <noreply@openai.com>
     gateway smoke start/status/stop/status returned `{"ok": true, ...}` and
     final line was `Refactor gate complete.`
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active` and
+- [x] Remove `../opensquilla-refactor-active` and
       `../opensquilla-refactor-agent-app-server`, run `git worktree prune`,
       and verify no extra refactor worktree directories remain beyond
       `../opensquilla-refactor-integration`.
+  - Cleanup command removed both worktrees and ran `git worktree prune`.
+  - Final worktree list no longer includes `opensquilla-refactor-active` or
+    `opensquilla-refactor-agent-app-server`.
 
 ## Child gate
 
@@ -285,13 +288,16 @@ Co-authored-by: Codex <noreply@openai.com>
   - Worker merge: `257262c`
 - Child verification commit: `9d3d48d`
 - Integration merge: `f8ae0ea`
-- Integration record: pending this record update.
+- Integration record: `7d233f5`
 - Verification evidence: worker RED/GREEN/touched-file checks and full child
   gate recorded above; main-thread focused GREEN, touched-file checks, diff
   review, and full child gate recorded above after merging worker branch.
   Integration `scripts/refactor_gate.sh` passed with `2659 passed, 6 skipped,
   2 warnings`; gateway smoke completed start/status/stop/status.
-- Cleanup evidence: pending worktree cleanup.
+- Cleanup evidence: `../opensquilla-refactor-active` and
+  `../opensquilla-refactor-agent-app-server` removed; `git worktree prune`
+  completed; final `git worktree list --porcelain` shows no temporary
+  refactor worktrees beyond `../opensquilla-refactor-integration`.
 - Residual risk: low; boot still owns channel startup, router preload
   scheduling, and the final readiness flip after delegating app/server wiring.
 - Next recommended slice: continue gateway boot decomposition with a coarse

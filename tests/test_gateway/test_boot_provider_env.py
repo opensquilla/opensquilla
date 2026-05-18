@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 
 from opensquilla.gateway.config import GatewayConfig
@@ -14,6 +16,53 @@ class _CapturingSelector:
 
     def sync_primary(self, cfg) -> None:
         self.synced = cfg
+
+
+def test_rpc_config_delegates_provider_runtime_sync_to_gateway_boundary() -> None:
+    from opensquilla.gateway import rpc_config
+
+    source = Path(rpc_config.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    boundary_path = Path(rpc_config.__file__).with_name("provider_runtime_sync.py")
+
+    assert boundary_path.exists()
+
+    boundary_tree = ast.parse(boundary_path.read_text(encoding="utf-8"))
+    imports = {
+        (node.module, alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+    top_level_functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    boundary_defs = {
+        node.name
+        for node in ast.walk(boundary_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert {
+        ("opensquilla.gateway.provider_runtime_sync", "clear_runtime_secret_paths"),
+        ("opensquilla.gateway.provider_runtime_sync", "inherit_runtime_secrets"),
+        ("opensquilla.gateway.provider_runtime_sync", "sync_image_generation"),
+        ("opensquilla.gateway.provider_runtime_sync", "sync_provider_selector"),
+    } <= imports
+    assert {
+        "_clear_runtime_secret_paths",
+        "_inherit_runtime_secrets",
+        "_sync_image_generation",
+        "_sync_provider_selector",
+    } <= top_level_functions
+    assert {
+        "clear_runtime_secret_paths",
+        "inherit_runtime_secrets",
+        "sync_image_generation",
+        "sync_provider_selector",
+    } <= boundary_defs
 
 
 def test_boot_resolves_direct_provider_env_key_and_base_url(

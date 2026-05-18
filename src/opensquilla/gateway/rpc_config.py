@@ -6,6 +6,12 @@ import copy
 from pathlib import Path
 from typing import Any, cast
 
+from opensquilla.gateway.provider_runtime_sync import (
+    clear_runtime_secret_paths,
+    inherit_runtime_secrets,
+    sync_image_generation,
+    sync_provider_selector,
+)
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.paths import default_opensquilla_home
 
@@ -37,15 +43,11 @@ def _persist_config(config: Any) -> None:
 
 
 def _inherit_runtime_secrets(source: Any, target: Any) -> None:
-    if hasattr(target, "inherit_runtime_secrets") and source is not None:
-        target.inherit_runtime_secrets(source)
+    inherit_runtime_secrets(source, target)
 
 
 def _clear_runtime_secret_paths(config: Any, paths: set[str]) -> None:
-    if not hasattr(config, "clear_runtime_secret"):
-        return
-    for path in paths:
-        config.clear_runtime_secret(path)
+    clear_runtime_secret_paths(config, paths)
 
 
 def _collect_paths(payload: Any, prefix: str = "") -> set[str]:
@@ -208,37 +210,11 @@ def _validate_memory_embedding_semantics(config: Any) -> None:
 
 
 def _sync_provider_selector(ctx: RpcContext, config: Any) -> None:
-    llm_cfg = getattr(config, "llm", None)
-    if llm_cfg is None:
-        return
-
-    from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
-    from opensquilla.provider.selector import ProviderConfig
-
-    runtime = resolve_llm_runtime_config(config)
-    selector = getattr(ctx, "provider_selector", None)
-    if selector is None or not hasattr(selector, "sync_primary"):
-        return
-
-    selector.sync_primary(
-        ProviderConfig(
-            provider=runtime.provider,
-            model=runtime.model,
-            api_key=runtime.api_key,
-            base_url=runtime.base_url,
-            proxy=runtime.proxy,
-            provider_routing=runtime.provider_routing,
-        )
-    )
+    sync_provider_selector(ctx, config)
 
 
 def _sync_image_generation(config: Any) -> None:
-    from opensquilla.provider.image_generation_runtime import configure_image_generation
-
-    configure_image_generation(
-        getattr(config, "image_generation", None),
-        llm_config=getattr(config, "llm", None),
-    )
+    sync_image_generation(config)
 
 
 # Read-only paths that cannot be modified via config.set/patch/apply

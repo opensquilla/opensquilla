@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import re
 import weakref
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -53,6 +52,24 @@ from opensquilla.gateway.channel_artifacts import (
 from opensquilla.gateway.channel_artifacts import (
     strip_delivered_artifact_image_references as _strip_delivered_artifact_image_references,
 )
+from opensquilla.gateway.channel_replies import (
+    DirectiveTagStreamSanitizer as _DirectiveTagStreamSanitizer,
+)
+from opensquilla.gateway.channel_replies import (
+    sanitize_outgoing_message as _sanitize_outgoing_message,
+)
+from opensquilla.gateway.channel_replies import (
+    terminal_payload_from_error_event as _terminal_payload_from_error_event,
+)
+from opensquilla.gateway.channel_replies import (
+    terminal_payload_from_exception as _terminal_payload_from_exception,
+)
+from opensquilla.gateway.channel_replies import (
+    terminal_reply_suffix as _terminal_reply_suffix,
+)
+from opensquilla.gateway.channel_streaming import (
+    RuntimeChannelStreamRelay as _RuntimeChannelStreamRelay,
+)
 from opensquilla.paths import media_root_from_config
 from opensquilla.session.terminal_reply import build_terminal_reply
 
@@ -60,31 +77,6 @@ if TYPE_CHECKING:
     from opensquilla.gateway.event_bridge import EventBridge
 
 log = structlog.get_logger(__name__)
-
-
-def _terminal_payload_from_exception(exc: BaseException) -> dict[str, str]:
-    is_timeout = isinstance(exc, TimeoutError)
-    return {
-        "status": "timeout" if is_timeout else "failed",
-        "terminal_reason": "timeout" if is_timeout else "error",
-        "error_class": exc.__class__.__name__,
-        "error_message": str(exc),
-    }
-
-
-def _terminal_payload_from_error_event(event: ErrorEvent) -> dict[str, str | None]:
-    code = (event.code or "").lower()
-    is_timeout = "timeout" in code or "stream_idle" in code
-    return {
-        "status": "timeout" if is_timeout else "failed",
-        "terminal_reason": "timeout" if is_timeout else "error",
-        "error_class": event.code,
-        "error_message": event.message,
-    }
-
-
-def _terminal_reply_suffix(message: str) -> str:
-    return f"\n\n({message})"
 
 
 def _emit_metric(name: str, value: int = 1, **labels: Any) -> None:
@@ -174,52 +166,8 @@ def _compute_channel_cap(config: Any) -> int:
     formula_cap = max(2 * max_concurrency, 1)
     return min(raw_cap, formula_cap)
 
-_DIRECTIVE_TAG_RE = re.compile(
-    r"\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]\s*"
-)
-_DIRECTIVE_TAG_BUFFER_LIMIT = 256
 _DEFAULT_STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
 _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 180.0
-
-
-def _strip_inline_directive_tags(content: str) -> str:
-    return _DIRECTIVE_TAG_RE.sub("", content)
-
-
-def _sanitize_outgoing_message(message: OutgoingMessage) -> OutgoingMessage:
-    cleaned = _strip_inline_directive_tags(message.content)
-    if cleaned == message.content:
-        return message
-    return message.model_copy(update={"content": cleaned})
-
-
-class _DirectiveTagStreamSanitizer:
-    """Strip inline reply directives even when a tag is split across chunks."""
-
-    def __init__(self) -> None:
-        self._pending = ""
-
-    def clean(self, chunk: str) -> str:
-        text = self._pending + chunk
-        self._pending = ""
-        cleaned = _strip_inline_directive_tags(text)
-        start = cleaned.rfind("[[")
-        if start == -1:
-            return cleaned
-        suffix = cleaned[start:]
-        if (
-            "]]" not in suffix
-            and "\n" not in suffix
-            and len(suffix) <= _DIRECTIVE_TAG_BUFFER_LIMIT
-        ):
-            self._pending = suffix
-            return cleaned[:start]
-        return cleaned
-
-    def flush(self) -> str:
-        pending = self._pending
-        self._pending = ""
-        return _strip_inline_directive_tags(pending)
 
 
 def _accepts_keyword_arg(callable_obj: Any, name: str) -> bool:
@@ -1096,138 +1044,6 @@ def _streaming_reply_kwargs(channel: Any, msg: IncomingMessage) -> dict[str, Any
     if not callable(builder):
         return {}
     return dict(builder(msg))
-
-
-_STREAM_DONE = object()
-
-
-class _RuntimeChannelStreamRelay:
-    """Bridge one runtime task's stream events into a channel streaming adapter."""
-
-    def __init__(self, channel: Any, inbound: IncomingMessage, config: Any = None) -> None:
-        self._channel = channel
-        self._inbound = inbound
-        self._config = config
-        self._queue: asyncio.Queue[str | object] = asyncio.Queue()
-        self._artifacts: list[dict[str, Any]] = []
-        self.delivered_artifact_keys: set[str] = set()
-        self._task: asyncio.Task[Any] | None = None
-        self._closed = False
-        self.text_emitted = False
-        self.stream_error: BaseException | None = None
-
-    @classmethod
-    def maybe_start(
-        cls,
-        channel: Any,
-        inbound: IncomingMessage,
-        task_runtime: Any,
-        config: Any = None,
-    ) -> _RuntimeChannelStreamRelay | None:
-        if not resolve_channel_stream_policy(channel).relay_stream:
-            return None
-        enqueue = getattr(task_runtime, "enqueue", None)
-        if not callable(enqueue) or not _accepts_keyword_arg(enqueue, "stream_event_sink"):
-            return None
-        relay = cls(channel, inbound, config)
-        relay._task = asyncio.create_task(relay._run())
-        return relay
-
-    async def _run(self) -> Any:
-        try:
-            return await self._channel.send_streaming(
-                self._chunks(),
-                **_streaming_reply_kwargs(self._channel, self._inbound),
-            )
-        except Exception as exc:  # noqa: BLE001 - streaming is best-effort fallback.
-            self.stream_error = exc
-            log.warning(
-                "channel_dispatch.runtime_streaming_failed",
-                channel_type=type(self._channel).__name__,
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
-            return None
-
-    async def _chunks(self) -> AsyncIterator[str]:
-        sanitizer = _DirectiveTagStreamSanitizer()
-        while True:
-            item = await self._queue.get()
-            if item is _STREAM_DONE:
-                tail = sanitizer.flush()
-                if tail:
-                    yield tail
-                return
-            if isinstance(item, str):
-                chunk = sanitizer.clean(item)
-                if chunk:
-                    yield chunk
-
-    async def emit(self, event: Any) -> None:
-        artifact = _artifact_event_payload(event)
-        if artifact is not None:
-            self._artifacts.append(artifact)
-            return
-        text = _text_delta_from_event(event)
-        if not text:
-            return
-        text = _strip_artifact_markers_from_channel_text(text)
-        if not text:
-            return
-        self.text_emitted = True
-        await self._queue.put(text)
-
-    async def close(self, timeout: float = 10.0) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        artifact_lines = (
-            []
-            if _can_deliver_channel_files(self._channel)
-            else _artifact_fallback_lines(self._artifacts)
-        )
-        if artifact_lines:
-            prefix = "\n\n" if self.text_emitted else ""
-            artifact_text = "\n".join(artifact_lines)
-            await self._queue.put(f"{prefix}{artifact_text}")
-            self.text_emitted = True
-        await self._queue.put(_STREAM_DONE)
-        if self._task is None:
-            return
-        try:
-            await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
-        except TimeoutError as exc:
-            self.stream_error = exc
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-        except Exception as exc:  # noqa: BLE001 - error already becomes batch fallback.
-            self.stream_error = exc
-
-        if _can_deliver_channel_files(self._channel):
-            undelivered = await _deliver_artifacts_as_channel_files(
-                self._channel,
-                self._inbound,
-                self._artifacts,
-                self._config,
-            )
-            undelivered_keys = {
-                key for artifact in undelivered if (key := _artifact_delivery_key(artifact))
-            }
-            self.delivered_artifact_keys.update(
-                key
-                for artifact in self._artifacts
-                if (key := _artifact_delivery_key(artifact)) and key not in undelivered_keys
-            )
-            fallback_lines = _artifact_fallback_lines(undelivered)
-            if fallback_lines:
-                await self._channel.send(
-                    _build_reply_message(
-                        self._channel,
-                        "\n".join(fallback_lines),
-                        self._inbound,
-                    )
-                )
 
 
 def _text_delta_from_event(event: Any) -> str:

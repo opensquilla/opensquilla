@@ -144,15 +144,15 @@ Separate provider selector materialization from gateway sync code without changi
 - [x] Implement the behavior-compatible provider selector materialization boundary.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -167,11 +167,9 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Integration Gate
 
-- `uv run --extra dev ruff check src tests`
-- `uv run --extra dev mypy src/opensquilla --show-error-codes`
-- `git diff --check HEAD^ HEAD`
-- `uv run --extra dev pytest`
-- gateway smoke through `scripts/refactor_gate.sh`
+- Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `b5d2bf0`.
+- Integration merge: `git merge --no-ff codex/refactor-provider-selector-materialization-boundary` produced merge commit `1b1895f`.
+- Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 512 source files; whitespace passed; pytest passed with `2464 passed, 6 skipped, 2 warnings in 26.52s`; gateway smoke start/status/stop/status passed on `127.0.0.1:56232`.
 
 ## Rollback
 
@@ -181,8 +179,11 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `8143b12` (`Extract provider selector materialization boundary`)
+- Integration merge: `1b1895f` (`Merge provider selector materialization boundary`)
 - Verification evidence:
+  - Red, focused green, touched ruff/mypy, release/refactor hygiene, child full gate, integration preflight, integration merge, and integration full gate all recorded above.
 - Residual risk:
+  - Low. The gateway compatibility exports remain in `provider_runtime_sync`, `sync_provider_selector` still resolves effective runtime config, and boot assembly imports selector materialization directly from the provider layer.
 - Next recommended slice:
+  - Use the updated coarser cadence for a Provider module-family batch rather than another helper-sized move: consolidate provider runtime status/model listing/catalog payload boundaries and provider-facing gateway facades in one module-level stage, preserving provider defaults, OpenRouter routing, usage accounting, and public RPC payload compatibility.

@@ -500,8 +500,12 @@ def _delivery_target_from_task_runtime(
     task_runtime: Any,
     parent_task_id: str,
 ) -> _DeliveryTarget | None:
-    tasks = getattr(task_runtime, "_tasks", None)
-    runtime_task = tasks.get(parent_task_id) if isinstance(tasks, dict) else None
+    get_runtime_task = getattr(task_runtime, "get_runtime_task", None)
+    if callable(get_runtime_task):
+        runtime_task = get_runtime_task(parent_task_id)
+    else:
+        tasks = getattr(task_runtime, "_tasks", None)
+        runtime_task = tasks.get(parent_task_id) if isinstance(tasks, dict) else None
     envelope = getattr(runtime_task, "envelope", None)
     if envelope is None:
         return None

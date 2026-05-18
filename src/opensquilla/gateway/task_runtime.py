@@ -49,6 +49,7 @@ from opensquilla.gateway.task_runtime_records import (
 )
 from opensquilla.gateway.task_runtime_scheduler import TaskRuntimeScheduler
 from opensquilla.gateway.task_runtime_shutdown import shutdown_task_runtime
+from opensquilla.gateway.task_runtime_state import TaskRuntimeState
 from opensquilla.gateway.task_runtime_terminal import (
     SubagentCompletionEvent as SubagentCompletionEvent,
 )
@@ -58,8 +59,6 @@ from opensquilla.gateway.task_runtime_terminal import (
 )
 from opensquilla.gateway.task_runtime_terminal_state import (
     TERMINAL_STATUSES,
-    cleanup_terminal_task_state,
-    snapshot_unfinished_tasks,
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
 from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus
@@ -145,11 +144,7 @@ class TaskRuntime:
         # one task runs at a time per session_key.  Acquire order: always BEFORE
         # TurnRunner._session_locks when both are needed in the same call path.
         self._session_locks: dict[str, asyncio.Lock] = {}
-        self._tasks: dict[str, _RuntimeTask] = {}
-        self._pending_by_session: dict[str, list[_RuntimeTask]] = {}
-        self._running_by_session: dict[str, _RuntimeTask] = {}
-        self._last_envelope_by_session: dict[str, RouteEnvelope] = {}
-        self._state_lock = asyncio.Lock()
+        self._runtime_state = TaskRuntimeState()
 
     @property
     def _max_concurrency(self) -> int:
@@ -187,6 +182,26 @@ class TaskRuntime:
     def _fair_cond(self) -> asyncio.Condition | None:
         return self._scheduler.fair_cond
 
+    @property
+    def _tasks(self) -> dict[str, _RuntimeTask]:
+        return self._runtime_state.tasks
+
+    @property
+    def _pending_by_session(self) -> dict[str, list[_RuntimeTask]]:
+        return self._runtime_state.pending_by_session
+
+    @property
+    def _running_by_session(self) -> dict[str, _RuntimeTask]:
+        return self._runtime_state.running_by_session
+
+    @property
+    def _last_envelope_by_session(self) -> dict[str, RouteEnvelope]:
+        return self._runtime_state.last_envelope_by_session
+
+    @property
+    def _state_lock(self) -> asyncio.Lock:
+        return self._runtime_state.state_lock
+
     async def enqueue(
         self,
         envelope: RouteEnvelope,
@@ -219,8 +234,7 @@ class TaskRuntime:
         if queue_mode == "interrupt":
             await self.cancel(session_key=envelope.session_key)
         elif self._max_pending_per_session is not None:
-            async with self._state_lock:
-                pending_count = len(self._pending_by_session.get(envelope.session_key, []))
+            pending_count = await self._runtime_state.pending_count_locked(envelope.session_key)
             if pending_count >= self._max_pending_per_session:
                 _emit_metric(
                     "queue_full_errors_total",
@@ -259,14 +273,12 @@ class TaskRuntime:
             semantic_message=semantic_message,
             stream_event_sink=stream_event_sink,
         )
-        async with self._state_lock:
-            self._tasks[record.task_id] = runtime_task
-            self._pending_by_session.setdefault(envelope.session_key, []).append(runtime_task)
-            self._scheduler.enroll(runtime_task)
-            if update_envelope_cache:
-                self._last_envelope_by_session[envelope.session_key] = envelope
-            runtime_task.asyncio_task = asyncio.create_task(self._execute(runtime_task))
-            _queue_depth = len(self._pending_by_session.get(envelope.session_key, []))
+        _queue_depth = await self._runtime_state.register_queued(
+            runtime_task,
+            update_envelope_cache=update_envelope_cache,
+            before_start=lambda: self._scheduler.enroll(runtime_task),
+            start_task=lambda: asyncio.create_task(self._execute(runtime_task)),
+        )
         _emit_metric(
             "opensquilla_queue_depth",
             value=_queue_depth,
@@ -306,19 +318,11 @@ class TaskRuntime:
             raise ValueError("task_id or session_key is required")
         if session_key is not None:
             session_key = canonicalize_session_key(session_key)
-        async with self._state_lock:
-            tasks = [
-                task
-                for task in self._tasks.values()
-                if (task_id is None or task.task_id == task_id)
-                and (session_key is None or task.envelope.session_key == session_key)
-                and task.status not in TERMINAL_STATUSES
-            ]
-            for task in tasks:
-                task.cancel_requested = True
-                if task.asyncio_task is not None and not task.asyncio_task.done():
-                    task.asyncio_task.cancel()
-        return len(tasks)
+        return await self._runtime_state.cancel_matching(
+            task_id=task_id,
+            session_key=session_key,
+            terminal_statuses=TERMINAL_STATUSES,
+        )
 
     async def send(
         self,
@@ -328,7 +332,7 @@ class TaskRuntime:
         stream_event_sink: TaskStreamEventSink | None = None,
     ) -> TaskHandle:
         session_key = canonicalize_session_key(session_key)
-        cached = self._last_envelope_by_session.get(session_key)
+        cached = self._runtime_state.get_last_envelope(session_key)
         if cached is None:
             envelope = RouteEnvelope(
                 source_kind=SourceKind.SYSTEM,
@@ -365,11 +369,14 @@ class TaskRuntime:
         )
 
     async def wait(self, task_id: str, timeout: float | None = None) -> AgentTaskRecord:
-        runtime_task = self._tasks.get(task_id)
+        runtime_task = self.get_runtime_task(task_id)
         if runtime_task is None:
             return await self.status(task_id)
         await asyncio.wait_for(runtime_task.done.wait(), timeout=timeout)
         return await self.status(task_id)
+
+    def get_runtime_task(self, task_id: str) -> _RuntimeTask | None:
+        return self._runtime_state.get_task(task_id)
 
     async def shutdown(
         self,
@@ -401,8 +408,8 @@ class TaskRuntime:
             wait indefinitely (use with care in production; set a finite value).
         """
         await shutdown_task_runtime(
-            tasks=self._tasks,
-            state_lock=self._state_lock,
+            tasks=self._runtime_state.tasks,
+            state_lock=self._runtime_state.state_lock,
             mark_unfinished_abandoned=self._mark_unfinished_abandoned,
             cancel=cancel,
             timeout=timeout,
@@ -418,36 +425,17 @@ class TaskRuntime:
         run_kind: str,
         no_memory_capture: bool,
     ) -> TaskHandle | None:
-        async with self._state_lock:
-            pending = self._pending_by_session.get(envelope.session_key, [])
-            candidate = next(
-                (
-                    task
-                    for task in reversed(pending)
-                    if task.queue_mode == "collect" and task.status == AgentTaskStatus.QUEUED
-                ),
-                None,
-            )
-            if candidate is None:
-                return None
-            if (
-                no_memory_capture
-                or candidate.run_kind != run_kind
-                or candidate.envelope.input_provenance != envelope.input_provenance
-            ):
-                candidate.no_memory_capture = True
-            candidate.message = f"{candidate.message}\n{message}"
-            details = {
-                "source_name": candidate.envelope.source_name,
-                "input_provenance": candidate.envelope.input_provenance,
-                "metadata": candidate.envelope.metadata,
-                "collected": True,
-                "message_count": candidate.message.count("\n") + 1,
-                "no_memory_capture": candidate.no_memory_capture,
-            }
-        await self._storage.update_agent_task(candidate.task_id, details=details)
+        collected = await self._runtime_state.try_collect(
+            envelope=envelope,
+            message=message,
+            run_kind=run_kind,
+            no_memory_capture=no_memory_capture,
+        )
+        if collected is None:
+            return None
+        await self._storage.update_agent_task(collected.task.task_id, details=collected.details)
         return TaskHandle(
-            task_id=candidate.task_id,
+            task_id=collected.task.task_id,
             session_key=envelope.session_key,
             status=AgentTaskStatus.QUEUED,
         )
@@ -491,10 +479,7 @@ class TaskRuntime:
         return self._session_locks.setdefault(session_key, asyncio.Lock())
 
     async def _mark_running(self, task: _RuntimeTask) -> None:
-        async with self._state_lock:
-            task.status = AgentTaskStatus.RUNNING
-            self._remove_pending(task)
-            self._running_by_session[task.envelope.session_key] = task
+        await self._runtime_state.mark_running(task)
         await self._storage.update_agent_task(
             task.task_id,
             status=AgentTaskStatus.RUNNING,
@@ -511,22 +496,16 @@ class TaskRuntime:
         error_class: str | None = None,
         error_message: str | None = None,
     ) -> None:
-        async with self._state_lock:
-            cleanup = cleanup_terminal_task_state(
-                task=task,
-                status=status,
-                tasks=self._tasks,
-                pending_by_session=self._pending_by_session,
-                running_by_session=self._running_by_session,
-                last_envelope_by_session=self._last_envelope_by_session,
-            )
-            if not cleanup.emitted:
-                return
-            # Clean up RR deque entry when session has no more work.
-            self._scheduler.remove_inactive_session(
+        cleanup = await self._runtime_state.cleanup_terminal(
+            task=task,
+            status=status,
+            after_cleanup=lambda cleanup: self._scheduler.remove_inactive_session(
                 task,
                 has_session_work=cleanup.has_session_work,
-            )
+            ),
+        )
+        if not cleanup.emitted:
+            return
         await self._storage.update_agent_task(
             task.task_id,
             status=status,
@@ -561,25 +540,13 @@ class TaskRuntime:
         )
 
     async def _mark_unfinished_abandoned(self) -> None:
-        async with self._state_lock:
-            unfinished = snapshot_unfinished_tasks(self._tasks)
+        unfinished = await self._runtime_state.snapshot_unfinished()
         for task in unfinished:
             await self._mark_terminal(
                 task,
                 AgentTaskStatus.ABANDONED,
                 terminal_reason="shutdown_timeout",
             )
-
-    def _remove_pending(self, task: _RuntimeTask) -> None:
-        pending = self._pending_by_session.get(task.envelope.session_key)
-        if not pending:
-            return
-        try:
-            pending.remove(task)
-        except ValueError:
-            return
-        if not pending:
-            self._pending_by_session.pop(task.envelope.session_key, None)
 
     async def _emit(self, session_key: str, event_name: str, payload: dict[str, Any]) -> None:
         if self._event_emitter is None:

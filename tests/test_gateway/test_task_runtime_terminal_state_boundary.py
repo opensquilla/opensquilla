@@ -80,12 +80,24 @@ def test_terminal_state_module_exports_cleanup_helpers() -> None:
 def test_mark_terminal_delegates_state_cleanup() -> None:
     source = _source_for_method("_mark_terminal")
 
-    assert "cleanup_terminal_task_state(" in source
+    assert "self._runtime_state.cleanup_terminal(" in source
+    assert "cleanup_terminal_task_state(" not in source
     assert "self._tasks.pop" not in source
     assert "self._running_by_session.pop" not in source
     assert "self._pending_by_session.pop" not in source
     assert "self._last_envelope_by_session.pop" not in source
     assert "self._remove_pending(" not in source
+
+
+def test_runtime_state_boundary_delegates_to_terminal_cleanup_helper() -> None:
+    state_module = importlib.import_module("opensquilla.gateway.task_runtime_state")
+    source = inspect.getsource(state_module.TaskRuntimeState.cleanup_terminal)
+
+    assert "cleanup_terminal_task_state(" in source
+    assert "tasks=self._tasks" in source
+    assert "pending_by_session=self._pending_by_session" in source
+    assert "running_by_session=self._running_by_session" in source
+    assert "last_envelope_by_session=self._last_envelope_by_session" in source
 
 
 def test_terminal_cleanup_helper_never_touches_session_locks() -> None:

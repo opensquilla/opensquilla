@@ -78,6 +78,9 @@ class _TaskRuntime:
             return SimpleNamespace(task_id=task_id, status=self.synthesis_status)
         raise KeyError(task_id)
 
+    def get_runtime_task(self, task_id: str):
+        return self._tasks.get(task_id)
+
     async def emit_text_delta(self, text: str) -> None:
         assert self.stream_event_sink is not None
         await self.stream_event_sink(TextDeltaEvent(text=text))

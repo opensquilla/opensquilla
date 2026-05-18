@@ -100,4 +100,8 @@ def test_search_runtime_sync_is_owned_by_search_onboarding_boundary() -> None:
     assert (
         "opensquilla.search.runtime",
         "configure_search",
+    ) not in _imports_from(RPC_ONBOARDING_SEARCH)
+    assert (
+        "opensquilla.search.runtime",
+        "sync_search_runtime_from_config",
     ) in _imports_from(RPC_ONBOARDING_SEARCH)

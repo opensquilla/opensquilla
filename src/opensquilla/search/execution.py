@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -31,8 +32,7 @@ def _format_search_error(provider_name: str, exc: Exception) -> tuple[str, str]:
 
 
 def _ensure_builtin_search_providers() -> None:
-    import opensquilla.search.providers.brave  # noqa: F401
-    import opensquilla.search.providers.duckduckgo  # noqa: F401
+    search_runtime.ensure_builtin_search_providers()
 
 
 def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
@@ -230,13 +230,6 @@ def _search_payload(
     return payload
 
 
-from opensquilla.search.rpc_payload import (  # noqa: E402
-    search_provider_payload,  # noqa: F401
-    search_query_rpc_payload,  # noqa: F401
-    search_status_rpc_payload,  # noqa: F401
-)
-
-
 def _search_error_payload(
     query: str,
     provider_name: str,
@@ -258,3 +251,27 @@ def _search_error_payload(
     if attempts is not None:
         payload["attempts"] = attempts
     return payload
+
+
+def search_provider_payload() -> dict[str, str]:
+    """Compatibility wrapper for the search RPC provider payload helper."""
+
+    from opensquilla.search.rpc_payload import search_provider_payload as _payload
+
+    return _payload()
+
+
+def search_status_rpc_payload(params: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Compatibility wrapper for the search status RPC payload helper."""
+
+    from opensquilla.search.rpc_payload import search_status_rpc_payload as _payload
+
+    return _payload(params)
+
+
+async def search_query_rpc_payload(params: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Compatibility wrapper for the search query RPC payload helper."""
+
+    from opensquilla.search.rpc_payload import search_query_rpc_payload as _payload
+
+    return await _payload(params)

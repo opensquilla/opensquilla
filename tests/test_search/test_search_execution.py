@@ -4,12 +4,14 @@ import pytest
 
 from opensquilla.search.execution import (
     run_search_payload,
-    search_provider_payload,
-    search_query_rpc_payload,
     search_runtime_status,
-    search_status_rpc_payload,
 )
 from opensquilla.search.registry import register_provider
+from opensquilla.search.rpc_payload import (
+    search_provider_payload,
+    search_query_rpc_payload,
+    search_status_rpc_payload,
+)
 from opensquilla.search.types import SearchProviderError, SearchProviderSpec, SearchResult
 from opensquilla.tools.builtin.web import configure_search, run_web_search_payload
 
@@ -106,6 +108,26 @@ def test_search_execution_builds_status_rpc_payload() -> None:
     assert status["provider"] == "execution_ok"
     assert status["configured"] is True
     assert status["diagnostics"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_execution_preserves_rpc_payload_compatibility_exports() -> None:
+    from opensquilla.search import execution
+
+    register_provider(
+        "execution_ok",
+        OkSearchProvider,
+        SearchProviderSpec(provider_id="execution_ok"),
+    )
+    configure_search("execution_ok", max_results=4)
+
+    assert execution.search_provider_payload() == search_provider_payload()
+    assert execution.search_status_rpc_payload({"provider": "execution_ok"}) == (
+        search_status_rpc_payload({"provider": "execution_ok"})
+    )
+    assert await execution.search_query_rpc_payload({"query": "hello", "limit": 2}) == (
+        await search_query_rpc_payload({"query": "hello", "limit": 2})
+    )
 
 
 @pytest.mark.asyncio

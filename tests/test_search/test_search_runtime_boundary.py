@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
+from opensquilla.gateway.config import GatewayConfig
 from opensquilla.search import runtime as search_runtime
 from opensquilla.tools.builtin import web
 
@@ -71,17 +73,17 @@ def test_web_tool_does_not_own_search_execution() -> None:
 
 def test_gateway_configures_search_runtime_boundary() -> None:
     forbidden = ("opensquilla.tools.builtin.web", "configure_search")
+    runtime_forbidden = ("opensquilla.search.runtime", "configure_search")
+    runtime_sync = ("opensquilla.search.runtime", "sync_search_runtime_from_config")
 
     assert forbidden not in _imports_from(BOOT)
     assert forbidden not in _imports_from(RPC_ONBOARDING)
     assert forbidden not in _imports_from(RPC_ONBOARDING_SEARCH)
-    assert ("opensquilla.search.runtime", "configure_search") in _imports_from(BOOT)
-    assert ("opensquilla.search.runtime", "configure_search") not in _imports_from(
-        RPC_ONBOARDING
-    )
-    assert ("opensquilla.search.runtime", "configure_search") in _imports_from(
-        RPC_ONBOARDING_SEARCH
-    )
+    assert runtime_forbidden not in _imports_from(BOOT)
+    assert runtime_forbidden not in _imports_from(RPC_ONBOARDING)
+    assert runtime_forbidden not in _imports_from(RPC_ONBOARDING_SEARCH)
+    assert runtime_sync in _imports_from(BOOT)
+    assert runtime_sync in _imports_from(RPC_ONBOARDING_SEARCH)
 
 
 def test_gateway_reads_search_provider_from_runtime_boundary() -> None:
@@ -131,8 +133,66 @@ def test_search_rpc_payload_boundary_owns_request_and_wire_shape() -> None:
         "search_status_rpc_payload",
         "search_query_rpc_payload",
     }
-    assert not rpc_owned_names & execution_names
     assert rpc_owned_names <= rpc_payload_names
+    assert not {
+        "_search_status_rpc_params",
+        "_query_limit_from_params",
+        "_search_rpc_payload",
+    } & execution_names
+    # Public imports from search.execution remain as thin compatibility wrappers.
+    assert rpc_owned_names <= execution_names
+    source = SEARCH_EXECUTION.read_text(encoding="utf-8")
+    assert source.count("Compatibility wrapper for the search") == 3
+
+
+def test_search_runtime_sync_from_config_preserves_bootstrap_policy(monkeypatch) -> None:
+    monkeypatch.setenv("CUSTOM_BRAVE_KEY", "env-brave-key")
+    config = GatewayConfig(
+        search_provider="duckduckgo",
+        search_api_key_env="CUSTOM_BRAVE_KEY",
+        search_max_results=9,
+        search_proxy="http://proxy.test",
+        search_use_env_proxy=True,
+        search_fallback_policy="network",
+        search_diagnostics=True,
+    )
+
+    runtime = search_runtime.sync_search_runtime_from_config(config)
+
+    assert runtime.provider_name == "brave"
+    assert runtime.max_results == 9
+    assert runtime.api_key == "env-brave-key"
+    assert runtime.proxy == "http://proxy.test"
+    assert runtime.use_env_proxy is True
+    assert runtime.fallback_policy == "network"
+    assert runtime.diagnostics is True
+    assert search_runtime.search_provider_kwargs("brave") == {
+        "api_key": "env-brave-key",
+        "proxy": "http://proxy.test",
+        "use_env_proxy": True,
+        "diagnostics": True,
+    }
+
+
+def test_search_runtime_sync_from_config_preserves_explicit_provider(monkeypatch) -> None:
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "env-brave-key")
+    config = SimpleNamespace(
+        search_provider="brave",
+        search_api_key="explicit-brave-key",
+        search_api_key_env="",
+        search_max_results=3,
+        search_proxy="",
+        search_use_env_proxy=False,
+        search_fallback_policy="not-valid",
+        search_diagnostics=False,
+    )
+
+    runtime = search_runtime.sync_search_runtime_from_config(config)
+
+    assert runtime.provider_name == "brave"
+    assert runtime.max_results == 3
+    assert runtime.api_key == "explicit-brave-key"
+    assert runtime.fallback_policy == "off"
 
 
 def test_web_compat_wrappers_delegate_to_search_runtime() -> None:

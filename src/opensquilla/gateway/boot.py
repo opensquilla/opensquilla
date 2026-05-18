@@ -228,7 +228,7 @@ class ServiceContainer:
     - skills.runtime
       (create_configured_skill_loader + configure_skill_loader via create_skill_tools)
     - tools.services (configure_tool_services)
-    - search.runtime (configure_search)
+    - search.runtime (sync_search_runtime_from_config)
     Do not call build_services() twice in the same process without
     understanding these side effects.
     """
@@ -1236,31 +1236,10 @@ async def build_services(
 
     # ── Search provider (brave > duckduckgo fallback) ───────────────
     try:
-        import opensquilla.search.providers.brave  # noqa: F401 — registers provider
-        import opensquilla.search.providers.duckduckgo  # noqa: F401 — registers provider
-        from opensquilla.search.registry import get_provider_spec
-        from opensquilla.search.runtime import configure_search
+        from opensquilla.search.runtime import sync_search_runtime_from_config
 
-        provider = config.search_provider
-        search_api_key = config.search_api_key
-        if not search_api_key:
-            env_key = config.search_api_key_env or get_provider_spec(provider).env_key
-            search_api_key = os.environ.get(env_key, "") if env_key else ""
-        # Auto-select: use brave if key is available and provider is default
-        if provider == "duckduckgo":
-            if search_api_key or os.environ.get("BRAVE_SEARCH_API_KEY"):
-                provider = "brave"
-
-        configure_search(
-            provider_name=provider,
-            max_results=config.search_max_results,
-            api_key=search_api_key,
-            proxy=config.search_proxy,
-            use_env_proxy=config.search_use_env_proxy,
-            fallback_policy=config.search_fallback_policy,
-            diagnostics=config.search_diagnostics,
-        )
-        log.info("build_services.search_provider_initialized", provider=provider)
+        runtime = sync_search_runtime_from_config(config)
+        log.info("build_services.search_provider_initialized", provider=runtime.provider_name)
     except Exception as e:
         log.warning("build_services.search_provider_failed", error=str(e))
 

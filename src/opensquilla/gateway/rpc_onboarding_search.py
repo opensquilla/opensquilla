@@ -16,17 +16,9 @@ _d = get_dispatcher()
 
 
 def _sync_search_provider(config: Any) -> None:
-    from opensquilla.search.runtime import configure_search
+    from opensquilla.search.runtime import sync_search_runtime_from_config
 
-    configure_search(
-        provider_name=config.search_provider,
-        max_results=config.search_max_results,
-        api_key=config.search_api_key,
-        proxy=config.search_proxy,
-        use_env_proxy=config.search_use_env_proxy,
-        fallback_policy=config.search_fallback_policy,
-        diagnostics=config.search_diagnostics,
-    )
+    sync_search_runtime_from_config(config)
 
 
 @_d.method("onboarding.search.configure", scope="operator.admin")

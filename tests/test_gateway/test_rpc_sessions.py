@@ -16,7 +16,12 @@ import pytest
 
 from opensquilla.agents.registry import AgentRegistry
 from opensquilla.engine.types import DoneEvent
-from opensquilla.gateway import rpc_session_lifecycle, rpc_session_read_queries, rpc_sessions
+from opensquilla.gateway import (
+    rpc_session_lifecycle,
+    rpc_session_management,
+    rpc_session_read_queries,
+    rpc_sessions,
+)
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
 from opensquilla.gateway.attachment_ingest import (
     MAX_STAGED_PDF_BYTES,
@@ -370,8 +375,8 @@ class TestSessionsCreate:
         assert res.payload["key"].startswith("agent:myagent:")
         assert "sessionId" in res.payload
 
-    def test_gateway_create_delegates_payload_to_session_boundary(self):
-        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+    def test_session_management_create_delegates_payload_to_session_boundary(self):
+        source = Path(rpc_session_management.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         imports = {
             (node.module, alias.name)
@@ -382,7 +387,7 @@ class TestSessionsCreate:
         handler = next(
             node
             for node in tree.body
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_sessions_create"
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "handle_sessions_create"
         )
         handler_constants = {
             node.value for node in ast.walk(handler) if isinstance(node, ast.Constant)
@@ -1280,8 +1285,8 @@ class TestSessionsPatch:
         assert res.payload["key"] == session.session_key
         assert "displayName" in res.payload["updated"]
 
-    def test_gateway_patch_delegates_payload_to_session_boundary(self):
-        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+    def test_session_management_patch_delegates_payload_to_session_boundary(self):
+        source = Path(rpc_session_management.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         imports = {
             (node.module, alias.name)
@@ -1292,7 +1297,7 @@ class TestSessionsPatch:
         handler = next(
             node
             for node in tree.body
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_sessions_patch"
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "handle_sessions_patch"
         )
         handler_constants = {
             node.value for node in ast.walk(handler) if isinstance(node, ast.Constant)

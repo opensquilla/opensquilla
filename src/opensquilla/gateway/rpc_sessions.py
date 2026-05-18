@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from dataclasses import asdict, replace
 from typing import Any
 
@@ -12,10 +11,11 @@ import structlog
 from opensquilla.gateway import attachment_ingest as _attachment_ingest
 from opensquilla.gateway import rpc_session_events as _session_events
 from opensquilla.gateway import rpc_session_lifecycle as _session_lifecycle
+from opensquilla.gateway import rpc_session_management as _session_management
 from opensquilla.gateway import rpc_session_read_queries as _session_read_queries
 from opensquilla.gateway import rpc_session_send_inputs as _session_send_inputs
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
-from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, RpcUnavailableError, get_dispatcher
+from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.rpc_compaction_inputs import (
     context_window_tokens,
     effective_compaction_model,
@@ -33,13 +33,9 @@ from opensquilla.gateway.session_services import (
     get_session_storage,
 )
 from opensquilla.paths import media_root_from_config
-from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
+from opensquilla.session.keys import normalize_agent_id
 from opensquilla.session.rpc_payload import (
     normalize_terminal_event_payload,
-    session_agent_not_found_details,
-    session_create_response,
-    session_create_stub_response,
-    session_patch_response,
     session_send_accepted_response,
 )
 
@@ -105,12 +101,7 @@ def _validate_attachments(raw_attachments: Any) -> list[dict[str, Any]]:
 
 
 def _require_key(params: dict | None) -> str:
-    if not isinstance(params, dict) or "key" not in params:
-        raise ValueError("params.key is required")
-    key = params["key"]
-    if not isinstance(key, str):
-        raise ValueError("params.key must be a string")
-    return canonicalize_session_key(key)
+    return _session_management.require_session_key(params)
 
 
 def _context_window_tokens(params: dict | None, ctx: RpcContext) -> int:
@@ -126,51 +117,19 @@ def _resolve_compaction_provider(ctx: RpcContext, session: Any | None) -> Any | 
 
 
 def _model_value(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
+    return _session_management.model_value(value)
 
 
 def _agent_registry_model(ctx: RpcContext, agent_id: str) -> str | None:
-    registry = getattr(ctx, "agent_registry", None)
-    getter = getattr(registry, "get_agent_model", None)
-    if not callable(getter):
-        return None
-    try:
-        return _model_value(getter(agent_id))
-    except Exception:  # noqa: BLE001 - registry lookup must not break legacy sessions
-        log.warning("sessions.agent_model_lookup_failed", agent_id=agent_id)
-        return None
+    return _session_management.agent_registry_model(ctx, agent_id)
 
 
 async def _agent_registry_has(ctx: RpcContext, agent_id: str) -> bool:
-    """Return True iff *agent_id* exists in the registry (built-in main always True).
-
-    Returns ``True`` when no registry is wired so legacy code paths that ran
-    without an agent registry continue to work — the validation only kicks in
-    when a registry is available to consult.
-    """
-    if normalize_agent_id(agent_id) == "main":
-        return True
-    registry = getattr(ctx, "agent_registry", None)
-    lister = getattr(registry, "list_agents", None)
-    if not callable(lister):
-        return True
-    try:
-        agents = await lister(include_builtin=True)
-    except Exception:  # noqa: BLE001 - never block session create on registry hiccups
-        log.warning("sessions.agent_registry_list_failed", agent_id=agent_id)
-        return True
-    target = normalize_agent_id(agent_id)
-    for entry in agents:
-        if normalize_agent_id(str(entry.get("id", ""))) == target:
-            return True
-    return False
+    return await _session_management.agent_registry_has(ctx, agent_id)
 
 
 def _session_turn_model(ctx: RpcContext, session: Any | None, agent_id: str) -> str | None:
-    return _model_value(getattr(session, "model", None)) or _agent_registry_model(ctx, agent_id)
+    return _session_management.session_turn_model(ctx, session, agent_id)
 
 
 async def _list_task_rows(ctx: RpcContext, storage: Any | None, session_key: str) -> list[Any]:
@@ -186,13 +145,7 @@ async def _list_task_rows_by_session(
 
 
 def _create_session_key(agent_id: str, kind: object = None) -> str:
-    short_id = uuid.uuid4().hex[:8]
-    normalized_kind = str(kind or "").strip().lower().replace("_", "-")
-    if normalized_kind == "web":
-        normalized_kind = "webchat"
-    if normalized_kind in {"cli", "webchat"}:
-        return f"agent:{agent_id}:{normalized_kind}:{short_id}"
-    return f"agent:{agent_id}:{short_id}"
+    return _session_management.create_session_key(agent_id, kind)
 
 
 async def _resolve_session_node(storage: Any, key: str) -> Any:
@@ -206,48 +159,7 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
 
 @_d.method("sessions.create", scope="operator.write")
 async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
-    if not isinstance(params, dict):
-        params = {}
-    agent_id = normalize_agent_id(params.get("agentId", "main"))
-    display_name = params.get("displayName")
-    message = params.get("message")
-    model = _model_value(params.get("model")) or _agent_registry_model(ctx, agent_id)
-    kind = params.get("kind") or params.get("sessionKind")
-    if message is not None and not isinstance(message, str):
-        raise ValueError("params.message must be a string")
-
-    if not await _agent_registry_has(ctx, agent_id):
-        raise RpcHandlerError(
-            "agent.not_found",
-            f"Agent '{agent_id}' does not exist",
-            details=session_agent_not_found_details(agent_id),
-        )
-
-    if ctx.session_manager is None:
-        if message:
-            raise RpcUnavailableError("sessions.create(message=...) requires a session manager")
-        key = _create_session_key(agent_id, kind)
-        return session_create_stub_response(key)
-
-    session = await ctx.session_manager.create(
-        session_key=_create_session_key(agent_id, kind),
-        agent_id=agent_id,
-        display_name=display_name,
-        model=model,
-    )
-    seeded_message = False
-
-    if message:
-        _persisted = await ctx.session_manager.append_message(
-            session.session_key,
-            role="user",
-            content=message,
-        )
-        if _persisted is not None and isinstance(_persisted.content, str):
-            message = _persisted.content
-        seeded_message = True
-
-    return session_create_response(session, seeded_message=seeded_message)
+    return await _session_management.handle_sessions_create(params, ctx)
 
 
 @_d.method("sessions.send", scope="operator.write")
@@ -589,45 +501,7 @@ async def _handle_sessions_abort(params: dict | None, ctx: RpcContext) -> dict:
 
 @_d.method("sessions.patch", scope="operator.admin")
 async def _handle_sessions_patch(params: dict | None, ctx: RpcContext) -> dict:
-    key = _require_key(params)
-
-    if ctx.session_manager is None:
-        raise KeyError("No session manager available")
-
-    storage = get_session_storage(ctx.session_manager)
-    if storage is None:
-        raise KeyError("No session storage available")
-
-    session = await storage.get_session(key)
-    if session is None:
-        raise KeyError(f"Session not found: {key}")
-
-    update_values: dict[str, Any] = {}
-    assert isinstance(params, dict)
-    field_map = {
-        "displayName": "display_name",
-        "model": "model",
-        "thinkingLevel": "thinking_level",
-        "metadata": "meta",
-    }
-    updated_fields: list[str] = []
-    for field, attr in field_map.items():
-        if field in params and hasattr(session, attr):
-            update_values[attr] = params[field]
-            updated_fields.append(field)
-
-    if update_values:
-        update = getattr(ctx.session_manager, "update", None)
-        if update is not None:
-            await update(key, **update_values)
-        else:
-            for attr, value in update_values.items():
-                setattr(session, attr, value)
-            upsert = getattr(storage, "upsert_session", None)
-            if upsert is not None:
-                await upsert(session)
-
-    return session_patch_response(key, updated_fields)
+    return await _session_management.handle_sessions_patch(params, ctx)
 
 
 @_d.method("sessions.reset", scope="operator.write")

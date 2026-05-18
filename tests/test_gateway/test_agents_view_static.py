@@ -85,9 +85,8 @@ def test_sessions_table_keeps_table_cells_structural() -> None:
 
     assert '<td class="sess-table__cell--key">' in source
     assert '<div class="sess-table__key-content">' in source
-    key_cell_rule = css[
-        css.index(".sess-table__cell--key {") : css.index("}", css.index(".sess-table__cell--key {"))
-    ]
+    key_cell_start = css.index(".sess-table__cell--key {")
+    key_cell_rule = css[key_cell_start : css.index("}", key_cell_start)]
     assert "display:" not in key_cell_rule
     assert ".sess-table__key-content" in css
     assert "display: flex" in css[css.index(".sess-table__key-content") :]

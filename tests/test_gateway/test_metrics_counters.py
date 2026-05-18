@@ -10,8 +10,10 @@ and asserting structlog field values, plus a regex check on the format.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -22,6 +24,17 @@ import structlog.testing
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
 from opensquilla.gateway.task_runtime import TaskQueueFullError, TaskRuntime
 from opensquilla.session.models import AgentTaskRecord
+
+
+@contextmanager
+def _capture_metric_logs():
+    old_config = structlog.get_config()
+    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.NOTSET))
+    try:
+        with structlog.testing.capture_logs() as captured:
+            yield captured
+    finally:
+        structlog.configure(**old_config)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -88,7 +101,7 @@ def _make_runtime(
 @pytest.mark.asyncio
 async def test_all_four_counters_emit() -> None:
     """Each of the 4 core metric events fires at least once with correct fields."""
-    with structlog.testing.capture_logs() as captured:
+    with _capture_metric_logs() as captured:
         # --- opensquilla_queue_depth: emitted on successful enqueue ---
         rt = _make_runtime()
         env = _make_envelope("agent-1::sess-metrics-1")
@@ -192,7 +205,7 @@ async def test_log_format_regex() -> None:
         r"turn_cancellations_total|queue_full_errors_total)$"
     )
 
-    with structlog.testing.capture_logs() as captured:
+    with _capture_metric_logs() as captured:
         rt = _make_runtime()
         env = _make_envelope("agent-1::sess-regex-1")
         h = await rt.enqueue(env, "regex-test")

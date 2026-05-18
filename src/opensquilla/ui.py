@@ -2,12 +2,34 @@
 
 from __future__ import annotations
 
+import sys
+from typing import IO, cast
+
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
-console = Console(highlight=False)
-error_console = Console(stderr=True, highlight=False)
+
+class _DynamicStream:
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    @property
+    def _stream(self):
+        return getattr(sys, self._name)
+
+    def write(self, data: str) -> int:
+        return int(self._stream.write(data))
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
+console = Console(file=cast(IO[str], _DynamicStream("stdout")), highlight=False)
+error_console = Console(file=cast(IO[str], _DynamicStream("stderr")), highlight=False)
 
 ACCENT = "#F56600"
 ACCENT_SOFT = "#FF8A4C"

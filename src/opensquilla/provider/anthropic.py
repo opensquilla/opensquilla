@@ -398,7 +398,10 @@ class AnthropicProvider:
                         if request_has_document:
                             _increment_document_block_rejected(str(response.status_code))
                         yield ErrorEvent(
-                            message=f"HTTP {response.status_code}: {body.decode()}",
+                            message=(
+                                f"HTTP {response.status_code}: "
+                                f"{body.decode('utf-8', errors='replace')}"
+                            ),
                             code=str(response.status_code),
                         )
                         return

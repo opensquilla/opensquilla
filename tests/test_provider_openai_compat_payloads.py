@@ -1216,3 +1216,88 @@ def test_gemini_stream_tool_call_without_index_is_tolerated(monkeypatch: Any) ->
     assert tool_end.tool_name == "lookup"
     assert tool_end.arguments == {"q": "hi"}
     assert done.model == "gemini-2.5-flash"
+
+
+def test_gemini_stream_multiple_tool_calls_without_indexes_stay_separate(
+    monkeypatch: Any,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "gemini-2.5-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "id": "call_lookup",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"q":"hi"}',
+                                    },
+                                },
+                                {
+                                    "id": "call_save",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "save",
+                                        "arguments": '{"value":1}',
+                                    },
+                                },
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "gemini-2.5-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="gemini-2.5-flash",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        provider_kind="gemini",
+    )
+    tools = [
+        ToolDefinition(
+            name="lookup",
+            description="Lookup a value.",
+            input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+        ),
+        ToolDefinition(
+            name="save",
+            description="Save a value.",
+            input_schema=ToolInputSchema(
+                properties={"value": {"type": "number"}},
+                required=["value"],
+            ),
+        ),
+    ]
+
+    events = _collect_events(provider, ChatConfig(), tools=tools)
+
+    tool_ends = [event for event in events if isinstance(event, ToolUseEndEvent)]
+    assert [(event.tool_use_id, event.tool_name, event.arguments) for event in tool_ends] == [
+        ("call_lookup", "lookup", {"q": "hi"}),
+        ("call_save", "save", {"value": 1}),
+    ]

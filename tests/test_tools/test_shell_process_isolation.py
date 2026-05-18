@@ -150,6 +150,7 @@ async def test_exec_command_cleans_descendant_after_shell_exits(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell quoting is required")
 async def test_exec_command_timeout_still_stops_foreground_process() -> None:
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote('import time; time.sleep(5)')}"
 

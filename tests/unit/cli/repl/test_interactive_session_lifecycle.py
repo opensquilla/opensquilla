@@ -157,19 +157,13 @@ async def test_interactive_session_multiple_same_size_pastes_expand_distinctly()
 
 
 @pytest.mark.asyncio
-async def test_patch_stdout_restored_after_context_exit() -> None:
-    """`patch_stdout` wraps the Application lifetime and unwraps on exit.
-
-    We check `sys.stdout` identity before vs after the context manager; if
-    `patch_stdout` did not unwind, the restored stream would still be the
-    `StdoutProxy` wrapper.
-    """
+async def test_custom_output_does_not_patch_stdout() -> None:
+    """Headless custom-output sessions should not probe the real terminal."""
     import sys
 
     before = sys.stdout
     with create_pipe_input() as pipe:
         async with interactive_session(input=pipe, output=DummyOutput()):
-            # During the context: stdout is wrapped (patch_stdout active).
-            assert sys.stdout is not before
+            assert sys.stdout is before
         # After exit: original stdout restored.
         assert sys.stdout is before

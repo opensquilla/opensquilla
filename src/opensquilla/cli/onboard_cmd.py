@@ -35,6 +35,14 @@ def _print_env_reference_warnings(config) -> None:
         console.print(warning_panel(warning))
 
 
+def _print_saved_path(path: object) -> None:
+    console.print(
+        f"[bold {ACCENT}]◆[/] [bold]saved[/] "
+        f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(path)}[/]",
+        soft_wrap=True,
+    )
+
+
 def _format_missing_sections(status: OnboardingStatus) -> str:
     parts = [
         f"{name} ({state.value})"
@@ -267,20 +275,14 @@ def configure_command(
                     },
                 )
                 result = engine.persist()
-                console.print(
-                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
-                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
-                )
+                _print_saved_path(result.path)
                 _print_env_reference_warnings(load_config(result.path))
                 return
             if normalized == "router" and router:
                 engine = SetupEngine()
                 engine.apply("router", {"mode": router})
                 result = engine.persist()
-                console.print(
-                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
-                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
-                )
+                _print_saved_path(result.path)
                 _print_env_reference_warnings(load_config(result.path))
                 return
             if normalized == "search" and search_provider:
@@ -295,10 +297,7 @@ def configure_command(
                     },
                 )
                 result = engine.persist()
-                console.print(
-                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
-                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
-                )
+                _print_saved_path(result.path)
                 _print_env_reference_warnings(load_config(result.path))
                 return
             if normalized in {"channel", "channels"} and channel_type and name:
@@ -313,10 +312,7 @@ def configure_command(
                 entry.update(parse_channel_field_pairs(fields, channel_type))
                 engine.apply("channel", {"entry": entry})
                 result = engine.persist()
-                console.print(
-                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
-                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
-                )
+                _print_saved_path(result.path)
                 return
             if normalized in {"image-generation", "image_generation"} and image_provider:
                 engine = SetupEngine()
@@ -332,10 +328,7 @@ def configure_command(
                     },
                 )
                 result = engine.persist()
-                console.print(
-                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
-                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
-                )
+                _print_saved_path(result.path)
                 return
             if normalized in {"memory-embedding", "memory_embedding"} and memory_provider:
                 engine = SetupEngine()
@@ -350,10 +343,7 @@ def configure_command(
                     },
                 )
                 result = engine.persist()
-                console.print(
-                    f"[bold {ACCENT}]◆[/] [bold]saved[/] "
-                    f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(result.path)}[/]"
-                )
+                _print_saved_path(result.path)
                 return
         except (KeyError, TypeError, ValueError) as exc:
             error_console.print(f"[red]Error:[/red] {markup_escape(exc)}")
@@ -361,7 +351,4 @@ def configure_command(
 
     interactive_result = run_interactive_configure(selected or None)
     if interactive_result is not None:
-        console.print(
-            f"[bold {ACCENT}]◆[/] [bold]saved[/] "
-            f"[dim]→[/] [{ACCENT_SOFT}]{markup_escape(interactive_result.path)}[/]"
-        )
+        _print_saved_path(interactive_result.path)

@@ -158,6 +158,7 @@ module = [
     "botpy.*",
     "cachetools.*",
     "dingtalk_stream.*",
+    "jieba",
     "nio.*",
     "numpy.*",
     "onnxruntime.*",
@@ -165,7 +166,6 @@ module = [
     "src.router.*",
     "tiktoken.*",
     "tokenizers.*",
-    "transformers.*",
     "yaml.*",
     "yoyo.*",
 ]

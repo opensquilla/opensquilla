@@ -6,6 +6,7 @@ import csv
 import hashlib
 import io
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -34,6 +35,7 @@ _PDF_SANS_CANDIDATES = (
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     "C:/Windows/Fonts/arial.ttf",
 )
+_STABLE_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _PDF_SANS_BOLD_CANDIDATES = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/local/share/fonts/dejavu/DejaVuSans-Bold.ttf",
@@ -93,6 +95,19 @@ def _first_existing_path(candidates: tuple[str, ...]) -> str | None:
         if Path(candidate).exists():
             return candidate
     return None
+
+
+def _normalize_zip_timestamps(payload: bytes) -> bytes:
+    source = io.BytesIO(payload)
+    target = io.BytesIO()
+    with zipfile.ZipFile(source, "r") as src, zipfile.ZipFile(target, "w") as dst:
+        for info in src.infolist():
+            stable = zipfile.ZipInfo(info.filename, _STABLE_ZIP_TIMESTAMP)
+            stable.compress_type = info.compress_type
+            stable.external_attr = info.external_attr
+            stable.comment = info.comment
+            dst.writestr(stable, src.read(info.filename))
+    return target.getvalue()
 
 
 def _register_pdf_fonts() -> tuple[str, str, str | None]:
@@ -410,7 +425,7 @@ async def create_pptx(slides: list[dict[str, Any]], name: str | None = None) -> 
     output = io.BytesIO()
     presentation.save(output)
     return _published_response(
-        payload=output.getvalue(),
+        payload=_normalize_zip_timestamps(output.getvalue()),
         name=_ensure_name(name, default="generated.pptx", suffix=".pptx"),
         mime=_PPTX_MIME,
         source="create_pptx",

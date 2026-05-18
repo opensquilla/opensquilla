@@ -703,6 +703,7 @@ def test_cron_commands_use_existing_rpc_payloads(monkeypatch):
         {
             "expression": "*/5 * * * *",
             "text": "check in",
+            "payloadKind": "reminder",
             "sessionTarget": "isolated",
             "agentId": "main",
         },

@@ -11,7 +11,7 @@ import hashlib
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -3114,7 +3114,6 @@ class Agent:
                 next_event.cancel()
                 with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
                     await next_event
-                await self._close_provider_stream(stream_iter)
                 if total_deadline is not None and loop.time() >= total_deadline:
                     raise TimeoutError(f"Agent total timeout after {self.config.timeout}s")
                 raise _IterationStreamTimeoutError
@@ -3740,7 +3739,7 @@ class Agent:
 
     @staticmethod
     def _is_provider_context_projection_reuse_result(result: ToolResult) -> bool:
-        status = result.execution_status or {}
+        status: Mapping[str, Any] = result.execution_status or {}
         return bool(
             result.is_error
             and isinstance(status, dict)

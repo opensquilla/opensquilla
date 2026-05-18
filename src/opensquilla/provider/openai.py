@@ -372,6 +372,12 @@ def _resolve_tool_call_index(
         return _coerce_int(tc["index"])
     if provider_kind != "gemini":
         raise KeyError("index")
+    tool_call_id = tc.get("id")
+    if isinstance(tool_call_id, str) and tool_call_id:
+        for idx, call in pending_calls.items():
+            if call.get("id") == tool_call_id:
+                return idx
+        return max(pending_calls.keys(), default=-1) + 1
     if len(pending_calls) == 1:
         return cast(int, next(iter(pending_calls)))
     return max(pending_calls.keys(), default=-1) + 1

@@ -817,7 +817,7 @@ def _quiet_logs_for_interactive_chat() -> None:
     # the in-tree handler so the init
     # chatter ("Building prefix dict ...") cannot reach the TTY at all.
     try:
-        import jieba  # noqa: F401, PLC0415
+        import jieba  # type: ignore[import-untyped]  # noqa: F401, PLC0415
     except ImportError:
         pass
     else:

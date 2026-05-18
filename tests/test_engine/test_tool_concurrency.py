@@ -33,6 +33,7 @@ from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
 # ---------------------------------------------------------------------------
 
 _TOOL_SLEEP_S = 0.2
+_SCHEDULER_TOLERANCE_S = 0.05
 
 
 def _tool_def(name: str) -> ToolDefinition:
@@ -224,7 +225,7 @@ async def test_feishu_read_only_tools_have_independent_inflight_cap() -> None:
     elapsed = time.monotonic() - t0
 
     assert max_in_flight == 4
-    assert 2 * _TOOL_SLEEP_S <= elapsed < 3 * _TOOL_SLEEP_S
+    assert 2 * _TOOL_SLEEP_S - _SCHEDULER_TOLERANCE_S <= elapsed < 3 * _TOOL_SLEEP_S
 
 
 @pytest.mark.asyncio

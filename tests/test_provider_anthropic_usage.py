@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from opensquilla.provider.anthropic import AnthropicProvider, _anthropic_input_token_counts
-from opensquilla.provider.types import ChatConfig, DoneEvent, Message
+from opensquilla.provider.types import ChatConfig, DoneEvent, ErrorEvent, Message
 
 
 def test_anthropic_input_tokens_include_cache_read_and_creation_tokens() -> None:
@@ -239,3 +239,39 @@ def test_anthropic_done_event_cache_write_handles_both_shapes(
 
     done = asyncio.run(_collect())
     assert done.cache_write_tokens == expected
+
+
+def test_anthropic_http_error_with_non_utf8_body_yields_error_event(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"content-type": "application/json"},
+            content=b"\xffrate limited",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.anthropic.httpx.AsyncClient", patched_async_client)
+    provider = AnthropicProvider(api_key="test", model="claude-opus-4-7")
+
+    async def _collect() -> list[object]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="hi")],
+                config=ChatConfig(),
+            )
+        ]
+
+    events = asyncio.run(_collect())
+
+    assert len(events) == 1
+    error = events[0]
+    assert isinstance(error, ErrorEvent)
+    assert error.code == "429"
+    assert error.message.startswith("HTTP 429:")

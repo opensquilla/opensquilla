@@ -14,6 +14,8 @@ from opensquilla.mcp.types import MCPServerConfig, MCPToolDef, MCPToolResult
 class MCPStdioClient(MCPClient):
     """MCP client using stdio transport (subprocess + Content-Length framing)."""
 
+    _CLOSE_TIMEOUT_SECONDS = 2.0
+
     def __init__(self, config: MCPServerConfig) -> None:
         super().__init__(config)
         self._process: asyncio.subprocess.Process | None = None
@@ -83,9 +85,24 @@ class MCPStdioClient(MCPClient):
 
     async def close(self) -> None:
         """Terminate the subprocess."""
-        if self._process is not None:
-            self._process.terminate()
-            self._process = None
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        if process.returncode is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=self._CLOSE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            await process.wait()
 
     async def _send_request(
         self, method: str, params: dict[str, Any] | None = None

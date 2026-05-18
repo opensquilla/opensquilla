@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from typing import Any
 from urllib.parse import urljoin
 
@@ -53,6 +54,14 @@ _RETRY_DELAY_SECONDS = 0.25
 _WEB_FETCH_DEFAULT_MAX_CHARS = 20_000
 _WEB_FETCH_MAX_CHARS_ENV = "OPENSQUILLA_WEB_FETCH_MAX_CHARS"
 _MAX_REDIRECTS = 5
+
+_XML_ATTR_ESCAPES = {
+    "<": "&lt;",
+    ">": "&gt;",
+    "&": "&amp;",
+    '"': "&quot;",
+    "'": "&apos;",
+}
 
 
 def _check_ssrf(url: str) -> None:
@@ -380,7 +389,28 @@ async def web_fetch(
 
 
 def _wrap_content(source: str, content: str) -> str:
-    return f'<external-content source="{source}">{content}</external-content>'
+    safe_source = _xml_escape_attr(source)
+    safe_content = _escape_external_content_boundaries(content)
+    return f'<external-content source="{safe_source}">{safe_content}</external-content>'
+
+
+def _xml_escape_attr(value: str) -> str:
+    return "".join(_XML_ATTR_ESCAPES.get(ch, ch) for ch in value)
+
+
+def _escape_external_content_boundaries(value: str) -> str:
+    out = re.sub(
+        r"<\s*/\s*external-content\s*>",
+        "&lt;/external-content&gt;",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"<\s*external-content\b",
+        "&lt;external-content",
+        out,
+        flags=re.IGNORECASE,
+    )
 
 
 def _extract_inner(wrapped: str) -> str:

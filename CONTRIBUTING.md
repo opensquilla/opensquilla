@@ -2,11 +2,11 @@
 
 Thanks for improving OpenSquilla. Keep pull requests small, focused, and covered by tests that outside contributors can run without private access.
 
-## Branch Targets
+## Target Branch
 
-Open regular feature and bug-fix pull requests against `dev`. The `dev` branch is the shared integration line for the next release.
+Open pull requests against `dev` by default. OpenSquilla uses `dev` as the active integration branch for feature work, bug fixes, tests, and contributor changes.
 
-Open pull requests against `main` only for release candidates, release stabilization, or urgent hotfixes that start from the current published line. If a pull request was opened against `main` by mistake, retarget it to `dev` before review.
+Use `main` only for maintainer-directed release candidates, release stabilization, documentation-only preview, or urgent hotfix work that starts from the current published line. When in doubt, target `dev`; maintainers will route release-ready changes from `dev` to `main`. If a pull request was opened against `main` by mistake, retarget it to `dev` before review.
 
 ## Default Checks
 

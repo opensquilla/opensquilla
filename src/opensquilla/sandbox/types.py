@@ -202,6 +202,7 @@ class SandboxResult:
     truncated_stdout: bool = False
     truncated_stderr: bool = False
     timed_out: bool = False
+    backend_notes: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def ok(self) -> bool:
@@ -231,6 +232,7 @@ class DenialReason(StrEnum):
     THRESHOLD_EXCEEDED = "threshold_exceeded"
     REPEATED_SAME_INTENT = "repeated_same_intent"
     RUNTIME_UNCONFIGURED = "runtime_unconfigured"
+    SEATBELT_DENIED = "seatbelt_denied"
 
 
 class SuggestedNextStep(StrEnum):

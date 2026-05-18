@@ -12,6 +12,7 @@ from opensquilla.sandbox.integration import configure_runtime, reset_runtime
 from opensquilla.sandbox.intent_cache import get_intent_cache, reset_intent_cache
 from opensquilla.tools.builtin import code_exec, filesystem, shell
 from opensquilla.tools.builtin.code_exec import execute_code
+from opensquilla.tools.builtin.shell_policy import PolicyResult
 from opensquilla.tools.types import (
     CallerKind,
     InteractionMode,
@@ -230,6 +231,103 @@ async def test_unattended_bypass_allows_destructive_code_exec(
     assert payload["exit_code"] == 0
     assert not target.exists()
     assert len(get_approval_queue().list_pending("exec")) == 0
+
+
+@pytest.mark.asyncio
+async def test_approved_destructive_code_exec_uses_host_grant_when_sandbox_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.workspace_dir = str(tmp_path)
+    target = tmp_path / "target.txt"
+    target.write_text("delete me", encoding="utf-8")
+    configure_runtime(
+        SandboxSettings(
+            sandbox=True,
+            security_grading=True,
+            backend="noop",
+            allow_legacy_mode=True,
+        ),
+        workspace=tmp_path,
+    )
+    monkeypatch.setattr(
+        code_exec,
+        "_resolve_python_bin",
+        lambda *, sandbox_enabled: sys.executable,
+    )
+
+    async def fail_sandbox(*args: object, **kwargs: object) -> object:
+        raise AssertionError("sandbox backend should not run after approval")
+
+    monkeypatch.setattr(code_exec, "run_under_backend", fail_sandbox)
+
+    code = "import os\nos.remove('target.txt')"
+    pending = json.loads(await execute_code(code))
+    assert pending["status"] == "approval_required"
+    approval_id = str(pending["approval_id"])
+    get_approval_queue().resolve(approval_id, approved=True)
+
+    result = await execute_code(code, approval_id=approval_id)
+    payload = json.loads(result)
+
+    assert payload["exit_code"] == 0
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_approved_background_process_uses_host_grant_when_sandbox_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.workspace_dir = str(tmp_path)
+    target = tmp_path / "target.txt"
+    target.write_text("delete me", encoding="utf-8")
+    configure_runtime(
+        SandboxSettings(
+            sandbox=True,
+            security_grading=True,
+            backend="noop",
+            allow_legacy_mode=True,
+        ),
+        workspace=tmp_path,
+    )
+
+    async def fail_sandbox(*args: object, **kwargs: object) -> object:
+        raise AssertionError("sandbox background backend should not run after approval")
+
+    monkeypatch.setattr(shell, "_spawn_sandboxed_background_process", fail_sandbox)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True,
+            reason=f"command requires approval: {command}",
+            needs_approval=True,
+        ),
+    )
+
+    pending = json.loads(await shell.background_process("rm target.txt", workdir=str(tmp_path)))
+    assert pending["status"] == "approval_required"
+    approval_id = str(pending["approval_id"])
+    get_approval_queue().resolve(approval_id, approved=True)
+
+    result = await shell.background_process(
+        "rm target.txt",
+        workdir=str(tmp_path),
+        timeout=5,
+        approval_id=approval_id,
+    )
+
+    assert "status: running" in result
+    session_id = result.splitlines()[0].split("=", 1)[1]
+    session = shell._bg_sessions[session_id]
+    assert session.collector_task is not None
+    await session.collector_task
+    assert not target.exists()
 
 
 @pytest.mark.asyncio

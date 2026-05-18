@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -22,9 +23,15 @@ import structlog
 from opensquilla.gateway.approval_queue import get_approval_queue
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend, build_bwrap_argv
 from opensquilla.sandbox.backend.noop import NoopBackend
+from opensquilla.sandbox.backend.seatbelt import (
+    SeatbeltBackend,
+    build_seatbelt_argv,
+    render_seatbelt_profile,
+)
 from opensquilla.sandbox.governance import action_fingerprint
 from opensquilla.sandbox.integration import (
     build_request,
+    escalate_backend_denial,
     gate_action,
     get_runtime,
     run_under_backend,
@@ -99,6 +106,13 @@ class _BgSession:
     ended_at: float | None = None
     returncode: int | None = None
     collector_task: asyncio.Task[None] | None = None
+    cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _SpawnedBackgroundProcess:
+    process: asyncio.subprocess.Process
+    cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list)
 
 
 # Task-local flag: set inside _check_exec_approval when the user actually
@@ -430,6 +444,11 @@ def _finalize_bg_session(session: _BgSession) -> None:
     if session.ended_at is None:
         session.ended_at = time.time()
     session.done = True
+    callbacks = list(session.cleanup_callbacks)
+    session.cleanup_callbacks.clear()
+    for callback in callbacks:
+        with contextlib.suppress(Exception):
+            callback()
 
 
 def _signal_bg_process(session: _BgSession, sig: signal.Signals) -> None:
@@ -616,6 +635,32 @@ async def exec_command(
             sandbox_result = await run_under_backend(backend_request, runtime=runtime)
         except Exception as exc:
             raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
+        if sandbox_result.backend_notes:
+            escalation = await escalate_backend_denial(
+                sandbox_result, request, policy, runtime=runtime
+            )
+            if isinstance(escalation, DenialResult):
+                return json.dumps(escalation.to_dict())
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=cwd,
+                    env=merged_env,
+                )
+                try:
+                    stdout_bytes, _ = await asyncio.wait_for(
+                        proc.communicate(), timeout=effective_timeout
+                    )
+                except TimeoutError:
+                    proc.kill()
+                    await proc.communicate()
+                    return f"[timeout after {effective_timeout}s]\ncommand: {command}"
+                output = stdout_bytes.decode("utf-8", errors="replace")
+                return f"exit_code={proc.returncode}\n{output}"
+            except Exception as e:
+                return f"[error] {e}"
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr
@@ -690,6 +735,8 @@ async def background_process(
         return json.dumps(lockdown_block, ensure_ascii=False)
     if result.needs_approval:
         prior_elevation = _approval_elevation_state()
+        approval_response: dict[str, object] | None = None
+        approval_granted = False
         try:
             approval_response = await _check_exec_approval(
                 tool_name="background_process",
@@ -699,8 +746,10 @@ async def background_process(
                 approval_id=approval_id,
                 background=True,
             )
+            approval_granted = approval_response is None and _approval_elevation_state()
         finally:
-            _restore_approval_elevation(prior_elevation)
+            if not approval_granted:
+                _restore_approval_elevation(prior_elevation)
         if approval_response is not None:
             status = approval_response.get("status")
             if status == "approval_denied":
@@ -721,7 +770,7 @@ async def background_process(
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
-        proc = await _spawn_sandboxed_background_process(
+        spawned = await _spawn_sandboxed_background_process(
             runtime=runtime,
             request=SandboxRequest(
                 argv=("sh", "-lc", command),
@@ -736,11 +785,12 @@ async def background_process(
         session = _BgSession(
             session_id=session_id,
             command=command,
-            process=proc,
+            process=spawned.process,
             session_key=ctx.session_key if ctx is not None else None,
             agent_id=ctx.agent_id if ctx is not None else None,
             is_owner_run=bool(ctx.is_owner) if ctx is not None else False,
             local_urls=_local_server_urls_from_command(command),
+            cleanup_callbacks=spawned.cleanup_callbacks,
         )
         _bg_sessions[session_id] = session
         effective_timeout = _resolve_background_timeout(timeout)
@@ -748,7 +798,7 @@ async def background_process(
         async def _collect_restricted() -> None:
             output_task = asyncio.create_task(_read_bg_output(session))
             try:
-                await asyncio.wait_for(proc.wait(), timeout=effective_timeout)
+                await asyncio.wait_for(spawned.process.wait(), timeout=effective_timeout)
             except TimeoutError:
                 session.timed_out = True
                 await _terminate_bg_session(session)
@@ -819,19 +869,20 @@ async def _spawn_sandboxed_background_process(
     *,
     runtime,
     request: SandboxRequest,
-) -> asyncio.subprocess.Process:
+) -> _SpawnedBackgroundProcess:
     backend = runtime.backend
     if isinstance(backend, BubblewrapBackend):
         argv = build_bwrap_argv(request)
-        return await asyncio.create_subprocess_exec(
+        process = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
         )
+        return _SpawnedBackgroundProcess(process=process)
     if isinstance(backend, NoopBackend):
-        return await asyncio.create_subprocess_exec(
+        process = await asyncio.create_subprocess_exec(
             *request.argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -840,6 +891,48 @@ async def _spawn_sandboxed_background_process(
             env=request.env,
             start_new_session=True,
         )
+        return _SpawnedBackgroundProcess(process=process)
+    if isinstance(backend, SeatbeltBackend):
+        tmp_ctx: tempfile.TemporaryDirectory[str] | None = None
+        profile_path: Path | None = None
+
+        def cleanup() -> None:
+            if profile_path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(profile_path)
+            if tmp_ctx is not None:
+                tmp_ctx.cleanup()
+
+        try:
+            tmp_dir: Path | None = None
+            if request.policy.tmp_writable:
+                tmp_ctx = tempfile.TemporaryDirectory(prefix="opensquilla-seatbelt-tmp-")
+                tmp_dir = Path(tmp_ctx.name)
+            profile = render_seatbelt_profile(request, tmp_dir=tmp_dir)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                prefix="opensquilla-seatbelt-",
+                suffix=".sb",
+                delete=False,
+            ) as profile_file:
+                profile_file.write(profile)
+                profile_file.flush()
+                profile_path = Path(profile_file.name)
+            argv = build_seatbelt_argv(request, profile_path)
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=str(request.cwd),
+                env=request.env,
+                start_new_session=True,
+            )
+            return _SpawnedBackgroundProcess(process=process, cleanup_callbacks=[cleanup])
+        except Exception:
+            cleanup()
+            raise
     raise ToolError(f"Sandbox backend {backend.name!r} does not support background shell")
 
 

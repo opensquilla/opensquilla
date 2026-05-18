@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import secrets
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,8 @@ log = logging.getLogger(__name__)
 
 # Marker text for replay when the persisted file is missing on disk.
 _MISSING_ATTACHMENT_TEMPLATE = "[attachment unavailable: {name}]"
+_WINDOWS_REPLACE_RETRIES = 3
+_WINDOWS_REPLACE_RETRY_DELAY_S = 0.02
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -51,7 +54,14 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        for attempt in range(_WINDOWS_REPLACE_RETRIES if os.name == "nt" else 1):
+            try:
+                os.replace(tmp_path, path)
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt + 1 >= _WINDOWS_REPLACE_RETRIES:
+                    raise
+                time.sleep(_WINDOWS_REPLACE_RETRY_DELAY_S)
     except BaseException:
         try:
             tmp_path.unlink(missing_ok=True)

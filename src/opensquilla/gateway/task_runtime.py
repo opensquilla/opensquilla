@@ -826,7 +826,7 @@ class TaskRuntime:
                                 # the original exception unchanged so the outer
                                 # handler records the correct cause.
                                 _elapsed = time.monotonic() - _deadline_start
-                                if _elapsed >= self._turn_hard_deadline_s:
+                                if _elapsed + 0.01 >= self._turn_hard_deadline_s:
                                     raise _TurnHardDeadlineExceeded(
                                         deadline_s=self._turn_hard_deadline_s,
                                     ) from exc

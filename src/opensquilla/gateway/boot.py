@@ -8,6 +8,7 @@ import logging
 import os
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -290,6 +291,7 @@ class ServiceContainer:
     task_runtime: Any = None
     heartbeat_loop: Any = None
     heartbeat_watcher: Any = None
+    _compaction_listener_remove: Callable[[], None] | None = None
 
     # Backward-compat alias — returns the "main" store (or None).
     @property

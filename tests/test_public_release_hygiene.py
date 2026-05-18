@@ -187,7 +187,7 @@ def test_readme_documents_quick_and_manual_terminal_install_commands() -> None:
     assert 'powershell -c "irm https://astral.sh/uv/install.ps1 | iex"' in text
     assert "$env:Path" in text
     assert "bash scripts/install_source.sh" in text
-    assert ".\\scripts\\install_source.ps1" in text
+    assert "./scripts/install_source.ps1" in text
 
 
 def test_readme_uses_gateway_default_port() -> None:

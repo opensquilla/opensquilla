@@ -36,10 +36,14 @@ def test_config_view_explains_debug_file_logging_fields() -> None:
 def test_logs_mobile_toolbar_wraps_controls() -> None:
     css = LOGS_CSS.read_text(encoding="utf-8")
 
-    levels_rule = css[css.index(".lg-levels__row {") : css.index("}", css.index(".lg-levels__row {"))]
+    levels_start = css.index(".lg-levels__row {")
+    levels_rule = css[levels_start : css.index("}", levels_start)]
     assert "flex-wrap: wrap" in levels_rule
 
-    level_button_rule = css[css.index(".lg-level-btn {") : css.index("}", css.index(".lg-level-btn {"))]
+    level_button_start = css.index(".lg-level-btn {")
+    level_button_rule = css[
+        level_button_start : css.index("}", level_button_start)
+    ]
     assert "min-height: 32px" in level_button_rule
 
     mobile_start = css.index("@media (max-width: 720px)")

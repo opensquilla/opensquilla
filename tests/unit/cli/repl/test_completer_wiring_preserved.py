@@ -123,7 +123,10 @@ def test_interactive_session_wires_completer_and_auto_suggest() -> None:
     """
     # Reset the per-surface cache so this test sees a fresh build.
     prompt_mod._chat_applications.clear()
-    chat_app = prompt_mod._get_or_create_chat_app(Surface.CLI_GATEWAY)
+    chat_app = prompt_mod._get_or_create_chat_app(
+        Surface.CLI_GATEWAY,
+        output=DummyOutput(),
+    )
 
     # Completer is the FuzzyCompleter-wrapping _SlashCompleter from prompt.py.
     assert chat_app._buffer.completer is not None

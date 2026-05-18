@@ -129,6 +129,15 @@ class UploadStore:
         except (OSError, json.JSONDecodeError):
             return None
 
+    def _marker_expired(self, marker: dict[str, Any]) -> bool:
+        expires_at = marker.get("expires_at")
+        if not isinstance(expires_at, (int, float, str)):
+            return False
+        try:
+            return float(expires_at) < self._now()
+        except ValueError:
+            return False
+
     def _write_marker(self, file_uuid: str, meta: dict[str, Any]) -> None:
         path = self._marker_path(file_uuid)
         if path is None:
@@ -205,7 +214,11 @@ class UploadStore:
         async with lock:
             entry = self._entries.get(file_uuid)
             if entry is None:
-                if self._read_marker(file_uuid) is not None:
+                marker = self._read_marker(file_uuid)
+                if marker is not None and self._marker_expired(marker):
+                    self._delete_marker(file_uuid)
+                    raise AttachmentNotFoundError(file_uuid)
+                if marker is not None:
                     raise AttachmentLostInRestartError(file_uuid)
                 raise AttachmentNotFoundError(file_uuid)
             if entry.expires_at < self._now():
@@ -237,6 +250,7 @@ class UploadStore:
         if not expired:
             return 0
         count = 0
+        removed: list[str] = []
         for u in expired:
             lock = self._locks.get(u)
             # Skip-without-blocking: if the lock is held a resolver/upload
@@ -245,7 +259,14 @@ class UploadStore:
                 continue
             self._entries.pop(u, None)
             self._delete_marker(u)
+            removed.append(u)
             count += 1
+        if removed:
+            async with self._lock_for_locks:
+                for u in removed:
+                    lock = self._locks.get(u)
+                    if lock is not None and not lock.locked():
+                        self._locks.pop(u, None)
         return count
 
 

@@ -1,5 +1,6 @@
 ## Checklist
 
+- [ ] This pull request targets `dev`, unless a maintainer asked for a `main` release/hotfix/documentation PR.
 - [ ] I ran `uv run ruff check src tests`.
 - [ ] I ran `uv run pytest -q`.
 - [ ] I ran `uv build --wheel`.

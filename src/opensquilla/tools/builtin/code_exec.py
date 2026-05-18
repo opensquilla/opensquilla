@@ -13,7 +13,12 @@ import tempfile
 import time
 from pathlib import Path
 
-from opensquilla.sandbox.integration import gate_action, get_runtime, run_under_backend
+from opensquilla.sandbox.integration import (
+    escalate_backend_denial,
+    gate_action,
+    get_runtime,
+    run_under_backend,
+)
 from opensquilla.sandbox.types import DenialResult, SandboxRequest
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
@@ -274,6 +279,8 @@ async def execute_code(
         )
 
         prior_elevation = _approval_elevation_state()
+        approval_response: dict[str, object] | None = None
+        approval_granted = False
         try:
             approval_response = await _check_exec_approval(
                 tool_name="execute_code",
@@ -283,8 +290,10 @@ async def execute_code(
                 approval_id=approval_id,
                 background=False,
             )
+            approval_granted = approval_response is None and _approval_elevation_state()
         finally:
-            _restore_approval_elevation(prior_elevation)
+            if not approval_granted:
+                _restore_approval_elevation(prior_elevation)
         if approval_response is not None:
             return json.dumps(approval_response)
 
@@ -324,28 +333,15 @@ async def execute_code(
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
+        backend_request = SandboxRequest(
+            argv=(python_bin, "-c", code),
+            cwd=request.cwd,
+            action_kind=request.action_kind,
+            policy=request.policy,
+            env=safe_env,
+        )
         try:
-            sandbox_result = await run_under_backend(
-                SandboxRequest(
-                    argv=(python_bin, "-c", code),
-                    cwd=request.cwd,
-                    action_kind=request.action_kind,
-                    policy=request.policy,
-                    env=safe_env,
-                ),
-                runtime=runtime,
-            )
-            elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
-            stdout = sandbox_result.stdout
-            stderr = sandbox_result.stderr
-            stderr = _append_code_exec_sandbox_network_hint(stdout=stdout, stderr=stderr)
-            return _execution_result_json(
-                returncode=sandbox_result.returncode,
-                stdout=stdout,
-                stderr=stderr,
-                timed_out=sandbox_result.timed_out,
-                elapsed_ms=elapsed_ms,
-            )
+            sandbox_result = await run_under_backend(backend_request, runtime=runtime)
         except Exception as exc:
             return _execution_result_json(
                 returncode=-1,
@@ -354,6 +350,56 @@ async def execute_code(
                 timed_out=False,
                 elapsed_ms=0,
             )
+        if sandbox_result.backend_notes:
+            escalation = await escalate_backend_denial(
+                sandbox_result, request, _policy, runtime=runtime
+            )
+            if isinstance(escalation, DenialResult):
+                return json.dumps(escalation.to_dict())
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    python_bin, "-c", code,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(workdir_path),
+                    env=safe_env,
+                )
+                try:
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                        proc.communicate(), timeout=timeout
+                    )
+                except TimeoutError:
+                    proc.kill()
+                    await proc.communicate()
+                    elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
+                    return _execution_result_json(
+                        returncode=-1, stdout="", stderr=f"Execution timed out after {timeout}s",
+                        timed_out=True, elapsed_ms=elapsed_ms,
+                    )
+                elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
+                return _execution_result_json(
+                    returncode=proc.returncode if proc.returncode is not None else -1,
+                    stdout=stdout_bytes.decode("utf-8", errors="replace"),
+                    stderr=stderr_bytes.decode("utf-8", errors="replace"),
+                    timed_out=False,
+                    elapsed_ms=elapsed_ms,
+                )
+            except Exception as exc:
+                return _execution_result_json(
+                    returncode=-1, stdout="", stderr=f"Execution error: {exc}",
+                    timed_out=False, elapsed_ms=0,
+                )
+        elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
+        stdout = sandbox_result.stdout
+        stderr = sandbox_result.stderr
+        stderr = _append_code_exec_sandbox_network_hint(stdout=stdout, stderr=stderr)
+        return _execution_result_json(
+            returncode=sandbox_result.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=sandbox_result.timed_out,
+            elapsed_ms=elapsed_ms,
+        )
 
     try:
         proc = await asyncio.create_subprocess_exec(

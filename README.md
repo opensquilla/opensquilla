@@ -209,7 +209,7 @@ modify the code.
    **Windows PowerShell**
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\install_source.ps1
+   powershell -ExecutionPolicy Bypass -File ./scripts/install_source.ps1
    ```
 
    The script installs `.[recommended]` (SquillaRouter + memory + local
@@ -232,7 +232,7 @@ modify the code.
    ```
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\install_source.ps1 -Extras matrix   # Windows
+   powershell -ExecutionPolicy Bypass -File ./scripts/install_source.ps1 -Extras matrix   # Windows
    ```
 
 4. **Configure and run** — see [Configuration](#configuration).

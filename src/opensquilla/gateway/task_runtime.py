@@ -45,6 +45,7 @@ from opensquilla.gateway.task_runtime_records import (
     RuntimeTask as _RuntimeTask,
 )
 from opensquilla.gateway.task_runtime_scheduler import TaskRuntimeScheduler
+from opensquilla.gateway.task_runtime_shutdown import shutdown_task_runtime
 from opensquilla.gateway.task_runtime_terminal import (
     SubagentCompletionEvent as SubagentCompletionEvent,
 )
@@ -402,45 +403,15 @@ class TaskRuntime:
             Deadline (seconds) for the graceful drain phase.  ``None`` means
             wait indefinitely (use with care in production; set a finite value).
         """
-        tasks = [
-            task.asyncio_task
-            for task in self._tasks.values()
-            if task.asyncio_task is not None and not task.asyncio_task.done()
-        ]
-        if not tasks:
-            return
-
-        if graceful:
-            # Phase 1: wait for all tasks to finish naturally.
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True),
-                    timeout=graceful_timeout,
-                )
-                return
-            except TimeoutError:
-                log.warning(
-                    "task_runtime.graceful_shutdown_timeout",
-                    graceful_timeout=graceful_timeout,
-                    remaining=sum(1 for t in tasks if not t.done()),
-                )
-            # Phase 2: cancel whatever is still running after the drain timeout.
-            tasks = [t for t in tasks if not t.done()]
-
-        if cancel:
-            for task in tasks:
-                task.cancel()
-        if tasks:
-            done, pending = await asyncio.wait(tasks, timeout=timeout)
-            for task in pending:
-                task.cancel()
-            if pending:
-                await self._mark_unfinished_abandoned()
-            for task in done:
-                try:
-                    task.result()
-                except (asyncio.CancelledError, Exception):
-                    pass
+        await shutdown_task_runtime(
+            tasks=self._tasks,
+            state_lock=self._state_lock,
+            mark_unfinished_abandoned=self._mark_unfinished_abandoned,
+            cancel=cancel,
+            timeout=timeout,
+            graceful=graceful,
+            graceful_timeout=graceful_timeout,
+        )
 
     async def _try_collect(
         self,

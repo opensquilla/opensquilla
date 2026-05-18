@@ -298,10 +298,13 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - `git diff --check`: passed with no output.
 - [x] Run `scripts/refactor_gate.sh` in child.
   - Result: `2612 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
-- [ ] Commit child verification/stage record.
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration merge hash, verification, and next slice.
+- [x] Commit child verification/stage record.
+  - Commit: `ade2713` (`Record task runtime lifecycle child verification`).
+- [x] Merge child into integration with `git merge --no-ff`.
+  - Merge commit: `2060d8c` (`Merge task runtime lifecycle boundary batch`).
+- [x] Run `scripts/refactor_gate.sh` in integration.
+  - Result: `2614 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
+- [x] Record child hash, integration merge hash, verification, and next slice.
 - [ ] Remove `../opensquilla-refactor-active` and all lifecycle worker worktrees, run `git worktree prune`, and verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
 
 ## Child Gate
@@ -328,7 +331,7 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 
 ## Completion Record
 
-- Child commit:
+- Child commit: `ade2713` (`Record task runtime lifecycle child verification`)
 - Worker commits:
   - `2cbcfdd` (`Extract task runtime execution lifecycle`)
   - `97f6634` (`Extract task runtime shutdown boundary`)
@@ -337,13 +340,14 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - `ee7b095` (`Merge task runtime shutdown lifecycle worker`)
   - `5be97a1` (`Merge task runtime terminal state worker`)
   - `0745eef` (`Restore task runtime TaskRun compatibility alias`)
-- Integration merge:
+- Integration merge: `2060d8c` (`Merge task runtime lifecycle boundary batch`)
 - Verification evidence:
   - Focused batch: `39 passed in 7.98s`.
   - Touched-file ruff: `All checks passed!`.
   - Mypy: `Success: no issues found in 542 source files` with existing notes.
   - `git diff --check`: passed with no output.
   - Child `scripts/refactor_gate.sh`: `2612 passed, 8 skipped, 2 warnings`; gateway smoke passed.
+  - Integration `scripts/refactor_gate.sh`: `2614 passed, 6 skipped, 2 warnings`; gateway smoke passed.
 - Cleanup evidence:
 - Residual risk: the facade still owns `_mark_running`, `_remove_pending`, storage update/event emission in `_mark_terminal`, and queue collection; these are smaller follow-up boundaries after lifecycle extraction.
 - Next recommended slice: task runtime queue/collection and running-state facade cleanup, or a broader Gateway boot cron-result delivery cleanup noted by the previous stage.

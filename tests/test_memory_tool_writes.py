@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -186,3 +187,37 @@ async def test_memory_save_tool_maps_write_errors_to_tool_errors(tmp_path: Path)
         current_tool_context.reset(token)
 
     assert not (workspace / "memory" / "bad.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_memory_save_tool_defaults_daily_path_appends_indexes_and_notifies(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    today_path = f"memory/{datetime.now().strftime('%Y-%m-%d')}.md"
+    target = workspace / today_path
+    target.parent.mkdir(parents=True)
+    target.write_text("old", encoding="utf-8")
+    store = FakeStore()
+    notifications: list[str] = []
+    registry = ToolRegistry()
+    create_memory_tools(
+        {"ops": store},
+        {"ops": object()},
+        registry=registry,
+        memory_source="workspace",
+        on_memory_write=notifications.append,
+    )
+    tool = registry.get("memory_save")
+    assert tool is not None
+
+    token = current_tool_context.set(ToolContext(agent_id="ops", workspace_dir=str(workspace)))
+    try:
+        result = await tool.handler(content="new", mode="replace")
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == f"Saved to {today_path} (1 chunks indexed; integrity=ok)."
+    assert target.read_text(encoding="utf-8") == "old\n\nnew"
+    assert store.indexed == [(today_path, "old\n\nnew")]
+    assert notifications == ["ops"]

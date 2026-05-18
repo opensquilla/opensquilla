@@ -10,6 +10,7 @@ from opensquilla.memory.runtime import (
     reset_memory_tools_runtime,
     resolve_memory_agent,
 )
+from opensquilla.tools.builtin import memory_tools
 from opensquilla.tools.builtin.memory_tools import create_memory_tools
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import ToolContext, ToolError, current_tool_context
@@ -135,3 +136,101 @@ async def test_registered_memory_tools_surface_runtime_errors() -> None:
 
     with pytest.raises(ToolError, match="memory_source"):
         await tool.handler(path="MEMORY.md")
+
+
+@pytest.mark.asyncio
+async def test_registered_memory_tools_delegate_to_memory_tool_surface(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+    class FakeSurface:
+        async def search(self, query: str, max_results: int) -> str:
+            calls.append(("search", (query, max_results), {}))
+            return "surface search"
+
+        async def save(self, content: str, *, path: str = "", mode: str = "append") -> str:
+            calls.append(("save", (content,), {"path": path, "mode": mode}))
+            return "surface save"
+
+        def get(
+            self,
+            path: str,
+            *,
+            from_line: int | None = None,
+            lines: int | None = None,
+            from_arg: object | None = None,
+        ) -> str:
+            calls.append(
+                (
+                    "get",
+                    (path,),
+                    {"from_line": from_line, "lines": lines, "from_arg": from_arg},
+                )
+            )
+            return "surface get"
+
+        async def delete(self, path: str) -> str:
+            calls.append(("delete", (path,), {}))
+            return "surface delete"
+
+    def fake_create_memory_tool_surface(*args: object, **kwargs: object) -> FakeSurface:
+        calls.append(("create", args, kwargs))
+        return FakeSurface()
+
+    monkeypatch.setattr(
+        memory_tools,
+        "create_memory_tool_surface",
+        fake_create_memory_tool_surface,
+        raising=False,
+    )
+    registry = ToolRegistry()
+    store = object()
+    retriever = object()
+
+    memory_tools.create_memory_tools(
+        store,
+        retriever,
+        registry=registry,
+        memory_source="workspace",
+        memory_base="/state",
+        workspace_base="/workspace",
+    )
+
+    assert await registry.get("memory_search").handler(query="alpha", max_results=2) == (
+        "surface search"
+    )
+    assert await registry.get("memory_save").handler(
+        content="remember",
+        path="memory/note.md",
+        mode="replace",
+    ) == "surface save"
+    assert await registry.get("memory_get").handler(
+        path="memory/note.md",
+        from_line=3,
+        **{"from": 2},
+    ) == "surface get"
+    assert await registry.get("memory_delete").handler(path="memory/note.md") == (
+        "surface delete"
+    )
+
+    assert calls == [
+        (
+            "create",
+            (store, retriever),
+            {
+                "memory_base": "/state",
+                "memory_dir": None,
+                "memory_config": None,
+                "on_memory_write": None,
+                "memory_source": "workspace",
+                "workspace_base": "/workspace",
+            },
+        ),
+        ("search", ("alpha", 2), {}),
+        ("save", ("remember",), {"path": "memory/note.md", "mode": "replace"}),
+        (
+            "get",
+            ("memory/note.md",),
+            {"from_line": 3, "lines": None, "from_arg": 2},
+        ),
+        ("delete", ("memory/note.md",), {}),
+    ]

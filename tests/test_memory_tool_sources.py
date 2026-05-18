@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from opensquilla.memory.runtime import ResolvedMemoryAgent, reset_memory_tools_runtime
+from opensquilla.memory.source_paths import private_archive_error
 from opensquilla.memory.tool_sources import (
     MemorySourceError,
     delete_memory_source,
@@ -75,6 +76,7 @@ def test_memory_tool_source_boundary_owns_tool_results() -> None:
 
     root = Path(__file__).resolve().parents[1]
     memory_tools_path = root / "src/opensquilla/tools/builtin/memory_tools.py"
+    tool_surface_path = root / "src/opensquilla/memory/tool_surface.py"
     tree = ast.parse(memory_tools_path.read_text(encoding="utf-8"))
     imports = {
         (node.module, alias.name)
@@ -83,14 +85,16 @@ def test_memory_tool_source_boundary_owns_tool_results() -> None:
         for alias in node.names
     }
 
+    assert tool_surface_path.exists()
+    assert ("opensquilla.memory.tool_surface", "create_memory_tool_surface") in imports
     assert (
         "opensquilla.memory.tool_sources",
         "memory_get_tool_result",
-    ) in imports
+    ) not in imports
     assert (
         "opensquilla.memory.tool_sources",
         "memory_delete_tool_result",
-    ) in imports
+    ) not in imports
     assert ("opensquilla.memory.tool_sources", "read_memory_source") not in imports
     assert ("opensquilla.memory.tool_sources", "delete_memory_source") not in imports
 
@@ -195,3 +199,49 @@ async def test_registered_memory_get_and_delete_delegate_to_memory_sources(
         current_tool_context.reset(token)
 
     assert store.removed == ["memory/note.md"]
+
+
+@pytest.mark.asyncio
+async def test_registered_memory_get_archive_policy_preserves_private_errors(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    archive = workspace / "memory" / "archive" / "turn.md"
+    archive.parent.mkdir(parents=True)
+    archive.write_text("private turn", encoding="utf-8")
+    registry = ToolRegistry()
+    create_memory_tools(
+        FakeStore(),
+        object(),
+        registry=registry,
+        memory_source="workspace",
+        memory_config=type("MemoryConfig", (), {"index_captured_turns": False})(),
+    )
+    memory_get = registry.get("memory_get")
+    assert memory_get is not None
+
+    token = current_tool_context.set(ToolContext(agent_id="main", workspace_dir=str(workspace)))
+    try:
+        assert (
+            await memory_get.handler(path="memory/archive/turn.md")
+            == private_archive_error()
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    registry = ToolRegistry()
+    create_memory_tools(
+        FakeStore(),
+        object(),
+        registry=registry,
+        memory_source="workspace",
+        memory_config=type("MemoryConfig", (), {"index_captured_turns": True})(),
+    )
+    memory_get = registry.get("memory_get")
+    assert memory_get is not None
+
+    token = current_tool_context.set(ToolContext(agent_id="main", workspace_dir=str(workspace)))
+    try:
+        assert await memory_get.handler(path="memory/archive/turn.md") == "private turn"
+    finally:
+        current_tool_context.reset(token)

@@ -20,32 +20,15 @@ Usage (multi-agent routing):
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from opensquilla.memory.runtime import (
-    MemoryToolRuntime,
-    MemoryToolRuntimeError,
-    ResolvedMemoryAgent,
-    configure_memory_tools_runtime,
-    current_memory_tools_runtime,
-    resolve_memory_agent,
-)
-from opensquilla.memory.tool_search import MEMORY_SEARCH_DEFAULT_RESULTS, search_memory_tool
-from opensquilla.memory.tool_sources import (
-    memory_delete_tool_result,
-    memory_get_tool_result,
-)
-from opensquilla.memory.tool_writes import (
-    MemoryWriteError,
-    PlannedMemoryWrite,
-    apply_memory_writes,
-    validate_memory_save_target,
+from opensquilla.memory.tool_surface import (
+    MEMORY_SEARCH_DEFAULT_RESULTS,
+    create_memory_tool_surface,
 )
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import ToolError, current_tool_context
 
 if TYPE_CHECKING:
     from opensquilla.memory.retrieval import MemoryRetriever
@@ -73,7 +56,7 @@ def create_memory_tools(
     When dicts are provided, the active agent_id (from ToolContext via contextvar) selects
     the correct store, retriever, and memory directory at call time.
     """
-    configure_memory_tools_runtime(
+    surface = create_memory_tool_surface(
         stores,
         retrievers,
         memory_base=memory_base,
@@ -83,27 +66,6 @@ def create_memory_tools(
         memory_source=memory_source,
         workspace_base=workspace_base,
     )
-
-    def _runtime() -> MemoryToolRuntime:
-        runtime = current_memory_tools_runtime()
-        if runtime is None:
-            raise ToolError("memory tools runtime not configured.")
-        return runtime
-
-    def _resolve() -> ResolvedMemoryAgent:
-        """Pick the store/retriever/memory_dir/workspace_dir for the current agent_id."""
-        ctx = current_tool_context.get()
-        try:
-            return resolve_memory_agent(
-                agent_id=(ctx.agent_id if ctx else None) or "main",
-                workspace_dir=ctx.workspace_dir if ctx else None,
-            )
-        except MemoryToolRuntimeError as exc:
-            raise ToolError(str(exc)) from exc
-
-    def _allow_archive_memory_source() -> bool:
-        config = _runtime().memory_config
-        return bool(config and getattr(config, "index_captured_turns", False))
 
     @tool(
         name="memory_search",
@@ -127,8 +89,7 @@ def create_memory_tools(
         registry=registry,
     )
     async def memory_search(query: str, max_results: int = MEMORY_SEARCH_DEFAULT_RESULTS) -> str:
-        r = _resolve()
-        return await search_memory_tool(r.retriever, query, max_results)
+        return await surface.search(query, max_results)
 
     @tool(
         name="memory_save",
@@ -160,28 +121,7 @@ def create_memory_tools(
         registry=registry,
     )
     async def memory_save(content: str, path: str = "", mode: str = "append") -> str:
-        r = _resolve()
-        # Default path: today's daily note
-        today = datetime.now().strftime("%Y-%m-%d")
-        if not path:
-            path = f"memory/{today}.md"
-            mode = "append"
-
-        try:
-            validate_memory_save_target(path, mode)
-            chunks = await apply_memory_writes(
-                r,
-                [PlannedMemoryWrite(path=path, content=content, mode=mode)],
-                memory_config=_runtime().memory_config,
-            )
-        except MemoryWriteError as exc:
-            raise ToolError(str(exc)) from exc
-        # Notify snapshot refresh on successful write
-        ctx = current_tool_context.get()
-        _aid = (ctx.agent_id if ctx else None) or "main"
-        _runtime().notify_memory_write(_aid)
-        integrity = "ok" if chunks[path] > 0 else "missing_chunks"
-        return f"Saved to {path} ({chunks[path]} chunks indexed; integrity={integrity})."
+        return await surface.save(content, path=path, mode=mode)
 
     @tool(
         name="memory_get",
@@ -213,14 +153,7 @@ def create_memory_tools(
         lines: int | None = None,
         **kwargs: Any,
     ) -> str:
-        return memory_get_tool_result(
-            _resolve(),
-            path,
-            from_line=from_line,
-            lines=lines,
-            from_arg=kwargs.get("from"),
-            allow_archive=_allow_archive_memory_source(),
-        )
+        return surface.get(path, from_line=from_line, lines=lines, from_arg=kwargs.get("from"))
 
     @tool(
         name="memory_delete",
@@ -239,11 +172,7 @@ def create_memory_tools(
         registry=registry,
     )
     async def memory_delete(path: str) -> str:
-        result = await memory_delete_tool_result(
-            _resolve(),
-            path,
-            allow_archive=_allow_archive_memory_source(),
-        )
+        result = await surface.delete(path)
         if result.startswith("Deleted "):
             logger.info("memory_delete.ok", path=path)
         return result

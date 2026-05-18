@@ -212,63 +212,92 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - Observed: same-thread read-only probe started successfully.
 - [x] Create fixed active worktree on `codex/refactor-task-runtime-lifecycle-boundary-batch`.
 - [x] Write this stage plan before implementation.
-- [ ] Commit this stage plan as the worker base.
-- [ ] Create branch-isolated worker worktrees from the plan base:
+- [x] Commit this stage plan as the worker base.
+  - Commit: `2851140` (`Plan task runtime lifecycle boundary batch`).
+- [x] Create branch-isolated worker worktrees from the plan base:
   - `../opensquilla-refactor-agent-lifecycle-execution`
   - `../opensquilla-refactor-agent-lifecycle-shutdown`
   - `../opensquilla-refactor-agent-lifecycle-terminal-state`
-- [ ] Launch three same-thread `spawn_agent` workers with explicit ownership and worktree paths.
+- [x] Launch three same-thread `spawn_agent` workers with explicit ownership and worktree paths.
+  - `lifecycle-execution`: agent `019e3d09-342a-7c93-81f9-c7fbe671846d`.
+  - `lifecycle-shutdown`: agent `019e3d09-3547-7861-baf2-f478d3dd3657`.
+  - `lifecycle-terminal-state`: agent `019e3d09-362e-7e00-aa31-f2a78f196993`.
 
 ### Task 2: Worker `lifecycle-execution`
 
-- [ ] Write RED tests in `tests/test_gateway/test_task_runtime_execution_boundary.py`.
+- [x] Write RED tests in `tests/test_gateway/test_task_runtime_execution_boundary.py`.
   - Assert `opensquilla.gateway.task_runtime_execution` exports an execution helper.
   - Assert `TaskRuntime._execute` is a thin delegator into the execution boundary.
   - Assert cancel-before-start still emits `CANCELLED` with `terminal_reason="cancelled_before_start"`.
   - Assert slot release still happens if the turn handler raises.
-- [ ] Run `uv run --extra dev pytest tests/test_gateway/test_task_runtime_execution_boundary.py -q` and confirm the expected missing-module or ownership failure.
-- [ ] Move `_execute` flow to `task_runtime_execution.py`, using callbacks for wait/acquire/release/mark-terminal/turn-handler/metrics.
-- [ ] Run focused worker checks:
+- [x] Run `uv run --extra dev pytest tests/test_gateway/test_task_runtime_execution_boundary.py -q` and confirm the expected missing-module or ownership failure.
+  - RED: `2 failed, 2 passed`; failures were missing `opensquilla.gateway.task_runtime_execution` and `_execute` not yet delegating.
+- [x] Move `_execute` flow to `task_runtime_execution.py`, using callbacks for wait/acquire/release/mark-terminal/turn-handler/metrics.
+- [x] Run focused worker checks:
   - `uv run --extra dev pytest tests/test_gateway/test_task_runtime_execution_boundary.py tests/test_gateway/test_metrics_counters.py tests/test_gateway/test_fair_queuing.py -q`
   - touched-file `ruff check`
-- [ ] Commit with the required trailer.
+  - GREEN: `12 passed`.
+  - Ruff: `All checks passed!`.
+  - `git diff --check && git diff --cached --check`: passed with no output.
+- [x] Commit with the required trailer.
+  - Commit: `2cbcfdd` (`Extract task runtime execution lifecycle`).
 
 ### Task 3: Worker `lifecycle-shutdown`
 
-- [ ] Write RED tests in `tests/test_gateway/test_task_runtime_shutdown_boundary.py`.
+- [x] Write RED tests in `tests/test_gateway/test_task_runtime_shutdown_boundary.py`.
   - Assert `opensquilla.gateway.task_runtime_shutdown` exports a shutdown helper.
   - Assert `TaskRuntime.shutdown` is a thin delegator.
   - Assert graceful drain completes without cancelling.
   - Assert graceful timeout falls back to cancellation and invokes abandoned marking once for unfinished tasks.
   - Assert `cancel=False` waits without issuing cancellation.
-- [ ] Run `uv run --extra dev pytest tests/test_gateway/test_task_runtime_shutdown_boundary.py -q` and confirm the expected missing-module or ownership failure.
-- [ ] Move shutdown task snapshot/drain/cancel/abandon orchestration to `task_runtime_shutdown.py`.
-- [ ] Run focused worker checks:
+- [x] Run `uv run --extra dev pytest tests/test_gateway/test_task_runtime_shutdown_boundary.py -q` and confirm the expected missing-module or ownership failure.
+  - RED: exit 2, `ModuleNotFoundError: No module named 'opensquilla.gateway.task_runtime_shutdown'`.
+- [x] Move shutdown task snapshot/drain/cancel/abandon orchestration to `task_runtime_shutdown.py`.
+- [x] Run focused worker checks:
   - `uv run --extra dev pytest tests/test_gateway/test_task_runtime_shutdown_boundary.py tests/test_gateway/test_graceful_shutdown_drain.py tests/test_gateway/test_shutdown_order.py -q`
   - touched-file `ruff check`
-- [ ] Commit with the required trailer.
+  - GREEN: `8 passed in 0.96s`.
+  - Ruff: `All checks passed!`.
+  - `git diff --check && git diff --cached --check`: passed.
+- [x] Commit with the required trailer.
+  - Commit: `97f6634` (`Extract task runtime shutdown boundary`).
 
 ### Task 4: Worker `lifecycle-terminal-state`
 
-- [ ] Write RED tests in `tests/test_gateway/test_task_runtime_terminal_state_boundary.py`.
+- [x] Write RED tests in `tests/test_gateway/test_task_runtime_terminal_state_boundary.py`.
   - Assert `opensquilla.gateway.task_runtime_terminal_state` exports terminal cleanup helpers.
   - Assert `TaskRuntime._mark_terminal` delegates state cleanup and no longer directly mutates every tracking dict inline.
   - Assert terminal cleanup helper never references or pops `_session_locks`.
   - Assert unfinished snapshot returns non-terminal tasks for shutdown-abandon flow.
-- [ ] Run `uv run --extra dev pytest tests/test_gateway/test_task_runtime_terminal_state_boundary.py -q` and confirm the expected missing-module or ownership failure.
-- [ ] Move terminal state cleanup and unfinished-task snapshot helpers to `task_runtime_terminal_state.py`.
-- [ ] Run focused worker checks:
+- [x] Run `uv run --extra dev pytest tests/test_gateway/test_task_runtime_terminal_state_boundary.py -q` and confirm the expected missing-module or ownership failure.
+  - RED: `4 failed` due to missing `task_runtime_terminal_state` module and `_mark_terminal` not delegating cleanup.
+- [x] Move terminal state cleanup and unfinished-task snapshot helpers to `task_runtime_terminal_state.py`.
+- [x] Run focused worker checks:
   - `uv run --extra dev pytest tests/test_gateway/test_task_runtime_terminal_state_boundary.py tests/test_gateway/test_no_split_brain_lock.py tests/test_gateway/test_task_runtime_terminal_cleanup.py tests/test_gateway/test_task_runtime_scheduler_boundary.py -q`
   - touched-file `ruff check`
-- [ ] Commit with the required trailer.
+  - GREEN: `14 passed in 6.68s`.
+  - Ruff: `All checks passed!`.
+  - `git diff --check` and `git diff --cached --check`: clean.
+- [x] Commit with the required trailer.
+  - Commit: `bde475d` (`Extract task runtime terminal state cleanup`).
 
 ### Task 5: Main-Thread Integration Review
 
-- [ ] Collect worker results and inspect diffs before trusting summaries.
-- [ ] Merge worker branches into `../opensquilla-refactor-active`, resolving shared `task_runtime.py` conflicts manually.
-- [ ] Run focused green command.
-- [ ] Run additional touched-file checks.
-- [ ] Run `scripts/refactor_gate.sh` in child.
+- [x] Collect worker results and inspect diffs before trusting summaries.
+- [x] Merge worker branches into `../opensquilla-refactor-active`, resolving shared `task_runtime.py` conflicts manually.
+  - Execution worker merge: `b3a85ba` (`Merge task runtime execution lifecycle worker`).
+  - Shutdown worker merge: `ee7b095` (`Merge task runtime shutdown lifecycle worker`).
+  - Terminal-state worker merge: `5be97a1` (`Merge task runtime terminal state worker`).
+  - Compatibility fix: `0745eef` (`Restore task runtime TaskRun compatibility alias`).
+- [x] Run focused green command.
+  - `uv run --extra dev pytest tests/test_gateway/test_task_runtime_execution_boundary.py tests/test_gateway/test_task_runtime_shutdown_boundary.py tests/test_gateway/test_task_runtime_terminal_state_boundary.py tests/test_gateway/test_graceful_shutdown_drain.py tests/test_gateway/test_shutdown_order.py tests/test_gateway/test_no_split_brain_lock.py tests/test_gateway/test_task_runtime_terminal_cleanup.py tests/test_gateway/test_metrics_counters.py tests/test_gateway/test_fair_queuing.py tests/test_gateway/test_task_runtime_terminal_message.py tests/test_gateway/test_task_runtime_scheduler_boundary.py -q`
+  - Result: `39 passed in 7.98s` after restoring `TaskRun` compatibility alias.
+- [x] Run additional touched-file checks.
+  - Touched-file ruff: `All checks passed!`.
+  - `uv run --extra dev mypy src/opensquilla --show-error-codes`: `Success: no issues found in 542 source files` with existing notes.
+  - `git diff --check`: passed with no output.
+- [x] Run `scripts/refactor_gate.sh` in child.
+  - Result: `2612 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
 - [ ] Commit child verification/stage record.
 - [ ] Merge child into integration with `git merge --no-ff`.
 - [ ] Run `scripts/refactor_gate.sh` in integration.
@@ -301,9 +330,20 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 
 - Child commit:
 - Worker commits:
+  - `2cbcfdd` (`Extract task runtime execution lifecycle`)
+  - `97f6634` (`Extract task runtime shutdown boundary`)
+  - `bde475d` (`Extract task runtime terminal state cleanup`)
+  - `b3a85ba` (`Merge task runtime execution lifecycle worker`)
+  - `ee7b095` (`Merge task runtime shutdown lifecycle worker`)
+  - `5be97a1` (`Merge task runtime terminal state worker`)
+  - `0745eef` (`Restore task runtime TaskRun compatibility alias`)
 - Integration merge:
 - Verification evidence:
+  - Focused batch: `39 passed in 7.98s`.
+  - Touched-file ruff: `All checks passed!`.
+  - Mypy: `Success: no issues found in 542 source files` with existing notes.
+  - `git diff --check`: passed with no output.
+  - Child `scripts/refactor_gate.sh`: `2612 passed, 8 skipped, 2 warnings`; gateway smoke passed.
 - Cleanup evidence:
-- Residual risk:
-- Next recommended slice:
-
+- Residual risk: the facade still owns `_mark_running`, `_remove_pending`, storage update/event emission in `_mark_terminal`, and queue collection; these are smaller follow-up boundaries after lifecycle extraction.
+- Next recommended slice: task runtime queue/collection and running-state facade cleanup, or a broader Gateway boot cron-result delivery cleanup noted by the previous stage.

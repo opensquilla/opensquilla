@@ -50,8 +50,7 @@ def test_chat_renders_live_and_historical_artifacts_as_header_auth_downloads() -
     assert "data-artifact-download" in source
     assert "headers['x-opensquilla-session-key'] = _sessionKey" in source
     assert "url.searchParams.delete('sessionKey')" in source
-    assert "fetch(downloadUrl" in source
-    assert "Authorization" in source
+    assert "WebUiHttp.download(downloadUrl" in source
 
 
 def test_chat_artifact_images_render_as_preview_cards_and_refresh_on_done() -> None:

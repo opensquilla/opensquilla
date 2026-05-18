@@ -58,8 +58,7 @@ const ApprovalsView = (() => {
   }
 
   function _loadData() {
-    fetch('/api/approvals')
-      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    WebUiHttp.getJson('/api/approvals')
       .then(data => {
         const container = _el && _el.querySelector('#appr-content');
         if (!container) return;
@@ -139,11 +138,7 @@ const ApprovalsView = (() => {
             const elevatedMode = decision === 'bypass' ? 'full' : '';
             const body = { id, namespace, approved, allowAlways, rememberIntent };
             if (elevatedMode) body.elevatedMode = elevatedMode;
-            fetch('/api/approvals/resolve', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body)
-            }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            WebUiHttp.postJson('/api/approvals/resolve', body)
               .then(() => {
                 if (elevatedMode) _setBrowserElevated(elevatedMode);
                 UI.toast((elevatedMode ? 'Bypass enabled' : (approved ? 'Approved' : 'Denied')) + ': ' + id, 'info');
@@ -198,11 +193,7 @@ const ApprovalsView = (() => {
         // Optimistically style
         container.querySelectorAll('.ap-radio').forEach(r => r.classList.remove('is-active'));
         input.closest('.ap-radio')?.classList.add('is-active');
-        fetch('/api/approvals/settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode }),
-        }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        WebUiHttp.postJson('/api/approvals/settings', { mode })
           .then(() => {
             UI.toast('Approval strategy: ' + mode, mode === 'auto-approve' ? 'warn' : 'info');
             _loadData();

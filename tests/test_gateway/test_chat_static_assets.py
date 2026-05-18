@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 APP_JS = Path("src/opensquilla/gateway/static/js/app.js")
+HTTP_ACCESS_JS = Path("src/opensquilla/gateway/static/js/http_access.js")
 CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
 CHAT_CSS = Path("src/opensquilla/gateway/static/css/views/chat.css")
 BASE_CSS = Path("src/opensquilla/gateway/static/css/base.css")
@@ -20,6 +21,10 @@ BASE_CSS = Path("src/opensquilla/gateway/static/css/base.css")
 
 def _read_app_js() -> str:
     return APP_JS.read_text(encoding="utf-8")
+
+
+def _read_http_access_js() -> str:
+    return HTTP_ACCESS_JS.read_text(encoding="utf-8")
 
 
 def _read_chat_js() -> str:
@@ -117,16 +122,17 @@ def test_chat_js_uses_two_mode_attachment_payload() -> None:
 
 def test_chat_upload_uses_app_auth_token_accessor() -> None:
     app_source = _read_app_js()
+    http_source = _read_http_access_js()
     chat_source = _read_chat_js()
 
     assert "window.OpenSquillaAuth" not in chat_source
     assert "function getAuthToken()" in app_source
     assert "loadConnectionSettings().token" in app_source
     assert "getAuthToken" in app_source
-    assert "App.getAuthToken" in chat_source
-    assert "window.App && App.getAuthToken" not in chat_source
-    assert "const token = (App.getAuthToken && App.getAuthToken()) || '';" in chat_source
-    assert "headers['Authorization'] = `Bearer ${token}`" in chat_source
+    assert "WebUiHttp.upload('/api/v1/files/upload', form" in chat_source
+    assert "App.getAuthToken" not in chat_source
+    assert "getAuthToken" in http_source
+    assert "headers['Authorization'] = `Bearer ${token}`" in http_source
 
 
 # ---------------------------------------------------------------------------

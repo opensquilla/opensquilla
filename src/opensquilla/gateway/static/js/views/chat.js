@@ -1377,13 +1377,10 @@ const ChatView = (() => {
       let sessions = [];
       let fetched = false;
       try {
-        const resp = await fetch('/api/sessions');
-        if (resp.ok) {
-          const data = await resp.json();
-          const raw = data.sessions || data.keys || [];
-          sessions = raw.filter((s) => !!(typeof s === 'string' ? s : (s.key || s.session || s.sessionKey)));
-          fetched = true;
-        }
+        const data = await WebUiHttp.getJson('/api/sessions');
+        const raw = data.sessions || data.keys || [];
+        sessions = raw.filter((s) => !!(typeof s === 'string' ? s : (s.key || s.session || s.sessionKey)));
+        fetched = true;
       } catch (_) { /* network error — fall through to prompt */ }
 
       // Bail if dismissed during await.
@@ -1602,10 +1599,9 @@ const ChatView = (() => {
   async function _syncElevatedMode(mode) {
     if (!_sessionKey || _elevatedUnavailable) return;
     try {
-      const resp = await fetch('/api/elevated-mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionKey: _sessionKey, mode: mode || 'off' }),
+      const resp = await WebUiHttp.postJsonResponse('/api/elevated-mode', {
+        sessionKey: _sessionKey,
+        mode: mode || 'off',
       });
       if (resp.status === 403) {
         // Owner-only endpoint, but the current connection isn't a local-owner
@@ -3435,13 +3431,9 @@ const ChatView = (() => {
     const downloadUrl = _artifactDownloadUrl(artifact);
     if (!downloadUrl) return;
     const headers = {};
-    const token = (App.getAuthToken && App.getAuthToken()) || '';
-    if (token) headers['Authorization'] = `Bearer ${token}`;
     if (_sessionKey) headers['x-opensquilla-session-key'] = _sessionKey;
-    const response = await fetch(downloadUrl, {
-      method: 'GET',
+    const response = await WebUiHttp.download(downloadUrl, {
       headers: headers,
-      credentials: 'same-origin',
     });
     if (!response.ok) {
       UI.toast(`Download failed: HTTP ${response.status}`, 'warn', 3500);
@@ -3776,15 +3768,7 @@ const ChatView = (() => {
       : new File([file], file.name, { type: mime });
     form.append('file', uploadFile, file.name);
     form.append('mime', mime);
-    const headers = {};
-    const token = (App.getAuthToken && App.getAuthToken()) || '';
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    const response = await fetch('/api/v1/files/upload', {
-      method: 'POST',
-      body: form,
-      headers: headers,
-      credentials: 'same-origin',
-    });
+    const response = await WebUiHttp.upload('/api/v1/files/upload', form);
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
       throw new Error(`HTTP ${response.status} ${detail}`);

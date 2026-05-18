@@ -55,13 +55,7 @@ const ApprovalMonitor = (() => {
     if (_pollBusy) return;
     _pollBusy = true;
     try {
-      const resp = await fetch('/api/approvals', { cache: 'no-store' });
-      if (!resp.ok) {
-        _setBadge(0);
-        _increasePollBackoff();
-        return;
-      }
-      const data = await resp.json();
+      const data = await WebUiHttp.getJson('/api/approvals', { cache: 'no-store' });
       const pending = Array.isArray(data.pending) ? data.pending : [];
       _setBadge(pending.length);
       _notifyPending(pending);
@@ -181,12 +175,7 @@ const ApprovalMonitor = (() => {
     };
     if (elevatedMode) body.elevatedMode = elevatedMode;
     try {
-      const resp = await fetch('/api/approvals/resolve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      await WebUiHttp.postJson('/api/approvals/resolve', body);
       if (elevatedMode) _setBrowserElevated(elevatedMode);
       _closeModal();
       UI.toast(

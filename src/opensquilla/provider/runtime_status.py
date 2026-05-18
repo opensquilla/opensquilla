@@ -58,6 +58,12 @@ class ProviderStatusReport:
     rows: tuple[ProviderStatusRow, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderStatusQuery:
+    provider_filter: str | None = None
+    probe_models: bool = False
+
+
 async def build_provider_status_payload(
     specs: Iterable[ProviderStatusSpec],
     *,
@@ -136,12 +142,29 @@ async def build_provider_status_report(
     probe_models: bool = False,
     environ: Mapping[str, str] | None = None,
 ) -> ProviderStatusReport:
+    return await build_provider_status_report_for_query(
+        specs,
+        ProviderStatusQuery(provider_filter=provider_filter, probe_models=probe_models),
+        provider_selector=provider_selector,
+        config=config,
+        environ=environ,
+    )
+
+
+async def build_provider_status_report_for_query(
+    specs: Iterable[ProviderStatusSpec],
+    query: ProviderStatusQuery,
+    *,
+    provider_selector: Any | None,
+    config: Any | None,
+    environ: Mapping[str, str] | None = None,
+) -> ProviderStatusReport:
     spec_list = list(specs)
-    if provider_filter:
+    if query.provider_filter:
         by_id = {spec.provider_id: spec for spec in spec_list}
-        if provider_filter not in by_id:
-            raise ValueError(f"Unknown provider: {provider_filter}")
-        spec_list = [by_id[provider_filter]]
+        if query.provider_filter not in by_id:
+            raise ValueError(f"Unknown provider: {query.provider_filter}")
+        spec_list = [by_id[query.provider_filter]]
 
     env = environ if environ is not None else os.environ
     active = active_llm_provider(provider_selector, config)
@@ -161,7 +184,7 @@ async def build_provider_status_report(
         buildable, error = _provider_buildability(spec, is_active, model, llm_cfg, base_url)
         probe = (
             await probe_provider_models(spec.provider_id, provider_selector)
-            if probe_models and is_active
+            if query.probe_models and is_active
             else ProviderModelProbe(
                 attempted=False,
                 status="skipped",

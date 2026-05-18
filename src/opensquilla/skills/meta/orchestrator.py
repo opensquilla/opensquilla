@@ -834,15 +834,26 @@ class MetaOrchestrator:
         the process. Stdout is interpreted per ``parse`` (``text`` |
         ``json`` | ``lines``) and returned as the step output.
 
-        Errors (missing entrypoint, non-zero exit, timeout, invalid JSON when
-        ``parse=json``) raise :class:`RuntimeError` so the orchestrator's
-        step-failure path catches them and the meta-skill falls back to a
-        normal turn instead of silently feeding garbage downstream.
+        Optional features:
+
+        * ``entrypoint.stdin`` — Jinja-rendered template (with ``{baseDir}``
+          substitution) piped to the subprocess's stdin.
+        * ``entrypoint.assemble`` — a list of ``{into, from_template}``
+          entries; each ``from_template`` is rendered and written to ``into``
+          (resolved against ``workdir`` for relative paths) before the
+          subprocess starts.
+
+        Errors (missing entrypoint, non-zero exit, timeout, invalid JSON
+        when ``parse=json``, invalid ``stdin``/``assemble`` shape) raise
+        :class:`RuntimeError` so the orchestrator's step-failure path catches
+        them and the meta-skill falls back to a normal turn instead of
+        silently feeding garbage downstream.
         """
 
         import asyncio
         import json as _json
         import shlex
+        from pathlib import Path as _Path
 
         skill_spec = self._skill_loader.get_by_name(effective_skill)
         if skill_spec is None:
@@ -934,8 +945,6 @@ class MetaOrchestrator:
             into_path_str = _render(into_raw.replace("{baseDir}", base_dir))
             template_body = _render(template_raw.replace("{baseDir}", base_dir))
             # Relative paths anchor to cwd (workdir), absolute paths pass through.
-            from pathlib import Path as _Path
-
             target = _Path(into_path_str)
             if not target.is_absolute() and workdir:
                 target = _Path(workdir) / target

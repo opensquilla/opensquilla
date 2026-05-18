@@ -290,9 +290,16 @@ Co-authored-by: Codex <noreply@openai.com>
     `2631 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
 - [x] Record child hash, integration hash, verification, and next slice.
   - Integration record commit pending in this edit.
-- [ ] Remove `../opensquilla-refactor-active` and worker worktrees, run
+- [x] Remove `../opensquilla-refactor-active` and worker worktrees, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
+  - Removed `../opensquilla-refactor-active`.
+  - Removed `../opensquilla-refactor-agent-runtime-state`.
+  - Removed `../opensquilla-refactor-agent-cron-delivery`.
+  - Ran `git worktree prune`.
+  - Verified all three removed paths are absent.
+  - `git worktree list --porcelain` shows no remaining `opensquilla-refactor-*`
+    worktrees except `../opensquilla-refactor-integration`.
 
 ## Child gate
 
@@ -331,7 +338,7 @@ Co-authored-by: Codex <noreply@openai.com>
 - Integration merge:
   - `4a1e6f7` (`Merge runtime state cron delivery parallel batch`).
 - Integration record:
-  - Pending in this edit.
+  - `23325e5` (`Record runtime state cron delivery integration`).
 - Verification evidence:
   - Runtime worker RED: missing `opensquilla.gateway.task_runtime_state` module.
   - Runtime review-loop RED: missing legacy `_tasks` fallback.
@@ -346,7 +353,12 @@ Co-authored-by: Codex <noreply@openai.com>
   - Integration gate: ruff passed; mypy success on 544 source files; pytest
     `2631 passed, 6 skipped, 2 warnings`; gateway smoke passed.
 - Cleanup evidence:
-  - Pending until integration merge and final worktree cleanup.
+  - Removed `../opensquilla-refactor-active`.
+  - Removed `../opensquilla-refactor-agent-runtime-state`.
+  - Removed `../opensquilla-refactor-agent-cron-delivery`.
+  - Ran `git worktree prune`.
+  - Verified all three removed paths are absent and `git worktree list --porcelain`
+    has no extra refactor worktrees beyond `../opensquilla-refactor-integration`.
 - Residual risk:
   - `TaskRuntime` still exposes private compatibility properties (`_tasks`,
     `_pending_by_session`, `_running_by_session`, `_last_envelope_by_session`,

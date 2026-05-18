@@ -3,7 +3,7 @@
 Verifies that ``SessionManager.append_message`` passes ``expected_epoch``
 through to storage; that a concurrent reset + write pair is atomic so
 the write either fully succeeds (pre-reset) or fully fails (post-reset)
-with no partial rows; and that ``_emit_to_subscribers`` reads the
+with no partial rows; and that ``emit_to_session_subscribers`` reads the
 in-process epoch cache after warm-up rather than hitting the DB on
 every event.
 """
@@ -154,17 +154,17 @@ async def test_concurrent_reset_during_write_atomic(storage):
     assert entries == [], f"No rows must be written after stale epoch; found {entries}"
 
 
-# ── _emit_to_subscribers uses cache after warm-up ──────────────────────────
+# ── emit_to_session_subscribers uses cache after warm-up ──────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_emit_no_db_query_per_event(storage):
-    """_emit_to_subscribers must not call storage.get_epoch on every event.
+    """emit_to_session_subscribers must not call storage.get_epoch on every event.
 
     After the first cache-miss DB hit, subsequent emits for the same session
     read the in-process cache.  100 emits → < 5 DB calls.
     """
-    from opensquilla.gateway.rpc_sessions import _emit_to_subscribers
+    from opensquilla.gateway.rpc_session_events import emit_to_session_subscribers
 
     node = await _make_session(storage)
     key = node.session_key
@@ -210,7 +210,7 @@ async def test_emit_no_db_query_per_event(storage):
     _ws_module.get_registry = lambda: FakeRegistry()
     try:
         for _ in range(100):
-            await _emit_to_subscribers(
+            await emit_to_session_subscribers(
                 fake_ctx, key, "session.event.text_delta", {"text": "x"}
             )
     finally:

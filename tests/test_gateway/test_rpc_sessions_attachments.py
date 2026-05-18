@@ -14,13 +14,25 @@ from typing import Any
 
 import pytest
 
-from opensquilla.gateway.rpc_sessions import (
-    _ALLOWED_MEDIA_TYPES,
-    _MAX_ATTACHMENT_BYTES,
-    _MAX_ATTACHMENTS,
-    _MAX_TEXT_ATTACHMENT_BYTES,
-    _validate_attachments,
+from opensquilla.gateway.rpc_session_send_inputs import (
+    ALLOWED_MEDIA_TYPES as _ALLOWED_MEDIA_TYPES,
 )
+from opensquilla.gateway.rpc_session_send_inputs import (
+    MAX_ATTACHMENT_BYTES as _MAX_ATTACHMENT_BYTES,
+)
+from opensquilla.gateway.rpc_session_send_inputs import (
+    MAX_ATTACHMENTS as _MAX_ATTACHMENTS,
+)
+from opensquilla.gateway.rpc_session_send_inputs import (
+    MAX_TEXT_ATTACHMENT_BYTES as _MAX_TEXT_ATTACHMENT_BYTES,
+)
+from opensquilla.gateway.rpc_session_send_inputs import (
+    validate_session_attachments,
+)
+
+
+def _validate_attachments(raw_attachments: Any) -> list[dict[str, Any]]:
+    return validate_session_attachments(raw_attachments, logger=None)
 
 
 def _b64(payload: bytes) -> str:
@@ -56,25 +68,19 @@ def test_max_attachments_per_turn_is_ten() -> None:
     assert _MAX_ATTACHMENTS == 10
 
 
-def test_rpc_session_attachment_helpers_delegate_to_send_input_boundary() -> None:
+def test_rpc_session_attachment_helpers_live_in_send_input_boundary() -> None:
     import ast
     from pathlib import Path
 
-    from opensquilla.gateway import rpc_sessions
+    from opensquilla.gateway import rpc_session_send_inputs, rpc_sessions
 
     source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    boundary_path = Path(rpc_sessions.__file__).with_name("rpc_session_send_inputs.py")
+    boundary_path = Path(rpc_session_send_inputs.__file__)
 
     assert boundary_path.exists()
 
     boundary_tree = ast.parse(boundary_path.read_text(encoding="utf-8"))
-    imports = {
-        (node.module, alias.name)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module
-        for alias in node.names
-    }
     top_level_functions = {
         node.name
         for node in tree.body
@@ -86,12 +92,8 @@ def test_rpc_session_attachment_helpers_delegate_to_send_input_boundary() -> Non
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
-    assert {
-        ("opensquilla.gateway.rpc_session_send_inputs", "resolve_session_attachments"),
-        ("opensquilla.gateway.rpc_session_send_inputs", "validate_session_attachments"),
-    } <= imports
-    assert "_validate_attachments" in top_level_functions
-    assert "_resolve_attachments" in top_level_functions
+    assert "_validate_attachments" not in top_level_functions
+    assert "_resolve_attachments" not in top_level_functions
     assert {
         "validate_session_attachments",
         "resolve_session_attachments",
@@ -189,24 +191,23 @@ def test_claimed_pdf_without_magic_bytes_rejected() -> None:
         _validate_attachments([_attach("application/pdf", not_a_pdf, name="liar.pdf")])
 
 
-def test_mime_sniff_logs_warning_on_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mime_sniff_logs_warning_on_mismatch() -> None:
     """Mismatch between claimed and sniffed MIME emits a structured warning.
 
-    The validator uses structlog (not stdlib logging) so we capture via
-    monkeypatch on the module-level logger rather than caplog — testing
-    the contract, not the framework plumbing.
+    The validator accepts a structured logger; capture via a tiny fake logger
+    rather than caplog to test the contract, not the framework plumbing.
     """
-    from opensquilla.gateway import rpc_sessions
-
     captured: list[tuple[str, dict[str, Any]]] = []
 
-    def _record_warning(event: str, **kwargs: Any) -> None:
-        captured.append((event, kwargs))
-
-    monkeypatch.setattr(rpc_sessions.log, "warning", _record_warning)
+    class FakeLogger:
+        def warning(self, event: str, **kwargs: Any) -> None:
+            captured.append((event, kwargs))
 
     pdf_bytes = b"%PDF-1.4\nbody\n"
-    _validate_attachments([_attach("text/plain", pdf_bytes, name="weird.txt")])
+    validate_session_attachments(
+        [_attach("text/plain", pdf_bytes, name="weird.txt")],
+        logger=FakeLogger(),
+    )
 
     assert any(
         "mime" in event.lower() and "mismatch" in event.lower() for event, _ in captured

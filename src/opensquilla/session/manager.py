@@ -128,8 +128,8 @@ class SessionManager:
         self._runtime_state_evictors: list[RuntimeStateEvictor] = list(
             runtime_state_evictors or ()
         )
-        # In-process epoch cache so _emit_to_subscribers can
-        # read the current epoch without a DB round-trip on every event.
+        # In-process epoch cache so session event delivery can avoid a
+        # DB round-trip on every event.
         # Invalidated (updated) whenever increment_epoch commits a new value.
         self._epoch_cache: dict[str, int] = {}
 

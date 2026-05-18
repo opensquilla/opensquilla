@@ -38,6 +38,7 @@ from opensquilla.gateway.app import create_gateway_app
 from opensquilla.gateway.config import GatewayConfig, is_public_bind
 from opensquilla.gateway.cron_result_delivery import build_cron_delivery_chain
 from opensquilla.gateway.rpc import get_dispatcher
+from opensquilla.gateway.runtime_wiring import build_gateway_runtime_wiring
 from opensquilla.gateway.session_event_delivery import deliver_session_event
 from opensquilla.gateway.task_runtime_streaming import (
     emit_task_runtime_stream_events as _emit_task_runtime_stream_events,
@@ -1344,111 +1345,25 @@ async def start_gateway_server(
     # Lazy ref for channel_manager — cron handler captures it via closure,
     # populated after channel_manager is constructed below.
     _cm_holder: list = [None]
-    from opensquilla.scheduler.heartbeat import (
-        HeartbeatConfigWatcher,
-        HeartbeatRunner,
-    )
-    from opensquilla.scheduler.heartbeat_loop import HeartbeatLoop
-    from opensquilla.scheduler.heartbeat_service import HeartbeatService
-    from opensquilla.tools.services import configure_tool_services
-
-    heartbeat_service = HeartbeatService(
-        turn_runner=turn_runner,
-        session_storage=get_session_storage(svc.session_manager) or svc.session_manager,
-        channel_manager_ref=lambda: _cm_holder[0],
-    )
-    heartbeat_loop = HeartbeatLoop(
+    runtime_wiring = await build_gateway_runtime_wiring(
         config=config,
-        heartbeat_service=heartbeat_service,
-    )
-
-    from opensquilla.gateway.background_completion import BackgroundCompletionManager
-    from opensquilla.gateway.event_bridge import EventBridge
-    from opensquilla.gateway.subagent_announce import set_background_completion_manager
-    from opensquilla.gateway.task_runtime import TaskRun, TaskRuntime
-
-    runtime_event_bridge = EventBridge(
+        svc=svc,
+        turn_runner=turn_runner,
         subscription_manager=subscription_manager,
-        connection_registry=get_registry(),
-    )
-    background_completion_manager = BackgroundCompletionManager(
-        session_manager=svc.session_manager,
-        event_emitter=runtime_event_bridge.emit,
         channel_manager_ref=lambda: _cm_holder[0],
+        task_turn_dispatcher=dispatch_task_runtime_turn,
     )
-    set_background_completion_manager(background_completion_manager)
-
-    async def _subagent_completion_listener(event: Any) -> None:
-        from opensquilla.gateway.subagent_announce import announce_subagent_completion
-
-        await announce_subagent_completion(
-            event,
-            session_manager=svc.session_manager,
-            event_emitter=runtime_event_bridge.emit,
-            channel_manager=_cm_holder[0],
-            task_runtime=task_runtime,
-        )
-
-    async def _task_runtime_turn_handler(run: TaskRun) -> None:
-        await dispatch_task_runtime_turn(
-            run,
-            config=config,
-            session_manager=svc.session_manager,
-            turn_runner=turn_runner,
-            event_emitter=runtime_event_bridge.emit,
-        )
-
-    task_runtime = TaskRuntime(
-        storage=get_session_storage(svc.session_manager) or svc.session_manager,
-        turn_handler=_task_runtime_turn_handler,
-        event_emitter=runtime_event_bridge.emit,
-        terminal_listener=_subagent_completion_listener,
-        max_concurrency=_task_runtime_max_concurrency(config),
-        max_pending_per_session=_task_runtime_max_pending_per_session(config),
-        subagent_reserved_slots=int(
-            getattr(getattr(config, "subagents", None), "subagent_reserved_slots", 0)
-        ),
-    )
-    # Wire task_runtime's lock provider into turn_runner so both share a
-    # single asyncio.Lock per session_key.
-    turn_runner.set_session_lock_provider(task_runtime._get_session_lock_for_turn)
-    svc.task_runtime = task_runtime
-    # Wire the runtime into SessionManager so kill_session can cascade-cancel.
-    attach_runtime = getattr(svc.session_manager, "attach_task_runtime", None)
-    if callable(attach_runtime):
-        attach_runtime(task_runtime)
-    configure_tool_services(task_runtime=task_runtime)
-
-    # Resolve HEARTBEAT.md path; instantiate Runner + Watcher;
-    # start Watcher BEFORE the Loop so the first tick already sees any
-    # frontmatter overrides. ``reload_now()`` runs synchronously at start.
-    heartbeat_runner = HeartbeatRunner()
-    workspace_dir = config.workspace_dir or ""
-    md_path_setting = getattr(config.heartbeat, "config_path", None)
-    if md_path_setting:
-        heartbeat_md_path = Path(md_path_setting).expanduser()
-    elif workspace_dir:
-        heartbeat_md_path = Path(workspace_dir).expanduser() / "HEARTBEAT.md"
-    else:
-        heartbeat_md_path = Path.home() / ".opensquilla" / "workspace" / "HEARTBEAT.md"
-    heartbeat_watcher = HeartbeatConfigWatcher(
-        heartbeat_runner,
-        heartbeat_md_path,
-        loop_listener=heartbeat_loop.apply_overrides,
-    )
-    await heartbeat_watcher.start()
-    svc.heartbeat_watcher = heartbeat_watcher
-
-    await heartbeat_loop.start()
-    svc.heartbeat_loop = heartbeat_loop
+    heartbeat_service = runtime_wiring.heartbeat_service
+    heartbeat_loop = runtime_wiring.heartbeat_loop
+    task_runtime = runtime_wiring.task_runtime
+    runtime_event_bridge = runtime_wiring.runtime_event_bridge
+    background_completion_manager = runtime_wiring.background_completion_manager
 
     # Register cron agent_run handler (DI-based, no monkey-patch)
     if svc.cron_scheduler is not None:
         from opensquilla.memory.dream_factory import build_dream_factory
         from opensquilla.scheduler.dream_handler import make_memory_dream_handler
         from opensquilla.scheduler.handlers import make_agent_run_handler, make_system_event_handler
-        from opensquilla.scheduler.heartbeat_service import HeartbeatService
-
         async def _emit_session_event(
             session_key: str,
             event_name: str,
@@ -1524,12 +1439,7 @@ async def start_gateway_server(
     if channel_manager is None and config.channels.channels:
         from opensquilla.channels.manager import ChannelManager
         from opensquilla.gateway.channel_ingress import GatewayChannelIngress
-        from opensquilla.gateway.event_bridge import EventBridge
 
-        event_bridge = EventBridge(
-            subscription_manager=subscription_manager,
-            connection_registry=get_registry(),
-        )
         channel_rpc_context_factory = _make_channel_rpc_context_factory(
             svc,
             config,
@@ -1543,7 +1453,7 @@ async def start_gateway_server(
             config.channels.channels,
             turn_runner=turn_runner,
             session_manager=svc.session_manager,
-            event_bridge=event_bridge,
+            event_bridge=runtime_event_bridge,
             config=config,
             task_runtime=task_runtime,
             rpc_dispatcher=get_dispatcher(),

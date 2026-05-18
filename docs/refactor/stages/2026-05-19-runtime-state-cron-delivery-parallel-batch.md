@@ -214,6 +214,7 @@ the integration branch.
   - `tests/test_gateway/test_metrics_counters.py`
   - `tests/test_gateway/test_background_completion.py`
   - `tests/test_gateway/test_task_runtime_reserved_slots.py`
+  - `tests/test_gateway/test_task_runtime_terminal_state_boundary.py`
   - `tests/test_gateway/test_rpc_cron_current_session.py`
 - Documentation:
   - This stage record.
@@ -222,20 +223,59 @@ the integration branch.
 
 - [x] Run `scripts/refactor_preflight.sh --allow-dirty`.
   - Result: preflight passed on active child worktree at `9962247`.
-- [ ] Commit this stage plan on the active child branch.
-- [ ] Create worker worktrees from the active child branch.
-- [ ] Dispatch runtime-state worker.
-- [ ] Dispatch cron-delivery worker.
-- [ ] Runtime worker writes failing tests and records RED output.
-- [ ] Cron worker writes failing tests and records RED output.
-- [ ] Runtime worker implements minimal compatible state boundary.
-- [ ] Cron worker implements minimal compatible cron delivery boundary.
-- [ ] Review runtime worker diff and verification.
-- [ ] Review cron worker diff and verification.
-- [ ] Merge runtime worker into active child with `git merge --no-ff`.
-- [ ] Merge cron worker into active child with `git merge --no-ff`.
-- [ ] Run focused green command and touched-file checks.
-- [ ] Run `scripts/refactor_gate.sh` in the active child worktree.
+- [x] Commit this stage plan on the active child branch.
+  - Commit: `4c1922f` (`Plan runtime state and cron delivery parallel batch`).
+- [x] Create worker worktrees from the active child branch.
+  - Runtime worktree: `../opensquilla-refactor-agent-runtime-state`.
+  - Cron delivery worktree: `../opensquilla-refactor-agent-cron-delivery`.
+- [x] Dispatch runtime-state worker.
+  - Worker: `Russell`; same-thread `spawn_agent` was available.
+- [x] Dispatch cron-delivery worker.
+  - Worker: `Ampere`; same-thread `spawn_agent` was available.
+- [x] Runtime worker writes failing tests and records RED output.
+  - Initial RED: `ModuleNotFoundError: No module named 'opensquilla.gateway.task_runtime_state'`.
+  - Review-loop RED: `2 failed, 9 passed`; failures covered missing legacy
+    `_tasks` fallback before the compatibility fix.
+- [x] Cron worker writes failing tests and records RED output.
+  - RED: `ModuleNotFoundError: No module named 'opensquilla.gateway.cron_result_delivery'`.
+- [x] Runtime worker implements minimal compatible state boundary.
+  - Commit: `bd0b75f` (`refactor: extract task runtime state boundary`).
+- [x] Cron worker implements minimal compatible cron delivery boundary.
+  - Commit: `e61f64d` (`refactor: extract gateway cron result delivery`).
+- [x] Review runtime worker diff and verification.
+  - Review found no blocking issues; required fixes for missing
+    `no_memory_capture`, one-shot provenance, and legacy `_tasks` fallback
+    coverage were applied before merge.
+  - Runtime focused verification after review fixes: `38 passed in 7.22s`;
+    ruff and `git diff --check` passed.
+- [x] Review cron worker diff and verification.
+  - Review found no blocking issues.
+  - Cron focused verification: `22 passed in 0.47s`; reviewer also ran
+    `26 passed` including session-event delivery boundary, ruff, mypy for
+    touched files, and `git diff --check`.
+- [x] Merge runtime worker into active child with `git merge --no-ff`.
+  - Merge commit: `cb18d05` (`Merge task runtime state boundary worker`).
+- [x] Merge cron worker into active child with `git merge --no-ff`.
+  - Merge commit: `b4f4835` (`Merge gateway cron delivery boundary worker`).
+- [x] Run focused green command and touched-file checks.
+  - Focused green command: `60 passed in 9.68s`.
+  - Touched-file ruff: all checks passed.
+  - `uv run --extra dev mypy src/opensquilla --show-error-codes`: success,
+    no issues in 544 source files, with existing notes.
+  - `git diff --check`: passed.
+- [x] Run `scripts/refactor_gate.sh` in the active child worktree.
+  - First run exposed stale boundary-test expectation:
+    `test_mark_terminal_delegates_state_cleanup` still expected
+    `_mark_terminal` to call `cleanup_terminal_task_state` directly.
+  - Root cause: the new runtime-state boundary delegates terminal cleanup via
+    `TaskRuntimeState.cleanup_terminal`; the test was updated to verify this
+    two-step boundary.
+  - Local regression for the fix:
+    `tests/test_gateway/test_task_runtime_terminal_state_boundary.py`
+    plus runtime focused files: `21 passed in 6.74s`; `git diff --check`
+    passed.
+  - Final child gate: ruff passed; mypy success on 544 source files; pytest
+    `2629 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
 - [ ] Commit child verification/stage record update with:
 
 ```text
@@ -275,12 +315,40 @@ Co-authored-by: Codex <noreply@openai.com>
 ## Completion record
 
 - Runtime worker commit:
+  - `bd0b75f` (`refactor: extract task runtime state boundary`).
 - Cron worker commit:
+  - `e61f64d` (`refactor: extract gateway cron result delivery`).
 - Child merge commits:
+  - `cb18d05` (`Merge task runtime state boundary worker`).
+  - `b4f4835` (`Merge gateway cron delivery boundary worker`).
 - Child verification commit:
+  - Pending.
 - Integration merge:
+  - Pending.
 - Integration record:
+  - Pending.
 - Verification evidence:
+  - Runtime worker RED: missing `opensquilla.gateway.task_runtime_state` module.
+  - Runtime review-loop RED: missing legacy `_tasks` fallback.
+  - Runtime worker GREEN: `38 passed in 7.22s`; ruff and `git diff --check`
+    passed.
+  - Cron worker RED: missing `opensquilla.gateway.cron_result_delivery` module.
+  - Cron worker GREEN: `22 passed in 0.47s`; ruff and `git diff --check`
+    passed.
+  - Focused merged batch: `60 passed in 9.68s`.
+  - Child gate: ruff passed; mypy success on 544 source files; pytest
+    `2629 passed, 8 skipped, 2 warnings`; gateway smoke passed.
 - Cleanup evidence:
+  - Pending until integration merge and final worktree cleanup.
 - Residual risk:
+  - `TaskRuntime` still exposes private compatibility properties (`_tasks`,
+    `_pending_by_session`, `_running_by_session`, `_last_envelope_by_session`,
+    `_state_lock`) that delegate to `TaskRuntimeState`; this is intentional
+    compatibility for existing tests and local callers, but later stages can
+    migrate direct private access to explicit facade methods.
+  - `boot.py` still contains broad service wiring; cron-result delivery has
+    moved out, but additional boot-boundary extractions remain possible.
 - Next recommended slice:
+  - Continue Gateway boot/service wiring cleanup, or migrate remaining direct
+    `TaskRuntime` private compatibility access in tests/callers to explicit
+    facade methods once downstream behavior is stable.

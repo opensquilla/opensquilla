@@ -98,15 +98,15 @@ Extract provider runtime side-effect helpers from `rpc_config.py` into a dedicat
 - [x] Implement the smallest behavior-compatible change.
 - [x] Run focused tests and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -132,8 +132,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit: pending
-- Integration merge:
+- Child commit: `46397a2` (`Move provider runtime sync behind gateway boundary`)
+- Integration merge: `aa211fb` (`Merge provider runtime sync boundary`)
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-provider-runtime-sync-boundary` passed on branch `codex/refactor-provider-runtime-sync-boundary` at `3f67726`.
   - Red: `uv run --extra dev pytest tests/test_gateway/test_boot_provider_env.py::test_rpc_config_delegates_provider_runtime_sync_to_gateway_boundary -q` failed as expected because `provider_runtime_sync.py` did not exist.
@@ -143,7 +143,10 @@ Co-authored-by: Codex <noreply@openai.com>
   - Boundary test update: first child gate failed in `tests/test_provider_image_generation_runtime_boundary.py::test_gateway_configures_image_generation_runtime_boundary` because the old architecture test expected `rpc_config.py` to directly import `configure_image_generation`. The test was updated so `provider_runtime_sync.py` owns that direct provider-runtime import while `rpc_config.py` imports `sync_image_generation`.
   - Focused architecture retest: `uv run --extra dev pytest tests/test_provider_image_generation_runtime_boundary.py::test_gateway_configures_image_generation_runtime_boundary tests/test_gateway/test_boot_provider_env.py::test_rpc_config_delegates_provider_runtime_sync_to_gateway_boundary -q` passed, `2 passed in 0.44s`.
   - Final child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 485 source files; whitespace passed; pytest passed with `2397 passed, 8 skipped, 2 warnings in 25.28s`; gateway smoke start/status/stop passed on `127.0.0.1:53147`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `3f67726`.
+  - Integration merge: `git merge --no-ff codex/refactor-provider-runtime-sync-boundary` produced merge commit `aa211fb`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 485 source files; whitespace passed; pytest passed with `2399 passed, 6 skipped, 2 warnings in 36.08s`; gateway smoke start/status/stop passed on `127.0.0.1:53291`.
 - Residual risk:
-  - Pending integration merge and integration gate.
+  - Low. Compatibility wrappers remain in `rpc_config.py`, and full child/integration gates passed after the image-generation runtime boundary test was updated for the new provider runtime sync owner.
 - Next recommended slice:
   - Continue Provider/Tools/Channels with concrete child worktree ownership, but prefer main-thread-created worktrees until worker execution is reliable.

@@ -459,14 +459,6 @@ def _state_path(config: GatewayConfig, filename: str) -> Path:
     return state_root / filename
 
 
-def _task_runtime_max_concurrency(config: GatewayConfig) -> int:
-    return int(config.task_runtime.max_concurrency)
-
-
-def _task_runtime_max_pending_per_session(config: GatewayConfig) -> int:
-    return int(config.task_runtime.max_pending_per_session)
-
-
 def _task_runtime_envelope_owner(envelope: Any) -> bool:
     """Resolve owner privileges from authenticated route metadata."""
     from opensquilla.gateway.routing import SourceKind

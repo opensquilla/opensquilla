@@ -83,7 +83,7 @@ async def build_gateway_runtime_wiring(
 
     runtime_event_bridge = EventBridge(
         subscription_manager=subscription_manager,
-        connection_registry=connection_registry or get_registry(),
+        connection_registry=get_registry() if connection_registry is None else connection_registry,
     )
     background_completion_manager = BackgroundCompletionManager(
         session_manager=svc.session_manager,

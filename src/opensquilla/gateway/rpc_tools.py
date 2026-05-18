@@ -11,7 +11,7 @@ from opensquilla.search.execution import (
     search_query_rpc_payload,
     search_status_rpc_payload,
 )
-from opensquilla.tools.registry import (
+from opensquilla.tools.rpc_payload import (
     tools_catalog_payload,
     tools_effective_payload,
 )

@@ -15,7 +15,6 @@ from opensquilla.provider.types import ToolDefinition, ToolInputSchema
 from opensquilla.tools.policy import (
     ToolSurfaceCapabilities,
     resolve_runtime_tool_surface,
-    tool_surface_capabilities_from_runtime,
 )
 from opensquilla.tools.types import (
     CRON_AGENT_ALLOW,
@@ -337,11 +336,9 @@ def get_default_registry() -> ToolRegistry:
 
 
 def _tool_rpc_params(params: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    if params is None:
-        return {}
-    if not isinstance(params, Mapping):
-        raise ValueError("params must be an object")
-    return params
+    from opensquilla.tools.rpc_payload import tool_rpc_params
+
+    return tool_rpc_params(params)
 
 
 def _tool_surface_capabilities_for_runtime(
@@ -354,9 +351,10 @@ def _tool_surface_capabilities_for_runtime(
     channel_manager: object | None = None,
     originating_envelope: object | None = None,
 ) -> ToolSurfaceCapabilities:
-    if tool_surface_capabilities is not None:
-        return tool_surface_capabilities
-    return tool_surface_capabilities_from_runtime(
+    from opensquilla.tools.rpc_payload import tool_surface_capabilities_for_runtime
+
+    return tool_surface_capabilities_for_runtime(
+        tool_surface_capabilities=tool_surface_capabilities,
         session_manager=session_manager,
         task_runtime=task_runtime,
         scheduler=scheduler,
@@ -379,26 +377,20 @@ async def tools_catalog_payload(
     channel_manager: object | None = None,
     originating_envelope: object | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    raw = _tool_rpc_params(params)
-    registry = tool_registry or get_default_registry()
-    tools = await registry.list_tools(
-        profile=raw.get("profile"),
-        session_key=raw.get("sessionKey"),
-        agent_id=raw.get("agentId"),
-        caller_kind=raw.get("callerKind"),
-        interaction_mode=raw.get("interactionMode"),
-        tool_surface_capabilities=_tool_surface_capabilities_for_runtime(
-            tool_surface_capabilities=tool_surface_capabilities,
-            session_manager=session_manager,
-            task_runtime=task_runtime,
-            scheduler=scheduler,
-            gateway_config=gateway_config,
-            channel_manager=channel_manager,
-            originating_envelope=originating_envelope,
-        ),
+    from opensquilla.tools.rpc_payload import tools_catalog_payload as build_payload
+
+    return await build_payload(
+        params,
+        tool_registry=tool_registry,
         is_owner=is_owner,
+        tool_surface_capabilities=tool_surface_capabilities,
+        session_manager=session_manager,
+        task_runtime=task_runtime,
+        scheduler=scheduler,
+        gateway_config=gateway_config,
+        channel_manager=channel_manager,
+        originating_envelope=originating_envelope,
     )
-    return {"tools": tools}
 
 
 async def tools_effective_payload(
@@ -414,25 +406,20 @@ async def tools_effective_payload(
     channel_manager: object | None = None,
     originating_envelope: object | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    raw = _tool_rpc_params(params)
-    registry = tool_registry or get_default_registry()
-    tools = await registry.effective_tools(
-        session_key=raw.get("sessionKey"),
-        agent_id=raw.get("agentId"),
-        caller_kind=raw.get("callerKind"),
-        interaction_mode=raw.get("interactionMode"),
-        tool_surface_capabilities=_tool_surface_capabilities_for_runtime(
-            tool_surface_capabilities=tool_surface_capabilities,
-            session_manager=session_manager,
-            task_runtime=task_runtime,
-            scheduler=scheduler,
-            gateway_config=gateway_config,
-            channel_manager=channel_manager,
-            originating_envelope=originating_envelope,
-        ),
+    from opensquilla.tools.rpc_payload import tools_effective_payload as build_payload
+
+    return await build_payload(
+        params,
+        tool_registry=tool_registry,
         is_owner=is_owner,
+        tool_surface_capabilities=tool_surface_capabilities,
+        session_manager=session_manager,
+        task_runtime=task_runtime,
+        scheduler=scheduler,
+        gateway_config=gateway_config,
+        channel_manager=channel_manager,
+        originating_envelope=originating_envelope,
     )
-    return {"tools": tools}
 
 
 def tool(

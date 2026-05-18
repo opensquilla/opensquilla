@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING
 import structlog
 
 from opensquilla.skills.runtime import configure_skill_loader, current_skill_loader
-from opensquilla.skills.types import SkillInstallSpec, SkillLayer
+from opensquilla.skills.runtime_facade import (
+    SkillRuntimeFacadeError,
+    loaded_skill_dependency_preview,
+    loaded_skill_list_text,
+    read_loaded_skill_resource,
+)
+from opensquilla.skills.types import SkillLayer
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError
 
@@ -31,11 +37,6 @@ _MUTABLE_LAYERS = frozenset({SkillLayer.WORKSPACE})
 _SKILL_NAME_RE = re.compile(r"^[a-z][a-z0-9\-]{0,62}$")
 _INSTALL_OUTPUT_LIMIT = 4_000
 _INSTALL_TIMEOUT_SECONDS = 120.0
-
-_BREW_FORMULA_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9/_@.+-]*$")
-_NODE_PACKAGE_RE = re.compile(r"^(?:@[A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*$")
-_GO_MODULE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~/-]*(?:@[A-Za-z0-9][A-Za-z0-9._~+-]*)?$")
-_UV_PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]+\])?$")
 
 
 def _get_loader() -> SkillLoader | None:
@@ -77,71 +78,6 @@ def _cap_output(value: bytes | str, limit: int = _INSTALL_OUTPUT_LIMIT) -> str:
     return f"{text[:limit]}\n... truncated {omitted} characters"
 
 
-def _validate_install_value(value: str, pattern: re.Pattern[str], label: str) -> str:
-    if not value:
-        raise ToolError(f"Missing install value: {label}")
-    if value.startswith("-") or not pattern.match(value):
-        raise ToolError(f"Unsafe install value for {label}: {value}")
-    return value
-
-
-def _argv_for_install_spec(spec: SkillInstallSpec) -> list[str]:
-    kind = spec.kind
-    if kind == "download":
-        raise ToolError("Install kind 'download' is deferred and cannot be executed")
-    if kind == "brew":
-        formula = _validate_install_value(
-            spec.formula or spec.package,
-            _BREW_FORMULA_RE,
-            "formula",
-        )
-        return ["brew", "install", formula]
-    if kind == "node":
-        package = _validate_install_value(
-            spec.package,
-            _NODE_PACKAGE_RE,
-            "package",
-        )
-        return ["npm", "install", "-g", "--ignore-scripts", package]
-    if kind == "go":
-        module = _validate_install_value(
-            spec.module or spec.package,
-            _GO_MODULE_RE,
-            "module",
-        )
-        if "@" not in module:
-            module = f"{module}@latest"
-        return ["go", "install", module]
-    if kind == "uv":
-        package = _validate_install_value(
-            spec.package or spec.module,
-            _UV_PACKAGE_RE,
-            "package",
-        )
-        return ["uv", "tool", "install", package]
-    raise ToolError(f"Unsupported install kind: {kind}")
-
-
-def _find_install_spec(skill_name: str, install_id: str) -> SkillInstallSpec:
-    if install_id.startswith("-"):
-        raise ToolError(f"Unsafe install value for install_id: {install_id}")
-    loader = _get_loader()
-    if loader is None:
-        raise ToolError("Skill loader not available")
-
-    skill = loader.get_by_name(skill_name)
-    if skill is None:
-        raise ToolError(f"Skill not found: {skill_name}")
-    if skill.metadata is None or not skill.metadata.install:
-        raise ToolError(f"Skill has no install metadata: {skill_name}")
-
-    for index, spec in enumerate(skill.metadata.install):
-        fallback_id = f"{spec.kind}-{index}"
-        if spec.id == install_id or (not spec.id and install_id == fallback_id):
-            return spec
-    raise ToolError(f"Install spec not found for skill '{skill_name}': {install_id}")
-
-
 async def _run_install_argv(argv: list[str]) -> tuple[int, str, str, bool]:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -174,37 +110,7 @@ def create_skill_tools(loader: SkillLoader) -> None:
         description="List all available skills with name, description, and eligibility.",
     )
     async def skill_list() -> str:
-        loader = _get_loader()
-        if loader is None:
-            return "No skill loader available."
-        skills = loader.load_all()
-        if not skills:
-            return "No skills installed."
-
-        from opensquilla.skills.eligibility import EligibilityContext, diagnose_eligibility
-
-        ctx = EligibilityContext.auto()
-        lines = [f"Available skills ({len(skills)}):"]
-        for s in sorted(skills, key=lambda x: x.name):
-            report = diagnose_eligibility(s, ctx)
-            lines.append(f"  - {s.name}: {s.description}")
-            if not report.eligible:
-                missing = []
-                for b in report.missing_bins:
-                    missing.append(f"{b} (binary)")
-                for e in report.missing_env:
-                    missing.append(f"{e} (env var)")
-                if report.disabled:
-                    missing.append("disabled")
-                if report.wrong_os:
-                    missing.append("wrong OS")
-                if missing:
-                    lines.append(f"      [unavailable] Missing: {', '.join(missing)}")
-                for hint in report.install_hints:
-                    lines.append(f"      Install: {hint.command}")
-                for e in report.missing_env:
-                    lines.append(f"      Hint: Set environment variable {e}")
-        return "\n".join(lines)
+        return loaded_skill_list_text(_get_loader())
 
     @tool(
         name="skill_view",
@@ -222,29 +128,7 @@ def create_skill_tools(loader: SkillLoader) -> None:
         required=["name"],
     )
     async def skill_view(name: str, file_path: str | None = None) -> str:
-        loader = _get_loader()
-        if loader is None:
-            return "No skill loader available."
-        skill = loader.get_by_name(name)
-        if skill is None:
-            return f"Skill not found: {name}"
-
-        if file_path:
-            normalized_path = file_path.strip().lstrip("./")
-            if normalized_path in {"", "SKILL.md"}:
-                return skill.content or f"(Skill '{name}' has no body content)"
-
-            from pathlib import Path
-
-            from opensquilla.skills.resources import SkillResources
-
-            resources = SkillResources(Path(skill.base_dir))
-            content = resources.read_reference(file_path) or resources.read_script(file_path)
-            if content is None:
-                return f"File not found in skill '{name}': {file_path}"
-            return content
-
-        return skill.content or f"(Skill '{name}' has no body content)"
+        return read_loaded_skill_resource(_get_loader(), name, file_path)
 
     @tool(
         name="install_skill_deps",
@@ -275,31 +159,23 @@ def create_skill_tools(loader: SkillLoader) -> None:
         install_id: str,
         confirmed: bool = False,
     ) -> str:
-        spec = _find_install_spec(skill_name, install_id)
-        argv = _argv_for_install_spec(spec)
-        label = spec.label or spec.id or "Install dependency"
+        try:
+            preview = loaded_skill_dependency_preview(_get_loader(), skill_name, install_id)
+        except SkillRuntimeFacadeError as exc:
+            raise ToolError(str(exc)) from exc
 
         if not confirmed:
-            return json.dumps(
-                {
-                    "status": "preview",
-                    "skill_name": skill_name,
-                    "install_id": install_id,
-                    "kind": spec.kind,
-                    "label": label,
-                    "argv": argv,
-                }
-            )
+            return preview.to_json()
 
-        exit_code, stdout, stderr, timed_out = await _run_install_argv(argv)
+        exit_code, stdout, stderr, timed_out = await _run_install_argv(preview.argv)
         return json.dumps(
             {
                 "status": "timeout" if timed_out else "executed",
                 "skill_name": skill_name,
                 "install_id": install_id,
-                "kind": spec.kind,
-                "label": label,
-                "argv": argv,
+                "kind": preview.kind,
+                "label": preview.label,
+                "argv": preview.argv,
                 "exit_code": exit_code,
                 "stdout": stdout,
                 "stderr": stderr,

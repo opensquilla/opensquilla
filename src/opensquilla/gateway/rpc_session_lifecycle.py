@@ -14,7 +14,6 @@ from opensquilla.gateway.rpc_compaction_inputs import (
     build_gateway_compaction_config,
     context_window_tokens,
 )
-from opensquilla.gateway.session_services import get_session_lock, get_session_storage
 from opensquilla.memory.session_flush import FlushReceipt
 from opensquilla.session.compaction import call_compact_with_optional_config
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
@@ -29,6 +28,7 @@ from opensquilla.session.rpc_payload import (
     session_permission_denied_details,
     session_reset_response,
 )
+from opensquilla.session.services import get_session_lock, get_session_storage
 
 log = structlog.get_logger(__name__)
 _RESET_RUNTIME_SETTLE_SECONDS = 0.25

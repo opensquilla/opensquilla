@@ -43,7 +43,7 @@ from opensquilla.gateway.scopes import (
     operator_scope_satisfies,
     resolve_required_scope,
 )
-from opensquilla.gateway.session_services import get_session_storage
+from opensquilla.session.services import get_session_storage
 
 # Handler type: (params, context) -> payload or raises
 RpcHandlerFn = Callable[[Any, "RpcContext"], Coroutine[Any, Any, Any]]

@@ -20,7 +20,6 @@ from opensquilla.gateway import (
     rpc_session_lifecycle,
     rpc_session_read_queries,
     rpc_session_send,
-    session_management_service,
 )
 from opensquilla.gateway import (
     rpc_sessions as _rpc_sessions,  # noqa: F401 - import registers session RPC handlers
@@ -37,6 +36,7 @@ from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.task_runtime import TaskQueueFullError
 from opensquilla.gateway.uploads import set_upload_store
 from opensquilla.gateway.websocket import SubscriptionManager, get_registry
+from opensquilla.session import management_service as session_management_service
 from opensquilla.session.compaction import CompactionConfig
 from opensquilla.session.rpc_payload import session_agent_not_found_details
 

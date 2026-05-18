@@ -6,12 +6,12 @@ from typing import Any
 
 import structlog
 
-from opensquilla.gateway.session_services import (
+from opensquilla.gateway.session_streams import SessionStreamRegistry, get_session_streams
+from opensquilla.session.services import (
     get_session_epoch,
     get_session_storage,
     set_session_epoch,
 )
-from opensquilla.gateway.session_streams import SessionStreamRegistry, get_session_streams
 
 log = structlog.get_logger(__name__)
 

@@ -37,10 +37,10 @@ from opensquilla.engine.usage import UsageTracker as _UsageTracker
 from opensquilla.gateway.app import create_gateway_app
 from opensquilla.gateway.config import GatewayConfig, is_public_bind
 from opensquilla.gateway.rpc import get_dispatcher
-from opensquilla.gateway.session_services import get_session_storage
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.websocket import get_registry
 from opensquilla.paths import default_opensquilla_home
+from opensquilla.session.services import get_session_storage
 from opensquilla.session.terminal_reply import build_terminal_reply
 
 log = structlog.get_logger(__name__)

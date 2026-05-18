@@ -5,9 +5,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 GATEWAY = ROOT / "src/opensquilla/gateway"
+SESSION = ROOT / "src/opensquilla/session"
 RPC_SESSIONS = GATEWAY / "rpc_sessions.py"
 RPC_SESSION_MANAGEMENT = GATEWAY / "rpc_session_management.py"
-SESSION_MANAGEMENT_SERVICE = GATEWAY / "session_management_service.py"
+SESSION_MANAGEMENT_SERVICE = SESSION / "management_service.py"
 
 
 def _tree(path: Path) -> ast.Module:
@@ -64,10 +65,7 @@ def test_session_management_service_owns_create_patch_implementation() -> None:
         "handle_sessions_patch",
     } == set(management_async_functions.keys())
     assert {
-        ("opensquilla.gateway.rpc", "RpcContext"),
-        ("opensquilla.gateway.rpc", "RpcHandlerError"),
-        ("opensquilla.gateway.rpc", "RpcUnavailableError"),
-        ("opensquilla.gateway.session_services", "get_session_storage"),
+        ("opensquilla.session.services", "get_session_storage"),
         ("opensquilla.session.keys", "canonicalize_session_key"),
         ("opensquilla.session.keys", "normalize_agent_id"),
         ("opensquilla.session.rpc_payload", "session_agent_not_found_details"),
@@ -75,9 +73,10 @@ def test_session_management_service_owns_create_patch_implementation() -> None:
         ("opensquilla.session.rpc_payload", "session_create_stub_response"),
         ("opensquilla.session.rpc_payload", "session_patch_response"),
     } <= service_imports
+    assert not any(module == "opensquilla.gateway.rpc" for module, _name in service_imports)
     assert {
-        ("opensquilla.gateway.session_management_service", "create_session"),
-        ("opensquilla.gateway.session_management_service", "patch_session"),
+        ("opensquilla.session.management_service", "create_session"),
+        ("opensquilla.session.management_service", "patch_session"),
     } <= management_imports
 
 

@@ -5,9 +5,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 GATEWAY = ROOT / "src/opensquilla/gateway"
+SESSION = ROOT / "src/opensquilla/session"
 RPC_SESSION_MANAGEMENT = GATEWAY / "rpc_session_management.py"
 RPC_SESSION_SEND = GATEWAY / "rpc_session_send.py"
-SESSION_MANAGEMENT_SERVICE = GATEWAY / "session_management_service.py"
+SESSION_MANAGEMENT_SERVICE = SESSION / "management_service.py"
 
 
 def _tree(path: Path) -> ast.Module:
@@ -65,11 +66,11 @@ def test_session_management_service_owns_create_patch_and_model_defaults() -> No
         ("opensquilla.session.rpc_payload", "session_patch_response"),
     }.isdisjoint(management_imports)
     assert (
-        "opensquilla.gateway.session_management_service",
+        "opensquilla.session.management_service",
         "create_session",
     ) in management_imports
     assert (
-        "opensquilla.gateway.session_management_service",
+        "opensquilla.session.management_service",
         "patch_session",
     ) in management_imports
 
@@ -78,11 +79,11 @@ def test_session_send_uses_service_instead_of_rpc_management_module() -> None:
     imports = _imports_from(RPC_SESSION_SEND)
 
     assert (
-        "opensquilla.gateway.session_management_service",
+        "opensquilla.session.management_service",
         "require_session_key",
     ) in imports
     assert (
-        "opensquilla.gateway.session_management_service",
+        "opensquilla.session.management_service",
         "session_turn_model",
     ) in imports
     assert not any(

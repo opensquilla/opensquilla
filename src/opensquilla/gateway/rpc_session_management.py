@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from opensquilla.gateway.rpc import RpcContext
-from opensquilla.gateway.session_management_service import create_session, patch_session
+from opensquilla.session.management_service import create_session, patch_session
 
 
 async def handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from opensquilla.gateway.session_services import (
+from opensquilla.session.services import (
     get_session_epoch,
     get_session_lock,
     get_session_storage,

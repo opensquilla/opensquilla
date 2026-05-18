@@ -16,17 +16,17 @@ from opensquilla.gateway.rpc_session_send_inputs import (
     trusted_elevated_hint,
 )
 from opensquilla.gateway.rpc_session_turn_runtime import enqueue_session_turn_via_runtime
-from opensquilla.gateway.session_management_service import (
+from opensquilla.paths import media_root_from_config
+from opensquilla.session.keys import normalize_agent_id
+from opensquilla.session.management_service import (
     require_session_key,
     session_turn_model,
 )
-from opensquilla.gateway.session_services import get_session_lock, get_session_storage
-from opensquilla.paths import media_root_from_config
-from opensquilla.session.keys import normalize_agent_id
 from opensquilla.session.rpc_payload import (
     normalize_terminal_event_payload,
     session_send_accepted_response,
 )
+from opensquilla.session.services import get_session_lock, get_session_storage
 
 log = structlog.get_logger(__name__)
 STREAM_IDLE_TIMEOUT_CODE = "stream_idle_timeout"

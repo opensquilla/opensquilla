@@ -58,6 +58,23 @@ def test_setup_view_loads_catalog_and_status():
     assert "current.mode" in txt
 
 
+def test_setup_and_channels_views_use_domain_view_state_helpers():
+    setup = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    channels = (VIEWS / "channels.js").read_text(encoding="utf-8")
+
+    assert "const SetupDomainViewState = Object.freeze" in setup
+    assert "SetupDomainViewState.setupStatus" in setup
+    assert "SetupDomainViewState.configuredChannels" in setup
+    assert "SetupDomainViewState.channelRuntimeState" in setup
+    assert "const ChannelsDomainViewState = Object.freeze" in channels
+    assert "ChannelsDomainViewState.normalizeChannels" in channels
+    assert "ChannelsDomainViewState.statusHint" in channels
+    assert "WebUiRpc.client()" in setup
+    assert "WebUiRpc.client()" in channels
+    assert "App.getRpc(" not in setup
+    assert "App.getRpc(" not in channels
+
+
 def test_setup_view_is_available_and_uses_canonical_cli_fallbacks():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
     assert "SETUP_UI_AVAILABLE" not in txt

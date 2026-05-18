@@ -10,23 +10,49 @@ const SkillsView = (() => {
   let _statusFilter = 'all';
   let _activeTab = 'installed';
 
-  const _LAYER_ORDER = ['workspace', 'bundled', 'managed', 'personal', 'project', 'extra'];
-  const _LAYER_LABEL = {
-    workspace: 'Workspace',
-    bundled: 'Bundled',
-    managed: 'Managed',
-    personal: 'Personal',
-    project: 'Project',
-    extra: 'Extra',
-  };
-  const _LAYER_HELP = {
-    workspace: 'Workspace skills are local to the active workspace.',
-    bundled: 'Bundled skills ship with OpenSquilla.',
-    managed: 'Managed skills are locally installed into OpenSquilla state.',
-    personal: 'Personal skills are local user installs, not bundled.',
-    project: 'Project skills are local to the current project.',
-    extra: 'Extra skills come from configured local directories.',
-  };
+  const SkillsDomainViewState = Object.freeze({
+    LAYER_ORDER: ['workspace', 'bundled', 'managed', 'personal', 'project', 'extra'],
+    LAYER_LABEL: {
+      workspace: 'Workspace',
+      bundled: 'Bundled',
+      managed: 'Managed',
+      personal: 'Personal',
+      project: 'Project',
+      extra: 'Extra',
+    },
+    LAYER_HELP: {
+      workspace: 'Workspace skills are local to the active workspace.',
+      bundled: 'Bundled skills ship with OpenSquilla.',
+      managed: 'Managed skills are locally installed into OpenSquilla state.',
+      personal: 'Personal skills are local user installs, not bundled.',
+      project: 'Project skills are local to the current project.',
+      extra: 'Extra skills come from configured local directories.',
+    },
+    skillStatus(skill) {
+      return skill.status || (skill.eligible ? 'ready' : 'needs_setup');
+    },
+    statusRank(skill) {
+      const status = SkillsDomainViewState.skillStatus(skill);
+      if (status === 'ready') return 0;
+      if (status === 'not_declared') return 1;
+      return 2;
+    },
+    statusDotClass(skill) {
+      const status = SkillsDomainViewState.skillStatus(skill);
+      if (status === 'ready') return 'is-ready';
+      if (status === 'needs_setup') return 'is-needs';
+      return 'is-unverified';
+    },
+    statusDetail(skill) {
+      return skill.status_detail || (skill.eligible ? 'Ready' : 'Needs setup');
+    },
+    layerLabel(layer) {
+      return SkillsDomainViewState.LAYER_LABEL[layer] || layer || 'Unknown';
+    },
+    layerHelp(layer) {
+      return SkillsDomainViewState.LAYER_HELP[layer] || 'Configured local skill directory.';
+    },
+  });
 
   function _ensureCss() {
     if (document.querySelector('link[data-view-css="skills"]')) return;
@@ -280,12 +306,6 @@ const SkillsView = (() => {
       return;
     }
 
-    const _rank = (s) => {
-      if (s.status === 'ready') return 0;
-      if (s.status === 'not_declared') return 1;
-      return 2;
-    };
-
     const groups = {};
     skills.forEach(s => {
       const l = s.layer || 'extra';
@@ -294,23 +314,23 @@ const SkillsView = (() => {
 
     Object.values(groups).forEach(list => {
       list.sort((a, b) => {
-        const ra = _rank(a);
-        const rb = _rank(b);
+        const ra = SkillsDomainViewState.statusRank(a);
+        const rb = SkillsDomainViewState.statusRank(b);
         if (ra !== rb) return ra - rb;
         return (a.name || '').localeCompare(b.name || '');
       });
     });
 
     let html = '';
-    _LAYER_ORDER.forEach(layer => {
+    SkillsDomainViewState.LAYER_ORDER.forEach(layer => {
       const list = groups[layer];
       if (!list || list.length === 0) return;
       html += `<details class="sk-group" open>
         <summary class="sk-group__head">
           <span class="sk-group__caret">▾</span>
-          <span class="sk-group__label">${_esc(_layerLabel(layer))}</span>
+          <span class="sk-group__label">${_esc(SkillsDomainViewState.layerLabel(layer))}</span>
           <span class="sk-group__count">${list.length}</span>
-          <span class="sk-group__meta">${_esc(_layerHelp(layer))}</span>
+          <span class="sk-group__meta">${_esc(SkillsDomainViewState.layerHelp(layer))}</span>
         </summary>
         <div class="sk-grid">
           ${list.map(_renderCard).join('')}
@@ -322,13 +342,8 @@ const SkillsView = (() => {
   }
 
   function _renderCard(skill) {
-    const status = skill.status || (skill.eligible ? 'ready' : 'needs_setup');
-    let dotCls;
-    if (status === 'ready') dotCls = 'is-ready';
-    else if (status === 'needs_setup') dotCls = 'is-needs';
-    else dotCls = 'is-unverified';
-
-    const dotTitle = skill.status_detail || (skill.eligible ? 'Ready' : 'Needs setup');
+    const dotCls = SkillsDomainViewState.statusDotClass(skill);
+    const dotTitle = SkillsDomainViewState.statusDetail(skill);
     const emoji = skill.emoji ? `<span class="sk-card__emoji">${_esc(skill.emoji)}</span>` : '';
     const desc = skill.description
       ? (skill.description.length > 100 ? skill.description.slice(0, 100) + '…' : skill.description)
@@ -349,7 +364,7 @@ const SkillsView = (() => {
     if (!dlg || !body) return;
 
     const statusDetail = skill.status_detail || '';
-    const status = skill.status || (skill.eligible ? 'ready' : 'needs_setup');
+    const status = SkillsDomainViewState.skillStatus(skill);
     let statusChip;
     if (status === 'ready') {
       statusChip = `<span class="sk-chip sk-chip--ok" title="${_esc(statusDetail)}">✓ ready</span>`;
@@ -358,7 +373,7 @@ const SkillsView = (() => {
     } else {
       statusChip = `<span class="sk-chip sk-chip--warn" title="${_esc(statusDetail)}">needs deps</span>`;
     }
-    const layerChip = `<span class="sk-chip" title="${_esc(_layerHelp(skill.layer))}">${_esc(_layerLabel(skill.layer))}</span>`;
+    const layerChip = `<span class="sk-chip" title="${_esc(SkillsDomainViewState.layerHelp(skill.layer))}">${_esc(SkillsDomainViewState.layerLabel(skill.layer))}</span>`;
 
     let missingHtml = '';
     if (status === 'needs_setup') {
@@ -542,11 +557,11 @@ const SkillsView = (() => {
   }
 
   function _layerLabel(layer) {
-    return _LAYER_LABEL[layer] || layer || 'Unknown';
+    return SkillsDomainViewState.layerLabel(layer);
   }
 
   function _layerHelp(layer) {
-    return _LAYER_HELP[layer] || 'Configured local skill directory.';
+    return SkillsDomainViewState.layerHelp(layer);
   }
 
   return { render, destroy };

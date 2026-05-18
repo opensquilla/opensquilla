@@ -15,13 +15,35 @@ const SetupView = (() => {
     t2: 'Stronger reasoning (t2)',
     t3: 'Max quality (t3)',
   };
+  const SetupDomainViewState = Object.freeze({
+    emptyChannelStatus() {
+      return { channels: [] };
+    },
+    setupStatus(status) {
+      const needsOnboarding = !!(status && status.needsOnboarding);
+      return {
+        className: needsOnboarding ? 'is-warn' : 'is-ok',
+        label: needsOnboarding ? 'Action needed' : 'Configured',
+      };
+    },
+    configuredChannels(channelStatus) {
+      return ((channelStatus || {}).channels || []).filter(row => row && row.configured !== false);
+    },
+    channelRuntimeState(row) {
+      const connected = row.connected === true;
+      return {
+        className: connected ? 'is-ok' : 'is-warn',
+        label: connected ? 'Connected' : (row.status === 'stopped' ? 'Action needed' : row.status || 'connecting'),
+      };
+    },
+  });
 
   let _el = null;
   let _rpc = null;
   let _catalog = {};
   let _status = {};
   let _config = {};
-  let _channelStatus = { channels: [] };
+  let _channelStatus = SetupDomainViewState.emptyChannelStatus();
   let _step = 'provider';
   let _channelType = '';
   let _pollTimer = null;
@@ -41,12 +63,12 @@ const SetupView = (() => {
         _rpc.call('onboarding.catalog'),
         _rpc.call('onboarding.status'),
         _rpc.call('config.get'),
-        _rpc.call('channels.status').catch(() => ({ channels: [] })),
+        _rpc.call('channels.status').catch(() => SetupDomainViewState.emptyChannelStatus()),
       ]);
       _catalog = catalog || {};
       _status = status || {};
       _config = config || {};
-      _channelStatus = channelStatus || { channels: [] };
+      _channelStatus = channelStatus || SetupDomainViewState.emptyChannelStatus();
     } catch (err) {
       _el.innerHTML = `<div class="setup-error">Failed to load setup catalog: ${_esc(err.message)}</div>`;
     }
@@ -54,6 +76,7 @@ const SetupView = (() => {
 
   function _draw() {
     if (!_el) return;
+    const statusUi = SetupDomainViewState.setupStatus(_status);
     _el.innerHTML = `
       <section class="setup">
         <header class="setup__head">
@@ -65,8 +88,8 @@ const SetupView = (() => {
             <button type="button" class="setup__exit" data-exit-setup aria-label="Exit setup and return to Overview">
               <span aria-hidden="true">←</span><span>Exit setup</span>
             </button>
-            <div class="setup__status ${_status.needsOnboarding ? 'is-warn' : 'is-ok'}">
-              ${_status.needsOnboarding ? 'Action needed' : 'Configured'}
+            <div class="setup__status ${statusUi.className}">
+              ${statusUi.label}
             </div>
           </div>
         </header>
@@ -212,7 +235,7 @@ const SetupView = (() => {
     const channels = (_catalog.channels || []);
     const selected = channels.some(c => c.type === _channelType) ? _channelType : (channels[0]?.type || 'telegram');
     _channelType = selected;
-    const runtimeRows = (_channelStatus.channels || []).filter(row => row.configured !== false);
+    const runtimeRows = SetupDomainViewState.configuredChannels(_channelStatus);
     return `
       <section class="setup-panel">
         <header class="setup-panel__head">
@@ -249,12 +272,11 @@ const SetupView = (() => {
   }
 
   function _channelStatusRow(row) {
-    const connected = row.connected === true;
-    const state = connected ? 'Connected' : (row.status === 'stopped' ? 'Action needed' : row.status || 'connecting');
-    return `<div class="setup-runtime__row ${connected ? 'is-ok' : 'is-warn'}">
+    const runtime = SetupDomainViewState.channelRuntimeState(row);
+    return `<div class="setup-runtime__row ${runtime.className}">
       <span>${_esc(row.name)}</span>
       <span>${_esc(row.type || '')}</span>
-      <strong>${_esc(state)}</strong>
+      <strong>${_esc(runtime.label)}</strong>
     </div>`;
   }
 
@@ -528,7 +550,7 @@ const SetupView = (() => {
   }
 
   async function _loadChannelStatus() {
-    _channelStatus = await _rpc.call('channels.status').catch(() => ({ channels: [] }));
+    _channelStatus = await _rpc.call('channels.status').catch(() => SetupDomainViewState.emptyChannelStatus());
   }
 
   function _startChannelPolling() {
@@ -558,7 +580,7 @@ const SetupView = (() => {
     _catalog = {};
     _status = {};
     _config = {};
-    _channelStatus = { channels: [] };
+    _channelStatus = SetupDomainViewState.emptyChannelStatus();
   }
 
   return { render, destroy };

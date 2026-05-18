@@ -134,6 +134,23 @@ const UI = (() => {
     return `<span class="${cls}">${label}</span>`;
   }
 
+  // -- Control view stat card --
+  function statCard({
+    label,
+    value,
+    hint = '',
+    hero = false,
+    mono = false,
+  } = {}) {
+    const cardClass = hero ? 'stat stat--hero' : 'stat';
+    const valueClass = mono ? 'stat-value mono' : 'stat-value';
+    return `<div class="${cardClass}">
+      <div class="stat-label">${label}</div>
+      <div class="${valueClass}">${value}</div>
+      <div class="stat-hint">${hint}</div>
+    </div>`;
+  }
+
   // -- Relative time --
   function relTime(isoOrTs) {
     const d = typeof isoOrTs === 'number' ? new Date(isoOrTs * 1000) : new Date(isoOrTs);
@@ -607,7 +624,7 @@ const UI = (() => {
   }
 
   return {
-    toast, modal, dataTable, skeleton, chip, relTime,
+    toast, modal, dataTable, skeleton, chip, statCard, relTime,
     sessionStatusClass, sessionStatusChip, sessionStatusLabel,
     drawer, combobox,
   };

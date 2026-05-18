@@ -215,27 +215,30 @@ const LogsView = (() => {
     const debug = _allLines.filter(l => l.level === 'DEBUG' || l.level === 'TRACE').length;
     const visible = _allLines.filter(l => _activeLevels.has(l.level) && (!_searchText || l.message.toLowerCase().includes(_searchText))).length;
 
-    wrap.innerHTML = `
-      <div class="stat stat--hero">
-        <div class="stat-label">In view</div>
-        <div class="stat-value">${visible.toLocaleString()}</div>
-        <div class="stat-hint">of ${total.toLocaleString()} loaded</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Errors</div>
-        <div class="stat-value">${errors}</div>
-        <div class="stat-hint">${errors ? 'review needed' : 'all clear'}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Warnings</div>
-        <div class="stat-value">${warns}</div>
-        <div class="stat-hint">${warns ? 'recent advisories' : 'none'}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Info / Debug</div>
-        <div class="stat-value mono">${infos}<span>/</span>${debug}</div>
-        <div class="stat-hint">routine output</div>
-      </div>`;
+    wrap.innerHTML = [
+      UI.statCard({
+        label: 'In view',
+        value: visible.toLocaleString(),
+        hint: `of ${total.toLocaleString()} loaded`,
+        hero: true,
+      }),
+      UI.statCard({
+        label: 'Errors',
+        value: errors,
+        hint: errors ? 'review needed' : 'all clear',
+      }),
+      UI.statCard({
+        label: 'Warnings',
+        value: warns,
+        hint: warns ? 'recent advisories' : 'none',
+      }),
+      UI.statCard({
+        label: 'Info / Debug',
+        value: `${infos}<span>/</span>${debug}`,
+        hint: 'routine output',
+        mono: true,
+      }),
+    ].join('');
   }
 
   function _renderStatusPills() {

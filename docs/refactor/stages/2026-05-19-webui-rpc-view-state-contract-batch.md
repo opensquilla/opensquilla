@@ -17,7 +17,7 @@
 - Integration branch: `codex/refactor-architecture`
 - Child branch: `codex/refactor-webui-rpc-view-state-contract-batch`
 - Child worktree: `../opensquilla-refactor-active`
-- Owner: Codex main thread for architecture, Superpowers evidence, worker dispatch, review, merge integration, full gates, stage record, and cleanup. Same-thread `spawn_agent` healthcheck succeeded with agent `019e3c2b-a31a-7771-9047-e7d6a314f2dd`.
+- Owner: Codex main thread for architecture, Superpowers evidence, worker dispatch, review, merge integration, full gates, stage record, and cleanup. Same-thread `spawn_agent` healthchecks succeeded, including agent `019e3c2f-508d-72f0-9050-9a1b64bf8359` before dispatching this batch.
 
 ## Goal
 
@@ -233,54 +233,93 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 - [x] Use Serena project activation and initial instructions.
 - [x] Create fixed active worktree on `codex/refactor-webui-rpc-view-state-contract-batch`.
 - [x] Write this stage plan before implementation.
-- [ ] Commit this stage plan as the worker base.
+- [x] Commit this stage plan as the worker base.
+  - Commit: `2eff4ed`.
+  - Baseline focused command passed after correcting the skills static test path: `109 passed in 3.12s`.
 
 ### Task 2: Worker `webui-transport-access`
 
-- [ ] Create an independent worker worktree/branch.
-- [ ] Write RED static boundary tests for RPC/HTTP access ownership or load order.
-- [ ] Run the worker RED command and record the expected failure.
-- [ ] Implement one behavior-compatible transport/access boundary move.
-- [ ] Run worker focused tests and touched-file checks.
-- [ ] Commit with the required co-author trailer.
+- [x] Create an independent worker worktree/branch.
+- [x] Write RED static boundary tests for RPC/HTTP access ownership or load order.
+- [x] Run the worker RED command and record the expected failure.
+  - RED: `uv run --extra dev pytest tests/test_gateway/test_webui_rpc_access_static.py tests/test_gateway/test_webui_http_access_static.py -q`
+  - Result: expected failure, `2 failed, 3 passed`, because `WebUiHttp.getPendingApprovals` and `WebUiHttp.resolveApproval` did not exist.
+- [x] Implement one behavior-compatible transport/access boundary move.
+  - Approval monitor approval endpoint calls now go through `WebUiHttp` helper methods.
+- [x] Run worker focused tests and touched-file checks.
+  - GREEN: same pytest command, `5 passed in 0.03s`.
+  - Ruff: `uv run --extra dev ruff check tests/test_gateway/test_webui_http_access_static.py`, `All checks passed!`.
+  - `git diff --check` passed.
+- [x] Commit with the required co-author trailer.
+  - Commit: `e00fc08`.
 
 ### Task 3: Worker `webui-chat-state`
 
-- [ ] Create an independent worker worktree/branch.
-- [ ] Write RED static boundary tests for chat view-state ownership.
-- [ ] Run the worker RED command and record the expected failure.
-- [ ] Implement one behavior-compatible chat view-state boundary move.
-- [ ] Run worker focused tests and touched-file checks.
-- [ ] Commit with the required co-author trailer.
+- [x] Create an independent worker worktree/branch.
+- [x] Write RED static boundary tests for chat view-state ownership.
+- [x] Run the worker RED command and record the expected failure.
+  - RED: `uv run --extra dev pytest tests/test_gateway/test_chat_view_static.py tests/test_gateway/test_chat_static_assets.py -q`.
+  - Result: expected failure, `1 failed, 53 passed`, because `_CHAT_VIEW_STATE` did not exist.
+- [x] Implement one behavior-compatible chat view-state boundary move.
+  - Run-state labels/classes and task terminal/error mappings now live under `_CHAT_VIEW_STATE`; compatibility wrapper functions remain.
+- [x] Run worker focused tests and touched-file checks.
+  - GREEN: same pytest command, `54 passed`.
+  - Ruff: `uv run --extra dev ruff check tests/test_gateway/test_chat_view_static.py tests/test_gateway/test_chat_static_assets.py`, `All checks passed!`.
+  - `git diff --check` passed.
+- [x] Commit with the required co-author trailer.
+  - Commit: `8c8f2c4`.
 
 ### Task 4: Worker `webui-control-views`
 
-- [ ] Create an independent worker worktree/branch.
-- [ ] Write RED static boundary tests for shared UI/control-view ownership.
-- [ ] Run the worker RED command and record the expected failure.
-- [ ] Implement one behavior-compatible shared UI/control-view boundary move.
-- [ ] Run worker focused tests and touched-file checks.
-- [ ] Commit with the required co-author trailer.
+- [x] Create an independent worker worktree/branch.
+- [x] Write RED static boundary tests for shared UI/control-view ownership.
+- [x] Run the worker RED command and record the expected failure.
+  - RED: `uv run --extra dev pytest tests/test_gateway/test_agents_view_static.py tests/test_gateway/test_status_helper_static.py tests/test_gateway/test_usage_view_static.py tests/test_gateway/test_logs_view_static.py -q`.
+  - Result: expected failure, `2 failed, 18 passed`, because shared `statCard` helper and `UI.statCard` usages did not exist.
+- [x] Implement one behavior-compatible shared UI/control-view boundary move.
+  - Shared stat-card markup now lives in `UI.statCard`; agents, sessions, and logs use the helper.
+- [x] Run worker focused tests and touched-file checks.
+  - GREEN: same pytest command, `20 passed`.
+  - Ruff: `uv run --extra dev ruff check tests/test_gateway/test_status_helper_static.py`, `All checks passed!`.
+  - `git diff --check` passed.
+- [x] Commit with the required co-author trailer.
+  - Commit: `125df63`.
 
 ### Task 5: Worker `webui-setup-domain-views`
 
-- [ ] Create an independent worker worktree/branch.
-- [ ] Write RED static boundary tests for setup/domain view ownership.
-- [ ] Run the worker RED command and record the expected failure.
-- [ ] Implement one behavior-compatible setup/domain view boundary move.
-- [ ] Run worker focused tests and touched-file checks.
-- [ ] Commit with the required co-author trailer.
+- [x] Create an independent worker worktree/branch.
+- [x] Write RED static boundary tests for setup/domain view ownership.
+- [x] Run the worker RED command and record the expected failure.
+  - RED: `uv run --extra dev pytest tests/test_gateway/test_static_onboarding_views.py tests/test_gateway/test_cron_view_static.py tests/test_gateway_static_skills_view.py -q`.
+  - Result: expected failure, `3 failed, 30 passed`, because `SetupDomainViewState`, `ChannelsDomainViewState`, `CronDomainViewState`, and `SkillsDomainViewState` did not exist.
+- [x] Implement one behavior-compatible setup/domain view boundary move.
+  - Setup, channels, cron, and skills view-state constants/helpers now own domain-specific display and payload mapping.
+- [x] Run worker focused tests and touched-file checks.
+  - GREEN: same pytest command, `33 passed in 0.05s`.
+  - Ruff: `uv run --extra dev ruff check tests/test_gateway/test_static_onboarding_views.py tests/test_gateway/test_cron_view_static.py tests/test_gateway_static_skills_view.py`, `All checks passed!`.
+  - `git diff --check` passed.
+- [x] Commit with the required co-author trailer.
+  - Commit: `1fc516d`.
 
 ### Task 6: Main Integration Review
 
-- [ ] Wait for all worker branches and read summaries.
-- [ ] Review each branch diff before merge.
-- [ ] Merge worker branches into child branch one by one with `git merge --no-ff`.
-- [ ] Resolve conflicts without reverting another worker's ownership.
-- [ ] Run the focused batch green command.
-- [ ] Run touched-file ruff and `git diff --check`.
-- [ ] Run full child `scripts/refactor_gate.sh`.
-- [ ] Commit stage-record update with the required co-author trailer.
+- [x] Wait for all worker branches and read summaries.
+- [x] Review each branch diff before merge.
+- [x] Merge worker branches into child branch one by one with `git merge --no-ff`.
+  - Transport/access merge: `fb1852b`.
+  - Chat state merge: `387de78`.
+  - Control views merge: `50fad7e`.
+  - Setup/domain views merge: `26b8a0e`.
+- [x] Resolve conflicts without reverting another worker's ownership.
+  - No merge conflicts occurred.
+- [x] Run the focused batch green command.
+  - Result: `116 passed in 0.73s`.
+- [x] Run touched-file ruff and `git diff --check`.
+  - Ruff touched static tests: `All checks passed!`.
+  - `git diff --check` passed.
+- [x] Run full child `scripts/refactor_gate.sh`.
+  - Result: ruff passed; mypy passed; whitespace passed; pytest `2527 passed, 8 skipped, 2 warnings in 58.53s`; gateway smoke start/status/stop passed; refactor gate complete.
+- [x] Commit stage-record update with the required co-author trailer.
 
 ### Task 7: Integration Branch Merge and Cleanup
 
@@ -318,8 +357,24 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 ## Completion Record
 
 - Worker commits:
+  - `e00fc08` Refactor approval monitor HTTP access boundary.
+  - `8c8f2c4` Refactor chat view state mappings.
+  - `125df63` Refactor control view stat cards.
+  - `1fc516d` Refactor setup domain view state helpers.
 - Child integration commits:
+  - `fb1852b` Merge webui transport access boundary batch.
+  - `387de78` Merge webui chat state boundary batch.
+  - `50fad7e` Merge webui control views boundary batch.
+  - `26b8a0e` Merge webui setup domain views boundary batch.
 - Integration merge:
 - Verification evidence:
+  - Baseline focused Web UI suite: `109 passed in 3.12s`.
+  - Post-worker focused Web UI suite: `116 passed in 0.73s`.
+  - Touched static-test Ruff: `All checks passed!`.
+  - Child `git diff --check`: passed.
+  - Child full `scripts/refactor_gate.sh`: ruff passed; mypy passed; whitespace passed; pytest `2527 passed, 8 skipped, 2 warnings in 58.53s`; gateway smoke passed.
 - Residual risk:
+  - Web UI coverage in this batch remains static-contract focused; no browser JS runtime or visual pass was run.
+  - The shared stat-card helper preserves existing trusted-view HTML interpolation semantics; callers should keep values sourced from view-generated or escaped content.
 - Next recommended slice:
+  - Provider runtime and model-routing boundaries, or a browser-runtime Web UI harness if the project wants dynamic coverage for the static refactors.

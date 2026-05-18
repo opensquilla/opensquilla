@@ -29,7 +29,11 @@ from opensquilla.cli.attachments import (
     CLI_STAGED_PDF_BYTES,
     CLI_TEXT_ATTACHMENT_BYTES,
 )
-from opensquilla.cli.chat_cmd import _file_prompt_and_attachments
+from opensquilla.cli.chat_cmd import (
+    _file_prompt_and_attachments,
+    _image_prompt_and_attachments,
+    _image_prompt_from_command,
+)
 
 
 def _write(tmp_path: Path, name: str, payload: bytes) -> Path:
@@ -56,6 +60,38 @@ def test_file_command_inline_for_small_csv(tmp_path: Path) -> None:
     assert att["name"] == "data.csv"
     assert "data" in att and "file_uuid" not in att
     assert base64.b64decode(att["data"]) == csv_bytes
+
+
+def test_file_command_parses_quoted_path_with_spaces(tmp_path: Path) -> None:
+    csv_bytes = b"col_a,col_b\n1,2\n"
+    path = _write(tmp_path, "data set.csv", csv_bytes)
+
+    prompt, attachments = _file_prompt_and_attachments(
+        f'/file "{path}" summarise this', upload_callable=None
+    )
+
+    assert prompt == "summarise this"
+    assert attachments[0]["name"] == "data set.csv"
+    assert attachments[0]["type"] == "text/csv"
+    assert base64.b64decode(attachments[0]["data"]) == csv_bytes
+
+
+def test_file_command_rejects_unclosed_quoted_path() -> None:
+    with pytest.raises(ValueError, match=r"Usage: /file"):
+        _file_prompt_and_attachments('/file "unterminated', upload_callable=None)
+
+
+def test_image_command_parses_quoted_path_with_spaces(tmp_path: Path) -> None:
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"payload"
+    path = _write(tmp_path, "screen shot.png", png_bytes)
+
+    prompt, attachments = _image_prompt_and_attachments(f'/image "{path}" describe it')
+
+    assert _image_prompt_from_command(f'/image "{path}" describe it') == "describe it"
+    assert prompt == "describe it"
+    assert attachments[0]["name"] == "screen shot.png"
+    assert attachments[0]["type"] == "image/png"
+    assert base64.b64decode(attachments[0]["data"]) == png_bytes
 
 
 # ---------------------------------------------------------------------------

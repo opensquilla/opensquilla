@@ -18,6 +18,7 @@ from opensquilla.gateway.channel_dispatch import (
     _compute_channel_cap,
     _deliver_runtime_channel_reply,
 )
+from opensquilla.gateway.channel_inflight import ChannelInFlightSet, compute_channel_cap
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -78,12 +79,18 @@ def _make_session_manager() -> Any:
     return sm
 
 
-# ── _ChannelInFlightSet cap and formula ──────────────────────────────────────
+# ── ChannelInFlightSet cap and formula ───────────────────────────────────────
+
+
+def test_channel_dispatch_inflight_compatibility_aliases() -> None:
+    """Legacy channel_dispatch private imports remain compatibility aliases."""
+    assert _ChannelInFlightSet is ChannelInFlightSet
+    assert _compute_channel_cap is compute_channel_cap
 
 
 def test_inflight_set_cap_enforced() -> None:
     """In-flight set tracks tasks and reports full() at cap."""
-    ifs = _ChannelInFlightSet(cap=3)
+    ifs = ChannelInFlightSet(cap=3)
     assert not ifs.full()
 
     tasks = []
@@ -115,26 +122,26 @@ def test_inflight_cap_scales_with_concurrency(
         channel_inflight_cap=channel_inflight_cap,
         max_concurrency=max_concurrency,
     )
-    assert _compute_channel_cap(cfg) == expected_cap
+    assert compute_channel_cap(cfg) == expected_cap
 
 
 def test_compute_channel_cap_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     """Env path: OPENSQUILLA_CHANNEL_INFLIGHT_CAP=1 gives cap=min(1, 2×4)=1."""
     monkeypatch.setenv("OPENSQUILLA_CHANNEL_INFLIGHT_CAP", "1")
-    # _compute_channel_cap reads from config object, not env directly —
+    # compute_channel_cap reads from config object, not env directly —
     # env is applied by GatewayConfig. Test via config mock.
     cfg = _make_config(channel_inflight_cap=1, max_concurrency=4)
-    assert _compute_channel_cap(cfg) == 1
+    assert compute_channel_cap(cfg) == 1
 
 
-# ── _ChannelInFlightSet docstring must mention SEPARATE second-layer semaphore
+# ── ChannelInFlightSet docstring must mention SEPARATE second-layer semaphore
 
 
 def test_ac2_2_docstring_mentions_separate_semaphore() -> None:
-    """_ChannelInFlightSet docstring must reference global_sem separation."""
-    doc = _ChannelInFlightSet.__doc__ or ""
+    """ChannelInFlightSet docstring must reference global_sem separation."""
+    doc = ChannelInFlightSet.__doc__ or ""
     assert "global_sem" in doc or "second-layer" in doc, (
-        "_ChannelInFlightSet docstring must mention 'second-layer' or 'global_sem'"
+        "ChannelInFlightSet docstring must mention 'second-layer' or 'global_sem'"
     )
 
 
@@ -222,7 +229,7 @@ async def test_ac2_3_done_callback_logs_error_and_counter() -> None:
     async def _failing_reply() -> None:
         raise ValueError("reply boom")
 
-    ifs = _ChannelInFlightSet(cap=8)
+    ifs = ChannelInFlightSet(cap=8)
 
     session_key = "s:cb-test"
 
@@ -266,8 +273,8 @@ async def test_ac2_3_done_callback_logs_error_and_counter() -> None:
 
 @pytest.mark.asyncio
 async def test_close_cancels_inflight() -> None:
-    """_ChannelInFlightSet.cancel_all() cancels and awaits all tasks."""
-    ifs = _ChannelInFlightSet(cap=8)
+    """ChannelInFlightSet.cancel_all() cancels and awaits all tasks."""
+    ifs = ChannelInFlightSet(cap=8)
 
     results: list[str] = []
 
@@ -345,12 +352,10 @@ async def test_no_deadlock_stress() -> None:
 
     Uses mock task_runtime that returns immediately to avoid real LLM calls.
     """
-    from opensquilla.gateway.channel_dispatch import _ChannelInFlightSet
-
     total_requests = 10_000
     cap = 8
 
-    ifs = _ChannelInFlightSet(cap=cap)
+    ifs = ChannelInFlightSet(cap=cap)
     completed: list[int] = []
     dropped: list[int] = []
 
@@ -395,9 +400,7 @@ async def test_no_deadlock_stress() -> None:
 @pytest.mark.asyncio
 async def test_inflight_cap_triggers_busy_reply() -> None:
     """When cap is reached, channel gets 'Server busy' reply."""
-    from opensquilla.gateway.channel_dispatch import _ChannelInFlightSet
-
-    ifs = _ChannelInFlightSet(cap=2)
+    ifs = ChannelInFlightSet(cap=2)
     channel = _make_channel()
 
     # Fill the in-flight set with dummy tasks
@@ -440,10 +443,10 @@ async def test_cap_full_no_transcript_pollution() -> None:
     is not written; user receives 'Server busy' reply.
     """
     from opensquilla.channels.types import IncomingMessage
-    from opensquilla.gateway.channel_dispatch import _ChannelInFlightSet, run_channel_dispatch
+    from opensquilla.gateway.channel_dispatch import run_channel_dispatch
 
     # Build a full in-flight set (cap=1, one dummy task)
-    ifs = _ChannelInFlightSet(cap=1)
+    ifs = ChannelInFlightSet(cap=1)
 
     async def _noop() -> None:
         await asyncio.sleep(60)
@@ -563,11 +566,10 @@ async def test_debounce_reservation_enforced() -> None:
     from unittest.mock import AsyncMock, MagicMock, patch
 
     from opensquilla.gateway.channel_dispatch import (
-        _ChannelInFlightSet,
         _dispatch_combined_message_after_debounce,
     )
 
-    ifs = _ChannelInFlightSet(cap=1)
+    ifs = ChannelInFlightSet(cap=1)
 
     channel = MagicMock()
     channel.send = AsyncMock()

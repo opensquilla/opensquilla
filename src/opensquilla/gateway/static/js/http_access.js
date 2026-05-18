@@ -83,7 +83,24 @@ const WebUiHttp = (() => {
     });
   }
 
-  return { request, getJson, postJsonResponse, postJson, download, upload };
+  function getPendingApprovals() {
+    return getJson('/api/approvals', { cache: 'no-store' });
+  }
+
+  function resolveApproval(body) {
+    return postJson('/api/approvals/resolve', body);
+  }
+
+  return {
+    request,
+    getJson,
+    postJsonResponse,
+    postJson,
+    download,
+    upload,
+    getPendingApprovals,
+    resolveApproval,
+  };
 })();
 
 window.WebUiHttp = WebUiHttp;

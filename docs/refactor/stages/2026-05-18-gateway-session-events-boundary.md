@@ -127,15 +127,15 @@ Extract non-handler event delivery helpers from `rpc_sessions.py` into a dedicat
 - [x] Implement the smallest behavior-compatible change.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -161,8 +161,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
-- Integration merge:
+- Child commit: `38f4db1` (`Move session events behind gateway boundary`)
+- Integration merge: `d1bc3ec` (`Merge gateway session events boundary`)
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-gateway-session-events-boundary` passed on branch `codex/refactor-gateway-session-events-boundary` at `06c7ccb`.
   - Red: `uv run --extra dev pytest tests/test_gateway/test_rpc_session_events.py -q` failed as expected with `ModuleNotFoundError: No module named 'opensquilla.gateway.rpc_session_events'`.
@@ -170,7 +170,10 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/gateway/rpc_sessions.py src/opensquilla/gateway/rpc_session_events.py tests/test_gateway/test_rpc_session_events.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_gateway/test_rpc_sessions.py tests/test_gateway/test_session_streams.py tests/test_session/test_epoch_migration.py tests/test_session/test_epoch_production_path.py -q` passed, `99 passed in 1.48s`.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 482 source files; whitespace passed; pytest passed with `2393 passed, 8 skipped, 2 warnings in 29.01s`; gateway smoke start/status/stop passed on `127.0.0.1:55575`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `c4207f9`.
+  - Integration merge: `git merge --no-ff codex/refactor-gateway-session-events-boundary` produced merge commit `d1bc3ec`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 484 source files; whitespace passed; pytest passed with `2398 passed, 6 skipped, 2 warnings in 29.42s`; gateway smoke start/status/stop passed on `127.0.0.1:56392`.
 - Residual risk:
   - Low. Existing `_emit_to_subscribers` and `_increment_and_emit_epoch` compatibility wrappers remain in `rpc_sessions.py`, and existing session replay/epoch tests pass.
 - Next recommended slice:
-  - Continue Phase 3 with a TaskRuntime reset/abort drain boundary or wait for scout results if targeting a larger provider/tools slice.
+  - Continue Phase 3 with a TaskRuntime reset/abort drain boundary, or open larger independent Provider/Tools/Web UI slices in parallel from the current integration head.

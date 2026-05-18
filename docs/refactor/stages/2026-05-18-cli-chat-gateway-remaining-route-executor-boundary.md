@@ -129,15 +129,15 @@ Extract the remaining direct gateway slash route branches into focused executors
 - [x] Implement the smallest behavior-compatible change.
 - [x] Run focused tests and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child gate
 
@@ -163,8 +163,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit: pending
-- Integration merge:
+- Child commit: `b5fa46e` (`Move remaining gateway chat routes behind executors`)
+- Integration merge: `8372bbf` (`Merge CLI chat gateway remaining route executor boundary`)
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-cli-chat-gateway-remaining-route-executor-boundary` passed on branch `codex/refactor-cli-chat-gateway-remaining-route-executor-boundary` at `090c15c`.
   - Parallel probes: `gateway_path_file_route_probe`, `gateway_privacy_routes_probe`, and `gateway_dispatcher_batch_plan_probe` were launched and then closed after exceeding wait windows without returning results.
@@ -173,7 +173,10 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_gateway_io_route_workflows.py src/opensquilla/cli/chat_gateway_control_route_workflows.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py tests/test_cli/test_cli_product_completeness.py -q` passed, `224 passed in 1.93s`.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 480 source files; whitespace passed; pytest passed with `2388 passed, 8 skipped, 2 warnings in 54.88s`; gateway smoke start/status/stop passed on `127.0.0.1:51104`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `090c15c`.
+  - Integration merge: `git merge --no-ff codex/refactor-cli-chat-gateway-remaining-route-executor-boundary` produced merge commit `8372bbf`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 480 source files; whitespace passed; pytest passed with `2390 passed, 6 skipped, 2 warnings in 36.49s`; gateway smoke start/status/stop passed on `127.0.0.1:51761`.
 - Residual risk:
-  - Pending integration merge and integration gate.
+  - Low. This slice moves remaining gateway slash route-name dispatch into thin executors while preserving existing path/file/control behavior workflows and compatibility wrappers.
 - Next recommended slice:
-  - Pending completion; if this slice lands, shift from CLI chat gateway route dispatch to a different architecture lane such as session RPC payload boundaries or provider runtime boundaries.
+  - Shift from CLI chat gateway route dispatch to a different architecture lane with parallel agents, such as session RPC payload boundaries or provider runtime boundaries, because `_handle_gateway_slash_command` now only chains route executors after route matching.

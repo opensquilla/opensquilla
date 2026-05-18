@@ -49,8 +49,7 @@ def test_session_lifecycle_module_owns_lifecycle_implementation() -> None:
         ("opensquilla.session.lifecycle_service", "require_existing_session"),
         ("opensquilla.session.lifecycle_service", "require_session_storage"),
         ("opensquilla.session.lifecycle_service", "run_with_session_lock"),
-        ("opensquilla.session.lifecycle_flush", "execute_lifecycle_flush"),
-        ("opensquilla.session.lifecycle_flush", "unavailable_flush_failure_for_transcript"),
+        ("opensquilla.session.lifecycle_memory", "preserve_lifecycle_memory"),
         ("opensquilla.session.rpc_payload", "session_abort_response"),
         ("opensquilla.session.rpc_payload", "session_reset_response"),
         ("opensquilla.session.rpc_payload", "session_delete_response"),
@@ -64,6 +63,13 @@ def test_session_lifecycle_module_owns_lifecycle_implementation() -> None:
         ("opensquilla.session.rpc_payload", "session_permission_denied_details"),
     }
     assert direct_flush_payload_imports.isdisjoint(lifecycle_imports)
+
+    lifecycle_orchestration_imports = {
+        ("opensquilla.session.keys", "normalize_agent_id"),
+        ("opensquilla.session.lifecycle_flush", "execute_lifecycle_flush"),
+        ("opensquilla.session.lifecycle_flush", "unavailable_flush_failure_for_transcript"),
+    }
+    assert lifecycle_orchestration_imports.isdisjoint(lifecycle_imports)
 
 
 def test_rpc_sessions_lifecycle_handlers_delegate_to_boundary() -> None:

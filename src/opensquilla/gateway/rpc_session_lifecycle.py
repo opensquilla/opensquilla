@@ -15,12 +15,10 @@ from opensquilla.gateway.rpc_compaction_inputs import (
     context_window_tokens,
 )
 from opensquilla.session.compaction import call_compact_with_optional_config
-from opensquilla.session.keys import normalize_agent_id
 from opensquilla.session.lifecycle_flush import (
     SessionLifecycleFlushFailure,
-    execute_lifecycle_flush,
-    unavailable_flush_failure_for_transcript,
 )
+from opensquilla.session.lifecycle_memory import preserve_lifecycle_memory
 from opensquilla.session.lifecycle_service import (
     require_existing_session,
     require_session_storage,
@@ -185,19 +183,18 @@ async def handle_sessions_reset(
 
     if ctx.flush_service is None:
         session = await require_existing_session(storage, key)
-        previous_session_id = session.session_id
-
-        transcript = await ctx.session_manager.get_transcript(key)
-        failure = unavailable_flush_failure_for_transcript(
+        preservation = await preserve_lifecycle_memory(
             "reset",
+            ctx.session_manager,
+            ctx.flush_service,
             key,
-            previous_session_id,
-            transcript,
+            session,
             force=force,
             principal_scopes=ctx.principal.scopes,
         )
-        if failure is not None:
-            _raise_lifecycle_flush_failure(failure)
+        if preservation.failure is not None:
+            _raise_lifecycle_flush_failure(preservation.failure)
+        previous_session_id = preservation.previous_session_id or session.session_id
 
         updated, rotated = await ctx.session_manager.apply_intent(key, SessionIntent.RESET_SAME_KEY)
         new_epoch = await increment_and_emit_epoch(ctx, storage, key)
@@ -224,20 +221,18 @@ async def handle_sessions_reset(
 
     async def _run_locked() -> dict[str, Any]:
         session = await require_existing_session(storage, key)
-        previous_session_id = session.session_id
-        agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
-
-        transcript = await ctx.session_manager.get_transcript(key)
-        flush_attempt = await execute_lifecycle_flush(
+        preservation = await preserve_lifecycle_memory(
             "reset",
+            ctx.session_manager,
             ctx.flush_service,
-            transcript,
             key,
-            agent_id=agent_id,
-            session_id=previous_session_id,
+            session,
+            force=force,
+            principal_scopes=ctx.principal.scopes,
         )
-        if flush_attempt.failure is not None:
-            _raise_lifecycle_flush_failure(flush_attempt.failure)
+        if preservation.failure is not None:
+            _raise_lifecycle_flush_failure(preservation.failure)
+        previous_session_id = preservation.previous_session_id or session.session_id
 
         updated, rotated = await ctx.session_manager.apply_intent(key, SessionIntent.RESET_SAME_KEY)
         new_epoch = await increment_and_emit_epoch(ctx, storage, key)
@@ -246,7 +241,7 @@ async def handle_sessions_reset(
             rotated,
             previous_session_id,
             updated.session_id,
-            receipt=flush_attempt.receipt,
+            receipt=preservation.receipt,
             epoch=new_epoch,
         )
 
@@ -336,37 +331,34 @@ async def handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict:
         session = None
         if storage is not None:
             session = await storage.get_session(key)
-        previous_session_id = getattr(session, "session_id", None) if session else None
 
         if ctx.flush_service is None:
-            transcript = await ctx.session_manager.get_transcript(key)
-            failure = unavailable_flush_failure_for_transcript(
+            preservation = await preserve_lifecycle_memory(
                 "compact",
+                ctx.session_manager,
+                ctx.flush_service,
                 key,
-                previous_session_id,
-                transcript,
+                session,
                 force=force,
                 principal_scopes=ctx.principal.scopes,
             )
-            if failure is not None:
-                _raise_lifecycle_flush_failure(failure)
+            if preservation.failure is not None:
+                _raise_lifecycle_flush_failure(preservation.failure)
         else:
             storage = require_session_storage(ctx.session_manager)
             session = await require_existing_session(storage, key)
-            previous_session_id = getattr(session, "session_id", None)
-            agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
-            transcript = await ctx.session_manager.get_transcript(key)
-            flush_attempt = await execute_lifecycle_flush(
+            preservation = await preserve_lifecycle_memory(
                 "compact",
+                ctx.session_manager,
                 ctx.flush_service,
-                transcript,
                 key,
-                agent_id=agent_id,
-                session_id=previous_session_id,
+                session,
+                force=force,
+                principal_scopes=ctx.principal.scopes,
             )
-            if flush_attempt.failure is not None:
-                _raise_lifecycle_flush_failure(flush_attempt.failure)
-            receipt = flush_attempt.receipt
+            if preservation.failure is not None:
+                _raise_lifecycle_flush_failure(preservation.failure)
+            receipt = preservation.receipt
 
         result = await ctx.session_manager.truncate(key, max_messages=max_messages)
         return session_compact_response(key, result, receipt=receipt)

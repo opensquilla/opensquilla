@@ -1409,18 +1409,10 @@ class TestSessionsReset:
             if isinstance(node, ast.Dict)
         }
 
-        assert ("opensquilla.session.lifecycle_flush", "execute_lifecycle_flush") in imports
-        assert (
-            "opensquilla.session.lifecycle_flush",
-            "unavailable_flush_failure_for_transcript",
-        ) in imports
+        assert ("opensquilla.session.lifecycle_memory", "preserve_lifecycle_memory") in imports
         assert ("opensquilla.session.rpc_payload", "session_reset_response") in imports
         assert any(
-            isinstance(node, ast.Name) and node.id == "execute_lifecycle_flush"
-            for node in ast.walk(handler)
-        )
-        assert any(
-            isinstance(node, ast.Name) and node.id == "unavailable_flush_failure_for_transcript"
+            isinstance(node, ast.Name) and node.id == "preserve_lifecycle_memory"
             for node in ast.walk(handler)
         )
         assert not any(
@@ -1598,18 +1590,10 @@ class TestSessionsCompact:
             if isinstance(node, ast.Dict)
         }
 
-        assert ("opensquilla.session.lifecycle_flush", "execute_lifecycle_flush") in imports
-        assert (
-            "opensquilla.session.lifecycle_flush",
-            "unavailable_flush_failure_for_transcript",
-        ) in imports
+        assert ("opensquilla.session.lifecycle_memory", "preserve_lifecycle_memory") in imports
         assert ("opensquilla.session.rpc_payload", "session_compact_response") in imports
         assert any(
-            isinstance(node, ast.Name) and node.id == "execute_lifecycle_flush"
-            for node in ast.walk(handler)
-        )
-        assert any(
-            isinstance(node, ast.Name) and node.id == "unavailable_flush_failure_for_transcript"
+            isinstance(node, ast.Name) and node.id == "preserve_lifecycle_memory"
             for node in ast.walk(handler)
         )
         assert any(

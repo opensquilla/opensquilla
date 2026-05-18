@@ -155,15 +155,15 @@ Further separate provider-domain status/catalog/listing materialization from Gat
 - [x] Implement the cohesive behavior-compatible module batch without dropping existing feature coverage.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 - [ ] Remove `../opensquilla-refactor-active`, run `git worktree prune`, and verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
 
 ## Child Gate
@@ -190,8 +190,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit: recorded in the worker final response after this stage file is committed.
-- Integration merge: not performed by this worker.
+- Child commit: `3a67894c2c014f3fd353b26bf5b680eb7169aabc`.
+- Integration merge: `49a6f0269214c34373245f31d924d36cf6e07d76`.
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-provider-status-catalog-batch` passed on branch `codex/refactor-provider-status-catalog-batch` at `3d9837d`.
   - Red: `uv run --extra dev pytest tests/test_provider_model_catalog.py tests/test_gateway/test_provider_runtime_assembly_boundary.py -q` failed during collection with `ImportError: cannot import name 'refresh_openrouter_catalog_and_pricing' from 'opensquilla.provider.model_catalog'`.
@@ -202,6 +202,7 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched mypy: `uv run --extra dev mypy src/opensquilla/provider/model_catalog.py src/opensquilla/gateway/provider_runtime_assembly.py --show-error-codes` passed with no issues in 2 source files.
   - Whitespace: `git diff --check` passed.
   - Final full child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 512 source files; whitespace passed; pytest passed with `2465 passed, 8 skipped, 2 warnings in 28.88s`; gateway smoke start/status/stop/status passed on `127.0.0.1:58098`.
+  - Integration merge gate: `scripts/refactor_gate.sh` passed after merge `49a6f02`; ruff passed; mypy passed with no issues in 512 source files; whitespace passed; pytest passed with `2467 passed, 6 skipped, 2 warnings in 27.46s`; gateway smoke start/status/stop/status passed on `127.0.0.1:58424`.
 - Residual risk:
   - Low. The Provider catalog boundary now owns best-effort catalog/pricing refresh orchestration, but Gateway still supplies GatewayConfig-derived pricing model IDs and the existing engine pricing callback. Public provider compatibility wrappers and JSON/RPC payload facades were covered by focused tests and the full gate.
 - Next recommended slice:

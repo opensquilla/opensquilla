@@ -11,6 +11,7 @@ WEB_TOOL = ROOT / "src/opensquilla/tools/builtin/web.py"
 BOOT = ROOT / "src/opensquilla/gateway/boot.py"
 RPC_ONBOARDING = ROOT / "src/opensquilla/gateway/rpc_onboarding.py"
 RPC_TOOLS = ROOT / "src/opensquilla/gateway/rpc_tools.py"
+RPC_SEARCH = ROOT / "src/opensquilla/gateway/rpc_search.py"
 
 
 def _top_level_names(path: Path) -> set[str]:
@@ -77,8 +78,11 @@ def test_gateway_configures_search_runtime_boundary() -> None:
 def test_gateway_reads_search_provider_from_runtime_boundary() -> None:
     assert ("opensquilla.tools.builtin.web", "get_active_provider") not in _imports_from(RPC_TOOLS)
     assert ("opensquilla.search.runtime", "get_active_provider") not in _imports_from(RPC_TOOLS)
-    assert ("opensquilla.search.execution", "search_provider_payload") in _imports_from(
+    assert ("opensquilla.search.execution", "search_provider_payload") not in _imports_from(
         RPC_TOOLS
+    )
+    assert ("opensquilla.search.execution", "search_provider_payload") in _imports_from(
+        RPC_SEARCH
     )
 
 
@@ -87,14 +91,20 @@ def test_gateway_runs_search_queries_through_search_boundary() -> None:
 
     assert forbidden not in _imports_from(RPC_TOOLS)
     assert ("opensquilla.search.execution", "run_search_payload") not in _imports_from(RPC_TOOLS)
-    assert ("opensquilla.search.execution", "search_query_rpc_payload") in _imports_from(
+    assert ("opensquilla.search.execution", "search_query_rpc_payload") not in _imports_from(
         RPC_TOOLS
+    )
+    assert ("opensquilla.search.execution", "search_query_rpc_payload") in _imports_from(
+        RPC_SEARCH
     )
     assert ("opensquilla.search.execution", "search_runtime_status") not in _imports_from(
         RPC_TOOLS
     )
-    assert ("opensquilla.search.execution", "search_status_rpc_payload") in _imports_from(
+    assert ("opensquilla.search.execution", "search_status_rpc_payload") not in _imports_from(
         RPC_TOOLS
+    )
+    assert ("opensquilla.search.execution", "search_status_rpc_payload") in _imports_from(
+        RPC_SEARCH
     )
 
 

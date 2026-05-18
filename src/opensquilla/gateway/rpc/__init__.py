@@ -63,6 +63,8 @@ import opensquilla.gateway.rpc_logs  # noqa: E402, F401
 import opensquilla.gateway.rpc_memory  # noqa: E402, F401
 import opensquilla.gateway.rpc_models  # noqa: E402, F401
 import opensquilla.gateway.rpc_onboarding  # noqa: E402, F401
+import opensquilla.gateway.rpc_providers  # noqa: E402, F401
+import opensquilla.gateway.rpc_search  # noqa: E402, F401
 import opensquilla.gateway.rpc_secrets  # noqa: E402, F401
 import opensquilla.gateway.rpc_sessions  # noqa: E402, F401
 import opensquilla.gateway.rpc_skills  # noqa: E402, F401

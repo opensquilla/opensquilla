@@ -14,7 +14,7 @@ from opensquilla.provider.runtime_status import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-RPC_TOOLS = ROOT / "src/opensquilla/gateway/rpc_tools.py"
+RPC_PROVIDERS = ROOT / "src/opensquilla/gateway/rpc_providers.py"
 
 
 def _top_level_functions(path: Path) -> set[str]:
@@ -226,7 +226,7 @@ async def test_build_provider_status_rpc_payload_owns_request_params() -> None:
 
 
 def test_gateway_delegates_provider_status_wire_shape_to_provider_boundary() -> None:
-    imports = _imports_from(RPC_TOOLS)
+    imports = _imports_from(RPC_PROVIDERS)
 
     assert (
         "opensquilla.provider.runtime_status",
@@ -242,5 +242,5 @@ def test_gateway_delegates_provider_status_wire_shape_to_provider_boundary() -> 
     ) not in imports
     assert ("opensquilla.provider.runtime_status", "ProviderStatusRow") not in imports
     assert ("opensquilla.provider.runtime_status", "ProviderModelProbe") not in imports
-    assert "_provider_status_row_to_wire" not in _top_level_functions(RPC_TOOLS)
-    assert "_model_probe_to_wire" not in _top_level_functions(RPC_TOOLS)
+    assert "_provider_status_row_to_wire" not in _top_level_functions(RPC_PROVIDERS)
+    assert "_model_probe_to_wire" not in _top_level_functions(RPC_PROVIDERS)

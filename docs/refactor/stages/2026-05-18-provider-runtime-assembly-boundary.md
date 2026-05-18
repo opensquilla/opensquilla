@@ -133,15 +133,15 @@ Separate Provider runtime assembly service behavior from the Gateway bootstrap c
 - [x] Implement the smallest behavior-compatible provider runtime assembly move.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -167,8 +167,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `916e1d5db64da8f8abc71925ec9ca786662a7f55`.
+- Integration merge: `07022819cf85e7d132871f8e0283b9a35ab4d6dc`.
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-provider-runtime-assembly-boundary` passed on branch `codex/refactor-provider-runtime-assembly-boundary` at `cab6959`.
   - Red: `uv run --extra dev pytest tests/test_gateway/test_provider_runtime_assembly_boundary.py -q` failed as expected with `2 failed in 0.02s` because `src/opensquilla/gateway/provider_runtime_assembly.py` did not exist.
@@ -178,6 +178,7 @@ Co-authored-by: Codex <noreply@openai.com>
   - Release hygiene spot check: `uv run --extra dev pytest tests/test_public_release_hygiene.py::test_tracked_public_files_do_not_contain_real_secret_shapes_or_local_paths -q` passed with `1 passed in 0.36s`.
   - Whitespace: `git diff --check` passed.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 506 source files; whitespace passed; pytest passed with `2443 passed, 8 skipped, 2 warnings in 49.99s`; gateway smoke start/status/stop passed on port `51487`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 506 source files; whitespace passed; pytest passed with `2445 passed, 6 skipped, 2 warnings in 26.95s`; gateway smoke start/status/stop passed on port `51621`.
 - Residual risk:
   - Low. The slice preserves the `provider_bootstrap` import facade and moves existing assembly logic without changing selector/catalog/pricing/image runtime behavior.
 - Next recommended slice:

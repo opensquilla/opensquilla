@@ -223,8 +223,12 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - Observed: failed with `agent thread limit reached`.
 - [x] Create fixed active worktree on `codex/refactor-task-runtime-terminalization-boundary-batch`.
 - [x] Write this stage plan before implementation.
-- [ ] Commit this stage plan as the worker base.
-- [ ] Launch three external workers with `scripts/refactor_external_agent.sh`, each from this child branch.
+- [x] Commit this stage plan as the worker base.
+  - Commit: `6971bdd` (`Plan task runtime terminalization boundary batch`).
+- [x] Launch three external workers with `scripts/refactor_external_agent.sh`, each from this child branch.
+  - `task-runtime-records`: branch `codex/refactor-task-runtime-records-boundary`.
+  - `task-runtime-terminal`: branch `codex/refactor-task-runtime-terminal-boundary`.
+  - `task-runtime-scheduler`: branch `codex/refactor-task-runtime-scheduler-boundary`.
 
 ### Task 2: Worker `task-runtime-records`
 
@@ -276,14 +280,23 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 
 ### Task 5: Main Integration Review
 
-- [ ] Wait for external worker results and read each `last_message` summary.
-- [ ] Review every worker diff before merge.
-- [ ] Merge worker branches into `codex/refactor-task-runtime-terminalization-boundary-batch` one by one with `git merge --no-ff`.
-- [ ] Resolve shared `task_runtime.py` imports/delegation conflicts without reverting another worker's ownership.
-- [ ] Run the focused batch green command.
-- [ ] Run touched-file ruff, mypy, and `git diff --check`.
-- [ ] Run full child `scripts/refactor_gate.sh`.
-- [ ] Commit any integration fix or stage-record update with the required co-author trailer.
+- [x] Wait for external worker results and read each `last_message` summary.
+- [x] Review every worker diff before merge.
+- [x] Merge worker branches into `codex/refactor-task-runtime-terminalization-boundary-batch` one by one with `git merge --no-ff`.
+  - `8669ad5` (`Merge task runtime records boundary worker`).
+  - `bd472cc` (`Merge task runtime terminal boundary worker`).
+  - `56fd20a` (`Merge task runtime scheduler boundary worker`).
+- [x] Resolve shared `task_runtime.py` imports/delegation conflicts without reverting another worker's ownership.
+  - `489faeb` (`Resolve task runtime boundary import ordering`).
+- [x] Run the focused batch green command.
+  - `61 passed`.
+- [x] Run touched-file ruff, mypy, and `git diff --check`.
+  - Targeted ruff passed.
+  - Mypy passed with no issues in 537 source files.
+  - `git diff --check` clean.
+- [x] Run full child `scripts/refactor_gate.sh`.
+  - Passed: ruff, mypy, whitespace, pytest `2588 passed, 8 skipped, 2 warnings`, gateway smoke on `127.0.0.1:52711`.
+- [x] Commit any integration fix or stage-record update with the required co-author trailer.
 
 ### Task 6: Integration Branch Merge And Cleanup
 
@@ -323,12 +336,32 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 ## Completion Record
 
 - Worker commits:
-  - task-runtime-records:
-  - task-runtime-terminal:
-  - task-runtime-scheduler:
+  - task-runtime-records: `4ef5c2d` (`Refactor task runtime records boundary`).
+  - task-runtime-terminal: `fcd836f` (`Refactor task runtime terminal boundary`).
+  - task-runtime-scheduler: `6a11963` (`Refactor task runtime scheduler boundary`).
 - Child integration commits:
+  - `8669ad5` (`Merge task runtime records boundary worker`).
+  - `bd472cc` (`Merge task runtime terminal boundary worker`).
+  - `56fd20a` (`Merge task runtime scheduler boundary worker`).
+  - `489faeb` (`Resolve task runtime boundary import ordering`).
 - Integration merge:
 - Verification evidence:
+  - Worker `task-runtime-records` RED: `uv run --extra dev pytest tests/test_gateway/test_task_runtime_records_boundary.py -q` failed as expected with `ModuleNotFoundError: No module named 'opensquilla.gateway.task_runtime_records'`.
+  - Worker `task-runtime-terminal` RED: `uv run --extra dev pytest tests/test_gateway/test_task_runtime_terminal_boundary.py -q` failed as expected with `ModuleNotFoundError: No module named 'opensquilla.gateway.task_runtime_terminal'`.
+  - Worker `task-runtime-scheduler` RED: `uv run --extra dev pytest tests/test_gateway/test_task_runtime_scheduler_boundary.py -q` failed as expected with `ModuleNotFoundError: No module named 'opensquilla.gateway.task_runtime_scheduler'`.
+  - Worker full gates passed independently:
+    - `task-runtime-records`: `2578 passed, 8 skipped`; gateway smoke passed.
+    - `task-runtime-terminal`: `2582 passed, 8 skipped`; gateway smoke passed.
+    - `task-runtime-scheduler`: `2578 passed, 8 skipped`; gateway smoke passed.
+  - Main focused batch after worker merge/conflict resolution:
+    - `uv run --extra dev pytest tests/test_gateway/test_task_runtime_records_boundary.py tests/test_gateway/test_task_runtime_terminal_boundary.py tests/test_gateway/test_task_runtime_scheduler_boundary.py tests/test_gateway/test_task_runtime_terminal_message.py tests/test_gateway/test_fair_queuing.py tests/test_gateway/test_no_split_brain_lock.py tests/test_gateway/test_graceful_shutdown_drain.py tests/test_gateway/test_metrics_counters.py tests/test_session/test_session_rpc_payload.py -q`
+    - `61 passed`.
+  - Main touched-file ruff: all checks passed.
+  - Main mypy: success, no issues found in 537 source files.
+  - Main `git diff --check`: clean.
+  - Child full gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 537 source files; whitespace passed; pytest `2588 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
 - Cleanup evidence:
 - Residual risk:
+  - Low to medium. Task runtime orchestration remains in `TaskRuntime`, while records, terminal payload/subagent completion helpers, and scheduler state now have explicit owning modules. Compatibility imports remain on `opensquilla.gateway.task_runtime`, and scheduler-owned state is still exposed via compatibility properties for existing tests. Future slices should avoid removing those compatibility properties until downstream/import-surface checks are broadened.
 - Next recommended slice:
+  - Continue with a session/task runtime cleanup batch that can reduce remaining orchestration coupling around `TaskRuntime._execute`, `TaskRuntime.shutdown`, and runtime stream emission, or pivot to another coarse module-family slice if overall-plan priorities point elsewhere after integration gate and cleanup.

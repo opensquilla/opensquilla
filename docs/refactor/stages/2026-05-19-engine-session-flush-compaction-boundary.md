@@ -338,16 +338,16 @@ do not revert unrelated changes, and stop rather than editing outside ownership.
 - [x] Run combined focused GREEN.
 - [x] Run touched-file Ruff, mypy, and `git diff --check`.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit child stage record with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`, run
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
+- [x] Remove `../opensquilla-refactor-active`, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
 
@@ -399,6 +399,12 @@ Co-authored-by: Codex <noreply@openai.com>
 - `git diff --check HEAD^ HEAD`
 - `uv run --extra dev pytest`
 - gateway smoke through `scripts/refactor_gate.sh`
+- Result after integration merge `e3e573b`: passed.
+  - Ruff: passed.
+  - Mypy: no issues in 534 source files.
+  - Whitespace: clean.
+  - Pytest: `2577 passed, 6 skipped, 2 warnings`.
+  - Gateway smoke: start/status/stop/status passed on `127.0.0.1:51401`.
 
 ## Rollback
 
@@ -411,17 +417,26 @@ Co-authored-by: Codex <noreply@openai.com>
 ## Completion record
 
 - Child commit:
+  - `a28c4b9` (`Record engine session flush compaction verification`).
 - Worker commits:
   - `ed511b7` (`Refine agent background flush completion`).
   - `dc483e2` (`Serialize no-flush session reset`).
   - `72a8f0e` (`Refactor engine preflight compaction boundary`).
 - Integration merge:
+  - `e3e573b` (`Merge engine session flush compaction boundary`).
 - Verification evidence:
 - Baseline focused: `66 passed`.
 - Worker focused RED/GREEN evidence recorded above.
 - Combined focused: `75 passed`.
 - Touched Ruff/mypy/diff-check: passed.
 - Child `scripts/refactor_gate.sh`: passed with `2575 passed, 8 skipped`.
+- Integration `scripts/refactor_gate.sh`: passed with
+  `2577 passed, 6 skipped`; gateway smoke passed on `127.0.0.1:51401`.
+- Cleanup evidence:
+  - Removed `../opensquilla-refactor-active`.
+  - Ran `git worktree prune`.
+  - Verified `git worktree list --porcelain` no longer lists the active
+    refactor child worktree or temporary review worktrees.
 - Residual risk:
   - Low to medium. The stage preserves current T3 `flush_failed` generic
     fallback behavior. A later stage can make snapshot-aware compaction

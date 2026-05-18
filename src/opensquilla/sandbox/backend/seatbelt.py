@@ -314,7 +314,7 @@ class SeatbeltBackend(Backend):
         _validate_request(request)
 
         tmp_ctx: tempfile.TemporaryDirectory[str] | None = None
-        profile_file: tempfile.NamedTemporaryFile[str] | None = None
+        profile_file: Any | None = None
         try:
             tmp_dir: Path | None = None
             if request.policy.tmp_writable:

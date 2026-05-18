@@ -112,7 +112,9 @@ class _DreamFileLock:
         else:
             import fcntl
 
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+            flock = getattr(fcntl, "flock")
+            lock_ex = getattr(fcntl, "LOCK_EX")
+            flock(self._fh.fileno(), lock_ex)
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
@@ -129,7 +131,9 @@ class _DreamFileLock:
             else:
                 import fcntl
 
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+                flock = getattr(fcntl, "flock")
+                lock_un = getattr(fcntl, "LOCK_UN")
+                flock(self._fh.fileno(), lock_un)
         finally:
             self._fh.close()
             self._fh = None

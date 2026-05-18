@@ -3779,7 +3779,7 @@ class Agent:
 
     @staticmethod
     def _is_provider_context_projection_reuse_result(result: ToolResult) -> bool:
-        status = result.execution_status or {}
+        status: Any = result.execution_status or {}
         return bool(
             result.is_error
             and isinstance(status, dict)

@@ -432,5 +432,6 @@ def build_tool_handler(
                     )
             finally:
                 current_tool_context.reset(token)
+        raise AssertionError("unreachable")
 
     return _handler

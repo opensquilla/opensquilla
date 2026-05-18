@@ -351,7 +351,7 @@ async def prompt_approval_inline(*, surface: Surface, approval_panel: str) -> st
         # No outer Application is running for this surface; run the fresh
         # one-shot session directly. This still avoids re-entering any
         # cached ``PromptSession`` so the legacy re-entry bug cannot recur.
-        fresh = PromptSession(message=approval_panel)
+        fresh: PromptSession[str] = PromptSession(message=approval_panel)
         try:
             value = await fresh.prompt_async()
         except (EOFError, KeyboardInterrupt):

@@ -31,10 +31,12 @@ def _sanitized_failure_fields(payload: dict[str, Any]) -> tuple[str | None, str 
         error_class, error_message = sanitize_agent_error(terminal_payload)
         return error_class, error_message
     error_class = payload.get("error_class")
-    error_message = payload.get("error_message")
+    raw_error_message = payload.get("error_message")
     return (
         error_class if isinstance(error_class, str) and error_class else None,
-        error_message if isinstance(error_message, str) and error_message else None,
+        raw_error_message
+        if isinstance(raw_error_message, str) and raw_error_message
+        else None,
     )
 
 

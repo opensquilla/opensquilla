@@ -110,15 +110,15 @@ Extract standalone slash route matching into a dedicated boundary without changi
 - [x] Implement the smallest behavior-compatible change.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -144,8 +144,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `e6505dc`.
+- Integration merge: `844f355`.
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-cli-chat-standalone-slash-routing-boundary` passed on branch `codex/refactor-cli-chat-standalone-slash-routing-boundary` at `b57afa8`.
   - Red: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py::test_standalone_slash_routes_preserve_current_command_surface tests/test_cli/test_chat_cmd.py::test_chat_standalone_slash_matching_uses_route_boundary -q` failed as expected because `chat_standalone_slash_routes.py` did not exist and `_standalone_repl` still owned standalone slash matching.
@@ -153,7 +153,10 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched ruff: `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_standalone_slash_routes.py tests/test_cli/test_chat_cmd.py` passed.
   - Touched tests: `uv run --extra dev pytest tests/test_cli/test_chat_cmd.py -q` passed, `137 passed in 1.06s`.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 487 source files; whitespace passed; pytest passed with `2400 passed, 8 skipped, 2 warnings in 56.54s`; gateway smoke start/status/stop passed on `127.0.0.1:55565`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `b57afa8`.
+  - Integration merge: `git merge --no-ff codex/refactor-cli-chat-standalone-slash-routing-boundary` produced merge commit `844f355`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 487 source files; whitespace passed; pytest passed with `2402 passed, 6 skipped, 2 warnings in 31.34s`; gateway smoke start/status/stop passed on `127.0.0.1:56119`.
 - Residual risk:
-  - Pending child commit, integration merge, and integration gate.
+  - Low. The slice moves route matching only; workflow behavior and unsupported standalone `/file` handling remain unchanged.
 - Next recommended slice:
   - After this lands, extract standalone utility route execution for `/tool-compress` and `/save` into a focused executor boundary, or continue with a non-CLI architecture boundary if higher leverage.

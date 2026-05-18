@@ -171,7 +171,7 @@ Separate reusable session-management services from Gateway helper modules withou
 - [x] Implement the cohesive behavior-compatible module batch without dropping existing feature coverage.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
@@ -206,7 +206,7 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit:
+- Child commit: `5b4043c`.
 - Integration merge: Not performed by this external worker.
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-session-management-batch` passed on branch `codex/refactor-session-management-batch` at `3d9837d`.

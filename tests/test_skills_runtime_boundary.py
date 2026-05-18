@@ -165,7 +165,7 @@ def test_boot_delegates_skill_loader_construction_to_skills_runtime() -> None:
 def test_cli_delegates_skill_loader_construction_to_skills_runtime() -> None:
     imports = _runtime_imports_from(CLI_SKILLS_ROWS)
 
-    assert ("opensquilla.skills.runtime", "create_configured_skill_loader") in imports
+    assert ("opensquilla.skills", "runtime") in imports
     assert ("opensquilla.skills.runtime_facade", "loaded_skill_rows") in imports
     assert ("opensquilla.skills.loader", "SkillLoader") not in imports
     assert ("opensquilla.skills.paths", "resolve_skill_layer_dirs") not in imports

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from opensquilla.engine.agent import Agent, _IterationStreamTimeoutError
 from opensquilla.engine.runtime import TurnRunner
 from opensquilla.engine.types import AgentConfig, DoneEvent
 from opensquilla.gateway.config import GatewayConfig
@@ -169,3 +171,38 @@ async def test_run_threads_iteration_timeout_into_agent_config(
     assert any(kw.get("iteration_timeout") == 444.0 for kw in seen_kwargs), (
         f"AgentConfig never received iteration_timeout=444.0; saw {seen_kwargs!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_stream_iteration_timeout_does_not_double_close_provider_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = Agent.__new__(Agent)
+    agent.config = MagicMock(timeout=1.0)
+    close_calls = 0
+
+    async def provider_stream() -> AsyncIterator[dict[str, str]]:
+        try:
+            await asyncio.sleep(1.0)
+            yield {"type": "chunk", "data": "late"}
+        finally:
+            await asyncio.sleep(0)
+
+    async def record_close(_stream_iter: AsyncIterator[Any]) -> None:
+        nonlocal close_calls
+        close_calls += 1
+
+    monkeypatch.setattr(agent, "_close_provider_stream", record_close)
+
+    loop = asyncio.get_running_loop()
+
+    with pytest.raises(_IterationStreamTimeoutError):
+        async for _event in agent._stream_provider_events_with_deadline(
+            provider_stream(),
+            loop=loop,
+            iter_deadline=loop.time() + 0.01,
+            total_deadline=None,
+        ):
+            pass
+
+    assert close_calls == 0

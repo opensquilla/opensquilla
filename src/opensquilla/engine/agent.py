@@ -3190,7 +3190,6 @@ class Agent:
                 next_event.cancel()
                 with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
                     await next_event
-                await self._close_provider_stream(stream_iter)
                 if total_deadline is not None and loop.time() >= total_deadline:
                     raise TimeoutError(f"Agent total timeout after {self.config.timeout}s")
                 raise _IterationStreamTimeoutError

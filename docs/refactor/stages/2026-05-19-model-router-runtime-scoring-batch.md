@@ -251,9 +251,9 @@ This stage intentionally batches three related but separately owned boundaries:
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 - [ ] Remove `../opensquilla-refactor-active`, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
@@ -281,10 +281,18 @@ Co-authored-by: Codex <noreply@openai.com>
 ## Integration gate
 
 - `uv run --extra dev ruff check src tests`
+  - Result through `scripts/refactor_gate.sh`: `All checks passed!`
 - `uv run --extra dev mypy src/opensquilla --show-error-codes`
+  - Result through `scripts/refactor_gate.sh`: `Success: no issues found
+    in 528 source files`.
 - `git diff --check HEAD^ HEAD`
+  - Result through `scripts/refactor_gate.sh`: clean.
 - `uv run --extra dev pytest`
+  - Result through `scripts/refactor_gate.sh`: `2540 passed, 6 skipped,
+    2 warnings in 26.28s`.
 - gateway smoke through `scripts/refactor_gate.sh`
+  - Result: gateway start/status/stop/status smoke returned `ok: true`;
+    final status was `not_started`.
 
 ## Rollback
 
@@ -294,9 +302,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit: finalized on child branch before integration merge; exact hash
-  recorded in the integration completion update below.
-- Integration merge:
+- Child commit: `645c998` (`Refactor model router runtime scoring boundaries`)
+- Integration merge: `0e87da7` (`Merge model router runtime scoring batch`)
 - Verification evidence:
   - Baseline before edits:
     `91 passed, 2 skipped` for router/pricing/history/runtime focused suite.

@@ -36,9 +36,9 @@ from opensquilla.asyncio_utils import create_background_task
 from opensquilla.engine.usage import UsageTracker as _UsageTracker
 from opensquilla.gateway.app import create_gateway_app
 from opensquilla.gateway.config import GatewayConfig, is_public_bind
+from opensquilla.gateway.cron_result_delivery import build_cron_delivery_chain
 from opensquilla.gateway.rpc import get_dispatcher
 from opensquilla.gateway.session_event_delivery import deliver_session_event
-from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.task_runtime_streaming import (
     emit_task_runtime_stream_events as _emit_task_runtime_stream_events,
 )
@@ -562,42 +562,6 @@ def build_task_runtime_run_kwargs(
         # ``TurnRunner.run`` falling back to ``message`` as semantic input.
         kwargs["semantic_message"] = run.semantic_message
     return kwargs
-
-
-def build_cron_result_payload(
-    origin_session_key: str,
-    text: str,
-    entry: Any,
-) -> dict[str, Any]:
-    """Build the WS payload for a ``session.event.cron_result`` broadcast.
-
-    Pure helper extracted from the cron-forwarder closure so the wire
-    contract is testable by gate 4 without spinning up a live gateway.
-    The web frontend at ``chat.js:727`` and any other ``cron_result``
-    subscriber relies on these exact keys.
-    """
-    return {
-        "sessionKey": origin_session_key,
-        "message": {
-            "role": "assistant",
-            "text": text,
-            "timestamp": getattr(entry, "created_at", None),
-            "provenanceKind": getattr(entry, "provenance_kind", None),
-            "provenanceSourceTool": getattr(entry, "provenance_source_tool", None),
-            "provenanceSourceSessionKey": getattr(entry, "provenance_source_session_key", None),
-        },
-    }
-
-
-def build_sessions_changed_payload(session_key: str, reason: str) -> dict[str, str]:
-    """Build the WS payload for a ``sessions.changed`` broadcast.
-
-    Trivial helper — but having one symbol is the only way to ground a
-    gate-4 snapshot in actual production code rather than an invented
-    literal that production drift would silently ignore. Sites that
-    emit this event must call this helper.
-    """
-    return {"key": session_key, "reason": reason}
 
 
 def _optional_positive_timeout(config: Any, attr: str, default: float) -> float | None:
@@ -1481,78 +1445,9 @@ async def start_gateway_server(
     # Register cron agent_run handler (DI-based, no monkey-patch)
     if svc.cron_scheduler is not None:
         from opensquilla.memory.dream_factory import build_dream_factory
-        from opensquilla.scheduler.delivery import DeliveryChain
         from opensquilla.scheduler.dream_handler import make_memory_dream_handler
         from opensquilla.scheduler.handlers import make_agent_run_handler, make_system_event_handler
         from opensquilla.scheduler.heartbeat_service import HeartbeatService
-
-        async def _cron_ws_emitter(topic: str, event: str, payload: dict) -> int:
-            """Targeted WS push with per-connection error isolation."""
-            _registry = get_registry()
-            _sub_mgr = subscription_manager
-            if _sub_mgr is None:
-                return 0
-            conn_ids = _sub_mgr.get_topic_subscribers(topic)
-            conn_ids |= _sub_mgr.get_topic_subscribers("cron:*")
-            sent = 0
-            for conn_id in conn_ids:
-                conn = _registry.get(conn_id)
-                if conn:
-                    try:
-                        await conn.send_event(event, payload)
-                        sent += 1
-                    except Exception:
-                        pass
-            return sent
-
-        async def _session_forwarder(
-            origin_session_key: str,
-            text: str,
-            provenance: dict,
-        ) -> None:
-            if svc.session_manager is None:
-                return
-
-            entry = await svc.session_manager.append_message(
-                origin_session_key,
-                role="assistant",
-                content=text,
-                provenance=provenance,
-            )
-
-            _sub_mgr = subscription_manager
-            if _sub_mgr is None:
-                return
-
-            payload = build_cron_result_payload(origin_session_key, text, entry)
-
-            _registry = get_registry()
-            stream_payload = get_session_streams().record(
-                origin_session_key,
-                "session.event.cron_result",
-                payload,
-            )
-            for conn_id in _sub_mgr.get_message_subscribers(origin_session_key):
-                conn = _registry.get(conn_id)
-                if conn:
-                    try:
-                        await conn.send_event("session.event.cron_result", stream_payload)
-                    except Exception:
-                        pass
-
-            sessions_changed_payload = build_sessions_changed_payload(
-                origin_session_key, "cron_result"
-            )
-            for conn_id in (
-                _sub_mgr.get_message_subscribers(origin_session_key)
-                | _sub_mgr.get_session_subscribers()
-            ):
-                conn = _registry.get(conn_id)
-                if conn:
-                    try:
-                        await conn.send_event("sessions.changed", sessions_changed_payload)
-                    except Exception:
-                        pass
 
         async def _emit_session_event(
             session_key: str,
@@ -1572,10 +1467,10 @@ async def start_gateway_server(
                 logger=log,
             )
 
-        delivery_chain = DeliveryChain(
+        delivery_chain = build_cron_delivery_chain(
             channel_manager_ref=lambda: _cm_holder[0],
-            ws_emitter=_cron_ws_emitter,
-            session_forwarder=_session_forwarder,
+            subscription_manager=subscription_manager,
+            session_manager=svc.session_manager,
         )
 
         def _cron_workspace_resolver(agent_id: str) -> tuple[str | None, bool]:

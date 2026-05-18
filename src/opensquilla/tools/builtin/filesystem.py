@@ -80,6 +80,13 @@ def _resolve_path(path: str) -> Path:
     return raw.resolve(strict=False) if raw.is_absolute() else raw
 
 
+def _resolve_workdir(workdir: str | None) -> Path | None:
+    """Resolve a local execution working directory against the active workspace."""
+    if workdir:
+        return _resolve_path(workdir)
+    return _workspace_root()
+
+
 def _resolve_base(path: str | None) -> Path:
     if path:
         return _resolve_path(path)

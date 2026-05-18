@@ -23,6 +23,7 @@ import json
 import re
 from typing import Any, Final
 
+from opensquilla.tool_boundary import ToolCall, ToolResult
 from opensquilla.tools.types import SafeToolUserMessage
 
 # Class names whose instances represent transient infrastructure problems.
@@ -196,6 +197,29 @@ def build_tool_failure_envelope(
         "user_message": user_message,
         "retry_allowed": False if policy_denial else _is_retriable(exc),
     }
+
+
+def build_tool_failure_result(
+    tool_call: ToolCall,
+    exc: BaseException,
+    *,
+    policy_denial: bool = False,
+    error_class_override: str | None = None,
+    user_message_override: str | None = None,
+) -> ToolResult:
+    envelope = build_tool_failure_envelope(
+        exc,
+        tool_call.tool_name,
+        policy_denial=policy_denial,
+        error_class_override=error_class_override,
+        user_message_override=user_message_override,
+    )
+    return ToolResult(
+        tool_use_id=tool_call.tool_use_id,
+        tool_name=tool_call.tool_name,
+        content=json.dumps(envelope),
+        is_error=True,
+    )
 
 
 def build_denial_envelope(denial: Any, tool_name: str) -> dict[str, Any]:

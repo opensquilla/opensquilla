@@ -7,17 +7,14 @@ from pathlib import Path
 
 from opensquilla.sandbox.integration import get_runtime, run_under_backend, sandboxed
 from opensquilla.sandbox.policy import build_policy, select_level
+from opensquilla.tools.builtin import filesystem
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import current_tool_context
 
 
 def _effective_workdir(workdir: str | None) -> str | None:
-    if workdir:
-        return workdir
-    ctx = current_tool_context.get()
-    if ctx and ctx.workspace_dir:
-        return str(Path(ctx.workspace_dir).expanduser().resolve())
-    return None
+    resolved = filesystem._resolve_workdir(workdir)
+    return str(resolved) if resolved is not None else None
 
 
 async def _run_git(*args: str, cwd: str | None = None) -> str:

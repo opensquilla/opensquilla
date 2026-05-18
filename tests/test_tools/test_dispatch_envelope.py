@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,39 @@ from opensquilla.tools.types import (
     ToolSpec,
     current_tool_context,
 )
+
+ROOT = Path(__file__).resolve().parents[2]
+DISPATCH = ROOT / "src/opensquilla/tools/dispatch.py"
+ENVELOPE = ROOT / "src/opensquilla/tools/envelope.py"
+
+
+def _top_level_functions(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _imports_from(path: Path) -> set[tuple[str, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                imports.add((node.module, alias.name))
+    return imports
+
+
+def test_dispatch_envelope_boundary_uses_shared_envelope_result_builder() -> None:
+    dispatch_functions = _top_level_functions(DISPATCH)
+    dispatch_imports = _imports_from(DISPATCH)
+    envelope_functions = _top_level_functions(ENVELOPE)
+
+    assert "_build_envelope_result" not in dispatch_functions
+    assert ("opensquilla.tools.envelope", "build_tool_failure_result") in dispatch_imports
+    assert "build_tool_failure_result" in envelope_functions
 
 
 def _build_registry() -> ToolRegistry:

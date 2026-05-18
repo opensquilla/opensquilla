@@ -67,9 +67,8 @@ def validate_http_url_for_fetch(
     trusted_fake_ip_cidrs: Iterable[str] | None = None,
 ) -> None:
     """Validate that an HTTP(S) URL does not resolve to a blocked address."""
+    validate_http_url_scheme(url)
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise UnsupportedURLSchemeError("Only HTTP/HTTPS URLs are supported")
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("Invalid URL: no hostname")
@@ -103,6 +102,13 @@ def validate_http_url_for_fetch(
                 else "private/internal range"
             )
             raise SSRFBlockedError(_blocked_message(hostname, addr, reason))
+
+
+def validate_http_url_scheme(url: str, *, error_message: str | None = None) -> None:
+    """Validate that the URL uses an HTTP(S) scheme."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise UnsupportedURLSchemeError(error_message or "Only HTTP/HTTPS URLs are supported")
 
 
 def _hard_block_reason(addr: IPAddress) -> str | None:

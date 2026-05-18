@@ -28,6 +28,7 @@ from opensquilla.sandbox.integration import (
 )
 from opensquilla.sandbox.policy import build_policy, select_level
 from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy, SandboxRequest
+from opensquilla.tools.builtin import filesystem
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import (
@@ -220,15 +221,8 @@ def _resolve_background_timeout(timeout: float | int | None) -> float:
 
 
 def _effective_workdir(workdir: str | None) -> str | None:
-    ctx = current_tool_context.get()
-    if workdir:
-        raw = Path(workdir).expanduser()
-        if not raw.is_absolute() and ctx and ctx.workspace_dir:
-            return str((Path(ctx.workspace_dir).expanduser().resolve() / raw).resolve())
-        return str(raw.resolve())
-    if ctx and ctx.workspace_dir:
-        return str(Path(ctx.workspace_dir).expanduser().resolve())
-    return None
+    resolved = filesystem._resolve_workdir(workdir)
+    return str(resolved) if resolved is not None else None
 
 
 def _bg_status(session: _BgSession) -> str:

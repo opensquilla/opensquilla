@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from opensquilla.tools.builtin import filesystem as fs
+from opensquilla.tools.builtin import git, patch, shell
 from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
 
 
@@ -151,6 +152,20 @@ def _make_symlink(link: Path, target: Path) -> None:
         os.symlink(target, link)
     except (OSError, NotImplementedError) as exc:
         pytest.skip(f"symlink unsupported/unavailable: {exc}")
+
+
+def test_local_execution_workdir_boundary_resolves_against_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
+    try:
+        expected = str((workspace / "nested").resolve())
+        assert str(fs._resolve_workdir("nested")) == expected
+        assert shell._effective_workdir("nested") == expected
+        assert git._effective_workdir("nested") == expected
+        assert patch._default_patch_root() == workspace.resolve()
+    finally:
+        current_tool_context.reset(token)
 
 
 @pytest.mark.asyncio

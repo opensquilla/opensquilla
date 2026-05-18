@@ -7,7 +7,6 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
@@ -33,14 +32,8 @@ from opensquilla.search.execution import (
     search_runtime_status as _search_runtime_status,
 )
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import ToolError, UnsupportedURLSchemeError, current_tool_context
-
-
-def _validate_http_url(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
-        raise UnsupportedURLSchemeError(url)
-
+from opensquilla.tools.ssrf import validate_http_url_scheme
+from opensquilla.tools.types import ToolError, current_tool_context
 
 _SENSITIVE_HTTP_METHODS = {"POST", "PUT", "PATCH"}
 _TEXT_BODY_LIMIT = 10_000
@@ -148,7 +141,7 @@ async def http_request(
     timeout: float = 30.0,
     output_path: str | None = None,
 ) -> str:
-    _validate_http_url(url)
+    validate_http_url_scheme(url, error_message=url)
     marker = _sensitive_url_marker(url)
     if marker is not None:
         return _sensitive_body_block("http_request", marker)

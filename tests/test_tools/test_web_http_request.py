@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import json
@@ -11,9 +12,28 @@ import httpx
 import pytest
 
 from opensquilla.tools.builtin import web
-from opensquilla.tools.types import ToolError
+from opensquilla.tools.types import ToolError, UnsupportedURLSchemeError
 
 HttpRequestCallable = Callable[..., Awaitable[str]]
+WEB_TOOL = Path(__file__).resolve().parents[2] / "src/opensquilla/tools/builtin/web.py"
+
+
+def _imports_from(path: Path) -> set[tuple[str, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                imports.add((node.module, alias.name))
+    return imports
+
+
+def test_http_request_routes_url_scheme_validation_through_ssrf_boundary() -> None:
+    imports = _imports_from(WEB_TOOL)
+
+    assert ("opensquilla.tools.ssrf", "validate_http_url_scheme") in imports
+    assert ("opensquilla.tools.ssrf", "validate_http_url_for_fetch") not in imports
+    assert ("urllib.parse", "urlparse") not in imports
 
 
 def _original_http_request() -> HttpRequestCallable:
@@ -35,6 +55,12 @@ def _patch_response(monkeypatch: pytest.MonkeyPatch, response: httpx.Response) -
             return response
 
     monkeypatch.setattr(web.httpx, "AsyncClient", FakeAsyncClient)
+
+
+@pytest.mark.asyncio
+async def test_http_request_preserves_non_http_scheme_error_message() -> None:
+    with pytest.raises(UnsupportedURLSchemeError, match="ftp://example.test/file"):
+        await _original_http_request()(url="ftp://example.test/file")
 
 
 @pytest.mark.asyncio

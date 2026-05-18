@@ -26,7 +26,7 @@ from opensquilla.provider.image_generation import (
     generate_with_fallbacks,
 )
 from opensquilla.tools.registry import tool
-from opensquilla.tools.ssrf import validate_http_url_for_fetch
+from opensquilla.tools.ssrf import validate_http_url_for_fetch, validate_http_url_scheme
 from opensquilla.tools.types import (
     CallerKind,
     SafeToolError,
@@ -186,6 +186,7 @@ async def _fetch_image_url(url: str) -> tuple[bytes, str]:
         if marker is not None:
             raise ToolError("Blocked: URL contains sensitive data")
         try:
+            validate_http_url_scheme(candidate_url)
             validate_http_url_for_fetch(candidate_url)
         except UnsupportedURLSchemeError as exc:
             raise ToolError("Only HTTP/HTTPS URLs are supported for image fetch") from exc

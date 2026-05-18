@@ -146,15 +146,15 @@ Separate provider runtime config resolution from gateway boot/sync code without 
 - [x] Implement the behavior-compatible provider runtime config boundary.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -180,8 +180,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `3c525cfb31433192c24b5aa4df385ca7087b2665` (`3c525cf`, `Extract provider runtime config boundary`).
+- Integration merge: `9cf825bb4d27085dcc63791db96b7c50e1df1de5` (`9cf825b`, `Merge provider runtime config boundary`).
 - Verification evidence:
 - Red: `uv run --extra dev pytest tests/test_provider_runtime_config_boundary.py -q` failed during collection with `ModuleNotFoundError: No module named 'opensquilla.provider.runtime_config'`.
 - Focused green: `uv run --extra dev pytest tests/test_provider_runtime_config_boundary.py tests/test_gateway/test_boot_provider_env.py tests/test_gateway/test_provider_runtime_assembly_boundary.py tests/test_gateway/test_provider_runtime_sync_boundary.py tests/test_gateway/test_router_boot.py tests/test_onboarding/test_config_store.py tests/test_onboarding/test_mutations.py tests/test_onboarding/test_status.py -q` passed with `103 passed in 1.61s`.
@@ -189,5 +189,8 @@ Co-authored-by: Codex <noreply@openai.com>
 - Touched mypy: `uv run --extra dev mypy src/opensquilla/provider src/opensquilla/gateway/llm_runtime.py src/opensquilla/gateway/provider_runtime_assembly.py src/opensquilla/gateway/provider_runtime_sync.py --show-error-codes` passed with no issues in 26 source files.
 - Whitespace: `git diff --check` passed.
 - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 511 source files; whitespace passed; pytest passed with `2459 passed, 8 skipped, 2 warnings in 48.86s`; gateway smoke start/status/stop passed on port `55073`.
+- Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed at `9cf825b`.
+- Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 511 source files; whitespace passed; pytest passed with `2461 passed, 6 skipped, 2 warnings in 26.59s`; gateway smoke start/status/stop passed on port `55214`.
+- Directory hygiene target: remove `../opensquilla-refactor-active` after this record commit, then run `git worktree prune` and verify no extra `opensquilla-refactor-*` worktrees remain beyond integration.
 - Residual risk: gateway compatibility imports from `opensquilla.gateway.llm_runtime` are intentionally preserved until all older callers can be audited; future provider slices should avoid deleting the facade without a public import sweep.
 - Next recommended slice: move provider selector/materialization ownership into the provider layer while keeping gateway runtime sync as the RPC-facing composition boundary.

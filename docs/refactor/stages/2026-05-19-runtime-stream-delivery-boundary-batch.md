@@ -293,10 +293,13 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - `git diff --check`: passed with no output.
 - [x] Run `scripts/refactor_gate.sh` in child.
   - Result: `2599 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
-- [ ] Commit child verification/stage record.
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration merge hash, verification, and next slice.
+- [x] Commit child verification/stage record.
+  - Commit: `4903a1e` (`Record runtime stream delivery child verification`).
+- [x] Merge child into integration with `git merge --no-ff`.
+  - Merge commit: `e693592` (`Merge runtime stream delivery boundary batch`).
+- [x] Run `scripts/refactor_gate.sh` in integration.
+  - Result: `2601 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
+- [x] Record child hash, integration merge hash, verification, and next slice.
 - [ ] Remove `../opensquilla-refactor-active`, run `git worktree prune`, and verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
 
 ## Child Gate
@@ -323,19 +326,20 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 
 ## Completion Record
 
-- Child commit:
+- Child commit: `4903a1e` (`Record runtime stream delivery child verification`)
 - Worker commits:
   - `2092b89` (`Extract task runtime stream emission`)
   - `e4989e5` (`Refactor session event delivery boundary`)
   - `e0d8504` (`test: tighten webui task terminal mapping`)
   - `db5209c` (`Merge webui terminal boundary worker`)
-- Integration merge:
+- Integration merge: `e693592` (`Merge runtime stream delivery boundary batch`)
 - Verification evidence:
   - Focused batch: `97 passed in 0.57s`.
   - Touched-file ruff: `All checks passed!`.
   - Mypy: `Success: no issues found in 539 source files` with existing notes.
   - `git diff --check`: passed with no output.
   - Child `scripts/refactor_gate.sh`: `2599 passed, 8 skipped, 2 warnings`; gateway smoke passed.
+  - Integration `scripts/refactor_gate.sh`: `2601 passed, 6 skipped, 2 warnings`; gateway smoke passed.
 - Cleanup evidence:
 - Residual risk: boot cron-result manual delivery still has a small duplicated subscriber loop; leave it for a later boot wiring/service cleanup to avoid broadening this stream boundary.
 - Next recommended slice: task runtime execution/shutdown lifecycle boundary, covering `_execute`, `shutdown`, and terminal state mutation helpers after this stream/session delivery layer is separate.

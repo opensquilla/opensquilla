@@ -30,6 +30,25 @@ planning helper-sized moves.
 - Tests inspected:
 - Existing boundary pattern this stage follows:
 
+## Superpowers evidence
+
+- `superpowers:using-git-worktrees`:
+  - Evidence:
+- `superpowers:writing-plans`:
+  - Evidence:
+- `superpowers:test-driven-development`:
+  - Evidence:
+- `superpowers:verification-before-completion`:
+  - Evidence:
+- Parallelism decision:
+  - `superpowers:dispatching-parallel-agents` or
+    `superpowers:subagent-driven-development` used:
+  - `spawn_agent` probe:
+  - If same-thread agents were unavailable, external worker fallback:
+- Historical evidence note:
+  - Do not claim a prior stage used a Superpowers checkpoint unless the stage
+    record or current command log contains evidence. Record gaps explicitly.
+
 ## Boundary decision
 
 - Module batch:

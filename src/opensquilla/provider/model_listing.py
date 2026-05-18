@@ -18,9 +18,36 @@ class ProviderModelRow:
     output_cost_per_1k: float
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderModelQuery:
+    provider: str | None = None
+    capabilities: tuple[str, ...] = ()
+
+    @classmethod
+    def from_filters(
+        cls,
+        *,
+        provider_filter: str | None = None,
+        capabilities_filter: list[str] | None = None,
+    ) -> ProviderModelQuery:
+        return cls(
+            provider=provider_filter,
+            capabilities=tuple(capabilities_filter or ()),
+        )
+
+    def matches(self, row: ProviderModelRow) -> bool:
+        if self.provider and row.provider != self.provider:
+            return False
+        if self.capabilities:
+            required = set(self.capabilities)
+            return required.issubset(set(row.capabilities))
+        return True
+
+
 async def list_provider_model_rows(
     provider_selector: Any | None,
     *,
+    query: ProviderModelQuery | None = None,
     provider_filter: str | None = None,
     capabilities_filter: list[str] | None = None,
 ) -> list[ProviderModelRow]:
@@ -33,14 +60,11 @@ async def list_provider_model_rows(
         return []
 
     rows = [_model_info_to_row(_model_info_payload(model)) for model in raw or []]
-    if provider_filter:
-        rows = [row for row in rows if row.provider == provider_filter]
-
-    if capabilities_filter:
-        required = set(capabilities_filter)
-        rows = [row for row in rows if required.issubset(set(row.capabilities))]
-
-    return rows
+    effective_query = query or ProviderModelQuery.from_filters(
+        provider_filter=provider_filter,
+        capabilities_filter=capabilities_filter,
+    )
+    return [row for row in rows if effective_query.matches(row)]
 
 
 async def list_provider_models_rpc_payload(

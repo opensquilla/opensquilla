@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from opensquilla.provider import ModelInfo
+from opensquilla.provider import ModelInfo, model_listing
 from opensquilla.provider.model_listing import (
     list_provider_model_rows,
     list_provider_models_rpc_payload,
@@ -73,6 +73,27 @@ async def test_list_provider_model_rows_filters_provider_and_capabilities() -> N
         provider_filter="openrouter",
         capabilities_filter=["tools"],
     )
+
+    assert [row.id for row in rows] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_provider_model_query_owns_provider_and_capability_filters() -> None:
+    selector = FakeModelSelector(
+        [
+            {"provider": "openrouter", "model_id": "a", "supports_tools": True},
+            {"provider": "openrouter", "model_id": "b", "supports_tools": False},
+            {"provider": "ollama", "model_id": "c", "supports_tools": True},
+        ]
+    )
+
+    assert hasattr(model_listing, "ProviderModelQuery")
+    query = model_listing.ProviderModelQuery(
+        provider="openrouter",
+        capabilities=("tools",),
+    )
+
+    rows = await list_provider_model_rows(selector, query=query)
 
     assert [row.id for row in rows] == ["a"]
 

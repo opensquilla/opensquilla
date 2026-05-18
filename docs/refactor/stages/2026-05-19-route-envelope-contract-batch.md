@@ -232,7 +232,7 @@ Co-authored-by: Codex <noreply@openai.com>
 - [x] Merge child into integration with `git merge --no-ff`.
 - [x] Run `scripts/refactor_gate.sh` in integration.
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`, run
+- [x] Remove `../opensquilla-refactor-active`, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
 
@@ -320,6 +320,10 @@ Result before child commit:
     tests, gateway normalization tests, scheduler boundary tests, policy-agent
     tests, sessions gateway boundary tests, and router boot cron/model route
     checks.
+  - Cleanup: removed the active child worktree, ran `git worktree prune`,
+    deleted the merged child branch `codex/refactor-route-envelope-contract-batch`,
+    and verified the sibling `opensquilla-refactor-*` directory listing contains
+    only the integration worktree.
 - Residual risk:
   - Neutral `runtime.routing` is intentionally structural only. Scheduler keeps
     cron `ToolContext` construction in the scheduler layer to avoid pulling

@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MEDIA_TOOL = ROOT / "src/opensquilla/tools/builtin/media.py"
 BOOT = ROOT / "src/opensquilla/gateway/boot.py"
 PROVIDER_BOOTSTRAP = ROOT / "src/opensquilla/gateway/provider_bootstrap.py"
+PROVIDER_RUNTIME_ASSEMBLY = ROOT / "src/opensquilla/gateway/provider_runtime_assembly.py"
 RPC_CONFIG = ROOT / "src/opensquilla/gateway/rpc_config.py"
 RPC_ONBOARDING = ROOT / "src/opensquilla/gateway/rpc_onboarding.py"
 PROVIDER_RUNTIME_SYNC = ROOT / "src/opensquilla/gateway/provider_runtime_sync.py"
@@ -50,7 +51,13 @@ def test_media_tool_does_not_own_image_generation_runtime_state() -> None:
 def test_gateway_configures_image_generation_runtime_boundary() -> None:
     forbidden = ("opensquilla.tools.builtin.media", "configure_image_generation")
 
-    for path in (BOOT, PROVIDER_BOOTSTRAP, RPC_ONBOARDING, PROVIDER_RUNTIME_SYNC):
+    for path in (
+        BOOT,
+        PROVIDER_BOOTSTRAP,
+        PROVIDER_RUNTIME_ASSEMBLY,
+        RPC_ONBOARDING,
+        PROVIDER_RUNTIME_SYNC,
+    ):
         assert forbidden not in _imports_from(path)
     assert (
         "opensquilla.provider.image_generation_runtime",
@@ -63,6 +70,10 @@ def test_gateway_configures_image_generation_runtime_boundary() -> None:
     assert (
         "opensquilla.gateway.provider_runtime_sync",
         "sync_image_generation",
+    ) in _imports_from(PROVIDER_RUNTIME_ASSEMBLY)
+    assert (
+        "opensquilla.gateway.provider_runtime_assembly",
+        "build_provider_runtime_services",
     ) in _imports_from(PROVIDER_BOOTSTRAP)
     assert forbidden not in _imports_from(RPC_CONFIG)
     assert (

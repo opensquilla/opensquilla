@@ -56,6 +56,48 @@ def test_max_attachments_per_turn_is_ten() -> None:
     assert _MAX_ATTACHMENTS == 10
 
 
+def test_rpc_session_attachment_helpers_delegate_to_send_input_boundary() -> None:
+    import ast
+    from pathlib import Path
+
+    from opensquilla.gateway import rpc_sessions
+
+    source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    boundary_path = Path(rpc_sessions.__file__).with_name("rpc_session_send_inputs.py")
+
+    assert boundary_path.exists()
+
+    boundary_tree = ast.parse(boundary_path.read_text(encoding="utf-8"))
+    imports = {
+        (node.module, alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+    top_level_functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    boundary_defs = {
+        node.name
+        for node in ast.walk(boundary_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert {
+        ("opensquilla.gateway.rpc_session_send_inputs", "resolve_session_attachments"),
+        ("opensquilla.gateway.rpc_session_send_inputs", "validate_session_attachments"),
+    } <= imports
+    assert "_validate_attachments" in top_level_functions
+    assert "_resolve_attachments" in top_level_functions
+    assert {
+        "validate_session_attachments",
+        "resolve_session_attachments",
+    } <= boundary_defs
+
+
 # ---------------------------------------------------------------------------
 # Inline acceptance for each non-image MIME class.
 # ---------------------------------------------------------------------------

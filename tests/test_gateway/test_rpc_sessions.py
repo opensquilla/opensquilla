@@ -795,6 +795,64 @@ class TestSessionsSend:
         assert "_normalize_terminal_event_payload" not in top_level_functions
         assert ("opensquilla.session.terminal_reply", "build_terminal_reply") not in imports
 
+    def test_gateway_sessions_send_delegates_input_normalization_to_gateway_boundary(self):
+        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        boundary_path = Path(rpc_sessions.__file__).with_name(
+            "rpc_session_send_inputs.py"
+        )
+
+        assert boundary_path.exists()
+
+        boundary_tree = ast.parse(boundary_path.read_text(encoding="utf-8"))
+        imports = {
+            (node.module, alias.name)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        top_level_functions = {
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        boundary_defs = {
+            node.name
+            for node in ast.walk(boundary_tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        handler = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_handle_sessions_send"
+        )
+        handler_calls = {
+            node.func.id
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+        assert {
+            (
+                "opensquilla.gateway.rpc_session_send_inputs",
+                "normalize_memory_capture_controls",
+            ),
+            ("opensquilla.gateway.rpc_session_send_inputs", "trusted_elevated_hint"),
+        } <= imports
+        assert "trusted_elevated_hint" in handler_calls
+        assert "normalize_memory_capture_controls" in handler_calls
+        assert "_trusted_elevated_hint" not in handler_calls
+        assert "_normalize_memory_capture_controls" not in handler_calls
+        assert "_coerce_optional_bool" not in top_level_functions
+        assert "_first_dict_value" not in top_level_functions
+        assert "_trusted_elevated_hint" not in top_level_functions
+        assert "_normalize_memory_capture_controls" not in top_level_functions
+        assert {
+            "trusted_elevated_hint",
+            "normalize_memory_capture_controls",
+        } <= boundary_defs
+
     @pytest.mark.asyncio
     async def test_send_queue_full_rolls_back_and_returns_retryable_details(
         self,

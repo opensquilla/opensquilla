@@ -12,8 +12,15 @@ import structlog
 
 from opensquilla.engine.start_turn import start_turn_via_runtime
 from opensquilla.gateway import attachment_ingest as _attachment_ingest
+from opensquilla.gateway import rpc_session_send_inputs as _session_send_inputs
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, RpcUnavailableError, get_dispatcher
+from opensquilla.gateway.rpc_session_send_inputs import (
+    normalize_memory_capture_controls,
+    resolve_session_attachments,
+    trusted_elevated_hint,
+    validate_session_attachments,
+)
 from opensquilla.gateway.session_services import (
     get_session_epoch,
     get_session_lock,
@@ -54,28 +61,15 @@ from opensquilla.session.rpc_payload import (
 
 _d = get_dispatcher()
 log = structlog.get_logger(__name__)
-_ELEVATED_MODES = frozenset({"on", "bypass", "full"})
-
-_ALLOWED_MEDIA_TYPES = _attachment_ingest.ALLOWED_MEDIA_TYPES
-_MAX_ATTACHMENT_BYTES = _attachment_ingest.MAX_ATTACHMENT_BYTES
-_MAX_STAGED_PDF_BYTES = _attachment_ingest.MAX_STAGED_PDF_BYTES
-_MAX_TEXT_ATTACHMENT_BYTES = _attachment_ingest.TEXT_ATTACHMENT_BYTES
-_MAX_TOTAL_ATTACHMENT_BYTES = _attachment_ingest.MAX_TOTAL_ATTACHMENT_BYTES
-_MAX_ATTACHMENTS = _attachment_ingest.MAX_ATTACHMENTS
-_attachment_media_type = _attachment_ingest.attachment_media_type
-_normalize_attachments = _attachment_ingest.normalize_attachments
-_sniff_mime_from_bytes = _attachment_ingest.sniff_mime_from_bytes
-
-
-def _trusted_elevated_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> str | None:
-    """Return an operator-owned elevated hint, or None."""
-
-    value = source_hint.get("elevated")
-    if isinstance(value, str) and value in _ELEVATED_MODES and ctx.principal.is_owner:
-        return value
-    return None
-
-
+_ALLOWED_MEDIA_TYPES = _session_send_inputs.ALLOWED_MEDIA_TYPES
+_MAX_ATTACHMENT_BYTES = _session_send_inputs.MAX_ATTACHMENT_BYTES
+_MAX_STAGED_PDF_BYTES = _session_send_inputs.MAX_STAGED_PDF_BYTES
+_MAX_TEXT_ATTACHMENT_BYTES = _session_send_inputs.MAX_TEXT_ATTACHMENT_BYTES
+_MAX_TOTAL_ATTACHMENT_BYTES = _session_send_inputs.MAX_TOTAL_ATTACHMENT_BYTES
+_MAX_ATTACHMENTS = _session_send_inputs.MAX_ATTACHMENTS
+_attachment_media_type = _session_send_inputs.attachment_media_type
+_normalize_attachments = _session_send_inputs.normalize_attachments
+_sniff_mime_from_bytes = _session_send_inputs.sniff_mime_from_bytes
 _STREAM_IDLE_TIMEOUT_CODE = "stream_idle_timeout"
 _STREAM_IDLE_TIMEOUT_MESSAGE = "Session event stream idle before terminal event"
 _RESET_RUNTIME_SETTLE_SECONDS = 0.25
@@ -173,88 +167,20 @@ async def _resolve_attachments(
     session_id: str | None = None,
     disk_budget_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
-    resolved, _consumed = await _attachment_ingest.resolve_attachments(
+    return await resolve_session_attachments(
         validated,
         store=store,
         material_root=material_root,
         session_id=session_id,
         disk_budget_bytes=disk_budget_bytes,
     )
-    return resolved
 
 
 def _validate_attachments(raw_attachments: Any) -> list[dict[str, Any]]:
-    validated, _failures = _attachment_ingest.validate_attachments(
+    return validate_session_attachments(
         raw_attachments,
         logger=log,
     )
-    return validated
-
-
-def _coerce_optional_bool(value: Any) -> bool | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off", ""}:
-            return False
-    return bool(value)
-
-
-def _first_dict_value(*values: Any) -> dict[str, Any] | None:
-    for value in values:
-        if isinstance(value, dict):
-            return dict(value)
-    return None
-
-
-def _normalize_memory_capture_controls(params: dict[str, Any]) -> dict[str, Any]:
-    """Normalize RPC/chat memory-capture controls onto snake_case fields."""
-
-    source_hint = params.get("_source")
-    if not isinstance(source_hint, dict):
-        source_hint = {}
-
-    no_memory_capture = _coerce_optional_bool(
-        params.get("no_memory_capture", params.get("noMemoryCapture"))
-    )
-    if no_memory_capture is None:
-        no_memory_capture = _coerce_optional_bool(
-            source_hint.get("no_memory_capture", source_hint.get("noMemoryCapture"))
-        )
-
-    input_provenance = _first_dict_value(
-        params.get("input_provenance"),
-        params.get("inputProvenance"),
-        source_hint.get("input_provenance"),
-        source_hint.get("inputProvenance"),
-    )
-    provenance_kind = (
-        params.get("input_provenance_kind")
-        or params.get("inputProvenanceKind")
-        or params.get("provenance_kind")
-        or source_hint.get("input_provenance_kind")
-        or source_hint.get("inputProvenanceKind")
-        or source_hint.get("provenance_kind")
-    )
-    if input_provenance is None and provenance_kind:
-        input_provenance = {"kind": str(provenance_kind)}
-    elif input_provenance is not None and "kind" not in input_provenance and provenance_kind:
-        input_provenance["kind"] = str(provenance_kind)
-
-    run_kind = params.get("run_kind", params.get("runKind"))
-    if run_kind is None:
-        run_kind = source_hint.get("run_kind", source_hint.get("runKind"))
-
-    return {
-        "no_memory_capture": bool(no_memory_capture),
-        "input_provenance": input_provenance,
-        "run_kind": str(run_kind) if run_kind is not None and str(run_kind) else None,
-    }
 
 
 def _require_key(params: dict | None) -> str:
@@ -624,11 +550,11 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             session_id=getattr(session, "session_id", None),
             principal_is_owner=ctx.principal.is_owner,
         )
-    elevated_hint = _trusted_elevated_hint(ctx, source_hint)
+    elevated_hint = trusted_elevated_hint(ctx.principal.is_owner, source_hint)
     if elevated_hint is not None:
         route_envelope.metadata["elevated"] = elevated_hint
 
-    capture_controls = _normalize_memory_capture_controls(params)
+    capture_controls = normalize_memory_capture_controls(params)
     if capture_controls["input_provenance"] is not None:
         route_envelope = replace(
             route_envelope,

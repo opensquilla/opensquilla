@@ -40,9 +40,8 @@ from opensquilla.gateway.channel_manager_wiring import (
     start_gateway_channels,
 )
 from opensquilla.gateway.config import GatewayConfig, is_public_bind
-from opensquilla.gateway.cron_result_delivery import build_cron_delivery_chain
+from opensquilla.gateway.cron_handler_wiring import register_gateway_cron_handlers
 from opensquilla.gateway.runtime_wiring import build_gateway_runtime_wiring
-from opensquilla.gateway.session_event_delivery import deliver_session_event
 from opensquilla.gateway.task_runtime_streaming import (
     emit_task_runtime_stream_events as _emit_task_runtime_stream_events,
 )
@@ -1354,80 +1353,19 @@ async def start_gateway_server(
     runtime_event_bridge = runtime_wiring.runtime_event_bridge
     background_completion_manager = runtime_wiring.background_completion_manager
 
-    # Register cron agent_run handler (DI-based, no monkey-patch)
-    if svc.cron_scheduler is not None:
-        from opensquilla.memory.dream_factory import build_dream_factory
-        from opensquilla.scheduler.dream_handler import make_memory_dream_handler
-        from opensquilla.scheduler.handlers import make_agent_run_handler, make_system_event_handler
-        async def _emit_session_event(
-            session_key: str,
-            event_name: str,
-            payload: dict[str, Any],
-        ) -> None:
-            _sub_mgr = subscription_manager
-            if _sub_mgr is None:
-                return
-
-            await deliver_session_event(
-                subscription_manager=_sub_mgr,
-                connection_registry=get_registry(),
-                session_key=session_key,
-                event_name=event_name,
-                payload=payload,
-                logger=log,
-            )
-
-        delivery_chain = build_cron_delivery_chain(
-            channel_manager_ref=lambda: _cm_holder[0],
-            subscription_manager=subscription_manager,
-            session_manager=svc.session_manager,
-        )
-
-        def _cron_workspace_resolver(agent_id: str) -> tuple[str | None, bool]:
-            workspace_dir = resolve_agent_workspace_dir(agent_id, config)
-            workspace_strict = getattr(config, "workspace_strict", None)
-            if not isinstance(workspace_strict, bool):
-                workspace_strict = bool(workspace_dir)
-            return str(workspace_dir), workspace_strict
-
-        agent_handler = make_agent_run_handler(
-            delivery_chain=delivery_chain,
-            turn_runner_ref=lambda: turn_runner,
-            session_manager_ref=lambda: svc.session_manager,
-            task_runtime_ref=lambda: task_runtime,
-            workspace_resolver=_cron_workspace_resolver,
-        )
-        system_handler = make_system_event_handler(
-            delivery_chain=delivery_chain,
-            turn_runner_ref=lambda: turn_runner,
-            session_manager_ref=lambda: svc.session_manager,
-            session_event_emitter=_emit_session_event,
-            heartbeat_service_ref=lambda: heartbeat_service,
-            heartbeat_loop_ref=lambda: heartbeat_loop,
-            workspace_resolver=_cron_workspace_resolver,
-        )
-        dream_handler = make_memory_dream_handler(
-            build_dream=build_dream_factory(
-                config=config,
-                provider_selector=svc.provider_selector,
-                tool_registry=svc.tool_registry,
-                turn_runner=turn_runner,
-            ),
-            should_skip=lambda: (
-                "disabled" if not getattr(config.memory.dream, "enabled", False) else None
-            ),
-        )
-        svc.cron_scheduler.register_handler("agent_run", agent_handler)
-        svc.cron_scheduler.register_handler("system_event", system_handler)
-        svc.cron_scheduler.register_handler("memory_dream", dream_handler)
-        log.info("gateway.cron_handler_registered", handler_key="agent_run")
-        log.info("gateway.cron_handler_registered", handler_key="system_event")
-        log.info("gateway.cron_handler_registered", handler_key="memory_dream")
-        await _register_dream_crons(
-            scheduler=svc.cron_scheduler,
-            memory_config=config.memory,
-            agent_ids=_configured_agent_ids(config),
-        )
+    await register_gateway_cron_handlers(
+        config=config,
+        svc=svc,
+        turn_runner=turn_runner,
+        task_runtime=task_runtime,
+        heartbeat_service=heartbeat_service,
+        heartbeat_loop=heartbeat_loop,
+        subscription_manager=subscription_manager,
+        channel_manager_ref=lambda: _cm_holder[0],
+        dream_cron_registrar=_register_dream_crons,
+        configured_agent_ids=_configured_agent_ids,
+        logger=log,
+    )
 
     # Build channel adapters (don't start yet -- app doesn't exist)
     channel_wiring = build_gateway_channel_manager_wiring(

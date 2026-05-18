@@ -248,8 +248,32 @@ def test_boot_delegates_cron_delivery_helpers_to_gateway_boundary() -> None:
     }
 
     assert (
+        "opensquilla.gateway.cron_handler_wiring",
+        "register_gateway_cron_handlers",
+    ) in imports
+    assert (
+        "opensquilla.gateway.cron_result_delivery",
+        "build_cron_delivery_chain",
+    ) not in imports
+    assert "build_cron_result_payload" not in top_level_functions
+    assert "build_sessions_changed_payload" not in top_level_functions
+
+
+def test_cron_handler_wiring_owns_delivery_chain_registration_dependency() -> None:
+    from opensquilla.gateway import cron_handler_wiring
+
+    source = cron_handler_wiring.__file__ and open(
+        cron_handler_wiring.__file__, encoding="utf-8"
+    ).read()
+    tree = ast.parse(source)
+    imports = {
+        (node.module, alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+
+    assert (
         "opensquilla.gateway.cron_result_delivery",
         "build_cron_delivery_chain",
     ) in imports
-    assert "build_cron_result_payload" not in top_level_functions
-    assert "build_sessions_changed_payload" not in top_level_functions

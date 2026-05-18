@@ -128,9 +128,9 @@ Extract provider-specific onboarding RPC mutation handlers from `rpc_onboarding.
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -156,8 +156,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `c11c181` (`Extract onboarding provider RPC boundary`)
+- Integration merge: `b1415e9` (`Merge onboarding provider runtime boundary`)
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-onboarding-provider-runtime-boundary` passed on branch `codex/refactor-onboarding-provider-runtime-boundary` at `b8499da`.
   - Red: `uv run --extra dev pytest tests/test_gateway/test_rpc_onboarding_provider_boundary.py -q` failed as expected with `2 failed` because `rpc_onboarding_providers.py` did not exist and `rpc/__init__.py` did not import it.
@@ -166,6 +166,10 @@ Co-authored-by: Codex <noreply@openai.com>
   - Whitespace: `git diff --check` passed.
   - Broader onboarding/provider/public surface tests: `uv run --extra dev pytest tests/test_gateway/test_rpc_onboarding.py tests/test_gateway/test_rpc_onboarding_provider_boundary.py tests/test_gateway/test_rpc_public_surface_baseline.py tests/test_gateway/test_static_onboarding_views.py tests/test_onboarding/test_mutations.py tests/test_onboarding/test_flow.py tests/test_provider_image_generation_runtime_boundary.py tests/test_gateway/test_provider_runtime_sync_boundary.py -q` passed, `125 passed in 1.32s`.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 496 source files; whitespace passed; pytest passed with `2424 passed, 8 skipped, 2 warnings in 51.26s`; gateway smoke start/status/stop passed on `127.0.0.1:62810`.
+  - Child release hygiene staged retest: `uv run --extra dev pytest tests/test_public_release_hygiene.py::test_tracked_public_files_do_not_contain_real_secret_shapes_or_local_paths -q` passed, `1 passed in 0.31s`.
+  - Integration preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `b8499da`.
+  - Integration merge: `git merge --no-ff codex/refactor-onboarding-provider-runtime-boundary` produced merge commit `b1415e9`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 496 source files; whitespace passed; pytest passed with `2426 passed, 6 skipped, 2 warnings in 27.36s`; gateway smoke start/status/stop passed on `127.0.0.1:62972`.
 - Residual risk:
   - Low. The slice moves only provider-specific onboarding RPC registrations; public method names/scopes remain covered by the public surface baseline and focused onboarding RPC tests.
 - Next recommended slice:

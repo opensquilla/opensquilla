@@ -15,6 +15,7 @@ in ``docs/adr/006-sandbox-governance.md``.
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -154,9 +155,31 @@ class SandboxSettings(BaseSettings):
         )
 
 
+def apply_host_compatibility(settings: SandboxSettings) -> SandboxSettings:
+    """Adjust unsupported platform defaults before runtime selection."""
+
+    if (
+        sys.platform.startswith("win")
+        and settings.sandbox
+        and settings.backend == "auto"
+    ):
+        log.warning(
+            "sandbox.windows_auto_backend_unsupported: "
+            "no Windows sandbox backend is available; disabling sandbox for this runtime"
+        )
+        return settings.model_copy(
+            update={
+                "sandbox": False,
+                "security_grading": False,
+            }
+        )
+    return settings
+
+
 __all__ = [
     "BackendName",
     "EffectiveMode",
     "NetworkDefault",
+    "apply_host_compatibility",
     "SandboxSettings",
 ]

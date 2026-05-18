@@ -13,7 +13,11 @@ from opensquilla.safety.injection_guard import (
 )
 from opensquilla.safety.permission_matrix import Principal, is_tool_allowed
 from opensquilla.tool_boundary import AgentToolHandler, ToolCall, ToolResult
-from opensquilla.tools.envelope import build_tool_failure_envelope, is_denial_payload
+from opensquilla.tools.envelope import (
+    build_tool_failure_envelope,
+    build_tool_failure_result,
+    is_denial_payload,
+)
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import (
     CallerKind,
@@ -46,30 +50,6 @@ def _extract_pending_approval(content: Any) -> dict[str, Any] | None:
 
 def _has_live_approval_surface(ctx: ToolContext | None) -> bool:
     return ctx is None or ctx.interaction_mode is InteractionMode.INTERACTIVE
-
-
-def _build_envelope_result(
-    tool_call: ToolCall,
-    *,
-    exc: Exception,
-    policy_denial: bool = False,
-    error_class_override: str | None = None,
-    user_message_override: str | None = None,
-) -> ToolResult:
-    return ToolResult(
-        tool_use_id=tool_call.tool_use_id,
-        tool_name=tool_call.tool_name,
-        content=json.dumps(
-            build_tool_failure_envelope(
-                exc,
-                tool_call.tool_name,
-                policy_denial=policy_denial,
-                error_class_override=error_class_override,
-                user_message_override=user_message_override,
-            )
-        ),
-        is_error=True,
-    )
 
 
 def build_tool_handler(
@@ -106,7 +86,7 @@ def build_tool_handler(
                     agent_id=effective_ctx.agent_id if effective_ctx else None,
                     session_key=effective_ctx.session_key if effective_ctx else None,
                 )
-                return _build_envelope_result(
+                return build_tool_failure_result(
                     tool_call,
                     exc=ValueError("dispatch injection refused"),
                     policy_denial=True,
@@ -123,14 +103,14 @@ def build_tool_handler(
                     f'Use skill_view(name="{skill_name}") to read the skill instructions, '
                     "then continue using only tools listed in Available Tools."
                 )
-                return _build_envelope_result(
+                return build_tool_failure_result(
                     tool_call,
                     exc=ValueError("skill call mismatch"),
                     policy_denial=True,
                     error_class_override="UnsupportedSurface",
                     user_message_override=user_message,
                 )
-            return _build_envelope_result(
+            return build_tool_failure_result(
                 tool_call,
                 exc=KeyError(tool_call.tool_name),
                 policy_denial=True,
@@ -148,7 +128,7 @@ def build_tool_handler(
                 agent_id=effective_ctx.agent_id if effective_ctx else None,
                 session_key=effective_ctx.session_key if effective_ctx else None,
             )
-            return _build_envelope_result(
+            return build_tool_failure_result(
                 tool_call,
                 exc=PermissionError("owner-only tool"),
                 policy_denial=True,
@@ -166,7 +146,7 @@ def build_tool_handler(
                 agent_id=effective_ctx.agent_id if effective_ctx else None,
                 session_key=effective_ctx.session_key if effective_ctx else None,
             )
-            return _build_envelope_result(
+            return build_tool_failure_result(
                 tool_call,
                 exc=PermissionError("tool blocked"),
                 policy_denial=True,
@@ -189,7 +169,7 @@ def build_tool_handler(
                 agent_id=effective_ctx.agent_id if effective_ctx else None,
                 session_key=effective_ctx.session_key if effective_ctx else None,
             )
-            return _build_envelope_result(
+            return build_tool_failure_result(
                 tool_call,
                 exc=PermissionError("tool blocked"),
                 policy_denial=True,
@@ -214,7 +194,7 @@ def build_tool_handler(
                     agent_id=effective_ctx.agent_id if effective_ctx else None,
                     session_key=effective_ctx.session_key if effective_ctx else None,
                 )
-                return _build_envelope_result(
+                return build_tool_failure_result(
                     tool_call,
                     exc=PermissionError("tool denied"),
                     policy_denial=True,

@@ -4,7 +4,8 @@ import json
 
 import httpx
 
-from opensquilla.tools.envelope import build_tool_failure_envelope
+from opensquilla.engine.types import ToolCall
+from opensquilla.tools.envelope import build_tool_failure_envelope, build_tool_failure_result
 from opensquilla.tools.types import SafeToolError
 
 
@@ -79,6 +80,27 @@ def test_policy_denial_envelope_has_exactly_five_keys() -> None:
     assert envelope["error_class"] == "PolicyDenied"
     assert envelope["user_message"] == "Blocked by policy."
     assert envelope["retry_allowed"] is False
+
+
+def test_tool_failure_result_wraps_canonical_five_key_envelope() -> None:
+    result = build_tool_failure_result(
+        ToolCall(tool_use_id="tc-denied", tool_name="exec_command", arguments={}),
+        PermissionError("raw denied detail"),
+        policy_denial=True,
+        error_class_override="PolicyDenied",
+        user_message_override="Blocked by policy.",
+    )
+
+    assert result.tool_use_id == "tc-denied"
+    assert result.tool_name == "exec_command"
+    assert result.is_error is True
+    assert json.loads(result.content) == {
+        "status": "error",
+        "tool": "exec_command",
+        "error_class": "PolicyDenied",
+        "user_message": "Blocked by policy.",
+        "retry_allowed": False,
+    }
 
 
 def test_safe_tool_error_instance_message_preserves_five_key_shape() -> None:

@@ -31,9 +31,9 @@ def test_windows_auto_backend_disables_sandbox_runtime(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from opensquilla.sandbox import integration
+    from opensquilla.sandbox import config as config_mod
 
-    monkeypatch.setattr(integration.sys, "platform", "win32")
+    monkeypatch.setattr(config_mod, "sys", type("_Sys", (), {"platform": "win32"})(), raising=False)
 
     runtime = configure_runtime(
         SandboxSettings(sandbox=True, security_grading=True, backend="auto"),
@@ -48,14 +48,26 @@ def test_windows_auto_backend_disables_sandbox_runtime(
     assert runtime.backend.name == "noop"
 
 
+def test_windows_auto_backend_compatibility_is_resolved_in_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox import config as config_mod
+
+    monkeypatch.setattr(config_mod, "sys", type("_Sys", (), {"platform": "win32"})(), raising=False)
+
+    settings = SandboxSettings(sandbox=True, security_grading=True, backend="auto")
+    adjusted = config_mod.apply_host_compatibility(settings)
+
+    assert adjusted.sandbox is False
+    assert adjusted.security_grading is False
+
+
 def test_linux_auto_backend_without_real_backend_still_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     from opensquilla.sandbox import backend as backend_mod
-    from opensquilla.sandbox import integration
 
-    monkeypatch.setattr(integration.sys, "platform", "linux")
     monkeypatch.setattr(backend_mod.sys, "platform", "linux")
     monkeypatch.setattr(
         backend_mod.BubblewrapBackend,

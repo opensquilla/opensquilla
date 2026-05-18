@@ -21,6 +21,18 @@ def test_current_session_cron_payload_binds_target_and_origin_session() -> None:
     assert "payload.originSessionKey = boundSessionKey;" in source
 
 
+def test_cron_view_uses_domain_view_state_helper_for_session_targets() -> None:
+    source = CRON_JS.read_text(encoding="utf-8")
+
+    assert "const CronDomainViewState = Object.freeze" in source
+    assert "CronDomainViewState.defaultPayloadKind" in source
+    assert "CronDomainViewState.defaultSessionTarget" in source
+    assert "CronDomainViewState.jobSessionKey" in source
+    assert "CronDomainViewState.bindCurrentSessionPayload" in source
+    assert "WebUiRpc.client()" in source
+    assert "App.getRpc(" not in source
+
+
 def test_editing_cron_jobs_prefers_origin_before_target_session_key() -> None:
     source = CRON_JS.read_text(encoding="utf-8")
 

@@ -6,6 +6,38 @@ const ChannelsView = (() => {
   let _unsubs = [];
   let _intervals = [];
   let _channels = [];
+  const ChannelsDomainViewState = Object.freeze({
+    normalizeChannels(data) {
+      const raw = ((data || {}).channels || []).filter(c => c && c.configured !== false);
+      return [...raw].sort(ChannelsDomainViewState.sortByOperatorUrgency);
+    },
+    sortByOperatorUrgency(a, b) {
+      const order = { running: 0, connected: 0, restarting: 1, exhausted: 1, dead: 1, stopped: 2, disabled: 3 };
+      const oa = order[a.status] ?? 1;
+      const ob = order[b.status] ?? 1;
+      return oa - ob;
+    },
+    isRunningStatus(status) {
+      return status === 'running' || status === 'connected';
+    },
+    needsAttention(status) {
+      return status === 'dead' || status === 'restarting' || status === 'exhausted';
+    },
+    inactiveHint(inactive, disabled) {
+      if (!inactive) return 'no inactive channels';
+      if (disabled) return `${disabled} disabled`;
+      return 'configured but idle';
+    },
+    statusHint({ status, isRunning, isDead, enabled, name }) {
+      const safeName = name || '<name>';
+      if (!enabled) return `Disabled in config — gateway restart required after re-enabling. Run \`opensquilla configure --section channels\` to change.`;
+      if (isDead) return `Adapter is dead. Inspect gateway logs, then \`opensquilla channels restart ${safeName}\`.`;
+      if (isRunning) return 'Adapter is live in the current gateway process.';
+      if (status === 'restarting') return 'Adapter is restarting after dispatch errors.';
+      if (status === 'exhausted') return `Adapter exhausted its retry budget. Try \`opensquilla channels restart ${safeName}\`.`;
+      return 'Configured on disk but not active in this gateway process — restart the gateway to load it.';
+    },
+  });
 
   function _ensureCss() {
     if (document.querySelector('link[data-view-css="channels"]')) return;
@@ -77,15 +109,7 @@ const ChannelsView = (() => {
 
     _rpc.call('channels.status').then(data => {
       if (!_el) return;
-      const raw = (data.channels || []).filter(c => c && c.configured !== false);
-
-      // Sort by operator urgency while keeping the UI read-only.
-      const order = { running: 0, connected: 0, restarting: 1, exhausted: 1, dead: 1, stopped: 2, disabled: 3 };
-      _channels = [...raw].sort((a, b) => {
-        const oa = order[a.status] ?? 1;
-        const ob = order[b.status] ?? 1;
-        return oa - ob;
-      });
+      _channels = ChannelsDomainViewState.normalizeChannels(data);
 
       _renderStats();
       _renderCards();
@@ -96,8 +120,8 @@ const ChannelsView = (() => {
     const wrap = _el && _el.querySelector('#stat-row');
     if (!wrap) return;
     const total = _channels.length;
-    const connected = _channels.filter(c => c.status === 'running' || c.status === 'connected').length;
-    const attention = _channels.filter(c => _needsAttention(c.status)).length;
+    const connected = _channels.filter(c => ChannelsDomainViewState.isRunningStatus(c.status)).length;
+    const attention = _channels.filter(c => ChannelsDomainViewState.needsAttention(c.status)).length;
     const inactive = total - connected - attention;
     const disabled = _channels.filter(c => c.status === 'disabled').length;
     const restarts = _channels.reduce((acc, c) => acc + (Number(c.restart_attempts) || 0), 0);
@@ -120,7 +144,7 @@ const ChannelsView = (() => {
       <div class="stat">
         <div class="stat-label">Inactive</div>
         <div class="stat-value">${inactive}</div>
-        <div class="stat-hint">${attention ? `<span class="ch-neg">${attention} need attention</span>` : _inactiveHint(inactive, disabled)}</div>
+        <div class="stat-hint">${attention ? `<span class="ch-neg">${attention} need attention</span>` : ChannelsDomainViewState.inactiveHint(inactive, disabled)}</div>
       </div>
       <div class="stat">
         <div class="stat-label">Restart attempts</div>
@@ -180,7 +204,7 @@ const ChannelsView = (() => {
     container.innerHTML = _channels.map((ch, i) => {
       const name = ch.name || ch.id || 'Unknown';
       const status = ch.status || (ch.connected ? 'connected' : 'stopped');
-      const isRunning = status === 'running' || status === 'connected';
+      const isRunning = ChannelsDomainViewState.isRunningStatus(status);
       const isDead = status === 'dead';
       const dotCls = isRunning ? 'ok' : isDead ? 'err' : 'off';
       const chipCls = isRunning ? 'chip-ok' : isDead ? 'chip-danger' : '';
@@ -212,30 +236,10 @@ const ChannelsView = (() => {
           <pre class="ch-card__config-pre">${_esc(configJson)}</pre>
         </details>
         <footer class="ch-card__footnote">
-          <span>${_esc(_statusHint({ status, isRunning, isDead, enabled: ch.enabled !== false, name }))}</span>
+          <span>${_esc(ChannelsDomainViewState.statusHint({ status, isRunning, isDead, enabled: ch.enabled !== false, name }))}</span>
         </footer>
       </article>`;
     }).join('');
-  }
-
-  function _statusHint({ status, isRunning, isDead, enabled, name }) {
-    const safeName = name || '<name>';
-    if (!enabled) return `Disabled in config — gateway restart required after re-enabling. Run \`opensquilla configure --section channels\` to change.`;
-    if (isDead) return `Adapter is dead. Inspect gateway logs, then \`opensquilla channels restart ${safeName}\`.`;
-    if (isRunning) return 'Adapter is live in the current gateway process.';
-    if (status === 'restarting') return 'Adapter is restarting after dispatch errors.';
-    if (status === 'exhausted') return `Adapter exhausted its retry budget. Try \`opensquilla channels restart ${safeName}\`.`;
-    return 'Configured on disk but not active in this gateway process — restart the gateway to load it.';
-  }
-
-  function _needsAttention(status) {
-    return status === 'dead' || status === 'restarting' || status === 'exhausted';
-  }
-
-  function _inactiveHint(inactive, disabled) {
-    if (!inactive) return 'no inactive channels';
-    if (disabled) return `${disabled} disabled`;
-    return 'configured but idle';
   }
 
   function _esc(s) {

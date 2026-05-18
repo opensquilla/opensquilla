@@ -25,3 +25,15 @@ def test_skills_view_distinguishes_bundled_from_local_layers() -> None:
     assert "Bundled skills ship with OpenSquilla." in view
     assert "Managed skills are locally installed into OpenSquilla state." in view
     assert "Personal skills are local user installs, not bundled." in view
+
+
+def test_skills_view_uses_domain_view_state_helper_for_layers_and_status() -> None:
+    view = Path("src/opensquilla/gateway/static/js/views/skills.js").read_text(encoding="utf-8")
+
+    assert "const SkillsDomainViewState = Object.freeze" in view
+    assert "SkillsDomainViewState.skillStatus" in view
+    assert "SkillsDomainViewState.statusRank" in view
+    assert "SkillsDomainViewState.layerLabel" in view
+    assert "SkillsDomainViewState.layerHelp" in view
+    assert "WebUiRpc.client()" in view
+    assert "App.getRpc(" not in view

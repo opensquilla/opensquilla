@@ -16,6 +16,34 @@ const CronView = (() => {
   // Sort state
   let _sortCol = 'next_run';
   let _sortAsc = true;
+  const CronDomainViewState = Object.freeze({
+    defaultPayloadKind(activeSessionKey, template) {
+      const tpl = template || {};
+      return tpl.payloadKind || (activeSessionKey ? 'agent_turn' : 'system_event');
+    },
+    defaultSessionTarget(activeSessionKey, template) {
+      const tpl = template || {};
+      return tpl.sessionTarget || (activeSessionKey ? 'current' : 'main');
+    },
+    jobSessionKey(job) {
+      if (!job) return '';
+      return (
+        job.originSessionKey ||
+        job.origin_session_key ||
+        job.targetSessionKey ||
+        job.target_session_key ||
+        job.sessionKey ||
+        job.session_key ||
+        ''
+      );
+    },
+    bindCurrentSessionPayload(payload, boundSessionKey) {
+      payload.sessionKey = boundSessionKey;
+      payload.targetSessionKey = boundSessionKey;
+      payload.originSessionKey = boundSessionKey;
+      return payload;
+    },
+  });
 
   // ---- render / destroy ------------------------------------------------
 
@@ -798,10 +826,10 @@ const CronView = (() => {
     const expression = job ? (job.expression || '') : (tpl.expression || '');
     const activeSessionKey = _activeChatSessionKey();
     const payloadKind = job ? (job.payloadKind || 'agent_turn')
-      : (tpl.payloadKind || (activeSessionKey ? 'agent_turn' : 'system_event'));
+      : CronDomainViewState.defaultPayloadKind(activeSessionKey, tpl);
     const sessionTarget = job ? (job.sessionTarget || job.session_target || 'isolated')
-      : (tpl.sessionTarget || (activeSessionKey ? 'current' : 'main'));
-    const targetSessionKey = job ? _jobSessionKey(job) : (tpl.targetSessionKey || activeSessionKey || '');
+      : CronDomainViewState.defaultSessionTarget(activeSessionKey, tpl);
+    const targetSessionKey = job ? CronDomainViewState.jobSessionKey(job) : (tpl.targetSessionKey || activeSessionKey || '');
 
     _el.querySelector('#cp-name').value = name;
     _el.querySelector('#cp-message').value = message;
@@ -867,13 +895,13 @@ const CronView = (() => {
       targetSelect.title = 'Choose where this background agent task keeps its conversation context.';
       if (modeHint) modeHint.textContent = 'Agent tasks run as scheduled turns and use the selected session target.';
       if (target === 'main') {
-        const activeSessionKey = _activeChatSessionKey() || _jobSessionKey(_editingJob);
+        const activeSessionKey = _activeChatSessionKey() || CronDomainViewState.jobSessionKey(_editingJob);
         target = activeSessionKey ? 'current' : 'isolated';
         targetSelect.value = target;
         if (activeSessionKey && !targetInput.value.trim()) targetInput.value = activeSessionKey;
       }
       if (target === 'current' && !targetInput.value.trim()) {
-        targetInput.value = _activeChatSessionKey() || _jobSessionKey(_editingJob);
+        targetInput.value = _activeChatSessionKey() || CronDomainViewState.jobSessionKey(_editingJob);
       }
       _el.querySelector('#cp-message-label').textContent = 'Task prompt';
       _el.querySelector('#cp-target-session-row').hidden = !(target === 'current' || target === 'session');
@@ -912,11 +940,9 @@ const CronView = (() => {
     payload.expression = _el.querySelector('#cp-cron').value.trim();
     if (sessionTarget === 'current') {
       const boundSessionKey =
-        targetSessionKey || _activeChatSessionKey() || _jobSessionKey(_editingJob);
+        targetSessionKey || _activeChatSessionKey() || CronDomainViewState.jobSessionKey(_editingJob);
       if (!boundSessionKey) { UI.toast('Current session key is required', 'warn'); return; }
-      payload.sessionKey = boundSessionKey;
-      payload.targetSessionKey = boundSessionKey;
-      payload.originSessionKey = boundSessionKey;
+      CronDomainViewState.bindCurrentSessionPayload(payload, boundSessionKey);
     }
     if (sessionTarget === 'session') {
       if (!targetSessionKey) { UI.toast('Named session key is required', 'warn'); return; }
@@ -1193,16 +1219,7 @@ const CronView = (() => {
   }
 
   function _jobSessionKey(job) {
-    if (!job) return '';
-    return (
-      job.originSessionKey ||
-      job.origin_session_key ||
-      job.targetSessionKey ||
-      job.target_session_key ||
-      job.sessionKey ||
-      job.session_key ||
-      ''
-    );
+    return CronDomainViewState.jobSessionKey(job);
   }
 
   function _esc(s) {

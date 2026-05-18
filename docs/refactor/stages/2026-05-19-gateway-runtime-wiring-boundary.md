@@ -223,15 +223,20 @@ avoidable conflicts.
   - Result: ruff passed; mypy no issues in 547 source files; whitespace passed;
     pytest `2638 passed, 8 skipped, 2 warnings in 52.06s`; gateway smoke
     start/status/stop/status passed.
-- [ ] Commit child verification/stage record update with:
+- [x] Commit child verification/stage record update with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+  - Commit: `3a310e5` (`Record gateway runtime wiring child verification`).
+- [x] Merge child into integration with `git merge --no-ff`.
+  - Merge commit: `4118f5e` (`Merge gateway runtime wiring boundary`).
+- [x] Run `scripts/refactor_gate.sh` in integration.
+  - Result: ruff passed; mypy no issues in 547 source files; whitespace passed;
+    pytest `2640 passed, 6 skipped, 2 warnings in 30.24s`; gateway smoke
+    start/status/stop/status passed.
+- [x] Record child hash, integration hash, verification, and next slice.
 - [ ] Remove active and worker worktrees, run `git worktree prune`, and verify
       no extra refactor worktree directories remain beyond
       `../opensquilla-refactor-integration`.
@@ -267,8 +272,9 @@ Co-authored-by: Codex <noreply@openai.com>
   - `972f278` (`Fix session runtime stage path hygiene`)
   - `3bcbcdd` (`Merge gateway runtime wiring worker`)
   - `0e6495f` (`Polish gateway runtime wiring boundary`)
-- Child verification commit:
-- Integration merge:
+- Child verification commit: `3a310e5` (`Record gateway runtime wiring child
+  verification`).
+- Integration merge: `4118f5e` (`Merge gateway runtime wiring boundary`).
 - Integration record:
 - Verification evidence:
 - Worker RED/GREEN evidence recorded above.
@@ -283,6 +289,9 @@ Co-authored-by: Codex <noreply@openai.com>
   source files; `git diff --check` passed.
 - Active child `scripts/refactor_gate.sh`: ruff passed; mypy no issues in 547
   source files; whitespace passed; pytest `2638 passed, 8 skipped, 2
+  warnings`; gateway smoke passed.
+- Integration `scripts/refactor_gate.sh`: ruff passed; mypy no issues in 547
+  source files; whitespace passed; pytest `2640 passed, 6 skipped, 2
   warnings`; gateway smoke passed.
 - Cleanup evidence:
 - Residual risk: low; the stage moves runtime wiring behind a Gateway boundary

@@ -305,13 +305,14 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 - [x] Run full integration `scripts/refactor_gate.sh`.
   - Passed: ruff, mypy, whitespace, pytest `2590 passed, 6 skipped, 2 warnings`, gateway smoke on `127.0.0.1:52835`.
 - [x] Update this completion record with worker commits, child hash, integration hash, verification output, residual risk, and next recommended slice.
-- [ ] Commit the stage record update on integration with the required co-author trailer.
-- [ ] Remove `../opensquilla-refactor-active` and external worker worktrees:
+- [x] Commit the stage record update on integration with the required co-author trailer.
+  - `e525dc5` (`Record task runtime terminalization integration`).
+- [x] Remove `../opensquilla-refactor-active` and external worker worktrees:
   - `../opensquilla-refactor-agent-task-runtime-records`
   - `../opensquilla-refactor-agent-task-runtime-terminal`
   - `../opensquilla-refactor-agent-task-runtime-scheduler`
-- [ ] Run `git worktree prune`.
-- [ ] Verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
+- [x] Run `git worktree prune`.
+- [x] Verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
 
 ## Child Gate
 
@@ -366,6 +367,12 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - Child full gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 537 source files; whitespace passed; pytest `2588 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
   - Integration full gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 537 source files; whitespace passed; pytest `2590 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
 - Cleanup evidence:
+  - Removed `../opensquilla-refactor-active`.
+  - Removed `../opensquilla-refactor-agent-task-runtime-records`.
+  - Removed `../opensquilla-refactor-agent-task-runtime-terminal`.
+  - Removed `../opensquilla-refactor-agent-task-runtime-scheduler`.
+  - Ran `git worktree prune`.
+  - Verified `find .. -maxdepth 1 -type d -name 'opensquilla-refactor-*' -print | sort` lists only `../opensquilla-refactor-integration`.
 - Residual risk:
   - Low to medium. Task runtime orchestration remains in `TaskRuntime`, while records, terminal payload/subagent completion helpers, and scheduler state now have explicit owning modules. Compatibility imports remain on `opensquilla.gateway.task_runtime`, and scheduler-owned state is still exposed via compatibility properties for existing tests. Future slices should avoid removing those compatibility properties until downstream/import-surface checks are broadened.
 - Next recommended slice:

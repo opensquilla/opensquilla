@@ -470,6 +470,32 @@ def test_post_restart_returns_specific_error_for_lost_uuid(tmp_path: Path) -> No
         asyncio.run(fresh.get(file_uuid))
 
 
+def test_post_restart_expired_marker_is_not_reported_as_lost(tmp_path: Path) -> None:
+    """Expired restart markers are treated as gone and cleaned up."""
+    marker_dir = tmp_path / "inbound"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+
+    file_uuid = "u-expired-restart"
+    marker = marker_dir / f"{file_uuid}.meta"
+    marker.write_text(
+        json.dumps(
+            {
+                "sha256": "deadbeef" * 8,
+                "mime": "text/plain",
+                "name": "old.txt",
+                "size": 3,
+                "expires_at": time.time() - 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fresh = UploadStore(marker_dir=marker_dir, ttl_seconds=600, max_file_bytes=30 * 1024 * 1024)
+    with pytest.raises(AttachmentNotFoundError):
+        asyncio.run(fresh.get(file_uuid))
+    assert not marker.exists()
+
+
 # ---------------------------------------------------------------------------
 # HTTP-layer security tests.
 # ---------------------------------------------------------------------------

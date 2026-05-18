@@ -329,9 +329,11 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 
 ### Task 7: Integration Branch Merge and Cleanup
 
-- [ ] Merge child into integration with `git merge --no-ff codex/refactor-tools-sandbox-security-execution-boundary-batch`.
-- [ ] Run full integration `scripts/refactor_gate.sh`.
-- [ ] Update this completion record with worker commits, child hash, integration hash, verification output, residual risk, and next recommended slice.
+- [x] Merge child into integration with `git merge --no-ff codex/refactor-tools-sandbox-security-execution-boundary-batch`.
+  - Integration merge commit: `3b7b04739f4ff2e3e90f3458973147d257be582d Merge branch 'codex/refactor-tools-sandbox-security-execution-boundary-batch' into codex/refactor-architecture`.
+- [x] Run full integration `scripts/refactor_gate.sh`.
+  - Result: ruff passed; mypy succeeded across 521 source files; whitespace check passed; pytest `2515 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop/status succeeded; `Refactor gate complete.`
+- [x] Update this completion record with worker commits, child hash, integration hash, verification output, residual risk, and next recommended slice.
 - [ ] Commit the stage record update on integration with the required co-author trailer.
 - [ ] Remove `../opensquilla-refactor-active`.
 - [ ] Remove external worker worktrees `../opensquilla-refactor-agent-local-execution-filesystem` and `../opensquilla-refactor-agent-network-media-security`.
@@ -374,15 +376,17 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - Base plan: `5833a4b Record tools sandbox security boundary batch plan`.
   - Local worker merge: `6c255e7 Merge branch 'codex/refactor-local-execution-filesystem-boundary-batch' into codex/refactor-tools-sandbox-security-execution-boundary-batch`.
   - Network/media worker merge: `555cd5f Merge branch 'codex/refactor-network-media-security-boundary-batch' into codex/refactor-tools-sandbox-security-execution-boundary-batch`.
-  - Stage-record update: pending this commit.
+  - Stage-record update: `5f603ac Record tools sandbox security boundary gate`.
 - Integration merge:
-  - Pending merge into `codex/refactor-architecture`.
+  - `3b7b04739f4ff2e3e90f3458973147d257be582d Merge branch 'codex/refactor-tools-sandbox-security-execution-boundary-batch' into codex/refactor-architecture`.
+  - Final integration stage-record update: pending this commit.
 - Verification evidence:
   - Focused worker integration: `109 passed`.
   - Targeted ruff over `src/opensquilla/tools`, `src/opensquilla/sandbox`, `tests/test_tools`, `tests/test_sandbox`, and `tests/test_security`: `All checks passed!`.
   - Targeted mypy over `src/opensquilla/tools` and `src/opensquilla/sandbox`: `Success: no issues found in 48 source files`.
   - `git diff --check`: no output.
   - Child `scripts/refactor_gate.sh`: ruff passed; mypy succeeded across 521 source files; whitespace check passed; pytest `2513 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop/status succeeded; `Refactor gate complete.`
+  - Integration `scripts/refactor_gate.sh`: ruff passed; mypy succeeded across 521 source files; whitespace check passed; pytest `2515 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop/status succeeded; `Refactor gate complete.`
 - Residual risk:
   - `web.http_request` intentionally keeps scheme-only validation rather than full SSRF DNS validation to preserve existing behavior; full SSRF validation remains owned by fetch/media paths.
   - Same-thread agent dispatch hit a thread limit mid-stage; external worker fallback completed the independent slices, and this fallback should remain the default whenever `spawn_agent` becomes unavailable.

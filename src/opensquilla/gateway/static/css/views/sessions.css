@@ -217,7 +217,16 @@
 .sess-table tbody tr:hover td { background: var(--bg-elevated); }
 .sess-table tbody tr.is-selected td { background: color-mix(in srgb, var(--accent) 6%, var(--bg-surface)); }
 .sess-table__cell--check { width: 36px; }
-.sess-table__cell--actions { white-space: nowrap; text-align: right; width: 1px; }
+.sess-table__cell--actions {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  width: 1px;
+  white-space: nowrap;
+  text-align: right;
+  background: var(--bg-surface);
+  box-shadow: -12px 0 18px -18px var(--shadow);
+}
 .sess-table__cell--key {
   min-width: 240px;
 }
@@ -328,6 +337,8 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
+  min-width: 32px;
+  min-height: 32px;
   padding: 4px 8px;
   font-size: var(--fs-xs);
   font-weight: 500;
@@ -503,5 +514,9 @@
   .sess-stage__actions { width: 100%; }
   .sess-search-input { width: 100%; flex: 1; }
   .sess-search-wrap { flex: 1; }
-  .sess-table-wrap { overflow-x: auto; }
+  .sess-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .sess-table { min-width: 720px; }
 }

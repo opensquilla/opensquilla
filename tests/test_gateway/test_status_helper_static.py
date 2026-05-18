@@ -3,6 +3,7 @@ from pathlib import Path
 COMPONENTS_JS = Path("src/opensquilla/gateway/static/js/components.js")
 SESSIONS_JS = Path("src/opensquilla/gateway/static/js/views/sessions.js")
 OVERVIEW_JS = Path("src/opensquilla/gateway/static/js/views/overview.js")
+SESSIONS_CSS = Path("src/opensquilla/gateway/static/css/views/sessions.css")
 
 
 def test_components_js_defines_session_status_helpers() -> None:
@@ -54,6 +55,40 @@ def test_sessions_view_does_not_count_killed_as_errored() -> None:
     assert "failedOrTimedOut" in source
     assert "aborted" in source
     assert "s.status === 'failed' || s.status === 'killed' || s.status === 'timeout'" not in source
+
+
+def test_sessions_view_counts_terminal_task_failures_as_failed() -> None:
+    source = SESSIONS_JS.read_text(encoding="utf-8")
+
+    assert "function _sessionVisualStatus(row)" in source
+    assert "const visualStatus = _sessionVisualStatus(row);" in source
+    assert "const failedOrTimedOut = _allSessions.filter(s => {" in source
+    stats_start = source.index("const failedOrTimedOut = _allSessions.filter(s => {")
+    stats_end = source.index("const aborted =", stats_start)
+    stats_block = source[stats_start:stats_end]
+    assert "_sessionVisualStatus(s)" in stats_block
+    assert "status === 'failed' || status === 'timeout'" in stats_block
+    assert "s.status === 'failed' || s.status === 'timeout'" not in stats_block
+
+
+def test_sessions_view_counts_terminal_cancellations_as_aborted() -> None:
+    source = SESSIONS_JS.read_text(encoding="utf-8")
+
+    assert "const aborted = _allSessions.filter(s => _sessionVisualStatus(s) === 'killed').length;" in source
+    assert "const aborted = _allSessions.filter(s => s.status === 'killed').length;" not in source
+
+
+def test_sessions_mobile_keeps_row_actions_reachable() -> None:
+    css = SESSIONS_CSS.read_text(encoding="utf-8")
+
+    action_rule = css[css.index(".sess-table__cell--actions {") : css.index("}", css.index(".sess-table__cell--actions {"))]
+    assert "position: sticky" in action_rule
+    assert "right: 0" in action_rule
+    assert "z-index:" in action_rule
+
+    icon_rule = css[css.index(".sess-iconbtn {") : css.index("}", css.index(".sess-iconbtn {"))]
+    assert "min-width: 32px" in icon_rule
+    assert "min-height: 32px" in icon_rule
 
 
 def test_overview_view_uses_status_helper() -> None:

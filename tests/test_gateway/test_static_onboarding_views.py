@@ -149,6 +149,37 @@ def test_setup_router_controls_use_user_facing_labels():
     assert "Stronger reasoning (t2)" in txt
 
 
+def test_setup_view_preserves_unsaved_form_values_across_step_navigation():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "const _drafts" in txt
+    assert "function _rememberDraft" in txt
+    assert "function _restoreDraft" in txt
+    assert "function _setStep" in txt
+    assert "data-next" in txt
+    assert "_setStep(btn.dataset.next)" in txt
+
+
+def test_setup_view_does_not_redraw_dirty_channel_form_during_status_poll():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "let _channelDirty" in txt
+    assert "data-channel-dirty-root" in txt
+    assert "if (_channelDirty) return;" in txt
+
+
+def test_setup_view_surfaces_action_needed_reasons():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "function _onboardingReasons" in txt
+    assert "setup-reasons" in txt
+    assert "Provider action required" in txt
+    assert "No channels configured" in txt
+
+
+def test_setup_panel_avoids_dense_background_rule_lines():
+    css = (ROOT / "static/css/views/setup.css").read_text(encoding="utf-8")
+    panel_block = css.split(".setup-panel {", 1)[1].split("}", 1)[0]
+    assert "repeating-linear-gradient" not in panel_block
+
+
 def test_config_view_exposes_memory_tab_and_restart_notice():
     txt = (VIEWS / "config.js").read_text(encoding="utf-8")
     assert "label: 'Memory'" in txt

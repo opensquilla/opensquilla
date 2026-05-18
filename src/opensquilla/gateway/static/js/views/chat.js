@@ -2449,6 +2449,7 @@ const ChatView = (() => {
       } else if (event.endsWith('.error')) {
         _endStreaming();
         _addMessage('error', _sessionErrorMessage(payload));
+        _scheduleHistorySync();
         if (_activeTaskGroups.size > 0) {
           _applySessionRunState(_activeTaskGroupRunState(payload));
         } else {
@@ -3016,9 +3017,26 @@ const ChatView = (() => {
       return 'The task was cancelled before it finished.';
     }
     if (status === 'failed') {
+      const failedDetail = _payloadErrorDetail(payload);
+      if (failedDetail) return failedDetail;
       return 'The task failed before it could finish.';
     }
     return 'The task ended before it could finish.';
+  }
+
+  function _payloadErrorDetail(payload) {
+    const candidates = [
+      payload?.error,
+      payload?.message,
+      payload?.error_message,
+      payload?.detail,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+    return '';
   }
 
   function _sessionErrorMessage(payload) {

@@ -279,6 +279,31 @@ def test_chat_maps_task_terminal_events_during_migration() -> None:
     assert "_sessionErrorMessage(payload)" in error_handler
 
 
+def test_chat_failed_task_message_prefers_payload_error_detail() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    start = source.index("function _taskTerminalMessage(status, payload)")
+    end = source.index("  function _sessionErrorMessage(payload)", start)
+    body = source[start:end]
+
+    assert "const failedDetail = _payloadErrorDetail(payload);" in body
+    assert "if (failedDetail) return failedDetail;" in body
+    assert "function _payloadErrorDetail(payload)" in source
+    for field_name in ("error", "message", "error_message", "detail"):
+        assert f"payload?.{field_name}" in source
+
+
+def test_chat_error_event_refreshes_from_persisted_transcript() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    error_start = source.index("} else if (event.endsWith('.error'))")
+    error_end = source.index("      }", source.index("_applySessionRunState({", error_start))
+    error_body = source[error_start:error_end]
+
+    assert "_addMessage('error', _sessionErrorMessage(payload));" in error_body
+    assert "_scheduleHistorySync();" in error_body
+
+
 def test_chat_subscribe_failure_is_visible() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 

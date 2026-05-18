@@ -99,6 +99,7 @@
   overflow-x: auto;
 }
 .cfg-tab {
+  min-height: 36px;
   padding: 8px 16px;
   font-size: var(--fs-sm);
   font-weight: 500;
@@ -454,8 +455,10 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  min-width: 32px;
+  min-height: 32px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   margin: 0;
   border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
@@ -720,6 +723,15 @@
   .cfg-toolbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .cfg-tabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .cfg-tab {
+    min-height: 36px;
   }
 
   .cfg-search-wrap {

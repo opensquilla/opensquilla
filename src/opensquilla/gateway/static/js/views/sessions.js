@@ -199,9 +199,12 @@ const SessionsView = (() => {
       const runStatus = _sessionRunStatus(s);
       return runStatus === 'queued' || runStatus === 'running';
     }).length;
-    const done = _allSessions.filter(s => s.status === 'done').length;
-    const failedOrTimedOut = _allSessions.filter(s => s.status === 'failed' || s.status === 'timeout').length;
-    const aborted = _allSessions.filter(s => s.status === 'killed').length;
+    const done = _allSessions.filter(s => _sessionVisualStatus(s) === 'done').length;
+    const failedOrTimedOut = _allSessions.filter(s => {
+      const status = _sessionVisualStatus(s);
+      return status === 'failed' || status === 'timeout';
+    }).length;
+    const aborted = _allSessions.filter(s => _sessionVisualStatus(s) === 'killed').length;
     const totalMessages = _allSessions.reduce((acc, s) => acc + (Number(s.message_count) || 0), 0);
     const totalSize = _allSessions.reduce((acc, s) => acc + (Number(s.size_bytes) || 0), 0);
     // Distinct agents derived from key prefix `agent:NAME:...` (best-effort).
@@ -294,7 +297,8 @@ const SessionsView = (() => {
 
     slice.forEach(row => {
       const checked = _selected.has(row.key) ? 'checked' : '';
-      const status = (row.status || 'unknown').toLowerCase();
+      const visualStatus = _sessionVisualStatus(row);
+      const status = visualStatus;
       const statusCls = UI.sessionStatusClass(status);
       const statusChip = UI.sessionStatusChip(status);
       const statusTip = UI.sessionStatusLabel(status);
@@ -715,9 +719,27 @@ const SessionsView = (() => {
     row = row || {};
     const active = row.active_task || row.activeTask || null;
     const activeStatus = active ? _normalizeRunStatus(active.status) : '';
-    const rawStatus = row.run_status || row.runStatus || active?.status || row.last_task?.status || row.lastTask?.status || '';
+    const terminalStatus = _terminalRunStatus(row);
+    const rawStatus = row.run_status || row.runStatus || active?.status || terminalStatus || '';
     const runStatus = _normalizeRunStatus(rawStatus);
-    return active && (activeStatus === 'queued' || activeStatus === 'running') ? activeStatus : runStatus;
+    if (active && (activeStatus === 'queued' || activeStatus === 'running')) return activeStatus;
+    if (terminalStatus) return _normalizeRunStatus(terminalStatus);
+    return runStatus;
+  }
+
+  function _terminalRunStatus(row) {
+    row = row || {};
+    const lastTask = row.last_task || row.lastTask || null;
+    const rawStatus = lastTask?.status || row.terminal_status || row.terminalStatus || '';
+    const status = _normalizeRunStatus(rawStatus);
+    return ['failed', 'timeout', 'cancelled', 'interrupted'].includes(status) ? status : '';
+  }
+
+  function _sessionVisualStatus(row) {
+    const runStatus = _sessionRunStatus(row);
+    if (runStatus === 'failed' || runStatus === 'timeout') return runStatus;
+    if (runStatus === 'cancelled' || runStatus === 'interrupted') return 'killed';
+    return String(row?.status || 'unknown').toLowerCase();
   }
 
   function _runStatusLabel(status) {

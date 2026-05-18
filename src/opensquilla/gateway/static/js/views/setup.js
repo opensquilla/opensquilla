@@ -25,6 +25,8 @@ const SetupView = (() => {
   let _step = 'provider';
   let _channelType = '';
   let _pollTimer = null;
+  const _drafts = new Map();
+  let _channelDirty = false;
 
   async function render(el) {
     _el = el;
@@ -68,6 +70,7 @@ const SetupView = (() => {
             <div class="setup__status ${_status.needsOnboarding ? 'is-warn' : 'is-ok'}">
               ${_status.needsOnboarding ? 'Action needed' : 'Configured'}
             </div>
+            ${_renderOnboardingReasons()}
           </div>
         </header>
         <nav class="setup-stepper" aria-label="Setup steps">
@@ -78,13 +81,38 @@ const SetupView = (() => {
         <div class="setup__body">${_renderCurrentStep()}</div>
       </section>`;
 
+    _restoreDraft(_step);
+    _restoreDynamicDraftFields();
     _el.querySelectorAll('[data-step]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        _step = btn.dataset.step;
-        _draw();
-      });
+      btn.addEventListener('click', () => _setStep(btn.dataset.step));
     });
     _bindStep();
+  }
+
+  function _renderOnboardingReasons() {
+    const reasons = _onboardingReasons();
+    if (!reasons.length) return '';
+    return `<ul class="setup-reasons" aria-label="Setup actions needed">
+      ${reasons.map(reason => `<li>${_esc(reason)}</li>`).join('')}
+    </ul>`;
+  }
+
+  function _onboardingReasons() {
+    if (!_status.needsOnboarding) return [];
+    const reasons = [];
+    const llm = _config.llm || {};
+    if (_providerEnvMissing()) {
+      reasons.push(`${_providerEnvKey()} is not visible`);
+    } else if (!llm.provider || !llm.model) {
+      reasons.push('Provider action required');
+    }
+    if ((_status.channelCount || 0) === 0) {
+      reasons.push('No channels configured');
+    }
+    if (_status.imageGenerationEnabled !== false && _status.imageGenerationConfigured === false) {
+      reasons.push('Image generation needs a visible key');
+    }
+    return reasons.length ? reasons : ['Review setup sections for pending actions'];
   }
 
   function _renderCurrentStep() {
@@ -220,7 +248,7 @@ const SetupView = (() => {
           <p>${runtimeRows.length} configured</p>
         </header>
         <div class="setup-channel-grid">
-          <div class="setup-form">
+          <div class="setup-form" data-channel-dirty-root>
             <label><span>Channel type</span>
               <select data-channel-type>
                 ${channels.map(c => `<option value="${_esc(c.type)}"${c.type === selected ? ' selected' : ''}>${_esc(c.label)}</option>`).join('')}
@@ -366,12 +394,21 @@ const SetupView = (() => {
   }
 
   function _bindStep() {
-    _el.querySelectorAll('[data-next]').forEach(btn => btn.addEventListener('click', () => { _step = btn.dataset.next; _draw(); }));
-    _el.querySelectorAll('[data-prev]').forEach(btn => btn.addEventListener('click', () => { _step = btn.dataset.prev; _draw(); }));
+    _el.querySelectorAll('[data-next]').forEach(btn => btn.addEventListener('click', () => _setStep(btn.dataset.next)));
+    _el.querySelectorAll('[data-prev]').forEach(btn => btn.addEventListener('click', () => _setStep(btn.dataset.prev)));
     _el.querySelectorAll('[data-exit-setup]').forEach(btn => btn.addEventListener('click', () => Router.navigate('/overview')));
     _el.querySelector('[data-reload]')?.addEventListener('click', async () => { await _load(); _draw(); });
-    _el.querySelector('[data-provider-select]')?.addEventListener('change', () => _drawProviderFields());
-    _el.querySelector('[data-channel-type]')?.addEventListener('change', () => _drawChannelFields());
+    _el.querySelector('[data-provider-select]')?.addEventListener('change', () => {
+      _rememberDraft('provider');
+      _drawProviderFields();
+    });
+    _el.querySelector('[data-channel-type]')?.addEventListener('change', () => {
+      _channelDirty = true;
+      _rememberDraft('channels');
+      _drawChannelFields();
+      _bindChannelDirtyTracking();
+    });
+    _bindChannelDirtyTracking();
     _bindConditionalSelects(_el);
     _applyConditionalFields();
     _el.querySelector('[data-save-provider]')?.addEventListener('click', _saveProvider);
@@ -379,6 +416,74 @@ const SetupView = (() => {
     _el.querySelector('[data-save-channel]')?.addEventListener('click', _saveChannel);
     _el.querySelector('[data-save-memory]')?.addEventListener('click', _saveMemory);
     _el.querySelector('[data-save-image]')?.addEventListener('click', _saveImage);
+  }
+
+  function _setStep(step) {
+    if (!step || step === _step) return;
+    _rememberDraft(_step);
+    _step = step;
+    _draw();
+  }
+
+  function _rememberDraft(step = _step) {
+    if (!_el) return;
+    const fields = {};
+    _el.querySelectorAll('.setup__body input, .setup__body select, .setup__body textarea').forEach((input, idx) => {
+      fields[_fieldKey(input, idx)] = input.type === 'checkbox' ? input.checked : input.value;
+    });
+    _drafts.set(step, fields);
+  }
+
+  function _restoreDraft(step = _step) {
+    const fields = _drafts.get(step);
+    if (!fields || !_el) return;
+    _el.querySelectorAll('.setup__body input, .setup__body select, .setup__body textarea').forEach((input, idx) => {
+      const key = _fieldKey(input, idx);
+      if (!Object.prototype.hasOwnProperty.call(fields, key)) return;
+      if (input.type === 'checkbox') input.checked = fields[key] === true;
+      else input.value = fields[key];
+    });
+  }
+
+  function _restoreDynamicDraftFields() {
+    if (_step === 'provider' && _drafts.has('provider')) {
+      _drawProviderFields();
+      _restoreDraft('provider');
+    }
+    if (_step === 'channels' && _drafts.has('channels')) {
+      _drawChannelFields();
+      _restoreDraft('channels');
+    }
+  }
+
+  function _fieldKey(input, idx) {
+    const scoped = input.closest('[data-scope][data-name]');
+    if (scoped) return `${scoped.dataset.scope}:${scoped.dataset.name}`;
+    const tier = input.closest('[data-tier]');
+    if (tier && input.dataset.tierField) return `tier:${tier.dataset.tier}:${input.dataset.tierField}`;
+    if (input.dataset.routerMode !== undefined) return 'router:mode';
+    if (input.dataset.defaultTier !== undefined) return 'router:defaultTier';
+    if (input.dataset.providerSelect !== undefined) return 'provider:selected';
+    if (input.dataset.channelType !== undefined) return 'channel:type';
+    if (input.dataset.memoryProvider !== undefined) return 'extras:memory:provider';
+    if (input.dataset.memoryField) return `extras:memory:${input.dataset.memoryField}`;
+    if (input.dataset.imageProvider !== undefined) return 'extras:image:provider';
+    if (input.dataset.imageEnabled !== undefined) return 'extras:image:enabled';
+    if (input.dataset.imageField) return `extras:image:${input.dataset.imageField}`;
+    return `field:${idx}`;
+  }
+
+  function _bindChannelDirtyTracking() {
+    const root = _el.querySelector('[data-channel-dirty-root]');
+    if (!root) return;
+    root.querySelectorAll('input, select, textarea').forEach(input => {
+      const markDirty = () => {
+        _channelDirty = true;
+        _rememberDraft('channels');
+      };
+      input.addEventListener('input', markDirty);
+      input.addEventListener('change', markDirty);
+    });
   }
 
   function _drawProviderFields() {
@@ -451,6 +556,7 @@ const SetupView = (() => {
         return;
       }
       UI.toast('Provider saved.', 'info');
+      _drafts.delete('provider');
       _step = 'router';
       _draw();
     } catch (err) {
@@ -476,6 +582,7 @@ const SetupView = (() => {
       });
       UI.toast('Router saved.', 'info');
       await _load();
+      _drafts.delete('router');
       _step = 'channels';
       _draw();
     } catch (err) {
@@ -489,6 +596,8 @@ const SetupView = (() => {
       await _rpc.call('onboarding.channel.probe', { entry });
       await _rpc.call('onboarding.channel.upsert', { entry });
       UI.toast('Channel saved. Restart required.', 'info');
+      _channelDirty = false;
+      _drafts.delete('channels');
       await _loadChannelStatus();
       _draw();
     } catch (err) {
@@ -535,6 +644,7 @@ const SetupView = (() => {
     if (_pollTimer) clearInterval(_pollTimer);
     _pollTimer = setInterval(async () => {
       if (!_el || _step !== 'channels') return;
+      if (_channelDirty) return;
       await _loadChannelStatus();
       _draw();
     }, 5000);

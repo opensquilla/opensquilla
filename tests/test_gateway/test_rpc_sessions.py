@@ -1409,20 +1409,18 @@ class TestSessionsReset:
             if isinstance(node, ast.Dict)
         }
 
-        assert ("opensquilla.session.rpc_payload", "session_flush_error_details") in imports
-        assert ("opensquilla.session.rpc_payload", "session_flush_unavailable_details") in imports
-        assert ("opensquilla.session.rpc_payload", "session_permission_denied_details") in imports
+        assert ("opensquilla.session.lifecycle_flush", "execute_lifecycle_flush") in imports
+        assert (
+            "opensquilla.session.lifecycle_flush",
+            "unavailable_flush_failure_for_transcript",
+        ) in imports
         assert ("opensquilla.session.rpc_payload", "session_reset_response") in imports
         assert any(
-            isinstance(node, ast.Name) and node.id == "session_flush_error_details"
+            isinstance(node, ast.Name) and node.id == "execute_lifecycle_flush"
             for node in ast.walk(handler)
         )
         assert any(
-            isinstance(node, ast.Name) and node.id == "session_flush_unavailable_details"
-            for node in ast.walk(handler)
-        )
-        assert any(
-            isinstance(node, ast.Name) and node.id == "session_permission_denied_details"
+            isinstance(node, ast.Name) and node.id == "unavailable_flush_failure_for_transcript"
             for node in ast.walk(handler)
         )
         assert not any(
@@ -1600,24 +1598,22 @@ class TestSessionsCompact:
             if isinstance(node, ast.Dict)
         }
 
-        assert ("opensquilla.session.rpc_payload", "session_flush_error_details") in imports
-        assert ("opensquilla.session.rpc_payload", "session_flush_unavailable_details") in imports
+        assert ("opensquilla.session.lifecycle_flush", "execute_lifecycle_flush") in imports
+        assert (
+            "opensquilla.session.lifecycle_flush",
+            "unavailable_flush_failure_for_transcript",
+        ) in imports
         assert ("opensquilla.session.rpc_payload", "session_compact_response") in imports
-        assert ("opensquilla.session.rpc_payload", "session_permission_denied_details") in imports
         assert any(
-            isinstance(node, ast.Name) and node.id == "session_flush_error_details"
+            isinstance(node, ast.Name) and node.id == "execute_lifecycle_flush"
             for node in ast.walk(handler)
         )
         assert any(
-            isinstance(node, ast.Name) and node.id == "session_flush_unavailable_details"
+            isinstance(node, ast.Name) and node.id == "unavailable_flush_failure_for_transcript"
             for node in ast.walk(handler)
         )
         assert any(
             isinstance(node, ast.Name) and node.id == "session_compact_response"
-            for node in ast.walk(handler)
-        )
-        assert any(
-            isinstance(node, ast.Name) and node.id == "session_permission_denied_details"
             for node in ast.walk(handler)
         )
         assert "before_count" not in handler_constants

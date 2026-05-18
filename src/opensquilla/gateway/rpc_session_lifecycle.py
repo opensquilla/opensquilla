@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, NoReturn
 
 import structlog
 
@@ -14,9 +14,13 @@ from opensquilla.gateway.rpc_compaction_inputs import (
     build_gateway_compaction_config,
     context_window_tokens,
 )
-from opensquilla.memory.session_flush import FlushReceipt
 from opensquilla.session.compaction import call_compact_with_optional_config
 from opensquilla.session.keys import normalize_agent_id
+from opensquilla.session.lifecycle_flush import (
+    SessionLifecycleFlushFailure,
+    execute_lifecycle_flush,
+    unavailable_flush_failure_for_transcript,
+)
 from opensquilla.session.lifecycle_service import (
     require_existing_session,
     require_session_storage,
@@ -29,9 +33,6 @@ from opensquilla.session.rpc_payload import (
     session_compact_response,
     session_context_compact_response,
     session_delete_response,
-    session_flush_error_details,
-    session_flush_unavailable_details,
-    session_permission_denied_details,
     session_reset_response,
 )
 from opensquilla.session.services import get_session_storage
@@ -44,6 +45,22 @@ _ACTIVE_TASK_STATUSES = frozenset({"queued", "running"})
 EpochEmitter = Callable[[RpcContext, Any, str], Awaitable[int]]
 EventEmitter = Callable[[RpcContext, str, str, dict], Awaitable[None]]
 ResetDrain = Callable[[Any, str], Awaitable[None]]
+
+
+def _raise_lifecycle_flush_failure(
+    failure: SessionLifecycleFlushFailure,
+    *,
+    from_exc: BaseException | None = None,
+) -> NoReturn:
+    error = RpcHandlerError(
+        code=failure.code,
+        message=failure.message,
+        details=failure.details,
+    )
+    cause = from_exc or failure.cause
+    if cause is not None:
+        raise error from cause
+    raise error
 
 
 def _task_status_value(status: Any) -> str:
@@ -171,26 +188,16 @@ async def handle_sessions_reset(
         previous_session_id = session.session_id
 
         transcript = await ctx.session_manager.get_transcript(key)
-        if transcript and not force:
-            raise RpcHandlerError(
-                code="flush_unavailable",
-                message=(
-                    "Reset aborted: flush service is unavailable and the "
-                    "transcript is non-empty. Re-run with force=true (admin) "
-                    "to discard without backup."
-                ),
-                details=session_flush_unavailable_details(
-                    key,
-                    previous_session_id,
-                    message_count=len(transcript),
-                ),
-            )
-        if transcript and force and "operator.admin" not in ctx.principal.scopes:
-            raise RpcHandlerError(
-                code="permission_denied",
-                message="force=true on sessions.reset requires operator.admin scope.",
-                details=session_permission_denied_details(key, previous_session_id),
-            )
+        failure = unavailable_flush_failure_for_transcript(
+            "reset",
+            key,
+            previous_session_id,
+            transcript,
+            force=force,
+            principal_scopes=ctx.principal.scopes,
+        )
+        if failure is not None:
+            _raise_lifecycle_flush_failure(failure)
 
         updated, rotated = await ctx.session_manager.apply_intent(key, SessionIntent.RESET_SAME_KEY)
         new_epoch = await increment_and_emit_epoch(ctx, storage, key)
@@ -221,61 +228,16 @@ async def handle_sessions_reset(
         agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
 
         transcript = await ctx.session_manager.get_transcript(key)
-
-        if not transcript:
-            updated, rotated = await ctx.session_manager.apply_intent(
-                key, SessionIntent.RESET_SAME_KEY
-            )
-            new_epoch = await increment_and_emit_epoch(ctx, storage, key)
-            receipt = FlushReceipt(
-                mode="skipped",
-                flushed_paths=[],
-                slug=None,
-                message_count=0,
-                duration_ms=0,
-                raw_reason=None,
-                error=None,
-            )
-            return session_reset_response(
-                key,
-                rotated,
-                previous_session_id,
-                updated.session_id,
-                receipt=receipt,
-                epoch=new_epoch,
-            )
-
-        try:
-            receipt = await ctx.flush_service.execute(
-                transcript,
-                key,
-                agent_id=agent_id,
-                timeout=30.0,
-                message_window=0,
-                segment_mode="auto",
-            )
-        except Exception as exc:  # noqa: BLE001
-            receipt = FlushReceipt(
-                mode="error",
-                flushed_paths=[],
-                slug=None,
-                message_count=len(transcript),
-                duration_ms=0,
-                raw_reason=None,
-                error=str(exc),
-            )
-            raise RpcHandlerError(
-                code="flush_disk_error",
-                message=f"Reset aborted: flush failed ({receipt.error})",
-                details=session_flush_error_details(key, previous_session_id, receipt),
-            ) from exc
-
-        if receipt.mode == "error":
-            raise RpcHandlerError(
-                code="flush_disk_error",
-                message=f"Reset aborted: flush failed ({receipt.error or 'unknown error'})",
-                details=session_flush_error_details(key, previous_session_id, receipt),
-            )
+        flush_attempt = await execute_lifecycle_flush(
+            "reset",
+            ctx.flush_service,
+            transcript,
+            key,
+            agent_id=agent_id,
+            session_id=previous_session_id,
+        )
+        if flush_attempt.failure is not None:
+            _raise_lifecycle_flush_failure(flush_attempt.failure)
 
         updated, rotated = await ctx.session_manager.apply_intent(key, SessionIntent.RESET_SAME_KEY)
         new_epoch = await increment_and_emit_epoch(ctx, storage, key)
@@ -284,7 +246,7 @@ async def handle_sessions_reset(
             rotated,
             previous_session_id,
             updated.session_id,
-            receipt=receipt,
+            receipt=flush_attempt.receipt,
             epoch=new_epoch,
         )
 
@@ -369,7 +331,7 @@ async def handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict:
     force = bool((params or {}).get("force", False))
 
     async def _run_locked() -> dict[str, Any]:
-        receipt: FlushReceipt | None = None
+        receipt: Any | None = None
         storage = get_session_storage(ctx.session_manager)
         session = None
         if storage is not None:
@@ -378,76 +340,33 @@ async def handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict:
 
         if ctx.flush_service is None:
             transcript = await ctx.session_manager.get_transcript(key)
-            if transcript and not force:
-                raise RpcHandlerError(
-                    code="flush_unavailable",
-                    message=(
-                        "Compact aborted: flush service is unavailable and "
-                        "the transcript is non-empty. Re-run with force=true "
-                        "(admin) to truncate without backup."
-                    ),
-                    details=session_flush_unavailable_details(
-                        key,
-                        previous_session_id,
-                        message_count=len(transcript),
-                    ),
-                )
-            if transcript and force and "operator.admin" not in ctx.principal.scopes:
-                raise RpcHandlerError(
-                    code="permission_denied",
-                    message="force=true on sessions.compact requires operator.admin scope.",
-                    details=session_permission_denied_details(key, previous_session_id),
-                )
+            failure = unavailable_flush_failure_for_transcript(
+                "compact",
+                key,
+                previous_session_id,
+                transcript,
+                force=force,
+                principal_scopes=ctx.principal.scopes,
+            )
+            if failure is not None:
+                _raise_lifecycle_flush_failure(failure)
         else:
             storage = require_session_storage(ctx.session_manager)
             session = await require_existing_session(storage, key)
             previous_session_id = getattr(session, "session_id", None)
             agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
             transcript = await ctx.session_manager.get_transcript(key)
-            if transcript:
-                try:
-                    receipt = await ctx.flush_service.execute(
-                        transcript,
-                        key,
-                        agent_id=agent_id,
-                        timeout=30.0,
-                        message_window=0,
-                        segment_mode="auto",
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    receipt = FlushReceipt(
-                        mode="error",
-                        flushed_paths=[],
-                        slug=None,
-                        message_count=len(transcript),
-                        duration_ms=0,
-                        raw_reason=None,
-                        error=str(exc),
-                    )
-                    raise RpcHandlerError(
-                        code="flush_disk_error",
-                        message=f"Compact aborted: flush failed ({receipt.error})",
-                        details=session_flush_error_details(key, previous_session_id, receipt),
-                    ) from exc
-
-                if receipt.mode == "error":
-                    raise RpcHandlerError(
-                        code="flush_disk_error",
-                        message=(
-                            f"Compact aborted: flush failed ({receipt.error or 'unknown error'})"
-                        ),
-                        details=session_flush_error_details(key, previous_session_id, receipt),
-                    )
-            else:
-                receipt = FlushReceipt(
-                    mode="skipped",
-                    flushed_paths=[],
-                    slug=None,
-                    message_count=0,
-                    duration_ms=0,
-                    raw_reason=None,
-                    error=None,
-                )
+            flush_attempt = await execute_lifecycle_flush(
+                "compact",
+                ctx.flush_service,
+                transcript,
+                key,
+                agent_id=agent_id,
+                session_id=previous_session_id,
+            )
+            if flush_attempt.failure is not None:
+                _raise_lifecycle_flush_failure(flush_attempt.failure)
+            receipt = flush_attempt.receipt
 
         result = await ctx.session_manager.truncate(key, max_messages=max_messages)
         return session_compact_response(key, result, receipt=receipt)

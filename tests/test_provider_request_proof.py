@@ -13,7 +13,10 @@ from opensquilla.provider.request_proof import (
 
 def test_provider_request_proof_allows_payload_within_budget() -> None:
     proof = prove_provider_payload(
-        {"messages": [{"role": "user", "content": "small"}]},
+        {
+            "messages": [{"role": "user", "content": "small"}],
+            "tools": [{"name": "tool", "description": "desc"}],
+        },
         projection_adapter="openai",
         proof_budget=10_000,
     )
@@ -21,6 +24,11 @@ def test_provider_request_proof_allows_payload_within_budget() -> None:
     assert proof["fits"] is True
     assert proof["projection_adapter"] == "openai"
     assert proof["estimated_chars"] < 10_000
+    assert proof["messages_chars"] > 0
+    assert proof["tools_chars"] > 0
+    assert proof["system_chars"] == 0
+    assert proof["top_level_chars"] == 0
+    assert proof["tool_schema_too_large"] is False
 
 
 def test_provider_request_proof_blocks_oversized_payload() -> None:
@@ -258,3 +266,30 @@ def test_provider_request_proof_reports_recent_tail_after_tail_compaction_fails(
     assert proof["fits"] is False
     assert proof["retry_count"] == 2
     assert proof["recent_tail_too_large"] is True
+
+
+def test_provider_request_proof_emergency_compacts_many_current_turn_tool_results() -> None:
+    payload = {
+        "messages": [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "research"},
+            *[
+                {"role": "tool", "tool_call_id": f"call_{index}", "content": "x" * 5000}
+                for index in range(80)
+            ],
+        ]
+    }
+
+    compacted, proof = prove_or_compact_provider_payload(
+        payload,
+        projection_adapter="openrouter",
+        proof_budget=96_000,
+        status_projection_mode="content_envelope",
+    )
+
+    assert proof is not None
+    assert proof["fits"] is True
+    assert proof["retry_count"] == 3
+    assert proof["emergency_current_turn_compacted"] is True
+    assert proof["recent_tail_too_large"] is False
+    assert compacted["messages"][2]["content"] != payload["messages"][2]["content"]

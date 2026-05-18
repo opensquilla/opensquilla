@@ -1,4 +1,4 @@
-"""Agent safety baseline (S-SAFETY).
+"""Agent safety baseline.
 
 Four modules form the public safety surface:
 
@@ -14,8 +14,7 @@ Four modules form the public safety surface:
   CPU/memory/wall/network limits via :mod:`resource`.
 
 Import order: modules are side-effect-free; importing this package is safe
-during engine/gateway boot. See ``docs/architecture/module-contracts.md``
-(``## safety``) for the full contract.
+during engine/gateway boot.
 """
 
 from __future__ import annotations

@@ -9,8 +9,7 @@ Two pure functions form the public surface:
   resource caps and the approval flag.
 
 Keeping both pure makes them trivial to unit-test and means the integration
-layer can call them without side effects. The active design is recorded in
-``docs/adr/006-sandbox-governance.md``.
+layer can call them without side effects.
 """
 
 from __future__ import annotations

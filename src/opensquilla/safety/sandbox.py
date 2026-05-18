@@ -81,8 +81,7 @@ def _preexec(limits: SandboxLimits):  # pragma: no cover — runs in child
             (limits.cpu_seconds, limits.cpu_seconds),
         )
         # Memory — RLIMIT_AS is the address-space cap. Not all platforms
-        # enforce this (macOS caveat documented in
-        # docs/architecture/execution-sandbox.md); we set it anyway.
+        # enforce this, but Unix backends set it when available.
         mem_bytes = limits.memory_mb * 1024 * 1024
         try:
             resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))

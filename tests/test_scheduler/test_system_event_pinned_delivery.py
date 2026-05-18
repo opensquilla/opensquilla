@@ -1,9 +1,8 @@
 """Main+systemEvent cron must pin heartbeat reply target via the resolver.
 
-Covers US-001 in the cron alignment PRD: _resolve_system_event_heartbeat_delivery_override
-was defined but never plumbed, so main-session reminders drifted to whichever channel
-had touched the main session last. These tests assert the resolver's mapping and that
-make_system_event_handler now forwards its result through to heartbeat run_once.
+Main-session reminders must not drift to whichever channel touched the session
+last. These tests assert the resolver's mapping and that make_system_event_handler
+forwards its result through to heartbeat run_once.
 """
 
 from __future__ import annotations

@@ -1,9 +1,8 @@
-"""tz must be reachable from user surfaces, not just internal APIs (US-002).
+"""tz must be reachable from user surfaces, not just internal APIs.
 
-Reviewer feedback: tz was wired through ops/engine/persistence but not
-exposed on the cron tool or the RPC layer, so it could not actually be
-set by a user. These tests assert it is reachable through both surfaces
-and round-trips on the RPC wire payload.
+tz is wired through ops/engine/persistence and must also be exposed on the cron
+tool and RPC layer. These tests assert it is reachable through both surfaces and
+round-trips on the RPC wire payload.
 """
 
 from __future__ import annotations

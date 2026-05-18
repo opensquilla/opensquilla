@@ -1,9 +1,8 @@
 """``opensquilla dist`` subcommand - emit workspace-state.json.
 
-S22 ships one artefact: a reproducible, versioned inventory of the current
-opensquilla install (bundled channels, bundled tools, gateway safety defaults,
-package + python-requires metadata). See ``docs/dist/workspace-state.md``
-for the schema and reproducibility + secret-hygiene contracts.
+Emits a reproducible, versioned inventory of the current opensquilla install:
+bundled channels, bundled tools, gateway safety defaults, package metadata, and
+the package's Python requirement.
 """
 
 from __future__ import annotations

@@ -1119,7 +1119,7 @@ async def build_services(
     # yoyo would operate on a separate in-memory connection from storage.
     # Migration failures propagate: code ships behind the migration, never
     # ahead of it — silently booting on an out-of-date schema is worse than
-    # failing loud. See docs/architecture/schema-migration.md.
+    # failing loud.
     if session_db_path != ":memory:":
         from opensquilla.persistence.migrator import apply_pending
 

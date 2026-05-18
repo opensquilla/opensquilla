@@ -174,9 +174,11 @@ def test_unavailable_source_no_change() -> None:
 
 
 def test_reconcile_skips_when_items_already_billed_and_sum_matches_row() -> None:
-    """Phase 8 Option D fast-path: when the tracker has filled in real
-    per-call billed costs for every item AND their sum already matches the
-    row total, the reconcile must do nothing — no rebadge to
+    """When billed items already sum to the row total, reconcile is a no-op.
+
+    If the tracker has filled in real per-call billed costs for every item and
+    their sum already matches the row total, the reconcile must do nothing: no
+    rebadge to
     'provider_billed_prorated', no value rewrite. Otherwise the UI would
     falsely show the "split is estimated" disclosure for sessions where the
     split is in fact the literal provider receipt.
@@ -227,10 +229,11 @@ def test_reconcile_still_prorates_when_mixed_items_drift_from_row() -> None:
 
 
 def test_reconcile_skips_mixed_breakdown_when_sum_already_matches_row() -> None:
-    """Phase 8 mixed-row Option D extension (Codex stop-time #2): when the
-    row uses SessionUsage.total_cost (billed where available, estimate
-    where not), the breakdown sum already equals the row total. The
-    fast-path must skip even though item sources are heterogeneous —
+    """Mixed-source breakdowns are no-ops when they already sum to the row.
+
+    When the row uses SessionUsage.total_cost (billed where available, estimate
+    where not), the breakdown sum already equals the row total. The fast-path
+    must skip even though item sources are heterogeneous —
     otherwise mixed rows get falsely rebadged as provider_billed_prorated.
     """
     row = _make_row(

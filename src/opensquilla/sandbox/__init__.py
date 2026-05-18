@@ -3,8 +3,6 @@
 Public surface for the sandbox subsystem. Importing this package is safe at
 startup: no subprocesses are spawned, no filesystem probing beyond an
 in-memory import of the backend modules.
-
-See ``docs/adr/006-sandbox-governance.md`` for the active decision record.
 """
 
 from __future__ import annotations

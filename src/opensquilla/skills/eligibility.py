@@ -96,7 +96,7 @@ def check_eligibility(spec: SkillSpec, ctx: EligibilityContext) -> bool:
 
 @dataclass
 class InstallHint:
-    """Display-only install command. Decoupled from hub/deps.py execution logic."""
+    """Display-only install command, decoupled from dependency execution logic."""
 
     kind: str  # "brew", "uv", "npm", "go", "download"
     label: str  # "Install himalaya (brew)"

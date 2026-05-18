@@ -1579,8 +1579,7 @@ class GatewayConfig(BaseSettings):
     # Sleeping browsers commonly stop sending pings; without this knob the
     # server retains half-open connections after suspend.
     client_ws_keepalive_timeout_s: float = 120.0
-    # WebSocket per-connection outbound writer queue (Principle 2 in
-    # docs/plans/ws-writer-queue.md). When enabled, every connection gets a
+    # WebSocket per-connection outbound writer queue. When enabled, every connection gets a
     # bounded asyncio.Queue + dedicated writer task; producers enqueue and
     # return immediately. Slow clients trigger a fast 1011 close instead of
     # back-pressuring the turn pipeline. Kill switch is read at connection
@@ -1785,7 +1784,7 @@ class GatewayConfig(BaseSettings):
     def load(cls, config_path: str | Path | None = None) -> GatewayConfig:
         """Auto-discover and load config.
 
-        Precedence: explicit path > cwd/opensquilla.toml > ~/.opensquilla/config.toml > defaults.
+        Precedence: explicit path > current-directory config > user config > defaults.
         Environment variables always override TOML values (Pydantic Settings behavior).
         """
         import tomllib

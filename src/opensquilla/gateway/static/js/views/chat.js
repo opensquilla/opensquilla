@@ -1825,8 +1825,7 @@ const ChatView = (() => {
       }
     });
 
-    // Document-level ESC: works regardless of focus. Priority chain mirrors
-    // claude-code-rebuilt useCancelRequest:
+    // Document-level ESC: works regardless of focus. Priority chain:
     //   1. streaming  → _onStop (which also recovers pending)
     //   2. pending    → _popAllPendingIntoComposer
     //   3. otherwise drop through to the textarea handler / popovers / no-op
@@ -4286,7 +4285,7 @@ const ChatView = (() => {
   }
 
   // Recover the entire pending queue back into the composer for editing.
-  // Modeled on claude-code-rebuilt's popAllEditable: queued texts join the
+  // Queued texts join the
   // current textarea content with newlines (FIFO), attachments stack into
   // _pendingAttachments, and the queue is cleared. The caller decides
   // whether to send — recovery never auto-fires. Returns true when the

@@ -12,9 +12,7 @@ The signal-handlers module owns two pieces of behavior:
       Ctrl-Z UX still works.
 
 Both signals are Unix-only; Windows lacks ``signal.SIGWINCH`` and
-``signal.SIGTSTP`` entirely. Per the platform contract in
-``.omc/plans/concurrent-repl.md`` automated Windows pty coverage is
-deferred — Windows is manual-QA only.
+``signal.SIGTSTP`` entirely, so automated pty coverage is Unix-only.
 
 The tests below are designed to NEVER actually suspend the pytest
 process: the SIGTSTP gate exposes branch counters that tests observe

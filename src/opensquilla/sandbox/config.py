@@ -8,8 +8,7 @@ to attach a :class:`SandboxSettings` submodel in a later integration step.
 The four-way truth table for the two feature switches is implemented in
 :meth:`SandboxSettings.validate_combination`, which returns an
 :class:`EffectiveMode` instead of mutating silently. The caller decides
-whether to log a warning or abort. The active behaviour contract is recorded
-in ``docs/adr/006-sandbox-governance.md``.
+whether to log a warning or abort.
 """
 
 from __future__ import annotations

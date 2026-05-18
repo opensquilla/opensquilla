@@ -19,9 +19,8 @@ class ModelUsage:
     # Provider-billed cost accumulated across every raw provider call attributed
     # to this model. New field appended at the end so existing positional
     # callers (ModelUsage(model_id, in, out)) continue to align. When > 0 the
-    # model_breakdown serializer prefers this over the pricing-table estimate
-    # below, eliminating the cache-discount drift that drove the Phase 5
-    # pro-rate workaround in rpc_usage.py.
+    # model_breakdown serializer prefers this over the pricing-table estimate,
+    # avoiding cache-discount drift in the per-model split.
     billed_cost: float = 0.0
 
     @property
@@ -91,8 +90,8 @@ class SessionUsage:
 
         - ``provider_billed``: every per-model entry has a real billed total.
         - ``mixed``: some models billed, others estimate-only.
-        - ``opensquilla_estimate``: no billed data at all (pre-Option D path,
-          or provider returned no cost for any call).
+        - ``opensquilla_estimate``: no billed data at all, or provider returned
+          no cost for any call.
         """
         if not self._per_model:
             return "opensquilla_estimate"
@@ -148,8 +147,7 @@ class SessionUsage:
 
         Prefer the real provider-billed cost when present; otherwise fall back
         to the local pricing-table estimate. This is what lets the WebUI show
-        per-model values that actually sum to the row total without the
-        Phase 5 pro-rate dance.
+        per-model values that actually sum to the row total without prorating.
         """
         billed = float(getattr(mu_or_self, "billed_cost", 0.0) or 0.0)
         estimate = float(mu_or_self.cost or 0.0)

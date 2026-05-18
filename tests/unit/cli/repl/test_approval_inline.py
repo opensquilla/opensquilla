@@ -330,7 +330,7 @@ def test_stream_py_has_no_live_constructor() -> None:
 
 
 def test_prompt_approval_inline_uses_in_terminal_not_suspend_to_background() -> None:
-    """Regression for the Codex review finding: the approval flow MUST use
+    """Regression guard: the approval flow MUST use
     ``prompt_toolkit.application.run_in_terminal.in_terminal`` to scope the
     outer-Application suspension to the body of the approval prompt.
 
@@ -353,7 +353,7 @@ def test_prompt_approval_inline_uses_in_terminal_not_suspend_to_background() -> 
 
 
 # --------------------------------------------------------------------------- #
-# Codex finding #2 — surface plumbing through `prompt_approval`               #
+# Surface plumbing through `prompt_approval`                                  #
 # --------------------------------------------------------------------------- #
 
 

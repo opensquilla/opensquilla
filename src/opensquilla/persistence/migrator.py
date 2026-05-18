@@ -1,8 +1,7 @@
 """Schema migrator — thin wrapper over yoyo-migrations.
 
-See ADR.md line 48 for the alembic rejection rationale and
-`docs/architecture/schema-migration.md` for the per-version up/down policy
-and boot-time run order.
+Each migration module owns its versioned up/down policy; gateway boot applies
+pending migrations before code paths depend on the new schema.
 """
 
 from __future__ import annotations

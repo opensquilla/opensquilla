@@ -32,7 +32,6 @@ Secret-hygiene contract
 No value in the payload is derived from ``os.environ`` or any file outside
 this module and the installed package's metadata. No key whose name
 matches ``*_key`` / ``*_token`` / ``*_secret`` appears in the schema.
-See ``docs/dist/workspace-state.md`` for the full contract.
 """
 
 from __future__ import annotations

@@ -60,8 +60,9 @@ def test_usage_view_recognises_prorated_source() -> None:
 
 
 def test_usage_expand_row_renders_cost_source_badge() -> None:
-    """Per-model expand rows must surface a Source badge (Codex stop-time review
-    flagged that pro-rated source was invisible without a per-row badge).
+    """Per-model expand rows must surface a Source badge.
+
+    Without a per-row badge, the pro-rated source is invisible to the user.
     Without this assertion a regression could re-hide the per-model source by
     accidentally removing the cell.
     """

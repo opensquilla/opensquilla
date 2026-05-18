@@ -457,10 +457,8 @@ def _build_callback_handler_class() -> type:
 
         def process(self, callback_message: Any) -> Any:  # type: ignore[override]
             """SDK contract: ``AsyncChatbotHandler.raw_process`` submits this
-            method to a ``ThreadPoolExecutor`` (see
-            ``dingtalk_stream/chatbot.py:829-836``) and never awaits it.
-            The method MUST therefore be sync — the SDK source explicitly
-            says ``不要用 async 修饰`` ("do not decorate with async").
+            method to a ``ThreadPoolExecutor`` and never awaits it.
+            The method MUST therefore be sync.
             We hop back to the channel's event loop via
             ``call_soon_threadsafe`` to deliver the parsed message into
             the asyncio queue safely from the worker thread.

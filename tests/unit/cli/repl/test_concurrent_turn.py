@@ -1103,7 +1103,7 @@ async def test_pending_queue_caps_at_max_size(monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Codex finding #3 — promote-and-race drain (preemptible queued turns)        #
+# Promote-and-race drain (preemptible queued turns)                           #
 # --------------------------------------------------------------------------- #
 
 

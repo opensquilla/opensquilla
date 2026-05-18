@@ -1,7 +1,7 @@
 """RPC method registry and dispatcher.
 
-Historically every gateway RPC handler registered against the module-level
-``_dispatcher`` singleton in ``gateway/rpc.py``. That singleton is now a
+Historically every gateway RPC handler registered against a module-level
+``_dispatcher`` singleton. That singleton is now a
 first-class :class:`RpcRegistry` living in this module so the set of
 method names is discoverable, testable, and mockable without import
 side-effects.

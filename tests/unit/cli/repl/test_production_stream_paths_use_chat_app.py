@@ -1,4 +1,4 @@
-"""Codex finding #1 — production stream paths must thread ``chat_app``.
+"""Production stream paths must thread ``chat_app``.
 
 Both ``_stream_response_gateway`` and ``_stream_response_turnrunner`` are the
 real REPL stream renderers. Before this fix, they constructed

@@ -35,7 +35,7 @@ def _default_taps_path() -> Path:
 def _migrate_legacy_taps(new_path: Path) -> Path:
     """Return the taps path to use, migrating the legacy file when possible.
 
-    Happy path: relocates ``$STATE/skills/taps.json`` to ``new_path`` via
+    Happy path: relocates the legacy state tap file to ``new_path`` via
     :func:`os.replace` (atomic on POSIX) and returns ``new_path``.
 
     Failure fallback: when the rename fails (read-only filesystem, permission

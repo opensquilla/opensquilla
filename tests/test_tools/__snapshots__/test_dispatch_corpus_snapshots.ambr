@@ -427,3 +427,26 @@
     'is_error': True,
   })
 # ---
+# name: test_dispatch_corpus_snapshot[unparsed_raw_arguments_rejected]
+  dict({
+    'artifact_count': 0,
+    'content': dict({
+      'error_class': 'InvalidToolArgumentsError',
+      'retry_allowed': False,
+      'status': 'error',
+      'tool': 'simple_tool',
+      'user_message': 'The tool call arguments were not valid JSON. Reissue the tool call with valid JSON that matches the tool schema.',
+    }),
+    'execution_status': dict({
+      'exit_code': None,
+      'preservation_class': 'diagnostic',
+      'reason': 'runtime_error',
+      'source': 'tool_runtime',
+      'status': 'error',
+      'timed_out': False,
+      'truncated': False,
+      'version': 1,
+    }),
+    'is_error': True,
+  })
+# ---

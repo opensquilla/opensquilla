@@ -12,9 +12,12 @@ from opensquilla.provider.types import (
     ChatConfig,
     ContentBlockImage,
     ContentBlockText,
+    ContentBlockToolResult,
     DoneEvent,
     ErrorEvent,
     Message,
+    ToolDefinition,
+    ToolInputSchema,
 )
 
 
@@ -249,3 +252,180 @@ def test_anthropic_final_request_proof_allows_native_image_payload(
         "media_type": "image/png",
         "data": "a" * 5000,
     }
+
+
+def _large_schema_tool() -> ToolDefinition:
+    return ToolDefinition(
+        name="large_schema_tool",
+        description="Tool with enough schema text to prove final adapter payload accounting.",
+        input_schema=ToolInputSchema(
+            properties={
+                "payload": {
+                    "type": "string",
+                    "description": "schema details " * 120,
+                }
+            },
+            required=["payload"],
+        ),
+    )
+
+
+def test_openai_final_request_proof_compacts_adapter_payload_with_tools(
+    monkeypatch: Any,
+) -> None:
+    requests: list[httpx.Request] = []
+    payloads: list[dict[str, Any]] = []
+    proofs: list[dict[str, Any]] = []
+    budget = 3600
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_openai_sse_body(),
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    monkeypatch.setattr(
+        "opensquilla.provider.openai.log.info",
+        lambda event, **kwargs: (
+            proofs.append(kwargs) if event == "provider.request_proof" else None
+        ),
+    )
+    provider = OpenAIProvider(api_key="test", model="gpt-test")
+    messages = [
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="call_1",
+                    content="tool output " * 500,
+                )
+            ],
+        )
+    ]
+
+    async def run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                messages,
+                tools=[_large_schema_tool()],
+                config=ChatConfig(
+                    system="system prompt " * 20,
+                    provider_request_max_chars=budget,
+                ),
+            )
+        ]
+
+    events = asyncio.run(run())
+
+    assert len(requests) == 1
+    assert any(isinstance(event, DoneEvent) for event in events)
+    assert len(requests[0].content) <= budget
+    assert any(
+        "provider_request" in message.get("content", "")
+        for message in payloads[0]["messages"]
+    )
+    proof = proofs[-1]
+    assert proof["fits"] is True
+    assert proof["retry_count"] >= 1
+    assert proof["messages_chars"] > 0
+    assert proof["tools_chars"] > 0
+    assert proof["system_chars"] > 0
+    assert proof["top_level_chars"] > 0
+
+
+def test_anthropic_final_request_proof_compacts_adapter_payload_with_tools(
+    monkeypatch: Any,
+) -> None:
+    requests: list[httpx.Request] = []
+    payloads: list[dict[str, Any]] = []
+    proofs: list[dict[str, Any]] = []
+    budget = 3600
+    body = _anthropic_sse_body(
+        [
+            {
+                "type": "message_start",
+                "message": {"id": "msg_1", "model": "claude-test", "usage": {}},
+            },
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "ok"},
+            },
+            {"type": "message_delta", "usage": {"output_tokens": 1}},
+            {"type": "message_stop"},
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body,
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.anthropic.httpx.AsyncClient", patched_async_client)
+    monkeypatch.setattr(
+        "opensquilla.provider.anthropic.log.info",
+        lambda event, **kwargs: (
+            proofs.append(kwargs) if event == "provider.request_proof" else None
+        ),
+    )
+    provider = AnthropicProvider(api_key="test", model="claude-test")
+    messages = [
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="call_1",
+                    content="tool output " * 500,
+                )
+            ],
+        )
+    ]
+
+    async def run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                messages,
+                tools=[_large_schema_tool()],
+                config=ChatConfig(
+                    system="system prompt " * 20,
+                    provider_request_max_chars=budget,
+                ),
+            )
+        ]
+
+    events = asyncio.run(run())
+
+    assert len(requests) == 1
+    assert any(isinstance(event, DoneEvent) for event in events)
+    assert len(requests[0].content) <= budget
+    assert "provider_request" in payloads[0]["messages"][0]["content"][0]["content"]
+    proof = proofs[-1]
+    assert proof["fits"] is True
+    assert proof["retry_count"] >= 1
+    assert proof["messages_chars"] > 0
+    assert proof["tools_chars"] > 0
+    assert proof["system_chars"] > 0
+    assert proof["top_level_chars"] > 0

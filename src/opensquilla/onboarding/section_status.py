@@ -36,7 +36,7 @@ from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
 class SectionStatus(StrEnum):
     """Readiness state of one onboarding section.
 
-    The naming mirrors the codex advisory: ``MISSING`` for unfinished setup,
+    The naming is user-facing: ``MISSING`` for unfinished setup,
     ``DEGRADED`` for "user told us to use an env var that isn't set right now",
     ``OPTIONAL`` for sections the user intentionally opted out of,
     ``UNKNOWN`` for verifier-side lookup failures. ``StrEnum`` keeps the values

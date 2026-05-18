@@ -501,6 +501,44 @@ async def test_outer_stage_injects_partial_failure_disclosure_before_done() -> N
 
 
 @pytest.mark.asyncio
+async def test_outer_stage_disclosure_summarizes_current_turn_exhaustion() -> None:
+    agent_run = _RecordingAgentRun(events=[DoneEvent(text="Parent synthesis.")])
+    stage, _ = _make_stage(agent_run=agent_run)
+    inp = _make_input(
+        input_provenance={
+            "kind": "internal_system",
+            "runtime_partial_failure_disclosure_required": True,
+            "subagent_group_outcome": {
+                "total": 2,
+                "succeeded": 1,
+                "failed": 1,
+                "non_success": 1,
+                "failed_children": [
+                    {
+                        "child_session_key": "agent:main:subagent:failed",
+                        "status": "failed",
+                        "terminal_reason": "error",
+                        "error_class": "current_turn_context_exhausted",
+                        "error_message": (
+                            "Context overflow is in the current turn's recent tool calls "
+                            "or reasoning tail; history compaction cannot reduce it."
+                        ),
+                    }
+                ],
+            },
+        }
+    )
+
+    yielded = await _drain(stage, inp)
+
+    disclosure = yielded[0]
+    assert isinstance(disclosure, TextDeltaEvent)
+    assert "Subagents: 1/2 succeeded" in disclosure.text
+    assert "current_turn_context_exhausted" in disclosure.text
+    assert "history compaction cannot reduce it" not in disclosure.text
+
+
+@pytest.mark.asyncio
 async def test_outer_stage_injects_disclosure_for_all_failed_group() -> None:
     agent_run = _RecordingAgentRun(events=[DoneEvent(text="No usable result.")])
     stage, _ = _make_stage(agent_run=agent_run)

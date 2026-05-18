@@ -1,8 +1,7 @@
 """Channel → tool permission matrix.
 
-Public surface: :func:`is_tool_allowed`. See
-``docs/architecture/tool-permission-matrix.md`` for the default matrix
-and override semantics.
+Public surface: :func:`is_tool_allowed`, with the default matrix and override
+semantics kept in this module.
 
 Default policy:
 

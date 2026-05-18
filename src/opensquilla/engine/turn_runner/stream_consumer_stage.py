@@ -607,6 +607,10 @@ def _format_subagent_failure_children(value: Any) -> str:
 def _format_subagent_failure_error(child: dict[str, Any]) -> str:
     error_class = _first_text(child.get("error_class"), default="")
     error_message = _first_text(child.get("error_message"), default="")
+    if error_class == "current_turn_context_exhausted":
+        return error_class
+    if error_message and len(error_message) > 160:
+        error_message = f"{error_message[:157]}..."
     if error_class and error_message:
         return f"{error_class}: {error_message}"
     return error_message or error_class

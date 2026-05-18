@@ -1,7 +1,7 @@
 """Pin the agent → usage_tracker billed_cost forwarding contract.
 
-Phase 8 / Option D step 2: when the Agent loop receives a
-``ProviderDoneEvent`` with a real ``billed_cost`` from the provider, it
+When the Agent loop receives a ``ProviderDoneEvent`` with a real
+``billed_cost`` from the provider, it
 must call ``UsageTracker.add(..., billed_cost=...)`` so the per-model
 breakdown can surface the actual provider-billed cost (instead of the
 cache-blind pricing-table estimate).

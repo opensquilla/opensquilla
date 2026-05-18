@@ -213,6 +213,29 @@ async def test_group_payloads_enrich_non_current_children_from_task_ledger() -> 
     assert "error_message=boom" in wake_message
 
 
+def test_parent_wake_bounds_aggregate_subagent_output() -> None:
+    payloads = []
+    for index in range(5):
+        payloads.append(
+            {
+                "child_session_key": f"agent:worker:subagent:{index}",
+                "task_id": f"task-{index}",
+                "agent_id": f"worker-{index}",
+                "status": "succeeded",
+                "terminal_reason": "completed",
+                "result": {"text": f"result-{index}-" + ("x" * 12_000)},
+            }
+        )
+
+    wake_message = _format_parent_wake_message(PARENT_TASK, payloads)
+
+    assert len(wake_message) < 20_000
+    assert wake_message.count("<untrusted_subagent_result>") == 5
+    assert "[subagent result truncated" in wake_message
+    assert "child_session_key=agent:worker:subagent:4" in wake_message
+    assert "task_id=task-4" in wake_message
+
+
 def test_group_outcome_summary_counts_and_bounds_non_success_children() -> None:
     long_error = "boom-" * 200
     payloads = [

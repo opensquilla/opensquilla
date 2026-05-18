@@ -173,8 +173,8 @@ def _tracker_rows(ctx: RpcContext, *, now_ms: int) -> list[dict[str, Any]]:
             cache_write_tokens=getattr(usage, "cache_write_tokens", 0) or 0,
             ephemeral=True,
         )
-        # Option D: read aggregate billed/cost_source from SessionUsage so the
-        # row matches the per-model breakdown items. Without this, a
+        # Read aggregate billed/cost_source from SessionUsage so the row
+        # matches the per-model breakdown items. Without this, a
         # tracker-only row would always show cost_source=opensquilla_estimate
         # while individual breakdown chips could be provider_billed — a
         # visible self-contradiction in the UI ("row says estimated but
@@ -222,13 +222,12 @@ _BILLED_COST_SOURCES = frozenset({"provider_billed", "mixed"})
 def _reconcile_breakdown_to_row(row: dict[str, Any]) -> None:
     """Make per-model breakdown costs sum to the row's displayed total.
 
-    **Fallback path** (Phase 8 / Option D): when the in-memory tracker
-    has captured real per-call ``billed_cost`` per model (commit 80490d1
-    + 2065a45), the breakdown items already carry actual provider-billed
+    **Fallback path**: when the in-memory tracker has captured real per-call
+    ``billed_cost`` per model, the breakdown items already carry provider-billed
     figures and their sum already equals ``row.cost_usd`` by construction
     (since the row's ``billed_cost_usd`` and the per-model billed totals
     are accumulated from the same ``ProviderDoneEvent.billed_cost`` source
-    in ``agent.py:1068``). In that case this function is a no-op — see
+    values). In that case this function is a no-op — see
     the early-return guard below.
 
     The pro-rate path below remains for **disk-loaded sessions**: after a
@@ -252,7 +251,7 @@ def _reconcile_breakdown_to_row(row: dict[str, Any]) -> None:
     - row is estimate-only (sums equal by construction);
     - row cost is 0 (no billed total to spread);
     - **all items already carry ``provider_billed`` and their sum matches the
-      row total within 0.001 (Option D fast-path)**.
+      row total within 0.001**.
     """
     breakdown = row.get("modelBreakdown")
     if not isinstance(breakdown, list) or len(breakdown) <= 1:
@@ -267,15 +266,14 @@ def _reconcile_breakdown_to_row(row: dict[str, Any]) -> None:
     def _item_cost(item: Mapping[str, Any]) -> float:
         return float(item.get("costUsd") or item.get("cost_usd") or 0.0)
 
-    # Option D fast-path: pro-rate exists to correct drift between row.cost_usd
-    # and the breakdown sum. If they already agree within 1/10th of a cent,
-    # there is no drift to correct — no matter the per-item source. This
-    # covers two cases:
+    # Pro-rating exists only to correct drift between row.cost_usd and the
+    # breakdown sum. If they already agree within 1/10th of a cent, there is no
+    # drift to correct — no matter the per-item source. This covers two cases:
     #   - Pure billed: every item is provider_billed and matches by construction.
-    #   - Mixed (Option D extension): some items provider_billed, others
-    #     opensquilla_estimate; row uses SessionUsage.total_cost which sums
-    #     billed-where-available plus estimate-where-not, so the breakdown
-    #     sum matches and rebadging would be misleading.
+    #   - Mixed: some items provider_billed, others opensquilla_estimate; row
+    #     uses SessionUsage.total_cost which sums billed-where-available plus
+    #     estimate-where-not, so the breakdown sum matches and rebadging would
+    #     be misleading.
     # Without this guard, mixed rows would falsely rebadge every item as
     # ``provider_billed_prorated`` and trigger the "split is estimated"
     # disclosure even though each item's individual source is already the

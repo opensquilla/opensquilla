@@ -257,7 +257,6 @@ class SubagentManager:
         Retained as a graceful-shutdown barrier even without a live caller:
         teardown paths need an awaitable "all running subagents settled"
         primitive rather than each one open-coding ``asyncio.wait``.
-        See ``docs/architecture/module-contracts.md::engine``.
         """
         tasks = [h.task for h in self.registry.all_handles() if h.status == "running"]
         if not tasks:

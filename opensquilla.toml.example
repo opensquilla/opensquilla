@@ -259,7 +259,7 @@ enabled = true
 # timeout_seconds = 30.0
 
 [sandbox]
-# Per-command ephemeral sandbox + security grading (see docs/adr/006-sandbox-governance.md).
+# Per-command ephemeral sandbox + security grading.
 #
 #  sandbox           on  -> processes run under namespace/profile isolation
 #                    off -> host execution is allowed (logs a WARNING per run)

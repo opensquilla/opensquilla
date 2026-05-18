@@ -185,7 +185,7 @@ class GitHubSource(SkillSource):
             repo = item.get("repository", {})
             full_name = repo.get("full_name", "")
             path = item.get("path", "")
-            # Extract skill name from path (e.g. "skills/apple-notes/SKILL.md" → "apple-notes")
+            # Extract the skill name from the parent directory of a SKILL.md path.
             parts = path.rsplit("/", 2)
             skill_name = parts[-2] if len(parts) >= 2 else full_name
 

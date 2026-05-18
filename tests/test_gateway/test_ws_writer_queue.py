@@ -1,15 +1,14 @@
 """Per-connection WebSocket writer queue tests.
 
-Covers acceptance criteria for stories US-002..US-006 plus the
-Principle 2 mechanical invariant (US-007 §U-1).
+Covers the per-connection writer queue invariants for outbound ordering,
+backpressure, and terminal cleanup.
 
 Categories:
-    - Unit (U-1..U-9): direct WsConnection behavior with a fake socket.
-    - Observability (O-1..O-3): structured-log assertions via
+    - Unit: direct WsConnection behavior with a fake socket.
+    - Observability: structured-log assertions via
       structlog.testing.capture_logs.
-    - Integration (I-3): writer task lifecycle on disconnect-equivalent.
+    - Integration: writer task lifecycle on disconnect-equivalent.
 
-Companion plan: ``.omc/plans/ws-writer-queue.md``.
 """
 from __future__ import annotations
 
@@ -76,7 +75,7 @@ async def _flush_writer(conn: WsConnection, *, deadline: float = 1.0) -> None:
 
 
 # ---------------------------------------------------------------------------
-# U-5: seq is minted at dequeue and is strictly monotonic + contiguous.
+# seq is minted at dequeue and is strictly monotonic + contiguous.
 # ---------------------------------------------------------------------------
 
 
@@ -96,7 +95,7 @@ async def test_seq_minted_at_dequeue_is_monotonic_and_contiguous() -> None:
 
 
 # ---------------------------------------------------------------------------
-# U-3 + O-1: lossy drop emits gateway.ws_writer_drop log with full field set.
+# lossy drop emits gateway.ws_writer_drop log with full field set.
 # ---------------------------------------------------------------------------
 
 
@@ -104,7 +103,7 @@ async def test_seq_minted_at_dequeue_is_monotonic_and_contiguous() -> None:
 async def test_lossy_drop_log_has_full_field_set_for_tick() -> None:
     """Tick is the only LOSSY event. Its payload has no session_key / stream_seq.
 
-    Asserts U-3, U-9, O-1: the drop log fields are present and null-safe.
+    Asserts the drop log fields are present and null-safe.
     Strategy: maxsize=4, push 5 ticks synchronously (no yield) so the writer
     hasn't dequeued anything yet → 5th push hits QueueFull → eviction.
     """
@@ -144,7 +143,7 @@ async def test_lossy_drop_log_has_full_field_set_for_tick() -> None:
 
 
 # ---------------------------------------------------------------------------
-# U-4 + O-2: CONTROL overflow triggers force-close 1011 with overflow_close log.
+# CONTROL overflow triggers force-close 1011 with overflow_close log.
 # ---------------------------------------------------------------------------
 
 
@@ -200,7 +199,7 @@ async def test_control_overflow_triggers_force_close_with_overflow_log() -> None
 
 
 # ---------------------------------------------------------------------------
-# U-2 + O-3: writer cancel during blocked send completes within bounded budget.
+# writer cancel during blocked send completes within bounded budget.
 # ---------------------------------------------------------------------------
 
 
@@ -235,11 +234,10 @@ class _ShieldedFakeWebSocket(_FakeWebSocket):
 
 @pytest.mark.asyncio
 async def test_writer_cancel_during_blocked_send_within_budget() -> None:
-    """U-2: when ws.send_text is genuinely wedged (cancel cannot propagate),
+    """When ws.send_text is genuinely wedged (cancel cannot propagate),
     ``_force_close`` still completes within ~3s due to wait_for(2.0).
 
-    O-3: gateway.ws_writer_force_close_timeout log is emitted with conn_id
-    and reason.
+    gateway.ws_writer_force_close_timeout is emitted with conn_id and reason.
     """
     fake = _ShieldedFakeWebSocket()
     conn = WsConnection(conn_id="cx-stuck", ws=fake)  # type: ignore[arg-type]
@@ -274,7 +272,7 @@ async def test_writer_cancel_during_blocked_send_within_budget() -> None:
 
 
 # ---------------------------------------------------------------------------
-# U-6: kill switch disabled → no writer task, legacy direct-send used.
+# kill switch disabled -> no writer task, legacy direct-send used.
 # ---------------------------------------------------------------------------
 
 
@@ -296,7 +294,7 @@ async def test_kill_switch_disabled_uses_legacy_direct_send() -> None:
 
 
 # ---------------------------------------------------------------------------
-# U-7: pre-auth direct-send (writer not started) uses legacy path.
+# pre-auth direct-send (writer not started) uses legacy path.
 # ---------------------------------------------------------------------------
 
 
@@ -318,7 +316,7 @@ async def test_pre_auth_direct_send_when_writer_not_started() -> None:
 
 
 # ---------------------------------------------------------------------------
-# U-8: same-kind eviction for tick (replaces oldest tick, not other event).
+# same-kind eviction for tick (replaces oldest tick, not other event).
 # ---------------------------------------------------------------------------
 
 
@@ -375,7 +373,7 @@ async def test_same_kind_eviction_only_drops_same_kind() -> None:
 
 
 # ---------------------------------------------------------------------------
-# U-9: drop log null-safe extraction for tick payload missing fields.
+# drop log null-safe extraction for tick payload missing fields.
 # ---------------------------------------------------------------------------
 
 
@@ -411,19 +409,20 @@ async def test_drop_log_null_safe_for_tick_payload() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sanity: _LOSSY_EVENTS is exactly {"tick"} (Principle 2 invariant).
+# Sanity: _LOSSY_EVENTS is exactly {"tick"}.
 # ---------------------------------------------------------------------------
 
 
 def test_lossy_events_is_only_tick() -> None:
-    """The lossy set MUST be exactly {tick} — any change to this set without
-    verifying the upstream record() invariant violates Principle 2.
+    """The lossy set MUST be exactly {tick}.
+
+    Any change to this set must preserve the upstream record() invariant.
     """
     assert _LOSSY_EVENTS == frozenset({"tick"})
 
 
 # ---------------------------------------------------------------------------
-# I-3: stop_writer is idempotent and cleans up on disconnect-equivalent.
+# stop_writer is idempotent and cleans up on disconnect-equivalent.
 # ---------------------------------------------------------------------------
 
 
@@ -454,7 +453,7 @@ def test_sentinel_stop_is_exported() -> None:
 
 
 # ---------------------------------------------------------------------------
-# U-1 (Principle 2 mechanical): server-emitted text_delta payloads are
+# server-emitted text_delta payloads are
 # preserved end-to-end across a force_close + reconnect+replay cycle.
 #
 # We don't run a real WS server here. Instead we verify the property
@@ -471,11 +470,11 @@ def test_sentinel_stop_is_exported() -> None:
 
 
 @pytest.mark.asyncio
-async def test_principle2_invariant_text_delta_is_control_not_lossy() -> None:
-    """Mechanical Principle 2: text_delta is CONTROL, so it is never silently
-    dropped. The only LOSSY event is tick. This test guards against any
-    future change to ``_LOSSY_EVENTS`` that would re-introduce silent text
-    truncation.
+async def test_text_delta_is_control_not_lossy() -> None:
+    """text_delta is CONTROL, so it is never silently dropped.
+
+    The only LOSSY event is tick. This test guards against any future change to
+    ``_LOSSY_EVENTS`` that would re-introduce silent text truncation.
     """
     # text_delta MUST NOT be lossy.
     assert "session.event.text_delta" not in _LOSSY_EVENTS

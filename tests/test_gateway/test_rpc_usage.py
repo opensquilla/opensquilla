@@ -55,11 +55,11 @@ def test_usage_status_tracker_only_path_surfaces_cache_totals() -> None:
 
 
 def test_usage_status_tracker_row_source_matches_breakdown_when_billed() -> None:
-    """Phase 8 Option D consistency guard (Codex stop-time finding):
-    when the tracker has real per-call billed_cost data, the tracker-only
-    row's cost_source must NOT be hard-coded as 'opensquilla_estimate'
-    while the per-model breakdown items show 'provider_billed' — that
-    self-contradiction confused users into questioning the dashboard."""
+    """Tracker rows with real billed data must match breakdown cost sources.
+
+    A tracker-only row must not claim ``opensquilla_estimate`` while each
+    per-model breakdown item reports ``provider_billed``.
+    """
     tracker = UsageTracker()
     tracker.add(
         "agent:webchat:billed",
@@ -124,10 +124,9 @@ def test_usage_status_tracker_row_source_mixed_when_some_models_unbilled() -> No
     assert row["costSource"] == "mixed"
     # billed_cost_usd reflects only the truly billed portion.
     assert row["billedCostUsd"] == 0.05
-    # KEY INVARIANT (Codex stop-time finding): row.cost_usd == sum of
-    # breakdown costs — i.e. billed (for billed models) + estimate
-    # (for unbilled models). Previously set to billed_cost only, which
-    # under-reported by the unbilled portion.
+    # Key invariant: row.cost_usd == sum of breakdown costs, i.e. billed
+    # (for billed models) + estimate (for unbilled models). Setting this to
+    # billed_cost only under-reports by the unbilled portion.
     breakdown_sum = sum(item["costUsd"] for item in row["modelBreakdown"])
     assert row["costUsd"] == breakdown_sum
     # And the unbilled model contributed a non-zero estimate.

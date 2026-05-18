@@ -811,9 +811,9 @@ def _quiet_logs_for_interactive_chat() -> None:
     logging.getLogger().setLevel(level)
     # ``jieba`` (CJK tokenizer, used by the memory layer) installs its own
     # ``StreamHandler`` on ``default_logger`` and calls ``setLevel(DEBUG)``
-    # inside ``jieba/__init__.py``. A pre-import ``setLevel`` would be
-    # overridden when jieba later imports; force the import here, then pin
-    # the level back down and detach the in-tree handler so the init
+    # during import. A pre-import ``setLevel`` would be overridden when jieba
+    # later imports; force the import here, then pin the level back down and detach
+    # the in-tree handler so the init
     # chatter ("Building prefix dict ...") cannot reach the TTY at all.
     try:
         import jieba  # noqa: F401, PLC0415

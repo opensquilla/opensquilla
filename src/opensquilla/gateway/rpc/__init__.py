@@ -1,7 +1,6 @@
 """Gateway RPC package.
 
-This package replaces the flat ``src/opensquilla/gateway/rpc.py`` module. The
-public import surface is preserved verbatim: every existing
+This package preserves the former flat RPC import surface verbatim: every existing
 
     from opensquilla.gateway.rpc import RpcContext, RpcDispatcher, get_dispatcher
 

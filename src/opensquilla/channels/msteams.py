@@ -8,9 +8,8 @@ Starlette request body into a ``botbuilder.schema.Activity`` first
 ``parse_request`` helper rejects raw Starlette ``Request`` objects.
 
 Outbound proactive sends use ``BotFrameworkAdapter.continue_conversation``
-keyed off persisted ``ConversationReference`` records (cached on disk
-under ``<workspace>/state/msteams/conversations.json`` with a
-``schema_version`` and auto-rebuild on mismatch).
+keyed off persisted ``ConversationReference`` records cached in gateway state
+with a ``schema_version`` and auto-rebuild on mismatch.
 
 Streaming edits use ``TurnContext.update_activity``; if the channel
 reports the operation as unsupported, the adapter falls back to

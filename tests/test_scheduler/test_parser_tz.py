@@ -1,4 +1,4 @@
-"""IANA timezone support for cron schedules (US-002).
+"""IANA timezone support for cron schedules.
 
 Covers the new ``CronJob.tz`` field + ``validate_tz`` + ``_next_run``'s
 wall-time-in-tz matching, and round-trip persistence of ``tz``.

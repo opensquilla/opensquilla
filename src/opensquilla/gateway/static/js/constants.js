@@ -2,8 +2,8 @@
  *
  * Loaded as a plain <script> via the index.html template, before any view code.
  * Exposes `window.SquillaConstants` as the single source of truth so values
- * like the CNY exchange rate don't drift across overview.js, usage.js, and
- * components/token-widget.js (which previously all hard-coded 7.25).
+ * like the CNY exchange rate don't drift across overview, usage, and token
+ * widget views.
  *
  * Add new constants conservatively: anything user-visible should live here
  * with a brief comment explaining provenance.

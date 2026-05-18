@@ -30,6 +30,10 @@ from opensquilla.provider import ErrorEvent as ProviderError
 from opensquilla.provider import TextDeltaEvent as ProviderText
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEnd
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
+from opensquilla.provider.request_proof import (
+    ProviderRequestBudgetExceeded,
+    prove_provider_payload,
+)
 from opensquilla.session.compaction import CompactionResult
 
 
@@ -120,6 +124,49 @@ class _ProviderRequestBudgetExceededProvider:
             else json.dumps(self.proof)
         )
         yield ProviderError(message=message, code="provider_request_budget_exhausted")
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
+class _BudgetCheckingProvider:
+    provider_name = "openrouter"
+
+    def __init__(self, *, proof_budget: int) -> None:
+        self.proof_budget = proof_budget
+        self.calls: list[list[Message]] = []
+        self.proofs: list[dict[str, Any]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        return self._stream(messages)
+
+    async def _stream(self, messages: list[Message]) -> AsyncIterator[Any]:
+        payload = {
+            "messages": [message.model_dump(mode="json") for message in messages]
+        }
+        try:
+            proof = prove_provider_payload(
+                payload,
+                projection_adapter="openrouter",
+                proof_budget=self.proof_budget,
+            )
+        except ProviderRequestBudgetExceeded as exc:
+            self.proofs.append(exc.proof)
+            yield ProviderError(
+                message=json.dumps(exc.proof),
+                code="provider_request_budget_exhausted",
+            )
+            return
+
+        self.proofs.append(proof)
+        yield ProviderText(text="ok")
+        yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
 
     async def list_models(self) -> list[Any]:
         return []
@@ -438,6 +485,131 @@ async def test_provider_request_budget_exhausted_compacts_warns_and_retries(
     assert not any(
         isinstance(event, ErrorEvent)
         and event.code == "provider_request_budget_exhausted"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_provider_request_budget_uses_provider_window_for_compaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compaction_windows: list[int] = []
+
+    async def _effective_compact(request: Any) -> CompactionResult:
+        compaction_windows.append(request.context_window_tokens)
+        return CompactionResult(
+            summary="short summary",
+            kept_entries=[],
+            removed_count=len(request.entries),
+            chunks_processed=1,
+        )
+
+    monkeypatch.setattr("opensquilla.engine.agent.compact_context", _effective_compact)
+    provider = _ProviderRequestBudgetExceededProvider(
+        success_after=1,
+        proof={
+            "fallback_reason": "provider_request_budget_exhausted",
+            "estimated_chars": 109_055,
+            "estimated_tokens": 27_263,
+            "proof_budget": 96_000,
+            "recent_tail_too_large": True,
+        },
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            context_window_tokens=1_048_576,
+            max_provider_retries=0,
+            max_overflow_retries=2,
+            flush_enabled=False,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("x" * 4000)]
+
+    assert compaction_windows
+    assert compaction_windows[0] < 100_000
+    assert len(provider.calls) == 2
+    assert any(event.kind == "done" and getattr(event, "text", "") == "ok" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_provider_request_budget_retry_payload_is_rechecked_against_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compaction_windows: list[int] = []
+
+    async def _effective_compact(request: Any) -> CompactionResult:
+        compaction_windows.append(request.context_window_tokens)
+        return CompactionResult(
+            summary="short summary",
+            kept_entries=[],
+            removed_count=len(request.entries),
+            chunks_processed=1,
+        )
+
+    monkeypatch.setattr("opensquilla.engine.agent.compact_context", _effective_compact)
+    provider = _BudgetCheckingProvider(proof_budget=2_500)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            context_window_tokens=1_048_576,
+            max_provider_retries=0,
+            max_overflow_retries=2,
+            flush_enabled=False,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("x" * 4000)]
+
+    assert [proof["fits"] for proof in provider.proofs] == [False, True]
+    assert compaction_windows
+    assert compaction_windows[0] < agent.config.context_window_tokens
+    assert len(provider.calls) == 2
+    assert provider.proofs[1]["estimated_chars"] <= provider.proof_budget
+    assert session_payload_chars(provider.calls[1]) < provider.proof_budget
+    assert any(event.kind == "done" and getattr(event, "text", "") == "ok" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_provider_request_budget_recent_tail_reason_survives_noop_compaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _noop_compact(request: Any) -> CompactionResult:
+        return CompactionResult(
+            summary="",
+            kept_entries=request.entries,
+            removed_count=0,
+            chunks_processed=0,
+        )
+
+    monkeypatch.setattr("opensquilla.engine.agent.compact_context", _noop_compact)
+    provider = _ProviderRequestBudgetExceededProvider(
+        proof={
+            "fallback_reason": "provider_request_budget_exhausted",
+            "estimated_chars": 109_055,
+            "estimated_tokens": 27_263,
+            "proof_budget": 96_000,
+            "recent_tail_too_large": True,
+        },
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            context_window_tokens=1_048_576,
+            max_provider_retries=0,
+            max_overflow_retries=2,
+            flush_enabled=False,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("x" * 4000)]
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+
+    assert len(provider.calls) == 1
+    assert errors[-1].code == "current_turn_context_exhausted"
+    assert not any(
+        isinstance(event, ErrorEvent) and event.code == "compaction_not_smaller"
         for event in events
     )
 

@@ -17,11 +17,11 @@ import os
 import platform
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Hashable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, SupportsInt, TypeGuard, cast
+from typing import Any, Final, Literal, SupportsInt, TypeGuard, cast
 
 import structlog
 
@@ -200,7 +200,6 @@ def _is_deepseek_model_id(model: str) -> bool:
 
 # Tools that are safe to run concurrently within a single LLM turn.
 # Any tool name absent from this set is treated as mutex (serial dispatch).
-# See docs/dev/tool-concurrency-spec.md for the dispatch contract.
 _SAFE_TOOL_NAMES: frozenset[str] = frozenset({
     "agents_list",
     "git_diff",
@@ -225,6 +224,70 @@ _SAFE_TOOL_NAMES: frozenset[str] = frozenset({
     "web_fetch",
     "web_search",
 })
+
+_ToolConcurrencyMode = Literal["mutex", "concurrent", "keyed", "predicate"]
+
+
+@dataclass(frozen=True)
+class _ToolConcurrencyPolicy:
+    mode: _ToolConcurrencyMode
+    key: Hashable | None = None
+    max_inflight: int | None = None
+    limit_key: Hashable | None = None
+
+
+_FEISHU_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
+    "feishu_chat_read",
+    "feishu_doc_list_blocks",
+    "feishu_doc_read_raw",
+    "feishu_drive_meta",
+    "feishu_drive_search",
+    "feishu_scopes_status",
+    "feishu_wiki_get_node",
+    "feishu_wiki_list_nodes",
+    "feishu_wiki_list_spaces",
+})
+
+_MUTEX_TOOL_POLICY = _ToolConcurrencyPolicy(mode="mutex")
+_CONCURRENT_TOOL_POLICY = _ToolConcurrencyPolicy(mode="concurrent")
+_FEISHU_READ_TOOL_POLICY = _ToolConcurrencyPolicy(
+    mode="concurrent",
+    max_inflight=4,
+    limit_key=("feishu", "read"),
+)
+
+
+def _get_tool_concurrency_policy(
+    tool_name: str,
+    arguments: Mapping[str, Any] | None = None,
+    *,
+    parent_session_key: str | None = None,
+) -> _ToolConcurrencyPolicy:
+    if tool_name in _SAFE_TOOL_NAMES:
+        return _CONCURRENT_TOOL_POLICY
+    if tool_name in _FEISHU_READ_ONLY_TOOL_NAMES:
+        return _FEISHU_READ_TOOL_POLICY
+    if tool_name == "sessions_send":
+        session_key = (arguments or {}).get("session_key")
+        if isinstance(session_key, str) and session_key.strip():
+            return _ToolConcurrencyPolicy(
+                mode="keyed",
+                key=("sessions_send", session_key.strip()),
+            )
+        return _MUTEX_TOOL_POLICY
+    if tool_name == "sessions_spawn":
+        from opensquilla.tools.types import current_tool_context  # noqa: PLC0415
+
+        ctx = current_tool_context.get()
+        parent_key = parent_session_key or (ctx.session_key if ctx is not None else None)
+        if parent_key:
+            return _ToolConcurrencyPolicy(
+                mode="keyed",
+                key=("sessions_spawn", parent_key),
+            )
+        return _MUTEX_TOOL_POLICY
+    return _MUTEX_TOOL_POLICY
+
 
 # Per-call-chain owner tracking for session-lock re-entry detection.
 # A ContextVar is copied into child asyncio Tasks created while a turn is
@@ -403,9 +466,9 @@ def _normalize_capture_kind(value: str) -> str:
     return value.strip().lower().replace("-", "_").replace(".", "_").replace(":", "_")
 
 
-# Boot-path initialization of safety baseline (S-SAFETY). All four submodules
+# Boot-path initialization of the safety baseline. All four submodules
 # are imported here so tool dispatch and ingress guards can consult them
-# without late imports. See docs/architecture/module-contracts.md §safety.
+# without late imports.
 #
 # The tuple pins the imports to module scope so the linter does not drop them
 # as "unused" — dispatch paths reach these modules via attribute lookup at
@@ -1140,7 +1203,7 @@ class TurnRunner:
         # Captured at session start, refreshed on write/compaction.
         self._memory_snapshots: dict[tuple[str, str], MemorySnapshot] = {}
         # Frozen bootstrap snapshots keyed by (agent_id, session_key, context_mode).
-        # Captured on first prompt assembly so USER.md/AGENTS.md edits do not
+        # Captured on first prompt assembly so bootstrap-source edits do not
         # churn the cacheable prefix mid-session.
         self._bootstrap_snapshots: dict[tuple[str, str, str], BootstrapSnapshot] = {}
         self._compaction_failures: dict[str, _CompactionFailureState] = {}
@@ -2867,8 +2930,7 @@ class TurnRunner:
         3. ``## <key>`` blocks for each ``extra_context`` entry (no gating).
 
         Each section's bytes match what the prior Jinja render produced for
-        the same inputs (verified in
-        ``tests/test_engine/test_prompt_cache.py::TestVolatileFieldsInSuffix``).
+        the same inputs.
         Sections are joined directly with no separator — adjacent ``\\n\\n``
         terminators in each section already provide the visual break, the
         same way the prior template rendered them inline. The final result

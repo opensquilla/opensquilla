@@ -1,4 +1,4 @@
-"""Concurrent tool dispatch tests — US-005 (T5.1).
+"""Concurrent tool dispatch tests.
 
 Verifies that same-turn safe tools run concurrently via asyncio.gather
 and mutex tools remain serial.  All tests use mock LLM and mock tool
@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from opensquilla.engine import Agent, AgentConfig, ToolResult
-from opensquilla.engine.runtime import _SAFE_TOOL_NAMES
+from opensquilla.engine.runtime import _SAFE_TOOL_NAMES, _get_tool_concurrency_policy
 from opensquilla.engine.types import ToolCall
 from opensquilla.provider import (
     ChatConfig,
@@ -85,6 +85,44 @@ class _FixedToolCallProvider:
         return []
 
 
+class _FixedToolCallArgsProvider:
+    """Fake LLM that returns fixed tool calls with explicit arguments."""
+
+    provider_name = "fake"
+
+    def __init__(self, tool_calls: list[tuple[str, dict[str, Any]]]) -> None:
+        self._tool_calls = tool_calls
+        self.calls: list[list[Message]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        call_number = len(self.calls)
+        return self._stream(call_number)
+
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number > 1:
+            yield ProviderTextDelta(text="done")
+            yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
+            return
+        for i, (name, arguments) in enumerate(self._tool_calls):
+            tid = f"tool-{i}"
+            yield ProviderToolUseStart(tool_use_id=tid, tool_name=name)
+            yield ProviderToolUseEnd(
+                tool_use_id=tid,
+                tool_name=name,
+                arguments=arguments,
+            )
+        yield ProviderDone(stop_reason="tool_use", input_tokens=1, output_tokens=1)
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
 async def _collect(agent: Agent, message: str = "go") -> list[Any]:
     return [e async for e in agent.run_turn(message)]
 
@@ -99,6 +137,200 @@ _SAFE_SAMPLE = sorted(_SAFE_TOOL_NAMES)[:6]  # pick 6 safe names for the concurr
 def test_web_search_is_safe_for_same_turn_concurrency() -> None:
     """web_search is read-only network I/O and should batch with safe tools."""
     assert "web_search" in _SAFE_TOOL_NAMES
+
+
+def test_sessions_spawn_policy_keys_by_parent_session() -> None:
+    """Spawn policy is scoped to the parent session rather than global state."""
+    policy = _get_tool_concurrency_policy(
+        "sessions_spawn",
+        {},
+        parent_session_key="agent:main:parent-a",
+    )
+
+    assert policy.mode == "keyed"
+    assert policy.key == ("sessions_spawn", "agent:main:parent-a")
+
+
+@pytest.mark.asyncio
+async def test_feishu_read_only_tools_run_concurrent() -> None:
+    """Read-only Feishu tools should batch without enabling Feishu mutators."""
+    tool_calls = [
+        ("feishu_doc_read_raw", {"document_id": "doc-a"}),
+        ("feishu_drive_meta", {"token": "doc-b"}),
+        ("feishu_wiki_get_node", {"token": "node-c"}),
+    ]
+    intervals: list[tuple[str, float, float]] = []
+
+    async def _handler(tc: ToolCall) -> ToolResult:
+        start = time.monotonic()
+        await asyncio.sleep(_TOOL_SLEEP_S)
+        intervals.append((tc.tool_name, start, time.monotonic()))
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content="ok",
+        )
+
+    provider = _FixedToolCallArgsProvider(tool_calls)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=2),
+        tool_definitions=[_tool_def(n) for n, _ in tool_calls],
+        tool_handler=_handler,
+    )
+
+    t0 = time.monotonic()
+    await _collect(agent)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 0.45, (
+        f"Expected Feishu read-only tools to overlap, got {elapsed:.3f} s."
+    )
+    assert len(intervals) == len(tool_calls)
+
+
+@pytest.mark.asyncio
+async def test_feishu_read_only_tools_have_independent_inflight_cap() -> None:
+    """Feishu reads should batch, but keep their own platform-facing cap."""
+    tool_calls = [
+        ("feishu_doc_read_raw", {"document_id": f"doc-{i}"})
+        for i in range(6)
+    ]
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _handler(tc: ToolCall) -> ToolResult:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(_TOOL_SLEEP_S)
+        in_flight -= 1
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content="ok",
+        )
+
+    provider = _FixedToolCallArgsProvider(tool_calls)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=2, max_safe_tool_concurrency=6),
+        tool_definitions=[_tool_def(n) for n, _ in tool_calls],
+        tool_handler=_handler,
+    )
+
+    t0 = time.monotonic()
+    await _collect(agent)
+    elapsed = time.monotonic() - t0
+
+    assert max_in_flight == 4
+    assert 2 * _TOOL_SLEEP_S <= elapsed < 3 * _TOOL_SLEEP_S
+
+
+@pytest.mark.asyncio
+async def test_feishu_mutating_tools_remain_serial() -> None:
+    """Feishu writes must remain mutex even when read-only Feishu tools batch."""
+    tool_calls = [
+        ("feishu_chat_send", {"chat_id": "chat-a", "text": "one"}),
+        ("feishu_chat_edit", {"message_id": "msg-a", "text": "two"}),
+    ]
+    intervals: list[tuple[str, float, float]] = []
+
+    async def _handler(tc: ToolCall) -> ToolResult:
+        start = time.monotonic()
+        await asyncio.sleep(_TOOL_SLEEP_S)
+        intervals.append((tc.tool_name, start, time.monotonic()))
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content="ok",
+        )
+
+    provider = _FixedToolCallArgsProvider(tool_calls)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=2),
+        tool_definitions=[_tool_def(n) for n, _ in tool_calls],
+        tool_handler=_handler,
+    )
+
+    await _collect(agent)
+
+    assert len(intervals) == len(tool_calls)
+    (_, _, first_end), (_, second_start, _) = intervals
+    assert second_start >= first_end - 0.01
+
+
+@pytest.mark.asyncio
+async def test_sessions_send_different_targets_run_concurrent() -> None:
+    """session sends to different target sessions should not globally serialize."""
+    tool_calls = [
+        ("sessions_send", {"session_key": "agent:main:child-a", "message": "one"}),
+        ("sessions_send", {"session_key": "agent:main:child-b", "message": "two"}),
+    ]
+    intervals: list[tuple[str, str, float, float]] = []
+
+    async def _handler(tc: ToolCall) -> ToolResult:
+        target = str(tc.arguments["session_key"])
+        start = time.monotonic()
+        await asyncio.sleep(_TOOL_SLEEP_S)
+        intervals.append((tc.tool_name, target, start, time.monotonic()))
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content="ok",
+        )
+
+    provider = _FixedToolCallArgsProvider(tool_calls)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=2),
+        tool_definitions=[_tool_def(n) for n, _ in tool_calls],
+        tool_handler=_handler,
+    )
+
+    t0 = time.monotonic()
+    await _collect(agent)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 0.35, (
+        f"Expected sends to different sessions to overlap, got {elapsed:.3f} s."
+    )
+    assert len(intervals) == len(tool_calls)
+
+
+@pytest.mark.asyncio
+async def test_sessions_send_same_target_serializes() -> None:
+    """session sends to one target session must preserve per-target order."""
+    tool_calls = [
+        ("sessions_send", {"session_key": "agent:main:child-a", "message": "one"}),
+        ("sessions_send", {"session_key": "agent:main:child-a", "message": "two"}),
+    ]
+    intervals: list[tuple[str, float, float]] = []
+
+    async def _handler(tc: ToolCall) -> ToolResult:
+        start = time.monotonic()
+        await asyncio.sleep(_TOOL_SLEEP_S)
+        intervals.append((str(tc.arguments["message"]), start, time.monotonic()))
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content="ok",
+        )
+
+    provider = _FixedToolCallArgsProvider(tool_calls)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=2),
+        tool_definitions=[_tool_def(n) for n, _ in tool_calls],
+        tool_handler=_handler,
+    )
+
+    await _collect(agent)
+
+    assert len(intervals) == len(tool_calls)
+    (_, _, first_end), (_, second_start, _) = intervals
+    assert second_start >= first_end - 0.01
 
 
 # ---------------------------------------------------------------------------

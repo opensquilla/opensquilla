@@ -68,11 +68,10 @@ def evaluate_policy(
 ) -> AccessDecision:
     """Evaluate a single inbound message against a channel's access policy.
 
-    Pure function. Adapters provide the policy; dispatch (future) provides
-    the runtime inputs (``is_group``, ``mentioned``, ``sender_id``). The
-    decision matrix is locked by ``tests/test_channels/_policy_baseline.py``;
-    ``ChannelAccessPolicy`` instances must be tuned so this evaluator
-    reproduces that baseline byte-for-byte for every adapter that adopts.
+    Pure function. Adapters provide the policy; dispatch provides the runtime
+    inputs (``is_group``, ``mentioned``, ``sender_id``). ``ChannelAccessPolicy``
+    instances must be tuned so this evaluator preserves each adapter's access
+    baseline when that adapter adopts the shared evaluator.
     """
     if is_group:
         if not policy.group_allowed:
@@ -150,8 +149,8 @@ class RateLimiter:
 #
 # Feishu is a non-consumer of this module: ``feishu.send_streaming`` collects
 # the entire stream and posts once at the end, so neither helper applies.
-# ``tests/test_channels/test_stream_helpers.py::test_feishu_does_not_import_stream_throttle``
-# locks that contract.
+# Keeping Feishu outside this helper avoids importing streaming-throttle state
+# into its post-once delivery path.
 
 
 @dataclass

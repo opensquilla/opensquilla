@@ -32,7 +32,7 @@ log = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Outbound writer queue primitives (Principle 2 in plans/ws-writer-queue.md)
+# Outbound writer queue primitives
 # ---------------------------------------------------------------------------
 #
 # When the per-connection writer queue is enabled, every outbound frame
@@ -98,7 +98,7 @@ class WsConnection:
     connected_at: int = field(default_factory=lambda: int(time.time() * 1000))
     _seq: int = field(default=0, init=False)
     _send_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
-    # Writer-queue state (per Principle 2 in plans/ws-writer-queue.md).
+    # Writer-queue state.
     # ``_queue_enabled`` mirrors the kill-switch config at registration time;
     # once a connection starts in legacy mode it stays in legacy mode for life.
     _queue_enabled: bool = field(default=False, init=False, repr=False)
@@ -182,7 +182,7 @@ class WsConnection:
             pass
 
     # ------------------------------------------------------------------
-    # Writer task lifecycle (Principle 2 / plans/ws-writer-queue.md §Step 5)
+    # Writer task lifecycle
     # ------------------------------------------------------------------
 
     def _start_writer(self, *, maxsize: int, enabled: bool) -> None:
@@ -232,7 +232,7 @@ class WsConnection:
             # it does not propagate into this teardown path. Do NOT
             # replace this with ``await task`` — that re-raises
             # CancelledError into ``_stop_writer`` and corrupts the
-            # cleanup sequence (see plan F-5 follow-up).
+            # cleanup sequence.
             try:
                 await asyncio.wait_for(
                     asyncio.gather(task, return_exceptions=True),
@@ -268,7 +268,7 @@ class WsConnection:
             # it does not propagate into this teardown path. Do NOT
             # replace this with ``await task`` — that re-raises
             # CancelledError into ``_force_close`` and corrupts the close
-            # sequence (see plan F-5 follow-up).
+            # sequence.
             try:
                 await asyncio.wait_for(
                     asyncio.gather(task, return_exceptions=True),
@@ -380,7 +380,7 @@ class WsConnection:
         # If the lossy set is later expanded to session-bearing events, the
         # eviction key MUST become (event_name, session_key) to prevent one
         # session's overflow from evicting another session's queued frame.
-        # See "Future considerations" in plans/ws-writer-queue.md.
+        # Keep this invariant if more lossy event kinds are added later.
         self._closing = True
         log.error(
             "gateway.ws_writer_overflow_close",
@@ -648,7 +648,7 @@ async def handle_ws_connection(
     # conn._writer_task owns all post-auth sends. send_event/send_res route
     # through conn._outbox; WS-frame seq is minted at dequeue inside the
     # writer loop (NOT at enqueue), so dropped lossy frames never consume a
-    # seq number. See Principle 2 in plans/ws-writer-queue.md for rationale.
+    # seq number.
     # Kill switch (config.ws_writer_queue_enabled) is read here at registration
     # time only — affects new connections only; existing connections retain
     # their startup-time behavior.
@@ -693,7 +693,7 @@ async def handle_ws_connection(
         # registry.unregister. Otherwise an EventBridge.emit on another
         # coroutine could still hold a reference to this connection while
         # the writer task is mid-cancel, producing a "zombie writer"
-        # scenario (Pre-mortem #2 in plans/ws-writer-queue.md §Step 5).
+        # scenario.
         await conn._stop_writer()
         tick_task.cancel()
         try:

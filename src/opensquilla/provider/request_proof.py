@@ -127,6 +127,21 @@ def _compact_tail_string(value: str, *, label: str) -> str:
     )
 
 
+def _emergency_compact_string(value: str, *, label: str) -> str:
+    if len(value) <= 320:
+        return value
+    head = value[:180]
+    tail = value[-40:]
+    omitted = len(value) - len(head) - len(tail)
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return (
+        f"{head}\n\n"
+        f"[provider_request_{label}_emergency_compacted: omitted {omitted} chars; "
+        f"original_chars={len(value)}; sha256={digest}]\n\n"
+        f"{tail}"
+    )
+
+
 def _compact_tool_arguments(value: str) -> str:
     if len(value) <= _COMPACTED_TAIL_STRING_MAX_CHARS:
         return value
@@ -230,6 +245,111 @@ def _compact_recent_tail_payload_once(payload: dict[str, Any]) -> dict[str, Any]
     return compacted
 
 
+def _emergency_compact_current_turn_payload_once(payload: dict[str, Any]) -> dict[str, Any]:
+    compacted = deepcopy(payload)
+    for message in compacted.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        content = message.get("content")
+        if isinstance(content, str) and role in {"assistant", "tool"}:
+            message["content"] = _emergency_compact_string(
+                content,
+                label=f"{role}_content",
+            )
+        if role == "assistant":
+            reasoning_content = message.get("reasoning_content")
+            if isinstance(reasoning_content, str):
+                message["reasoning_content"] = _emergency_compact_string(
+                    reasoning_content,
+                    label="reasoning_content",
+                )
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function = tool_call.get("function")
+                    if not isinstance(function, dict):
+                        continue
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, str):
+                        function["arguments"] = _emergency_compact_string(
+                            arguments,
+                            label="tool_arguments",
+                        )
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_result":
+                block_content = block.get("content")
+                if isinstance(block_content, str):
+                    block["content"] = _emergency_compact_string(
+                        block_content,
+                        label="tool_result",
+                    )
+                elif isinstance(block_content, list):
+                    for item in block_content:
+                        if isinstance(item, dict) and isinstance(item.get("text"), str):
+                            item["text"] = _emergency_compact_string(
+                                item["text"],
+                                label="tool_result_text",
+                            )
+            elif block.get("type") == "thinking" and isinstance(block.get("thinking"), str):
+                block["thinking"] = _emergency_compact_string(
+                    block["thinking"],
+                    label="thinking_block",
+                )
+    return compacted
+
+
+def _component_chars(payload: dict[str, Any], key: str) -> int:
+    if key not in payload:
+        return 0
+    return _payload_chars(payload[key])
+
+
+def _message_role_chars(payload: dict[str, Any], role: str) -> int:
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return 0
+    role_messages = [
+        message
+        for message in messages
+        if isinstance(message, dict) and message.get("role") == role
+    ]
+    return _payload_chars(role_messages) if role_messages else 0
+
+
+def _top_level_chars(payload: dict[str, Any]) -> int:
+    top_level_payload = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"messages", "tools", "system"}
+    }
+    return _payload_chars(top_level_payload) if top_level_payload else 0
+
+
+def _payload_component_chars(payload: dict[str, Any], proof_budget: int) -> dict[str, Any]:
+    messages_chars = _component_chars(payload, "messages")
+    tools_chars = _component_chars(payload, "tools")
+    system_chars = _component_chars(payload, "system") + _message_role_chars(
+        payload,
+        "system",
+    )
+    tool_schema_too_large = False
+    if proof_budget > 0 and tools_chars > 0:
+        tool_schema_too_large = tools_chars >= max(16_000, proof_budget // 4)
+    return {
+        "messages_chars": messages_chars,
+        "tools_chars": tools_chars,
+        "system_chars": system_chars,
+        "top_level_chars": _top_level_chars(payload),
+        "tool_schema_too_large": tool_schema_too_large,
+    }
+
 def prove_provider_payload(
     payload: dict[str, Any],
     *,
@@ -257,6 +377,7 @@ def prove_provider_payload(
         "fallback_reason": fallback_reason,
         "top_contributors": _top_contributors(budget_payload),
         "retry_count": 0,
+        **_payload_component_chars(budget_payload, proof_budget),
     }
     if media_blocks:
         proof["media_chars_excluded"] = media_chars
@@ -317,18 +438,44 @@ def prove_or_compact_provider_payload(
             status_projection_mode=status_projection_mode,
             fallback_reason=fallback_reason,
         )
-    except ProviderRequestBudgetExceededError as exc:
-        exc.proof["retry_count"] = 2
-        exc.proof["compact_needed"] = True
-        exc.proof["tool_payload_compaction_not_smaller"] = (
-            tool_compacted_chars >= first_chars
+    except ProviderRequestBudgetExceededError as tail_error:
+        emergency_compacted = _emergency_compact_current_turn_payload_once(tail_compacted)
+        emergency_compacted_chars = _payload_chars(emergency_compacted)
+        try:
+            proof = prove_provider_payload(
+                emergency_compacted,
+                projection_adapter=projection_adapter,
+                proof_budget=proof_budget,
+                status_projection_mode=status_projection_mode,
+                fallback_reason=fallback_reason,
+            )
+        except ProviderRequestBudgetExceededError as exc:
+            exc.proof["retry_count"] = 2
+            exc.proof["compact_needed"] = True
+            exc.proof["tool_payload_compaction_not_smaller"] = (
+                tool_compacted_chars >= first_chars
+            )
+            exc.proof["tail_compaction_not_smaller"] = (
+                tail_compacted_chars >= tool_compacted_chars
+            )
+            exc.proof["emergency_current_turn_compacted"] = True
+            exc.proof["emergency_compaction_not_smaller"] = (
+                emergency_compacted_chars >= tail_compacted_chars
+            )
+            exc.proof["compaction_not_smaller"] = emergency_compacted_chars >= first_chars
+            exc.proof["recent_tail_too_large"] = bool(tail_error.proof.get("top_contributors"))
+            raise
+        proof["retry_count"] = 3
+        proof["compact_needed"] = True
+        proof["tool_payload_compaction_not_smaller"] = tool_compacted_chars >= first_chars
+        proof["tail_compaction_not_smaller"] = tail_compacted_chars >= tool_compacted_chars
+        proof["emergency_current_turn_compacted"] = True
+        proof["emergency_compaction_not_smaller"] = (
+            emergency_compacted_chars >= tail_compacted_chars
         )
-        exc.proof["tail_compaction_not_smaller"] = (
-            tail_compacted_chars >= tool_compacted_chars
-        )
-        exc.proof["compaction_not_smaller"] = tail_compacted_chars >= first_chars
-        exc.proof["recent_tail_too_large"] = bool(exc.proof.get("top_contributors"))
-        raise
+        proof["compaction_not_smaller"] = emergency_compacted_chars >= first_chars
+        proof["recent_tail_too_large"] = False
+        return emergency_compacted, proof
     proof["retry_count"] = 2
     proof["compact_needed"] = True
     proof["tool_payload_compaction_not_smaller"] = tool_compacted_chars >= first_chars

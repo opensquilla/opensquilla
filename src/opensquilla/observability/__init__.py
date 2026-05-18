@@ -15,7 +15,7 @@ This package defines:
   never re-executes tools.
 
 Schema version is pinned to :data:`SCHEMA_VERSION`; changes remain additive
-until the integer is bumped (see ``docs/architecture/observability.md``).
+until the integer is bumped.
 """
 
 from __future__ import annotations

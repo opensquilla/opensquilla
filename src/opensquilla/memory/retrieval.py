@@ -20,7 +20,7 @@ from .types import (
 )
 
 # Matches YYYY-MM-DD.md or YYYY-MM-DD-<slug>.md at the basename.
-# The date must prefix the basename so release-2026-04-21.md does NOT match.
+# The date must prefix the basename; embedded dates elsewhere do not match.
 _DATED_FILENAME_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:-[a-z0-9][a-z0-9_-]*)?\.md")
 
 

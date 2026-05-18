@@ -24,7 +24,7 @@ in-process after the gate, while the shell tools additionally spawn through
 
 Nothing in this module performs isolation by itself; it routes to whichever
 backend :func:`opensquilla.sandbox.backend.select_backend` picked for the current
-host. See ``docs/adr/006-sandbox-governance.md`` for the active contract.
+host.
 """
 
 from __future__ import annotations

@@ -578,12 +578,8 @@ class Agent:
     ) -> None:
         if provider_error.code != "provider_request_budget_exhausted":
             return
-        try:
-            proof = json.loads(provider_error.message)
-        except (TypeError, ValueError):
-            self._last_compaction_refusal_reason = "provider_request_budget_exhausted"
-            return
-        if not isinstance(proof, dict):
+        proof = self._provider_request_budget_proof(provider_error)
+        if proof is None:
             self._last_compaction_refusal_reason = "provider_request_budget_exhausted"
             return
         if proof.get("recent_tail_too_large") is True:
@@ -595,6 +591,55 @@ class Agent:
         fallback_reason = proof.get("fallback_reason")
         if fallback_reason == "provider_request_budget_exhausted":
             self._last_compaction_refusal_reason = "provider_request_budget_exhausted"
+
+    @staticmethod
+    def _provider_request_budget_proof(
+        provider_error: ProviderErrorEvent,
+    ) -> dict[str, Any] | None:
+        if provider_error.code != "provider_request_budget_exhausted":
+            return None
+        try:
+            proof = json.loads(provider_error.message)
+        except (TypeError, ValueError):
+            return None
+        return proof if isinstance(proof, dict) else None
+
+    @staticmethod
+    def _positive_int(value: Any) -> int | None:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def _provider_budget_compaction_window_tokens(
+        self,
+        provider_error: ProviderErrorEvent,
+    ) -> int | None:
+        proof = self._provider_request_budget_proof(provider_error)
+        if proof is None:
+            return None
+        proof_budget = self._positive_int(proof.get("proof_budget"))
+        if proof_budget is None:
+            return None
+        estimated_chars = self._positive_int(proof.get("estimated_chars"))
+        estimated_tokens = self._positive_int(proof.get("estimated_tokens"))
+        if estimated_chars and estimated_tokens:
+            window_tokens = int(proof_budget * (estimated_tokens / estimated_chars))
+        else:
+            window_tokens = proof_budget // 4
+        if window_tokens <= 0:
+            return None
+        return min(self.config.context_window_tokens, window_tokens)
+
+    def _provider_budget_estimated_tokens(
+        self,
+        provider_error: ProviderErrorEvent,
+    ) -> int | None:
+        proof = self._provider_request_budget_proof(provider_error)
+        if proof is None:
+            return None
+        return self._positive_int(proof.get("estimated_tokens"))
 
     def _tool_execution_timeout(self, tool_call: ToolCall) -> float:
         timeout = float(self.config.tool_timeout)
@@ -2129,9 +2174,24 @@ class Agent:
                             _call_attempt += 1
                             continue
                         if failure_kind == ProviderFailureKind.CONTEXT_OVERFLOW:
+                            self._record_provider_context_overflow_reason(provider_error)
+                            provider_compaction_window_tokens = (
+                                self._provider_budget_compaction_window_tokens(provider_error)
+                            )
+                            provider_estimated_tokens = (
+                                self._provider_budget_estimated_tokens(provider_error)
+                            )
+                            provider_compaction_refusal_reason = (
+                                self._last_compaction_refusal_reason
+                            )
+                            overflow_total_tokens = provider_estimated_tokens
+                            if overflow_total_tokens is None:
+                                overflow_total_tokens = (
+                                    provider_compaction_window_tokens
+                                    or self.config.context_window_tokens
+                                ) + 1
                             if overflow_retries >= self.config.max_overflow_retries:
                                 yield self._transition(AgentState.ERROR)
-                                self._record_provider_context_overflow_reason(provider_error)
                                 terminal_error = self._context_overflow_error()
                                 yield terminal_error
                                 break
@@ -2145,15 +2205,23 @@ class Agent:
                             )
                             overflow_outcome = await self._check_context_overflow(
                                 turn_messages,
-                                self.config.context_window_tokens + 1,
+                                overflow_total_tokens,
                                 request_context_insert_index=request_context_insert_index,
                                 runtime_context_insert_index=runtime_context_insert_index,
+                                compaction_window_tokens=provider_compaction_window_tokens,
                             )
                             if overflow_outcome is None:
                                 yield self._transition(AgentState.ERROR)
                                 terminal_error = self._context_overflow_error()
                                 yield terminal_error
                                 break
+                            if (
+                                provider_compaction_refusal_reason
+                                and self._last_compaction_refusal_reason is None
+                            ):
+                                self._last_compaction_refusal_reason = (
+                                    provider_compaction_refusal_reason
+                                )
                             next_request_context_insert_index = (
                                 overflow_outcome.request_context_insert_index
                                 if overflow_outcome.request_context_insert_index is not None
@@ -2176,7 +2244,13 @@ class Agent:
                                 next_request_messages,
                             ):
                                 yield self._transition(AgentState.ERROR)
-                                self._last_compaction_refusal_reason = "compaction_not_smaller"
+                                if (
+                                    self._last_compaction_refusal_reason
+                                    != "provider_recent_tail_too_large"
+                                ):
+                                    self._last_compaction_refusal_reason = (
+                                        "compaction_not_smaller"
+                                    )
                                 terminal_error = self._context_overflow_error()
                                 yield terminal_error
                                 break
@@ -2465,12 +2539,13 @@ class Agent:
                 # ------ STREAMING → TOOL_CALLING ------
                 yield self._transition(AgentState.TOOL_CALLING)
 
-                # Execute tools and collect results.
-                # Safe tools (named in _SAFE_TOOL_NAMES) run concurrently via
-                # asyncio.gather; mutex tools run serially. Results are emitted
-                # in the original tool_calls arrival order regardless of
-                # completion order.
-                from opensquilla.engine.runtime import _SAFE_TOOL_NAMES  # noqa: PLC0415
+                # Execute tools and collect results. Concurrent/keyed tools run
+                # in bounded batches; mutex tools run serially. Results are
+                # emitted in the original tool_calls arrival order regardless
+                # of completion order.
+                from opensquilla.engine.runtime import (  # noqa: PLC0415
+                    _get_tool_concurrency_policy,
+                )
 
                 tool_result_blocks: list[ContentBlockToolResult] = []
                 executed_results: list[ToolResult] = []
@@ -2640,23 +2715,55 @@ class Agent:
                             with contextlib.suppress(asyncio.CancelledError):
                                 await task
 
-                # Dispatch preserving original order: accumulate consecutive safe
-                # tools into a batch and flush with asyncio.gather before each
-                # mutex tool, then run the mutex tool serially.  This ensures
-                # that a safe tool appearing after a mutex tool cannot start
+                # Dispatch preserving original order: accumulate consecutive
+                # concurrent/keyed tools into a batch and flush before each
+                # mutex tool, then run the mutex tool serially. This ensures
+                # that a parallel tool appearing after a mutex tool cannot start
                 # until that mutex tool has completed.
-                safe_batch: list[ToolCall] = []
+                parallel_batch: list[ToolCall] = []
 
-                async def _flush_safe_batch(
+                async def _flush_parallel_batch(
                     batch: list[ToolCall],
                 ) -> AsyncIterator[RunHeartbeatEvent]:
                     if not batch:
                         return
                     semaphore = asyncio.Semaphore(self._max_safe_tool_concurrency())
+                    keyed_locks: dict[Any, asyncio.Lock] = {}
+                    limiters: dict[Any, asyncio.Semaphore] = {}
 
                     async def _run_limited(tc: ToolCall) -> ToolResult:
-                        async with semaphore:
-                            return await _run_one(tc)
+                        policy = _get_tool_concurrency_policy(
+                            tc.tool_name,
+                            tc.arguments,
+                            parent_session_key=self._session_key,
+                        )
+                        key_lock = (
+                            keyed_locks.setdefault(policy.key, asyncio.Lock())
+                            if policy.key is not None
+                            else None
+                        )
+                        limiter = None
+                        if policy.max_inflight is not None:
+                            limit_key = policy.limit_key or tc.tool_name
+                            limiter = limiters.setdefault(
+                                limit_key,
+                                asyncio.Semaphore(max(1, int(policy.max_inflight))),
+                            )
+
+                        async def _run_after_policy_locks() -> ToolResult:
+                            async with semaphore:
+                                return await _run_one(tc)
+
+                        async def _run_after_key_lock() -> ToolResult:
+                            if limiter is None:
+                                return await _run_after_policy_locks()
+                            async with limiter:
+                                return await _run_after_policy_locks()
+
+                        if key_lock is None:
+                            return await _run_after_key_lock()
+                        async with key_lock:
+                            return await _run_after_key_lock()
 
                     task_to_tool_call = {
                         asyncio.create_task(_run_limited(tc)): tc for tc in batch
@@ -2665,18 +2772,23 @@ class Agent:
                         yield event
 
                 for tc in tool_calls:
-                    if tc.tool_name in _SAFE_TOOL_NAMES:
-                        safe_batch.append(tc)
+                    policy = _get_tool_concurrency_policy(
+                        tc.tool_name,
+                        tc.arguments,
+                        parent_session_key=self._session_key,
+                    )
+                    if policy.mode != "mutex":
+                        parallel_batch.append(tc)
                     else:
-                        async for event in _flush_safe_batch(safe_batch):
+                        async for event in _flush_parallel_batch(parallel_batch):
                             yield event
-                        safe_batch = []
+                        parallel_batch = []
                         async for event in _collect_tool_tasks(
                             {asyncio.create_task(_run_one(tc)): tc}
                         ):
                             yield event
 
-                async for event in _flush_safe_batch(safe_batch):
+                async for event in _flush_parallel_batch(parallel_batch):
                     yield event
 
                 # Emit results in original tool_calls order.
@@ -3058,6 +3170,7 @@ class Agent:
         *,
         request_context_insert_index: int | None = None,
         runtime_context_insert_index: int | None = None,
+        compaction_window_tokens: int | None = None,
     ) -> CompactionOutcome | None:
         """Check if total tokens exceed the overflow threshold.
 
@@ -3065,7 +3178,8 @@ class Agent:
         The flush is re-entrant: it can trigger on every approach to threshold.
         """
         self._last_compaction_refusal_reason = None
-        threshold = self.config.context_overflow_threshold * self.config.context_window_tokens
+        window_tokens = compaction_window_tokens or self.config.context_window_tokens
+        threshold = self.config.context_overflow_threshold * window_tokens
         if total_tokens <= threshold:
             return CompactionOutcome(
                 messages=messages,
@@ -3203,7 +3317,7 @@ class Agent:
         request = CompactionRequest(
             session_id="agent-turn",
             entries=entries,
-            context_window_tokens=self.config.context_window_tokens,
+            context_window_tokens=window_tokens,
             config=self._build_compaction_config(),
         )
 

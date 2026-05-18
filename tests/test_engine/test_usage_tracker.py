@@ -161,9 +161,9 @@ def test_model_breakdown_serializes_cache_fields_for_single_model_path() -> None
 
 
 # ---------------------------------------------------------------------------
-# Per-model billed_cost (Option D): real provider-billed amounts flow through
-# ModelUsage so the breakdown can show actual numbers instead of relying on
-# the rpc_usage pro-rate workaround.
+# Per-model billed_cost: real provider-billed amounts flow through ModelUsage
+# so the breakdown can show actual numbers instead of relying on the rpc_usage
+# pro-rate workaround.
 # ---------------------------------------------------------------------------
 
 
@@ -246,7 +246,7 @@ def test_model_breakdown_mixed_billed_and_estimate() -> None:
 def test_usage_tracker_add_forwards_billed_cost() -> None:
     """UsageTracker.add must thread billed_cost through to SessionUsage —
     this is the surface agent.py uses, so a regression here breaks the whole
-    Option D pipeline."""
+    provider-billed cost path."""
     tracker = UsageTracker()
     tracker.add(
         "session-a",
@@ -301,8 +301,8 @@ def test_session_cost_source_mixed_when_only_some_models_billed() -> None:
 
 def test_session_cost_source_estimate_when_no_models_billed() -> None:
     """No billed data anywhere → source = opensquilla_estimate (the
-    pre-Option D path; preserved for sessions where provider returned no
-    cost on any call)."""
+    estimate-only path; preserved for sessions where provider returned no cost
+    on any call)."""
     usage = SessionUsage()
     usage.add(1000, 50, "claude-opus-4-7")
     usage.add(2000, 80, "deepseek-v4-pro")

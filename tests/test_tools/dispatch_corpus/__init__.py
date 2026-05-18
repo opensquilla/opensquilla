@@ -369,6 +369,27 @@ def _case_skill_call_mismatch() -> CorpusCase:
     )
 
 
+def _case_unparsed_raw_arguments_rejected() -> CorpusCase:
+    """
+    Non-executable argument guard — registered tool receives an unparsed raw
+    argument payload and must return a structured envelope before handler
+    execution.
+    """
+    return CorpusCase(
+        name="unparsed_raw_arguments_rejected",
+        tool_call=ToolCall(
+            tool_use_id="tc-raw-args",
+            tool_name="simple_tool",
+            arguments={"_raw": '{"value": "unescaped " quote"}'},
+        ),
+        ctx_factory=_owner_agent_ctx,
+        registry_factory=lambda: _simple_registry("simple_tool"),
+        expected_is_error=True,
+        expected_error_class="InvalidToolArgumentsError",
+        expected_log_events={("dispatch.invalid_tool_arguments", "warning")},
+    )
+
+
 def _case_owner_only_block_non_owner() -> CorpusCase:
     """
     Owner-only defense — legacy lines 215–231, block branch.
@@ -972,6 +993,7 @@ ALL_CASES: list[CorpusCase] = [
     _case_injection_refused_untrusted_origin(),
     _case_tool_not_found_unknown_name(),
     _case_skill_call_mismatch(),
+    _case_unparsed_raw_arguments_rejected(),
     _case_owner_only_block_non_owner(),
     _case_owner_only_pass_owner(),
     _case_denied_tools_block(),

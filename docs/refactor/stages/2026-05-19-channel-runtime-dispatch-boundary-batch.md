@@ -315,7 +315,7 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - `e9b39af` (`Merge channel message IO worker`)
   - `6a7ef56` (`Resolve channel runtime boundary import ordering`)
 - Integration merge:
-  - Pending integration branch merge.
+  - `a75239b` (`Merge channel runtime dispatch boundary batch`)
 - Verification evidence:
   - Worker `channel-inflight` RED: `uv run --extra dev pytest tests/test_gateway/test_channel_inflight_boundary.py -q` failed as expected because `opensquilla.gateway.channel_inflight` did not exist.
   - Worker `channel-replies-streaming` RED: `uv run --extra dev pytest tests/test_gateway/test_channel_replies_streaming_boundary.py -q` failed as expected because `channel_replies` / `channel_streaming` did not exist and moved definitions still lived in `channel_dispatch.py`.
@@ -331,6 +331,7 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - Main mypy: success, no issues found in 521 source files.
   - Main `git diff --check`: clean.
   - Child full gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 521 source files; whitespace passed; pytest `2505 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
+  - Integration full gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 521 source files; whitespace passed; pytest `2507 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
 - Residual risk:
   - Low to medium. Behavior was preserved by existing runtime, realtime, artifact, ghost-turn, and in-flight tests, and compatibility aliases remain on `gateway.channel_dispatch`. The orchestrator still owns several smaller runtime helpers (`_build_reply_message`, `_status_reactor`, `_streaming_reply_kwargs`, `_text_delta_from_event`) that can move in a later cleanup after this larger boundary batch settles.
 - Next recommended slice:

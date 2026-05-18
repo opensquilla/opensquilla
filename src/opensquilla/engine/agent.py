@@ -395,6 +395,8 @@ class Agent:
         # Memory flush state (sub-agent based, re-entrant per compaction cycle)
         self._flush_done_this_cycle: bool = False
         self._active_flush_task: asyncio.Task | None = None
+        self._awaiting_flush_tasks: set[asyncio.Task] = set()
+        self._timed_out_flush_tasks: set[asyncio.Task] = set()
         self._flush_backoff_until: float = 0.0
         self._flush_backoff_seconds: float = 0.0
         self._session_flush_service = None  # set externally by runtime/gateway
@@ -2122,23 +2124,33 @@ class Agent:
             # Adds up to flush_timeout_seconds (default 5s) of latency, but without
             # this the flush is effectively dead code (always cancelled before finishing).
             if flush_task is not None and not flush_task.done():
+                self._awaiting_flush_tasks.add(flush_task)
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(flush_task),
                         timeout=self.config.flush_timeout_seconds,
                     )
-                    logger.info("memory_flush.completed_after_compaction")
-                    self._mark_flush_task_completed(flush_task)
+                    self._mark_flush_task_completed(
+                        flush_task,
+                        completed_event="memory_flush.completed_after_compaction",
+                    )
                 except TimeoutError:
+                    self._awaiting_flush_tasks.discard(flush_task)
+                    self._timed_out_flush_tasks.add(flush_task)
                     next_retry_seconds = self._record_flush_timeout_backoff()
                     logger.warning(
                         "memory_flush.timed_out",
                         timeout_seconds=self.config.flush_timeout_seconds,
                         next_retry_seconds=next_retry_seconds,
                     )
-                except Exception as exc:
-                    logger.warning("memory_flush.await_failed", error=str(exc))
+                    if flush_task.done():
+                        self._mark_flush_task_completed(flush_task)
+                except Exception:
                     self._mark_flush_task_completed(flush_task)
+                else:
+                    self._awaiting_flush_tasks.discard(flush_task)
+                finally:
+                    self._awaiting_flush_tasks.discard(flush_task)
 
         if not self._flush_done_this_cycle and self.config.flush_enabled:
             try:
@@ -2273,20 +2285,43 @@ class Agent:
         self._mark_flush_task_completed(task)
 
     def _on_flush_task_done(self, task: asyncio.Task) -> None:
+        if task in self._awaiting_flush_tasks:
+            return
         self._mark_flush_task_completed(task)
 
-    def _mark_flush_task_completed(self, task: asyncio.Task) -> None:
+    def _mark_flush_task_completed(
+        self,
+        task: asyncio.Task,
+        *,
+        completed_event: str | None = None,
+    ) -> None:
         if self._active_flush_task is not task:
             return
+        timed_out = task in self._timed_out_flush_tasks
+        self._awaiting_flush_tasks.discard(task)
+        self._timed_out_flush_tasks.discard(task)
         try:
             task.result()
         except asyncio.CancelledError:
             logger.debug("memory_flush.cancelled")
         except Exception as exc:  # noqa: BLE001
-            logger.warning("memory_flush.background_failed", error=str(exc))
+            if timed_out:
+                retry_after_seconds = max(0.0, self._flush_backoff_until - time.monotonic())
+            else:
+                retry_after_seconds = self._record_flush_timeout_backoff()
+            logger.warning(
+                "memory_flush.background_failed",
+                error=str(exc),
+                retry_after_seconds=round(retry_after_seconds, 3),
+            )
         else:
-            self._flush_backoff_seconds = 0.0
-            self._flush_backoff_until = 0.0
+            if timed_out:
+                logger.debug("memory_flush.completed_after_timeout")
+            else:
+                self._flush_backoff_seconds = 0.0
+                self._flush_backoff_until = 0.0
+                if completed_event is not None:
+                    logger.info(completed_event)
         self._active_flush_task = None
 
     def _record_flush_timeout_backoff(self) -> float:
@@ -2363,6 +2398,7 @@ class Agent:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("memory_flush.service_failed", error=str(exc))
+                raise
             return
 
         # Legacy fallback — only hit when no service is injected.

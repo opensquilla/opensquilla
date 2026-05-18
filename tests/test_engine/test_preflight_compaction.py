@@ -9,6 +9,8 @@ Covers:
 
 from __future__ import annotations
 
+import importlib
+import inspect
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -125,6 +127,36 @@ async def session_mgr():
 # ---------------------------------------------------------------------------
 # Tests: _maybe_preflight_compact
 # ---------------------------------------------------------------------------
+
+
+def test_preflight_compaction_coordinator_module_contract_exists() -> None:
+    """Engine preflight orchestration has an importable coordinator boundary."""
+
+    module = importlib.import_module("opensquilla.engine.preflight_compaction")
+
+    assert hasattr(module, "PreflightCompactionCoordinator")
+    assert module.T3_HANDLED == "handled"
+    assert module.T3_FLUSH_FAILED == "flush_failed"
+    assert module.flush_receipt_allows_destructive_compaction(
+        _flush_receipt(obligation_status="backfilled")
+    )
+    assert not module.flush_receipt_allows_destructive_compaction(
+        _flush_receipt(obligation_missing_ids=["missing"])
+    )
+
+
+def test_turn_runner_delegates_preflight_helpers_to_coordinator() -> None:
+    """TurnRunner should remain the composition owner, not the policy owner."""
+
+    module = importlib.import_module("opensquilla.engine.preflight_compaction")
+
+    assert (
+        TurnRunner._flush_receipt_allows_destructive_compaction
+        is module.flush_receipt_allows_destructive_compaction
+    )
+    source = inspect.getsource(TurnRunner._maybe_preflight_compact)
+    assert "PreflightCompactionCoordinator" in source
+    assert "estimate_tokens" not in source
 
 
 @pytest.mark.asyncio
@@ -567,6 +599,35 @@ async def test_run_falls_back_to_generic_preflight_after_t3_flush_failed() -> No
     assert seen["t3_session_key"] == "agent:main:abc123"
     assert seen["preflight_session_key"] == "agent:main:abc123"
     assert seen["compaction_model"] == "routed/model"
+
+
+@pytest.mark.parametrize("t3_result", ["handled", "compact_failed"])
+@pytest.mark.asyncio
+async def test_run_skips_generic_preflight_after_terminal_t3_result(t3_result: str) -> None:
+    selector = _FakeProviderSelector()
+    runner = TurnRunner(provider_selector=selector, config=GatewayConfig())
+    seen: dict[str, object] = {}
+
+    async def fake_t3(session_key, turn, context_window_tokens, **kwargs):
+        seen["t3_session_key"] = session_key
+        return t3_result
+
+    async def fail_preflight(session_key, context_window_tokens, **kwargs):
+        raise AssertionError("generic preflight should not run after terminal T3 result")
+
+    runner._maybe_compact_on_t3_upgrade = fake_t3  # type: ignore[method-assign]
+    runner._maybe_preflight_compact = fail_preflight  # type: ignore[method-assign]
+    tool_ctx = ToolContext(is_owner=True, caller_kind=CallerKind.CLI)
+
+    async for _ in runner.run(
+        "hello",
+        "agent:main:abc123",
+        tool_context=tool_ctx,
+        model="routed/model",
+    ):
+        pass
+
+    assert seen["t3_session_key"] == "agent:main:abc123"
 
 
 @pytest.mark.asyncio

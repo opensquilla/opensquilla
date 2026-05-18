@@ -182,29 +182,34 @@ async def handle_sessions_reset(
     force = bool((params or {}).get("force", False))
 
     if ctx.flush_service is None:
-        session = await require_existing_session(storage, key)
-        preservation = await preserve_lifecycle_memory(
-            "reset",
-            ctx.session_manager,
-            ctx.flush_service,
-            key,
-            session,
-            force=force,
-            principal_scopes=ctx.principal.scopes,
-        )
-        if preservation.failure is not None:
-            _raise_lifecycle_flush_failure(preservation.failure)
-        previous_session_id = preservation.previous_session_id or session.session_id
+        async def _run_locked_no_flush() -> dict[str, Any]:
+            session = await require_existing_session(storage, key)
+            preservation = await preserve_lifecycle_memory(
+                "reset",
+                ctx.session_manager,
+                ctx.flush_service,
+                key,
+                session,
+                force=force,
+                principal_scopes=ctx.principal.scopes,
+            )
+            if preservation.failure is not None:
+                _raise_lifecycle_flush_failure(preservation.failure)
+            previous_session_id = preservation.previous_session_id or session.session_id
 
-        updated, rotated = await ctx.session_manager.apply_intent(key, SessionIntent.RESET_SAME_KEY)
-        new_epoch = await increment_and_emit_epoch(ctx, storage, key)
-        return session_reset_response(
-            key,
-            rotated,
-            previous_session_id,
-            updated.session_id,
-            epoch=new_epoch,
-        )
+            updated, rotated = await ctx.session_manager.apply_intent(
+                key, SessionIntent.RESET_SAME_KEY
+            )
+            new_epoch = await increment_and_emit_epoch(ctx, storage, key)
+            return session_reset_response(
+                key,
+                rotated,
+                previous_session_id,
+                updated.session_id,
+                epoch=new_epoch,
+            )
+
+        return await run_with_session_lock(ctx.turn_runner, key, _run_locked_no_flush)
 
     registry = get_agent_task_registry()
     active = registry.get(key)

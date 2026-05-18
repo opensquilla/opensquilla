@@ -1349,6 +1349,93 @@ class TestSessionsReset:
         assert ctx.session_manager.applied_intents == [(session.session_key, "reset_same_key")]
 
     @pytest.mark.asyncio
+    async def test_reset_without_flush_service_waits_for_session_lock_before_memory_preservation(
+        self, dispatcher, session, monkeypatch
+    ):
+        runner = _RecordingTurnRunner()
+        manager = FakeSessionManager([session])
+        ctx = make_ctx(
+            session_manager=manager,
+            turn_runner=runner,
+            scopes=["operator.read", "operator.write"],
+        )
+        lock = runner._get_session_lock(session.session_key)
+        preservation_started = asyncio.Event()
+
+        async def preserve(*args, **kwargs):
+            preservation_started.set()
+            return SimpleNamespace(
+                previous_session_id=session.session_id,
+                receipt=None,
+                failure=None,
+            )
+
+        monkeypatch.setattr(rpc_session_lifecycle, "preserve_lifecycle_memory", preserve)
+
+        await lock.acquire()
+        try:
+            task = asyncio.create_task(
+                dispatcher.dispatch("r1", "sessions.reset", {"key": session.session_key}, ctx)
+            )
+            await asyncio.sleep(0)
+
+            assert preservation_started.is_set() is False
+            assert manager.applied_intents == []
+        finally:
+            lock.release()
+
+        res = await asyncio.wait_for(task, timeout=1.0)
+
+        assert res.ok is True
+        assert preservation_started.is_set() is True
+        assert manager.applied_intents == [(session.session_key, "reset_same_key")]
+
+    @pytest.mark.asyncio
+    async def test_reset_force_without_flush_service_serializes_transcript_check_and_rotation(
+        self, dispatcher, session
+    ):
+        class RecordingTranscriptSessionManager(_TranscriptSessionManager):
+            def __init__(self, sessions: list[FakeSession], transcript: list[Any]) -> None:
+                super().__init__(sessions, transcript)
+                self.lifecycle_events: list[str] = []
+
+            async def get_transcript(self, key: str) -> list[Any]:
+                self.lifecycle_events.append("transcript")
+                return await super().get_transcript(key)
+
+            async def apply_intent(self, session_key: str, intent: str, **kwargs):
+                self.lifecycle_events.append("apply_intent")
+                return await super().apply_intent(session_key, intent, **kwargs)
+
+        runner = _RecordingTurnRunner()
+        manager = RecordingTranscriptSessionManager([session], [SimpleNamespace(content="hi")])
+        ctx = make_ctx(session_manager=manager, turn_runner=runner)
+        lock = runner._get_session_lock(session.session_key)
+
+        await lock.acquire()
+        try:
+            task = asyncio.create_task(
+                dispatcher.dispatch(
+                    "r1",
+                    "sessions.reset",
+                    {"key": session.session_key, "force": True},
+                    ctx,
+                )
+            )
+            await asyncio.sleep(0)
+
+            assert manager.lifecycle_events == []
+            assert manager.applied_intents == []
+        finally:
+            lock.release()
+
+        res = await asyncio.wait_for(task, timeout=1.0)
+
+        assert res.ok is True
+        assert manager.lifecycle_events == ["transcript", "apply_intent"]
+        assert manager.applied_intents == [(session.session_key, "reset_same_key")]
+
+    @pytest.mark.asyncio
     async def test_reset_lets_recently_completed_runtime_task_settle(self, dispatcher, session):
         class RuntimeSettlesAfterDoneRace:
             def __init__(self) -> None:

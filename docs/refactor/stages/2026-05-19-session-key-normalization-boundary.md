@@ -140,7 +140,7 @@ Co-authored-by: Codex <noreply@openai.com>
 - [x] Merge child into integration with `git merge --no-ff`.
 - [x] Run `scripts/refactor_gate.sh` in integration.
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`, run
+- [x] Remove `../opensquilla-refactor-active`, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
 
@@ -181,6 +181,7 @@ Co-authored-by: Codex <noreply@openai.com>
   - Full child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 514 source files; whitespace passed; pytest passed with `2470 passed, 8 skipped, 2 warnings in 50.27s`; gateway smoke start/status/stop/status passed on `127.0.0.1:60459`.
   - Integration merge: `git merge --no-ff codex/refactor-session-key-normalization-boundary` produced merge commit `5a506b1`.
   - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 514 source files; whitespace passed; pytest passed with `2472 passed, 6 skipped, 2 warnings in 27.58s`; gateway smoke start/status/stop/status passed on `127.0.0.1:60572`.
+  - Cleanup: `git worktree remove ../opensquilla-refactor-active && git worktree prune && git worktree list` removed the active worktree; no refactor worktree remains beyond `../opensquilla-refactor-integration`.
 - Residual risk:
   - Low. The duplicated Gateway helper implementations were removed, while all callers still use the same validation and canonicalization behavior through the session-owned helper. The slice intentionally leaves non-parameter list-key canonicalization in the read-query module.
 - Next recommended slice:

@@ -14,6 +14,12 @@ from opensquilla.gateway import attachment_ingest as _attachment_ingest
 from opensquilla.gateway import rpc_session_send_inputs as _session_send_inputs
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, RpcUnavailableError, get_dispatcher
+from opensquilla.gateway.rpc_compaction_inputs import (
+    build_gateway_compaction_config,
+    context_window_tokens,
+    effective_compaction_model,
+    resolve_compaction_provider,
+)
 from opensquilla.gateway.rpc_session_send_inputs import (
     normalize_memory_capture_controls,
     resolve_session_attachments,
@@ -29,10 +35,7 @@ from opensquilla.gateway.session_services import (
 )
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.paths import media_root_from_config
-from opensquilla.session.compaction import (
-    build_compaction_config_from_provider,
-    call_compact_with_optional_config,
-)
+from opensquilla.session.compaction import call_compact_with_optional_config
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
 from opensquilla.session.rpc_payload import (
     messages_subscribe_response,
@@ -191,57 +194,15 @@ def _require_key(params: dict | None) -> str:
 
 
 def _context_window_tokens(params: dict | None, ctx: RpcContext) -> int:
-    raw: Any = None
-    if isinstance(params, dict):
-        raw = params.get("contextWindowTokens", params.get("context_window_tokens"))
-    if raw is None:
-        raw = getattr(ctx.config, "context_budget_tokens", 100_000)
-    if isinstance(raw, bool):
-        raise ValueError("contextWindowTokens must be a positive integer")
-    try:
-        value = int(raw)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("contextWindowTokens must be a positive integer") from exc
-    if value <= 0:
-        raise ValueError("contextWindowTokens must be a positive integer")
-    return value
+    return context_window_tokens(params, ctx)
 
 
 def _effective_compaction_model(session: Any | None) -> str | None:
-    if session is None:
-        return None
-    return getattr(session, "model_override", None) or getattr(session, "model", None)
+    return effective_compaction_model(session)
 
 
 def _resolve_compaction_provider(ctx: RpcContext, session: Any | None) -> Any | None:
-    selector = getattr(ctx, "provider_selector", None)
-    if selector is None:
-        return None
-
-    resolved_selector = selector
-    clone = getattr(selector, "clone", None)
-    if callable(clone):
-        try:
-            resolved_selector = clone()
-        except Exception:  # noqa: BLE001
-            resolved_selector = selector
-
-    model = _effective_compaction_model(session)
-    if model and resolved_selector is not selector:
-        override = getattr(resolved_selector, "override_model", None)
-        if callable(override):
-            try:
-                override(model)
-            except Exception:  # noqa: BLE001
-                pass
-
-    resolver = getattr(resolved_selector, "resolve", None)
-    if not callable(resolver):
-        return None
-    try:
-        return resolver()
-    except Exception:  # noqa: BLE001
-        return None
+    return resolve_compaction_provider(ctx, session)
 
 
 def _model_value(value: Any) -> str | None:
@@ -1166,7 +1127,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
     if ctx.session_manager is None:
         raise KeyError("No session manager available")
 
-    context_window_tokens = _context_window_tokens(params, ctx)
+    compact_tokens = context_window_tokens(params, ctx)
     turn_runner = ctx.turn_runner
     lock = get_session_lock(turn_runner, key)
 
@@ -1178,15 +1139,11 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
         if storage is not None:
             session = await storage.get_session(key)
 
-        compaction_config = build_compaction_config_from_provider(
-            _resolve_compaction_provider(ctx, session),
-            model_override=_effective_compaction_model(session),
-            compaction_config=getattr(getattr(ctx, "config", None), "compaction", None),
-        )
+        compaction_config = build_gateway_compaction_config(ctx, session)
 
         compact_with_result = getattr(ctx.session_manager, "compact_with_result", None)
         if callable(compact_with_result):
-            result = await compact_with_result(key, context_window_tokens, compaction_config)
+            result = await compact_with_result(key, compact_tokens, compaction_config)
             summary = getattr(result, "summary", "") or ""
             removed_count = int(getattr(result, "removed_count", 0) or 0)
             summary_source = getattr(result, "summary_source", "unknown") or "unknown"
@@ -1195,7 +1152,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             summary = await call_compact_with_optional_config(
                 compact,
                 key,
-                context_window_tokens,
+                compact_tokens,
                 compaction_config,
             )
             removed_count = 1 if summary else 0
@@ -1205,7 +1162,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             removed_count=removed_count,
             summary=summary,
             summary_source=summary_source,
-            context_window_tokens=context_window_tokens,
+            context_window_tokens=compact_tokens,
         )
 
     if lock is None:

@@ -1809,6 +1809,57 @@ class TestSessionsContextCompact:
         assert "summary_len" not in handler_constants
         assert "context_window_tokens" not in handler_constants
 
+    def test_gateway_context_compact_delegates_inputs_to_gateway_boundary(self):
+        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        boundary_path = Path(rpc_sessions.__file__).with_name("rpc_compaction_inputs.py")
+
+        assert boundary_path.exists()
+
+        boundary_tree = ast.parse(boundary_path.read_text(encoding="utf-8"))
+        imports = {
+            (node.module, alias.name)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        boundary_defs = {
+            node.name
+            for node in ast.walk(boundary_tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        handler = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_handle_sessions_context_compact"
+        )
+
+        assert {
+            ("opensquilla.gateway.rpc_compaction_inputs", "build_gateway_compaction_config"),
+            ("opensquilla.gateway.rpc_compaction_inputs", "context_window_tokens"),
+            ("opensquilla.gateway.rpc_compaction_inputs", "effective_compaction_model"),
+            ("opensquilla.gateway.rpc_compaction_inputs", "resolve_compaction_provider"),
+        } <= imports
+        assert {
+            "build_gateway_compaction_config",
+            "context_window_tokens",
+            "effective_compaction_model",
+            "resolve_compaction_provider",
+        } <= boundary_defs
+        assert any(
+            isinstance(node, ast.Name) and node.id == "context_window_tokens"
+            for node in ast.walk(handler)
+        )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "build_gateway_compaction_config"
+            for node in ast.walk(handler)
+        )
+        assert not any(
+            isinstance(node, ast.Name) and node.id == "build_compaction_config_from_provider"
+            for node in ast.walk(handler)
+        )
+
     @pytest.mark.asyncio
     async def test_context_compact_not_found(self, dispatcher, ctx_with_sessions):
         res = await dispatcher.dispatch(

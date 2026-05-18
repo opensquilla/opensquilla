@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -249,6 +251,56 @@ async def test_rpc_chat_auto_summarize_builds_provider_compaction_config() -> No
     assert config.base_url == "https://openrouter.ai/api/v1"
     assert selector.override_calls == []
     assert selector.clone_instance.override_calls == ["routed/model"]
+
+
+def test_rpc_chat_auto_summarize_delegates_compaction_inputs_to_gateway_boundary() -> None:
+    from opensquilla.gateway import rpc_chat
+
+    source = Path(rpc_chat.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    boundary_path = Path(rpc_chat.__file__).with_name("rpc_compaction_inputs.py")
+
+    assert boundary_path.exists()
+
+    boundary_tree = ast.parse(boundary_path.read_text(encoding="utf-8"))
+    imports = {
+        (node.module, alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+    top_level_functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    boundary_defs = {
+        node.name
+        for node in ast.walk(boundary_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    builder = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_build_context_overflow_compaction_config"
+    )
+
+    assert (
+        "opensquilla.gateway.rpc_compaction_inputs",
+        "build_gateway_compaction_config",
+    ) in imports
+    assert "build_gateway_compaction_config" in boundary_defs
+    assert "_effective_compaction_model" not in top_level_functions
+    assert "_resolve_compaction_provider" not in top_level_functions
+    assert any(
+        isinstance(node, ast.Name) and node.id == "build_gateway_compaction_config"
+        for node in ast.walk(builder)
+    )
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "build_compaction_config_from_provider"
+        for node in ast.walk(builder)
+    )
 
 
 @pytest.mark.asyncio

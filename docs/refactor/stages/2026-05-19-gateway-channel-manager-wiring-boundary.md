@@ -35,7 +35,7 @@ parallelism decision was still made explicitly under
 
 ## Current-state audit
 
-- Current HEAD: `dc90f46` (`Record gateway runtime wiring cleanup`)
+- Current HEAD at worker start: `88eaa05` (`Plan gateway channel manager wiring boundary`)
 - Worktree status: clean before this plan file.
 - AGENTS.md files in scope:
   - `AGENTS.md`
@@ -85,6 +85,11 @@ parallelism decision was still made explicitly under
   - Evidence: read current skill instructions; this stage requires RED boundary
     tests before adding `gateway/channel_manager_wiring.py` or changing
     `boot.py`.
+  - Worker RED evidence: ran
+    `uv run --extra dev pytest tests/test_gateway/test_channel_manager_wiring_boundary.py tests/test_gateway/test_router_boot.py::test_start_gateway_server_schedules_router_preload_after_channels tests/test_gateway/test_shutdown_order.py -q`
+    before production edits. Result: expected failure, 5 failed and 2 passed;
+    failures showed `channel_manager_wiring.py` was missing and
+    `boot.py` had not imported/delegated to the new boundary.
 - `superpowers:verification-before-completion`:
   - Evidence: read current skill instructions; focused tests, touched-file
     checks, child `scripts/refactor_gate.sh`, integration
@@ -100,6 +105,9 @@ parallelism decision was still made explicitly under
   - External worker fallback: use `scripts/refactor_external_agent.sh` with
     slot `channel-manager`. Do not fall back to unrecorded serial work unless
     the external worker route is blocked.
+  - Worker execution note: this worker ran in
+    `../opensquilla-refactor-agent-channel-manager` because same-thread
+    `spawn_agent` failed with `agent thread limit reached`.
 - Historical evidence note:
   - Missing per-substage Superpowers evidence is a blocker.
 
@@ -197,8 +205,8 @@ parallelism decision was still made explicitly under
 - [ ] Run `scripts/refactor_preflight.sh --allow-dirty`.
 - [ ] Commit this stage plan on the active child branch.
 - [ ] Create external worker worktree from the active child branch.
-- [ ] Worker writes failing boundary tests and records RED output.
-- [ ] Worker implements `gateway/channel_manager_wiring.py` and replaces the
+- [x] Worker writes failing boundary tests and records RED output.
+- [x] Worker implements `gateway/channel_manager_wiring.py` and replaces the
       inline boot channel manager construction/start blocks with short
       delegator calls.
 - [ ] Main thread reviews diff for behavior compatibility and boundary scope.
@@ -244,12 +252,29 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Worker commit:
+- Worker commit: this commit on `codex/refactor-gateway-channel-manager-worker`
 - Active child support commits:
 - Child verification commit:
 - Integration merge:
 - Integration record:
 - Verification evidence:
+  - RED:
+    `uv run --extra dev pytest tests/test_gateway/test_channel_manager_wiring_boundary.py tests/test_gateway/test_router_boot.py::test_start_gateway_server_schedules_router_preload_after_channels tests/test_gateway/test_shutdown_order.py -q`
+    -> expected failure, 5 failed and 2 passed.
+  - GREEN:
+    `uv run --extra dev pytest tests/test_gateway/test_channel_manager_wiring_boundary.py tests/test_gateway/test_router_boot.py::test_start_gateway_server_schedules_router_preload_after_channels tests/test_gateway/test_shutdown_order.py tests/test_gateway/test_channel_rpc_payload_facade.py -q`
+    -> 11 passed.
+  - Touched-file ruff:
+    `uv run --extra dev ruff check src/opensquilla/gateway/boot.py src/opensquilla/gateway/channel_manager_wiring.py tests/test_gateway/test_channel_manager_wiring_boundary.py`
+    -> all checks passed.
+  - Gateway mypy:
+    `uv run --extra dev mypy src/opensquilla/gateway --show-error-codes`
+    -> success, no issues found in 91 source files.
+  - Whitespace:
+    `git diff --check` -> clean.
+  - Full `scripts/refactor_gate.sh`: not run by this external worker; main
+    thread will run or re-run the child and integration gates.
 - Cleanup evidence:
-- Residual risk:
+- Residual risk: focused compatibility coverage passed; residual risk is
+  limited to interactions only covered by the full refactor gate.
 - Next recommended slice:

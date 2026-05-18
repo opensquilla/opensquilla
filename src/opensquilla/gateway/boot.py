@@ -35,9 +35,12 @@ from opensquilla.agents.scope import resolve_agent_model, resolve_agent_workspac
 from opensquilla.asyncio_utils import create_background_task
 from opensquilla.engine.usage import UsageTracker as _UsageTracker
 from opensquilla.gateway.app import create_gateway_app
+from opensquilla.gateway.channel_manager_wiring import (
+    build_gateway_channel_manager_wiring,
+    start_gateway_channels,
+)
 from opensquilla.gateway.config import GatewayConfig, is_public_bind
 from opensquilla.gateway.cron_result_delivery import build_cron_delivery_chain
-from opensquilla.gateway.rpc import get_dispatcher
 from opensquilla.gateway.runtime_wiring import build_gateway_runtime_wiring
 from opensquilla.gateway.session_event_delivery import deliver_session_event
 from opensquilla.gateway.task_runtime_streaming import (
@@ -1336,7 +1339,7 @@ async def start_gateway_server(
 
     # Lazy ref for channel_manager — cron handler captures it via closure,
     # populated after channel_manager is constructed below.
-    _cm_holder: list = [None]
+    _cm_holder: list[Any | None] = [None]
     runtime_wiring = await build_gateway_runtime_wiring(
         config=config,
         svc=svc,
@@ -1427,43 +1430,23 @@ async def start_gateway_server(
         )
 
     # Build channel adapters (don't start yet -- app doesn't exist)
-    webhook_routes: list = []
-    if channel_manager is None and config.channels.channels:
-        from opensquilla.channels.manager import ChannelManager
-        from opensquilla.gateway.channel_ingress import GatewayChannelIngress
-
-        channel_rpc_context_factory = _make_channel_rpc_context_factory(
-            svc,
-            config,
-            subscription_manager=subscription_manager,
-            channel_manager_ref=lambda: _cm_holder[0],
-            turn_runner=turn_runner,
-            heartbeat_service=heartbeat_service,
-            diagnostics_state=diagnostics_state,
-        )
-        channel_manager = ChannelManager.from_config(
-            config.channels.channels,
-            turn_runner=turn_runner,
-            session_manager=svc.session_manager,
-            event_bridge=runtime_event_bridge,
-            config=config,
-            task_runtime=task_runtime,
-            rpc_dispatcher=get_dispatcher(),
-            channel_rpc_context_factory=channel_rpc_context_factory,
-            channel_ingress=GatewayChannelIngress(),
-        )
-        webhook_routes = channel_manager.collect_webhook_routes()
-        # Populate lazy ref so cron handler can deliver to channels
-        _cm_holder[0] = channel_manager
-        log.info(
-            "gateway.channels_built",
-            count=len(config.channels.channels),
-            webhooks=len(webhook_routes),
-        )
-
-    # Ensure lazy ref covers pre-injected channel_manager too
-    if channel_manager is not None:
-        _cm_holder[0] = channel_manager
+    channel_wiring = build_gateway_channel_manager_wiring(
+        config=config,
+        svc=svc,
+        turn_runner=turn_runner,
+        subscription_manager=subscription_manager,
+        channel_manager=channel_manager,
+        channel_manager_ref=lambda: _cm_holder[0],
+        set_channel_manager_ref=lambda value: _cm_holder.__setitem__(0, value),
+        runtime_event_bridge=runtime_event_bridge,
+        task_runtime=task_runtime,
+        heartbeat_service=heartbeat_service,
+        diagnostics_state=diagnostics_state,
+        channel_rpc_context_factory_builder=_make_channel_rpc_context_factory,
+        logger=log,
+    )
+    channel_manager = channel_wiring.channel_manager
+    webhook_routes = channel_wiring.webhook_routes
 
     # ── ASGI app ─────────────────────────────────────────────────────
     app = create_gateway_app(
@@ -1524,22 +1507,7 @@ async def start_gateway_server(
         log.info("gateway.started", host=config.host, port=config.port)
 
     # Start channels (after app is ready to receive webhooks)
-    if channel_manager is not None:
-        results = await channel_manager.start_all()
-        start_errors_fn = getattr(channel_manager, "start_errors", None)
-        start_errors = start_errors_fn() if start_errors_fn is not None else {}
-        for name, ok in results.items():
-            if ok:
-                log.info("gateway.channel_started", channel=name)
-            else:
-                details = start_errors.get(name, {})
-                log.warning(
-                    "gateway.channel_failed",
-                    channel=name,
-                    error_type=details.get("error_type"),
-                    error=details.get("error"),
-                    exception=details.get("exception"),
-                )
+    await start_gateway_channels(channel_manager, logger=log)
 
     if run:
         create_background_task(preload_squilla_router_runtime(config))

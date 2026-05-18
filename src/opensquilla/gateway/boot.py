@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from opensquilla.engine.usage import UsageTracker
@@ -34,12 +34,12 @@ from starlette.applications import Starlette
 from opensquilla.agents.scope import resolve_agent_model, resolve_agent_workspace_dir
 from opensquilla.asyncio_utils import create_background_task
 from opensquilla.engine.usage import UsageTracker as _UsageTracker
-from opensquilla.gateway.app import create_gateway_app
+from opensquilla.gateway.app_server_wiring import build_gateway_app_server
 from opensquilla.gateway.channel_manager_wiring import (
     build_gateway_channel_manager_wiring,
     start_gateway_channels,
 )
-from opensquilla.gateway.config import GatewayConfig, is_public_bind
+from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.cron_handler_wiring import register_gateway_cron_handlers
 from opensquilla.gateway.runtime_wiring import build_gateway_runtime_wiring
 from opensquilla.gateway.task_runtime_streaming import (
@@ -640,7 +640,7 @@ class GatewayServer:
 
     app: Starlette
     config: GatewayConfig
-    _server: uvicorn.Server | None = field(default=None, repr=False)
+    _server: Any | None = field(default=None, repr=False)
     _task: asyncio.Task | None = field(default=None, repr=False)
     _channel_manager: Any = field(default=None, repr=False)
     _services: ServiceContainer | None = field(default=None, repr=False)
@@ -1386,63 +1386,28 @@ async def start_gateway_server(
     channel_manager = channel_wiring.channel_manager
     webhook_routes = channel_wiring.webhook_routes
 
-    # ── ASGI app ─────────────────────────────────────────────────────
-    app = create_gateway_app(
-        config,
-        session_manager=svc.session_manager,
-        provider_selector=svc.provider_selector,
-        tool_registry=svc.tool_registry,
-        subscription_manager=subscription_manager,
-        channel_manager=channel_manager,
-        usage_tracker=svc.usage_tracker,
-        skill_loader=svc.skill_loader,
-        cron_scheduler=svc.cron_scheduler,
-        turn_runner=turn_runner,
-        task_runtime=task_runtime,
-        flush_service=svc.flush_service,
-        heartbeat_service=heartbeat_service,
-        heartbeat_loop=heartbeat_loop,
-        agent_registry=svc.agent_registry,
-        diagnostics_state=diagnostics_state,
-        memory_managers=svc.memory_managers,
-        memory_stores=svc.memory_stores,
-        memory_retrievers=svc.memory_retrievers,
-        extra_routes=webhook_routes or None,
+    server_handle = cast(
+        GatewayServer,
+        build_gateway_app_server(
+            config=config,
+            svc=svc,
+            subscription_manager=subscription_manager,
+            channel_manager=channel_manager,
+            turn_runner=turn_runner,
+            task_runtime=task_runtime,
+            heartbeat_service=heartbeat_service,
+            heartbeat_loop=heartbeat_loop,
+            background_completion_manager=background_completion_manager,
+            diagnostics_state=diagnostics_state,
+            webhook_routes=webhook_routes,
+            run=run,
+            gateway_server_factory=GatewayServer,
+            uvicorn_config_factory=uvicorn.Config,
+            uvicorn_server_factory=uvicorn.Server,
+            background_task_factory=create_background_task,
+        ),
     )
-    app.state.gateway_ready = False
-
-    server_handle = GatewayServer(app=app, config=config)
-    server_handle._channel_manager = channel_manager
-    server_handle._services = svc
-    server_handle._background_completion_manager = background_completion_manager
-
-    if run:
-        uv_config = uvicorn.Config(
-            app=app,
-            host=config.host,
-            port=config.port,
-            log_level="info" if not config.debug else "debug",
-        )
-        server = uvicorn.Server(uv_config)
-        server_handle._server = server
-
-        task = create_background_task(server.serve())
-        server_handle._task = task
-
-        # Warn loudly before the normal started line so operators
-        # see the network-exposure notice even on info-level log streams.
-        if is_public_bind(config.host):
-            log.warning(
-                "gateway.bind.public",
-                host=config.host,
-                port=config.port,
-                message=(
-                    "gateway bound to a wildcard address; reachable from "
-                    "every interface. Opt-in required — only expose behind "
-                    "a trusted reverse proxy or VPN."
-                ),
-            )
-        log.info("gateway.started", host=config.host, port=config.port)
+    app = server_handle.app
 
     # Start channels (after app is ready to receive webhooks)
     await start_gateway_channels(channel_manager, logger=log)

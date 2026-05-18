@@ -18,7 +18,7 @@ const UsageView = (() => {
 
   function render(el) {
     _el = el;
-    _rpc = App.getRpc();
+    _rpc = WebUiRpc.client();
 
     _el.innerHTML = `
       <div class="usage-stage">

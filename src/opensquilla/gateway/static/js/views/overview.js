@@ -21,7 +21,7 @@ const OverviewView = (() => {
 
   function render(el) {
     _el = el;
-    _rpc = App.getRpc();
+    _rpc = WebUiRpc.client();
     _ensureCss();
 
     const { url, token } = App.loadConnectionSettings();

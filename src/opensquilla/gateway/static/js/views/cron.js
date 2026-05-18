@@ -21,7 +21,7 @@ const CronView = (() => {
 
   function render(el) {
     _el = el;
-    _rpc = App.getRpc();
+    _rpc = WebUiRpc.client();
     _el.innerHTML = `
       <div class="cron-stage">
         <header class="cron-stage__header">
@@ -217,7 +217,7 @@ const CronView = (() => {
 
   function destroy() {
     // Unsubscribe from cron events (best-effort; ignore disconnected state)
-    const rpc = App.getRpc();
+    const rpc = WebUiRpc.client();
     if (rpc) rpc.call('cron.unsubscribe', {}).catch(() => {});
 
     _unsubs.forEach(fn => fn());

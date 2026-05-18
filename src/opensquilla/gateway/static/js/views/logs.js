@@ -31,7 +31,7 @@ const LogsView = (() => {
 
   function render(el) {
     _el = el;
-    _rpc = App.getRpc();
+    _rpc = WebUiRpc.client();
     _ensureCss();
 
     // Reset state on each render

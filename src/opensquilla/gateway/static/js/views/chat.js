@@ -780,7 +780,7 @@ const ChatView = (() => {
 
   function render(el) {
     _el = el;
-    _rpc = App.getRpc();
+    _rpc = WebUiRpc.client();
     _applyRpcPolicy(_rpc?.policy || {});
 
     // Fetch active search provider on every render so config changes take effect immediately

@@ -20,7 +20,7 @@ const SessionsView = (() => {
 
   function render(el) {
     _el = el;
-    _rpc = App.getRpc();
+    _rpc = WebUiRpc.client();
     _el.innerHTML = `
       <div class="sess-stage">
         <header class="sess-stage__header">

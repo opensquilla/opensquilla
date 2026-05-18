@@ -28,7 +28,7 @@ const SetupView = (() => {
 
   async function render(el) {
     _el = el;
-    _rpc = App.getRpc();
+    _rpc = WebUiRpc.client();
     await _rpc.waitForConnection();
     await _load();
     _draw();

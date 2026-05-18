@@ -16,7 +16,7 @@ import pytest
 
 from opensquilla.agents.registry import AgentRegistry
 from opensquilla.engine.types import DoneEvent
-from opensquilla.gateway import rpc_session_lifecycle, rpc_sessions
+from opensquilla.gateway import rpc_session_lifecycle, rpc_session_read_queries, rpc_sessions
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
 from opensquilla.gateway.attachment_ingest import (
     MAX_STAGED_PDF_BYTES,
@@ -677,7 +677,7 @@ class TestSessionsList:
         assert manager._storage.list_agent_tasks_calls == []
 
     def test_gateway_sessions_list_delegates_payload_to_session_boundary(self):
-        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        source = Path(rpc_session_read_queries.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         imports = {
             (node.module, alias.name)
@@ -695,7 +695,7 @@ class TestSessionsList:
             node
             for node in tree.body
             if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "_handle_sessions_list"
+            and node.name == "handle_sessions_list"
         )
         constants = {
             node.value
@@ -2009,7 +2009,7 @@ class TestSessionsMessagesSubscribe:
         assert res.payload["run_status"] == "interrupted"
 
     def test_gateway_messages_subscribe_delegates_response_to_session_boundary(self):
-        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        source = Path(rpc_session_read_queries.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         imports = {
             (node.module, alias.name)
@@ -2021,7 +2021,7 @@ class TestSessionsMessagesSubscribe:
             node
             for node in tree.body
             if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "_handle_sessions_messages_subscribe"
+            and node.name == "handle_sessions_messages_subscribe"
         )
         handler_constants = {
             node.value for node in ast.walk(handler) if isinstance(node, ast.Constant)
@@ -2075,7 +2075,7 @@ class TestSessionsPreview:
         assert len(res.payload["previews"]) == 1
 
     def test_gateway_sessions_preview_delegates_payload_to_session_boundary(self):
-        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        source = Path(rpc_session_read_queries.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         imports = {
             (node.module, alias.name)
@@ -2087,7 +2087,7 @@ class TestSessionsPreview:
             node
             for node in tree.body
             if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "_handle_sessions_preview"
+            and node.name == "handle_sessions_preview"
         )
         preview_constants = {
             node.value for node in ast.walk(preview_handler) if isinstance(node, ast.Constant)
@@ -2126,7 +2126,7 @@ class TestSessionsResolve:
         assert res.payload["session_key"] == session.session_key
 
     def test_gateway_resolve_delegates_payload_to_session_boundary(self):
-        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        source = Path(rpc_session_read_queries.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         imports = {
             (node.module, alias.name)
@@ -2137,7 +2137,7 @@ class TestSessionsResolve:
         handler = next(
             node
             for node in tree.body
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_handle_sessions_resolve"
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "handle_sessions_resolve"
         )
         handler_constants = {
             node.value for node in ast.walk(handler) if isinstance(node, ast.Constant)

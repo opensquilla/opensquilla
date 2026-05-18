@@ -20,7 +20,10 @@ from opensquilla.gateway import (
     rpc_session_lifecycle,
     rpc_session_management,
     rpc_session_read_queries,
-    rpc_sessions,
+    rpc_session_send,
+)
+from opensquilla.gateway import (
+    rpc_sessions as _rpc_sessions,  # noqa: F401 - import registers session RPC handlers
 )
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
 from opensquilla.gateway.attachment_ingest import (
@@ -740,7 +743,7 @@ class TestSessionsSend:
         ]
 
     def test_gateway_sessions_send_delegates_response_payloads_to_session_boundary(self):
-        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        source = Path(rpc_session_send.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         imports = {
             (node.module, alias.name)
@@ -757,7 +760,7 @@ class TestSessionsSend:
             node
             for node in tree.body
             if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "_handle_sessions_send"
+            and node.name == "handle_sessions_send"
         )
         dict_key_sets = {
             tuple(
@@ -788,9 +791,9 @@ class TestSessionsSend:
         assert ("opensquilla.session.terminal_reply", "build_terminal_reply") not in imports
 
     def test_gateway_sessions_send_delegates_input_normalization_to_gateway_boundary(self):
-        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        source = Path(rpc_session_send.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
-        boundary_path = Path(rpc_sessions.__file__).with_name(
+        boundary_path = Path(rpc_session_send.__file__).with_name(
             "rpc_session_send_inputs.py"
         )
 
@@ -817,7 +820,7 @@ class TestSessionsSend:
             node
             for node in tree.body
             if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "_handle_sessions_send"
+            and node.name == "handle_sessions_send"
         )
         handler_calls = {
             node.func.id
@@ -846,9 +849,9 @@ class TestSessionsSend:
         } <= boundary_defs
 
     def test_gateway_sessions_send_delegates_runtime_enqueue_to_gateway_boundary(self):
-        source = Path(rpc_sessions.__file__).read_text(encoding="utf-8")
+        source = Path(rpc_session_send.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
-        boundary_path = Path(rpc_sessions.__file__).with_name(
+        boundary_path = Path(rpc_session_send.__file__).with_name(
             "rpc_session_turn_runtime.py"
         )
 
@@ -871,7 +874,7 @@ class TestSessionsSend:
             node
             for node in tree.body
             if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "_handle_sessions_send"
+            and node.name == "handle_sessions_send"
         )
         handler_calls = {
             node.func.id

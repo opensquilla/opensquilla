@@ -10,11 +10,13 @@ import structlog
 
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.provider_runtime_sync import (
-    build_provider_selector_from_runtime,
     sync_image_generation,
 )
 from opensquilla.provider.model_catalog import ModelCatalog
 from opensquilla.provider.runtime_config import resolve_llm_runtime_config
+from opensquilla.provider.selector_materialization import (
+    build_provider_selector_from_runtime,
+)
 
 log = structlog.get_logger(__name__)
 

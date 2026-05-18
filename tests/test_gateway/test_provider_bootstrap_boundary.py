@@ -69,13 +69,13 @@ def test_boot_delegates_provider_runtime_startup_to_provider_bootstrap() -> None
     ) in bootstrap_imports
     assert (
         "opensquilla.gateway.provider_runtime_sync",
-        "build_provider_selector_from_runtime",
-    ) in assembly_imports
-    assert (
-        "opensquilla.gateway.provider_runtime_sync",
         "sync_image_generation",
     ) in assembly_imports
     assert ("opensquilla.provider.model_catalog", "ModelCatalog") in assembly_imports
+    assert (
+        "opensquilla.provider.selector_materialization",
+        "build_provider_selector_from_runtime",
+    ) in assembly_imports
 
 
 @pytest.mark.asyncio

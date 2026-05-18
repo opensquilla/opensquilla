@@ -6,8 +6,19 @@ from types import SimpleNamespace
 
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
-from opensquilla.gateway.provider_runtime_sync import build_provider_selector_from_runtime
+from opensquilla.gateway.provider_runtime_sync import (
+    build_provider_selector_from_runtime as gateway_build_provider_selector_from_runtime,
+)
+from opensquilla.gateway.provider_runtime_sync import (
+    provider_config_from_runtime,
+)
 from opensquilla.gateway.rpc_onboarding import _sync_provider_selector
+from opensquilla.provider.selector_materialization import (
+    build_provider_selector_from_runtime,
+)
+from opensquilla.provider.selector_materialization import (
+    provider_config_from_runtime as provider_provider_config_from_runtime,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 GATEWAY = ROOT / "src/opensquilla/gateway"
@@ -75,16 +86,20 @@ def test_provider_runtime_sync_owns_gateway_selector_materialization() -> None:
         "opensquilla.gateway.provider_runtime_sync",
         "sync_provider_selector",
     ) in onboarding_imports
-    assert provider_selector_symbols <= boundary_imports
+    assert provider_selector_symbols.isdisjoint(boundary_imports)
+    assert (
+        "opensquilla.provider.selector_materialization",
+        "build_provider_selector_from_runtime",
+    ) in boundary_imports
     assert (
         "opensquilla.gateway.provider_runtime_assembly",
         "build_provider_runtime_services",
     ) in bootstrap_imports
     assert (
-        "opensquilla.gateway.provider_runtime_sync",
+        "opensquilla.provider.selector_materialization",
         "build_provider_selector_from_runtime",
     ) in assembly_imports
-    assert "build_provider_selector_from_runtime" in _function_names(
+    assert "build_provider_selector_from_runtime" not in _function_names(
         PROVIDER_RUNTIME_SYNC
     )
 
@@ -115,6 +130,11 @@ def test_build_provider_selector_from_runtime_preserves_effective_fields() -> No
     assert current.proxy == "http://127.0.0.1:7890"
     assert current.provider_routing["custom/model"] == "custom-provider"
     assert current.provider_routing["deepseek/deepseek-v4-flash"] == "deepseek"
+
+
+def test_gateway_sync_keeps_selector_materialization_compatibility_imports() -> None:
+    assert gateway_build_provider_selector_from_runtime is build_provider_selector_from_runtime
+    assert provider_config_from_runtime is provider_provider_config_from_runtime
 
 
 def test_rpc_onboarding_provider_sync_uses_effective_runtime_config(

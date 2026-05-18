@@ -4,6 +4,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from opensquilla.provider.selector_materialization import (
+    build_provider_selector_from_runtime,
+    provider_config_from_runtime,
+)
+
+__all__ = [
+    "build_provider_selector_from_runtime",
+    "clear_runtime_secret_paths",
+    "inherit_runtime_secrets",
+    "provider_config_from_runtime",
+    "sync_image_generation",
+    "sync_provider_selector",
+]
+
 
 def inherit_runtime_secrets(source: Any, target: Any) -> None:
     """Carry runtime-only secret values from one config object to another."""
@@ -19,37 +33,6 @@ def clear_runtime_secret_paths(config: Any, paths: set[str]) -> None:
         return
     for path in paths:
         config.clear_runtime_secret(path)
-
-
-def provider_config_from_runtime(runtime: Any, *, base_url: str | None = None) -> Any:
-    """Build the provider selector config from an effective LLM runtime object."""
-
-    from opensquilla.provider.selector import ProviderConfig
-
-    return ProviderConfig(
-        provider=runtime.provider,
-        model=runtime.model,
-        api_key=runtime.api_key,
-        base_url=runtime.base_url if base_url is None else base_url,
-        proxy=runtime.proxy,
-        provider_routing=runtime.provider_routing,
-    )
-
-
-def build_provider_selector_from_runtime(
-    runtime: Any,
-    *,
-    base_url: str | None = None,
-) -> Any:
-    """Create a provider selector from an effective LLM runtime object."""
-
-    from opensquilla.provider.selector import ModelSelector, SelectorConfig
-
-    return ModelSelector(
-        SelectorConfig(
-            primary=provider_config_from_runtime(runtime, base_url=base_url),
-        )
-    )
 
 
 def sync_provider_selector(ctx: Any, config: Any) -> None:

@@ -11,20 +11,43 @@
 ## Goal
 
 Progressively refactor OpenSquilla with isolated worktrees, narrow integration
-slices, complete quality gates, and user-facing compatibility preserved at every
-stage.
+module-batch slices, complete quality gates, and user-facing compatibility
+preserved at every stage.
 
 The active integration branch is `codex/refactor-architecture`. Keep the
 integration worktree separate from the main checkout. The main checkout is
 observe-only for this refactor line.
+
+## Refactor Cadence
+
+- Default to coarser, systemic module or module-family slices instead of
+  helper-sized moves. Good slices should cover a cohesive boundary batch such as
+  provider runtime/materialization/status, channel transport/dispatch/reply,
+  tools policy/execution/security, session runtime/persistence/queues, or Web UI
+  RPC/view-state contracts.
+- Use Superpowers planning to group related architecture work, identify shared
+  ownership boundaries up front, and run one unified focused verification set
+  plus the full refactor gate for the batch.
+- Keep every batch behavior-compatible. Larger refactors must add or update tests
+  so CLI text, RPC payloads, WebSocket events, provider defaults, channel
+  replies, public imports, and release hygiene remain at least as complete as the
+  original main branch.
+- Do not reduce scope by simplifying implementations, dropping compatibility
+  shims, or leaving feature gaps just to make a larger refactor pass.
+- Use the fixed sibling child path `../opensquilla-refactor-active` for the
+  active slice, merge back to the sibling integration worktree
+  `../opensquilla-refactor-integration`, then remove the active worktree and
+  prune git metadata before starting the next batch.
 
 ## Operating Rules
 
 1. Inspect current state before trusting prior context: `git status --short --branch`,
    `git rev-parse --short HEAD`, `git log --oneline -8`, and
    `find . -name AGENTS.md -print`.
-2. Create one child worktree per slice from the integration branch.
-3. Keep slices behavior-compatible and independently mergeable.
+2. Use the fixed active child worktree path for one independently mergeable
+   module-batch slice at a time.
+3. Keep slices behavior-compatible and independently mergeable, but avoid
+   creating many tiny slices for closely related module boundaries.
 4. Prefer explicit boundaries already used in this repo:
    `*_workflows.py`, `*_presenters.py`, `*_gateway_queries.py`,
    `*_config_mutations.py`, `*_rpc_payload.py`, and focused runtime/operation
@@ -165,9 +188,10 @@ observe-only for this refactor line.
 1. Run `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture`
    in the integration worktree.
 2. Create a child branch and worktree:
-   `git worktree add ../opensquilla-refactor-<slice> -b codex/refactor-<slice>`.
+   `git worktree add ../opensquilla-refactor-active -b codex/refactor-<slice>`.
 3. Generate or copy a stage plan from `docs/refactor/stage-template.md`.
-4. Use `superpowers:writing-plans` to turn the stage into concrete tasks.
+4. Use `superpowers:writing-plans` to turn the module-batch stage into concrete
+   tasks and focused verification groups.
 5. Identify independent subdomains and dispatch parallel agents where useful;
    otherwise record why the slice is single-threaded.
 6. Use `superpowers:test-driven-development` for code or executable behavior.
@@ -176,6 +200,9 @@ observe-only for this refactor line.
 9. Merge into integration with `git merge --no-ff`.
 10. Run `scripts/refactor_gate.sh` again from integration.
 11. Record child hash, integration hash, verification output, and next slice.
+12. Remove `../opensquilla-refactor-active`, run
+    `git worktree prune`, and verify no extra `opensquilla-refactor-*`
+    directories were left behind except the integration worktree.
 
 ## Standard Gate
 

@@ -19,14 +19,26 @@ overrides them.
 ## Refactor Workflow
 
 - For the active architecture refactor, use the integration branch
-  `codex/refactor-architecture` and create one isolated child git worktree per
-  independently mergeable slice.
+  `codex/refactor-architecture` and the sibling integration worktree
+  `../opensquilla-refactor-integration`.
+- Use one reusable active child worktree at the sibling path
+  `../opensquilla-refactor-active`. Do not create a new
+  `opensquilla-refactor-*` directory per slice unless the user explicitly
+  approves it. After each child slice is merged and recorded, remove the active
+  worktree and run `git worktree prune` so only the integration worktree remains
+  for the refactor line.
 - The root `AGENTS.md` is intentionally tracked on the refactor line. If it
   appears absent, verify that you are in a refactor worktree rather than the
   main checkout before creating another copy.
+- Prefer coarser, module-level or module-family refactor slices over
+  helper-sized moves. Use Superpowers to plan batches across related
+  CLI/Gateway/Session/Provider/Channels/Tools/Web UI boundaries, then run
+  unified focused tests and the full refactor gate for the batch. Do not
+  simplify implementation or drop behavior relative to the original main branch
+  to make a larger slice pass.
 - Start each slice from `docs/refactor/stage-template.md` and record current
   audit evidence, boundary decisions, TDD commands, verification, hashes, and
-  the next recommended slice under `docs/refactor/stages/`.
+  the next recommended module batch under `docs/refactor/stages/`.
 - Use Superpowers checkpoints for refactor work:
   `superpowers:using-git-worktrees`, `superpowers:writing-plans`,
   `superpowers:test-driven-development`, and

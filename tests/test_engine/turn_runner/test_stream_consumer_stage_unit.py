@@ -421,7 +421,7 @@ async def test_compaction_handler_skips_persist_when_session_manager_absent() ->
 
 
 @pytest.mark.asyncio
-async def test_compaction_handler_log_and_continue_on_persist_failure() -> None:
+async def test_compaction_handler_preserves_recoverable_state_on_persist_failure() -> None:
     persist = _RecordingCompactionPersist(raises=RuntimeError)
     snapshot = _RecordingMemorySnapshotRefresh()
     prompt = _RecordingSystemPromptRefresh()
@@ -431,12 +431,12 @@ async def test_compaction_handler_log_and_continue_on_persist_failure() -> None:
         system_prompt=prompt,
     )
     inp = _make_input()
-    # Must NOT raise -- log-and-continue per legacy.
+    # Must NOT raise, but failed durable persistence must not refresh runtime state
+    # into a false post-compaction view.
     await handler.handle(CompactionEvent(summary="s", kept_entries=[]), inp)
     assert len(persist.calls) == 1
-    # Snapshot + prompt still fire after persist failure.
-    assert len(snapshot.calls) == 1
-    assert len(prompt.calls) == 1
+    assert snapshot.calls == []
+    assert prompt.calls == []
 
 
 # ---------------------------------------------------------------------------

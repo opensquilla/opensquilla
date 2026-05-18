@@ -15,11 +15,13 @@ Five focused tests cover:
 4. System prompt refresh fires AFTER snapshot refresh; the cacheable
    base is extracted from the ``(base, dynamic_suffix)`` tuple when
    ``_assemble_prompt`` returns one.
-5. The persist call is log-and-continue: a raising persist does NOT
-   prevent the snapshot + prompt refresh from firing.
+5. Failed persistence reports a failed lifecycle event and does NOT refresh
+   snapshot or prompt state into a false post-compaction view.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 
@@ -43,6 +45,7 @@ class _RecordingCompactionHook:
     def __init__(self, *, raises: bool = False) -> None:
         self.raises = raises
         self.events: list[tuple[str, str | None, str | None, list[int] | None]] = []
+        self.outcomes: list[dict[str, Any]] = []
 
     async def before_compact(self, state) -> None:
         self.events.append(
@@ -57,12 +60,14 @@ class _RecordingCompactionHook:
             raise RuntimeError("before hook failed")
 
     async def after_compact(self, state, outcome) -> None:
+        outcome_dict = outcome if isinstance(outcome, dict) else {}
+        self.outcomes.append(outcome_dict)
         self.events.append(
             (
                 "after",
                 state.extra.get("phase"),
-                outcome.get("summary") if isinstance(outcome, dict) else None,
-                outcome.get("kept_entries") if isinstance(outcome, dict) else None,
+                outcome_dict.get("summary"),
+                outcome_dict.get("kept_entries"),
             )
         )
         if self.raises:
@@ -170,8 +175,10 @@ async def test_in_turn_compaction_after_hook_fires_after_persist_failure(
     ]
     assert in_turn_events == [
         ("before", "in_turn_stream", None, None),
-        ("after", "in_turn_stream", "THE_SUMMARY", [10, 20, 30]),
+        ("after", "in_turn_stream", None, None),
     ]
+    assert hook.outcomes[-1]["status"] == "failed"
+    assert hook.outcomes[-1]["reason"] == "persist_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -186,13 +193,13 @@ async def test_notify_compaction_fires_after_persist(
     """``cache_break_monitor.notify_compaction`` is invoked once after
     persist, with the same ``session_key``."""
 
-    notify_calls: list[str] = []
+    notify_calls: list[tuple[str, dict]] = []
     import opensquilla.engine.runtime as runtime_mod
 
     monkeypatch.setattr(
         runtime_mod,
         "notify_compaction",
-        lambda session_key: notify_calls.append(session_key),
+        lambda session_key, **payload: notify_calls.append((session_key, payload)),
     )
     # The runtime adapter imports notify_compaction lazily from
     # cache_break_monitor; patch the source module too.
@@ -201,7 +208,7 @@ async def test_notify_compaction_fires_after_persist(
     monkeypatch.setattr(
         cbm,
         "notify_compaction",
-        lambda session_key: notify_calls.append(session_key),
+        lambda session_key, **payload: notify_calls.append((session_key, payload)),
     )
 
     case = _baseline_case()
@@ -209,7 +216,36 @@ async def test_notify_compaction_fires_after_persist(
     await _drive(runner)
 
     assert len(notify_calls) == 1
-    assert notify_calls[0] == "agent:main:s1"
+    assert notify_calls[0][0] == "agent:main:s1"
+    assert notify_calls[0][1]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_emits_failed_lifecycle_without_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notify_calls: list[tuple[str, dict]] = []
+
+    import opensquilla.engine.cache_break_monitor as cbm
+
+    monkeypatch.setattr(
+        cbm,
+        "notify_compaction",
+        lambda session_key, **payload: notify_calls.append((session_key, payload)),
+    )
+
+    case = _baseline_case(persist_raises=RuntimeError)
+    runner = _setup_runner(monkeypatch, case)
+    yielded, raised = await _drive(runner)
+
+    assert raised is None
+    assert any(isinstance(e, DoneEvent) for e in yielded)
+    statuses = [payload.get("status") for _, payload in notify_calls]
+    assert "completed" not in statuses
+    assert "failed" in statuses
+    failed_payload = next(payload for _, payload in notify_calls if payload["status"] == "failed")
+    assert failed_payload["phase"] == "agent_inline_overflow"
+    assert failed_payload["reason"] == "persist_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -292,38 +328,41 @@ async def test_system_prompt_refresh_extracts_cacheable_base(
 
 
 # ---------------------------------------------------------------------------
-# In-turn compaction test 5: persist log-and-continue does NOT block snapshot/prompt
+# In-turn compaction test 5: persist failure preserves pre-refresh runtime state
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_persist_raises_log_and_continue_preserves_refreshes(
+async def test_persist_raises_preserves_recoverable_pre_compaction_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A raising ``persist_compaction_result`` is wrapped in
-    log-and-continue. The snapshot refresh + system prompt refresh
-    still fire afterwards.
+    """Failed DB persistence must not refresh false post-compaction state."""
 
-    This is the most critical compaction refresh contract: snapshot + prompt
-    refresh ALWAYS fire, even on persist failure, so the next turn's
-    cacheable prefix reflects the post-compaction state.
-    """
+    refresh_calls: list[dict] = []
+    import opensquilla.engine.turn_runner.harness as harness_mod
+
+    original_refresh = (
+        harness_mod._TurnRunnerMemorySnapshotRefreshAdapter.refresh_snapshot
+    )
+
+    def _record_refresh(self, **kwargs):
+        refresh_calls.append(kwargs)
+        return original_refresh(self, **kwargs)
+
+    monkeypatch.setattr(
+        harness_mod._TurnRunnerMemorySnapshotRefreshAdapter,
+        "refresh_snapshot",
+        _record_refresh,
+    )
 
     case = _baseline_case(persist_raises=RuntimeError)
     runner = _setup_runner(monkeypatch, case)
     yielded, raised = await _drive(runner)
 
-    # The turn must NOT abort -- persist failure is log-and-continue.
+    # The turn must NOT abort, but runtime state must stay recoverable.
     assert raised is None
-    # The stream continues -- DoneEvent must still be yielded.
     assert any(isinstance(e, DoneEvent) for e in yielded), (
         "stream aborted after persist failure"
     )
-    # System prompt refresh still fired.
-    assert len(_MAILBOX.refresh_prompt_calls) == 1, (
-        f"system prompt refresh skipped after persist raise "
-        f"({len(_MAILBOX.refresh_prompt_calls)} calls)"
-    )
-    # Memory snapshot dict was still updated (private_memory_allowed=True).
-    snap_key = ("agent:main", "agent:main:s1")
-    assert snap_key in runner._memory_snapshots
+    assert _MAILBOX.refresh_prompt_calls == []
+    assert refresh_calls == []

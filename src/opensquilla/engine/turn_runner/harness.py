@@ -747,10 +747,10 @@ class _TurnRunnerCompactionPersistAdapter(CompactionPersistPort):
     """Bind ``SessionManager.persist_compaction_result`` + ``notify_compaction``.
 
     Compaction refresh: the adapter forwards the persist call verbatim and
-    follows it with ``notify_compaction(session_key)``. The
-    log-and-continue try/except lives in the stage's
-    ``_CompactionHandler``. The
-    re-entrancy contract on ``persist_compaction_result`` is untouched.
+    follows it with a completed lifecycle notification. Failed persistence
+    is handled by the stream consumer stage so completed is never emitted
+    before durable storage succeeds. The re-entrancy contract on
+    ``persist_compaction_result`` is untouched.
     """
 
     def __init__(self, runner: TurnRunner) -> None:

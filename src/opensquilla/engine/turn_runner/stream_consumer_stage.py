@@ -15,7 +15,7 @@ through the harness-owned ``_StreamState`` value object the stage
 mutates in place.
 
 Compaction refresh preservation: the ``_CompactionHandler`` fires the
-supplied ``CompactionHook`` observers around the three-step
+supplied ``CompactionHook`` observers around the success-only three-step
 ``persist -> snapshot refresh -> system-prompt refresh`` sequence. The
 ``persist_compaction_result`` re-entrancy contract is preserved -- the
 adapter forwards the call verbatim and the IN-TURN path remains the
@@ -85,10 +85,9 @@ class CompactionPersistPort(Protocol):
     """Persist the IN-TURN ``CompactionEvent`` result + notify cache monitor.
 
     Wraps ``SessionManager.persist_compaction_result(session_key, summary,
-    kept_entries)`` followed by ``notify_compaction(session_key)``. The
-    single ``try/except`` wraps both and swallows
-    exceptions other than ``CancelledError`` (log + continue); the
-    stage applies that wrapping at the call site, not inside the port.
+    kept_entries)`` followed by a completed lifecycle notification. The
+    stage handles persistence failures by emitting a failed lifecycle
+    notification and preserving pre-refresh runtime state.
 
     Compaction refresh: This is the only remaining call site for
     ``persist_compaction_result``. The compaction contract requires the
@@ -653,12 +652,13 @@ def _int_value(value: Any) -> int:
 class _CompactionHandler:
     """Persist compaction and refresh memory snapshot + system prompt.
 
-    The order persist -> snapshot -> prompt is load-bearing per the
+    The success order persist -> snapshot -> prompt is load-bearing per the
     compaction contract (the Agent has already mutated its
     in-memory history; the DB transcript must be brought into sync
     first, then the next turn's snapshot dependencies refreshed). The
-    persist call is wrapped in a log-and-continue try/except matching
-    log-and-continue semantics; snapshot + prompt refresh always fire after.
+    persist call is wrapped so durable failures emit failed lifecycle feedback
+    and stop before snapshot/prompt refresh can manufacture a false compacted
+    runtime view.
 
     Does NOT yield -- ``CompactionEvent`` is internal-only.
     """
@@ -698,8 +698,29 @@ class _CompactionHandler:
                     summary=event.summary,
                     kept_entries=event.kept_entries,
                 )
-            except Exception as exc:  # noqa: BLE001 - log-and-continue intentional
+            except Exception as exc:  # noqa: BLE001 - preserve turn recoverability
                 log.warning("compaction_persist_failed", error=str(exc))
+                from opensquilla.engine.cache_break_monitor import notify_compaction
+
+                notify_compaction(
+                    inp.session_key,
+                    source="automatic",
+                    phase="agent_inline_overflow",
+                    status="failed",
+                    reason="persist_failed",
+                    message=str(exc),
+                    kept_count=len(event.kept_entries),
+                    summary_len=len(event.summary or ""),
+                )
+                await self._fire_after_compact(
+                    state,
+                    {
+                        "status": "failed",
+                        "reason": "persist_failed",
+                        "message": str(exc),
+                    },
+                )
+                return
 
         self._memory_snapshot.refresh_snapshot(
             agent_id=inp.agent_id,
@@ -716,6 +737,7 @@ class _CompactionHandler:
         await self._fire_after_compact(
             state,
             {
+                "status": "completed",
                 "summary": event.summary,
                 "kept_entries": event.kept_entries,
             },

@@ -3,8 +3,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from opensquilla.provider.types import ToolDefinition, ToolInputSchema
 from opensquilla.tools.policy import ToolSurfaceCapabilities
+from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import (
     CallerKind,
     InteractionMode,
@@ -22,6 +25,7 @@ from opensquilla.tools.visibility import (
 
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "src/opensquilla/tools/registry.py"
+SURFACE = ROOT / "src/opensquilla/tools/surface.py"
 VISIBILITY = ROOT / "src/opensquilla/tools/visibility.py"
 
 
@@ -92,6 +96,36 @@ def _top_level_assignments(path: Path) -> set[str]:
     return names
 
 
+def _class_methods(path: Path, class_name: str) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return {
+                child.name
+                for child in node.body
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+    return set()
+
+
+def test_tools_surface_boundary_owns_runtime_request_and_row_helpers() -> None:
+    imports = _imports_from(REGISTRY)
+
+    assert ("opensquilla.tools", "surface") in imports
+    assert "ToolSurfaceRequest" in _top_level_classes(SURFACE)
+    assert {
+        "default_tool_context",
+        "tool_context_for_profile",
+        "effective_tool_context",
+        "tool_context_for_surface_request",
+        "catalog_tool_row",
+        "effective_tool_row",
+    } <= _top_level_functions(SURFACE)
+    assert "effective_tool_context" not in _top_level_functions(VISIBILITY)
+    assert "effective_tool_context" in _top_level_assignments(VISIBILITY)
+    assert "_schema_for" not in _class_methods(REGISTRY, "ToolRegistry")
+
+
 def test_registry_delegates_visibility_policy_to_tools_visibility_boundary() -> None:
     imports = _imports_from(REGISTRY)
 
@@ -112,7 +146,7 @@ def test_registry_delegates_visibility_policy_to_tools_visibility_boundary() -> 
     assert "ToolProfile" in visibility_classes
     assert "filter_by_profile" in visibility_functions
     assert "resolve_profile" in visibility_functions
-    assert "effective_tool_context" in visibility_functions
+    assert "effective_tool_context" in visibility_assignments
     assert "visible_registered_tools" in visibility_functions
     assert "_CHANNEL_DEFAULT_ALLOW" in visibility_assignments
 
@@ -173,3 +207,57 @@ def test_visibility_boundary_preserves_effective_runtime_contexts() -> None:
     assert "publish_artifact" in subagent_ctx.denied_tools
     assert cron_ctx.caller_kind is CallerKind.CRON
     assert cron_ctx.is_owner is False
+
+
+def test_tool_surface_request_runtime_params_override_profile() -> None:
+    from opensquilla.tools.surface import (
+        ToolSurfaceRequest,
+        tool_context_for_surface_request,
+    )
+
+    ctx = tool_context_for_surface_request(
+        ToolSurfaceRequest(
+            profile="cron",
+            session_key="agent:main:auto",
+            agent_id="main",
+            caller_kind=CallerKind.AGENT,
+            interaction_mode=InteractionMode.UNATTENDED,
+            tool_surface_capabilities=ToolSurfaceCapabilities(session_manager=True),
+            is_owner=True,
+        )
+    )
+
+    assert ctx.caller_kind is CallerKind.AGENT
+    assert ctx.interaction_mode is InteractionMode.UNATTENDED
+    assert ctx.is_owner is True
+    assert ctx.allowed_tools is None
+
+
+@pytest.mark.asyncio
+async def test_registry_catalog_and_effective_share_surface_context_but_keep_row_shapes() -> None:
+    registry = ToolRegistry()
+    registry.register(_registered_tool("write_file").spec, _handler)
+    registry.register(_registered_tool("sessions_send").spec, _handler)
+    caps = ToolSurfaceCapabilities(session_manager=True, task_runtime=False)
+
+    catalog = await registry.list_tools(
+        profile="cron",
+        session_key="agent:main:auto",
+        caller_kind=CallerKind.AGENT,
+        interaction_mode=InteractionMode.UNATTENDED,
+        tool_surface_capabilities=caps,
+        is_owner=True,
+    )
+    effective = await registry.effective_tools(
+        session_key="agent:main:auto",
+        caller_kind=CallerKind.AGENT,
+        interaction_mode=InteractionMode.UNATTENDED,
+        tool_surface_capabilities=caps,
+        is_owner=True,
+    )
+
+    assert {tool["name"] for tool in catalog} == {"write_file"}
+    assert {tool["name"] for tool in effective} == {"write_file"}
+    assert {"source", "enabled"} <= set(catalog[0])
+    assert "source" not in effective[0]
+    assert "enabled" not in effective[0]

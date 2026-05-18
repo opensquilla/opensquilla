@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 POLICY = ROOT / "src/opensquilla/tools/policy.py"
 POLICY_RUNTIME = ROOT / "src/opensquilla/tools/policy_runtime.py"
 VISIBILITY = ROOT / "src/opensquilla/tools/visibility.py"
+SURFACE = ROOT / "src/opensquilla/tools/surface.py"
 RPC_PAYLOAD = ROOT / "src/opensquilla/tools/rpc_payload.py"
 REGISTRY = ROOT / "src/opensquilla/tools/registry.py"
 
@@ -78,21 +79,28 @@ def test_policy_module_delegates_runtime_surface_to_policy_runtime_boundary() ->
     assert "tool_surface_capabilities_from_runtime" in runtime_functions
 
 
-def test_internal_tool_modules_depend_on_policy_runtime_not_policy_facade() -> None:
-    for path in (VISIBILITY, RPC_PAYLOAD, REGISTRY):
+def test_tool_surface_depends_on_policy_runtime_not_policy_facade() -> None:
+    surface_imports = _imports_from(SURFACE)
+    assert (
+        "opensquilla.tools.policy_runtime",
+        "ToolSurfaceCapabilities",
+    ) in surface_imports
+    assert (
+        "opensquilla.tools.policy_runtime",
+        "resolve_runtime_tool_surface",
+    ) in surface_imports
+    assert (
+        "opensquilla.tools.policy_runtime",
+        "tool_surface_capabilities_from_runtime",
+    ) in surface_imports
+
+    for path in (SURFACE, VISIBILITY, RPC_PAYLOAD, REGISTRY):
         imports = _imports_from(path)
-        assert (
-            "opensquilla.tools.policy_runtime",
-            "ToolSurfaceCapabilities",
-        ) in imports or (
-            "opensquilla.tools.policy_runtime",
-            "tool_surface_capabilities_from_runtime",
-        ) in imports or (
-            "opensquilla.tools.policy_runtime",
-            "resolve_runtime_tool_surface",
-        ) in imports
         assert ("opensquilla.tools.policy", "ToolSurfaceCapabilities") not in imports
         assert ("opensquilla.tools.policy", "resolve_runtime_tool_surface") not in imports
+
+    for path in (VISIBILITY, RPC_PAYLOAD, REGISTRY):
+        assert ("opensquilla.tools", "surface") in _imports_from(path)
 
 
 def test_policy_runtime_preserves_runtime_capability_denylists() -> None:

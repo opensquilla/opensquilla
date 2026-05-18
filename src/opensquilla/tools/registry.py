@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Mapping
-from dataclasses import replace
 from typing import Any
 
 import structlog
 
 from opensquilla.provider.types import ToolDefinition, ToolInputSchema
+from opensquilla.tools import surface as surface_policy
 from opensquilla.tools import visibility as visibility_policy
 from opensquilla.tools.policy_runtime import ToolSurfaceCapabilities
 from opensquilla.tools.types import (
@@ -26,6 +26,7 @@ log = structlog.get_logger(__name__)
 ToolProfile = visibility_policy.ToolProfile
 filter_by_profile = visibility_policy.filter_by_profile
 resolve_profile = visibility_policy.resolve_profile
+ToolSurfaceRequest = surface_policy.ToolSurfaceRequest
 
 
 class ToolRegistry:
@@ -64,10 +65,10 @@ class ToolRegistry:
         return visibility_policy.is_tool_visible(rt, ctx)
 
     def _default_context(self) -> ToolContext:
-        return visibility_policy.default_tool_context()
+        return surface_policy.default_tool_context()
 
     def _context_for_profile(self, profile: str | None) -> ToolContext:
-        return visibility_policy.tool_context_for_profile(profile)
+        return surface_policy.tool_context_for_profile(profile)
 
     def _effective_context(
         self,
@@ -78,7 +79,7 @@ class ToolRegistry:
         tool_surface_capabilities: ToolSurfaceCapabilities | None = None,
         is_owner: bool = True,
     ) -> ToolContext:
-        return visibility_policy.effective_tool_context(
+        return surface_policy.effective_tool_context(
             session_key=session_key,
             agent_id=agent_id,
             caller_kind=caller_kind,
@@ -86,14 +87,6 @@ class ToolRegistry:
             tool_surface_capabilities=tool_surface_capabilities,
             is_owner=is_owner,
         )
-
-    @staticmethod
-    def _schema_for(rt: RegisteredTool) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": rt.spec.parameters,
-            "required": rt.spec.required,
-        }
 
     def to_tool_definitions(self, ctx: ToolContext | None = None) -> list[ToolDefinition]:
         """Export tools as MCP-compatible ToolDefinition list.
@@ -109,11 +102,7 @@ class ToolRegistry:
             ToolDefinition(
                 name=rt.spec.name,
                 description=rt.spec.description,
-                input_schema=ToolInputSchema(
-                    type="object",
-                    properties=rt.spec.parameters,
-                    required=rt.spec.required,
-                ),
+                input_schema=ToolInputSchema(**surface_policy.tool_schema(rt)),
                 execution_timeout_seconds=rt.spec.execution_timeout_seconds,
                 execution_timeout_argument=rt.spec.execution_timeout_argument,
                 execution_timeout_padding=rt.spec.execution_timeout_padding,
@@ -132,12 +121,9 @@ class ToolRegistry:
         tool_surface_capabilities: ToolSurfaceCapabilities | None = None,
         is_owner: bool = True,
     ) -> list[dict[str, Any]]:
-        has_runtime_context = any(
-            value is not None
-            for value in (session_key, agent_id, caller_kind, interaction_mode)
-        )
-        if has_runtime_context:
-            ctx = self._effective_context(
+        ctx = surface_policy.tool_context_for_surface_request(
+            ToolSurfaceRequest(
+                profile=profile,
                 session_key=session_key,
                 agent_id=agent_id,
                 caller_kind=caller_kind,
@@ -145,18 +131,9 @@ class ToolRegistry:
                 tool_surface_capabilities=tool_surface_capabilities,
                 is_owner=is_owner,
             )
-        else:
-            ctx = self._context_for_profile(profile)
-            if not is_owner:
-                ctx = replace(ctx, is_owner=False)
+        )
         return [
-            {
-                "name": rt.spec.name,
-                "description": rt.spec.description,
-                "schema": self._schema_for(rt),
-                "source": "plugin" if "." in rt.spec.name else "builtin",
-                "enabled": True,
-            }
+            surface_policy.catalog_tool_row(rt)
             for rt in self._iter_visible_tools(ctx, sort=True)
         ]
 
@@ -178,11 +155,7 @@ class ToolRegistry:
             is_owner=is_owner,
         )
         return [
-            {
-                "name": rt.spec.name,
-                "description": rt.spec.description,
-                "schema": self._schema_for(rt),
-            }
+            surface_policy.effective_tool_row(rt)
             for rt in self._iter_visible_tools(ctx, sort=True)
         ]
 

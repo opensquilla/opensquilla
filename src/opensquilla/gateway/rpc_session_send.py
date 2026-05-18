@@ -260,19 +260,13 @@ async def handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 )
                 return
 
-            from opensquilla.agents.scope import resolve_agent_workspace_dir
-            from opensquilla.gateway.routing import tool_context_from_envelope
+            from opensquilla.gateway.routing import tool_context_from_route_envelope
             from opensquilla.runtime.stream_wrappers import wrap_stream
 
-            workspace_dir = resolve_agent_workspace_dir(agent_id, ctx.config)
-            workspace_strict = getattr(ctx.config, "workspace_strict", None)
-            if not isinstance(workspace_strict, bool):
-                workspace_strict = bool(workspace_dir)
-            tool_ctx = tool_context_from_envelope(
+            tool_ctx = tool_context_from_route_envelope(
                 route_envelope,
+                ctx.config,
                 is_owner=ctx.principal.is_owner,
-                workspace_dir=str(workspace_dir),
-                workspace_strict=workspace_strict,
             )
             raw_stream = ctx.turn_runner.run(
                 message_text,

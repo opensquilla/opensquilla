@@ -89,6 +89,38 @@ def test_unattended_cli_denies_runtime_dependent_tools_but_keeps_session_reads()
     assert "session_status" not in ctx.denied_tools
 
 
+def test_tool_context_from_route_envelope_uses_gateway_config_for_channel_owner_and_workspace(
+    tmp_path,
+) -> None:
+    channel_msg = IncomingMessage(sender_id="u1", channel_id="c1", content="hi")
+    envelope = build_channel_route_envelope(
+        channel_msg,
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+    helper = getattr(gateway_routing, "tool_context_from_route_envelope", None)
+
+    assert callable(helper)
+
+    ctx = helper(
+        envelope,
+        SimpleNamespace(
+            channel_admin_senders={"feishu": ("u1",)},
+            workspace_dir=str(tmp_path),
+            workspace_strict="legacy-truthy-value",
+        ),
+        task_id="task-1",
+    )
+
+    assert ctx.is_owner is True
+    assert ctx.caller_kind is CallerKind.CHANNEL
+    assert ctx.session_key == "agent:main:feishu:u1"
+    assert ctx.workspace_dir == str(tmp_path)
+    assert ctx.workspace_strict is True
+    assert ctx.task_id == "task-1"
+
+
 def test_gateway_normalizes_scheduler_cron_envelope_into_gateway_route_envelope() -> None:
     job = SimpleNamespace(
         id="job-7",

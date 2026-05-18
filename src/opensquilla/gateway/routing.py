@@ -440,6 +440,66 @@ def tool_context_from_envelope(
     return ctx
 
 
+def _workspace_settings(agent_id: str, config: object | None) -> tuple[str, bool]:
+    from opensquilla.agents.scope import resolve_agent_workspace_dir
+
+    workspace_dir = resolve_agent_workspace_dir(agent_id, config)
+    workspace_strict = getattr(config, "workspace_strict", None)
+    if not isinstance(workspace_strict, bool):
+        workspace_strict = bool(workspace_dir)
+    return str(workspace_dir), workspace_strict
+
+
+def _is_channel_admin_sender(config: object | None, envelope: RouteEnvelope) -> bool:
+    admin_senders = getattr(config, "channel_admin_senders", None)
+    if not isinstance(admin_senders, dict):
+        return False
+
+    source_name = envelope.source_name
+    sender_id = envelope.sender_id
+    if not isinstance(source_name, str) or not source_name:
+        return False
+    if not isinstance(sender_id, str) or not sender_id:
+        return False
+
+    configured = admin_senders.get(source_name)
+    if isinstance(configured, str):
+        return sender_id == configured
+    if not isinstance(configured, list | tuple | set | frozenset):
+        return False
+    return sender_id in {str(item) for item in configured}
+
+
+def _default_route_owner(envelope: RouteEnvelope, config: object | None) -> bool:
+    principal_is_owner = envelope.metadata.get("principal_is_owner")
+    if isinstance(principal_is_owner, bool):
+        return principal_is_owner
+    if envelope.source_kind is SourceKind.CHANNEL:
+        return _is_channel_admin_sender(config, envelope)
+    return envelope.source_kind is SourceKind.CLI
+
+
+def tool_context_from_route_envelope(
+    envelope: RouteEnvelope | object,
+    config: object | None,
+    *,
+    is_owner: bool | None = None,
+    task_id: str | None = None,
+) -> ToolContext:
+    """Build turn-runtime ToolContext from a route and gateway configuration."""
+    normalized = normalize_route_envelope(envelope)
+    workspace_dir, workspace_strict = _workspace_settings(normalized.agent_id, config)
+    ctx = tool_context_from_envelope(
+        normalized,
+        is_owner=_default_route_owner(normalized, config) if is_owner is None else is_owner,
+        workspace_dir=workspace_dir,
+        workspace_strict=workspace_strict,
+    )
+    if task_id is not None:
+        ctx.task_id = task_id
+    return ctx
+
+
 def _interaction_mode(value: InteractionMode | str) -> InteractionMode:
     if isinstance(value, InteractionMode):
         return value

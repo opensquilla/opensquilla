@@ -9,16 +9,9 @@ from enum import StrEnum
 import structlog
 
 from opensquilla.provider.types import ToolDefinition
-from opensquilla.tools.policy_runtime import (
-    ToolSurfaceCapabilities,
-    resolve_runtime_tool_surface,
-)
+from opensquilla.tools import surface as surface_policy
 from opensquilla.tools.types import (
-    CRON_AGENT_ALLOW,
-    CRON_AGENT_DENY,
-    SUBAGENT_TOOL_DENY,
     CallerKind,
-    InteractionMode,
     RegisteredTool,
     ToolContext,
 )
@@ -29,6 +22,12 @@ log = structlog.get_logger(__name__)
 class ToolProfile(StrEnum):
     OWNER_FULL = "owner_full"
     CHANNEL_DEFAULT = "channel_default"
+
+
+default_tool_context = surface_policy.default_tool_context
+tool_context_for_profile = surface_policy.tool_context_for_profile
+parse_interaction_mode = surface_policy.parse_interaction_mode
+effective_tool_context = surface_policy.effective_tool_context
 
 
 _CHANNEL_DEFAULT_ALLOW: frozenset[str] = frozenset(
@@ -76,95 +75,6 @@ def resolve_profile(ctx: ToolContext | None) -> ToolProfile:
     if ctx and ctx.caller_kind is CallerKind.CHANNEL and not ctx.is_owner:
         return ToolProfile.CHANNEL_DEFAULT
     return ToolProfile.OWNER_FULL
-
-
-def default_tool_context() -> ToolContext:
-    return ToolContext(is_owner=True, caller_kind=CallerKind.AGENT)
-
-
-def tool_context_for_profile(profile: str | None) -> ToolContext:
-    if profile == "subagent":
-        return ToolContext(
-            is_owner=True,
-            caller_kind=CallerKind.SUBAGENT,
-            interaction_mode=InteractionMode.UNATTENDED,
-            denied_tools=set(SUBAGENT_TOOL_DENY),
-        )
-    if profile == "cron":
-        return ToolContext(
-            is_owner=False,
-            caller_kind=CallerKind.CRON,
-            interaction_mode=InteractionMode.UNATTENDED,
-            allowed_tools=set(CRON_AGENT_ALLOW),
-            denied_tools=set(CRON_AGENT_DENY),
-        )
-    return default_tool_context()
-
-
-def parse_interaction_mode(value: InteractionMode | str | None) -> InteractionMode | None:
-    if value is None:
-        return None
-    try:
-        return value if isinstance(value, InteractionMode) else InteractionMode(str(value))
-    except ValueError:
-        return None
-
-
-def effective_tool_context(
-    *,
-    session_key: str | None = None,
-    agent_id: str | None = None,
-    caller_kind: CallerKind | str | None = None,
-    interaction_mode: InteractionMode | str | None = None,
-    tool_surface_capabilities: ToolSurfaceCapabilities | None = None,
-    is_owner: bool = True,
-) -> ToolContext:
-    try:
-        explicit_kind = CallerKind(caller_kind) if caller_kind else None
-    except ValueError:
-        explicit_kind = None
-    explicit_interaction = parse_interaction_mode(interaction_mode)
-
-    if explicit_kind is CallerKind.SUBAGENT or (
-        session_key and session_key.startswith("subagent:")
-    ):
-        mode = explicit_interaction or InteractionMode.UNATTENDED
-        ctx = ToolContext(
-            is_owner=is_owner,
-            caller_kind=CallerKind.SUBAGENT,
-            interaction_mode=mode,
-            agent_id=agent_id or "main",
-            denied_tools=set(SUBAGENT_TOOL_DENY),
-        )
-        return resolve_runtime_tool_surface(
-            ctx,
-            capabilities=tool_surface_capabilities,
-        )
-    if explicit_kind is CallerKind.CRON or (session_key and session_key.startswith("cron:")):
-        mode = explicit_interaction or InteractionMode.UNATTENDED
-        ctx = ToolContext(
-            is_owner=False,
-            caller_kind=CallerKind.CRON,
-            interaction_mode=mode,
-            agent_id=agent_id or "main",
-            allowed_tools=set(CRON_AGENT_ALLOW),
-            denied_tools=set(CRON_AGENT_DENY),
-        )
-        return resolve_runtime_tool_surface(
-            ctx,
-            capabilities=tool_surface_capabilities,
-        )
-    mode = explicit_interaction or InteractionMode.INTERACTIVE
-    ctx = ToolContext(
-        is_owner=is_owner,
-        caller_kind=CallerKind.AGENT,
-        interaction_mode=mode,
-        agent_id=agent_id or "main",
-    )
-    return resolve_runtime_tool_surface(
-        ctx,
-        capabilities=tool_surface_capabilities,
-    )
 
 
 def is_tool_visible(rt: RegisteredTool, ctx: ToolContext | None = None) -> bool:

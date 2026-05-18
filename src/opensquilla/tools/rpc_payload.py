@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from opensquilla.tools import surface as surface_policy
 from opensquilla.tools.policy_runtime import (
     ToolSurfaceCapabilities,
     tool_surface_capabilities_from_runtime,
@@ -36,7 +37,7 @@ def tool_surface_capabilities_for_runtime(
 
     if tool_surface_capabilities is not None:
         return tool_surface_capabilities
-    return tool_surface_capabilities_from_runtime(
+    surface_caps = surface_policy.tool_surface_capabilities_for_runtime(
         session_manager=session_manager,
         task_runtime=task_runtime,
         scheduler=scheduler,
@@ -44,6 +45,15 @@ def tool_surface_capabilities_for_runtime(
         channel_manager=channel_manager,
         originating_envelope=originating_envelope,
     )
+    runtime_caps = tool_surface_capabilities_from_runtime(
+        session_manager=session_manager,
+        task_runtime=task_runtime,
+        scheduler=scheduler,
+        gateway_config=gateway_config,
+        channel_manager=channel_manager,
+        originating_envelope=originating_envelope,
+    )
+    return runtime_caps if runtime_caps == surface_caps else surface_caps
 
 
 async def tools_catalog_payload(

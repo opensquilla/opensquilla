@@ -489,20 +489,15 @@ async def dispatch_task_runtime_turn(
     and capture every kwarg actually flowing into ``turn_runner.run``
     (including the ``semantic_message`` regression surface).
     """
-    from opensquilla.gateway.routing import tool_context_from_envelope
+    from opensquilla.gateway.routing import tool_context_from_route_envelope
 
-    workspace_dir = resolve_agent_workspace_dir(run.agent_id, config)
-    workspace_strict = getattr(config, "workspace_strict", None)
-    if not isinstance(workspace_strict, bool):
-        workspace_strict = bool(workspace_dir)
     is_owner = _task_runtime_envelope_owner(run.envelope)
-    tool_context = tool_context_from_envelope(
+    tool_context = tool_context_from_route_envelope(
         run.envelope,
+        config,
         is_owner=is_owner,
-        workspace_dir=str(workspace_dir),
-        workspace_strict=workspace_strict,
+        task_id=run.task_id,
     )
-    tool_context.task_id = run.task_id
     session = None
     if session_manager is not None and hasattr(session_manager, "get_session"):
         session = await session_manager.get_session(run.session_key)

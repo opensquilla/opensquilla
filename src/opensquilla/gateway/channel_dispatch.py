@@ -871,26 +871,6 @@ async def _emit_run_heartbeat(
     )
 
 
-def _is_channel_admin_sender(config: Any, envelope: Any) -> bool:
-    admin_senders = getattr(config, "channel_admin_senders", None)
-    if not isinstance(admin_senders, dict):
-        return False
-
-    source_name = getattr(envelope, "source_name", None)
-    sender_id = getattr(envelope, "sender_id", None)
-    if not isinstance(source_name, str) or not source_name:
-        return False
-    if not isinstance(sender_id, str) or not sender_id:
-        return False
-
-    configured = admin_senders.get(source_name)
-    if isinstance(configured, str):
-        return sender_id == configured
-    if not isinstance(configured, list | tuple | set | frozenset):
-        return False
-    return sender_id in {str(item) for item in configured}
-
-
 async def _run_turn_with_streaming(
     channel: Any,
     turn_runner: Any,
@@ -912,26 +892,22 @@ async def _run_turn_with_streaming(
     message is edited to append "(Error: ...)" rather than leaving partial
     text visible.  Pre-stream errors send a standalone error message.
     """
-    from opensquilla.agents.scope import resolve_agent_workspace_dir
-    from opensquilla.gateway.routing import build_channel_route_envelope, tool_context_from_envelope
+    from opensquilla.gateway.routing import (
+        build_channel_route_envelope,
+        tool_context_from_route_envelope,
+    )
     from opensquilla.session.keys import parse_agent_id
 
     agent_id = parse_agent_id(session_key)
-    workspace_dir = resolve_agent_workspace_dir(agent_id, config)
-    workspace_strict = getattr(config, "workspace_strict", None)
-    if not isinstance(workspace_strict, bool):
-        workspace_strict = bool(workspace_dir)
     envelope = route_envelope or build_channel_route_envelope(
         msg,
         session_key=session_key,
         session_prefix=getattr(channel, "channel_id", None) or "unknown",
         agent_id=agent_id,
     )
-    tool_ctx = tool_context_from_envelope(
+    tool_ctx = tool_context_from_route_envelope(
         envelope,
-        is_owner=_is_channel_admin_sender(config, envelope),
-        workspace_dir=str(workspace_dir),
-        workspace_strict=workspace_strict,
+        config,
     )
     use_streaming = resolve_channel_stream_policy(channel).relay_stream
 

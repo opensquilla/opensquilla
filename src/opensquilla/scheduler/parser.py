@@ -216,14 +216,16 @@ def parse_schedule(
     m = _EVERY_RE.match(raw)
     if m:
         amount = int(m.group(1))
+        if amount <= 0:
+            raise CronParseError("Interval amount must be > 0")
         unit = m.group(2).lower()
         if unit in ("m", "min"):
-            if amount > 0 and 60 % amount == 0:
+            if 60 % amount == 0:
                 return ScheduleKind.EVERY, f"*/{amount} * * * *"
             else:
                 return ScheduleKind.EVERY, str(amount * 60)
         elif unit in ("h", "hr"):
-            if amount > 0 and 24 % amount == 0:
+            if 24 % amount == 0:
                 return ScheduleKind.EVERY, f"0 */{amount} * * *"
             else:
                 return ScheduleKind.EVERY, str(amount * 3600)
@@ -234,6 +236,8 @@ def parse_schedule(
     m = _RELATIVE_RE.match(raw)
     if m:
         amount = int(m.group(1))
+        if amount <= 0:
+            raise CronParseError("Relative delay must be > 0")
         unit = m.group(2).lower()
         secs = amount * _UNIT_SECONDS.get(unit, 60)
         target = now.astimezone(UTC) + timedelta(seconds=secs)

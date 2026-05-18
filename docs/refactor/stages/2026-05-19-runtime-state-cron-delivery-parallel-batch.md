@@ -276,15 +276,20 @@ the integration branch.
     passed.
   - Final child gate: ruff passed; mypy success on 544 source files; pytest
     `2629 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
-- [ ] Commit child verification/stage record update with:
+- [x] Commit child verification/stage record update with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- Commit: `1f40b42` (`Record runtime state cron delivery child verification`).
+- [x] Merge child into integration with `git merge --no-ff`.
+  - Merge commit: `4a1e6f7` (`Merge runtime state cron delivery parallel batch`).
+- [x] Run `scripts/refactor_gate.sh` in integration.
+  - Integration gate: ruff passed; mypy success on 544 source files; pytest
+    `2631 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
+- [x] Record child hash, integration hash, verification, and next slice.
+  - Integration record commit pending in this edit.
 - [ ] Remove `../opensquilla-refactor-active` and worker worktrees, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
@@ -322,11 +327,11 @@ Co-authored-by: Codex <noreply@openai.com>
   - `cb18d05` (`Merge task runtime state boundary worker`).
   - `b4f4835` (`Merge gateway cron delivery boundary worker`).
 - Child verification commit:
-  - Pending.
+  - `1f40b42` (`Record runtime state cron delivery child verification`).
 - Integration merge:
-  - Pending.
+  - `4a1e6f7` (`Merge runtime state cron delivery parallel batch`).
 - Integration record:
-  - Pending.
+  - Pending in this edit.
 - Verification evidence:
   - Runtime worker RED: missing `opensquilla.gateway.task_runtime_state` module.
   - Runtime review-loop RED: missing legacy `_tasks` fallback.
@@ -338,6 +343,8 @@ Co-authored-by: Codex <noreply@openai.com>
   - Focused merged batch: `60 passed in 9.68s`.
   - Child gate: ruff passed; mypy success on 544 source files; pytest
     `2629 passed, 8 skipped, 2 warnings`; gateway smoke passed.
+  - Integration gate: ruff passed; mypy success on 544 source files; pytest
+    `2631 passed, 6 skipped, 2 warnings`; gateway smoke passed.
 - Cleanup evidence:
   - Pending until integration merge and final worktree cleanup.
 - Residual risk:

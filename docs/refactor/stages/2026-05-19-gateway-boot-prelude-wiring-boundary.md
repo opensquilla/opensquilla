@@ -141,6 +141,16 @@ same boot prelude block and create avoidable conflicts.
 
 - Failing test command:
   - `uv run --extra dev pytest tests/test_gateway/test_boot_prelude_wiring_boundary.py tests/test_gateway/test_router_boot.py::test_start_gateway_server_shares_diagnostics_state_between_app_and_turn_runner tests/test_gateway/test_router_boot.py::test_start_gateway_server_schedules_router_preload_after_channels tests/test_gateway/test_pidfile_lock.py -q`
+- Actual RED output:
+  - `6 failed, 3 passed in 0.58s`
+  - New boundary failures:
+    - `test_boot_prelude_wiring_module_exports_builder_contract`:
+      `BOOT_PRELUDE.exists()` was false.
+    - `test_boot_delegates_prelude_setup_to_gateway_boundary`: import for
+      `opensquilla.gateway.boot_prelude_wiring.build_gateway_boot_prelude` was
+      absent from `boot.py`.
+    - Four behavior/delegation tests failed with
+      `ModuleNotFoundError: No module named 'opensquilla.gateway.boot_prelude_wiring'`.
 - Expected red failure:
   - `src/opensquilla/gateway/boot_prelude_wiring.py` does not exist, or AST
     boundary tests show `start_gateway_server` still directly performs config
@@ -162,10 +172,14 @@ same boot prelude block and create avoidable conflicts.
   - Keep service construction and all later boot wiring in `boot.py`.
 - Focused green command:
   - `uv run --extra dev pytest tests/test_gateway/test_boot_prelude_wiring_boundary.py tests/test_gateway/test_router_boot.py::test_start_gateway_server_shares_diagnostics_state_between_app_and_turn_runner tests/test_gateway/test_router_boot.py::test_start_gateway_server_schedules_router_preload_after_channels tests/test_gateway/test_pidfile_lock.py -q`
+  - Output: `9 passed in 0.51s`
 - Additional touched-file checks:
   - `uv run --extra dev ruff check src/opensquilla/gateway/boot.py src/opensquilla/gateway/boot_prelude_wiring.py tests/test_gateway/test_boot_prelude_wiring_boundary.py`
+    - Output: `All checks passed!`
   - `uv run --extra dev mypy src/opensquilla/gateway --show-error-codes`
+    - Output: `Success: no issues found in 94 source files`
   - `git diff --check`
+    - Output: no output; exit 0.
 
 ## Files
 
@@ -212,6 +226,14 @@ Co-authored-by: Codex <noreply@openai.com>
 - `git diff --check`
 - `uv run --extra dev pytest`
 - gateway smoke through `scripts/refactor_gate.sh`
+- Actual worker output:
+  - `scripts/refactor_gate.sh`
+  - Ruff: `All checks passed!`
+  - Mypy: `Success: no issues found in 551 source files`
+  - Whitespace: exit 0.
+  - Pytest: `2663 passed, 8 skipped, 2 warnings in 52.04s`
+  - Gateway smoke: start/status/stop/status all returned `{"ok": true, ...}`.
+  - Final line: `Refactor gate complete.`
 
 ## Integration gate
 
@@ -238,6 +260,16 @@ Co-authored-by: Codex <noreply@openai.com>
 - Integration merge:
 - Integration record:
 - Verification evidence:
+  - RED focused command: `6 failed, 3 passed in 0.58s`.
+  - GREEN focused command: `9 passed in 0.51s`.
+  - Touched ruff: `All checks passed!`.
+  - Touched mypy: `Success: no issues found in 94 source files`.
+  - `git diff --check`: exit 0.
+  - Full child gate: `Refactor gate complete.`
 - Cleanup evidence:
 - Residual risk:
+  - Integration merge, integration gate, and worktree cleanup remain for the
+    coordinating main thread.
 - Next recommended slice:
+  - Main thread should select the next Gateway module batch after reviewing and
+    integrating this worker slice.

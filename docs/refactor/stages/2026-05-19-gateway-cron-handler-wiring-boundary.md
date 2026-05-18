@@ -77,6 +77,8 @@ still made explicitly under `superpowers:dispatching-parallel-agents`.
 - `superpowers:using-superpowers`:
   - Evidence: current conversation already read and followed the skill before
     continuing this resumed refactor line.
+  - Worker evidence: external worker re-read the requested Superpowers skills
+    before writing boundary tests or production code.
 - `superpowers:using-git-worktrees`:
   - Evidence: inspected integration state and created isolated active child
     worktree `../opensquilla-refactor-active` on
@@ -86,20 +88,39 @@ still made explicitly under `superpowers:dispatching-parallel-agents`.
 - `superpowers:test-driven-development`:
   - Evidence: this stage requires RED boundary tests before adding
     `gateway/cron_handler_wiring.py` or changing `boot.py`.
+  - Worker RED:
+    `uv run --extra dev pytest tests/test_gateway/test_cron_handler_wiring_boundary.py tests/test_gateway/test_router_boot.py::test_dream_boot_does_not_register_when_auto_schedule_is_off tests/test_gateway/test_cron_result_delivery_boundary.py -q`
+    failed with 10 new boundary-test failures and 6 existing focused tests
+    passing. Expected failures included missing
+    `src/opensquilla/gateway/cron_handler_wiring.py`, missing
+    `register_gateway_cron_handlers` delegation from `start_gateway_server`,
+    direct boot imports/calls for cron handler factories, and
+    `ModuleNotFoundError` for the new boundary.
 - `superpowers:verification-before-completion`:
   - Evidence: focused tests, touched-file checks, child
     `scripts/refactor_gate.sh`, integration `scripts/refactor_gate.sh`, merge
     records, and cleanup evidence are required before claiming this stage
     complete.
+  - Worker GREEN:
+    `uv run --extra dev pytest tests/test_gateway/test_cron_handler_wiring_boundary.py tests/test_gateway/test_router_boot.py::test_dream_boot_does_not_register_when_auto_schedule_is_off tests/test_gateway/test_router_boot.py::test_dream_boot_pauses_existing_jobs_when_auto_schedule_is_off tests/test_gateway/test_router_boot.py::test_dream_boot_pauses_existing_jobs_when_disabled tests/test_gateway/test_cron_result_delivery_boundary.py tests/test_scheduler/test_dream_handler.py -q`
+    passed with 22 tests.
+  - Worker touched-file checks:
+    `uv run --extra dev ruff check src/opensquilla/gateway/boot.py src/opensquilla/gateway/cron_handler_wiring.py tests/test_gateway/test_cron_handler_wiring_boundary.py`
+    passed; `uv run --extra dev mypy src/opensquilla/gateway --show-error-codes`
+    passed with no issues in 92 source files; `git diff --check` passed.
+    A broader touched-test ruff check including
+    `tests/test_gateway/test_cron_result_delivery_boundary.py` also passed.
 - Parallelism decision:
   - `superpowers:dispatching-parallel-agents` used: yes for the decision.
     Implementation is intentionally single-worker because all production paths
     edit `start_gateway_server` in `boot.py`.
   - `spawn_agent` probe: attempted and failed with
     `collab spawn failed: agent thread limit reached`.
-  - External worker fallback: use `scripts/refactor_external_agent.sh` with
-    slot `cron-handler`. Do not fall back to unrecorded serial work unless the
-    external worker route is blocked.
+- External worker fallback: use `scripts/refactor_external_agent.sh` with slot
+  `cron-handler`. Do not fall back to unrecorded serial work unless the
+  external worker route is blocked.
+  - Worker evidence: this substage ran in external-worker fallback because
+    same-thread `spawn_agent` failed with `agent thread limit reached`.
 - Historical evidence note:
   - Missing per-substage Superpowers evidence is a blocker.
 
@@ -185,6 +206,7 @@ still made explicitly under `superpowers:dispatching-parallel-agents`.
   - `tests/test_gateway/test_cron_handler_wiring_boundary.py`
 - Modify:
   - `src/opensquilla/gateway/boot.py`
+  - `tests/test_gateway/test_cron_result_delivery_boundary.py`
 - Test:
   - `tests/test_gateway/test_router_boot.py`
   - `tests/test_gateway/test_cron_result_delivery_boundary.py`
@@ -197,11 +219,11 @@ still made explicitly under `superpowers:dispatching-parallel-agents`.
 - [ ] Run `scripts/refactor_preflight.sh --allow-dirty`.
 - [ ] Commit this stage plan on the active child branch.
 - [ ] Create external worker worktree from the active child branch.
-- [ ] Worker writes failing boundary tests and records RED output.
-- [ ] Worker implements `gateway/cron_handler_wiring.py` and replaces the
+- [x] Worker writes failing boundary tests and records RED output.
+- [x] Worker implements `gateway/cron_handler_wiring.py` and replaces the
       inline boot cron registration block with a short delegator call.
 - [ ] Main thread reviews diff for behavior compatibility and boundary scope.
-- [ ] Run focused green command and touched-file checks.
+- [x] Run focused green command and touched-file checks.
 - [ ] Run `scripts/refactor_gate.sh` in the active child worktree.
 - [ ] Commit child verification/stage record update with:
 
@@ -243,12 +265,20 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Worker commit:
+- Worker commit: pending branch commit; final worker response records hash.
 - Active child support commits:
 - Child verification commit:
 - Integration merge:
 - Integration record:
 - Verification evidence:
+  - RED command failed as expected with 10 new boundary-test failures and 6
+    existing focused tests passing before production changes.
+  - GREEN focused command passed with 22 tests after moving cron handler wiring.
+  - Touched checks passed: ruff for `boot.py`,
+    `cron_handler_wiring.py`, and the new boundary test; mypy for
+    `src/opensquilla/gateway`; `git diff --check`.
 - Cleanup evidence:
 - Residual risk:
+  - Full `scripts/refactor_gate.sh` was intentionally left for the main thread
+    unless time permits after worker-focused verification.
 - Next recommended slice:

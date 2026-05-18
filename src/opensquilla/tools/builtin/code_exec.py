@@ -274,6 +274,8 @@ async def execute_code(
         )
 
         prior_elevation = _approval_elevation_state()
+        approval_response: dict[str, object] | None = None
+        approval_granted = False
         try:
             approval_response = await _check_exec_approval(
                 tool_name="execute_code",
@@ -283,8 +285,10 @@ async def execute_code(
                 approval_id=approval_id,
                 background=False,
             )
+            approval_granted = approval_response is None and _approval_elevation_state()
         finally:
-            _restore_approval_elevation(prior_elevation)
+            if not approval_granted:
+                _restore_approval_elevation(prior_elevation)
         if approval_response is not None:
             return json.dumps(approval_response)
 

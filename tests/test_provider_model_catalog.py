@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from opensquilla.provider import model_catalog as provider_model_catalog
 from opensquilla.provider.model_catalog import (
     ModelCatalog,
     refresh_openrouter_catalog_and_pricing,
@@ -57,6 +58,20 @@ def test_direct_profile_static_fallbacks_cover_context_windows() -> None:
         max_tokens = catalog.resolve_max_tokens(model_id)
         assert max_tokens > 0
         assert max_tokens <= context_window
+
+
+def test_openrouter_pricing_model_ids_collects_primary_and_router_tiers() -> None:
+    assert hasattr(provider_model_catalog, "openrouter_pricing_model_ids")
+
+    assert provider_model_catalog.openrouter_pricing_model_ids(
+        "openrouter/active",
+        {
+            "fast": {"model": "openrouter/fast"},
+            "empty": {},
+            "custom": {"model": 12345},
+            "ignored": object(),
+        },
+    ) == {"openrouter/active", "openrouter/fast", "12345"}
 
 
 @pytest.mark.asyncio

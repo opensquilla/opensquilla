@@ -64,13 +64,14 @@ def test_provider_bootstrap_delegates_to_runtime_assembly_boundary() -> None:
     assert {
         "build_provider_runtime_services",
         "normalize_provider_base_url",
-        "_openrouter_pricing_model_ids",
     } <= assembly_functions
+    assert "_openrouter_pricing_model_ids" not in assembly_functions
     assert "_refresh_openrouter_catalog_and_pricing" not in assembly_functions
     assert "ProviderRuntimeServices" in assembly_classes
     assert {
         ("opensquilla.gateway.provider_runtime_sync", "sync_image_generation"),
         ("opensquilla.provider.model_catalog", "ModelCatalog"),
+        ("opensquilla.provider.model_catalog", "openrouter_pricing_model_ids"),
         (
             "opensquilla.provider.model_catalog",
             "refresh_openrouter_catalog_and_pricing",

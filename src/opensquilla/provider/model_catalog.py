@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 
 import httpx
 import structlog
@@ -51,6 +51,24 @@ _STATIC_FALLBACK: dict[str, tuple[int, int]] = {
     "moonshotai/kimi-k2.6": (DEFAULT_MAX_TOKENS, 262_142),
     "moonshotai/kimi-k2.5": (65_535, 262_144),
 }
+
+
+def openrouter_pricing_model_ids(
+    primary_model: object,
+    router_tiers: Mapping[object, object] | Iterable[object] | None = None,
+) -> set[str]:
+    """Collect OpenRouter model IDs whose prices should be refreshed."""
+
+    pricing_models = {str(primary_model)} if primary_model else set()
+    if router_tiers is None:
+        return pricing_models
+
+    tier_values = router_tiers.values() if isinstance(router_tiers, Mapping) else router_tiers
+    for tier_cfg in tier_values:
+        model_id = tier_cfg.get("model") if isinstance(tier_cfg, Mapping) else None
+        if model_id:
+            pricing_models.add(str(model_id))
+    return pricing_models
 
 
 class ModelCatalog:

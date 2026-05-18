@@ -14,6 +14,7 @@ from opensquilla.gateway.provider_runtime_sync import (
 )
 from opensquilla.provider.model_catalog import (
     ModelCatalog,
+    openrouter_pricing_model_ids,
     refresh_openrouter_catalog_and_pricing,
 )
 from opensquilla.provider.runtime_config import resolve_llm_runtime_config
@@ -40,17 +41,6 @@ def normalize_provider_base_url(base_url: str) -> str:
     if base_url.endswith("/v1"):
         return base_url[:-3]
     return base_url
-
-
-def _openrouter_pricing_model_ids(config: GatewayConfig) -> set[str]:
-    pricing_models = {str(config.llm.model)} if config.llm.model else set()
-    router_cfg = getattr(config, "squilla_router", None)
-    if router_cfg is not None:
-        for tier_cfg in getattr(router_cfg, "tiers", {}).values():
-            model_id = tier_cfg.get("model") if isinstance(tier_cfg, dict) else None
-            if model_id:
-                pricing_models.add(str(model_id))
-    return pricing_models
 
 
 async def build_provider_runtime_services(
@@ -82,7 +72,10 @@ async def build_provider_runtime_services(
             api_key=api_key,
             base_url=resolved_base,
             proxy=llm_runtime.proxy or "",
-            pricing_model_ids=_openrouter_pricing_model_ids(config),
+            pricing_model_ids=openrouter_pricing_model_ids(
+                config.llm.model,
+                getattr(getattr(config, "squilla_router", None), "tiers", {}),
+            ),
             refresh_prices=refresh_live_prices,
         )
 

@@ -122,15 +122,15 @@ Extract the related session management family from `rpc_sessions.py` into a focu
 - [x] Implement the smallest behavior-compatible management extraction.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 
 ## Child Gate
 
@@ -156,8 +156,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit:
-- Integration merge:
+- Child commit: `0f7bd6d`
+- Integration merge: `b00ef7e`
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-gateway-session-management-boundary` passed on branch `codex/refactor-gateway-session-management-boundary` at `8458933`.
   - Red: `uv run --extra dev pytest tests/test_gateway/test_rpc_session_management_boundary.py tests/test_gateway/test_rpc_sessions.py::TestSessionsCreate tests/test_gateway/test_rpc_sessions.py::TestSessionsPatch tests/test_gateway/test_rpc_public_surface_baseline.py::test_rpc_method_surface_and_scopes_are_stable -q` failed as expected with 2 boundary failures because `rpc_session_management.py` did not exist and `rpc_sessions.py` did not delegate to it; the existing behavior and public surface group still passed, `2 failed, 17 passed in 4.25s`.
@@ -167,6 +167,9 @@ Co-authored-by: Codex <noreply@openai.com>
   - Release hygiene spot check: `uv run --extra dev pytest tests/test_public_release_hygiene.py::test_tracked_public_files_do_not_contain_real_secret_shapes_or_local_paths -q` passed, `1 passed in 0.36s`.
   - Whitespace: `git diff --check` passed.
   - Child gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 493 source files; whitespace passed; pytest passed with `2417 passed, 8 skipped, 2 warnings in 49.72s`; gateway smoke start/status/stop passed on `127.0.0.1:56141`.
+  - Integration preflight: `scripts/refactor_preflight.sh --allow-dirty --expect-branch codex/refactor-architecture` passed on branch `codex/refactor-architecture` at `8458933`.
+  - Integration merge: `git merge --no-ff codex/refactor-gateway-session-management-boundary` produced merge commit `b00ef7e`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 493 source files; whitespace passed; pytest passed with `2419 passed, 6 skipped, 2 warnings in 29.27s`; gateway smoke start/status/stop passed on `127.0.0.1:56351`.
 - Residual risk:
   - Low to medium. The slice moves create/patch and registry/model helper behavior behind a focused boundary while preserving wrapper registration, public payload builders, session-key namespace behavior, patch persistence fallback, and send model selection via a compatibility wrapper.
 - Next recommended slice:

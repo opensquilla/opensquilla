@@ -17,9 +17,11 @@ from opensquilla.gateway.attachment_ingest import (
     MAX_TOTAL_ATTACHMENT_BYTES,
     AttachmentTotalTooLargeError,
 )
+from opensquilla.gateway.channel_artifacts import (
+    artifact_fallback_lines,
+    deliver_artifacts_as_channel_files,
+)
 from opensquilla.gateway.channel_dispatch import (
-    _artifact_fallback_lines,
-    _deliver_artifacts_as_channel_files,
     _deliver_runtime_channel_reply,
     _dispatch_combined_message_after_debounce,
     _ingest_channel_message_attachments,
@@ -489,7 +491,7 @@ async def test_unlisted_channel_sender_keeps_restricted_tool_context_for_agent_t
 
 
 def test_channel_artifact_fallback_uses_only_channel_safe_absolute_links() -> None:
-    assert _artifact_fallback_lines(
+    assert artifact_fallback_lines(
         [
             {
                 "id": "art-1",
@@ -499,7 +501,7 @@ def test_channel_artifact_fallback_uses_only_channel_safe_absolute_links() -> No
         ]
     ) == ["Generated file: report.txt -> available in WebUI"]
 
-    assert _artifact_fallback_lines(
+    assert artifact_fallback_lines(
         [
             {
                 "id": "art-2",
@@ -512,7 +514,7 @@ def test_channel_artifact_fallback_uses_only_channel_safe_absolute_links() -> No
         "https://gateway.example/artifacts/art-2?sig=short"
     ]
 
-    assert _artifact_fallback_lines(
+    assert artifact_fallback_lines(
         [
             {
                 "id": "art-3",
@@ -677,7 +679,7 @@ async def test_channel_file_delivery_dedupes_same_artifact_material(tmp_path) ->
     channel = FileChannel()
     config = SimpleNamespace(attachments=SimpleNamespace(media_root=str(tmp_path)))
 
-    undelivered = await _deliver_artifacts_as_channel_files(
+    undelivered = await deliver_artifacts_as_channel_files(
         channel,
         _message(),
         [first.to_dict(), second.to_dict()],

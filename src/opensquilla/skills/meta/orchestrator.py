@@ -917,6 +917,17 @@ class MetaOrchestrator:
         else:
             workdir = base_dir or None
 
+        # Optional stdin: render Jinja template and pipe to the subprocess.
+        stdin_raw = entrypoint.get("stdin")
+        stdin_bytes: bytes | None = None
+        if isinstance(stdin_raw, str) and stdin_raw:
+            stdin_text = _render(stdin_raw.replace("{baseDir}", base_dir))
+            stdin_bytes = stdin_text.encode("utf-8")
+        elif stdin_raw not in (None, ""):
+            raise RuntimeError(
+                f"step {step.id!r}: entrypoint.stdin must be a string template",
+            )
+
         log.info(
             "meta_orchestrator.skill_exec_spawn",
             step=step.id,
@@ -925,17 +936,19 @@ class MetaOrchestrator:
             argc=len(argv),
             timeout=timeout,
             parse=parse_mode,
+            stdin_bytes=len(stdin_bytes) if stdin_bytes is not None else 0,
         )
 
         proc = await asyncio.create_subprocess_exec(
             *argv,
+            stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workdir,
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout,
+                proc.communicate(input=stdin_bytes), timeout=timeout,
             )
         except TimeoutError as exc:
             with contextlib.suppress(ProcessLookupError):

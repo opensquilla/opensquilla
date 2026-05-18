@@ -17,6 +17,11 @@ from opensquilla.gateway.rpc_compaction_inputs import (
 from opensquilla.memory.session_flush import FlushReceipt
 from opensquilla.session.compaction import call_compact_with_optional_config
 from opensquilla.session.keys import normalize_agent_id
+from opensquilla.session.lifecycle_service import (
+    require_existing_session,
+    require_session_storage,
+    run_with_session_lock,
+)
 from opensquilla.session.management_service import require_session_key
 from opensquilla.session.models import SessionIntent
 from opensquilla.session.rpc_payload import (
@@ -29,7 +34,7 @@ from opensquilla.session.rpc_payload import (
     session_permission_denied_details,
     session_reset_response,
 )
-from opensquilla.session.services import get_session_lock, get_session_storage
+from opensquilla.session.services import get_session_storage
 
 log = structlog.get_logger(__name__)
 _RESET_RUNTIME_SETTLE_SECONDS = 0.25
@@ -153,9 +158,7 @@ async def handle_sessions_reset(
     if ctx.session_manager is None:
         raise KeyError("No session manager available")
 
-    storage = get_session_storage(ctx.session_manager)
-    if storage is None:
-        raise KeyError("No session storage available")
+    storage = require_session_storage(ctx.session_manager)
 
     task_runtime = getattr(ctx, "task_runtime", None)
     if task_runtime is not None:
@@ -164,9 +167,7 @@ async def handle_sessions_reset(
     force = bool((params or {}).get("force", False))
 
     if ctx.flush_service is None:
-        session = await storage.get_session(key)
-        if session is None:
-            raise KeyError(f"Session not found: {key}")
+        session = await require_existing_session(storage, key)
         previous_session_id = session.session_id
 
         transcript = await ctx.session_manager.get_transcript(key)
@@ -214,13 +215,8 @@ async def handle_sessions_reset(
         except Exception as exc:  # noqa: BLE001
             log.warning("sessions.reset.drain_failed", session_key=key, error=str(exc))
 
-    turn_runner = ctx.turn_runner
-    lock = get_session_lock(turn_runner, key)
-
     async def _run_locked() -> dict[str, Any]:
-        session = await storage.get_session(key)
-        if session is None:
-            raise KeyError(f"Session not found: {key}")
+        session = await require_existing_session(storage, key)
         previous_session_id = session.session_id
         agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
 
@@ -292,19 +288,14 @@ async def handle_sessions_reset(
             epoch=new_epoch,
         )
 
-    if lock is None:
-        return await _run_locked()
-    async with lock:
-        return await _run_locked()
+    return await run_with_session_lock(ctx.turn_runner, key, _run_locked)
 
 
 async def handle_sessions_delete(params: dict | None, ctx: RpcContext) -> dict:
     if ctx.session_manager is None:
         raise KeyError("No session manager available")
 
-    storage = get_session_storage(ctx.session_manager)
-    if storage is None:
-        raise KeyError("No session storage available")
+    storage = require_session_storage(ctx.session_manager)
 
     keys: list[str] = []
     if isinstance(params, dict):
@@ -334,16 +325,11 @@ async def handle_sessions_context_compact(params: dict | None, ctx: RpcContext) 
         raise KeyError("No session manager available")
 
     compact_tokens = context_window_tokens(params, ctx)
-    turn_runner = ctx.turn_runner
-    lock = get_session_lock(turn_runner, key)
-
     async def _run_locked() -> dict[str, Any]:
         storage = get_session_storage(ctx.session_manager)
         session = None
-        if storage is not None and await storage.get_session(key) is None:
-            raise KeyError(f"Session not found: {key}")
         if storage is not None:
-            session = await storage.get_session(key)
+            session = await require_existing_session(storage, key)
 
         compaction_config = build_gateway_compaction_config(ctx, session)
 
@@ -371,10 +357,7 @@ async def handle_sessions_context_compact(params: dict | None, ctx: RpcContext) 
             context_window_tokens=compact_tokens,
         )
 
-    if lock is None:
-        return await _run_locked()
-    async with lock:
-        return await _run_locked()
+    return await run_with_session_lock(ctx.turn_runner, key, _run_locked)
 
 
 async def handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict:
@@ -384,9 +367,6 @@ async def handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict:
 
     max_messages = (params or {}).get("maxMessages", 20)
     force = bool((params or {}).get("force", False))
-
-    turn_runner = ctx.turn_runner
-    lock = get_session_lock(turn_runner, key)
 
     async def _run_locked() -> dict[str, Any]:
         receipt: FlushReceipt | None = None
@@ -419,10 +399,9 @@ async def handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict:
                     details=session_permission_denied_details(key, previous_session_id),
                 )
         else:
-            if storage is None:
-                raise KeyError("No session storage available")
-            if session is None:
-                raise KeyError(f"Session not found: {key}")
+            storage = require_session_storage(ctx.session_manager)
+            session = await require_existing_session(storage, key)
+            previous_session_id = getattr(session, "session_id", None)
             agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
             transcript = await ctx.session_manager.get_transcript(key)
             if transcript:
@@ -473,7 +452,4 @@ async def handle_sessions_compact(params: dict | None, ctx: RpcContext) -> dict:
         result = await ctx.session_manager.truncate(key, max_messages=max_messages)
         return session_compact_response(key, result, receipt=receipt)
 
-    if lock is None:
-        return await _run_locked()
-    async with lock:
-        return await _run_locked()
+    return await run_with_session_lock(ctx.turn_runner, key, _run_locked)

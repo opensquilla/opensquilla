@@ -6,7 +6,6 @@ import asyncio
 import inspect
 import logging
 import os
-import secrets
 import time
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
@@ -35,6 +34,7 @@ from opensquilla.agents.scope import resolve_agent_model, resolve_agent_workspac
 from opensquilla.asyncio_utils import create_background_task
 from opensquilla.engine.usage import UsageTracker as _UsageTracker
 from opensquilla.gateway.app_server_wiring import build_gateway_app_server
+from opensquilla.gateway.boot_prelude_wiring import build_gateway_boot_prelude
 from opensquilla.gateway.channel_manager_wiring import (
     build_gateway_channel_manager_wiring,
     start_gateway_channels,
@@ -645,6 +645,7 @@ class GatewayServer:
     _channel_manager: Any = field(default=None, repr=False)
     _services: ServiceContainer | None = field(default=None, repr=False)
     _background_completion_manager: Any = field(default=None, repr=False)
+    _pid_lock: Any = field(default=None, repr=False)
 
     async def close(self, reason: str = "shutdown") -> None:
         """Gracefully shut down: stop channels, broadcast shutdown, close WS, stop server."""
@@ -1249,56 +1250,16 @@ async def start_gateway_server(
     3. Build ASGI app
     4. Start uvicorn server
     """
-    # ── Gateway-specific config handling ─────────────────────────────
-    if config is None:
-        config = GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
-
-    # Apply runtime port override
-    if port is not None:
-        config = config.model_copy(update={"port": port})
-
-    _setup_file_logging(config)
-    if config.config_path:
-        log.info("gateway.config_loaded", path=config.config_path)
-
-    # Gateway-specific: set env var for other components to discover
-    os.environ["OPENSQUILLA_GATEWAY_PORT"] = str(config.port)
-
-    # Gateway-specific: ensure auth token exists
-    if config.auth.mode == "token" and not config.auth.token:
-        token = secrets.token_urlsafe(32)
-        config.auth = config.auth.model_copy(update={"token": token})
-        config.mark_runtime_secret("auth.token")
-        log.info("gateway.auth_token_generated")
-
-    # Gateway-specific: resolve Control UI root directory (boot order 17)
-    if config.control_ui.enabled:
-        from opensquilla.gateway.control_ui import _STATIC_DIR, _TEMPLATE_DIR
-
-        if not _TEMPLATE_DIR.is_dir():
-            log.warning("gateway.control_ui.templates_missing", path=str(_TEMPLATE_DIR))
-        if not _STATIC_DIR.is_dir():
-            log.warning("gateway.control_ui.static_missing", path=str(_STATIC_DIR))
-        log.info(
-            "gateway.control_ui.resolved",
-            base_path=config.control_ui.base_path,
-            templates=str(_TEMPLATE_DIR),
-            static=str(_STATIC_DIR),
-        )
-    else:
-        log.info("gateway.control_ui.disabled")
-
-    # Surface lexical degradation when the operator enabled filter_enabled=true
-    # with a strategy that needs the local ONNX embedding backend.
-    emit_skill_filter_banner(config.skills)
-
-    # ── PID file lock ───────────────────────────────────────────────
-    # Prevents two gateway instances from sharing the same STATE_DIR.
-    # Must run before build_services so the lock is held before any DB work.
-    from opensquilla.gateway.pidlock import GatewayPidLock
-
-    _pid_lock = GatewayPidLock(_state_path(config, ""))
-    _pid_lock.acquire()
+    prelude = build_gateway_boot_prelude(
+        port=port,
+        config=config,
+        setup_file_logging=_setup_file_logging,
+        skill_filter_banner=emit_skill_filter_banner,
+        state_path_factory=_state_path,
+        logger=log,
+    )
+    config = prelude.config
+    pid_lock = prelude.pid_lock
 
     # ── Reusable service initialization via build_services ───────────
     svc = await build_services(
@@ -1408,6 +1369,7 @@ async def start_gateway_server(
         ),
     )
     app = server_handle.app
+    server_handle._pid_lock = pid_lock
 
     # Start channels (after app is ready to receive webhooks)
     await start_gateway_channels(channel_manager, logger=log)

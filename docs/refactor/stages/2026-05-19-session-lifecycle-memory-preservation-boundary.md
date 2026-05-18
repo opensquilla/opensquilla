@@ -377,7 +377,7 @@ git commit -m "Extract session lifecycle memory preservation boundary" \
   -m "Co-authored-by: Codex <noreply@openai.com>"
 ```
 
-- [ ] **Step 3: Merge and run integration gate**
+- [x] **Step 3: Merge and run integration gate**
 
 ```bash
 git -C ../opensquilla-refactor-integration merge --no-ff \
@@ -418,15 +418,15 @@ remain beyond `../opensquilla-refactor-integration`.
       existing feature coverage.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 - [ ] Remove `../opensquilla-refactor-active`, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
@@ -440,7 +440,10 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Integration Gate
 
-- Pending after merge: `scripts/refactor_gate.sh`
+- Full integration gate: `scripts/refactor_gate.sh` passed.
+- Integration pytest summary: `2490 passed, 6 skipped`.
+- Gateway smoke: start/status/stop/status completed and reported
+  `Refactor gate complete.`
 
 ## Rollback
 
@@ -451,8 +454,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion Record
 
-- Child commit: pending
-- Integration merge: pending
+- Child commit: `a39a268`
+- Integration merge: `251b7f4`
 - Verification evidence:
   - RED: `ModuleNotFoundError` for `opensquilla.session.lifecycle_memory`
   - Focused GREEN: `41 passed`
@@ -460,8 +463,11 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched mypy: passed
   - `git diff --check`: passed
   - Full child `scripts/refactor_gate.sh`: passed
+  - Full integration `scripts/refactor_gate.sh`: passed
 - Residual risk:
-  integration merge and integration gate are still pending.
+  low; reset/compact lifecycle memory preservation behavior is covered by
+  session-domain unit tests, Gateway AST boundary tests, existing reset/compact
+  behavior tests, memory flush tests, and full child/integration gates.
 - Next recommended slice:
   provider-facing onboarding/status UI batch or a broader channel dispatch
   routing boundary, depending on current integration state after this gate.

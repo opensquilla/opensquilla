@@ -300,7 +300,12 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 - [x] Run `scripts/refactor_gate.sh` in integration.
   - Result: `2601 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop/status passed.
 - [x] Record child hash, integration merge hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`, run `git worktree prune`, and verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
+- [x] Remove `../opensquilla-refactor-active`, run `git worktree prune`, and verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
+  - Removed `../opensquilla-refactor-active`.
+  - Removed external worker worktree `../opensquilla-refactor-agent-webui-terminal`.
+  - Ran `git worktree prune`.
+  - Verified `test ! -e ../opensquilla-refactor-active` and `test ! -e ../opensquilla-refactor-agent-webui-terminal`.
+  - `git worktree list --porcelain` shows no remaining `opensquilla-refactor-*` worktrees except `../opensquilla-refactor-integration`.
 
 ## Child Gate
 
@@ -341,5 +346,9 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - Child `scripts/refactor_gate.sh`: `2599 passed, 8 skipped, 2 warnings`; gateway smoke passed.
   - Integration `scripts/refactor_gate.sh`: `2601 passed, 6 skipped, 2 warnings`; gateway smoke passed.
 - Cleanup evidence:
+  - Removed `../opensquilla-refactor-active`.
+  - Removed `../opensquilla-refactor-agent-webui-terminal`.
+  - Ran `git worktree prune`.
+  - Verified both removed paths are absent and `git worktree list --porcelain` has no extra refactor worktrees beyond `../opensquilla-refactor-integration`.
 - Residual risk: boot cron-result manual delivery still has a small duplicated subscriber loop; leave it for a later boot wiring/service cleanup to avoid broadening this stream boundary.
 - Next recommended slice: task runtime execution/shutdown lifecycle boundary, covering `_execute`, `shutdown`, and terminal state mutation helpers after this stream/session delivery layer is separate.

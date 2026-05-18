@@ -46,6 +46,9 @@ def test_session_lifecycle_module_owns_lifecycle_implementation() -> None:
         "drain_task_runtime_for_reset",
     } <= lifecycle_functions.keys()
     assert {
+        ("opensquilla.session.lifecycle_service", "require_existing_session"),
+        ("opensquilla.session.lifecycle_service", "require_session_storage"),
+        ("opensquilla.session.lifecycle_service", "run_with_session_lock"),
         ("opensquilla.session.rpc_payload", "session_abort_response"),
         ("opensquilla.session.rpc_payload", "session_reset_response"),
         ("opensquilla.session.rpc_payload", "session_delete_response"),

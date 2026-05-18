@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,7 @@ async def test_exec_command_blocks_nested_sensitive_workdir() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="/dev/null redirection is POSIX-specific")
 async def test_exec_command_allows_dev_null_redirection() -> None:
     result = await shell.exec_command("printf ok 2>/dev/null")
 

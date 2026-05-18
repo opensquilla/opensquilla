@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -526,7 +526,7 @@ async def interactive_session(
 
     handle = InteractiveSessionHandle(chat_app)
     app_task: asyncio.Task[None] | None = None
-    stdout_cm = patch_stdout(raw=True)
+    stdout_cm = nullcontext() if output is not None else patch_stdout(raw=True)
 
     try:
         stdout_cm.__enter__()

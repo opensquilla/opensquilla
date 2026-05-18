@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,17 +52,18 @@ def test_release_installers_install_version_pinned_wheel_with_uv() -> None:
 
 
 def test_release_installer_rejects_non_release_selectors() -> None:
-    result = subprocess.run(
-        ["bash", "install.sh", "--version", "main"],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
     ps1 = RELEASE_PS1.read_text(encoding="utf-8")
 
-    assert result.returncode != 0
-    assert "only supports latest, stable, or release versions" in result.stderr
-    assert "scripts/install_source.sh" in result.stderr
+    if not sys.platform.startswith("win"):
+        result = subprocess.run(
+            ["bash", "install.sh", "--version", "main"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "only supports latest, stable, or release versions" in result.stderr
+        assert "scripts/install_source.sh" in result.stderr
     assert "only supports latest, stable, or release versions" in ps1
     assert "scripts/install_source.ps1" in ps1
 

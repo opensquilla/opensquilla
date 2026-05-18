@@ -241,10 +241,18 @@ Co-authored-by: Codex <noreply@openai.com>
     pytest `2645 passed, 6 skipped, 2 warnings in 29.19s`; gateway smoke
     start/status/stop/status passed.
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active` and
+- [x] Remove `../opensquilla-refactor-active` and
       `../opensquilla-refactor-agent-channel-manager`, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
+  - Removed:
+    - `../opensquilla-refactor-active`
+    - `../opensquilla-refactor-agent-channel-manager`
+  - Worker PID `72333` was no longer present.
+  - Ran `git worktree prune`.
+  - `git worktree list --porcelain` verified no extra
+    `opensquilla-refactor-*` worktrees remain beyond
+    `../opensquilla-refactor-integration`.
 
 ## Child gate
 
@@ -278,7 +286,8 @@ Co-authored-by: Codex <noreply@openai.com>
 - Child verification commit: `a87a9cc` (`Record gateway channel manager child
   verification`).
 - Integration merge: `6dcaf48` (`Merge gateway channel manager wiring boundary`).
-- Integration record:
+- Integration record: `e55dcd9` (`Record gateway channel manager integration
+  verification`).
 - Verification evidence:
   - RED:
     `uv run --extra dev pytest tests/test_gateway/test_channel_manager_wiring_boundary.py tests/test_gateway/test_router_boot.py::test_start_gateway_server_schedules_router_preload_after_channels tests/test_gateway/test_shutdown_order.py -q`
@@ -308,6 +317,12 @@ Co-authored-by: Codex <noreply@openai.com>
     source files; whitespace passed; pytest `2645 passed, 6 skipped, 2
     warnings`; gateway smoke passed.
 - Cleanup evidence:
+  - Worker PID `72333` was no longer present.
+  - Removed `../opensquilla-refactor-active`.
+  - Removed `../opensquilla-refactor-agent-channel-manager`.
+  - Ran `git worktree prune`.
+  - `git worktree list --porcelain` shows the refactor line only has
+    `../opensquilla-refactor-integration`.
 - Residual risk: low; the stage moves channel manager boot wiring behind a
   gateway boundary while preserving injected managers, webhook routes, startup
   logging, router preload ordering, shutdown ordering, and the full refactor

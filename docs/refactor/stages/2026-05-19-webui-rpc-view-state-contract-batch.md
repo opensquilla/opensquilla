@@ -323,14 +323,18 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
 
 ### Task 7: Integration Branch Merge and Cleanup
 
-- [ ] Merge child into integration with `git merge --no-ff codex/refactor-webui-rpc-view-state-contract-batch`.
-- [ ] Run full integration `scripts/refactor_gate.sh`.
-- [ ] Update this completion record with worker commits, child hash, integration hash, verification output, residual risk, and next recommended slice.
-- [ ] Commit the stage record update on integration with the required co-author trailer.
-- [ ] Remove `../opensquilla-refactor-active`.
-- [ ] Remove worker worktrees created for this batch.
-- [ ] Run `git worktree prune`.
-- [ ] Verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
+- [x] Merge child into integration with `git merge --no-ff codex/refactor-webui-rpc-view-state-contract-batch`.
+  - Integration merge commit: `bbb83c5`.
+- [x] Run full integration `scripts/refactor_gate.sh`.
+  - Result: ruff passed; mypy passed; whitespace passed; pytest `2529 passed, 6 skipped, 2 warnings in 27.10s`; gateway smoke start/status/stop passed; refactor gate complete.
+- [x] Update this completion record with worker commits, child hash, integration hash, verification output, residual risk, and next recommended slice.
+- [x] Commit the stage record update on integration with the required co-author trailer.
+- [x] Remove `../opensquilla-refactor-active`.
+- [x] Remove worker worktrees created for this batch.
+- [x] Run `git worktree prune`.
+- [x] Verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
+  - `git worktree list` no longer lists the active child or webui worker worktrees.
+  - `ls -d ../opensquilla-refactor-*` lists only `../opensquilla-refactor-integration`.
 
 ## Child Gate
 
@@ -367,12 +371,15 @@ Workers are not alone in the codebase. Each worker must preserve other workers' 
   - `50fad7e` Merge webui control views boundary batch.
   - `26b8a0e` Merge webui setup domain views boundary batch.
 - Integration merge:
+  - `bbb83c5` Merge Web UI RPC view-state contract batch.
 - Verification evidence:
   - Baseline focused Web UI suite: `109 passed in 3.12s`.
   - Post-worker focused Web UI suite: `116 passed in 0.73s`.
   - Touched static-test Ruff: `All checks passed!`.
   - Child `git diff --check`: passed.
   - Child full `scripts/refactor_gate.sh`: ruff passed; mypy passed; whitespace passed; pytest `2527 passed, 8 skipped, 2 warnings in 58.53s`; gateway smoke passed.
+  - Integration full `scripts/refactor_gate.sh`: ruff passed; mypy passed; whitespace passed; pytest `2529 passed, 6 skipped, 2 warnings in 27.10s`; gateway smoke passed.
+  - Cleanup: temporary active and worker worktrees removed and pruned; only `../opensquilla-refactor-integration` remains among refactor worktrees.
 - Residual risk:
   - Web UI coverage in this batch remains static-contract focused; no browser JS runtime or visual pass was run.
   - The shared stat-card helper preserves existing trusted-view HTML interpolation semantics; callers should keep values sourced from view-generated or escaped content.

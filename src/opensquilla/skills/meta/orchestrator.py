@@ -900,6 +900,54 @@ class MetaOrchestrator:
                 )
             rendered_args.append(_render(item.replace("{baseDir}", base_dir)))
 
+        # Resolve cwd early so assemble's relative-path anchoring matches the
+        # subprocess's working directory.
+        cwd = entrypoint.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            cwd = cwd.replace("{baseDir}", base_dir)
+            workdir: str | None = cwd
+        else:
+            workdir = base_dir or None
+
+        # Optional assemble: render templated files to disk before exec.
+        assemble_raw = entrypoint.get("assemble") or []
+        if assemble_raw and not isinstance(assemble_raw, list):
+            raise RuntimeError(
+                f"step {step.id!r}: entrypoint.assemble must be a list of mappings",
+            )
+        for index, entry in enumerate(assemble_raw):
+            if not isinstance(entry, dict):
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.assemble[{index}] must be a mapping",
+                )
+            into_raw = entry.get("into")
+            template_raw = entry.get("from_template")
+            if not isinstance(into_raw, str) or not into_raw:
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.assemble[{index}] missing 'into'",
+                )
+            if not isinstance(template_raw, str):
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.assemble[{index}] missing "
+                    f"'from_template'",
+                )
+            into_path_str = _render(into_raw.replace("{baseDir}", base_dir))
+            template_body = _render(template_raw.replace("{baseDir}", base_dir))
+            # Relative paths anchor to cwd (workdir), absolute paths pass through.
+            from pathlib import Path as _Path
+
+            target = _Path(into_path_str)
+            if not target.is_absolute() and workdir:
+                target = _Path(workdir) / target
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(template_body, encoding="utf-8")
+            log.info(
+                "meta_orchestrator.skill_exec_assemble",
+                step=step.id,
+                into=str(target),
+                bytes=len(template_body),
+            )
+
         argv = shlex.split(command_str) + rendered_args
         if not argv:
             raise RuntimeError(f"step {step.id!r}: empty argv after rendering")
@@ -910,12 +958,6 @@ class MetaOrchestrator:
         except (TypeError, ValueError):
             timeout = 60.0
         parse_mode = str(entrypoint.get("parse", "text"))
-        cwd = entrypoint.get("cwd")
-        if isinstance(cwd, str) and cwd:
-            cwd = cwd.replace("{baseDir}", base_dir)
-            workdir: str | None = cwd
-        else:
-            workdir = base_dir or None
 
         # Optional stdin: render Jinja template and pipe to the subprocess.
         stdin_raw = entrypoint.get("stdin")

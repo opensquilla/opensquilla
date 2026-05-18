@@ -148,10 +148,9 @@ def test_failed_upload_does_not_leak_uuid(store: UploadStore) -> None:
 def test_uuid_evicted_after_send_success(store: UploadStore) -> None:
     """The store's evict() drops the entry; subsequent get raises NotFound.
 
-    The explicit eviction hook lives in rpc_sessions._handle_sessions_send:
-    after start_turn_via_runtime accepts the turn, every consumed uuid is
-    evict()ed. This unit test locks the store contract that backs the
-    integration.
+    The explicit eviction hook lives in rpc_session_send.handle_sessions_send:
+    after the turn is accepted, every consumed uuid is evict()ed. This unit
+    test locks the store contract that backs the integration.
     """
 
     file_uuid = asyncio.run(store.put("r.pdf", "application/pdf", b"%PDF-1.4\n"))

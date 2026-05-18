@@ -1551,55 +1551,46 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
         if flush_enabled:
             get_transcript = getattr(ctx.session_manager, "get_transcript", None)
             if not callable(get_transcript):
-                raise RpcHandlerError(
-                    code="CONTEXT_FLUSH_FAILED",
-                    message=(
-                        "Compact aborted: session manager cannot inspect the "
-                        "transcript before flush."
-                    ),
-                    details={"key": key, "reason": "compaction_flush_failed"},
+                log.warning(
+                    "sessions.context_compact.flush_skipped",
+                    key=key,
+                    reason="transcript_reader_unavailable",
                 )
-            transcript = await get_transcript(key)
+                flush_enabled = False
+            else:
+                transcript = await get_transcript(key)
 
         if flush_enabled and transcript:
             if ctx.flush_service is None:
-                raise RpcHandlerError(
-                    code="CONTEXT_FLUSH_FAILED",
-                    message=(
-                        "Compact aborted: flush service is unavailable and "
-                        "the transcript is non-empty."
-                    ),
-                    details={"key": key, "reason": "compaction_flush_failed"},
+                log.warning(
+                    "sessions.context_compact.flush_skipped",
+                    key=key,
+                    reason="flush_service_unavailable",
                 )
-            agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
-            try:
-                receipt = await ctx.flush_service.execute(
-                    transcript,
-                    key,
-                    agent_id=agent_id,
-                    timeout=30.0,
-                    message_window=0,
-                    segment_mode="auto",
-                )
-            except Exception as exc:  # noqa: BLE001
-                raise RpcHandlerError(
-                    code="CONTEXT_FLUSH_FAILED",
-                    message=f"Compact aborted: flush failed ({exc})",
-                    details={"key": key, "reason": "compaction_flush_failed"},
-                ) from exc
-            if not flush_receipt_allows_destructive_compaction(receipt):
-                raise RpcHandlerError(
-                    code="CONTEXT_FLUSH_FAILED",
-                    message=(
-                        "Compact aborted: flush did not produce a complete "
-                        "LLM receipt."
-                    ),
-                    details={
-                        "key": key,
-                        "reason": "compaction_flush_failed",
-                        "flush_receipt": flush_receipt_to_dict(receipt),
-                    },
-                )
+            else:
+                agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
+                try:
+                    receipt = await ctx.flush_service.execute(
+                        transcript,
+                        key,
+                        agent_id=agent_id,
+                        timeout=30.0,
+                        message_window=0,
+                        segment_mode="auto",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "sessions.context_compact.flush_failed",
+                        key=key,
+                        error=str(exc),
+                    )
+                else:
+                    if not flush_receipt_allows_destructive_compaction(receipt):
+                        log.warning(
+                            "sessions.context_compact.flush_degraded",
+                            key=key,
+                            flush_receipt=flush_receipt_to_dict(receipt),
+                        )
 
         compaction_config = build_compaction_config_from_provider(
             _resolve_compaction_provider(ctx, session),

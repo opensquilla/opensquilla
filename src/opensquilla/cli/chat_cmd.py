@@ -29,6 +29,7 @@ from opensquilla.cli.repl.commands import is_exit_command, render_help_table
 from opensquilla.cli.repl.prompt import (
     interactive_session,
     prompt_approval,
+    queued_input_start_payload,
     user_input_echo_payload,
 )
 from opensquilla.cli.repl.session_state import ChatSessionState, messages_to_markdown
@@ -614,6 +615,7 @@ async def _run_concurrent_repl(
                     # turns un-preemptible until the deque emptied.
                     if pending_commands:
                         queued = pending_commands.popleft()
+                        await _echo_queued_turn_start(chat_app)
                         turn_task = asyncio.create_task(
                             dispatch(queued), name=task_name
                         )
@@ -650,6 +652,7 @@ async def _run_concurrent_repl(
                     # slash policy) before the loop returns.
                     while pending_commands:
                         queued = pending_commands.popleft()
+                        await _echo_queued_turn_start(chat_app)
                         turn_task = asyncio.create_task(
                             dispatch(queued), name=task_name
                         )
@@ -709,6 +712,7 @@ async def _run_concurrent_repl(
                     # slash policy) before the loop returns.
                     while pending_commands:
                         queued = pending_commands.popleft()
+                        await _echo_queued_turn_start(chat_app)
                         turn_task = asyncio.create_task(
                             dispatch(queued), name=task_name
                         )
@@ -930,12 +934,19 @@ async def _flush_before_standalone_rewrite(
     *,
     operation: str,
 ) -> bool:
-    """Fail closed before reset/compact when a durable transcript exists."""
+    """Fail closed before reset; compact can continue on flush degradation."""
+    compaction_operation = operation.strip().lower() == "compact"
     transcript = await _read_standalone_transcript(
         getattr(svc, "session_manager", None),
         session_key,
     )
     if transcript is None:
+        if compaction_operation:
+            console.print(
+                f"[yellow]{operation}: could not inspect durable transcript; "
+                "continuing with compaction only.[/yellow]"
+            )
+            return True
         console.print(
             f"[yellow]{operation} aborted: could not inspect the durable transcript.[/yellow]"
         )
@@ -945,6 +956,12 @@ async def _flush_before_standalone_rewrite(
 
     flush_service = getattr(svc, "flush_service", None)
     if flush_service is None:
+        if compaction_operation:
+            console.print(
+                f"[yellow]{operation}: flush service is unavailable; "
+                "continuing with compaction only.[/yellow]"
+            )
+            return True
         console.print(
             f"[yellow]{operation} aborted: flush service is unavailable and "
             "the durable transcript is non-empty.[/yellow]"
@@ -961,10 +978,23 @@ async def _flush_before_standalone_rewrite(
             segment_mode="auto",
         )
     except Exception as exc:  # noqa: BLE001
+        if compaction_operation:
+            console.print(
+                f"[yellow]{operation}: flush failed ({exc}); "
+                "continuing with compaction only.[/yellow]"
+            )
+            return True
         console.print(f"[yellow]{operation} aborted: flush failed ({exc}).[/yellow]")
         return False
 
     if not flush_receipt_allows_destructive_compaction(receipt):
+        if compaction_operation:
+            error = getattr(receipt, "error", None) or "degraded receipt"
+            console.print(
+                f"[yellow]{operation}: flush failed ({error}); "
+                "continuing with compaction only.[/yellow]"
+            )
+            return True
         error = getattr(receipt, "error", None) or "unknown error"
         console.print(f"[yellow]{operation} aborted: flush failed ({error}).[/yellow]")
         return False
@@ -2108,6 +2138,16 @@ async def _echo_user_input(chat_app: Any, text: str) -> None:
     payload = user_input_echo_payload(text)
     if not payload:
         return
+    write_through = getattr(chat_app, "write_through", None)
+    if callable(write_through):
+        await write_through(payload)
+        return
+    console.file.write(payload)
+    console.file.flush()
+
+
+async def _echo_queued_turn_start(chat_app: Any) -> None:
+    payload = queued_input_start_payload()
     write_through = getattr(chat_app, "write_through", None)
     if callable(write_through):
         await write_through(payload)

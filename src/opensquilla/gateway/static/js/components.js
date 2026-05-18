@@ -4,8 +4,12 @@ const UI = (() => {
 
   // -- Toast notifications --
   let _toastContainer = null;
+  const _visibleToasts = new Map();
 
   function toast(message, type = 'info', duration = 3000) {
+    const toastKey = `${type}\u0000${message}`;
+    if (_visibleToasts.has(toastKey)) return;
+
     if (!_toastContainer) {
       _toastContainer = document.createElement('div');
       _toastContainer.className = 'toast-stack';
@@ -14,8 +18,14 @@ const UI = (() => {
     const el = document.createElement('div');
     el.className = `toast ${type}`;
     el.textContent = message;
+    _visibleToasts.set(toastKey, el);
     _toastContainer.appendChild(el);
-    setTimeout(() => { el.remove(); }, duration);
+    setTimeout(() => {
+      el.remove();
+      if (_visibleToasts.get(toastKey) === el) {
+        _visibleToasts.delete(toastKey);
+      }
+    }, duration);
   }
 
   // -- Modal --

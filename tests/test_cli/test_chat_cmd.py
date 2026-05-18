@@ -1059,7 +1059,7 @@ async def test_standalone_reset_refuses_non_empty_transcript_without_flush_servi
 
 
 @pytest.mark.asyncio
-async def test_standalone_compact_refuses_non_empty_transcript_without_flush_service(
+async def test_standalone_compact_missing_flush_service_does_not_block_compaction(
     monkeypatch,
 ) -> None:
     services = _FakeServices()
@@ -1094,8 +1094,7 @@ async def test_standalone_compact_refuses_non_empty_transcript_without_flush_ser
 
     await chat_cmd._standalone_repl(model="openrouter/test", session_id=session_key)
 
-    assert services.session_manager.compact_calls == []
-    assert await services.session_manager.get_transcript(session_key)
+    assert len(services.session_manager.compact_calls) == 1
 
 
 class _FakeFlushService:
@@ -1165,7 +1164,7 @@ async def test_standalone_compact_flushes_before_compacting(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_standalone_compact_aborts_when_flush_fails(monkeypatch) -> None:
+async def test_standalone_compact_continues_when_flush_fails(monkeypatch) -> None:
     services = _FakeServices()
     session_key = "standalone:test"
     services.session_manager.transcripts[session_key] = [
@@ -1201,8 +1200,7 @@ async def test_standalone_compact_aborts_when_flush_fails(monkeypatch) -> None:
     await chat_cmd._standalone_repl(model="openrouter/test", session_id=session_key)
 
     assert len(services.flush_service.calls) == 1
-    assert services.session_manager.compact_calls == []
-    assert await services.session_manager.get_transcript(session_key)
+    assert len(services.session_manager.compact_calls) == 1
 
 
 @pytest.mark.asyncio

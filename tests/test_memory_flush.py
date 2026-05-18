@@ -137,7 +137,7 @@ async def test_agent_memory_flush_timeout_enters_backoff_without_retrigger(
 
 
 @pytest.mark.asyncio
-async def test_agent_memory_flush_timeout_refuses_compaction(
+async def test_agent_memory_flush_timeout_records_backoff_and_compacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import opensquilla.engine.agent as agent_module
@@ -184,9 +184,12 @@ async def test_agent_memory_flush_timeout_refuses_compaction(
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-    assert outcome is None
+    assert outcome is not None
+    assert outcome.compacted is True
+    assert outcome.summary == "User asked for memory flush timeout recovery."
     assert calls == 1
     assert agent._flush_backoff_seconds == 10.0
+    assert agent._last_compaction_refusal_reason is None
 
 
 @pytest.mark.asyncio

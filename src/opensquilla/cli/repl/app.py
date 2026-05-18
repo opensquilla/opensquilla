@@ -19,13 +19,11 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.auto_suggest import AutoSuggest
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer
-from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML, to_formatted_text
 from prompt_toolkit.history import FileHistory, History
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import (
-    ConditionalContainer,
     Float,
     FloatContainer,
     HSplit,
@@ -258,18 +256,12 @@ class ChatApplication:
                 return []
             return to_formatted_text(rendered)
 
-        # Persistent left-side prompt prefix. While the buffer is empty,
-        # render a neutral caret instead of ``you`` so the live input row
-        # does not look like an already-submitted blank user message in
-        # the transcript. As soon as the user starts typing, the row
-        # switches to the ordinary ``◢ you`` speaker marker.
-        from opensquilla.cli.ui import ACCENT, ACCENT_DEEP  # noqa: PLC0415
+        # Persistent left-side prompt prefix. Keep the current input row
+        # identified as ``you`` even before text is typed; submitted transcript
+        # rows are echoed separately by ``user_input_echo_payload``.
+        from opensquilla.cli.ui import ACCENT  # noqa: PLC0415
 
         def _input_prefix_fragments():  # type: ignore[no-untyped-def]
-            if not self._buffer.text:
-                return to_formatted_text(
-                    HTML(f"<style fg='{ACCENT_DEEP}'>› </style>")
-                )
             return to_formatted_text(
                 HTML(
                     f"<style fg='{ACCENT}'>◢ </style>"
@@ -279,7 +271,7 @@ class ChatApplication:
             )
 
         def _input_prefix_width():  # type: ignore[no-untyped-def]
-            return Dimension.exact(_ACTIVE_INPUT_PREFIX_WIDTH if self._buffer.text else 2)
+            return Dimension.exact(_ACTIVE_INPUT_PREFIX_WIDTH)
 
         input_window = VSplit(
             [
@@ -306,16 +298,10 @@ class ChatApplication:
                     return []
                 return to_formatted_text(rendered)
 
-            def _header_visible() -> bool:  # type: ignore[no-untyped-def]
-                return bool("".join(fragment[1] for fragment in _header_fragments()))
-
             children.append(
-                ConditionalContainer(
-                    Window(
-                        FormattedTextControl(_header_fragments),
-                        height=Dimension.exact(1),
-                    ),
-                    filter=Condition(_header_visible),
+                Window(
+                    FormattedTextControl(_header_fragments),
+                    height=Dimension.exact(1),
                 )
             )
         children.append(input_window)

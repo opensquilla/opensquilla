@@ -39,11 +39,25 @@ from opensquilla.tool_boundary import AgentToolHandler, ToolCall, ToolResult
 from opensquilla.tools.envelope import build_tool_failure_envelope
 from opensquilla.tools.policy import DispatchInput, finalize, run_chain_with_emit
 from opensquilla.tools.registry import ToolRegistry
-from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+from opensquilla.tools.types import (
+    CallerKind,
+    InvalidToolArgumentsError,
+    ProjectedToolArgumentsError,
+    ToolContext,
+    current_tool_context,
+)
 
 log = structlog.get_logger("opensquilla.tools.dispatch")
 
 __all__ = ["build_tool_handler"]
+
+_TOOL_ARGUMENT_PROJECTION_PREFIX = "[tool_use_argument_projection]\n"
+_COMPACTED_TOOL_ARGUMENT_MARKERS = frozenset(
+    {
+        "_opensquilla_compacted_tool_arguments",
+        "_opensquilla_compacted_tool_input",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +140,58 @@ def _check_injection_guard(
         error_class_override="InjectionRefused",
         user_message_override=str(reason),
     )
+
+
+def _check_non_executable_arguments(
+    tool_call: ToolCall,
+    effective_ctx: ToolContext | None,
+) -> ToolResult | None:
+    arguments = tool_call.arguments
+    if set(arguments) == {"_raw"} and isinstance(arguments.get("_raw"), str):
+        log.warning(
+            "dispatch.invalid_tool_arguments",
+            tool=tool_call.tool_name,
+            tool_use_id=tool_call.tool_use_id,
+            agent_id=effective_ctx.agent_id if effective_ctx else None,
+            session_key=effective_ctx.session_key if effective_ctx else None,
+            reason="unparsed_raw_arguments",
+        )
+        return _build_envelope_result(
+            tool_call,
+            exc=InvalidToolArgumentsError(),
+        )
+
+    if any(arguments.get(marker) is True for marker in _COMPACTED_TOOL_ARGUMENT_MARKERS):
+        log.warning(
+            "dispatch.projected_tool_arguments_refused",
+            tool=tool_call.tool_name,
+            tool_use_id=tool_call.tool_use_id,
+            agent_id=effective_ctx.agent_id if effective_ctx else None,
+            session_key=effective_ctx.session_key if effective_ctx else None,
+            reason="compacted_argument_marker",
+        )
+        return _build_envelope_result(
+            tool_call,
+            exc=ProjectedToolArgumentsError(),
+        )
+
+    for argument_name, value in arguments.items():
+        if isinstance(value, str) and value.startswith(_TOOL_ARGUMENT_PROJECTION_PREFIX):
+            log.warning(
+                "dispatch.projected_tool_arguments_refused",
+                tool=tool_call.tool_name,
+                tool_use_id=tool_call.tool_use_id,
+                agent_id=effective_ctx.agent_id if effective_ctx else None,
+                session_key=effective_ctx.session_key if effective_ctx else None,
+                reason="projection_string",
+                field=argument_name,
+            )
+            return _build_envelope_result(
+                tool_call,
+                exc=ProjectedToolArgumentsError(),
+            )
+
+    return None
 
 
 def _is_untrusted_caller(ctx: ToolContext | None) -> bool:
@@ -260,6 +326,10 @@ def build_tool_handler(
         registered = registry.get(tool_call.tool_name)
         if registered is None:
             return _resolve_registry_miss(tool_call, known, effective_ctx)
+
+        non_executable_arguments = _check_non_executable_arguments(tool_call, effective_ctx)
+        if non_executable_arguments is not None:
+            return non_executable_arguments
 
         # 3. ToolHook.before_tool — optional observability hook.
         hook_call = ToolHookCall(tool_call=tool_call, ctx=effective_ctx) if hooks else None

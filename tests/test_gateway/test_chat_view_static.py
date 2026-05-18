@@ -697,3 +697,26 @@ def test_chat_streaming_bubble_has_polite_live_region() -> None:
     end = source.index("function ", start + 1)
     body = source[start:end]
     assert "_streamBubble.setAttribute('aria-live', 'polite');" in body
+
+
+def test_chat_thread_does_not_duplicate_composer_bottom_clearance() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert "padding-bottom: max(var(--composer-h" not in css
+    assert "padding-bottom: var(--composer-h" not in css
+    assert "document.documentElement.style.setProperty('--composer-h'" in source
+
+
+def test_chat_input_bar_tightens_desktop_bottom_padding_but_keeps_mobile_safe_area() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    desktop_padding = "padding: var(--sp-2) var(--sp-4) var(--sp-1);"
+    mobile_safe_area = (
+        "padding-bottom: calc(var(--sp-2) + env(safe-area-inset-bottom, 0px));"
+    )
+
+    assert ".content:has(> .chat)" in css
+    assert "padding-bottom: 0;" in css
+    assert desktop_padding in css
+    assert mobile_safe_area in css
+    assert css.rfind(mobile_safe_area) > css.index(desktop_padding)

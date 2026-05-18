@@ -24,6 +24,9 @@ def _build_registry() -> ToolRegistry:
     async def boom() -> str:
         raise ValueError("bad argument")
 
+    async def echo(value: str = "") -> str:
+        return value
+
     async def pending() -> str:
         return json.dumps(
             {
@@ -36,6 +39,14 @@ def _build_registry() -> ToolRegistry:
         )
 
     registry.register(ToolSpec(name="boom", description="boom", parameters={}), boom)
+    registry.register(
+        ToolSpec(
+            name="echo",
+            description="echo",
+            parameters={"value": {"type": "string"}},
+        ),
+        echo,
+    )
     registry.register(ToolSpec(name="pending", description="pending", parameters={}), pending)
     return registry
 
@@ -101,6 +112,50 @@ async def test_dispatch_tool_exception_envelope_is_canonical_five_key_shape() ->
         "user_message",
         "retry_allowed",
     }
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_unparsed_raw_tool_arguments_before_handler() -> None:
+    handler = build_tool_handler(_build_registry())
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-raw",
+            tool_name="echo",
+            arguments={"_raw": '{"value": "unescaped " quote"}'},
+        )
+    )
+
+    assert result.is_error is True
+    payload = json.loads(result.content)
+    assert payload["tool"] == "echo"
+    assert payload["error_class"] == "InvalidToolArgumentsError"
+    assert payload["retry_allowed"] is False
+    assert "valid JSON" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_provider_compacted_tool_arguments_before_handler() -> None:
+    handler = build_tool_handler(_build_registry())
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-compacted",
+            tool_name="echo",
+            arguments={
+                "_opensquilla_compacted_tool_arguments": True,
+                "head": '{"value": "large',
+                "tail": 'payload"}',
+            },
+        )
+    )
+
+    assert result.is_error is True
+    payload = json.loads(result.content)
+    assert payload["tool"] == "echo"
+    assert payload["error_class"] == "ProjectedToolArgumentsError"
+    assert payload["retry_allowed"] is False
+    assert "compacted" in payload["user_message"]
 
 
 @pytest.mark.asyncio

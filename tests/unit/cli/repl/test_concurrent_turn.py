@@ -349,6 +349,89 @@ async def test_pending_commands_queue_during_turn(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_queued_turn_announces_when_promoted(monkeypatch) -> None:
+    """A queued input gets a short scrollback marker when it becomes active."""
+    from contextlib import asynccontextmanager
+
+    from opensquilla.cli import chat_cmd
+
+    events: list[tuple[str, str]] = []
+    in_first_turn = asyncio.Event()
+    finish_first_turn = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def _dispatch(user_input: str) -> bool:
+        events.append(("dispatch", user_input))
+        if user_input == "first":
+            in_first_turn.set()
+            await finish_first_turn.wait()
+        if user_input == "second":
+            second_started.set()
+        return True
+
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+
+    class _FakePTApp:
+        def invalidate(self) -> None:
+            return None
+
+    class _FakeChatApp:
+        application = _FakePTApp()
+
+        def set_cancel_callback(self, cb) -> None:
+            return None
+
+        async def write_through(self, payload: str) -> None:
+            events.append(("write", payload))
+
+    class _FakeHandle:
+        application = _FakeChatApp()
+
+        async def next_line(self) -> str | None:
+            return await inputs.get()
+
+        def set_toolbar(self, key, value) -> None:
+            return None
+
+    @asynccontextmanager
+    async def _fake_session(**kwargs):
+        yield _FakeHandle()
+
+    monkeypatch.setattr(chat_cmd, "interactive_session", _fake_session)
+
+    repl_task = asyncio.create_task(
+        chat_cmd._run_concurrent_repl(
+            surface=Surface.CLI_GATEWAY,
+            scope={"model": None, "session_key": None},
+            dispatch=_dispatch,
+        )
+    )
+
+    await inputs.put("first")
+    await asyncio.wait_for(in_first_turn.wait(), timeout=2.0)
+    await inputs.put("second")
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    finish_first_turn.set()
+    await asyncio.wait_for(second_started.wait(), timeout=2.0)
+    await inputs.put(None)
+    await asyncio.wait_for(repl_task, timeout=2.0)
+
+    queued_markers = [
+        i
+        for i, event in enumerate(events)
+        if event[0] == "write" and "running queued input" in event[1]
+    ]
+    assert queued_markers, events
+    second_echo = next(
+        i for i, event in enumerate(events) if event[0] == "write" and "second" in event[1]
+    )
+    second_dispatch = events.index(("dispatch", "second"))
+    assert second_echo < queued_markers[0] < second_dispatch
+
+
+@pytest.mark.asyncio
 async def test_loop_exits_cleanly_on_eof(monkeypatch) -> None:
     """Ctrl+D / EOF mid-idle exits the loop without leaving stray tasks."""
     from contextlib import asynccontextmanager

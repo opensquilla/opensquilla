@@ -250,24 +250,24 @@ def test_write_through_reuses_active_stream_region(monkeypatch) -> None:
     asyncio.run(_drive())
 
 
-def test_empty_prompt_during_waiting_is_not_rendered_as_user_message() -> None:
+def test_empty_prompt_during_waiting_keeps_user_label() -> None:
     chat_app = _fresh_chat_app()
 
     chat_app.set_toolbar("status", "Watching · 2.0s")
 
     prefix = _input_prefix_plain_text(chat_app)
-    assert "you" not in prefix
-    assert prefix == "› "
-    assert _input_prefix_width(chat_app) == 2
+    assert "you" in prefix
+    assert prefix == "◢ you  "
+    assert _input_prefix_width(chat_app) == 7
 
 
-def test_empty_idle_prompt_is_not_rendered_as_user_message() -> None:
+def test_empty_idle_prompt_keeps_user_label() -> None:
     chat_app = _fresh_chat_app()
 
     prefix = _input_prefix_plain_text(chat_app)
-    assert "you" not in prefix
-    assert prefix == "› "
-    assert _input_prefix_width(chat_app) == 2
+    assert "you" in prefix
+    assert prefix == "◢ you  "
+    assert _input_prefix_width(chat_app) == 7
 
 
 def test_waiting_prompt_restores_user_label_once_text_is_entered() -> None:
@@ -278,6 +278,7 @@ def test_waiting_prompt_restores_user_label_once_text_is_entered() -> None:
 
     prefix = _input_prefix_plain_text(chat_app)
     assert "you" in prefix
+    assert prefix == "◢ you  "
     assert _input_prefix_width(chat_app) == 7
 
 

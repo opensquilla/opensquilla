@@ -519,6 +519,82 @@ class Agent:
         self._flush_backoff_until: float = 0.0
         self._flush_backoff_seconds: float = 0.0
         self._session_flush_service = session_flush_service
+        self._last_compaction_refusal_reason: str | None = None
+
+    def _context_overflow_error(self) -> ErrorEvent:
+        reason = self._last_compaction_refusal_reason
+        if reason == "memory_flush_timeout_before_compaction":
+            return ErrorEvent(
+                message=(
+                    "Context compaction could not run because the pre-compaction "
+                    "memory flush timed out."
+                ),
+                code="compaction_refused_flush_timeout",
+            )
+        if reason == "memory_flush_degraded_before_compaction":
+            return ErrorEvent(
+                message=(
+                    "Context compaction could not run because the pre-compaction "
+                    "memory flush did not produce a verified summary."
+                ),
+                code="compaction_refused_memory_flush",
+            )
+        if reason == "empty_summary_rejected":
+            return ErrorEvent(
+                message="Context compaction produced no replacement summary.",
+                code="compaction_refused_empty_summary",
+            )
+        if reason == "compaction_failed":
+            return ErrorEvent(
+                message="Context compaction failed before the provider request could be retried.",
+                code="compaction_failed",
+            )
+        if reason == "compaction_not_smaller":
+            return ErrorEvent(
+                message="Context compaction did not reduce the provider request.",
+                code="compaction_not_smaller",
+            )
+        if reason == "provider_recent_tail_too_large":
+            return ErrorEvent(
+                message=(
+                    "Context overflow is in the current turn's recent tool calls or "
+                    "reasoning tail; history compaction cannot reduce it."
+                ),
+                code="current_turn_context_exhausted",
+            )
+        if reason == "provider_request_budget_exhausted":
+            return ErrorEvent(
+                message="Provider request budget remains exhausted after compaction.",
+                code="provider_request_budget_exhausted",
+            )
+        return ErrorEvent(
+            message="Context overflow persists after compaction",
+            code="compaction_exhausted",
+        )
+
+    def _record_provider_context_overflow_reason(
+        self,
+        provider_error: ProviderErrorEvent,
+    ) -> None:
+        if provider_error.code != "provider_request_budget_exhausted":
+            return
+        try:
+            proof = json.loads(provider_error.message)
+        except (TypeError, ValueError):
+            self._last_compaction_refusal_reason = "provider_request_budget_exhausted"
+            return
+        if not isinstance(proof, dict):
+            self._last_compaction_refusal_reason = "provider_request_budget_exhausted"
+            return
+        if proof.get("recent_tail_too_large") is True:
+            self._last_compaction_refusal_reason = "provider_recent_tail_too_large"
+            return
+        if proof.get("compaction_not_smaller") is True:
+            self._last_compaction_refusal_reason = "compaction_not_smaller"
+            return
+        fallback_reason = proof.get("fallback_reason")
+        if fallback_reason == "provider_request_budget_exhausted":
+            self._last_compaction_refusal_reason = "provider_request_budget_exhausted"
 
     def _tool_execution_timeout(self, tool_call: ToolCall) -> float:
         timeout = float(self.config.tool_timeout)
@@ -2055,10 +2131,8 @@ class Agent:
                         if failure_kind == ProviderFailureKind.CONTEXT_OVERFLOW:
                             if overflow_retries >= self.config.max_overflow_retries:
                                 yield self._transition(AgentState.ERROR)
-                                terminal_error = ErrorEvent(
-                                    message="Context overflow persists after compaction",
-                                    code="compaction_exhausted",
-                                )
+                                self._record_provider_context_overflow_reason(provider_error)
+                                terminal_error = self._context_overflow_error()
                                 yield terminal_error
                                 break
                             overflow_retries += 1
@@ -2077,10 +2151,7 @@ class Agent:
                             )
                             if overflow_outcome is None:
                                 yield self._transition(AgentState.ERROR)
-                                terminal_error = ErrorEvent(
-                                    message="Context overflow persists after compaction",
-                                    code="compaction_exhausted",
-                                )
+                                terminal_error = self._context_overflow_error()
                                 yield terminal_error
                                 break
                             next_request_context_insert_index = (
@@ -2105,10 +2176,8 @@ class Agent:
                                 next_request_messages,
                             ):
                                 yield self._transition(AgentState.ERROR)
-                                terminal_error = ErrorEvent(
-                                    message="Context overflow persists after compaction",
-                                    code="compaction_exhausted",
-                                )
+                                self._last_compaction_refusal_reason = "compaction_not_smaller"
+                                terminal_error = self._context_overflow_error()
                                 yield terminal_error
                                 break
                             turn_messages = overflow_outcome.messages
@@ -2248,10 +2317,7 @@ class Agent:
                 if overflow_outcome is None:
                     if overflow_retries >= self.config.max_overflow_retries:
                         yield self._transition(AgentState.ERROR)
-                        terminal_error = ErrorEvent(
-                            message="Context overflow persists after compaction",
-                            code="compaction_exhausted",
-                        )
+                        terminal_error = self._context_overflow_error()
                         yield terminal_error
                         break
                     overflow_retries += 1
@@ -2998,6 +3064,7 @@ class Agent:
         Uses sub-agent flush instead of prompt injection.
         The flush is re-entrant: it can trigger on every approach to threshold.
         """
+        self._last_compaction_refusal_reason = None
         threshold = self.config.context_overflow_threshold * self.config.context_window_tokens
         if total_tokens <= threshold:
             return CompactionOutcome(
@@ -3110,14 +3177,17 @@ class Agent:
                 self._flush_done_this_cycle = False
             receipt = await _await_flush_task()
             if not flush_receipt_allows_destructive_compaction(receipt):
+                reason = "memory_flush_degraded_before_compaction"
+                if flush_task is not None and self._flush_wait_timed_out_task is flush_task:
+                    reason = "memory_flush_timeout_before_compaction"
                 logger.warning(
                     "memory_flush.degraded_before_compaction",
+                    reason=reason,
                     mode=getattr(receipt, "mode", None),
                     integrity_status=getattr(receipt, "integrity_status", None),
                     indexed_chunk_count=getattr(receipt, "indexed_chunk_count", None),
                 )
                 self._flush_done_this_cycle = False
-                return None
 
         # --- Compaction ---
         entries = [
@@ -3140,6 +3210,7 @@ class Agent:
         try:
             result = await compact_context(request)
         except Exception:  # noqa: BLE001
+            self._last_compaction_refusal_reason = "compaction_failed"
             return None  # signal failure
 
         # Removing history without a replacement summary is equivalent to
@@ -3151,6 +3222,7 @@ class Agent:
                 removed_count=result.removed_count,
                 kept_count=len(result.kept_entries),
             )
+            self._last_compaction_refusal_reason = "empty_summary_rejected"
             return None
 
         has_structured_content = any(not isinstance(m.content, str) for m in messages)

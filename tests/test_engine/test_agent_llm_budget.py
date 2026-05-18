@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -89,8 +90,14 @@ class _ContextOverflowProvider:
 class _ProviderRequestBudgetExceededProvider:
     provider_name = "openrouter"
 
-    def __init__(self, *, success_after: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        success_after: int | None = None,
+        proof: dict[str, Any] | None = None,
+    ) -> None:
         self.success_after = success_after
+        self.proof = proof
         self.calls: list[list[Message]] = []
 
     def chat(
@@ -107,10 +114,12 @@ class _ProviderRequestBudgetExceededProvider:
             yield ProviderText(text="ok")
             yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
             return
-        yield ProviderError(
-            message='{"fallback_reason":"provider_request_budget_exhausted"}',
-            code="provider_request_budget_exhausted",
+        message = (
+            '{"fallback_reason":"provider_request_budget_exhausted"}'
+            if self.proof is None
+            else json.dumps(self.proof)
         )
+        yield ProviderError(message=message, code="provider_request_budget_exhausted")
 
     async def list_models(self) -> list[Any]:
         return []
@@ -322,7 +331,7 @@ async def test_context_overflow_noop_compaction_does_not_resend_unchanged_contex
 
     assert len(provider.calls) == 1
     assert any(
-        isinstance(event, ErrorEvent) and event.code == "compaction_exhausted"
+        isinstance(event, ErrorEvent) and event.code == "compaction_not_smaller"
         for event in events
     )
     assert not any(getattr(event, "kind", None) == "compaction" for event in events)
@@ -355,7 +364,7 @@ async def test_context_overflow_summary_only_larger_payload_does_not_retry(
 
     assert len(provider.calls) == 1
     assert any(
-        isinstance(event, ErrorEvent) and event.code == "compaction_exhausted"
+        isinstance(event, ErrorEvent) and event.code == "compaction_not_smaller"
         for event in events
     )
     assert not any(getattr(event, "kind", None) == "compaction" for event in events)
@@ -434,12 +443,50 @@ async def test_provider_request_budget_exhausted_compacts_warns_and_retries(
 
 
 @pytest.mark.asyncio
-async def test_context_overflow_flush_receipt_required_before_live_compaction(
+async def test_provider_request_budget_recent_tail_exhaustion_is_reported_precisely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _effective_compact(request: Any) -> CompactionResult:
+        return CompactionResult(
+            summary="short summary",
+            kept_entries=[],
+            removed_count=len(request.entries),
+            chunks_processed=1,
+        )
+
+    monkeypatch.setattr("opensquilla.engine.agent.compact_context", _effective_compact)
+    provider = _ProviderRequestBudgetExceededProvider(
+        proof={
+            "fallback_reason": "provider_request_budget_exhausted",
+            "recent_tail_too_large": True,
+            "estimated_chars": 100_000,
+            "proof_budget": 96_000,
+        }
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_provider_retries=0,
+            max_overflow_retries=1,
+            flush_enabled=False,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("x" * 4000)]
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+
+    assert len(provider.calls) == 2
+    assert errors[-1].code == "current_turn_context_exhausted"
+    assert "current turn" in errors[-1].message
+
+
+@pytest.mark.asyncio
+async def test_context_overflow_degraded_flush_still_runs_live_compaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     compact_called = False
 
-    async def _compact_should_not_run(request: Any) -> CompactionResult:
+    async def _compact_runs_after_degraded_flush(request: Any) -> CompactionResult:
         nonlocal compact_called
         compact_called = True
         return CompactionResult(
@@ -449,8 +496,11 @@ async def test_context_overflow_flush_receipt_required_before_live_compaction(
             chunks_processed=1,
         )
 
-    monkeypatch.setattr("opensquilla.engine.agent.compact_context", _compact_should_not_run)
-    provider = _ContextOverflowProvider()
+    monkeypatch.setattr(
+        "opensquilla.engine.agent.compact_context",
+        _compact_runs_after_degraded_flush,
+    )
+    provider = _ContextOverflowProvider(success_after=1)
     agent = Agent(
         provider=provider,
         config=AgentConfig(max_provider_retries=0, max_overflow_retries=2),
@@ -458,10 +508,62 @@ async def test_context_overflow_flush_receipt_required_before_live_compaction(
 
     events = [event async for event in agent.run_turn("x" * 4000)]
 
-    assert compact_called is False
-    assert len(provider.calls) == 1
-    assert any(
-        isinstance(event, ErrorEvent) and event.code == "compaction_exhausted"
+    assert compact_called is True
+    assert len(provider.calls) == 2
+    assert any(event.kind == "done" and getattr(event, "text", "") == "ok" for event in events)
+    assert not any(
+        isinstance(event, ErrorEvent)
+        and event.code in {"compaction_refused_memory_flush", "compaction_refused_flush_timeout"}
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_overflow_flush_timeout_records_backoff_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _compact_runs_after_flush_timeout(request: Any) -> CompactionResult:
+        return CompactionResult(
+            summary="short summary",
+            kept_entries=[],
+            removed_count=len(request.entries),
+            chunks_processed=1,
+        )
+
+    monkeypatch.setattr(
+        "opensquilla.engine.agent.compact_context",
+        _compact_runs_after_flush_timeout,
+    )
+    provider = _ContextOverflowProvider(success_after=1)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_provider_retries=0,
+            max_overflow_retries=2,
+            flush_timeout_seconds=0.01,
+            flush_backoff_initial_seconds=10.0,
+        ),
+    )
+
+    async def slow_flush(_plan: Any, _messages: Any) -> None:
+        await asyncio.sleep(1.0)
+
+    monkeypatch.setattr(agent, "_run_flush", slow_flush)
+    try:
+        events = [event async for event in agent.run_turn("x" * 4000)]
+    finally:
+        task = agent._active_flush_task
+        if task is not None and not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    assert len(provider.calls) == 2
+    assert agent._flush_backoff_seconds == 10.0
+    assert any(event.kind == "done" and getattr(event, "text", "") == "ok" for event in events)
+    assert not any(
+        isinstance(event, ErrorEvent)
+        and event.code in {"compaction_refused_memory_flush", "compaction_refused_flush_timeout"}
         for event in events
     )
 

@@ -57,6 +57,8 @@ async def test_set_toolbar_mutates_shared_context() -> None:
                 output=DummyOutput(),
                 model="provider/some-model",
             ) as handle:
+                layout_children = handle.application.application.layout.container.content.children
+                assert len(layout_children) == 3
                 handle.set_toolbar("status", "thinking…")
                 # Sanity: shared dict carries the value the handle wrote.
                 assert prompt_module._toolbar_context["status"] == "thinking…"
@@ -71,6 +73,7 @@ async def test_set_toolbar_mutates_shared_context() -> None:
                     fragment[1] for fragment in to_formatted_text(active_header)
                 )
                 assert "◢ squilla" in active_header_text
+                assert len(layout_children) == 3
                 # Clearing the status drops the chip and brings back the
                 # idle dim line carrying the model alias.
                 handle.set_toolbar("status", None)
@@ -78,6 +81,7 @@ async def test_set_toolbar_mutates_shared_context() -> None:
                 idle_header = prompt_module._input_header_fragments()
                 assert "some-model" in idle_html.value
                 assert idle_header.value == ""
+                assert len(layout_children) == 3
     finally:
         prompt_module._toolbar_context["status"] = previous_status
         prompt_module._toolbar_context["model"] = previous_model

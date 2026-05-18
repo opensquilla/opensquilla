@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from copy import deepcopy
 from typing import Any
 
 _COMPACTED_STRING_MAX_CHARS = 1200
+_COMPACTED_TAIL_STRING_MAX_CHARS = 640
+_COMPACTED_ARGUMENT_PREVIEW_CHARS = 360
+_COMPACTED_ARGUMENT_TAIL_CHARS = 120
 
 
 class ProviderRequestBudgetExceededError(RuntimeError):
@@ -108,6 +112,61 @@ def _compact_string(value: str) -> str:
     return f"{head}\n\n[provider_request_compacted: omitted {omitted} chars]\n\n{tail}"
 
 
+def _compact_tail_string(value: str, *, label: str) -> str:
+    if len(value) <= _COMPACTED_TAIL_STRING_MAX_CHARS:
+        return value
+    head = value[:420]
+    tail = value[-120:]
+    omitted = len(value) - len(head) - len(tail)
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return (
+        f"{head}\n\n"
+        f"[provider_request_{label}_compacted: omitted {omitted} chars; "
+        f"original_chars={len(value)}; sha256={digest}]\n\n"
+        f"{tail}"
+    )
+
+
+def _compact_tool_arguments(value: str) -> str:
+    if len(value) <= _COMPACTED_TAIL_STRING_MAX_CHARS:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    compacted = {
+        "_opensquilla_compacted_tool_arguments": True,
+        "original_chars": len(value),
+        "sha256": digest,
+        "head": value[:_COMPACTED_ARGUMENT_PREVIEW_CHARS],
+        "tail": value[-_COMPACTED_ARGUMENT_TAIL_CHARS:],
+    }
+    return json.dumps(compacted, ensure_ascii=False, separators=(",", ":"))
+
+
+def _compact_tool_input(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(raw) <= _COMPACTED_TAIL_STRING_MAX_CHARS:
+        return value
+    compacted = dict(value)
+    changed = False
+    for key, item in value.items():
+        if not isinstance(item, str):
+            continue
+        next_item = _compact_tail_string(item, label="tool_input")
+        if next_item != item:
+            compacted[key] = next_item
+            changed = True
+    if changed:
+        return compacted
+    return {
+        "_opensquilla_compacted_tool_input": True,
+        "original_chars": len(raw),
+        "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "head": raw[:_COMPACTED_ARGUMENT_PREVIEW_CHARS],
+        "tail": raw[-_COMPACTED_ARGUMENT_TAIL_CHARS:],
+    }
+
+
 def _compact_tool_payload_once(payload: dict[str, Any]) -> dict[str, Any]:
     compacted = deepcopy(payload)
     for message in compacted.get("messages", []):
@@ -129,6 +188,45 @@ def _compact_tool_payload_once(payload: dict[str, Any]) -> dict[str, Any]:
                 for item in block_content:
                     if isinstance(item, dict) and isinstance(item.get("text"), str):
                         item["text"] = _compact_string(item["text"])
+    return compacted
+
+
+def _compact_recent_tail_payload_once(payload: dict[str, Any]) -> dict[str, Any]:
+    compacted = deepcopy(payload)
+    for message in compacted.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "assistant":
+            reasoning_content = message.get("reasoning_content")
+            if isinstance(reasoning_content, str):
+                message["reasoning_content"] = _compact_tail_string(
+                    reasoning_content,
+                    label="reasoning_content",
+                )
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function = tool_call.get("function")
+                    if not isinstance(function, dict):
+                        continue
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, str):
+                        function["arguments"] = _compact_tool_arguments(arguments)
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                block["input"] = _compact_tool_input(block.get("input"))
+            elif block.get("type") == "thinking" and isinstance(block.get("thinking"), str):
+                block["thinking"] = _compact_tail_string(
+                    block["thinking"],
+                    label="thinking_block",
+                )
     return compacted
 
 
@@ -190,27 +288,54 @@ def prove_or_compact_provider_payload(
     except ProviderRequestBudgetExceededError as first_error:
         first_chars = int(first_error.proof["estimated_chars"])
 
-    compacted = _compact_tool_payload_once(payload)
-    compacted_chars = _payload_chars(compacted)
+    tool_compacted = _compact_tool_payload_once(payload)
+    tool_compacted_chars = _payload_chars(tool_compacted)
     try:
         proof = prove_provider_payload(
-            compacted,
+            tool_compacted,
+            projection_adapter=projection_adapter,
+            proof_budget=proof_budget,
+            status_projection_mode=status_projection_mode,
+            fallback_reason=fallback_reason,
+        )
+    except ProviderRequestBudgetExceededError:
+        pass
+    else:
+        proof["retry_count"] = 1
+        proof["compact_needed"] = True
+        proof["compaction_not_smaller"] = tool_compacted_chars >= first_chars
+        proof["recent_tail_too_large"] = False
+        return tool_compacted, proof
+
+    tail_compacted = _compact_recent_tail_payload_once(tool_compacted)
+    tail_compacted_chars = _payload_chars(tail_compacted)
+    try:
+        proof = prove_provider_payload(
+            tail_compacted,
             projection_adapter=projection_adapter,
             proof_budget=proof_budget,
             status_projection_mode=status_projection_mode,
             fallback_reason=fallback_reason,
         )
     except ProviderRequestBudgetExceededError as exc:
-        exc.proof["retry_count"] = 1
+        exc.proof["retry_count"] = 2
         exc.proof["compact_needed"] = True
-        exc.proof["compaction_not_smaller"] = compacted_chars >= first_chars
+        exc.proof["tool_payload_compaction_not_smaller"] = (
+            tool_compacted_chars >= first_chars
+        )
+        exc.proof["tail_compaction_not_smaller"] = (
+            tail_compacted_chars >= tool_compacted_chars
+        )
+        exc.proof["compaction_not_smaller"] = tail_compacted_chars >= first_chars
         exc.proof["recent_tail_too_large"] = bool(exc.proof.get("top_contributors"))
         raise
-    proof["retry_count"] = 1
+    proof["retry_count"] = 2
     proof["compact_needed"] = True
-    proof["compaction_not_smaller"] = compacted_chars >= first_chars
+    proof["tool_payload_compaction_not_smaller"] = tool_compacted_chars >= first_chars
+    proof["tail_compaction_not_smaller"] = tail_compacted_chars >= tool_compacted_chars
+    proof["compaction_not_smaller"] = tail_compacted_chars >= first_chars
     proof["recent_tail_too_large"] = False
-    return compacted, proof
+    return tail_compacted, proof
 
 
 def prove_provider_payload_from_env(

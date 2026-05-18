@@ -178,6 +178,24 @@ class SafeToolError(SafeToolUserMessage, ToolError):
             self.user_message = user_message
 
 
+class InvalidToolArgumentsError(SafeToolUserMessage, ValueError):
+    """Raised when provider output did not produce executable tool arguments."""
+
+    user_message = (
+        "The tool call arguments were not valid JSON. Reissue the tool call with "
+        "valid JSON that matches the tool schema."
+    )
+
+
+class ProjectedToolArgumentsError(SafeToolUserMessage, ValueError):
+    """Raised when provider-context argument projections reach dispatch."""
+
+    user_message = (
+        "The tool call arguments were compacted for model context and cannot be "
+        "executed. Reissue the tool call with the real schema fields."
+    )
+
+
 class UnsupportedSurfaceError(SafeToolError):
     """Raised when a tool needs an interactive surface that is unavailable."""
 
@@ -202,9 +220,9 @@ class SSRFBlockedError(SafeToolUserMessage, ValueError):
 
 
 class WorkspaceAccessError(SafeToolError):
-    """Raised when a filesystem write/edit escapes the active workspace."""
+    """Raised when a filesystem operation escapes the active workspace."""
 
     user_message = (
-        "File writes and edits must stay inside the active workspace. Use a relative "
+        "Filesystem operations must stay inside the active workspace. Use a relative "
         "path within the workspace or choose an approved workspace file."
     )

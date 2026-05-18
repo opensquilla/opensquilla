@@ -3813,13 +3813,11 @@ class TurnRunner:
         )
 
         if self._pre_compaction_flush_enabled():
-            flush_ok = await self._await_pre_compaction_flush_grace(
+            await self._await_pre_compaction_flush_grace(
                 transcript,
                 session_key,
                 event_prefix="t3_upgrade_compaction",
             )
-            if not flush_ok:
-                return _T3_FLUSH_FAILED
 
         try:
             compaction_config = None
@@ -3913,13 +3911,11 @@ class TurnRunner:
             ratio=ratio,
         )
         if self._pre_compaction_flush_enabled():
-            flush_ok = await self._await_pre_compaction_flush_grace(
+            await self._await_pre_compaction_flush_grace(
                 transcript,
                 session_key,
                 event_prefix="preflight_compaction",
             )
-            if not flush_ok:
-                return
         compaction_config = None
         if compaction_provider is not None or compaction_model:
             from opensquilla.session.compaction import build_compaction_config_from_provider

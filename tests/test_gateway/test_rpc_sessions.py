@@ -1209,7 +1209,7 @@ class TestSessionsContextCompact:
         ]
 
     @pytest.mark.asyncio
-    async def test_context_compact_refuses_missing_flush_service_when_enabled(
+    async def test_context_compact_missing_flush_service_does_not_block_compaction(
         self, dispatcher, session
     ):
         manager = FakeSessionManager([session])
@@ -1223,12 +1223,12 @@ class TestSessionsContextCompact:
             "r1", "sessions.contextCompact", {"key": session.session_key}, ctx
         )
 
-        assert res.ok is False
-        assert res.error.code == "CONTEXT_FLUSH_FAILED"
-        assert manager.compact_calls == []
+        assert res.ok is True
+        assert len(manager.compact_calls) == 1
+        assert manager.compact_calls[0][:2] == (session.session_key, 100000)
 
     @pytest.mark.asyncio
-    async def test_context_compact_refuses_degraded_flush_receipt(
+    async def test_context_compact_degraded_flush_receipt_does_not_block_compaction(
         self, dispatcher, session
     ):
         manager = FakeSessionManager([session])
@@ -1255,9 +1255,9 @@ class TestSessionsContextCompact:
             "r1", "sessions.contextCompact", {"key": session.session_key}, ctx
         )
 
-        assert res.ok is False
-        assert res.error.code == "CONTEXT_FLUSH_FAILED"
-        assert manager.compact_calls == []
+        assert res.ok is True
+        assert len(manager.compact_calls) == 1
+        assert manager.compact_calls[0][:2] == (session.session_key, 100000)
 
     @pytest.mark.asyncio
     async def test_context_compact_allowed_for_operator_write_scope(self, dispatcher, session):

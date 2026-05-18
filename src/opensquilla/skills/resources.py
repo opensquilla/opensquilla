@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+_RESOURCE_DIRS = ("references", "scripts", "assets", "templates")
 
 
 class SkillResources:
@@ -22,6 +24,10 @@ class SkillResources:
     @property
     def assets_dir(self) -> Path:
         return self._dir / "assets"
+
+    @property
+    def templates_dir(self) -> Path:
+        return self._dir / "templates"
 
     def has_scripts(self) -> bool:
         return self.scripts_dir.is_dir() and any(self.scripts_dir.iterdir())
@@ -47,25 +53,81 @@ class SkillResources:
             return []
         return sorted(p for p in self.assets_dir.iterdir() if p.is_file())
 
+    def read_resource(self, name: str) -> str | None:
+        """Read a text resource by skill-relative path.
+
+        Supports SKILL.md plus package resource paths such as
+        ``references/foo.md``, ``scripts/tool.py``, ``assets/palette.txt``,
+        and ``templates/report.md``. Bare filenames keep the legacy lookup
+        behavior by trying references/, scripts/, assets/, then templates/.
+        """
+
+        relative = _normalise_resource_path(name)
+        if relative is None:
+            return None
+
+        parts = relative.parts
+        if parts == ("SKILL.md",):
+            return self._read_text_under(self._dir, relative)
+
+        if parts and parts[0] in _RESOURCE_DIRS:
+            root = self._dir / parts[0]
+            return self._read_text_under(root, Path(*parts[1:]))
+
+        if len(parts) == 1:
+            for root_name in _RESOURCE_DIRS:
+                content = self._read_text_under(self._dir / root_name, relative)
+                if content is not None:
+                    return content
+        return None
+
     def read_reference(self, name: str) -> str | None:
         """Read a reference file by name. Returns None if not found."""
-        path = self.references_dir / name
-        if path.is_file():
-            # Security: ensure resolved path is within references_dir
-            try:
-                path.resolve().relative_to(self.references_dir.resolve())
-            except ValueError:
-                return None
-            return path.read_text(encoding="utf-8")
-        return None
+        relative = _normalise_resource_path(name)
+        if relative is None:
+            return None
+        if relative.parts[:1] == ("references",):
+            relative = Path(*relative.parts[1:])
+        return self._read_text_under(self.references_dir, relative)
 
     def read_script(self, name: str) -> str | None:
         """Read a script file by name. Returns None if not found."""
-        path = self.scripts_dir / name
-        if path.is_file():
-            try:
-                path.resolve().relative_to(self.scripts_dir.resolve())
-            except ValueError:
-                return None
-            return path.read_text(encoding="utf-8")
+        relative = _normalise_resource_path(name)
+        if relative is None:
+            return None
+        if relative.parts[:1] == ("scripts",):
+            relative = Path(*relative.parts[1:])
+        return self._read_text_under(self.scripts_dir, relative)
+
+    def _read_text_under(self, root: Path, relative: Path) -> str | None:
+        if not relative.parts:
+            return None
+        path = root / relative
+        try:
+            resolved_root = root.resolve()
+            resolved_path = path.resolve()
+            resolved_path.relative_to(resolved_root)
+        except (OSError, ValueError):
+            return None
+        if not resolved_path.is_file():
+            return None
+        try:
+            return resolved_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return None
+
+
+def _normalise_resource_path(name: str) -> Path | None:
+    raw = name.strip().replace("\\", "/")
+    while raw.startswith("./"):
+        raw = raw[2:]
+    if not raw:
         return None
+
+    posix = PurePosixPath(raw)
+    if posix.is_absolute():
+        return None
+    parts = posix.parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        return None
+    return Path(*parts)

@@ -17,7 +17,7 @@ from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
 from opensquilla.sandbox.integration import get_runtime, sandboxed
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import ToolError, current_tool_context
+from opensquilla.tools.types import ToolError, WorkspaceAccessError, current_tool_context
 
 _SPREADSHEET_EXTENSIONS = {".csv", ".tsv", ".xlsx"}
 _OFFICE_BINARY_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
@@ -262,7 +262,7 @@ def _gate_workspace_strict_read(tool_name: str, resolved: Path, original_path: s
 
     blocked = _workspace_strict_read_block(tool_name, resolved, original_path)
     if blocked is not None:
-        raise ToolError(str(blocked["message"]))
+        raise WorkspaceAccessError(str(blocked["message"]))
 
 
 def _workspace_strict_candidate_marker(

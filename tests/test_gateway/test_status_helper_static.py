@@ -27,6 +27,20 @@ def test_components_js_defines_session_status_helpers() -> None:
         assert label in source, f"missing tooltip label '{label}' in components.js"
 
 
+def test_components_js_deduplicates_visible_toasts_by_type_and_message() -> None:
+    source = COMPONENTS_JS.read_text(encoding="utf-8")
+    start = source.index("function toast(message, type = 'info', duration = 3000) {")
+    end = source.index("  // -- Modal --", start)
+    body = source[start:end]
+
+    assert "_visibleToasts = new Map()" in source
+    assert "const toastKey = `${type}\\u0000${message}`;" in body
+    assert "if (_visibleToasts.has(toastKey)) return;" in body
+    assert "_visibleToasts.set(toastKey, el);" in body
+    assert "if (_visibleToasts.get(toastKey) === el)" in body
+    assert "_visibleToasts.delete(toastKey);" in body
+
+
 def test_sessions_view_uses_status_helper() -> None:
     source = SESSIONS_JS.read_text(encoding="utf-8")
 
@@ -74,14 +88,18 @@ def test_sessions_view_counts_terminal_task_failures_as_failed() -> None:
 def test_sessions_view_counts_terminal_cancellations_as_aborted() -> None:
     source = SESSIONS_JS.read_text(encoding="utf-8")
 
-    assert "const aborted = _allSessions.filter(s => _sessionVisualStatus(s) === 'killed').length;" in source
+    assert (
+        "const aborted = _allSessions.filter(s => _sessionVisualStatus(s) === 'killed').length;"
+        in source
+    )
     assert "const aborted = _allSessions.filter(s => s.status === 'killed').length;" not in source
 
 
 def test_sessions_mobile_keeps_row_actions_reachable() -> None:
     css = SESSIONS_CSS.read_text(encoding="utf-8")
 
-    action_rule = css[css.index(".sess-table__cell--actions {") : css.index("}", css.index(".sess-table__cell--actions {"))]
+    action_start = css.index(".sess-table__cell--actions {")
+    action_rule = css[action_start : css.index("}", action_start)]
     assert "position: sticky" in action_rule
     assert "right: 0" in action_rule
     assert "z-index:" in action_rule

@@ -230,6 +230,14 @@ def user_input_echo_payload(text: str) -> str:
     return capture.get()
 
 
+def queued_input_start_payload() -> str:
+    """Render a short marker when a queued input becomes the active turn."""
+    with console.capture() as capture:
+        _chrome_top("squilla")
+        console.print("running queued input", style=ACCENT_SOFT)
+    return capture.get()
+
+
 def echo_user_input(text: str) -> None:
     """Echo a submitted input line into the scrollback above the prompt area.
 

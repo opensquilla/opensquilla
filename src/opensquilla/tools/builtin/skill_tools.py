@@ -235,7 +235,7 @@ def create_skill_tools(loader: SkillLoader) -> None:
             from opensquilla.skills.resources import SkillResources
 
             resources = SkillResources(Path(skill.base_dir))
-            content = resources.read_reference(file_path) or resources.read_script(file_path)
+            content = resources.read_resource(normalized_path)
             if content is None:
                 return f"File not found in skill '{name}': {file_path}"
             return content

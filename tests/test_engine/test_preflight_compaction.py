@@ -308,7 +308,7 @@ async def test_preflight_flushes_full_transcript_before_compact() -> None:
     ],
 )
 @pytest.mark.asyncio
-async def test_preflight_degraded_flush_receipts_refuse_compaction(
+async def test_preflight_degraded_flush_receipts_do_not_block_compaction(
     receipt: SimpleNamespace,
 ) -> None:
     context_window = 1000
@@ -329,7 +329,7 @@ async def test_preflight_degraded_flush_receipts_refuse_compaction(
         await runner._maybe_preflight_compact("agent:ops:long-session", context_window)
 
     flush_service.execute.assert_awaited_once()
-    mock_sm.compact.assert_not_called()
+    mock_sm.compact.assert_awaited_once_with("agent:ops:long-session", context_window)
 
 
 @pytest.mark.asyncio
@@ -386,7 +386,7 @@ async def test_preflight_uses_background_timeout_for_flush_service() -> None:
 
 
 @pytest.mark.asyncio
-async def test_preflight_flush_grace_timeout_refuses_compaction() -> None:
+async def test_preflight_flush_grace_timeout_does_not_block_compaction() -> None:
     context_window = 1000
     entries = [_make_entry("early durable fact " + ("a" * 4000))]
     mock_sm = MagicMock()
@@ -419,7 +419,7 @@ async def test_preflight_flush_grace_timeout_refuses_compaction() -> None:
         await runner._maybe_preflight_compact("agent:ops:long-session", context_window)
 
     assert flush_service.execute.await_args.kwargs["timeout"] == 42.0
-    mock_sm.compact.assert_not_called()
+    mock_sm.compact.assert_awaited_once_with("agent:ops:long-session", context_window)
 
 
 @pytest.mark.asyncio
@@ -480,7 +480,7 @@ async def test_preflight_env_flush_disabled_compacts_without_flush(
 
 
 @pytest.mark.asyncio
-async def test_preflight_flush_service_unavailable_refuses_compaction() -> None:
+async def test_preflight_flush_service_unavailable_does_not_block_compaction() -> None:
     context_window = 1000
     entries = [_make_entry("early durable fact " + ("a" * 4000))]
     mock_sm = MagicMock()
@@ -499,7 +499,7 @@ async def test_preflight_flush_service_unavailable_refuses_compaction() -> None:
     with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
         await runner._maybe_preflight_compact("agent:ops:long-session", context_window)
 
-    mock_sm.compact.assert_not_called()
+    mock_sm.compact.assert_awaited_once_with("agent:ops:long-session", context_window)
 
 
 @pytest.mark.asyncio

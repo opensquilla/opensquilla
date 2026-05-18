@@ -31,15 +31,15 @@ def _openai_sse_body(model: str = "test-model") -> bytes:
         },
     ]
     return b"".join(
-        f"data: {json.dumps(chunk)}\n\n".encode("utf-8") for chunk in chunks
+        f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks
     ) + b"data: [DONE]\n\n"
 
 
 def _anthropic_sse_body(events: list[dict[str, Any]]) -> bytes:
     parts: list[bytes] = []
     for event in events:
-        parts.append(f"event: {event['type']}\n".encode("utf-8"))
-        parts.append(f"data: {json.dumps(event)}\n\n".encode("utf-8"))
+        parts.append(f"event: {event['type']}\n".encode())
+        parts.append(f"data: {json.dumps(event)}\n\n".encode())
     return b"".join(parts)
 
 
@@ -76,7 +76,7 @@ def test_openai_final_request_proof_blocks_oversized_send(monkeypatch: Any) -> N
     assert events[0].code == "provider_request_budget_exhausted"
     proof = json.loads(events[0].message)
     assert proof["fits"] is False
-    assert proof["retry_count"] == 1
+    assert proof["retry_count"] == 2
     assert proof["top_contributors"][0]["chars"] == 5000
 
 
@@ -174,7 +174,7 @@ def test_anthropic_final_request_proof_blocks_oversized_send(monkeypatch: Any) -
     assert events[0].code == "provider_request_budget_exhausted"
     proof = json.loads(events[0].message)
     assert proof["fits"] is False
-    assert proof["retry_count"] == 1
+    assert proof["retry_count"] == 2
 
 
 def test_anthropic_final_request_proof_allows_native_image_payload(

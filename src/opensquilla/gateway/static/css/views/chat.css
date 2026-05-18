@@ -10,6 +10,10 @@
   position: relative;
 }
 
+.content:has(> .chat) {
+  padding-bottom: 0;
+}
+
 .chat--dragover {
   outline: 2px dashed var(--accent);
   outline-offset: -4px;
@@ -1639,11 +1643,6 @@
   white-space: nowrap;
 }
 
-/* .chat sets --composer-h via ResizeObserver; thread uses it for bottom clearance */
-.chat-thread {
-  padding-bottom: max(var(--composer-h, 90px), var(--sp-4));
-}
-
 /* ─── Chat Toolbar (feature toggle pills) ──────────────────────────────── */
 
 .chat-toolbar {
@@ -1680,16 +1679,9 @@
 @media (max-width: 480px) {
   #chat-btn-export { display: none !important; }
 
-  /* On narrow phones the input was getting squeezed to ~80px. Tighten gaps,
-     shrink icon-button targets to the touch minimum (40px instead of 44px)
-     so the input gets back enough width to read its own placeholder. */
-  .chat-input-bar {
-    gap: 4px;
-    padding-left: var(--sp-3);
-    padding-right: var(--sp-3);
-    /* Sit above iOS Safari's bottom toolbar / home-indicator. */
-    padding-bottom: calc(var(--sp-2) + env(safe-area-inset-bottom, 0px));
-  }
+  /* On narrow phones the input was getting squeezed to ~80px. Tighten icon
+     targets to the touch minimum (40px instead of 44px) so the input gets
+     back enough width to read its own placeholder. */
   .chat-input-bar .btn--icon {
     min-width: 40px;
     min-height: 40px;
@@ -1875,10 +1867,20 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-4);
+  padding: var(--sp-2) var(--sp-4) var(--sp-1);
   border-top: 1px solid var(--border);
   background: var(--bg);
   flex-shrink: 0;
+}
+
+@media (max-width: 480px) {
+  .chat-input-bar {
+    gap: 4px;
+    padding-left: var(--sp-3);
+    padding-right: var(--sp-3);
+    /* Sit above iOS Safari's bottom toolbar / home-indicator. */
+    padding-bottom: calc(var(--sp-2) + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 .chat-input-wrap {

@@ -252,7 +252,7 @@ async def test_observe_mode_skips() -> None:
 
 
 @pytest.mark.asyncio
-async def test_flush_raises_refuses_compaction() -> None:
+async def test_flush_raises_does_not_block_compaction() -> None:
     sm = _FakeSessionManager(_sample_transcript())
     fs = _FakeFlushService(raise_exc=RuntimeError("flush boom"))
     runner = _make_runner(session_manager=sm, flush_service=fs)
@@ -262,13 +262,13 @@ async def test_flush_raises_refuses_compaction() -> None:
         "agent:main:webchat:default", turn, 100_000
     )
 
-    assert result == "flush_failed"
+    assert result == "handled"
     assert len(fs.execute_calls) == 1
-    assert len(sm.compact_calls) == 0
+    assert len(sm.compact_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_flush_error_receipt_refuses_compaction() -> None:
+async def test_flush_error_receipt_does_not_block_compaction() -> None:
     sm = _FakeSessionManager(_sample_transcript())
     fs = _FakeFlushService(receipt=_FakeFlushReceipt(mode="error", error="provider down"))
     runner = _make_runner(session_manager=sm, flush_service=fs)
@@ -278,9 +278,9 @@ async def test_flush_error_receipt_refuses_compaction() -> None:
         "agent:main:webchat:default", turn, 100_000
     )
 
-    assert result == "flush_failed"
+    assert result == "handled"
     assert len(fs.execute_calls) == 1
-    assert len(sm.compact_calls) == 0
+    assert len(sm.compact_calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -295,7 +295,7 @@ async def test_flush_error_receipt_refuses_compaction() -> None:
     ],
 )
 @pytest.mark.asyncio
-async def test_degraded_flush_receipts_refuse_compaction(
+async def test_degraded_flush_receipts_do_not_block_compaction(
     receipt: _FakeFlushReceipt,
 ) -> None:
     sm = _FakeSessionManager(_sample_transcript())
@@ -307,9 +307,9 @@ async def test_degraded_flush_receipts_refuse_compaction(
         "agent:main:webchat:default", turn, 100_000
     )
 
-    assert result == "flush_failed"
+    assert result == "handled"
     assert len(fs.execute_calls) == 1
-    assert len(sm.compact_calls) == 0
+    assert len(sm.compact_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -349,7 +349,7 @@ async def test_t3_flush_uses_background_timeout_for_service_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t3_flush_grace_timeout_refuses_compaction() -> None:
+async def test_t3_flush_grace_timeout_does_not_block_compaction() -> None:
     sm = _FakeSessionManager(_sample_transcript())
     fs = _FakeFlushService(delay_seconds=0.05)
     runner = _make_runner(
@@ -364,9 +364,9 @@ async def test_t3_flush_grace_timeout_refuses_compaction() -> None:
         "agent:main:webchat:default", turn, 100_000
     )
 
-    assert result == "flush_failed"
+    assert result == "handled"
     assert fs.execute_calls[0]["timeout"] == 42.0
-    assert len(sm.compact_calls) == 0
+    assert len(sm.compact_calls) == 1
 
 
 @pytest.mark.asyncio

@@ -137,10 +137,13 @@ def test_chat_maps_task_terminal_events_during_migration() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
     assert "function _taskTerminalAsSessionEvent(event, payload)" in source
-    assert "task.failed" in source
-    assert "task.timeout" in source
-    assert "task.abandoned" in source
-    assert "task.cancelled" in source
+    assert "terminalStatuses: Object.freeze([" in source
+    assert "'failed'" in source
+    assert "'timeout'" in source
+    assert "'abandoned'" in source
+    assert "'cancelled'" in source
+    assert "event: 'session.event.done'" in source
+    assert "event: 'session.event.error'" in source
     assert "function _taskTerminalMessage(status, payload)" in source
     assert "function _sessionErrorMessage(payload)" in source
     assert "payload?.terminal_message" in source
@@ -153,6 +156,64 @@ def test_chat_maps_task_terminal_events_during_migration() -> None:
     error_end = source.index("if (_activeTaskGroups.size > 0)", error_start)
     error_handler = source[error_start:error_end]
     assert "_sessionErrorMessage(payload)" in error_handler
+
+
+def test_chat_task_terminal_mapping_uses_central_status_helper() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    helper = source[
+        source.index("taskTerminalAsSessionEvent(event, payload)") :
+        source.index("    taskTerminalMessage(status, payload)", source.index(
+            "taskTerminalAsSessionEvent(event, payload)"
+        ))
+    ]
+
+    assert "const status = _CHAT_VIEW_STATE.taskTerminalStatus(event);" in helper
+    assert "event === 'task.cancelled'" not in helper
+    assert "'task.failed'" not in helper
+    assert "'task.timeout'" not in helper
+    assert "'task.abandoned'" not in helper
+    assert "event: 'session.event.done'" in helper
+    assert "event: 'session.event.error'" in helper
+
+
+def test_chat_task_terminal_fallback_strings_are_isolated() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    messages_start = source.index("terminalMessages: Object.freeze({")
+    messages_end = source.index("    runStatusLabel(status)", messages_start)
+    messages = source[messages_start:messages_end]
+    mapper_start = source.index("taskTerminalAsSessionEvent(event, payload)")
+    mapper_end = source.index("    taskTerminalMessage(status, payload)", mapper_start)
+    mapper = source[mapper_start:mapper_end]
+    wildcard_start = source.index("_rpc.on('*', (rawEvent, rawPayload) => {")
+    wildcard_end = source.index("    }));", wildcard_start)
+    wildcard_handler = source[wildcard_start:wildcard_end]
+
+    fallback_texts = [
+        line.split("'", 2)[1]
+        for line in messages.splitlines()
+        if ": '" in line
+    ]
+
+    assert fallback_texts
+    for text in fallback_texts:
+        assert text not in mapper
+        assert text not in wildcard_handler
+    assert "_CHAT_VIEW_STATE.taskTerminalMessage(status, payload)" in mapper
+
+
+def test_chat_task_terminal_message_prefers_server_payload_text() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("taskTerminalMessage(status, payload)")
+    end = source.index("    sessionErrorMessage(payload)", start)
+    helper = source[start:end]
+
+    assert "payload?.terminal_message" in helper
+    assert helper.index("payload?.terminal_message") < helper.index(
+        "_CHAT_VIEW_STATE.terminalMessages.timeout"
+    )
+    assert helper.index("payload?.terminal_message") < helper.index(
+        "_CHAT_VIEW_STATE.terminalMessages[status]"
+    )
 
 
 def test_chat_subscribe_failure_is_visible() -> None:

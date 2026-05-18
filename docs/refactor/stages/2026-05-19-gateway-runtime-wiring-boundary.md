@@ -237,9 +237,16 @@ Co-authored-by: Codex <noreply@openai.com>
     pytest `2640 passed, 6 skipped, 2 warnings in 30.24s`; gateway smoke
     start/status/stop/status passed.
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove active and worker worktrees, run `git worktree prune`, and verify
+- [x] Remove active and worker worktrees, run `git worktree prune`, and verify
       no extra refactor worktree directories remain beyond
       `../opensquilla-refactor-integration`.
+  - Removed:
+    - `../opensquilla-refactor-active`
+    - `../opensquilla-refactor-agent-gateway-runtime`
+  - Worker PID `67596` was no longer present.
+  - `git worktree list --porcelain` verified no extra
+    `opensquilla-refactor-*` worktrees remain beyond
+    `../opensquilla-refactor-integration`.
 
 ## Child gate
 
@@ -275,7 +282,8 @@ Co-authored-by: Codex <noreply@openai.com>
 - Child verification commit: `3a310e5` (`Record gateway runtime wiring child
   verification`).
 - Integration merge: `4118f5e` (`Merge gateway runtime wiring boundary`).
-- Integration record:
+- Integration record: `1588e76` (`Record gateway runtime wiring integration
+  verification`).
 - Verification evidence:
 - Worker RED/GREEN evidence recorded above.
 - Worker focused GREEN: `28 passed in 0.85s`.
@@ -294,6 +302,12 @@ Co-authored-by: Codex <noreply@openai.com>
   source files; whitespace passed; pytest `2640 passed, 6 skipped, 2
   warnings`; gateway smoke passed.
 - Cleanup evidence:
+  - Worker PID `67596` was no longer present.
+  - Removed `../opensquilla-refactor-active`.
+  - Removed `../opensquilla-refactor-agent-gateway-runtime`.
+  - Ran `git worktree prune`.
+  - `git worktree list --porcelain` shows the refactor line only has
+    `../opensquilla-refactor-integration`.
 - Residual risk: low; the stage moves runtime wiring behind a Gateway boundary
   while preserving boot behavior through focused start-gateway tests and the
   full refactor gate.

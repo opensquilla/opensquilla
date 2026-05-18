@@ -10,13 +10,21 @@ from opensquilla.engine.types import ToolCall
 from opensquilla.provider import (
     ChatConfig,
     Message,
-    TextDeltaEvent as ProviderText,
     ToolDefinition,
     ToolInputSchema,
 )
-from opensquilla.provider import DoneEvent as ProviderDone
-from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEnd
-from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
+from opensquilla.provider import (
+    DoneEvent as ProviderDone,
+)
+from opensquilla.provider import (
+    TextDeltaEvent as ProviderText,
+)
+from opensquilla.provider import (
+    ToolUseEndEvent as ProviderToolUseEnd,
+)
+from opensquilla.provider import (
+    ToolUseStartEvent as ProviderToolUseStart,
+)
 
 
 class _ComplexTaskProvider:

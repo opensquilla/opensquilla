@@ -1125,25 +1125,15 @@ async def build_services(
     proxy = llm_runtime.proxy
     if provider_selector is None:
         if api_key:
-            from opensquilla.provider.selector import (
-                ModelSelector,
-                ProviderConfig,
-                SelectorConfig,
+            from opensquilla.gateway.provider_runtime_sync import (
+                build_provider_selector_from_runtime,
             )
 
             if resolved_base.endswith("/v1"):
                 resolved_base = resolved_base[:-3]
-            provider_selector = ModelSelector(
-                SelectorConfig(
-                    primary=ProviderConfig(
-                        provider=llm_runtime.provider,
-                        model=llm_runtime.model,
-                        api_key=api_key,
-                        base_url=resolved_base,
-                        proxy=proxy,
-                        provider_routing=llm_runtime.provider_routing,
-                    )
-                )
+            provider_selector = build_provider_selector_from_runtime(
+                llm_runtime,
+                base_url=resolved_base,
             )
             log.info(
                 "build_services.provider_ready",

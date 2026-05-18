@@ -55,34 +55,10 @@ def _apply_inplace(ctx: RpcContext, new_cfg: Any) -> None:
         ctx.config.inherit_runtime_secrets(new_cfg)
 
 
-def _sync_provider_selector(ctx: RpcContext, llm_cfg: Any) -> None:
-    selector = getattr(ctx, "provider_selector", None)
-    if selector is None or llm_cfg is None or not hasattr(selector, "sync_primary"):
-        return
-    config = getattr(ctx, "config", None)
-    if config is not None:
-        from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
+def _sync_provider_selector(ctx: RpcContext, config: Any) -> None:
+    from opensquilla.gateway.provider_runtime_sync import sync_provider_selector
 
-        runtime = resolve_llm_runtime_config(config)
-        api_key = runtime.api_key
-        base_url = runtime.base_url
-        proxy = runtime.proxy
-    else:
-        api_key = llm_cfg.api_key
-        base_url = llm_cfg.base_url
-        proxy = getattr(llm_cfg, "proxy", "")
-    from opensquilla.provider.selector import ProviderConfig
-
-    selector.sync_primary(
-        ProviderConfig(
-            provider=llm_cfg.provider,
-            model=llm_cfg.model,
-            api_key=api_key,
-            base_url=base_url,
-            proxy=proxy,
-            provider_routing=getattr(llm_cfg, "provider_routing", {}),
-        )
-    )
+    sync_provider_selector(ctx, getattr(ctx, "config", None) or config)
 
 
 def _sync_image_generation(config: Any) -> None:
@@ -170,7 +146,7 @@ async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
         proxy=params.get("proxy", "") if isinstance(params, dict) else "",
     )
     _apply_inplace(ctx, res.config)
-    _sync_provider_selector(ctx, res.config.llm)
+    _sync_provider_selector(ctx, res.config)
     _sync_image_generation(res.config)
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     return {
@@ -199,7 +175,7 @@ async def _router_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     tiers = params.get("tiers") if isinstance(params, dict) else None
     res = upsert_router(cfg, mode=mode, default_tier=default_tier, tiers=tiers)
     _apply_inplace(ctx, res.config)
-    _sync_provider_selector(ctx, res.config.llm)
+    _sync_provider_selector(ctx, res.config)
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     return {
         "changed": res.changed,

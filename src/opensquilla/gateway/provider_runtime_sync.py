@@ -21,6 +21,37 @@ def clear_runtime_secret_paths(config: Any, paths: set[str]) -> None:
         config.clear_runtime_secret(path)
 
 
+def provider_config_from_runtime(runtime: Any, *, base_url: str | None = None) -> Any:
+    """Build the provider selector config from an effective LLM runtime object."""
+
+    from opensquilla.provider.selector import ProviderConfig
+
+    return ProviderConfig(
+        provider=runtime.provider,
+        model=runtime.model,
+        api_key=runtime.api_key,
+        base_url=runtime.base_url if base_url is None else base_url,
+        proxy=runtime.proxy,
+        provider_routing=runtime.provider_routing,
+    )
+
+
+def build_provider_selector_from_runtime(
+    runtime: Any,
+    *,
+    base_url: str | None = None,
+) -> Any:
+    """Create a provider selector from an effective LLM runtime object."""
+
+    from opensquilla.provider.selector import ModelSelector, SelectorConfig
+
+    return ModelSelector(
+        SelectorConfig(
+            primary=provider_config_from_runtime(runtime, base_url=base_url),
+        )
+    )
+
+
 def sync_provider_selector(ctx: Any, config: Any) -> None:
     """Sync the gateway provider selector from the effective runtime config."""
 
@@ -29,23 +60,13 @@ def sync_provider_selector(ctx: Any, config: Any) -> None:
         return
 
     from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
-    from opensquilla.provider.selector import ProviderConfig
 
     runtime = resolve_llm_runtime_config(config)
     selector = getattr(ctx, "provider_selector", None)
     if selector is None or not hasattr(selector, "sync_primary"):
         return
 
-    selector.sync_primary(
-        ProviderConfig(
-            provider=runtime.provider,
-            model=runtime.model,
-            api_key=runtime.api_key,
-            base_url=runtime.base_url,
-            proxy=runtime.proxy,
-            provider_routing=runtime.provider_routing,
-        )
-    )
+    selector.sync_primary(provider_config_from_runtime(runtime))
 
 
 def sync_image_generation(config: Any) -> None:

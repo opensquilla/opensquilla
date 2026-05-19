@@ -13,6 +13,7 @@ import structlog
 from starlette.routing import Route
 
 from opensquilla.channels.debounce import _DefaultDebounceCoordinator
+from opensquilla.channels.delivery import resolve_delivery_target as resolve_channel_delivery_target
 from opensquilla.channels.ingress import ChannelInFlightSetPort, ChannelIngressPort
 from opensquilla.channels.registry import build_managed_channel
 from opensquilla.channels.types import ChannelHealth, DeliveryTargetResolution, ManagedChannel
@@ -378,71 +379,10 @@ class ChannelManager:
         first-class multi-account channel config.
         """
 
-        target_name = target.strip()
-        target_type = target_name.lower()
-        account = account_id.strip()
-        to = to.strip()
-        thread = thread_id.strip()
-
-        if not target_name:
-            return DeliveryTargetResolution(ok=False, reason="unsupported_target")
-
-        candidates = [
-            name
-            for name, channel_type in self._channel_types.items()
-            if channel_type.lower() == target_type
-        ]
-        if account:
-            if account not in candidates:
-                return DeliveryTargetResolution(ok=False, reason="unsupported_account")
-            return self._build_delivery_resolution(
-                adapter_name=account,
-                channel_type=target_type,
-                to=to,
-                account_id=account,
-                thread_id=thread,
-            )
-
-        if target_name in self._channels:
-            adapter_name = target_name
-            channel_type = self._channel_types.get(adapter_name, adapter_name).lower()
-            return self._build_delivery_resolution(
-                adapter_name=adapter_name,
-                channel_type=channel_type,
-                to=to,
-                account_id=account,
-                thread_id=thread,
-            )
-
-        if not candidates:
-            return DeliveryTargetResolution(ok=False, reason="unsupported_target")
-        if len(candidates) > 1:
-            return DeliveryTargetResolution(ok=False, reason="ambiguous_account")
-
-        return self._build_delivery_resolution(
-            adapter_name=candidates[0],
-            channel_type=target_type,
-            to=to,
-            account_id=account,
-            thread_id=thread,
-        )
-
-    def _build_delivery_resolution(
-        self,
-        *,
-        adapter_name: str,
-        channel_type: str,
-        to: str,
-        account_id: str,
-        thread_id: str,
-    ) -> DeliveryTargetResolution:
-        if thread_id and channel_type not in {"slack"}:
-            return DeliveryTargetResolution(ok=False, reason="unsupported_thread")
-        return DeliveryTargetResolution(
-            ok=True,
-            adapter=self._channels.get(adapter_name),
-            adapter_name=adapter_name,
-            channel_type=channel_type,
+        return resolve_channel_delivery_target(
+            channels=self._channels,
+            channel_types=self._channel_types,
+            target=target,
             to=to,
             account_id=account_id,
             thread_id=thread_id,

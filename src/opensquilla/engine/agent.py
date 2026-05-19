@@ -581,6 +581,7 @@ class Agent:
                 content=guarded_content,
                 is_error=result.is_error,
                 artifacts=list(result.artifacts),
+                terminates_turn=result.terminates_turn,
             )
             self.config.metadata["tool_json_guard_applied"] = True
             self.config.metadata["tool_json_guard_calls"] = (
@@ -636,6 +637,7 @@ class Agent:
             content=compressed_content,
             is_error=result.is_error,
             artifacts=list(result.artifacts),
+            terminates_turn=result.terminates_turn,
         )
 
     # ------------------------------------------------------------------

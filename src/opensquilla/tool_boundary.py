@@ -26,6 +26,13 @@ class ToolResult:
     content: str
     is_error: bool = False
     artifacts: list[dict[str, Any]] = field(default_factory=list)
+    # When True, the Agent dispatch loop terminates the turn after this
+    # tool result is committed to history (no further LLM round-trip).
+    # Set by meta_invoke on success — the meta-skill's streamed output is
+    # the user-visible turn output, so any subsequent LLM call would only
+    # produce a redundant "I've completed X" recap. Defaults to False;
+    # all existing tools are unaffected.
+    terminates_turn: bool = False
 
 
 AgentToolHandler = Callable[[ToolCall], Awaitable[ToolResult]]

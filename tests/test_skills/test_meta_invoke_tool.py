@@ -62,3 +62,92 @@ async def test_meta_invoke_handler_raises_routing_error() -> None:
         await meta_invoke(name="any")
     msg = str(exc_info.value).lower()
     assert "agent" in msg or "_run_one_streaming" in msg or "intercept" in msg
+
+
+# ---------------------------------------------------------------------------
+# Task 3: ToolResult.terminates_turn field + preservation through
+# Agent._compress_tool_result rebuild sites.
+# ---------------------------------------------------------------------------
+
+
+def test_tool_result_has_terminates_turn_field() -> None:
+    """ToolResult.terminates_turn defaults to False; can be set True."""
+    from opensquilla.tool_boundary import ToolResult
+
+    r = ToolResult(tool_use_id="u1", tool_name="t", content="ok")
+    assert r.terminates_turn is False
+
+    r2 = ToolResult(
+        tool_use_id="u1", tool_name="t", content="ok", terminates_turn=True,
+    )
+    assert r2.terminates_turn is True
+
+
+class _NullProvider:
+    """Minimal LLMProvider stand-in: never called by _compress_tool_result."""
+
+    provider_name = "null"
+
+    def chat(self, *args: object, **kwargs: object) -> object:  # pragma: no cover
+        raise AssertionError("provider.chat must not be called by _compress_tool_result")
+
+    async def list_models(self) -> list[object]:  # pragma: no cover
+        return []
+
+
+@pytest.mark.asyncio
+async def test_compress_tool_result_preserves_terminates_turn_when_short() -> None:
+    """When content is short enough to not need compression, the rebuild
+    must still carry terminates_turn through."""
+    from opensquilla.engine import Agent, AgentConfig
+    from opensquilla.tool_boundary import ToolResult
+
+    agent = Agent(provider=_NullProvider(), config=AgentConfig())
+
+    original = ToolResult(
+        tool_use_id="u1",
+        tool_name="meta_invoke",
+        content="small content",
+        is_error=False,
+        terminates_turn=True,
+    )
+    compressed = await agent._compress_tool_result(original)
+    assert compressed.terminates_turn is True
+
+
+@pytest.mark.asyncio
+async def test_compress_tool_result_preserves_terminates_turn_when_compressed() -> None:
+    """When content IS large enough to trigger compression, the rebuild
+    must STILL carry terminates_turn through (the other code path)."""
+    from opensquilla.engine import Agent, AgentConfig
+    from opensquilla.tool_boundary import ToolResult
+
+    # Shrink context_window_tokens so 50_000 chars (~12500 tokens) exceeds
+    # the compression budget (context_window_tokens * max_share = 1000 * 0.25
+    # = 250 tokens). truncate mode keeps compression purely local — no
+    # provider call needed.
+    config = AgentConfig(
+        context_window_tokens=1000,
+        tool_result_compression_enabled=True,
+        tool_result_compression_mode="truncate",
+    )
+    agent = Agent(provider=_NullProvider(), config=config)
+
+    big_content = "x" * 50_000
+    original = ToolResult(
+        tool_use_id="u1",
+        tool_name="meta_invoke",
+        content=big_content,
+        is_error=False,
+        terminates_turn=True,
+    )
+    compressed = await agent._compress_tool_result(original)
+    # Sanity-check the compression path actually fired (content shrunk).
+    assert len(compressed.content) < len(big_content), (
+        "test setup error: compression did not trigger; "
+        "second rebuild site would not be exercised"
+    )
+    # The FLAG must survive the rebuild.
+    assert compressed.terminates_turn is True, (
+        "terminates_turn lost during ToolResult compression rebuild"
+    )

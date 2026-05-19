@@ -69,8 +69,8 @@ Converge the refactor control docs and stage evidence after implementation, run 
 | G002 extension services | complete | Child `fb27727`, merge `2e3ddf4`, evidence `4339152`/`703e1ef`; integration gate `2829 passed, 6 skipped`. |
 | G003 channels ingress | complete | Child `df82ba3`, merge `f61d8d0`, evidence `0984087`; post-evidence integration gate `2833 passed, 6 skipped`. |
 | G004 provider/router | complete | Child `8de6884`, merge `1e4e5b4`, evidence `b310183`; integration gate `2836 passed, 6 skipped`. |
-| G005 contracts backplane | complete | Child `7d9b630`, merge `2c00a7c`, evidence `4f0233e`; integration gate `2838 passed, 6 skipped`. |
-| G006 final quality gate | in progress | Final docs, ai-slop, code review, full gate, wheel build, and completion audit recorded in this stage; final checkpoint still requires a fresh complete Codex goal snapshot. |
+| G005 contracts backplane | complete | Child `7d9b630`, merge `2c00a7c`, evidence `4f0233e`; review-cleanup child `464cb7e`, merge `09bbd7d`; integration gate `2839 passed, 6 skipped`. |
+| G006 final quality gate | ready for checkpoint | Final docs, ai-slop, code review, architecture CLEAR, full gate, wheel build, worktree cleanup, and completion audit are recorded in this stage; external lifecycle still requires `update_goal` and Ultragoal checkpoint. |
 
 ## Documentation convergence
 
@@ -96,7 +96,7 @@ Behavior lock:
 - G005 focused tests: `9 passed`.
 - G005 child gate: `2836 passed, 8 skipped`.
 - G005 integration gate: `2838 passed, 6 skipped`.
-- G006 final gate recorded below.
+- G006 final gate recorded below after review-cleanup merge `09bbd7d`.
 
 Cleanup plan:
 1. Check newest implementation/docs for fallback-like slop terms and TODO/FIXME markers.
@@ -118,21 +118,24 @@ Passes completed:
 - Native `spawn_agent` code-reviewer lane: blocked by `agent thread limit reached`.
 - Fallback review command: `codex review --base main`.
 - Review status: complete. Native `spawn_agent` review was blocked by `agent thread limit reached`, so the fallback used `codex review --base main` plus a separate `codex exec` architecture/devil’s-advocate lane.
-- Code-reviewer recommendation: APPROVE. Evidence: fallback review reported no discrete introduced regressions and observed project validation including compileall, ruff, mypy, targeted checks, and full pytest in the project virtualenv.
+- Initial code-reviewer recommendation: APPROVE. Evidence: fallback review reported no discrete introduced regressions and observed project validation including compileall, ruff, mypy, targeted checks, and full pytest in the project virtualenv.
+- Final code-review rerun after evidence update found one P2 release-hygiene issue: the G006 document recorded an absolute user home path. Fixed by changing it to `../opensquilla-refactor-active`; release hygiene tests and the full refactor gate passed after the fix.
 - Architect status before evidence update: BLOCK, only because this G006 document still had pending review/gate/checkpoint rows; implementation-specific findings were non-blocking. The non-blocking follow-up is to add assembly-time validation or narrower backplanes before using `ContractBackplane` as a required runtime bundle.
-- Final synthesis after second architecture pass: COMMENT/WATCH. The remaining non-blocking-but-gate-relevant concern is that `ContractBackplane` is optional and should expose assembly-time validation before future runtime adoption. G006 will resolve this before final checkpoint so the architecture status can become CLEAR.
-- WATCH-resolution patch: added explicit `ContractBackplane.missing_ports(...)` and `ContractBackplane.require_ports(...)` helpers so future runtime assembly can validate mandatory ports before using the optional backplane.
+- Second architecture pass status: COMMENT/WATCH with no final checkpoint blocker; concern was optional `ContractBackplane` runtime adoption validation.
+- WATCH-resolution patch: added explicit `ContractBackplane.missing_ports(...)` and `ContractBackplane.require_ports(...)` helpers so future runtime assembly can validate mandatory ports before using the optional backplane. TDD evidence: the focused test first failed with `AttributeError: 'ContractBackplane' object has no attribute 'missing_ports'`, then passed after implementation.
+- Final architecture CLEAR rerun: `Architectural Status: CLEAR`; `Final checkpoint blocker: no`; concerns `(none)`. Evidence: clean `git diff --check`, no local home paths in tracked docs, final gate `2839 passed, 6 skipped`, wheel build success, and `ContractBackplane` WATCH resolved by `missing_ports(...)` / `require_ports(...)` tests.
 
 ## Final verification plan
 
 Recorded final verification commands:
 
 - `git diff --check`: exit 0.
-- `uv run --extra dev pytest tests/test_public_release_hygiene.py tests/test_release_consistency.py tests/test_readme_links.py -q`: `15 passed in 0.68s`.
-- `scripts/refactor_gate.sh`: `2838 passed, 6 skipped, 2 warnings`, gateway smoke passed on port `49678`.
-- `uv build --wheel`: built `dist/opensquilla-0.1.0rc1-py3-none-any.whl`.
+- `uv run --extra dev pytest tests/test_public_release_hygiene.py tests/test_release_consistency.py tests/test_readme_links.py -q`: `15 passed in 0.52s` after merge `09bbd7d`.
+- `scripts/refactor_gate.sh`: `2839 passed, 6 skipped, 2 warnings`, gateway smoke passed on port `51240` after the release-hygiene review fix.
+- `uv build --wheel`: built `dist/opensquilla-0.1.0rc1-py3-none-any.whl` after merge `09bbd7d`.
 - Review cleanup TDD: `uv run --extra dev pytest tests/test_application/test_contract_backplane.py -q` failed first with `AttributeError: 'ContractBackplane' object has no attribute 'missing_ports'`; after implementation, focused contract/import tests passed `9 passed in 1.74s`.
-- Review cleanup child gate: `scripts/refactor_gate.sh` in `../opensquilla-refactor-active` passed with `2837 passed, 8 skipped, 2 warnings` and gateway smoke on port `50252`.
+- Review cleanup child gate: `scripts/refactor_gate.sh` in `../opensquilla-refactor-active` passed with `2837 passed, 8 skipped, 2 warnings` and gateway smoke on port `50252`; child commit `464cb7e`, integration merge `09bbd7d`.
+- Worktree cleanup: `git worktree remove ../opensquilla-refactor-active`; `git worktree prune`; `git worktree list` shows no `opensquilla-refactor-active` worktree remains.
 - `omx ultragoal status --json` from the main checkout: G001-G005 complete, G006 in progress before final checkpoint.
 - Fresh `get_goal` before final `update_goal`: pending.
 - `omx ultragoal checkpoint --goal-id G006-release-docs-final-quality-gate --status complete ... --quality-gate-json ...`: pending until `update_goal({"status":"complete"})` succeeds.
@@ -141,16 +144,16 @@ Recorded final verification commands:
 
 | Requirement | Artifact/evidence | Status |
 | --- | --- | --- |
-| Continue from existing refactor branch, not restart | Integration worktree `../opensquilla-refactor-integration`, branch `codex/refactor-architecture`; preflight head `4f0233e`. | verified |
+| Continue from existing refactor branch, not restart | Integration worktree `../opensquilla-refactor-integration`, branch `codex/refactor-architecture`; final verification head `09bbd7d` before this evidence commit. | verified |
 | Use coarse module/component batches | G001 selected G002-G005 as coarse module-family stories; G002-G005 completed as extension, channels, provider/router, contracts batches. | verified |
 | Use Superpowers for overall/substage planning | G001-G006 stage docs record Superpowers evidence and workflow checkpoints. | verified |
 | Use worktrees/parallelism when useful | Fixed active worktree used for G002-G005; Team used for G002; serial fallback recorded where shared ownership made parallelism counterproductive. | verified |
-| Preserve main parity and public behavior | Full refactor gates after each implementation merge; final gate `2838 passed, 6 skipped`; release/link/consistency tests `15 passed`; gateway smoke passed. | verified |
-| Add/maintain tests | G002-G005 added focused regression tests; G005 backplane tests passed; final full gate `2838 passed, 6 skipped`. | verified |
+| Preserve main parity and public behavior | Full refactor gates after each implementation merge; final gate `2839 passed, 6 skipped`; release/link/consistency tests `15 passed`; gateway smoke passed on port `51240`. | verified |
+| Add/maintain tests | G002-G005 added focused regression tests; review cleanup added `ContractBackplane` assembly validation coverage; final full gate `2839 passed, 6 skipped`. | verified |
 | Fix issues found during refactor | G003 hygiene regression was caught and fixed; G005 ruff issues were fixed before commit. | verified |
 | Anti-slop final pass | G006 ai-slop section above; fallback-like search over G005/G006 scope returned no findings; final gate passed. | verified |
-| Final code review | `codex review --base main` found no discrete introduced regressions; architecture lane moved from process BLOCK to WATCH; the WATCH concern was addressed by adding explicit `ContractBackplane` assembly validation helpers and tests. Final CLEAR rerun pending after merge. | in progress |
-| Final verification and checkpoint | final gate and wheel build passed; fresh `get_goal`, `update_goal`, and G006 checkpoint remain as the final lifecycle steps after final architecture CLEAR. | in progress |
+| Final code review | `codex review --base main` initially approved, then a rerun caught one P2 release-hygiene doc path issue; it was fixed and full gate passed. Final architecture rerun returned CLEAR/no checkpoint blocker after the `ContractBackplane` WATCH fix. | verified |
+| Final verification and checkpoint | final gate, release checks, wheel build, worktree cleanup, and architecture CLEAR passed after merge `09bbd7d`; fresh `get_goal`, `update_goal`, and G006 checkpoint remain as external lifecycle steps after this evidence commit. | ready |
 
 ## Rollback
 
@@ -161,9 +164,9 @@ Recorded final verification commands:
 ## Completion record
 
 - G006 docs commit:
-- Final code-review verdict: code-reviewer fallback APPROVE; architect first pass BLOCK only on pending evidence rows; second pass WATCH on optional `ContractBackplane` runtime adoption validation; TDD review-cleanup patch added validation helpers, final CLEAR rerun pending after merge.
-- Final verification evidence: release/link/consistency tests `15 passed`; full refactor gate `2838 passed, 6 skipped, 2 warnings` with gateway smoke on port `49678`; `uv build --wheel` built `dist/opensquilla-0.1.0rc1-py3-none-any.whl`.
-- Quality gate JSON: pending after second architecture pass and final docs commit.
-- Ultragoal checkpoint: pending after aggregate Codex goal is marked complete.
-- Aggregate Codex goal: active until final `update_goal`.
+- Final code-review verdict: fallback review initially APPROVE; rerun caught one P2 release-hygiene doc path issue, which was fixed before the fresh full gate. Architect first pass BLOCK only on pending evidence rows; second pass WATCH on optional `ContractBackplane` runtime adoption validation; TDD review-cleanup patch added validation helpers; final architecture rerun returned CLEAR/no checkpoint blocker.
+- Final verification evidence: release/link/consistency tests `15 passed`; full refactor gate `2839 passed, 6 skipped, 2 warnings` with gateway smoke on port `51240`; `uv build --wheel` built `dist/opensquilla-0.1.0rc1-py3-none-any.whl`; active child worktree removed/pruned.
+- Quality gate JSON: pending after this final docs commit so it can include the committed evidence hash.
+- Ultragoal checkpoint: pending external lifecycle step after aggregate Codex goal is marked complete.
+- Aggregate Codex goal: active until final `update_goal` after this evidence commit.
 - Residual risk: `ContractBackplane` is intentionally optional and unused as a required runtime bundle in this slice; future runtime adoption should call `require_ports(...)` at assembly boundaries or define narrower required-port backplanes.

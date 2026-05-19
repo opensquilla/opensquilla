@@ -202,7 +202,7 @@ observe-only for this refactor line.
 
 ## 2026-05-19 Ultragoal Execution Summary
 
-The continuation run for component/plugin decoupling completed the implementation stories G001-G005 and is in final G006 release/docs verification. The coarse-batch sequence was:
+The continuation run for component/plugin decoupling completed the implementation stories G001-G005 and reached G006 final release/docs verification. The coarse-batch sequence was:
 
 1. G001 global component/plugin decoupling audit: classified major architecture families, selected execution batches, and recorded Superpowers/Serena evidence.
 2. G002 extension services boundary batch: grouped skills/plugins, memory, search, and scheduler extension-service seams; completed child/integration gates and cleanup.
@@ -211,7 +211,7 @@ The continuation run for component/plugin decoupling completed the implementatio
 5. G005 contracts adoption/backplane batch: added `opensquilla.application.ContractBackplane` as an application-facing contract-port composition seam across tools, session, provider, channel, and memory ports; runtime consumer migration remains deferred to future slices so public behavior stays unchanged; completed child/integration gates and cleanup.
 6. G006 release/docs final quality gate: records the final anti-slop pass, code review, full refactor gate, wheel build, and completion audit before closing the aggregate goal.
 
-Final completion remains gated on `docs/refactor/stages/2026-05-19-release-docs-final-quality-gate.md`, `scripts/refactor_gate.sh`, release hygiene/link consistency tests, `uv build --wheel`, and a clean final code-review synthesis.
+Final verification evidence is recorded in `docs/refactor/stages/2026-05-19-release-docs-final-quality-gate.md`: release hygiene/link consistency tests, `scripts/refactor_gate.sh`, `uv build --wheel`, and the final architecture CLEAR rerun passed after the review-cleanup merge. The remaining lifecycle items are quality-gate JSON, `update_goal`, and the Ultragoal checkpoint.
 
 ## Standard Slice Lifecycle
 

@@ -1,31 +1,23 @@
-"""MetaOrchestrator — run a MetaPlan as a fleet of one-shot sub-Agents.
+"""MetaOrchestrator facade — run a MetaPlan as a fleet of one-shot sub-Agents.
 
-Scheduler semantics
--------------------
-* Steps run on a DAG-parallel scheduler (M7): every step whose
-  ``depends_on`` set has been satisfied is dispatched concurrently as its
-  own ``asyncio.Task``. Events from sibling tasks interleave in arrival
-  order, but per-step ordering is preserved
-  (``ToolUseStartEvent → [skill_view + nested events] → ToolResultEvent``).
-* Each step gets its own sub-Agent: same provider, same tool surface as the
-  parent turn, but with the composed Skill's body as the system prompt.
-* ``with_args`` is rendered via a tiny restricted Jinja environment
-  (``StrictUndefined`` + ``xml_escape / truncate / slugify / tojson`` filters)
-  and serialised into the user message of the sub-Agent.
-* The sub-Agent's ``TextDeltaEvent`` payloads are concatenated; the final
-  assistant text becomes the step's output and is available to downstream
-  steps as ``outputs.<step_id>``.
-* Any exception during a step short-circuits the whole plan: in-flight
-  sibling tasks are cancelled, synthetic ``ToolResultEvent`` close-bracket
-  frames are emitted for every step whose ``ToolUseStartEvent`` was already
-  forwarded (so the UI never sees a dangling in-progress card), and one
-  terminal ``MetaResult(ok=False)`` is yielded. ``TurnRunner`` is expected
-  to fall back to a normal turn with ``fallback_body`` + ``step_outputs``
-  injected as context.
+This module is the public surface of the meta-skill subsystem and a
+thin coordinator around three workers:
 
-What the orchestrator intentionally skips (see
-docs/proposals/meta-skills/MECHANISM.md §20 for the future work):
-input-side taint provenance, sub-turn sandbox narrowing,
+* :mod:`opensquilla.skills.meta.scheduler` — DAG-parallel ``asyncio``
+  scheduler that drives the steps and merges their event streams.
+* :mod:`opensquilla.skills.meta.executors` — per-``step.kind`` bodies
+  (``agent`` / ``llm_classify`` / ``tool_call`` / ``skill_exec``).
+* :mod:`opensquilla.skills.meta.templating` — restricted Jinja env,
+  ``with_args`` / route / placeholder rendering.
+
+The :class:`MetaOrchestrator` class binds instance dependencies
+(``agent_runner``, ``skill_loader``, optional ``llm_chat`` /
+``tool_invoker`` / ``workspace_dir``) and feeds them into the free
+worker functions; the factory functions at the bottom of this module
+build those dependencies from a parent turn's ``TurnRunner`` context.
+
+Out-of-scope for the MVP (see docs/proposals/meta-skills/MECHANISM.md
+§20): input-side taint provenance, sub-turn sandbox narrowing,
 large_outputs/artifact_ref, retries, when conditions, persistence to
 ``meta_skill_runs``, separate operator WS channel.
 """
@@ -35,14 +27,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from opensquilla.engine.types import (
-    AgentConfig,
-    AgentEvent,
-    ToolResultEvent,
-    ToolUseStartEvent,
-)
+from opensquilla.engine.types import AgentConfig, AgentEvent
 from opensquilla.provider.protocol import LLMProvider
-from opensquilla.skills.meta.events import _StepDone
+from opensquilla.skills.meta.events import _StepDone, yield_skill_view_preface
 from opensquilla.skills.meta.executors.agent import run_step_with_skill_stream
 from opensquilla.skills.meta.executors.llm_classify import run_llm_classify_step
 from opensquilla.skills.meta.executors.skill_exec import run_skill_exec_step
@@ -59,23 +46,15 @@ from opensquilla.skills.meta.templating import (
 from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
 
 # ---------------------------------------------------------------------------
-# Sub-Agent factory protocol
+# Injected-dependency protocols
 # ---------------------------------------------------------------------------
 
+#: Sub-Agent factory: (system_prompt, user_message) -> async iterator of
+#: AgentEvents. The orchestrator depends only on this minimal protocol —
+#: it does NOT own the Agent construction. The caller (TurnRunner) injects
+#: an :class:`AgentRunner` whose closure captures provider / tool_defs /
+#: tool_handler / usage_tracker from the parent turn.
 AgentRunner = Callable[[str, str], AsyncIterator[AgentEvent]]
-"""Callable: (system_prompt, user_message) -> async iterator of AgentEvents.
-
-The orchestrator depends only on this minimal protocol — it does NOT own
-the Agent construction. The caller (TurnRunner) injects an
-:class:`AgentRunner` whose closure captures provider / tool_defs /
-tool_handler / usage_tracker from the parent turn.
-"""
-
-
-# ---------------------------------------------------------------------------
-# Orchestrator
-# ---------------------------------------------------------------------------
-
 
 #: Lightweight LLM-only call (no tool loop). Returns the model's reply text.
 LLMChat = Callable[[str, str], Awaitable[str]]
@@ -157,50 +136,10 @@ class MetaOrchestrator:
         step_id: str,
         effective_skill: str,
     ) -> AsyncIterator[AgentEvent]:
-        """Invoke the **real** ``skill_view`` tool before each skill-loading step.
-
-        This is not a synthetic UI hint: it routes through the parent turn's
-        registered ``skill_view`` tool via ``self._tool_invoker`` so the call
-        goes through the normal tool boundary (audit log, sandbox checks,
-        usage tracking) and the ``result`` is whatever ``skill_view`` actually
-        returned — not a pre-computed preview of ``SKILL.md``.
-
-        When the tool invoker is not wired (degraded mode used by some tests),
-        the preface is skipped silently — the step executor still runs and
-        will surface its own loader error if the skill is missing.
-        """
-
-        if self._tool_invoker is None:
-            return
-
-        sv_use_id = f"meta_skill_view_{step_id}"
-        sv_tool_name = "skill_view"
-        yield ToolUseStartEvent(
-            tool_use_id=sv_use_id,
-            tool_name=sv_tool_name,
-        )
-        try:
-            result_text = await self._tool_invoker(
-                sv_tool_name,
-                {"name": effective_skill},
-            )
-        except Exception as exc:  # noqa: BLE001 — surface as an error card.
-            yield ToolResultEvent(
-                tool_use_id=sv_use_id,
-                tool_name=sv_tool_name,
-                result=str(exc),
-                is_error=True,
-                arguments={"name": effective_skill},
-            )
-            return
-
-        yield ToolResultEvent(
-            tool_use_id=sv_use_id,
-            tool_name=sv_tool_name,
-            result=result_text,
-            is_error=False,
-            arguments={"name": effective_skill},
-        )
+        async for ev in yield_skill_view_preface(
+            step_id, effective_skill, tool_invoker=self._tool_invoker,
+        ):
+            yield ev
 
     async def _dispatch_step_stream(
         self,
@@ -219,30 +158,37 @@ class MetaOrchestrator:
         """
 
         if step.kind == "llm_classify":
-            text = await self._run_llm_classify_step(step, inputs, outputs)
+            text = await run_llm_classify_step(
+                step,
+                inputs,
+                outputs,
+                llm_chat=self._llm_chat,
+                agent_runner=self._agent_runner,
+            )
             yield _StepDone(text=text)
             return
         if step.kind == "tool_call":
-            text = await self._run_tool_call_step(step, inputs, outputs)
+            text = await run_tool_call_step(
+                step,
+                inputs,
+                outputs,
+                tool_invoker=self._tool_invoker,
+                agent_runner=self._agent_runner,
+            )
             yield _StepDone(text=text)
             return
         if step.kind == "skill_exec":
-            text = await self._run_skill_exec_step(step, effective_skill, inputs, outputs)
+            text = await run_skill_exec_step(
+                step,
+                effective_skill,
+                inputs,
+                outputs,
+                skill_loader=self._skill_loader,
+                workspace_dir=self._workspace_dir,
+            )
             yield _StepDone(text=text)
             return
         # agent kind: forward sub-Agent events as they arrive.
-        async for item in self._run_step_with_skill_stream(
-            step, effective_skill, inputs, outputs,
-        ):
-            yield item
-
-    async def _run_step_with_skill_stream(
-        self,
-        step: MetaStep,
-        effective_skill: str,
-        inputs: dict[str, Any],
-        outputs: dict[str, str],
-    ) -> AsyncIterator[AgentEvent | _StepDone]:
         async for item in run_step_with_skill_stream(
             step,
             effective_skill,
@@ -252,50 +198,6 @@ class MetaOrchestrator:
             skill_loader=self._skill_loader,
         ):
             yield item
-
-    async def _run_llm_classify_step(
-        self,
-        step: MetaStep,
-        inputs: dict[str, Any],
-        outputs: dict[str, str],
-    ) -> str:
-        return await run_llm_classify_step(
-            step,
-            inputs,
-            outputs,
-            llm_chat=self._llm_chat,
-            agent_runner=self._agent_runner,
-        )
-
-    async def _run_tool_call_step(
-        self,
-        step: MetaStep,
-        inputs: dict[str, Any],
-        outputs: dict[str, str],
-    ) -> str:
-        return await run_tool_call_step(
-            step,
-            inputs,
-            outputs,
-            tool_invoker=self._tool_invoker,
-            agent_runner=self._agent_runner,
-        )
-
-    async def _run_skill_exec_step(
-        self,
-        step: MetaStep,
-        effective_skill: str,
-        inputs: dict[str, Any],
-        outputs: dict[str, str],
-    ) -> str:
-        return await run_skill_exec_step(
-            step,
-            effective_skill,
-            inputs,
-            outputs,
-            skill_loader=self._skill_loader,
-            workspace_dir=self._workspace_dir,
-        )
 
 
 def make_agent_runner_from_parent(
@@ -418,9 +320,3 @@ __all__ = [
     "render_with_args",
     "resolve_route",
 ]
-
-
-# ``_Coroutine`` placeholder used by some optional type-checkers; not needed
-# at runtime but documents the intent of ``AgentRunner`` returning an async
-# iterator rather than a coroutine.
-_Coroutine = Awaitable  # noqa: F841 — kept to silence "unused import" warnings.

@@ -337,7 +337,7 @@ Co-authored-by: Codex <noreply@openai.com>
 - [x] Merge child into integration with `git merge --no-ff`.
 - [x] Run `scripts/refactor_gate.sh` in integration.
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`,
+- [x] Remove `../opensquilla-refactor-active`,
       `../opensquilla-refactor-agent-cli-memory`, and
       `../opensquilla-refactor-agent-cli-reset`; run `git worktree prune`; verify
       no extra refactor worktree directories remain beyond
@@ -430,7 +430,7 @@ Co-authored-by: Codex <noreply@openai.com>
 - Integration merge:
 - `91a955e` (`Merge CLI main memory reset boundaries`)
 - Integration record:
-- pending
+- `d0e5cc1` (`Record CLI main memory reset integration verification`)
 - Verification evidence:
 - Active child focused command: `14 passed`.
 - Active child full `scripts/refactor_gate.sh`: `2682 passed, 8 skipped`,
@@ -438,6 +438,13 @@ Co-authored-by: Codex <noreply@openai.com>
 - Integration full `scripts/refactor_gate.sh`: `2684 passed, 6 skipped`,
   gateway smoke passed.
 - Cleanup evidence:
+- Removed `../opensquilla-refactor-active`.
+- Removed `../opensquilla-refactor-agent-cli-memory`.
+- Removed `../opensquilla-refactor-agent-cli-reset`.
+- Ran `git worktree prune`.
+- `find <workspace-parent> -maxdepth 1 -type d -name 'opensquilla-refactor-*'`
+  returned only `../opensquilla-refactor-integration`.
+- Final integration status was clean on `codex/refactor-architecture`.
 - Residual risk:
 - Low. CLI memory gateway RPC commands and top-level reset now delegate to
   workflow/presenter modules while preserving command names, flags, RPC payload

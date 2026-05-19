@@ -69,6 +69,7 @@ from opensquilla.session.compaction import (
 )
 from opensquilla.tool_boundary import AgentToolHandler as ToolHandler
 from opensquilla.tools.registry import ToolRegistry
+from opensquilla.tools.types import ToolContext, current_tool_context
 
 from .context import ContextAssembly
 from .subagent import SubagentManager, SubagentSpec
@@ -376,7 +377,7 @@ class Agent:
         turn_call_logger: TurnCallLogger | None = None,
         tool_result_summarizer_provider: LLMProvider | None = None,
         tool_registry: ToolRegistry | None = None,
-        tool_context: Any | None = None,
+        tool_context: ToolContext | None = None,
     ) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
@@ -394,7 +395,7 @@ class Agent:
         #   current_tool_context.get() or self._tool_context or ToolContext()
         # Production callers (runtime.py) may plumb the real ctx here as a
         # follow-up; default is None (permissive MVP fallback).
-        self._tool_context: Any | None = tool_context
+        self._tool_context: ToolContext | None = tool_context
         self._pending_warnings: list[WarningEvent] = []
 
         self._state: AgentState = AgentState.IDLE
@@ -1784,14 +1785,6 @@ class Agent:
                     }
                     async for event in _collect_tool_tasks(task_to_tool_call):
                         yield event
-
-                # Lazy import — keeps the engine→tools module dependency
-                # tight at module load time and matches the pattern used by
-                # _run_one_streaming itself.
-                from opensquilla.tools.types import (  # noqa: PLC0415
-                    ToolContext,
-                    current_tool_context,
-                )
 
                 for tc in tool_calls:
                     if tc.tool_name == "meta_invoke":

@@ -1774,6 +1774,8 @@ class TurnRunner:
                     LLMProvider | None,
                     tool_result_summarizer_provider,
                 ),
+                tool_registry=self._tool_registry,
+                tool_context=tool_context,
             )
             agent._memory_sync_manager = sync_manager
             cast(Any, agent)._session_flush_service = self._session_flush_service

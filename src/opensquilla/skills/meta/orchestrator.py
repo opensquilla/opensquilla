@@ -237,10 +237,20 @@ def make_agent_runner_from_parent(
             metadata=dict(getattr(base_config, "metadata", {}) or {}),
         )
 
+        # Strip meta_invoke from the sub-Agent's tool surface so a step
+        # cannot recurse into another meta-skill (pitfall #3 in the
+        # mechanism doc: meta-A → meta-B → meta-A loops).
+        filtered_tool_definitions = [
+            td for td in tool_definitions
+            if not (
+                getattr(td, "name", None) == "meta_invoke"
+                or (isinstance(td, dict) and td.get("name") == "meta_invoke")
+            )
+        ]
         agent = agent_factory(
             provider=provider,
             config=sub_config,
-            tool_definitions=tool_definitions,
+            tool_definitions=filtered_tool_definitions,
             tool_handler=tool_handler,
         )
         async for event in agent.run_turn(user_message):

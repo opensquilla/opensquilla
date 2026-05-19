@@ -82,4 +82,3 @@ def image_generation_provider_has_auth(provider: Any) -> bool:
     if not auth_env_vars:
         return True
     return any(bool(os.environ.get(env_var)) for env_var in auth_env_vars)
-

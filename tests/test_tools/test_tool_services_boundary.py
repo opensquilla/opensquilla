@@ -103,4 +103,3 @@ def test_gateway_boot_uses_shared_tool_service_wiring() -> None:
     assert "from opensquilla.tools.builtin.agents import set_" not in text
     assert "from opensquilla.tools.builtin.sessions import set_session_manager" not in text
     assert "from opensquilla.tools.builtin.sessions import set_task_runtime" not in text
-

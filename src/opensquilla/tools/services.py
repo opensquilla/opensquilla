@@ -149,4 +149,3 @@ def get_scheduler() -> object:
     if _services.scheduler is None:
         raise ToolError("Scheduler not available")
     return _services.scheduler
-

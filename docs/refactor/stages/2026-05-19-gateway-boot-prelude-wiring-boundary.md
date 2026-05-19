@@ -233,9 +233,13 @@ same boot prelude block and create avoidable conflicts.
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+  - Integration merge: `a14b463`
+- [x] Run `scripts/refactor_gate.sh` in integration.
+  - Integration gate passed: `2665 passed, 6 skipped, 2 warnings in 27.96s`;
+    gateway smoke start/status/stop/status returned `{"ok": true, ...}` and
+    final line was `Refactor gate complete.`
+- [x] Record child hash, integration hash, verification, and next slice.
 - [ ] Remove `../opensquilla-refactor-active` and
       `../opensquilla-refactor-agent-boot-prelude`, run `git worktree prune`,
       and verify no extra refactor worktree directories remain beyond
@@ -280,9 +284,9 @@ Co-authored-by: Codex <noreply@openai.com>
 - Active child support commits:
   - Stage plan: `5692c8d`
   - Worker merge: `8800915`
-- Child verification commit: pending this record update.
-- Integration merge:
-- Integration record:
+- Child verification commit: `dabdf4b`
+- Integration merge: `a14b463`
+- Integration record: pending this record update.
 - Verification evidence:
   - RED focused command: `6 failed, 3 passed in 0.58s`.
   - GREEN focused command: `9 passed in 0.51s`.
@@ -293,10 +297,12 @@ Co-authored-by: Codex <noreply@openai.com>
   - Main-thread focused GREEN after worker merge: `9 passed in 3.23s`.
   - Main-thread child gate after worker merge: `2663 passed, 8 skipped,
     2 warnings`; gateway smoke completed start/status/stop/status.
+  - Integration `scripts/refactor_gate.sh`: `2665 passed, 6 skipped,
+    2 warnings`; gateway smoke completed start/status/stop/status.
 - Cleanup evidence:
 - Residual risk:
-  - Integration merge, integration gate, and worktree cleanup remain for the
-    coordinating main thread.
+  - Worktree cleanup remains for the coordinating main thread.
 - Next recommended slice:
-  - Main thread should select the next Gateway module batch after reviewing and
-    integrating this worker slice.
+  - Continue Gateway boot decomposition only if the next batch is still
+    cohesive; otherwise switch to another Phase 2/3 boundary with independent
+    file ownership for better parallelism.

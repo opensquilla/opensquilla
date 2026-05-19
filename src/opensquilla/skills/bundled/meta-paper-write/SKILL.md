@@ -1,7 +1,7 @@
 ---
 name: meta-paper-write
 description: "Draft a demo research paper end-to-end from a topic phrase: web search → BibTeX → stub experiment → outline → matplotlib figure → 5 parallel section drafts → xelatex compile → PDF."
-kind: meta
+kind: meta_sop
 meta_priority: 50
 always: false
 triggers:
@@ -12,105 +12,42 @@ triggers:
 provenance:
   origin: opensquilla-original
   license: Apache-2.0
-composition:
-  steps:
-    - id: search_papers
-      kind: skill_exec
-      skill: multi-search-engine
-    - id: experiment
-      kind: skill_exec
-      skill: paper-experiment-stub
-    - id: refbib
-      kind: skill_exec
-      skill: paper-refbib-stub
-      depends_on: [search_papers]
-    - id: outline
-      kind: agent
-      skill: paper-outline-author
-      depends_on: [refbib]
-      with:
-        topic: "{{ inputs.user_message | truncate(200) }}"
-        cite_keys_hint: "{{ outputs.refbib | truncate(400) }}"
-    - id: plot
-      kind: skill_exec
-      skill: paper-plot-stub
-      depends_on: [experiment]
-    - id: draft_abstract
-      kind: agent
-      skill: paper-section-author
-      depends_on: [outline, refbib, plot]
-      with:
-        section: "abstract"
-        outline: "{{ outputs.outline }}"
-        cite_keys_hint: "{{ outputs.refbib | truncate(400) }}"
-    - id: draft_intro
-      kind: agent
-      skill: paper-section-author
-      depends_on: [outline, refbib, plot]
-      with:
-        section: "introduction"
-        outline: "{{ outputs.outline }}"
-        cite_keys_hint: "{{ outputs.refbib | truncate(400) }}"
-    - id: draft_method
-      kind: agent
-      skill: paper-section-author
-      depends_on: [outline, refbib, plot]
-      with:
-        section: "method"
-        outline: "{{ outputs.outline }}"
-        cite_keys_hint: "{{ outputs.refbib | truncate(400) }}"
-    - id: draft_results
-      kind: agent
-      skill: paper-section-author
-      depends_on: [outline, refbib, plot]
-      with:
-        section: "results"
-        outline: "{{ outputs.outline }}"
-        figure_path: "paper/figure_1.pdf"
-        cite_keys_hint: "{{ outputs.refbib | truncate(400) }}"
-    - id: draft_discussion
-      kind: agent
-      skill: paper-section-author
-      depends_on: [outline, refbib, plot]
-      with:
-        section: "discussion"
-        outline: "{{ outputs.outline }}"
-        cite_keys_hint: "{{ outputs.refbib | truncate(400) }}"
-    - id: compile_latex
-      kind: skill_exec
-      skill: latex-compile
-      depends_on:
-        - draft_abstract
-        - draft_intro
-        - draft_method
-        - draft_results
-        - draft_discussion
 ---
 
-# meta-paper-write (Meta-Skill, demo)
+# meta-paper-write (SOP form)
 
-Take a research topic and produce a compiled PDF paper.
+## Phase 1: Foundation [parallel]
+Run `multi-search-engine`. Save as `search_papers`.
+Run `paper-experiment-stub`. Save as `experiment`.
 
-Pipeline (11 steps; ① and ② start concurrently, ⑥–⑩ run in parallel after
-their join):
+## Phase 2: Bibliography [depends_on: search_papers]
+Run `paper-refbib-stub`. Save as `refbib`.
 
-| # | step | kind | skill |
-|---|------|------|-------|
-| ① | search_papers | skill_exec | multi-search-engine |
-| ② | experiment | skill_exec | paper-experiment-stub |
-| ③ | refbib | skill_exec | paper-refbib-stub (reads ① on stdin) |
-| ④ | outline | agent | paper-outline-author |
-| ⑤ | plot | skill_exec | paper-plot-stub (reads ②'s results.csv) |
-| ⑥ | draft_abstract | agent | paper-section-author |
-| ⑦ | draft_intro | agent | paper-section-author |
-| ⑧ | draft_method | agent | paper-section-author |
-| ⑨ | draft_results | agent | paper-section-author |
-| ⑩ | draft_discussion | agent | paper-section-author |
-| ⑪ | compile_latex | skill_exec | latex-compile (assembles paper.tex, xelatex×3 + bibtex) |
+## Phase 3: Outline
+Invoke `paper-outline-author` as agent with:
+- topic: `{{ inputs.user_message | truncate(200) }}`
+- cite_keys_hint: `{{ outputs.refbib | truncate(1500) }}`
+Save as `outline`.
 
-## Fallback
+## Phase 4: Plot [depends_on: experiment]
+Run `paper-plot-stub`. Save as `plot`.
 
-If the orchestration fails mid-pipeline, retry the failing step manually or
-run the pieces directly. The script that compiles the LaTeX is
-`paper/compile.py`; it expects `paper/paper.tex` and `paper/references.bib`
-to exist.
+## Phase 5: Drafting [parallel for_each: section; depends_on: [outline, refbib, plot]]
+```yaml for_each
+section:
+  - {id: draft_abstract,   name: abstract}
+  - {id: draft_intro,      name: introduction}
+  - {id: draft_method,     name: method}
+  - {id: draft_results,    name: results, figure_path: paper/figure_1.pdf}
+  - {id: draft_discussion, name: discussion}
+```
+
+Invoke `paper-section-author` as agent with:
+- section: `{{ section.name }}`
+- outline: `{{ outputs.outline }}`
+- cite_keys_hint: `{{ outputs.refbib | truncate(1500) }}`
+- figure_path: `{{ section.figure_path }}`
+Save as `{{ section.id }}`.
+
+## Phase 6: Compile [depends_on: [draft_abstract, draft_intro, draft_method, draft_results, draft_discussion]]
+Run `latex-compile`. Save as `compile_latex`.

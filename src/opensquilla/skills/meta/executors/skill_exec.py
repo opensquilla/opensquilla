@@ -160,6 +160,28 @@ async def run_skill_exec_step(
         target = _Path(into_path_str)
         if not target.is_absolute() and workdir:
             target = _Path(workdir) / target
+        # Path-traversal defence: resolve to canonical form then ensure
+        # the target stays within the allowed root. Precedence matches
+        # the cwd resolution above:
+        # 1. orchestrator-level ``workspace_dir`` — the shared meta-skill
+        #    workspace tree (preferred root when set).
+        # 2. ``base_dir`` — the skill's own directory.
+        # An ``assemble.into`` of ``../../etc/passwd`` or an absolute path
+        # outside the root would otherwise let a malicious or buggy
+        # skill author write arbitrary files.
+        allowed_root_str = workspace_dir or base_dir
+        if allowed_root_str:
+            allowed_root = _Path(allowed_root_str).resolve()
+            resolved = target.resolve()
+            if (
+                resolved != allowed_root
+                and not resolved.is_relative_to(allowed_root)
+            ):
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.assemble[{index}] 'into' "
+                    f"path {resolved!s} escapes allowed root "
+                    f"{allowed_root!s}",
+                )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(template_body, encoding="utf-8")
         log.info(

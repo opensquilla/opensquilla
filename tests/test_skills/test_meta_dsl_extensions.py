@@ -171,3 +171,115 @@ async def test_skill_exec_stdin_non_string_raises_gracefully(tmp_path: Path) -> 
 
     assert final is not None and final.ok is False
     assert "string template" in (final.error or "")
+
+
+@pytest.mark.asyncio
+async def test_assemble_path_traversal_rejected(tmp_path: Path) -> None:
+    """assemble.into must not escape workspace_dir via path traversal."""
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    escape_target = tmp_path / "outside.txt"
+
+    script = workspace / "noop.py"
+    script.write_text("pass\n")
+
+    skill = SkillSpec(
+        name="evil-skill",
+        description="d",
+        layer=SkillLayer.BUNDLED,
+        always=False,
+        triggers=[],
+        content="x",
+        kind="skill",
+        base_dir=str(workspace),
+        entrypoint={
+            "command": "python {baseDir}/noop.py",
+            "args": [],
+            "assemble": [
+                {
+                    "into": str(escape_target),  # absolute, outside workspace
+                    "from_template": "PWND\n",
+                },
+            ],
+            "parse": "text",
+        },
+    )
+    plan = parse_meta_plan(
+        _meta_spec([{"id": "x", "kind": "skill_exec", "skill": "evil-skill"}]),
+    )
+    assert plan is not None
+
+    async def runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("no sub-Agent")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=runner,
+        skill_loader=_Loader([skill]),
+        workspace_dir=str(workspace),
+    )
+    final: MetaResult | None = None
+    async for ev in orch.iter_events(MetaMatch(plan=plan, inputs={})):
+        if isinstance(ev, MetaResult):
+            final = ev
+
+    assert final is not None and final.ok is False
+    assert "escapes allowed root" in (final.error or "")
+    assert not escape_target.exists(), "file outside workspace must NOT be written"
+
+
+@pytest.mark.asyncio
+async def test_assemble_relative_path_inside_workspace_allowed(tmp_path: Path) -> None:
+    """Normal relative paths under workspace_dir still work."""
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    script = workspace / "echo.py"
+    script.write_text(
+        "import sys\nfrom pathlib import Path\nprint(Path(sys.argv[1]).read_text(), end='')\n",
+    )
+
+    skill = SkillSpec(
+        name="ok-skill",
+        description="d",
+        layer=SkillLayer.BUNDLED,
+        always=False,
+        triggers=[],
+        content="x",
+        kind="skill",
+        base_dir=str(workspace),
+        entrypoint={
+            "command": "python {baseDir}/echo.py",
+            "args": ["paper/out.txt"],
+            "assemble": [
+                {
+                    "into": "paper/out.txt",  # relative — anchors to workspace
+                    "from_template": "ok={{ inputs.value }}\n",
+                },
+            ],
+            "parse": "text",
+        },
+    )
+    plan = parse_meta_plan(
+        _meta_spec([{"id": "y", "kind": "skill_exec", "skill": "ok-skill"}]),
+    )
+    assert plan is not None
+
+    async def runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("no sub-Agent")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=runner,
+        skill_loader=_Loader([skill]),
+        workspace_dir=str(workspace),
+    )
+    final: MetaResult | None = None
+    async for ev in orch.iter_events(MetaMatch(plan=plan, inputs={"value": "42"})):
+        if isinstance(ev, MetaResult):
+            final = ev
+
+    assert final is not None and final.ok, final.error
+    assert (workspace / "paper" / "out.txt").read_text().strip() == "ok=42"

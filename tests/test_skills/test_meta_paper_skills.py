@@ -122,4 +122,8 @@ Hello, world.
     pdf = tmp_path / "paper.pdf"
     assert pdf.is_file()
     assert pdf.read_bytes()[:4] == b"%PDF"
-    assert "WROTE" in proc.stdout
+    # stdout is the clean user-facing deliverable line (PDF path + size).
+    # The verbose xelatex log tail is routed to stderr so it survives for
+    # debugging without polluting the meta-skill's final_text payload.
+    assert "paper.pdf" in proc.stdout.lower()
+    assert "successfully" in proc.stdout.lower()

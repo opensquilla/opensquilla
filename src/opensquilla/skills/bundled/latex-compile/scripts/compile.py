@@ -57,9 +57,18 @@ def main() -> None:
         print("\n".join(full_log[-3:]), file=sys.stderr)
         sys.exit(4)
 
-    tail = "\n".join("\n".join(full_log).splitlines()[-40:])
-    print(tail)
-    print(f"WROTE {pdf}")
+    # On success: emit a clean user-facing deliverable as stdout. The
+    # full xelatex log tail is verbose and confusing in the chat surface
+    # (overfull-hbox warnings, font info, page break trackers) — route it
+    # to stderr where it survives in the gateway log for debugging
+    # without becoming the meta-skill's final_text payload.
+    log_tail = "\n".join("\n".join(full_log).splitlines()[-40:])
+    print(log_tail, file=sys.stderr)
+    try:
+        size_kb = pdf.stat().st_size / 1024
+        print(f"Paper compiled successfully: {pdf} ({size_kb:.1f} KB)")
+    except OSError:
+        print(f"Paper compiled successfully: {pdf}")
 
 
 if __name__ == "__main__":

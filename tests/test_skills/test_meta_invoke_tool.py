@@ -595,3 +595,29 @@ async def test_dispatch_intercepts_meta_invoke_and_terminates_turn(
         "Expected llm_classify result 'A' in meta_invoke ToolResultEvent; "
         f"got: {success_contents[:300]!r}"
     )
+
+    # The orchestrator emits ToolUseStartEvent / ToolResultEvent for each
+    # meta-step (tool_name="meta-step:<step_id>"). The dispatch interceptor
+    # must forward these to the outer turn stream so the WebUI can render
+    # each step as a tool-call card — same visual treatment as the
+    # hard-takeover path. If these don't appear, soft-path turns look
+    # like a single opaque "meta_invoke" tool call to the UI, even though
+    # internally a multi-step DAG ran.
+    from opensquilla.engine.types import ToolUseStartEvent
+    step_starts = [
+        e for e in events
+        if isinstance(e, ToolUseStartEvent) and e.tool_name.startswith("meta-step:")
+    ]
+    step_results = [
+        e for e in events
+        if isinstance(e, ToolResultEvent) and e.tool_name.startswith("meta-step:")
+    ]
+    assert step_starts, (
+        "Expected at least one ToolUseStartEvent with tool_name='meta-step:<id>' "
+        "in the parent turn stream — dispatch interceptor must forward nested "
+        f"orchestrator events. Got event types: "
+        f"{sorted({type(e).__name__ for e in events})}"
+    )
+    assert step_results, (
+        "Expected at least one ToolResultEvent with tool_name='meta-step:<id>'."
+    )

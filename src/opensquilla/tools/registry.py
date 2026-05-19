@@ -34,21 +34,38 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, RegisteredTool] = {}
+        self._owners: dict[str, str] = {}
 
-    def register(self, spec: ToolSpec, handler: ToolHandler) -> None:
+    def register(self, spec: ToolSpec, handler: ToolHandler, *, owner: str | None = None) -> None:
         if spec.name in self._tools:
             log.warning("registry.tool_overwrite", name=spec.name, source="tools")
         self._tools[spec.name] = RegisteredTool(spec=spec, handler=handler)
+        if owner is None:
+            self._owners.pop(spec.name, None)
+        else:
+            self._owners[spec.name] = owner
 
     def get(self, name: str) -> RegisteredTool | None:
         return self._tools.get(name)
+
+    def owner_for(self, name: str) -> str | None:
+        return self._owners.get(name)
 
     def list_names(self) -> list[str]:
         return list(self._tools.keys())
 
     def unregister(self, name: str) -> bool:
         """Remove a tool by name. Returns True if it existed."""
-        return self._tools.pop(name, None) is not None
+        removed = self._tools.pop(name, None) is not None
+        self._owners.pop(name, None)
+        return removed
+
+    def unregister_owner(self, owner: str) -> list[str]:
+        """Remove tools registered for a lifecycle owner and return their names."""
+        names = sorted(name for name, tool_owner in self._owners.items() if tool_owner == owner)
+        for name in names:
+            self.unregister(name)
+        return names
 
     def all_tools(self) -> list[RegisteredTool]:
         return list(self._tools.values())

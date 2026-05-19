@@ -8,6 +8,7 @@ import pytest_asyncio
 from opensquilla.mcp.client import MCPClient
 from opensquilla.mcp.types import MCPServerConfig, MCPToolDef, MCPToolResult
 from opensquilla.tools.registry import ToolRegistry
+from opensquilla.tools.types import ToolSpec
 
 
 class FakeMCPClient(MCPClient):
@@ -96,3 +97,23 @@ async def test_failed_mcp_discovery_closes_client_without_leaking(
 
     assert client.closed is True
     assert discovery.active_clients_snapshot() == ()
+
+
+def test_tool_registry_lifecycle_owner_can_remove_mcp_registered_surface() -> None:
+    registry = ToolRegistry()
+
+    async def handler() -> str:
+        return "ok"
+
+    registry.register(
+        spec=ToolSpec(name="mcp_lookup", description="Lookup docs", parameters={}),
+        handler=handler,
+        owner="mcp:docs",
+    )
+
+    assert registry.get("mcp_lookup") is not None
+
+    removed = registry.unregister_owner("mcp:docs")
+
+    assert removed == ["mcp_lookup"]
+    assert registry.get("mcp_lookup") is None

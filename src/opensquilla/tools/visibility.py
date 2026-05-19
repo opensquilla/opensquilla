@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import StrEnum
 
 import structlog
@@ -22,6 +23,14 @@ log = structlog.get_logger(__name__)
 class ToolProfile(StrEnum):
     OWNER_FULL = "owner_full"
     CHANNEL_DEFAULT = "channel_default"
+
+
+@dataclass(frozen=True)
+class ToolDispatchBlock:
+    reason: str
+    exception: Exception
+    error_class: str
+    user_message: str
 
 
 default_tool_context = surface_policy.default_tool_context
@@ -99,6 +108,37 @@ def is_tool_visible(rt: RegisteredTool, ctx: ToolContext | None = None) -> bool:
             log.debug("tool_filtered", tool=rt.spec.name, reason="denied")
             return False
     return True
+
+
+def tool_dispatch_block(
+    rt: RegisteredTool,
+    ctx: ToolContext | None = None,
+) -> ToolDispatchBlock | None:
+    """Return a dispatch denial when request context forbids this tool."""
+    if ctx is None:
+        return None
+    if rt.spec.owner_only and not ctx.is_owner:
+        return ToolDispatchBlock(
+            reason="owner_only",
+            exception=PermissionError("owner-only tool"),
+            error_class="OwnerOnly",
+            user_message=f"Tool '{rt.spec.name}' restricted to owner.",
+        )
+    if rt.spec.name in ctx.denied_tools:
+        return ToolDispatchBlock(
+            reason="denied",
+            exception=PermissionError("tool blocked"),
+            error_class="PolicyDenied",
+            user_message=f"Tool '{rt.spec.name}' not available in this context.",
+        )
+    if ctx.allowed_tools is not None and rt.spec.name not in ctx.allowed_tools:
+        return ToolDispatchBlock(
+            reason="not_allowed",
+            exception=PermissionError("tool blocked"),
+            error_class="PolicyDenied",
+            user_message=f"Tool '{rt.spec.name}' not available in this context.",
+        )
+    return None
 
 
 def visible_registered_tools(

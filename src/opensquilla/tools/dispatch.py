@@ -13,6 +13,7 @@ from opensquilla.safety.injection_guard import (
 )
 from opensquilla.safety.permission_matrix import Principal, is_tool_allowed
 from opensquilla.tool_boundary import AgentToolHandler, ToolCall, ToolResult
+from opensquilla.tools import visibility as visibility_policy
 from opensquilla.tools.envelope import (
     build_tool_failure_envelope,
     build_tool_failure_result,
@@ -118,65 +119,23 @@ def build_tool_handler(
                 user_message_override=f"Tool not found: {tool_call.tool_name}",
             )
 
-        # Defense-in-depth: reject owner_only tools if context says non-owner
-        if effective_ctx and registered.spec.owner_only and not effective_ctx.is_owner:
+        # Defense-in-depth: reuse the same visibility boundary used for schemas.
+        visibility_block = visibility_policy.tool_dispatch_block(registered, effective_ctx)
+        if visibility_block is not None:
             log.warning(
                 "dispatch.defense_in_depth_block",
                 tool=tool_call.tool_name,
-                reason="owner_only",
+                reason=visibility_block.reason,
                 tool_use_id=tool_call.tool_use_id,
                 agent_id=effective_ctx.agent_id if effective_ctx else None,
                 session_key=effective_ctx.session_key if effective_ctx else None,
             )
             return build_tool_failure_result(
                 tool_call,
-                exc=PermissionError("owner-only tool"),
+                exc=visibility_block.exception,
                 policy_denial=True,
-                error_class_override="OwnerOnly",
-                user_message_override=f"Tool '{tool_call.tool_name}' restricted to owner.",
-            )
-
-        # Defense-in-depth: reject denied tools
-        if effective_ctx and tool_call.tool_name in effective_ctx.denied_tools:
-            log.warning(
-                "dispatch.defense_in_depth_block",
-                tool=tool_call.tool_name,
-                reason="denied",
-                tool_use_id=tool_call.tool_use_id,
-                agent_id=effective_ctx.agent_id if effective_ctx else None,
-                session_key=effective_ctx.session_key if effective_ctx else None,
-            )
-            return build_tool_failure_result(
-                tool_call,
-                exc=PermissionError("tool blocked"),
-                policy_denial=True,
-                error_class_override="PolicyDenied",
-                user_message_override=(
-                    f"Tool '{tool_call.tool_name}' not available in this context."
-                ),
-            )
-
-        if (
-            effective_ctx
-            and effective_ctx.allowed_tools is not None
-            and tool_call.tool_name not in effective_ctx.allowed_tools
-        ):
-            log.warning(
-                "dispatch.defense_in_depth_block",
-                tool=tool_call.tool_name,
-                reason="not_allowed",
-                tool_use_id=tool_call.tool_use_id,
-                agent_id=effective_ctx.agent_id if effective_ctx else None,
-                session_key=effective_ctx.session_key if effective_ctx else None,
-            )
-            return build_tool_failure_result(
-                tool_call,
-                exc=PermissionError("tool blocked"),
-                policy_denial=True,
-                error_class_override="PolicyDenied",
-                user_message_override=(
-                    f"Tool '{tool_call.tool_name}' not available in this context."
-                ),
+                error_class_override=visibility_block.error_class,
+                user_message_override=visibility_block.user_message,
             )
 
         if effective_ctx and effective_ctx.caller_kind is CallerKind.CHANNEL:

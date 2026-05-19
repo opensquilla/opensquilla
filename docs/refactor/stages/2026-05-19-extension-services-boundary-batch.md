@@ -130,10 +130,10 @@
 - [x] Implement `extension_services.gateway_runtime` and delegate from `gateway.boot`.
 - [x] Run the focused GREEN command and touched-file ruff.
 - [x] Run `scripts/refactor_gate.sh` in the child worktree.
-- [ ] Commit with the required Co-authored-by trailer.
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Commit with the required Co-authored-by trailer.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 - [ ] Remove `../opensquilla-refactor-active`, run `git worktree prune`, and verify cleanup.
 
 ## Child gate
@@ -155,8 +155,8 @@
 
 ## Completion record
 
-- Child commit: pending commit after child gate.
-- Integration merge: pending.
+- Child commit: `fb27727` (`Isolate extension-service boot wiring for coarse refactor progress`).
+- Integration merge: `2e3ddf4` (`Merge extension services boundary batch`).
 - Verification evidence:
   - RED: `uv run --extra dev pytest tests/test_extension_services/test_gateway_runtime.py -q` failed before implementation with missing `opensquilla.extension_services` and missing Gateway delegation.
   - GREEN: `uv run --extra dev pytest tests/test_extension_services/test_gateway_runtime.py -q` -> `3 passed in 2.47s`; after team review gap closure, extension-services boundary/fail-open tests -> `4 passed in 0.34s`.
@@ -165,5 +165,6 @@
   - Touched-file lint: `uv run --extra dev ruff check src/opensquilla/extension_services src/opensquilla/gateway/boot.py tests/test_extension_services/test_gateway_runtime.py tests/test_skills_runtime_boundary.py tests/test_search/test_search_runtime_boundary.py tests/test_gateway/test_router_boot.py tests/test_ci/test_architecture_import_contracts.py` -> `All checks passed!`.
   - Team review: `omx team 2:executor ...` -> 3 tasks completed, 0 failed; worker-1 independently ran focused checks (`107 passed`) and child `scripts/refactor_gate.sh` (`2827 passed, 8 skipped`) and found no blocking compatibility issue. The one noted gap (skills/scheduler/search fail-open not individually failure-injected) was closed with `test_build_extension_services_runtime_keeps_fail_open_boundaries_independent`.
   - Child gate: `scripts/refactor_gate.sh` -> ruff pass, mypy pass on 579 source files, whitespace pass, pytest `2827 passed, 8 skipped`, gateway smoke start/status/stop/status pass, `Refactor gate complete.`
-- Residual risk: integration merge/gate still pending; no known child-worktree failures after the final child gate and team review.
+  - Integration gate after merge `2e3ddf4`: `scripts/refactor_gate.sh` -> ruff pass, mypy pass on 579 source files, whitespace pass, pytest `2829 passed, 6 skipped`, gateway smoke start/status/stop/status pass, `Refactor gate complete.`
+- Residual risk: no known G002 blocker after child gate, team review, merge, and integration gate. Cleanup and Ultragoal checkpoint remain leader-owned follow-up steps.
 - Next recommended slice: G003 channels and external ingress batch.

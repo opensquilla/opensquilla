@@ -13,6 +13,7 @@ import structlog
 from cachetools import TTLCache
 
 from opensquilla.env import trust_env as _trust_env
+from opensquilla.safety.injection_guard import xml_escape
 from opensquilla.sandbox.integration import sandboxed
 from opensquilla.tools.registry import tool
 from opensquilla.tools.ssrf import validate_http_url_for_fetch
@@ -366,7 +367,10 @@ async def web_fetch(
 
 
 def _wrap_content(source: str, content: str) -> str:
-    return f'<external-content source="{source}">{content}</external-content>'
+    return (
+        f'<external-content source="{xml_escape(source)}">'
+        f"{xml_escape(content)}</external-content>"
+    )
 
 
 def _extract_inner(wrapped: str) -> str:
@@ -376,6 +380,17 @@ def _extract_inner(wrapped: str) -> str:
     if start_tag_end == -1 or end_tag_start == -1:
         return wrapped
     return wrapped[start_tag_end + 1 : end_tag_start]
+
+
+def _xml_unescape(text: str) -> str:
+    """Reverse this module's XML escaping before internal truncation."""
+    return (
+        text.replace("&apos;", "'")
+        .replace("&quot;", '"')
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        .replace("&amp;", "&")
+    )
 
 
 def _apply_max_chars(result: dict[str, Any], max_chars: int | None) -> dict[str, Any]:
@@ -388,7 +403,7 @@ def _apply_max_chars(result: dict[str, Any], max_chars: int | None) -> dict[str,
         return dict(result)
 
     output = dict(result)
-    inner = _extract_inner(str(output.get("text", "")))
+    inner = _xml_unescape(_extract_inner(str(output.get("text", ""))))
     if len(inner) <= max_chars:
         return output
 

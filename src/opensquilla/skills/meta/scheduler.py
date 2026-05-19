@@ -140,8 +140,16 @@ async def run_dag(
                 output_chars=len(final_text),
                 output_preview=final_text[:200],
             )
+            # The card preview is what users see expanded in chat. Keep it
+            # tight (≤100 chars) so 11 cards in a row don't drown the
+            # surface in raw step content — the full output is still
+            # available via the gateway log's ``output_preview`` (200 chars)
+            # and ``output_chars``. For 1-line outputs (skill_exec status
+            # strings like "wrote paper/results.csv") the full text shows
+            # through naturally.
             preview = (
-                final_text if len(final_text) <= 400 else final_text[:400] + "…"
+                final_text if len(final_text) <= 100
+                else f"{final_text[:80]}… ({len(final_text)} chars)"
             )
             await event_queue.put(
                 (

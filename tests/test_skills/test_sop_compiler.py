@@ -590,3 +590,71 @@ def test_emit_for_each_duplicate_generated_id_rejected() -> None:
     )
     with pytest.raises(SOPCompileError, match="duplicate"):
         _emit(doc, skill_loader=loader, skill_name="meta-x")
+
+
+def test_emit_depends_on_single_id_override() -> None:
+    from opensquilla.skills.meta.sop_compiler import _emit, _lex, _parse
+
+    body = (
+        "## Phase 1: A\n"
+        "Run `paper-experiment-stub`. Save as `a`.\n"
+        "## Phase 2: B\n"
+        "Run `paper-plot-stub`. Save as `b`.\n"
+        "## Phase 3: C [depends_on: a]\n"
+        "Run `paper-refbib-stub`. Save as `c`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    loader = _StubSkillLoader(
+        {
+            "paper-experiment-stub": {"entrypoint": {"command": "x"}},
+            "paper-plot-stub": {"entrypoint": {"command": "x"}},
+            "paper-refbib-stub": {"entrypoint": {"command": "x"}},
+        },
+    )
+    composition = _emit(doc, skill_loader=loader, skill_name="meta-x")
+    steps = {s["id"]: s for s in composition["steps"]}
+    assert steps["c"]["depends_on"] == ["a"]
+
+
+def test_emit_depends_on_list_override() -> None:
+    from opensquilla.skills.meta.sop_compiler import _emit, _lex, _parse
+
+    body = (
+        "## Phase 1: A\n"
+        "Run `paper-experiment-stub`. Save as `a`.\n"
+        "## Phase 2: B\n"
+        "Run `paper-plot-stub`. Save as `b`.\n"
+        "## Phase 3: C [depends_on: [a, b]]\n"
+        "Run `paper-refbib-stub`. Save as `c`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    loader = _StubSkillLoader(
+        {
+            "paper-experiment-stub": {"entrypoint": {"command": "x"}},
+            "paper-plot-stub": {"entrypoint": {"command": "x"}},
+            "paper-refbib-stub": {"entrypoint": {"command": "x"}},
+        },
+    )
+    composition = _emit(doc, skill_loader=loader, skill_name="meta-x")
+    steps = {s["id"]: s for s in composition["steps"]}
+    assert set(steps["c"]["depends_on"]) == {"a", "b"}
+
+
+def test_emit_depends_on_unknown_id_rejected() -> None:
+    from opensquilla.skills.meta.sop_compiler import SOPCompileError, _emit, _lex, _parse
+
+    body = (
+        "## Phase 1: A\n"
+        "Run `paper-experiment-stub`. Save as `a`.\n"
+        "## Phase 2: B [depends_on: nonexistent]\n"
+        "Run `paper-plot-stub`. Save as `b`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    loader = _StubSkillLoader(
+        {
+            "paper-experiment-stub": {"entrypoint": {"command": "x"}},
+            "paper-plot-stub": {"entrypoint": {"command": "x"}},
+        },
+    )
+    with pytest.raises(SOPCompileError, match="nonexistent"):
+        _emit(doc, skill_loader=loader, skill_name="meta-x")

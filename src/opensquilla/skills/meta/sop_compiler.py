@@ -107,7 +107,8 @@ class Token:
 
 
 _PHASE_HEADING_RE = re.compile(
-    r"^##\s+Phase\s+(?P<num>\d+)\s*:\s*(?P<title>[^\[]+?)\s*(?:\[(?P<annotations>[^\]]*)\])?\s*$",
+    r"^##\s+Phase\s+(?P<num>\d+)\s*:\s*(?P<title>[^\[]+?)\s*"
+    r"(?:\[(?P<annotations>(?:[^\[\]]|\[[^\[\]]*\])*)\])?\s*$",
 )
 _INVOCATION_RUN_RE = re.compile(r"^(?P<verb>Run|Invoke|Call tool|Classify)\s+")
 _WITH_BULLET_RE = re.compile(r"^-\s+(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<value>.+)$")
@@ -808,6 +809,21 @@ def _substitute_loop_vars(
     return _LOOP_REF_RE.sub(_replace, template)
 
 
+def _parse_depends_on_value(raw: str) -> list[str]:
+    """Parse a ``depends_on:`` annotation value as either a single id or ``[a, b, c]``.
+
+    Whitespace around items is stripped.
+    """
+
+    raw = raw.strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        inner = raw[1:-1].strip()
+        if not inner:
+            return []
+        return [s.strip() for s in inner.split(",") if s.strip()]
+    return [raw]
+
+
 def _emit(
     doc: SOPDocument,
     *,
@@ -819,15 +835,22 @@ def _emit(
     seen_ids: set[str] = set()
 
     for phase in doc.phases:
+        # Resolve depends_on: explicit annotation overrides sequential default.
         if "depends_on" in phase.annotations:
-            raise SOPCompileError(
-                skill_name=skill_name,
-                phase_index=phase.index,
-                span=phase.span,
-                reason="`depends_on` annotation emitter not implemented yet (Task 8)",
-            )
-
-        depends_on = list(previous_phase_step_ids)
+            depends_on = _parse_depends_on_value(phase.annotations["depends_on"])
+            for dep in depends_on:
+                if dep not in seen_ids:
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase.index,
+                        span=phase.span,
+                        reason=(
+                            f"depends_on references unknown step id {dep!r}; "
+                            f"defined ids so far: {sorted(seen_ids)}"
+                        ),
+                    )
+        else:
+            depends_on = list(previous_phase_step_ids)
         phase_step_ids: list[str] = []
 
         if phase.for_each_var is not None:

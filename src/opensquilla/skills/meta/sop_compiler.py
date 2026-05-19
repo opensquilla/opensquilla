@@ -754,20 +754,12 @@ def _emit(
     previous_phase_step_ids: list[str] = []
 
     for phase in doc.phases:
-        # Validate annotation set is supported by this emitter version.
         if phase.for_each_var is not None:
             raise SOPCompileError(
                 skill_name=skill_name,
                 phase_index=phase.index,
                 span=phase.span,
                 reason="for_each emitter not implemented yet (Task 7)",
-            )
-        if "parallel" in phase.annotations and "parallel for_each" not in phase.annotations:
-            raise SOPCompileError(
-                skill_name=skill_name,
-                phase_index=phase.index,
-                span=phase.span,
-                reason="`parallel` emitter not implemented yet (Task 6)",
             )
         if "depends_on" in phase.annotations:
             raise SOPCompileError(
@@ -777,8 +769,28 @@ def _emit(
                 reason="`depends_on` annotation emitter not implemented yet (Task 8)",
             )
 
+        is_parallel = "parallel" in phase.annotations
+        # In both sequential AND parallel phases, every step in this phase
+        # depends on every step in the previous phase. The difference is
+        # only how within-phase steps relate to each other — but the spec
+        # does not allow within-phase chaining (you'd use multiple phases
+        # for that). So parallel and sequential phases produce the same
+        # depends_on output; ``[parallel]`` is mostly an author signal.
         depends_on = list(previous_phase_step_ids)
         phase_step_ids: list[str] = []
+
+        if not is_parallel and len(phase.invocations) > 1:
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase.index,
+                span=phase.span,
+                reason=(
+                    f"phase has {len(phase.invocations)} invocations but no "
+                    f"[parallel] annotation — add [parallel] or split into "
+                    f"multiple phases"
+                ),
+            )
+
         for inv in phase.invocations:
             kind = _resolve_kind(
                 inv,

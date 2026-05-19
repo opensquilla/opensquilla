@@ -445,3 +445,32 @@ def test_emit_sequential_phases_default_depends_on() -> None:
     assert steps[0]["kind"] == "skill_exec"
     assert steps[2]["kind"] == "agent"
     assert steps[2]["with"] == {"topic": "`t`"} or steps[2]["with"] == {"topic": "t"}
+
+
+def test_emit_parallel_phase_yields_sibling_steps() -> None:
+    from opensquilla.skills.meta.sop_compiler import _emit, _lex, _parse
+
+    body = (
+        "## Phase 1: First\n"
+        "Run `paper-experiment-stub`. Save as `s1`.\n"
+        "## Phase 2: Foundation [parallel]\n"
+        "Run `paper-plot-stub`. Save as `s2a`.\n"
+        "Run `paper-refbib-stub`. Save as `s2b`.\n"
+        "## Phase 3: Third\n"
+        "Run `paper-plot-stub`. Save as `s3`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    loader = _StubSkillLoader(
+        {
+            "paper-experiment-stub": {"entrypoint": {"command": "x"}},
+            "paper-plot-stub": {"entrypoint": {"command": "x"}},
+            "paper-refbib-stub": {"entrypoint": {"command": "x"}},
+        },
+    )
+    composition = _emit(doc, skill_loader=loader, skill_name="meta-x")
+    steps = {s["id"]: s for s in composition["steps"]}
+    # s2a and s2b are siblings: both depend on s1, neither on each other
+    assert steps["s2a"]["depends_on"] == ["s1"]
+    assert steps["s2b"]["depends_on"] == ["s1"]
+    # s3 depends on both s2 steps
+    assert set(steps["s3"]["depends_on"]) == {"s2a", "s2b"}

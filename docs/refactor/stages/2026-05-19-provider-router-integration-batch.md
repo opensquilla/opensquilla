@@ -135,16 +135,16 @@ Move provider-router tier profile policy out of `gateway.config` into a provider
 - [x] Implement the cohesive behavior-compatible module batch without dropping existing feature coverage.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`, run `git worktree prune`, and verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
+- [x] Remove `../opensquilla-refactor-active`, run `git worktree prune`, and verify no extra refactor worktree directories remain beyond `../opensquilla-refactor-integration`.
 
 ## Child gate
 
@@ -170,8 +170,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit: pending local commit after this record is staged.
-- Integration merge: pending integration merge after child commit.
+- Child commit: `8de6884cc5b324617fb8877b150d12216715b5ca`.
+- Integration merge: `1e4e5b42f3d43e6f1253cf84905e420da8b46449`.
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --expect-branch codex/refactor-provider-router-integration-batch --allow-dirty` passed on child branch at `0984087`.
   - RED: `uv run --extra dev pytest tests/test_provider_router_profiles.py tests/test_model_router_defaults.py tests/test_provider_model_catalog.py -q` failed during collection with `ModuleNotFoundError: No module named 'opensquilla.provider.router_profiles'`.
@@ -181,6 +181,10 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched mypy: `uv run --extra dev mypy src/opensquilla/provider/router_profiles.py src/opensquilla/gateway/config.py --show-error-codes` passed with no issues in 2 source files.
   - Whitespace: `git diff --check` passed.
   - Child full gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 581 source files; whitespace passed; pytest passed with `2834 passed, 8 skipped, 2 warnings in 34.64s`; gateway smoke start/status/stop/status passed on loopback port `64693`.
+  - Integration merge: `git merge --no-ff codex/refactor-provider-router-integration-batch` produced merge `1e4e5b42f3d43e6f1253cf84905e420da8b46449`.
+  - Integration gate: `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues in 581 source files; whitespace passed; pytest passed with `2836 passed, 6 skipped, 2 warnings in 29.31s`; gateway smoke start/status/stop/status passed on loopback port `64810`.
+  - Release hygiene for final evidence doc: `uv run --extra dev pytest tests/test_public_release_hygiene.py -q` passed with `9 passed in 0.50s`; `git diff --check` passed.
+  - Cleanup: `git worktree remove ../opensquilla-refactor-active && git worktree prune` succeeded; worktree inventory has no `../opensquilla-refactor-active` entry.
 - Residual risk:
   - Low. Router tier profile data moved without changing GatewayConfig compatibility helper names or existing squilla_router/provider behavior; full gate and focused router/provider tests passed.
 - Next recommended slice:

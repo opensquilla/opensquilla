@@ -145,6 +145,52 @@ workers' changes and must not revert unrelated edits.
   - `uv run --extra dev ruff check src/opensquilla/cli/attachments.py src/opensquilla/cli/attachment_files.py src/opensquilla/cli/attachment_paths.py tests/test_cli/test_attachment_files_boundary.py tests/test_cli/test_attachment_paths_boundary.py tests/test_cli/test_attachments_facade_boundary.py tests/test_cli/test_chat_file_command.py tests/test_cli/test_chat_path_command.py tests/test_cli/test_chat_input_builders_boundary.py`
   - `uv run --extra dev mypy src/opensquilla/cli/attachments.py src/opensquilla/cli/attachment_files.py src/opensquilla/cli/attachment_paths.py --show-error-codes`
   - `git diff --check`
+- File worker evidence:
+  - RED command:
+    `uv run --extra dev pytest tests/test_cli/test_attachment_files_boundary.py -q`
+  - RED result: expected collection failure,
+    `ImportError: cannot import name 'attachment_files' from 'opensquilla.cli'`;
+    `1 error in 0.06s`.
+  - GREEN command:
+    `uv run --extra dev pytest tests/test_cli/test_attachment_files_boundary.py tests/test_cli/test_chat_file_command.py tests/test_cli/test_chat_input_builders_boundary.py::test_image_prompt_builder_preserves_payload_and_status_output tests/test_cli/test_chat_input_builders_boundary.py::test_async_file_prompt_builder_preserves_upload_behavior -q`
+  - GREEN result: `18 passed in 3.53s`.
+  - Worker ruff: `All checks passed!`.
+  - Worker diff checks: clean.
+  - Worker full `scripts/refactor_gate.sh`: `2724 passed, 8 skipped, 2
+    warnings`; gateway smoke passed.
+- Path worker evidence:
+  - RED command:
+    `uv run --extra dev pytest tests/test_cli/test_attachment_paths_boundary.py -q`
+  - RED result: expected collection failure,
+    `ImportError: cannot import name 'attachment_paths' from 'opensquilla.cli'`.
+  - GREEN command:
+    `uv run --extra dev pytest tests/test_cli/test_attachment_paths_boundary.py tests/test_cli/test_chat_path_command.py tests/test_cli/test_chat_input_builders_boundary.py::test_path_prompt_builder_preserves_no_upload_contract -q`
+  - GREEN result: `50 passed in 3.08s`.
+  - Worker ruff: `All checks passed!`.
+  - Worker diff check: clean.
+  - Worker full `scripts/refactor_gate.sh`: `2743 passed, 8 skipped, 2
+    warnings`; gateway smoke passed.
+- Main facade evidence:
+  - RED command:
+    `uv run --extra dev pytest tests/test_cli/test_attachments_facade_boundary.py -q`
+  - RED result: `2 failed` because `attachments.py` imported no symbols from
+    `opensquilla.cli.attachment_files` or `opensquilla.cli.attachment_paths`.
+  - GREEN command:
+    `uv run --extra dev pytest tests/test_cli/test_attachments_facade_boundary.py tests/test_cli/test_chat_file_command.py tests/test_cli/test_chat_path_command.py tests/test_cli/test_chat_input_builders_boundary.py tests/test_cli/test_agent_cmd.py tests/test_agent_cmd_no_key.py -q`
+  - GREEN result: `63 passed in 0.73s`.
+  - Combined focused command:
+    `uv run --extra dev pytest tests/test_cli/test_attachment_files_boundary.py tests/test_cli/test_attachment_paths_boundary.py tests/test_cli/test_attachments_facade_boundary.py tests/test_cli/test_chat_file_command.py tests/test_cli/test_chat_path_command.py tests/test_cli/test_chat_input_builders_boundary.py tests/test_cli/test_agent_cmd.py tests/test_agent_cmd_no_key.py -q`
+  - Combined focused result: `96 passed in 0.76s`.
+  - Touched-file ruff: `All checks passed!`.
+  - Touched-file mypy: `Success: no issues found in 3 source files`.
+  - Whitespace check: `git diff --check` -> clean.
+- Child full `scripts/refactor_gate.sh`:
+  - ruff: `All checks passed!`.
+  - mypy: `Success: no issues found in 568 source files`.
+  - whitespace: clean.
+  - pytest: `2752 passed, 8 skipped, 2 warnings in 55.27s`.
+  - gateway smoke: start/status/stop/status passed on `127.0.0.1:55396`.
+  - Result: `Refactor gate complete`.
 
 ## Files
 
@@ -165,18 +211,18 @@ workers' changes and must not revert unrelated edits.
 - [x] Confirm `spawn_agent` status.
 - [x] Create fixed active worktree on `codex/refactor-cli-attachments-input-boundaries`.
 - [x] Write this stage plan before production edits.
-- [ ] Commit this stage plan as the worker base.
-- [ ] Launch two external workers with `scripts/refactor_external_agent.sh`.
-- [ ] File worker writes RED boundary tests and records RED output.
-- [ ] Path worker writes RED boundary tests and records RED output.
-- [ ] File worker implements boundary and records GREEN/check evidence.
-- [ ] Path worker implements boundary and records GREEN/check evidence.
-- [ ] Main thread reviews both diffs for behavior compatibility and ownership.
-- [ ] Merge both worker branches into the active child.
-- [ ] Main thread writes and verifies facade RED/GREEN.
-- [ ] Run focused green command and touched-file checks.
-- [ ] Run `scripts/refactor_gate.sh` in the active child worktree.
-- [ ] Commit child verification/stage record update.
+- [x] Commit this stage plan as the worker base.
+- [x] Launch two external workers with `scripts/refactor_external_agent.sh`.
+- [x] File worker writes RED boundary tests and records RED output.
+- [x] Path worker writes RED boundary tests and records RED output.
+- [x] File worker implements boundary and records GREEN/check evidence.
+- [x] Path worker implements boundary and records GREEN/check evidence.
+- [x] Main thread reviews both diffs for behavior compatibility and ownership.
+- [x] Merge both worker branches into the active child.
+- [x] Main thread writes and verifies facade RED/GREEN.
+- [x] Run focused green command and touched-file checks.
+- [x] Run `scripts/refactor_gate.sh` in the active child worktree.
+- [x] Commit child verification/stage record update.
 - [ ] Merge child into integration with `git merge --no-ff`.
 - [ ] Run `scripts/refactor_gate.sh` in integration.
 - [ ] Record child hash, integration hash, verification, and next slice.
@@ -208,14 +254,24 @@ workers' changes and must not revert unrelated edits.
 
 ## Completion record
 
-- File worker commit:
-- Path worker commit:
+- File worker commit: `1ac1e3e` (`Refactor CLI file attachment helpers`).
+- Path worker commit: `1069fb1` (`Refactor CLI path attachment helpers`).
 - Active child worker merges:
-- Main facade commit:
-- Child verification commit:
+  - `8579ebb` (`Merge CLI file attachment helpers worker`).
+  - `d964a23` (`Merge CLI path attachment helpers worker`).
+- Main facade commit: `3595bdc` (`Refactor CLI attachments facade`).
+- Child verification commit: this record update, committed after the child gate.
 - Integration merge:
 - Integration record:
 - Verification evidence:
+  - Combined focused command: `uv run --extra dev pytest tests/test_cli/test_attachment_files_boundary.py tests/test_cli/test_attachment_paths_boundary.py tests/test_cli/test_attachments_facade_boundary.py tests/test_cli/test_chat_file_command.py tests/test_cli/test_chat_path_command.py tests/test_cli/test_chat_input_builders_boundary.py tests/test_cli/test_agent_cmd.py tests/test_agent_cmd_no_key.py -q`
+    -> `96 passed in 0.76s`.
+  - Touched-file ruff: `All checks passed!`.
+  - Touched-file mypy: `Success: no issues found in 3 source files`.
+  - Child full `scripts/refactor_gate.sh`: ruff passed; mypy passed with no
+    issues in 568 source files; whitespace clean; pytest `2752 passed, 8
+    skipped, 2 warnings in 55.27s`; gateway smoke start/status/stop/status
+    passed.
 - Cleanup evidence:
 - Residual risk:
 - Next recommended slice:

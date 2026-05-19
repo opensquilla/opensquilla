@@ -72,6 +72,170 @@ def _build_envelope_result(
     )
 
 
+async def preflight_tool_call(
+    *,
+    registry: ToolRegistry,
+    ctx: ToolContext | None,
+    tool_call: ToolCall,
+    known_skill_names: set[str] | None = None,
+) -> ToolResult | None:
+    """Run the policy-check gate for a tool call.
+
+    Returns a ``ToolResult`` envelope (with ``is_error=True``) when any
+    check rejects the call; returns ``None`` when the call passes every
+    check and the caller may dispatch to the registered handler.
+
+    Checks, in order:
+
+    1. Ingress-path injection guard (origin trace inside ``<untrusted>``).
+    2. Registry lookup, including skill-name-mismatch detection.
+    3. ``owner_only`` rejection for non-owner contexts.
+    4. ``denied_tools`` rejection.
+    5. ``allowed_tools`` strict allowlist.
+    6. Channel permission matrix (operator/user role).
+
+    This function is the single source of truth for tool policy. It is
+    shared by :func:`build_tool_handler` and by callers that need to
+    short-circuit on policy before dispatch (e.g. streaming tool
+    interceptors that bypass the regular handler).
+    """
+
+    # Ingress-path injection guard:
+    # if the tool-call origin trace lies inside an <untrusted> block,
+    # refuse immediately with a structured JSON payload.
+    origin = tool_call.origin_trace
+    if origin:
+        reason = extract_tool_call_refusal_reason(origin)
+        if reason == REFUSAL_REASON_TOOL_CALL_IN_UNTRUSTED:
+            log.warning(
+                "dispatch.injection_refused",
+                tool=tool_call.tool_name,
+                reason=reason,
+                tool_use_id=tool_call.tool_use_id,
+                agent_id=ctx.agent_id if ctx else None,
+                session_key=ctx.session_key if ctx else None,
+            )
+            return _build_envelope_result(
+                tool_call,
+                exc=ValueError("dispatch injection refused"),
+                policy_denial=True,
+                error_class_override="InjectionRefused",
+                user_message_override=str(reason),
+            )
+
+    registered = registry.get(tool_call.tool_name)
+    if registered is None:
+        if tool_call.tool_name in (known_skill_names or set()):
+            skill_name = tool_call.tool_name
+            user_message = (
+                f"{skill_name} is a skill, not a tool. Do not call skill names as tools. "
+                f'Use skill_view(name="{skill_name}") to read the skill instructions, '
+                "then continue using only tools listed in Available Tools."
+            )
+            return _build_envelope_result(
+                tool_call,
+                exc=ValueError("skill call mismatch"),
+                policy_denial=True,
+                error_class_override="UnsupportedSurface",
+                user_message_override=user_message,
+            )
+        return _build_envelope_result(
+            tool_call,
+            exc=KeyError(tool_call.tool_name),
+            policy_denial=True,
+            error_class_override="ToolNotFound",
+            user_message_override=f"Tool not found: {tool_call.tool_name}",
+        )
+
+    # Defense-in-depth: reject owner_only tools if context says non-owner
+    if ctx and registered.spec.owner_only and not ctx.is_owner:
+        log.warning(
+            "dispatch.defense_in_depth_block",
+            tool=tool_call.tool_name,
+            reason="owner_only",
+            tool_use_id=tool_call.tool_use_id,
+            agent_id=ctx.agent_id if ctx else None,
+            session_key=ctx.session_key if ctx else None,
+        )
+        return _build_envelope_result(
+            tool_call,
+            exc=PermissionError("owner-only tool"),
+            policy_denial=True,
+            error_class_override="OwnerOnly",
+            user_message_override=f"Tool '{tool_call.tool_name}' restricted to owner.",
+        )
+
+    # Defense-in-depth: reject denied tools
+    if ctx and tool_call.tool_name in ctx.denied_tools:
+        log.warning(
+            "dispatch.defense_in_depth_block",
+            tool=tool_call.tool_name,
+            reason="denied",
+            tool_use_id=tool_call.tool_use_id,
+            agent_id=ctx.agent_id if ctx else None,
+            session_key=ctx.session_key if ctx else None,
+        )
+        return _build_envelope_result(
+            tool_call,
+            exc=PermissionError("tool blocked"),
+            policy_denial=True,
+            error_class_override="PolicyDenied",
+            user_message_override=(
+                f"Tool '{tool_call.tool_name}' not available in this context."
+            ),
+        )
+
+    if (
+        ctx
+        and ctx.allowed_tools is not None
+        and tool_call.tool_name not in ctx.allowed_tools
+    ):
+        log.warning(
+            "dispatch.defense_in_depth_block",
+            tool=tool_call.tool_name,
+            reason="not_allowed",
+            tool_use_id=tool_call.tool_use_id,
+            agent_id=ctx.agent_id if ctx else None,
+            session_key=ctx.session_key if ctx else None,
+        )
+        return _build_envelope_result(
+            tool_call,
+            exc=PermissionError("tool blocked"),
+            policy_denial=True,
+            error_class_override="PolicyDenied",
+            user_message_override=(
+                f"Tool '{tool_call.tool_name}' not available in this context."
+            ),
+        )
+
+    if ctx and ctx.caller_kind is CallerKind.CHANNEL:
+        principal = Principal(
+            role="operator" if ctx.is_owner else "user",
+            channel_id=ctx.session_key,
+        )
+        decision = is_tool_allowed(tool_call.tool_name, "dm", principal)
+        if not decision.allowed:
+            log.warning(
+                "dispatch.permission_matrix_block",
+                tool=tool_call.tool_name,
+                reason=decision.reason,
+                tool_use_id=tool_call.tool_use_id,
+                agent_id=ctx.agent_id if ctx else None,
+                session_key=ctx.session_key if ctx else None,
+            )
+            return _build_envelope_result(
+                tool_call,
+                exc=PermissionError("tool denied"),
+                policy_denial=True,
+                error_class_override="UnsupportedSurface",
+                user_message_override=(
+                    f"Tool '{tool_call.tool_name}' denied: {decision.reason}."
+                ),
+            )
+
+    return None
+
+
 def build_tool_handler(
     registry: ToolRegistry,
     ctx: ToolContext | None = None,
@@ -81,148 +245,27 @@ def build_tool_handler(
     """Build an async tool handler function from a ToolRegistry.
 
     The returned handler:
-    1. Looks up the tool by name in the registry
-    2. Defense-in-depth: rejects owner_only tools for non-owner ctx
-    3. Defense-in-depth: rejects tools in ctx.denied_tools
-    4. Dispatches to the registered handler
-    5. Wraps results and errors into ToolResult
+    1. Runs :func:`preflight_tool_call` to enforce policy (injection
+       guard, registry lookup, owner/denied/allowed/channel matrix).
+    2. Dispatches to the registered handler if preflight passes.
+    3. Wraps results and errors into a :class:`ToolResult`.
     """
 
     async def _handler(tool_call: ToolCall) -> ToolResult:
         effective_ctx = current_tool_context.get() or ctx
 
-        # Ingress-path injection guard:
-        # if the tool-call origin trace lies inside an <untrusted> block,
-        # refuse immediately with a structured JSON payload.
-        origin = tool_call.origin_trace
-        if origin:
-            reason = extract_tool_call_refusal_reason(origin)
-            if reason == REFUSAL_REASON_TOOL_CALL_IN_UNTRUSTED:
-                log.warning(
-                    "dispatch.injection_refused",
-                    tool=tool_call.tool_name,
-                    reason=reason,
-                    tool_use_id=tool_call.tool_use_id,
-                    agent_id=effective_ctx.agent_id if effective_ctx else None,
-                    session_key=effective_ctx.session_key if effective_ctx else None,
-                )
-                return _build_envelope_result(
-                    tool_call,
-                    exc=ValueError("dispatch injection refused"),
-                    policy_denial=True,
-                    error_class_override="InjectionRefused",
-                    user_message_override=str(reason),
-                )
+        preflight = await preflight_tool_call(
+            registry=registry,
+            ctx=effective_ctx,
+            tool_call=tool_call,
+            known_skill_names=known_skill_names,
+        )
+        if preflight is not None:
+            return preflight
 
+        # preflight returned None ⇒ tool is registered and policy allows it.
         registered = registry.get(tool_call.tool_name)
-        if registered is None:
-            if tool_call.tool_name in (known_skill_names or set()):
-                skill_name = tool_call.tool_name
-                user_message = (
-                    f"{skill_name} is a skill, not a tool. Do not call skill names as tools. "
-                    f'Use skill_view(name="{skill_name}") to read the skill instructions, '
-                    "then continue using only tools listed in Available Tools."
-                )
-                return _build_envelope_result(
-                    tool_call,
-                    exc=ValueError("skill call mismatch"),
-                    policy_denial=True,
-                    error_class_override="UnsupportedSurface",
-                    user_message_override=user_message,
-                )
-            return _build_envelope_result(
-                tool_call,
-                exc=KeyError(tool_call.tool_name),
-                policy_denial=True,
-                error_class_override="ToolNotFound",
-                user_message_override=f"Tool not found: {tool_call.tool_name}",
-            )
-
-        # Defense-in-depth: reject owner_only tools if context says non-owner
-        if effective_ctx and registered.spec.owner_only and not effective_ctx.is_owner:
-            log.warning(
-                "dispatch.defense_in_depth_block",
-                tool=tool_call.tool_name,
-                reason="owner_only",
-                tool_use_id=tool_call.tool_use_id,
-                agent_id=effective_ctx.agent_id if effective_ctx else None,
-                session_key=effective_ctx.session_key if effective_ctx else None,
-            )
-            return _build_envelope_result(
-                tool_call,
-                exc=PermissionError("owner-only tool"),
-                policy_denial=True,
-                error_class_override="OwnerOnly",
-                user_message_override=f"Tool '{tool_call.tool_name}' restricted to owner.",
-            )
-
-        # Defense-in-depth: reject denied tools
-        if effective_ctx and tool_call.tool_name in effective_ctx.denied_tools:
-            log.warning(
-                "dispatch.defense_in_depth_block",
-                tool=tool_call.tool_name,
-                reason="denied",
-                tool_use_id=tool_call.tool_use_id,
-                agent_id=effective_ctx.agent_id if effective_ctx else None,
-                session_key=effective_ctx.session_key if effective_ctx else None,
-            )
-            return _build_envelope_result(
-                tool_call,
-                exc=PermissionError("tool blocked"),
-                policy_denial=True,
-                error_class_override="PolicyDenied",
-                user_message_override=(
-                    f"Tool '{tool_call.tool_name}' not available in this context."
-                ),
-            )
-
-        if (
-            effective_ctx
-            and effective_ctx.allowed_tools is not None
-            and tool_call.tool_name not in effective_ctx.allowed_tools
-        ):
-            log.warning(
-                "dispatch.defense_in_depth_block",
-                tool=tool_call.tool_name,
-                reason="not_allowed",
-                tool_use_id=tool_call.tool_use_id,
-                agent_id=effective_ctx.agent_id if effective_ctx else None,
-                session_key=effective_ctx.session_key if effective_ctx else None,
-            )
-            return _build_envelope_result(
-                tool_call,
-                exc=PermissionError("tool blocked"),
-                policy_denial=True,
-                error_class_override="PolicyDenied",
-                user_message_override=(
-                    f"Tool '{tool_call.tool_name}' not available in this context."
-                ),
-            )
-
-        if effective_ctx and effective_ctx.caller_kind is CallerKind.CHANNEL:
-            principal = Principal(
-                role="operator" if effective_ctx.is_owner else "user",
-                channel_id=effective_ctx.session_key,
-            )
-            decision = is_tool_allowed(tool_call.tool_name, "dm", principal)
-            if not decision.allowed:
-                log.warning(
-                    "dispatch.permission_matrix_block",
-                    tool=tool_call.tool_name,
-                    reason=decision.reason,
-                    tool_use_id=tool_call.tool_use_id,
-                    agent_id=effective_ctx.agent_id if effective_ctx else None,
-                    session_key=effective_ctx.session_key if effective_ctx else None,
-                )
-                return _build_envelope_result(
-                    tool_call,
-                    exc=PermissionError("tool denied"),
-                    policy_denial=True,
-                    error_class_override="UnsupportedSurface",
-                    user_message_override=(
-                        f"Tool '{tool_call.tool_name}' denied: {decision.reason}."
-                    ),
-                )
+        assert registered is not None  # preflight guarantees this
 
         # Dispatch to handler — set request-scoped context for tools that need agent_id
         token = current_tool_context.set(effective_ctx)

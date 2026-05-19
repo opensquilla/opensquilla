@@ -33,6 +33,15 @@ async def run_tool_call_step(
     a one-shot tool-call instruction when ``tool_invoker`` is None.
     """
 
+    # Defence in depth: the parser already cross-validates this, but
+    # repeat the check at runtime so a programmatically constructed
+    # ``MetaStep`` cannot bypass per-step tool gating.
+    if step.tool_allowlist and step.tool not in step.tool_allowlist:
+        raise RuntimeError(
+            f"step {step.id!r}: tool {step.tool!r} not in "
+            f"step.tool_allowlist {list(step.tool_allowlist)!r}",
+        )
+
     rendered_args = render_with_args(step.tool_args, inputs=inputs, outputs=outputs)
 
     if tool_invoker is None:

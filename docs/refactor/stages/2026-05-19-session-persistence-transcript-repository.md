@@ -11,7 +11,7 @@
 - Date: 2026-05-19
 - Integration branch: `codex/refactor-architecture`
 - Child branch: `codex/refactor-session-persistence-transcript-repository`
-- Child worktree: `/Users/cwan0785/opensquilla-refactor-agent-session`
+- Child worktree: `../opensquilla-refactor-agent-session`
 - Owner: Codex refactor worker
 
 ## Goal
@@ -53,7 +53,7 @@ storage-routing decisions for this boundary.
 
 - `superpowers:using-git-worktrees`:
   - Evidence: existing child worktree verified at
-    `/Users/cwan0785/opensquilla-refactor-agent-session` on branch
+    `../opensquilla-refactor-agent-session` on branch
     `codex/refactor-session-persistence-transcript-repository`.
 - `superpowers:writing-plans`:
   - Evidence: this stage record documents the implementation plan before code
@@ -146,7 +146,7 @@ storage-routing decisions for this boundary.
       existing feature coverage.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
@@ -187,7 +187,7 @@ Result: `scripts/refactor_gate.sh` passed. Full gate evidence:
 
 ## Completion record
 
-- Child commit: pending
+- Child commit: `26842c4866ac10f04178106771b48ff1e238d460`
 - Integration merge: not performed by this worker
 - Verification evidence:
   - RED boundary test failed before implementation because

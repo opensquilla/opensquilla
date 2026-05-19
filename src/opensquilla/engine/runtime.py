@@ -2679,6 +2679,26 @@ class TurnRunner:
         from opensquilla.tools.policy import apply_tool_policy_from_config
         from opensquilla.tools.registry import filter_by_profile, resolve_profile
 
+        # Load skills once and surface meta_invoke when any kind="meta"
+        # skill is registered. meta_invoke is exposed_by_default=False to
+        # keep the catalogue clean in deployments without meta-skills;
+        # we conditionally lift that gate here BEFORE apply_tool_policy_from_config
+        # so the policy clone (dataclasses.replace) inherits the
+        # surfaced_tools set reference and the visibility check at
+        # to_tool_definitions sees the addition.
+        loaded_skills: list[Any] = []
+        if self._skill_loader is not None:
+            try:
+                loaded_skills = list(self._skill_loader.load_all())
+            except Exception:
+                loaded_skills = []
+        if ctx is not None and loaded_skills and any(
+            getattr(s, "kind", "skill") == "meta" for s in loaded_skills
+        ):
+            if ctx.surfaced_tools is None:
+                ctx.surfaced_tools = set()
+            ctx.surfaced_tools.add("meta_invoke")
+
         if ctx is not None:
             ctx = apply_tool_policy_from_config(
                 ctx,
@@ -2709,16 +2729,11 @@ class TurnRunner:
         )
         if metadata is not None:
             metadata["tool_profile"] = profile.value
-        known_skill_names: set[str] = set()
-        if self._skill_loader is not None:
-            try:
-                known_skill_names = {
-                    skill.name
-                    for skill in self._skill_loader.load_all()
-                    if not getattr(skill, "disable_model_invocation", False)
-                }
-            except Exception:
-                known_skill_names = set()
+        known_skill_names = {
+            skill.name
+            for skill in loaded_skills
+            if not getattr(skill, "disable_model_invocation", False)
+        }
         tool_handler = build_tool_handler(
             self._tool_registry,
             ctx,

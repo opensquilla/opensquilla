@@ -134,7 +134,7 @@
 - [x] Merge child into integration with `git merge --no-ff`.
 - [x] Run `scripts/refactor_gate.sh` in integration.
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`, run `git worktree prune`, and verify cleanup.
+- [x] Remove `../opensquilla-refactor-active`, run `git worktree prune`, and verify cleanup.
 
 ## Child gate
 
@@ -157,6 +157,7 @@
 
 - Child commit: `fb27727` (`Isolate extension-service boot wiring for coarse refactor progress`).
 - Integration merge: `2e3ddf4` (`Merge extension services boundary batch`).
+- Evidence commit: `4339152` (`Record extension-services integration gate evidence`).
 - Verification evidence:
   - RED: `uv run --extra dev pytest tests/test_extension_services/test_gateway_runtime.py -q` failed before implementation with missing `opensquilla.extension_services` and missing Gateway delegation.
   - GREEN: `uv run --extra dev pytest tests/test_extension_services/test_gateway_runtime.py -q` -> `3 passed in 2.47s`; after team review gap closure, extension-services boundary/fail-open tests -> `4 passed in 0.34s`.
@@ -166,5 +167,7 @@
   - Team review: `omx team 2:executor ...` -> 3 tasks completed, 0 failed; worker-1 independently ran focused checks (`107 passed`) and child `scripts/refactor_gate.sh` (`2827 passed, 8 skipped`) and found no blocking compatibility issue. The one noted gap (skills/scheduler/search fail-open not individually failure-injected) was closed with `test_build_extension_services_runtime_keeps_fail_open_boundaries_independent`.
   - Child gate: `scripts/refactor_gate.sh` -> ruff pass, mypy pass on 579 source files, whitespace pass, pytest `2827 passed, 8 skipped`, gateway smoke start/status/stop/status pass, `Refactor gate complete.`
   - Integration gate after merge `2e3ddf4`: `scripts/refactor_gate.sh` -> ruff pass, mypy pass on 579 source files, whitespace pass, pytest `2829 passed, 6 skipped`, gateway smoke start/status/stop/status pass, `Refactor gate complete.`
-- Residual risk: no known G002 blocker after child gate, team review, merge, and integration gate. Cleanup and Ultragoal checkpoint remain leader-owned follow-up steps.
+  - Cleanup: `git worktree remove ../opensquilla-refactor-active`; `git worktree prune`; `git worktree list` no longer lists `../opensquilla-refactor-active`.
+  - Post-cleanup integration gate: `scripts/refactor_gate.sh` -> ruff pass, mypy pass on 579 source files, whitespace pass, pytest `2829 passed, 6 skipped`, gateway smoke start/status/stop/status pass, `Refactor gate complete.`
+- Residual risk: no known G002 blocker after child gate, team review, merge, integration gate, and active child worktree cleanup. Ultragoal checkpoint remains leader-owned follow-up step.
 - Next recommended slice: G003 channels and external ingress batch.

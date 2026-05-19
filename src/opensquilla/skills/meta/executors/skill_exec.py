@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import json as _json
 import shlex
+import sys
 from pathlib import Path as _Path
 from typing import Any
 
@@ -194,6 +195,16 @@ async def run_skill_exec_step(
     argv = shlex.split(command_str) + rendered_args
     if not argv:
         raise RuntimeError(f"step {step.id!r}: empty argv after rendering")
+
+    # Resolve bare interpreter names ("python", "python3") to the current
+    # process's sys.executable so wrapped-CLI skills authored as
+    # `command: python <script>` work regardless of whether the parent
+    # process's PATH includes a "python" symlink (e.g. uv-managed venvs
+    # ship only "python" inside .venv/bin but the gateway's runtime PATH
+    # may not surface it). Absolute paths and other commands pass through
+    # unchanged so authors can pin a specific interpreter when needed.
+    if argv[0] in ("python", "python3"):
+        argv[0] = sys.executable
 
     timeout_raw = entrypoint.get("timeout", 60.0)
     try:

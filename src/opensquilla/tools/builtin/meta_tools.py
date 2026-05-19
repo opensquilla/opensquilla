@@ -7,6 +7,14 @@ happens inside ``Agent._run_one_streaming``, which intercepts
 ``tc.tool_name == 'meta_invoke'`` before the standard ``_execute_tool``
 path. If this handler ever fires, something is misconfigured.
 
+Visibility: ``exposed_by_default=False``. ``meta_invoke`` is
+conditionally surfaced by ``SkillInjector`` (via
+``ToolContext.surfaced_tools``) when at least one ``kind=meta`` skill
+is present in ``<available_skills>``. Until Task 4 (SkillInjector)
+wires this up, the tool will NOT be visible to the LLM at all — that
+is intentional, as exposing the tool with no meta-skills in the
+catalogue would invite hallucinated calls.
+
 See ``docs/superpowers/specs/2026-05-19-meta-invoke-soft-activation-design.md``.
 """
 
@@ -39,6 +47,7 @@ from opensquilla.tools.registry import tool
         },
     },
     required=["name"],
+    exposed_by_default=False,
 )
 async def meta_invoke(name: str) -> str:  # noqa: ARG001 — name unused in guard
     raise RuntimeError(

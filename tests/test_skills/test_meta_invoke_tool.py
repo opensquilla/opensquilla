@@ -37,6 +37,19 @@ def test_meta_invoke_spec_shape() -> None:
     assert "playbook" in desc or "multi-step" in desc
 
 
+def test_meta_invoke_not_exposed_by_default() -> None:
+    """meta_invoke must not appear in default tool catalogues. It is
+    conditionally surfaced by SkillInjector when meta-skills are present."""
+    from opensquilla.tools.builtin import meta_tools  # noqa: F401
+    from opensquilla.tools.registry import get_default_registry
+
+    registered = get_default_registry().get("meta_invoke")
+    assert registered is not None  # exists in registry
+    assert registered.spec.exposed_by_default is False, (
+        "meta_invoke should be conditionally surfaced, not always exposed"
+    )
+
+
 @pytest.mark.asyncio
 async def test_meta_invoke_handler_raises_routing_error() -> None:
     """If the standard dispatcher ever invokes the meta_invoke handler,

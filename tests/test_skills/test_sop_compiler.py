@@ -7,6 +7,8 @@ plus integration and acceptance tests.
 
 from __future__ import annotations
 
+import pytest
+
 from opensquilla.skills.meta.parser import MetaPlanError
 
 # ---------------------------------------------------------------------------
@@ -165,3 +167,135 @@ def test_lex_returns_source_spans_with_correct_line_numbers() -> None:
     assert heading.span.start_line == 3
     invocation = next(t for t in tokens if t.type == TokenType.INVOCATION_LINE)
     assert invocation.span.start_line == 4
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: Parser
+# ---------------------------------------------------------------------------
+
+
+def test_parse_single_sequential_phase() -> None:
+    from opensquilla.skills.meta.sop_compiler import _lex, _parse
+
+    body = (
+        "## Phase 1: Search\n"
+        "Run `multi-search-engine`. Save as `s`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    assert len(doc.phases) == 1
+    phase = doc.phases[0]
+    assert phase.index == 1
+    assert phase.title == "Search"
+    assert phase.annotations == {}
+    assert len(phase.invocations) == 1
+    inv = phase.invocations[0]
+    assert inv.skill_name == "multi-search-engine"
+    assert inv.kind_hint is None
+    assert inv.step_id_template == "s"
+    assert inv.with_args == {}
+
+
+def test_parse_invoke_with_kind_and_args() -> None:
+    from opensquilla.skills.meta.sop_compiler import _lex, _parse
+
+    body = (
+        "## Phase 1: Outline\n"
+        "Invoke `paper-outline-author` as agent with:\n"
+        "- topic: `{{ inputs.user_message }}`\n"
+        "- max_words: 200\n"
+        "Save as `outline`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    inv = doc.phases[0].invocations[0]
+    assert inv.skill_name == "paper-outline-author"
+    assert inv.kind_hint == "agent"
+    assert inv.with_args["topic"] == "`{{ inputs.user_message }}`"
+    assert inv.with_args["max_words"] == "200"
+
+
+def test_parse_parallel_annotation() -> None:
+    from opensquilla.skills.meta.sop_compiler import _lex, _parse
+
+    body = (
+        "## Phase 1: First\n"
+        "Run `a`. Save as `s1`.\n"
+        "## Phase 2: Foundation [parallel]\n"
+        "Run `b`. Save as `s2`.\n"
+        "Run `c`. Save as `s3`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    p2 = doc.phases[1]
+    assert "parallel" in p2.annotations
+    assert len(p2.invocations) == 2
+
+
+def test_parse_for_each_annotation_with_items() -> None:
+    from opensquilla.skills.meta.sop_compiler import _lex, _parse
+
+    body = (
+        "## Phase 5: Drafting [parallel for_each: section]\n"
+        "```yaml for_each\n"
+        "section:\n"
+        "  - {id: a, name: A}\n"
+        "  - {id: b, name: B, extra: X}\n"
+        "```\n"
+        "Invoke `paper-section-author` with:\n"
+        "- section: `{{ section.name }}`\n"
+        "Save as `{{ section.id }}`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    p = doc.phases[0]
+    assert p.annotations.get("parallel for_each") == "section"
+    assert p.for_each_var == "section"
+    assert len(p.for_each_items) == 2
+    assert p.for_each_items[0] == {"id": "a", "name": "A"}
+    assert p.for_each_items[1] == {"id": "b", "name": "B", "extra": "X"}
+
+
+def test_parse_depends_on_annotation_single() -> None:
+    from opensquilla.skills.meta.sop_compiler import _lex, _parse
+
+    body = (
+        "## Phase 1: A\n"
+        "Run `s`. Save as `a`.\n"
+        "## Phase 2: B [depends_on: a]\n"
+        "Run `s`. Save as `b`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    p2 = doc.phases[1]
+    assert p2.annotations.get("depends_on") == "a"
+
+
+def test_parse_when_annotation_rejected() -> None:
+    from opensquilla.skills.meta.sop_compiler import SOPCompileError, _lex, _parse
+
+    body = (
+        "## Phase 1: A [when: outputs.x == 'yes']\n"
+        "Run `s`. Save as `a`.\n"
+    )
+    with pytest.raises(SOPCompileError, match="not in MVP scope"):
+        _parse(list(_lex(body)), skill_name="meta-x")
+
+
+def test_parse_missing_save_as_rejected() -> None:
+    from opensquilla.skills.meta.sop_compiler import SOPCompileError, _lex, _parse
+
+    body = (
+        "## Phase 1: A\n"
+        "Run `s`.\n"
+        "## Phase 2: B\n"
+        "Run `t`. Save as `b`.\n"
+    )
+    with pytest.raises(SOPCompileError, match="Save as"):
+        _parse(list(_lex(body)), skill_name="meta-x")
+
+
+def test_parse_stdin_prose_rejected() -> None:
+    from opensquilla.skills.meta.sop_compiler import SOPCompileError, _lex, _parse
+
+    body = (
+        "## Phase 1: Refbib\n"
+        "Run `paper-refbib-stub`. Pipe outputs.search to stdin. Save as `r`.\n"
+    )
+    with pytest.raises(SOPCompileError, match="stdin"):
+        _parse(list(_lex(body)), skill_name="meta-x")

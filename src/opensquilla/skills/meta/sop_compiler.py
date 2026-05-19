@@ -25,6 +25,8 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+import yaml
+
 from opensquilla.skills.meta.parser import MetaPlanError
 
 
@@ -248,3 +250,401 @@ def _lex(body: str) -> Iterator[Token]:
             ),
         )
         i += 1
+
+
+@dataclass(frozen=True)
+class SOPInvocation:
+    """One ``Run`` / ``Invoke`` block inside a phase."""
+
+    skill_name: str
+    kind_hint: str | None  # 'agent' | 'skill_exec' | None
+    with_args: dict[str, str]
+    step_id_template: str
+    span: SourceSpan
+
+
+@dataclass(frozen=True)
+class SOPPhase:
+    """A `## Phase N: title [annotations]` block plus its body."""
+
+    index: int
+    title: str
+    annotations: dict[str, str]
+    invocations: tuple[SOPInvocation, ...]
+    for_each_var: str | None = None
+    for_each_items: tuple[dict[str, str], ...] = ()
+    span: SourceSpan | None = None
+
+
+@dataclass(frozen=True)
+class SOPDocument:
+    phases: tuple[SOPPhase, ...]
+
+
+_INVOCATION_DETAILED_RE = re.compile(
+    r"^(?P<verb>Run|Invoke)\s+`(?P<skill>[A-Za-z0-9_\-]+)`"
+    r"(?:\s+as\s+(?P<kind>[A-Za-z_]+))?"
+    r"(?:\s+with\s*:)?"
+    r"\.?\s*$",
+)
+# Combined single-line form: ``Run `skill`. Save as `id`.``
+_INVOCATION_COMBINED_RE = re.compile(
+    r"^(?P<verb>Run|Invoke)\s+`(?P<skill>[A-Za-z0-9_\-]+)`"
+    r"(?:\s+as\s+(?P<kind>[A-Za-z_]+))?"
+    r"\s*\.\s+Save\s+as\s+`(?P<id>[^`]+)`\s*\.?\s*$",
+)
+_STDIN_PROSE_RE = re.compile(r"\bPipe\b.*\bto\s+stdin\b", re.IGNORECASE)
+_ASSEMBLE_PROSE_RE = re.compile(r"\bAssemble\b.*\bfrom\s+template\b", re.IGNORECASE)
+_SUPPORTED_KIND_HINTS = frozenset({"agent", "skill_exec"})
+_ALLOWED_ANNOTATIONS = frozenset({"parallel", "parallel for_each", "depends_on"})
+_REJECTED_ANNOTATIONS = frozenset({"when", "force_skip", "route"})
+
+
+def _parse_annotations(
+    raw: str, *, skill_name: str, phase_index: int, span: SourceSpan,
+) -> dict[str, str]:
+    """Parse ``[a; b: c; d]`` annotation block into a dict.
+
+    Reject unsupported annotations explicitly so authors get a clear error.
+    """
+
+    result: dict[str, str] = {}
+    if not raw:
+        return result
+    for raw_item in raw.split(";"):
+        item = raw_item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            key, _, value = item.partition(":")
+            key = key.strip()
+            value = value.strip()
+        else:
+            key, value = item, ""
+        if key in _REJECTED_ANNOTATIONS:
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase_index,
+                span=span,
+                reason=f"annotation {key!r} not in MVP scope (deferred to a future phase)",
+            )
+        if key not in _ALLOWED_ANNOTATIONS:
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase_index,
+                span=span,
+                reason=f"unknown annotation {key!r}; allowed: {sorted(_ALLOWED_ANNOTATIONS)}",
+            )
+        result[key] = value
+    return result
+
+
+def _parse_for_each_block(
+    text: str,
+    *,
+    skill_name: str,
+    phase_index: int,
+    span: SourceSpan,
+    expected_var: str,
+) -> tuple[str, tuple[dict[str, str], ...]]:
+    """Load ``yaml for_each`` block and validate item shape."""
+
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise SOPCompileError(
+            skill_name=skill_name,
+            phase_index=phase_index,
+            span=span,
+            reason=f"for_each YAML invalid: {exc}",
+        ) from exc
+    if not isinstance(data, dict) or len(data) != 1:
+        raise SOPCompileError(
+            skill_name=skill_name,
+            phase_index=phase_index,
+            span=span,
+            reason="for_each block must have exactly one top-level key (the loop variable)",
+        )
+    var_name, items = next(iter(data.items()))
+    if var_name != expected_var:
+        raise SOPCompileError(
+            skill_name=skill_name,
+            phase_index=phase_index,
+            span=span,
+            reason=(
+                f"for_each block key {var_name!r} does not match "
+                f"annotation variable {expected_var!r}"
+            ),
+        )
+    if not isinstance(items, list) or not items:
+        raise SOPCompileError(
+            skill_name=skill_name,
+            phase_index=phase_index,
+            span=span,
+            reason=f"for_each {var_name!r} must be a non-empty list",
+        )
+    seen_ids: set[str] = set()
+    normalised: list[dict[str, str]] = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase_index,
+                span=span,
+                reason=f"for_each item[{idx}] must be a mapping, got {type(item).__name__}",
+            )
+        if "id" not in item or not isinstance(item["id"], str):
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase_index,
+                span=span,
+                reason=f"for_each item[{idx}] missing required 'id' field",
+            )
+        if item["id"] in seen_ids:
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase_index,
+                span=span,
+                reason=f"for_each duplicate id {item['id']!r} at item[{idx}]",
+            )
+        seen_ids.add(item["id"])
+        normalised.append({k: str(v) for k, v in item.items()})
+    return var_name, tuple(normalised)
+
+
+def _parse(tokens: list[Token], *, skill_name: str) -> SOPDocument:
+    """Group lexer tokens into ``SOPPhase`` objects.
+
+    Each ``Run``/``Invoke`` line starts an invocation that consumes
+    subsequent ``WITH_BULLET`` lines until ``Save as``.
+    """
+
+    phases: list[SOPPhase] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.type != TokenType.PHASE_HEADING:
+            i += 1
+            continue
+
+        phase_index = int(tok.payload["num"])
+        title = tok.payload["title"]
+        annotations = _parse_annotations(
+            tok.payload["annotations"],
+            skill_name=skill_name,
+            phase_index=phase_index,
+            span=tok.span,
+        )
+        for_each_var: str | None = None
+        for_each_items: tuple[dict[str, str], ...] = ()
+        if "parallel for_each" in annotations:
+            for_each_var = annotations["parallel for_each"]
+            if not for_each_var:
+                raise SOPCompileError(
+                    skill_name=skill_name,
+                    phase_index=phase_index,
+                    span=tok.span,
+                    reason="parallel for_each missing variable name",
+                )
+
+        i += 1
+        # collect invocations + (optional) for_each yaml block
+        invocations: list[SOPInvocation] = []
+        current_skill: str | None = None
+        current_kind: str | None = None
+        current_with: dict[str, str] = {}
+        current_inv_span: SourceSpan | None = None
+        for_each_seen = False
+
+        while i < len(tokens) and tokens[i].type != TokenType.PHASE_HEADING:
+            t = tokens[i]
+            if t.type == TokenType.FENCED_YAML_FOR_EACH:
+                if for_each_var is None:
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase_index,
+                        span=t.span,
+                        reason=(
+                            "fenced 'yaml for_each' block without "
+                            "[parallel for_each: VAR] annotation"
+                        ),
+                    )
+                if for_each_seen:
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase_index,
+                        span=t.span,
+                        reason="multiple 'yaml for_each' blocks in one phase",
+                    )
+                _, items = _parse_for_each_block(
+                    t.span.excerpt,
+                    skill_name=skill_name,
+                    phase_index=phase_index,
+                    span=t.span,
+                    expected_var=for_each_var,
+                )
+                for_each_items = items
+                for_each_seen = True
+                i += 1
+                continue
+            if t.type == TokenType.INVOCATION_LINE:
+                if current_skill is not None:
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase_index,
+                        span=t.span,
+                        reason="new invocation started before previous one's `Save as` line",
+                    )
+                line = t.span.excerpt
+                # Reject stdin/assemble prose patterns explicitly.
+                if _STDIN_PROSE_RE.search(line):
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase_index,
+                        span=t.span,
+                        reason=(
+                            "step-level stdin not supported in MVP; "
+                            "declare it on the callee skill's entrypoint instead"
+                        ),
+                    )
+                if _ASSEMBLE_PROSE_RE.search(line):
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase_index,
+                        span=t.span,
+                        reason=(
+                            "step-level assemble not supported in MVP; "
+                            "declare it on the callee skill's entrypoint instead"
+                        ),
+                    )
+                combined = _INVOCATION_COMBINED_RE.match(line)
+                if combined is not None:
+                    kind = combined.group("kind")
+                    if kind is not None and kind not in _SUPPORTED_KIND_HINTS:
+                        raise SOPCompileError(
+                            skill_name=skill_name,
+                            phase_index=phase_index,
+                            span=t.span,
+                            reason=(
+                                f"unknown kind {kind!r}; must be one of "
+                                f"{sorted(_SUPPORTED_KIND_HINTS)}"
+                            ),
+                        )
+                    invocations.append(
+                        SOPInvocation(
+                            skill_name=combined.group("skill"),
+                            kind_hint=kind,
+                            with_args={},
+                            step_id_template=combined.group("id"),
+                            span=t.span,
+                        ),
+                    )
+                    i += 1
+                    continue
+                m = _INVOCATION_DETAILED_RE.match(line)
+                if not m:
+                    if line.lstrip().startswith(("Call tool", "Classify")):
+                        raise SOPCompileError(
+                            skill_name=skill_name,
+                            phase_index=phase_index,
+                            span=t.span,
+                            reason=(
+                                "Call tool/Classify patterns recognised but not "
+                                "implemented in v1; use Run/Invoke instead"
+                            ),
+                        )
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase_index,
+                        span=t.span,
+                        reason=f"invocation line does not match Run/Invoke grammar: {line!r}",
+                    )
+                current_skill = m.group("skill")
+                current_kind = m.group("kind")
+                if current_kind is not None and current_kind not in _SUPPORTED_KIND_HINTS:
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase_index,
+                        span=t.span,
+                        reason=(
+                            f"unknown kind {current_kind!r}; must be one of "
+                            f"{sorted(_SUPPORTED_KIND_HINTS)}"
+                        ),
+                    )
+                current_with = {}
+                current_inv_span = t.span
+                i += 1
+                continue
+            if t.type == TokenType.WITH_BULLET:
+                if current_skill is None:
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase_index,
+                        span=t.span,
+                        reason="with-bullet outside an invocation block",
+                    )
+                current_with[t.payload["key"]] = t.payload["value"]
+                i += 1
+                continue
+            if t.type == TokenType.SAVE_AS_LINE:
+                if current_skill is None:
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase_index,
+                        span=t.span,
+                        reason="`Save as` line outside an invocation block",
+                    )
+                assert current_inv_span is not None
+                invocations.append(
+                    SOPInvocation(
+                        skill_name=current_skill,
+                        kind_hint=current_kind,
+                        with_args=current_with,
+                        step_id_template=t.payload["id"],
+                        span=current_inv_span,
+                    ),
+                )
+                current_skill = None
+                current_kind = None
+                current_with = {}
+                current_inv_span = None
+                i += 1
+                continue
+            # BLANK / TEXT — skip
+            i += 1
+
+        if current_skill is not None:
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase_index,
+                span=current_inv_span,
+                reason="invocation missing `Save as` line",
+            )
+        if not invocations:
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase_index,
+                span=tok.span,
+                reason="phase contains no invocations",
+            )
+
+        phases.append(
+            SOPPhase(
+                index=phase_index,
+                title=title,
+                annotations=annotations,
+                invocations=tuple(invocations),
+                for_each_var=for_each_var,
+                for_each_items=for_each_items,
+                span=tok.span,
+            ),
+        )
+
+    if not phases:
+        raise SOPCompileError(
+            skill_name=skill_name,
+            phase_index=None,
+            span=None,
+            reason="no '## Phase N:' headings found in SOP body",
+        )
+    return SOPDocument(phases=tuple(phases))

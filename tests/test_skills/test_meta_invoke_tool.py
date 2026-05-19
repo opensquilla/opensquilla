@@ -319,3 +319,163 @@ async def test_run_one_streaming_unknown_meta_skill_returns_error_result(
     assert final.is_error is True
     assert final.terminates_turn is False
     assert "not a registered meta-skill" in final.content
+
+
+# ---------------------------------------------------------------------------
+# Task 6: Dispatch loop intercepts meta_invoke and terminates turn on success
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_intercepts_meta_invoke_and_terminates_turn(
+    tmp_path,
+) -> None:
+    """When the LLM emits tool_use(meta_invoke, ...), the dispatch loop
+    must intercept BEFORE the standard handler (which would raise
+    RuntimeError from the Task 1 guard) and call _run_one_streaming
+    inline. On success, terminates_turn=True must propagate to the
+    Agent's turn_yielded flag so the outer loop exits."""
+    from collections.abc import AsyncIterator
+
+    from opensquilla.engine.agent import Agent
+    from opensquilla.engine.types import (
+        AgentConfig,
+        DoneEvent,
+        ErrorEvent,
+        ToolResultEvent,
+    )
+    from opensquilla.provider.types import (
+        DoneEvent as ProviderDoneEvent,
+    )
+    from opensquilla.provider.types import (
+        ToolUseDeltaEvent as ProviderToolUseDelta,
+    )
+    from opensquilla.provider.types import (
+        ToolUseEndEvent as ProviderToolUseEnd,
+    )
+    from opensquilla.provider.types import (
+        ToolUseStartEvent as ProviderToolUseStart,
+    )
+    from opensquilla.skills.loader import SkillLoader
+    from opensquilla.tools.builtin import meta_tools  # noqa: F401 — registers meta_invoke
+    from opensquilla.tools.registry import get_default_registry
+    from opensquilla.tools.types import ToolContext
+
+    # Synthesize a tiny meta-skill (same trick as Task 5 happy path).
+    bundled = tmp_path / "skills" / "bundled"
+    bundled.mkdir(parents=True)
+    skill_dir = bundled / "meta-tiny"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-tiny\n"
+        "kind: meta\n"
+        "description: tiny meta-skill for dispatch test\n"
+        "triggers: [tiny-meta-trigger]\n"
+        "composition:\n"
+        "  steps:\n"
+        "    - id: c\n"
+        "      kind: llm_classify\n"
+        "      output_choices: [A, B]\n"
+        "      with: {text: \"x\"}\n"
+        "---\n"
+        "# meta-tiny\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    loader.load_all()
+
+    # Stub provider that emits ONE tool_use(meta_invoke, name="meta-tiny")
+    # then DoneEvent. If the dispatch loop ever lets the meta_invoke
+    # tool reach the standard handler, the registered guard raises
+    # RuntimeError and the turn ends with an error.
+    class _StubProvider:
+        provider_name = "stub"
+
+        async def chat(
+            self, messages, tools=None, config=None,
+        ) -> AsyncIterator:
+            yield ProviderToolUseStart(
+                tool_use_id="tu_1",
+                tool_name="meta_invoke",
+            )
+            yield ProviderToolUseDelta(
+                tool_use_id="tu_1",
+                json_fragment='{"name": "meta-tiny"}',
+            )
+            yield ProviderToolUseEnd(
+                tool_use_id="tu_1",
+                tool_name="meta_invoke",
+                arguments={"name": "meta-tiny"},
+            )
+            yield ProviderDoneEvent(stop_reason="tool_use")
+
+        async def list_models(self):
+            return []
+
+    registry = get_default_registry()
+    assert registry.get("meta_invoke") is not None
+
+    config = AgentConfig(
+        model_id="stub",
+        max_iterations=4,
+        system_prompt="",
+        metadata={"skill_loader": loader, "bootstrap_workspace_dir": str(tmp_path)},
+    )
+
+    agent = Agent(
+        provider=_StubProvider(),  # type: ignore[arg-type]
+        config=config,
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=registry,
+        tool_context=ToolContext(workspace_dir=str(tmp_path), is_owner=True),
+    )
+
+    # Override the llm_classify path
+    async def fake_llm_chat(_s: str, _u: str) -> str:
+        return "A"
+
+    agent._test_llm_chat_override = fake_llm_chat  # type: ignore[attr-defined]
+
+    # Drive the turn
+    events = []
+    async for ev in agent.run_turn("trigger meta-tiny somehow"):
+        events.append(ev)
+
+    # The Task 1 guard handler raises a RuntimeError that mentions
+    # "_run_one_streaming" or "intercept". If interception failed and
+    # the handler was hit, that error would surface in the
+    # ToolResultEvent emitted afterward. Search for it.
+    error_texts: list[str] = []
+    for e in events:
+        if isinstance(e, ToolResultEvent):
+            error_texts.append(e.result or "")
+        if isinstance(e, ErrorEvent):
+            error_texts.append(e.message or "")
+    flat = " | ".join(error_texts)
+    assert "_run_one_streaming" not in flat, (
+        f"Dispatch loop did NOT intercept meta_invoke — guard handler "
+        f"was reached. Events: {flat[:500]}"
+    )
+
+    # Turn must terminate cleanly with a DoneEvent (terminates_turn drives
+    # the outer-loop break, after which the agent emits DoneEvent).
+    assert any(isinstance(e, DoneEvent) for e in events), (
+        "Expected DoneEvent at end of turn"
+    )
+
+    # And critically — the ToolResultEvent for meta_invoke must show
+    # is_error=False (success path). If interception failed, the
+    # standard handler would have raised RuntimeError and the
+    # ToolResultEvent would carry is_error=True.
+    meta_invoke_results = [
+        e for e in events
+        if isinstance(e, ToolResultEvent) and e.tool_name == "meta_invoke"
+    ]
+    assert meta_invoke_results, "Expected at least one ToolResultEvent for meta_invoke"
+    assert all(not r.is_error for r in meta_invoke_results), (
+        f"meta_invoke ToolResultEvent must be success; got error contents: "
+        f"{[r.result for r in meta_invoke_results if r.is_error]}"
+    )

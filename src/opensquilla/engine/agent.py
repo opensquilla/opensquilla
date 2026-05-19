@@ -376,6 +376,7 @@ class Agent:
         turn_call_logger: TurnCallLogger | None = None,
         tool_result_summarizer_provider: LLMProvider | None = None,
         tool_registry: ToolRegistry | None = None,
+        tool_context: Any | None = None,
     ) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
@@ -388,6 +389,12 @@ class Agent:
         self._turn_call_logger = turn_call_logger
         self._tool_result_summarizer_provider = tool_result_summarizer_provider
         self._tool_registry: ToolRegistry | None = tool_registry
+        # Per-Agent tool_context fallback for streaming dispatch (e.g.,
+        # meta_invoke). Resolution order in the interceptor is:
+        #   current_tool_context.get() or self._tool_context or ToolContext()
+        # Production callers (runtime.py) may plumb the real ctx here as a
+        # follow-up; default is None (permissive MVP fallback).
+        self._tool_context: Any | None = tool_context
         self._pending_warnings: list[WarningEvent] = []
 
         self._state: AgentState = AgentState.IDLE
@@ -1778,7 +1785,43 @@ class Agent:
                     async for event in _collect_tool_tasks(task_to_tool_call):
                         yield event
 
+                # Lazy import — keeps the engine→tools module dependency
+                # tight at module load time and matches the pattern used by
+                # _run_one_streaming itself.
+                from opensquilla.tools.types import (  # noqa: PLC0415
+                    ToolContext,
+                    current_tool_context,
+                )
+
                 for tc in tool_calls:
+                    if tc.tool_name == "meta_invoke":
+                        # Mutex barrier: drain any in-flight safe batch
+                        # first so meta_invoke — which streams nested
+                        # events and may carry termination state — never
+                        # runs alongside other tools.
+                        async for event in _flush_safe_batch(safe_batch):
+                            yield event
+                        safe_batch = []
+                        # Resolve active tool context for the streaming
+                        # path. Mirrors _run_one_streaming's effective_ctx
+                        # resolution but adds a permissive MVP fallback to
+                        # ToolContext() so gates 1-2 still fire when
+                        # nothing has been plumbed in.
+                        active_ctx = (
+                            current_tool_context.get()
+                            or self._tool_context
+                            or ToolContext()
+                        )
+                        # Stream inline — forward nested events; capture
+                        # the final ToolResult into results_by_id so the
+                        # downstream emit-in-order block at line ~1796
+                        # finds it.
+                        async for ev in self._run_one_streaming(tc, active_ctx):
+                            if isinstance(ev, ToolResult):
+                                results_by_id[tc.tool_use_id] = ev
+                            else:
+                                yield ev
+                        continue
                     if tc.tool_name in _SAFE_TOOL_NAMES:
                         safe_batch.append(tc)
                     else:
@@ -1810,7 +1853,7 @@ class Agent:
                     )
                     while self._pending_warnings:
                         yield self._pending_warnings.pop(0)
-                    if self._is_turn_yield_result(result):
+                    if self._is_turn_yield_result(result) or result.terminates_turn:
                         turn_yielded = True
                     tool_result_blocks.append(
                         ContentBlockToolResult(

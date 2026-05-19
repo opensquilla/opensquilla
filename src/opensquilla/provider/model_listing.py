@@ -19,6 +19,17 @@ class ProviderModelRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderModelCatalog:
+    rows: tuple[ProviderModelRow, ...]
+
+    def filter(self, query: ProviderModelQuery) -> tuple[ProviderModelRow, ...]:
+        return tuple(row for row in self.rows if query.matches(row))
+
+    def count_provider(self, provider_id: str) -> int:
+        return sum(1 for row in self.rows if row.provider == provider_id)
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderModelQuery:
     provider: str | None = None
     capabilities: tuple[str, ...] = ()
@@ -51,20 +62,26 @@ async def list_provider_model_rows(
     provider_filter: str | None = None,
     capabilities_filter: list[str] | None = None,
 ) -> list[ProviderModelRow]:
-    if provider_selector is None:
-        return []
-
     try:
-        raw = await provider_selector.list_models()
+        catalog = await load_provider_model_catalog(provider_selector)
     except Exception:
         return []
-
-    rows = [_model_info_to_row(_model_info_payload(model)) for model in raw or []]
     effective_query = query or ProviderModelQuery.from_filters(
         provider_filter=provider_filter,
         capabilities_filter=capabilities_filter,
     )
-    return [row for row in rows if effective_query.matches(row)]
+    return list(catalog.filter(effective_query))
+
+
+async def load_provider_model_catalog(
+    provider_selector: Any | None,
+) -> ProviderModelCatalog:
+    if provider_selector is None:
+        return ProviderModelCatalog(rows=())
+
+    raw = await provider_selector.list_models()
+    rows = tuple(_model_info_to_row(_model_info_payload(model)) for model in raw or [])
+    return ProviderModelCatalog(rows=rows)
 
 
 async def list_provider_models_rpc_payload(

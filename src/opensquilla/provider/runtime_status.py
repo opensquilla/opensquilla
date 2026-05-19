@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .model_listing import load_provider_model_catalog
 from .selector import ProviderBuildError, build_provider
 
 
@@ -231,7 +232,7 @@ async def probe_provider_models(
             error="No provider selector configured",
         )
     try:
-        models = await provider_selector.list_models()
+        catalog = await load_provider_model_catalog(provider_selector)
     except Exception as exc:  # noqa: BLE001 - diagnostic surface
         return ProviderModelProbe(
             attempted=True,
@@ -240,11 +241,7 @@ async def probe_provider_models(
             error=str(exc),
         )
 
-    count = sum(
-        1
-        for model in models or []
-        if str(_model_payload(model).get("provider") or "") == provider_id
-    )
+    count = catalog.count_provider(provider_id)
     return ProviderModelProbe(attempted=True, status="ok", count=count, error=None)
 
 
@@ -289,14 +286,3 @@ def _provider_buildability(
         return False, str(exc)
     except Exception as exc:  # noqa: BLE001 - diagnostic surface
         return False, str(exc)
-
-
-def _model_payload(model: Any) -> dict[str, Any]:
-    if isinstance(model, dict):
-        return model
-    model_dump = getattr(model, "model_dump", None)
-    if callable(model_dump):
-        dumped = model_dump()
-        if isinstance(dumped, dict):
-            return dumped
-    return {}

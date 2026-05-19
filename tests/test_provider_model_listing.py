@@ -4,8 +4,10 @@ import pytest
 
 from opensquilla.provider import ModelInfo, model_listing
 from opensquilla.provider.model_listing import (
+    ProviderModelCatalog,
     list_provider_model_rows,
     list_provider_models_rpc_payload,
+    load_provider_model_catalog,
 )
 
 
@@ -20,6 +22,38 @@ class FakeModelSelector:
 class FailingModelSelector:
     async def list_models(self) -> list[object]:
         raise RuntimeError("provider unavailable")
+
+
+@pytest.mark.asyncio
+async def test_provider_model_catalog_snapshot_normalizes_filters_and_counts() -> None:
+    selector = FakeModelSelector(
+        [
+            {"provider": "openrouter", "model_id": "a", "supports_tools": True},
+            ModelInfo(
+                provider="openrouter",
+                model_id="b",
+                context_window=200,
+                supports_tools=False,
+            ),
+            {"provider": "ollama", "model_id": "c", "supports_tools": True},
+        ]
+    )
+
+    catalog = await load_provider_model_catalog(selector)
+
+    assert isinstance(catalog, ProviderModelCatalog)
+    assert catalog.count_provider("openrouter") == 2
+    assert catalog.count_provider("ollama") == 1
+    assert [
+        row.id
+        for row in catalog.filter(
+            model_listing.ProviderModelQuery(
+                provider="openrouter",
+                capabilities=("tools",),
+            )
+        )
+    ] == ["a"]
+    assert [row.id for row in catalog.rows] == ["a", "b", "c"]
 
 
 @pytest.mark.asyncio

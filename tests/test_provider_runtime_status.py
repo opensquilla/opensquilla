@@ -83,6 +83,33 @@ def _config(
 
 
 @pytest.mark.asyncio
+async def test_probe_provider_models_uses_model_listing_catalog_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selector = ListingModelSelector()
+    calls: list[object] = []
+
+    class Catalog:
+        def count_provider(self, provider_id: str) -> int:
+            assert provider_id == "openrouter"
+            return 7
+
+    async def load_catalog(provider_selector: object) -> Catalog:
+        calls.append(provider_selector)
+        return Catalog()
+
+    monkeypatch.setattr(runtime_status, "load_provider_model_catalog", load_catalog)
+
+    probe = await runtime_status.probe_provider_models("openrouter", selector)
+
+    assert calls == [selector]
+    assert probe.attempted is True
+    assert probe.status == "ok"
+    assert probe.count == 7
+    assert probe.error is None
+
+
+@pytest.mark.asyncio
 async def test_build_provider_status_report_resolves_configured_active_provider() -> None:
     report = await build_provider_status_report(
         [FakeStatusSpec(provider_id="openrouter")],

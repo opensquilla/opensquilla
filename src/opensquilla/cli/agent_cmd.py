@@ -3,37 +3,58 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import getpass
 import json
 import os
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import typer
-from rich.panel import Panel
-from rich.text import Text
 
+from opensquilla.cli.agent_outputs import (
+    AgentRunResult,
+    _entry_timestamp,
+    _message_event,
+    _print_no_provider_error,
+    _public_artifacts,
+    _to_benchmark_transcript,
+    _to_transcript_usage,
+    _usage_from_done,
+    _write_json,
+    _write_jsonl,
+)
+from opensquilla.cli.agent_runtime_config import (
+    _agent_model_from_config,
+    _parse_bool,
+    _resolve_permissions_profile,
+    _resolve_workspace_strict,
+    _with_agent_model_config,
+    _with_agent_thinking_config,
+    _with_agent_workspace_config,
+)
 from opensquilla.cli.attachments import attachments_from_paths
-from opensquilla.cli.ui import console
 
+_AGENT_OUTPUT_COMPAT_ALIASES = (
+    AgentRunResult,
+    _entry_timestamp,
+    _message_event,
+    _print_no_provider_error,
+    _public_artifacts,
+    _to_benchmark_transcript,
+    _to_transcript_usage,
+    _usage_from_done,
+    _write_json,
+    _write_jsonl,
+)
 
-@dataclass
-class AgentRunResult:
-    status: str
-    agent_id: str
-    session_key: str
-    text: str
-    usage: dict[str, Any]
-    errors: list[dict[str, str]]
-    workspace: str | None = None
-    workspace_strict: bool = False
-    thinking: str | None = None
-    transcript_path: str | None = None
-    usage_path: str | None = None
-    artifacts: list[dict[str, Any]] | None = None
+_AGENT_RUNTIME_CONFIG_COMPAT_ALIASES = (
+    _agent_model_from_config,
+    _parse_bool,
+    _resolve_permissions_profile,
+    _resolve_workspace_strict,
+    _with_agent_model_config,
+    _with_agent_thinking_config,
+    _with_agent_workspace_config,
+)
 
 
 def _cli_sender_id() -> str:
@@ -44,24 +65,6 @@ def _cli_sender_id() -> str:
         return getpass.getuser() or "cli-user"
     except Exception:
         return "cli-user"
-
-
-_AGENT_PERMISSION_PROFILES = frozenset({"restricted", "bypass", "full"})
-
-
-def _resolve_permissions_profile(value: str | None) -> str:
-    raw = value if value is not None else os.environ.get("OPENSQUILLA_AGENT_PERMISSIONS")
-    profile = (raw or "restricted").strip().lower()
-    if profile not in _AGENT_PERMISSION_PROFILES:
-        allowed = ", ".join(sorted(_AGENT_PERMISSION_PROFILES))
-        raise ValueError(f"permissions must be one of: {allowed}")
-    return profile
-
-
-def _public_artifacts(artifacts: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    from opensquilla.artifacts import artifact_payload
-
-    return [artifact_payload(artifact) for artifact in artifacts or []]
 
 
 async def run_agent_once(
@@ -256,265 +259,6 @@ async def run_agent_once(
         usage_path=usage_path,
         artifacts=artifacts,
     )
-
-
-def _with_agent_workspace_config(config: Any, workspace: str) -> Any:
-    memory = getattr(config, "memory", None)
-    if memory is not None and hasattr(memory, "model_copy"):
-        memory = memory.model_copy(update={"source": "workspace"})
-    elif memory is not None:
-        memory = copy.copy(memory)
-        setattr(memory, "source", "workspace")
-
-    update: dict[str, Any] = {"workspace_dir": workspace}
-    if memory is not None:
-        update["memory"] = memory
-    if hasattr(config, "model_copy"):
-        return config.model_copy(update=update)
-    copied = copy.copy(config)
-    setattr(copied, "workspace_dir", workspace)
-    if memory is not None:
-        setattr(copied, "memory", memory)
-    return copied
-
-
-def _with_agent_thinking_config(config: Any, thinking: str) -> Any:
-    llm = getattr(config, "llm", None)
-    if llm is None:
-        return config
-    if hasattr(llm, "model_copy"):
-        llm = llm.model_copy(update={"thinking": thinking})
-    else:
-        llm = copy.copy(llm)
-        setattr(llm, "thinking", thinking)
-
-    if hasattr(config, "model_copy"):
-        return config.model_copy(update={"llm": llm})
-    copied = copy.copy(config)
-    setattr(copied, "llm", llm)
-    return copied
-
-
-def _with_agent_model_config(config: Any, model: str) -> Any:
-    llm = getattr(config, "llm", None)
-    if llm is None:
-        return config
-    if hasattr(llm, "model_copy"):
-        llm = llm.model_copy(update={"model": model})
-    else:
-        llm = copy.copy(llm)
-        setattr(llm, "model", model)
-
-    if hasattr(config, "model_copy"):
-        return config.model_copy(update={"llm": llm})
-    copied = copy.copy(config)
-    setattr(copied, "llm", llm)
-    return copied
-
-
-def _agent_model_from_config(config: Any, agent_id: str) -> str | None:
-    try:
-        from opensquilla.agents.scope import resolve_agent_model
-
-        return resolve_agent_model(agent_id, config)
-    except Exception:
-        return None
-
-
-def _resolve_workspace_strict(
-    *,
-    cli_value: bool | None,
-    config_value: Any,
-    entrypoint_default: bool,
-    env: dict[str, str] | None = None,
-) -> bool:
-    if cli_value is not None:
-        return cli_value
-
-    env_value = _parse_bool((env or os.environ).get("OPENSQUILLA_WORKSPACE_STRICT"))
-    if env_value is not None:
-        return env_value
-
-    if isinstance(config_value, bool):
-        return config_value
-    return entrypoint_default
-
-
-def _parse_bool(value: str | None) -> bool | None:
-    if value is None:
-        return None
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return None
-
-
-def _usage_from_done(done: Any | None, model: str | None) -> dict[str, Any]:
-    return {
-        "input_tokens": done.input_tokens if done else 0,
-        "output_tokens": done.output_tokens if done else 0,
-        "total_tokens": (done.input_tokens + done.output_tokens) if done else 0,
-        "reasoning_tokens": done.reasoning_tokens if done else 0,
-        "cached_tokens": done.cached_tokens if done else 0,
-        "cost_usd": done.cost_usd if done else 0.0,
-        "billed_cost": done.billed_cost if done else 0.0,
-        "model": (done.model or model or "") if done else (model or ""),
-        "request_count": done.iterations if done else 0,
-    }
-
-
-def _to_benchmark_transcript(
-    entries: list[Any], usage: dict[str, Any] | None = None
-) -> list[dict[str, Any]]:
-    """Convert OpenSquilla transcript rows into benchmark-friendly JSONL events."""
-    output: list[dict[str, Any]] = []
-    for entry in entries:
-        role = getattr(entry, "role", "")
-        content = getattr(entry, "content", "") or ""
-        tool_calls = getattr(entry, "tool_calls", None) or []
-        timestamp = _entry_timestamp(entry)
-        if role == "assistant" and tool_calls:
-            assistant_blocks: list[dict[str, Any]] = []
-            for segment in tool_calls:
-                segment_type = segment.get("type")
-                if segment_type == "text":
-                    text = segment.get("text", "")
-                    if text:
-                        assistant_blocks.append({"type": "text", "text": text})
-                elif segment_type == "tool_use":
-                    assistant_blocks.append(
-                        {
-                            "type": "toolCall",
-                            "name": segment.get("name", ""),
-                            "id": segment.get("tool_use_id", ""),
-                            "arguments": segment.get("input") or {},
-                        }
-                    )
-                elif segment_type == "tool_result":
-                    if assistant_blocks:
-                        output.append(
-                            _message_event("assistant", assistant_blocks, timestamp=timestamp)
-                        )
-                        assistant_blocks = []
-                    output.append(
-                        _message_event(
-                            "toolResult",
-                            [{"type": "text", "text": str(segment.get("result", ""))}],
-                            timestamp=timestamp,
-                            tool_call_id=segment.get("tool_use_id", ""),
-                            tool_name=segment.get("name", ""),
-                            is_error=bool(segment.get("is_error", False)),
-                        )
-                    )
-            if assistant_blocks:
-                output.append(_message_event("assistant", assistant_blocks, timestamp=timestamp))
-            continue
-
-        output.append(
-            _message_event(
-                role,
-                [{"type": "text", "text": content}] if content else [],
-                timestamp=timestamp,
-            )
-        )
-    if usage is not None:
-        for event in reversed(output):
-            message = event.get("message", {})
-            if message.get("role") == "assistant":
-                message["usage"] = usage
-                break
-    return output
-
-
-def _message_event(
-    role: str,
-    content: list[dict[str, Any]],
-    *,
-    timestamp: str | None = None,
-    tool_call_id: str | None = None,
-    tool_name: str | None = None,
-    is_error: bool | None = None,
-) -> dict[str, Any]:
-    event: dict[str, Any] = {"type": "message", "message": {"role": role, "content": content}}
-    message = event["message"]
-    if tool_call_id is not None:
-        message["toolCallId"] = tool_call_id
-    if tool_name is not None:
-        message["toolName"] = tool_name
-    if is_error is not None:
-        message["isError"] = is_error
-    if timestamp:
-        event["timestamp"] = timestamp
-    return event
-
-
-def _entry_timestamp(entry: Any) -> str | None:
-    value = getattr(entry, "created_at", None)
-    if not isinstance(value, int | float):
-        return None
-    return datetime.fromtimestamp(value / 1000, UTC).isoformat().replace("+00:00", "Z")
-
-
-def _to_transcript_usage(usage: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "input": usage["input_tokens"],
-        "output": usage["output_tokens"],
-        "cacheRead": usage["cached_tokens"],
-        "cacheWrite": 0,
-        "totalTokens": usage["total_tokens"],
-        "cost": {
-            "input": 0.0,
-            "output": 0.0,
-            "cacheRead": 0.0,
-            "cacheWrite": 0.0,
-            "total": usage["cost_usd"],
-            "billed": usage["billed_cost"],
-        },
-    }
-
-
-def _write_jsonl(path: str, rows: list[dict[str, Any]]) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8") as fh:
-        for row in rows:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def _write_json(path: str, payload: dict[str, Any]) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def _print_no_provider_error() -> None:
-    """Print a three-section diagnostic panel when no LLM provider is configured."""
-    body = Text.assemble(
-        ("Symptom\n", "bold red"),
-        "No LLM provider configured.\n\n",
-        ("Cause\n", "bold yellow"),
-        (
-            "No API key was found. The following environment variables were all empty:\n"
-            "  OPENROUTER_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY,\n"
-            "  DEEPSEEK_API_KEY, GEMINI_API_KEY, DASHSCOPE_API_KEY, and others.\n"
-            "The config file ~/.opensquilla/config.toml also has no [llm].api_key set.\n\n"
-        ),
-        ("Next steps\n", "bold green"),
-        (
-            "Option 1 (recommended) — run the interactive setup wizard:\n"
-            "  opensquilla onboard\n\n"
-            "Option 2 — set an environment variable for your provider:\n"
-            "  export OPENROUTER_API_KEY=sk-or-...        # POSIX / macOS / Linux\n"
-            "  setx OPENROUTER_API_KEY \"sk-or-...\"  "
-            "# Windows cmd: set OPENROUTER_API_KEY=...\n\n"
-            "Option 3 — edit ~/.opensquilla/config.toml and add:\n"
-            "  [llm]\n"
-            "  api_key = \"your-key-here\"\n"
-        ),
-    )
-    console.print(Panel(body, title="No Provider Configured", border_style="red"))
 
 
 def run_agent_command(

@@ -19,6 +19,7 @@ from opensquilla.cli import (
     chat_presenters,
     chat_session_workflows,
     chat_slash_workflows,
+    chat_standalone_repl,
     chat_transcript_exports,
 )
 from opensquilla.cli.main import app
@@ -3526,6 +3527,9 @@ def test_standalone_save_transcript_writes_memory_transcript(tmp_path) -> None:
 
 def test_chat_save_transcript_uses_export_boundary() -> None:
     chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    standalone_repl_tree = ast.parse(
+        Path(chat_standalone_repl.__file__).read_text(encoding="utf-8")
+    )
     utility_route_path = Path(chat_cmd.__file__).with_name(
         "chat_gateway_utility_route_workflows.py"
     )
@@ -3557,7 +3561,7 @@ def test_chat_save_transcript_uses_export_boundary() -> None:
     }
     chat_standalone_utility_names = {
         alias.name
-        for node in ast.walk(chat_tree)
+        for node in ast.walk(standalone_repl_tree)
         if isinstance(node, ast.ImportFrom)
         and node.module == "opensquilla.cli.chat_standalone_utility_route_workflows"
         for alias in node.names
@@ -4447,7 +4451,7 @@ async def test_gateway_utility_route_executor_delegates_known_routes(monkeypatch
 
 
 def test_standalone_utility_routes_use_executor_boundary() -> None:
-    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    chat_tree = ast.parse(Path(chat_standalone_repl.__file__).read_text(encoding="utf-8"))
     executor_path = Path(chat_cmd.__file__).with_name(
         "chat_standalone_utility_route_workflows.py"
     )
@@ -4460,7 +4464,7 @@ def test_standalone_utility_routes_use_executor_boundary() -> None:
     standalone_handler = next(
         node
         for node in ast.walk(chat_tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_standalone_repl"
     )
     chat_executor_names = {
         alias.name
@@ -4883,7 +4887,7 @@ def test_chat_tool_compress_slashes_use_workflow_boundary() -> None:
 
 
 def test_chat_standalone_model_cost_slashes_use_workflow_boundary() -> None:
-    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    chat_tree = ast.parse(Path(chat_standalone_repl.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name(
         "chat_standalone_model_cost_workflows.py"
     )
@@ -4894,7 +4898,7 @@ def test_chat_standalone_model_cost_slashes_use_workflow_boundary() -> None:
     standalone_handler = next(
         node
         for node in ast.walk(chat_tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_standalone_repl"
     )
     chat_workflow_names = {
         alias.name
@@ -4932,7 +4936,7 @@ def test_chat_standalone_model_cost_slashes_use_workflow_boundary() -> None:
 
 
 def test_chat_standalone_status_slashes_use_workflow_boundary() -> None:
-    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    chat_tree = ast.parse(Path(chat_standalone_repl.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_status_workflows.py")
 
     assert workflow_path.exists()
@@ -4941,7 +4945,7 @@ def test_chat_standalone_status_slashes_use_workflow_boundary() -> None:
     standalone_handler = next(
         node
         for node in ast.walk(chat_tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_standalone_repl"
     )
     chat_workflow_names = {
         alias.name
@@ -4974,7 +4978,7 @@ def test_chat_standalone_status_slashes_use_workflow_boundary() -> None:
 
 
 def test_chat_standalone_new_slash_uses_workflow_boundary() -> None:
-    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    chat_tree = ast.parse(Path(chat_standalone_repl.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_session_workflows.py")
 
     assert workflow_path.exists()
@@ -4983,7 +4987,7 @@ def test_chat_standalone_new_slash_uses_workflow_boundary() -> None:
     standalone_handler = next(
         node
         for node in ast.walk(chat_tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_standalone_repl"
     )
     chat_workflow_names = {
         alias.name
@@ -5018,7 +5022,7 @@ def test_chat_standalone_new_slash_uses_workflow_boundary() -> None:
 
 
 def test_chat_standalone_clear_slash_uses_workflow_boundary() -> None:
-    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    chat_tree = ast.parse(Path(chat_standalone_repl.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_session_workflows.py")
 
     assert workflow_path.exists()
@@ -5027,7 +5031,7 @@ def test_chat_standalone_clear_slash_uses_workflow_boundary() -> None:
     standalone_handler = next(
         node
         for node in ast.walk(chat_tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_standalone_repl"
     )
     chat_workflow_names = {
         alias.name
@@ -5060,7 +5064,7 @@ def test_chat_standalone_clear_slash_uses_workflow_boundary() -> None:
 
 
 def test_chat_standalone_compact_slash_uses_workflow_boundary() -> None:
-    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    chat_tree = ast.parse(Path(chat_standalone_repl.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_session_workflows.py")
 
     assert workflow_path.exists()
@@ -5069,7 +5073,7 @@ def test_chat_standalone_compact_slash_uses_workflow_boundary() -> None:
     standalone_handler = next(
         node
         for node in ast.walk(chat_tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_standalone_repl"
     )
     chat_workflow_names = {
         alias.name
@@ -5112,7 +5116,7 @@ def test_chat_standalone_compact_slash_uses_workflow_boundary() -> None:
 
 
 def test_chat_standalone_path_slash_uses_workflow_boundary() -> None:
-    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    chat_tree = ast.parse(Path(chat_standalone_repl.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_path_workflows.py")
 
     assert workflow_path.exists()
@@ -5121,7 +5125,7 @@ def test_chat_standalone_path_slash_uses_workflow_boundary() -> None:
     standalone_handler = next(
         node
         for node in ast.walk(chat_tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_standalone_repl"
     )
     chat_workflow_names = {
         alias.name
@@ -5155,7 +5159,7 @@ def test_chat_standalone_path_slash_uses_workflow_boundary() -> None:
 
 
 def test_chat_standalone_image_slash_uses_workflow_boundary() -> None:
-    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    chat_tree = ast.parse(Path(chat_standalone_repl.__file__).read_text(encoding="utf-8"))
     workflow_path = Path(chat_cmd.__file__).with_name("chat_standalone_image_workflows.py")
 
     assert workflow_path.exists()
@@ -5164,7 +5168,7 @@ def test_chat_standalone_image_slash_uses_workflow_boundary() -> None:
     standalone_handler = next(
         node
         for node in ast.walk(chat_tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_standalone_repl"
     )
     chat_workflow_names = {
         alias.name
@@ -5198,7 +5202,7 @@ def test_chat_standalone_image_slash_uses_workflow_boundary() -> None:
 
 
 def test_chat_standalone_slash_matching_uses_route_boundary() -> None:
-    chat_tree = ast.parse(Path(chat_cmd.__file__).read_text(encoding="utf-8"))
+    chat_tree = ast.parse(Path(chat_standalone_repl.__file__).read_text(encoding="utf-8"))
     route_path = Path(chat_cmd.__file__).with_name("chat_standalone_slash_routes.py")
 
     assert route_path.exists()
@@ -5209,7 +5213,7 @@ def test_chat_standalone_slash_matching_uses_route_boundary() -> None:
     standalone_handler = next(
         node
         for node in ast.walk(chat_tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_standalone_repl"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_standalone_repl"
     )
     chat_route_names = {
         alias.name

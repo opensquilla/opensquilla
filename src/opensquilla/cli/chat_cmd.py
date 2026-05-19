@@ -13,14 +13,15 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, Protocol
-from uuid import uuid4
+from typing import Any, Protocol, cast
 
 import typer
 from rich.panel import Panel
 
 from opensquilla.cli import attachments as _cli_attachments
 from opensquilla.cli import chat_approval_prompts as _chat_approval_prompts
+from opensquilla.cli import chat_gateway_repl as _chat_gateway_repl
+from opensquilla.cli import chat_standalone_repl as _chat_standalone_repl
 from opensquilla.cli import chat_standalone_transcript_rewrite as _chat_transcript_rewrite
 from opensquilla.cli import chat_stream_presenters
 from opensquilla.cli import chat_stream_support as _chat_stream_support
@@ -63,26 +64,7 @@ from opensquilla.cli.chat_input_builders import (
     _path_prompt_and_attachments,
     _path_strategy_hint,
 )
-from opensquilla.cli.chat_standalone_image_workflows import handle_standalone_image_command
-from opensquilla.cli.chat_standalone_model_cost_workflows import (
-    handle_standalone_cost_command,
-    handle_standalone_model_command,
-)
-from opensquilla.cli.chat_standalone_path_workflows import handle_standalone_path_command
-from opensquilla.cli.chat_standalone_session_workflows import (
-    handle_standalone_clear_command,
-    handle_standalone_compact_command,
-    handle_standalone_new_command,
-)
-from opensquilla.cli.chat_standalone_slash_routes import match_standalone_slash_route
-from opensquilla.cli.chat_standalone_status_workflows import (
-    handle_standalone_models_command,
-    handle_standalone_status_command,
-)
-from opensquilla.cli.chat_standalone_utility_route_workflows import (
-    handle_standalone_utility_route_command,
-)
-from opensquilla.cli.repl.commands import is_exit_command, render_help_table
+from opensquilla.cli.repl.commands import is_exit_command
 from opensquilla.cli.repl.prompt import prompt_user
 from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.cli.repl.stream import StreamingRenderer, TurnResult, UsageSummary
@@ -302,160 +284,21 @@ async def _standalone_repl(
     timeout: float | None = None,
 ) -> None:
     """Interactive REPL backed by TurnRunner (full tools, skills, session persistence)."""
-    from opensquilla.cli.agent_cmd import _resolve_workspace_strict
-    from opensquilla.gateway import build_services, build_turn_runner_from_services
-    from opensquilla.gateway.routing import build_cli_route_envelope, tool_context_from_envelope
-
-    svc = await build_services()
-    session_manager = svc.session_manager
-    if session_manager is None:
-        raise RuntimeError("standalone chat requires session manager")
-    session_key = session_id or f"agent:main:standalone:{uuid4().hex[:8]}"
-    await session_manager.get_or_create(session_key, agent_id="main")
-    active_workspace = workspace or getattr(svc.config, "workspace_dir", None)
-    effective_workspace_strict = _resolve_workspace_strict(
-        cli_value=workspace_strict,
-        config_value=getattr(svc.config, "workspace_strict", None),
-        entrypoint_default=bool(active_workspace),
+    await _chat_standalone_repl.run_standalone_repl(
+        model,
+        session_id,
+        workspace=workspace,
+        workspace_strict=workspace_strict,
+        timeout=timeout,
+        prompt_user_fn=prompt_user,
+        stream_response=_stream_response_turnrunner,
+        run_image_command=_handle_image_command_turnrunner,
+        image_prompt_from_command=_image_prompt_from_command,
+        cli_sender_id_fn=_cli_sender_id,
+        flush_before_rewrite=_flush_before_standalone_rewrite,
+        resolve_compaction_provider=_resolve_compaction_provider,
+        console_obj=console,
     )
-
-    def _build_tool_ctx(active_session_key: str) -> object:
-        route_envelope = build_cli_route_envelope(
-            session_key=active_session_key,
-            agent_id="main",
-            channel_id="cli:chat",
-            sender_id=_cli_sender_id(),
-            source_name="chat",
-        )
-        return tool_context_from_envelope(
-            route_envelope,
-            is_owner=True,
-            workspace_dir=active_workspace,
-            workspace_strict=effective_workspace_strict,
-        )
-
-    tool_ctx = _build_tool_ctx(session_key)
-    state = ChatSessionState(session_key=session_key, model=model)
-
-    turn_runner = build_turn_runner_from_services(svc)
-
-    try:
-        while True:
-            try:
-                user_input = await prompt_user(state.prompt_state().label)
-            except (EOFError, KeyboardInterrupt):
-                console.print("\n[yellow]Goodbye.[/yellow]")
-                break
-
-            if user_input is None or is_exit_command(user_input):
-                console.print("[yellow]Goodbye.[/yellow]")
-                break
-
-            stripped = user_input.strip()
-            if not stripped:
-                continue
-
-            if stripped.startswith("/"):
-                route_match = match_standalone_slash_route(stripped)
-                if route_match is None:
-                    console.print("[red]Unknown command.[/red] [dim]Use /help.[/dim]")
-                    continue
-
-                route_name = route_match.name
-                parts = route_match.parts
-
-                if route_name == "help":
-                    console.print(render_help_table())
-                    continue
-                if route_name == "new":
-                    session_key, tool_ctx, state = await handle_standalone_new_command(
-                        parts,
-                        session_manager=session_manager,
-                        build_tool_context=_build_tool_ctx,
-                        model=model,
-                    )
-                    continue
-                if route_name == "status":
-                    handle_standalone_status_command(state)
-                    continue
-                if route_name == "models":
-                    handle_standalone_models_command()
-                    continue
-                if route_name == "model":
-                    updated_model = handle_standalone_model_command(parts, state)
-                    if updated_model is not None:
-                        model = updated_model
-                    continue
-                if route_name == "cost":
-                    handle_standalone_cost_command(state)
-                    continue
-                if await handle_standalone_utility_route_command(
-                    route_name,
-                    stripped,
-                    state,
-                    config=svc.config,
-                ):
-                    continue
-                if route_name == "clear":
-                    await handle_standalone_clear_command(
-                        state,
-                        services=svc,
-                        flush_before_rewrite=_flush_before_standalone_rewrite,
-                    )
-                    continue
-                if route_name == "compact":
-                    await handle_standalone_compact_command(
-                        state,
-                        services=svc,
-                        model=model,
-                        flush_before_rewrite=_flush_before_standalone_rewrite,
-                        resolve_compaction_provider=_resolve_compaction_provider,
-                    )
-                    continue
-                if route_name == "image":
-                    await handle_standalone_image_command(
-                        stripped,
-                        parts,
-                        state,
-                        turn_runner=turn_runner,
-                        tool_context=tool_ctx,
-                        services=svc,
-                        model=model,
-                        timeout=timeout,
-                        run_image_command=_handle_image_command_turnrunner,
-                        image_prompt_from_command=_image_prompt_from_command,
-                    )
-                    continue
-                if route_name == "path":
-                    await handle_standalone_path_command(
-                        stripped,
-                        parts,
-                        state,
-                        turn_runner=turn_runner,
-                        tool_context=tool_ctx,
-                        services=svc,
-                        model=model,
-                        timeout=timeout,
-                        stream_response=_stream_response_turnrunner,
-                    )
-                    continue
-                console.print("[red]Unknown command.[/red] [dim]Use /help.[/dim]")
-                continue
-
-            result = await _stream_response_turnrunner(
-                turn_runner,
-                session_key,
-                tool_ctx,
-                user_input,
-                model=model,
-                svc=svc,
-                timeout=timeout,
-            )
-            state.transcript.add("user", user_input)
-            state.transcript.add("assistant", result.text)
-            state.usage.add(result.usage)
-    finally:
-        await svc.close()
 
 
 # ---------------------------------------------------------------------------
@@ -465,82 +308,17 @@ async def _standalone_repl(
 
 async def _gateway_chat(model: str | None, session_id: str | None) -> None:
     """Chat via gateway daemon. Full features: tools, skills, session persistence."""
-    from opensquilla.cli.gateway_client import GatewayClient, GatewayRPCError
-
-    client = GatewayClient()
-    await client.connect()
-
-    elevated_state: dict[str, str | None] = {"mode": None}
-
-    try:
-        if session_id:
-            session_key = session_id
-            console.print(f"[dim]Connected to gateway. Resuming session: {session_key}[/dim]")
-            if model:
-                console.print(
-                    "[yellow]Note: --model is honored only at session creation; "
-                    "ignored when resuming a session.[/yellow]"
-                )
-        else:
-            session_key = await client.create_session(model=model)
-            console.print(f"[dim]Connected to gateway. Session: {session_key}[/dim]")
-            if model:
-                console.print(f"[dim]Model: {model}[/dim]")
-        state = ChatSessionState(session_key=session_key, model=model)
-
-        # Interactive REPL via gateway
-        console.print(
-            Panel(
-                f"[bold {ACCENT}]OpenSquilla Chat[/bold {ACCENT}]\n"
-                "[dim]Enter sends. Ctrl+C cancels the current turn or clears input. "
-                "Ctrl+D exits. /help lists commands.[/dim]",
-                title="Gateway",
-                border_style=ACCENT,
-            )
-        )
-
-        while True:
-            try:
-                user_input = await prompt_user(state.prompt_state().label)
-            except (EOFError, KeyboardInterrupt):
-                console.print("\n[yellow]Goodbye.[/yellow]")
-                break
-
-            if user_input is None or is_exit_command(user_input):
-                console.print("[yellow]Goodbye.[/yellow]")
-                break
-
-            stripped = user_input.strip()
-            if not stripped:
-                continue
-
-            if stripped.startswith("/"):
-                try:
-                    handled = await _handle_gateway_slash_command(
-                        stripped, state, client, elevated_state
-                    )
-                except GatewayRPCError as exc:
-                    console.print(error_panel(str(exc)))
-                    continue
-                if handled:
-                    session_key = state.session_key
-                    model = state.model
-                    continue
-                console.print("[red]Unknown command.[/red] [dim]Use /help.[/dim]")
-                continue
-
-            try:
-                result = await _stream_response_gateway(
-                    client, session_key, user_input, elevated_state
-                )
-            except GatewayRPCError as exc:
-                console.print(error_panel(str(exc)))
-                continue
-            state.transcript.add("user", user_input)
-            state.transcript.add("assistant", result.text)
-            state.usage.add(result.usage)
-    finally:
-        await client.close()
+    await _chat_gateway_repl.run_gateway_chat(
+        model,
+        session_id,
+        prompt_user_fn=prompt_user,
+        stream_response=_stream_response_gateway,
+        handle_slash_command=cast(Any, _handle_gateway_slash_command),
+        console_obj=cast(Any, console),
+        error_panel_fn=error_panel,
+        state_factory=ChatSessionState,
+        is_exit_command_fn=is_exit_command,
+    )
 
 
 async def _handle_gateway_slash_command(

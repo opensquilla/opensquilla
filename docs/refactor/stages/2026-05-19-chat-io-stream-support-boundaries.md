@@ -293,7 +293,7 @@ Co-authored-by: Codex <noreply@openai.com>
 - [x] Merge child into integration with `git merge --no-ff`.
 - [x] Run `scripts/refactor_gate.sh` in integration.
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`,
+- [x] Remove `../opensquilla-refactor-active`,
       `../opensquilla-refactor-agent-chat-stream-support`, and
       `../opensquilla-refactor-agent-chat-input-builders`; run
       `git worktree prune`; verify no extra refactor worktree directories
@@ -337,7 +337,7 @@ Co-authored-by: Codex <noreply@openai.com>
 - Integration merge:
 - `314b6fc` (`Merge chat IO and stream support boundaries`)
 - Integration record:
-- pending
+- `18ab64b` (`Record chat IO stream support integration verification`)
 - Verification evidence:
 - Focused merged command: `50 passed in 3.55s`.
 - Touched-file ruff: `All checks passed!`.
@@ -352,6 +352,12 @@ Co-authored-by: Codex <noreply@openai.com>
   skipped, 2 warnings`, gateway smoke start/status/stop/status passed, final
   line `Refactor gate complete.`
 - Cleanup evidence:
+- Removed `../opensquilla-refactor-active`,
+  `../opensquilla-refactor-agent-chat-stream-support`, and
+  `../opensquilla-refactor-agent-chat-input-builders`, then ran
+  `git worktree prune`.
+- Final refactor worktree directory scan returned only
+  `../opensquilla-refactor-integration`.
 - Residual risk:
 - Low. The moved helpers remain available as private compatibility aliases from
   `chat_cmd.py`; focused boundary tests and existing chat command tests preserve

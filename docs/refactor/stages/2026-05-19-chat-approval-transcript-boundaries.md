@@ -146,24 +146,46 @@ imports from `opensquilla.cli.chat_cmd`, and existing slash command behavior.
   - `uv run --extra dev pytest tests/test_cli/test_chat_approval_prompts_boundary.py -q`
   - Expected: collection/import failure because
     `opensquilla.cli.chat_approval_prompts` does not exist.
+  - Observed by worker: expected collection/import failure:
+    `ImportError: cannot import name 'chat_approval_prompts' from 'opensquilla.cli'`.
 - Approval worker GREEN:
   - `uv run --extra dev pytest tests/test_cli/test_chat_approval_prompts_boundary.py tests/test_cli/test_chat_cmd_approval.py -q`
+  - Observed by worker: `16 passed`.
+  - Main-thread verification after worker completion: `16 passed`.
+  - Worker checks: ruff passed, mypy passed, `git diff --check` passed.
+  - Worker commit: `adcdaa9` (`Extract chat approval prompt boundary`).
 - Transcript worker RED:
   - `uv run --extra dev pytest tests/test_cli/test_chat_standalone_transcript_rewrite_boundary.py -q`
   - Expected: collection/import failure because
     `opensquilla.cli.chat_standalone_transcript_rewrite` does not exist.
+  - Observed by worker: expected collection/import failure:
+    `ImportError: cannot import name 'chat_standalone_transcript_rewrite' from 'opensquilla.cli'`.
 - Transcript worker GREEN:
   - `uv run --extra dev pytest tests/test_cli/test_chat_standalone_transcript_rewrite_boundary.py tests/test_cli/test_chat_cmd.py::test_standalone_reset_refuses_non_empty_transcript_without_flush_service tests/test_cli/test_chat_cmd.py::test_standalone_compact_refuses_non_empty_transcript_without_flush_service tests/test_cli/test_chat_cmd.py::test_standalone_compact_flushes_before_compacting tests/test_cli/test_chat_cmd.py::test_standalone_compact_aborts_when_flush_fails -q`
+  - Observed by worker: `16 passed`.
+  - Main-thread verification after worker completion: `16 passed`.
+  - Worker checks: ruff passed, mypy passed, `git diff --check` passed.
+  - Worker commit: `a3e1102` (`Extract standalone transcript rewrite guard`).
 - Main-thread facade RED:
   - `uv run --extra dev pytest tests/test_cli/test_chat_cmd_facade_boundary.py -q`
   - Expected: failure showing `chat_cmd.py` still owns moved helper bodies
     instead of importing/delegating to the new modules.
+  - Observed: `2 failed`, showing `chat_cmd._maybe_handle_approval` and
+    `chat_cmd._read_standalone_transcript` were still local functions rather
+    than the new boundary helpers.
 - Main-thread facade GREEN:
   - `uv run --extra dev pytest tests/test_cli/test_chat_approval_prompts_boundary.py tests/test_cli/test_chat_standalone_transcript_rewrite_boundary.py tests/test_cli/test_chat_cmd_facade_boundary.py tests/test_cli/test_chat_cmd_approval.py tests/test_cli/test_chat_cmd.py -q`
+  - Observed focused subset before full chat tests: `34 passed`.
+  - Observed broader focused command: `169 passed`.
+  - Main-thread facade commit: `d347e53` (`Refactor chat command facade
+    boundaries`).
 - Additional touched-file checks:
   - `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_approval_prompts.py src/opensquilla/cli/chat_standalone_transcript_rewrite.py tests/test_cli/test_chat_approval_prompts_boundary.py tests/test_cli/test_chat_standalone_transcript_rewrite_boundary.py tests/test_cli/test_chat_cmd_facade_boundary.py tests/test_cli/test_chat_cmd_approval.py tests/test_cli/test_chat_cmd.py`
+    - Observed: `All checks passed!`.
   - `uv run --extra dev mypy src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_approval_prompts.py src/opensquilla/cli/chat_standalone_transcript_rewrite.py --show-error-codes`
+    - Observed: `Success: no issues found in 3 source files`.
   - `git diff --check`
+    - Observed: clean.
 
 ## Files
 
@@ -176,7 +198,6 @@ imports from `opensquilla.cli.chat_cmd`, and existing slash command behavior.
 - Modify:
   - `src/opensquilla/cli/chat_cmd.py`
   - `tests/test_cli/test_chat_cmd_approval.py`
-  - `tests/test_cli/test_chat_cmd.py`
 - Test:
   - Approval and standalone focused tests listed above.
 - Documentation:
@@ -193,18 +214,40 @@ imports from `opensquilla.cli.chat_cmd`, and existing slash command behavior.
       `codex/refactor-chat-approval-transcript-boundaries`.
 - [x] Run child preflight.
 - [x] Write this stage plan before production edits.
-- [ ] Commit this stage plan as the worker base.
-- [ ] Dispatch two same-thread workers with explicit worktree/branch ownership.
-- [ ] Approval worker writes RED boundary tests and records RED output.
-- [ ] Transcript worker writes RED boundary tests and records RED output.
-- [ ] Approval worker implements boundary and records GREEN/check evidence.
-- [ ] Transcript worker implements boundary and records GREEN/check evidence.
-- [ ] Merge approval worker branch into child with `git merge --no-ff`.
-- [ ] Merge transcript worker branch into child with `git merge --no-ff`.
-- [ ] Main thread writes RED facade boundary test.
-- [ ] Main thread delegates `chat_cmd.py` wrappers/call sites to new modules.
-- [ ] Run focused tests and touched-file checks.
-- [ ] Run child `scripts/refactor_gate.sh`.
+- [x] Commit this stage plan as the worker base.
+  - Commit: `4cf579a` (`Plan chat approval transcript boundaries`).
+- [x] Dispatch two same-thread workers with explicit worktree/branch ownership.
+  - Approval worker: `Lagrange`.
+  - Transcript worker: `Sagan`.
+- [x] Approval worker writes RED boundary tests and records RED output.
+  - RED: expected collection/import failure because
+    `opensquilla.cli.chat_approval_prompts` did not exist.
+- [x] Transcript worker writes RED boundary tests and records RED output.
+  - RED: expected collection/import failure because
+    `opensquilla.cli.chat_standalone_transcript_rewrite` did not exist.
+- [x] Approval worker implements boundary and records GREEN/check evidence.
+  - Commit: `adcdaa9` (`Extract chat approval prompt boundary`).
+- [x] Transcript worker implements boundary and records GREEN/check evidence.
+  - Commit: `a3e1102` (`Extract standalone transcript rewrite guard`).
+- [x] Merge approval worker branch into child with `git merge --no-ff`.
+  - Merge: `1192278` (`Merge chat approval prompts worker`).
+- [x] Merge transcript worker branch into child with `git merge --no-ff`.
+  - Merge: `fa77b3f` (`Merge chat standalone transcript worker`).
+- [x] Main thread writes RED facade boundary test.
+  - RED: `2 failed`, showing `chat_cmd.py` still owned moved helpers.
+- [x] Main thread delegates `chat_cmd.py` wrappers/call sites to new modules.
+  - Commit: `d347e53` (`Refactor chat command facade boundaries`).
+- [x] Run focused tests and touched-file checks.
+  - Focused tests: `169 passed`.
+  - Ruff: all checks passed.
+  - Mypy: no issues in 3 source files.
+  - `git diff --check`: clean.
+- [x] Run child `scripts/refactor_gate.sh`.
+  - Ruff: all checks passed.
+  - Mypy: success on 572 source files.
+  - Whitespace: clean.
+  - Pytest: `2790 passed, 8 skipped, 2 warnings`.
+  - Gateway smoke: passed on `127.0.0.1:57955`.
 - [ ] Commit child verification record.
 - [ ] Merge child into integration with `git merge --no-ff`.
 - [ ] Run integration `scripts/refactor_gate.sh`.
@@ -237,8 +280,42 @@ imports from `opensquilla.cli.chat_cmd`, and existing slash command behavior.
 
 ## Completion record
 
-- Child commit:
+- Approval worker commit:
+  - `adcdaa9` (`Extract chat approval prompt boundary`).
+- Transcript worker commit:
+  - `a3e1102` (`Extract standalone transcript rewrite guard`).
+- Active child worker merges:
+  - `1192278` (`Merge chat approval prompts worker`).
+  - `fa77b3f` (`Merge chat standalone transcript worker`).
+- Main facade commit:
+  - `d347e53` (`Refactor chat command facade boundaries`).
+- Child verification commit:
 - Integration merge:
+- Integration record:
 - Verification evidence:
+  - Approval worker RED: missing `opensquilla.cli.chat_approval_prompts`
+    module.
+  - Approval worker GREEN: `16 passed`; ruff, mypy, and `git diff --check`
+    passed.
+  - Transcript worker RED: missing
+    `opensquilla.cli.chat_standalone_transcript_rewrite` module.
+  - Transcript worker GREEN: `16 passed`; ruff, mypy, and `git diff --check`
+    passed.
+  - Main facade RED: `2 failed`; `chat_cmd.py` still owned approval and
+    transcript helpers instead of delegating to the new modules.
+  - Main facade GREEN focused subset: `34 passed`.
+  - Broader focused command: `169 passed`.
+  - Touched-file ruff: all checks passed.
+  - Touched-file mypy: success, no issues in 3 source files.
+  - `git diff --check`: passed.
+  - Child full `scripts/refactor_gate.sh`: ruff passed; mypy success on 572
+    source files; whitespace clean; pytest `2790 passed, 8 skipped, 2
+    warnings`; gateway smoke passed on `127.0.0.1:57955`.
+- Cleanup evidence:
 - Residual risk:
+  - Pending integration gate; child verification is green but this stage is not
+    complete until integration merge/gate and worktree cleanup are recorded.
 - Next recommended slice:
+  - Continue CLI boundary thinning by extracting another cohesive `chat_cmd.py`
+    route/runtime boundary, or switch to a Gateway/Session batch if CLI chat
+    has reached a practical pause point after integration review.

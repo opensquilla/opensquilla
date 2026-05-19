@@ -58,7 +58,7 @@ jobs:
         run: uv sync --extra dev --extra recommended --frozen
 
       - name: Install Playwright browser
-        run: npx --yes playwright install chromium
+        run: npx --yes playwright install --with-deps chromium
 
       - name: Fail if OpenRouter secret is missing
         shell: bash

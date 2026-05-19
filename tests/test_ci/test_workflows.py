@@ -58,8 +58,10 @@ def test_webui_browser_workflow_is_manual_and_opt_in() -> None:
 
     assert _trigger_keys(data) == {"workflow_dispatch"}
     assert 'OPENSQUILLA_WEBUI_BROWSER_E2E: "1"' in text
+    assert 'OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E: "1"' in text
     assert "tests/functional/test_webui_browser_e2e.py" in text
-    assert "playwright install chromium" in text
+    assert "tests/functional/test_webui_browser_chat_e2e.py" in text
+    assert "playwright install --with-deps chromium" in text
 
 
 def test_llm_workflow_is_single_manual_smoke() -> None:
@@ -81,6 +83,7 @@ def test_live_release_e2e_workflow_is_manual_and_separates_private_inputs() -> N
     assert "tests/functional/test_gateway_llm_e2e.py" in text
     assert "tests/functional/test_webui_browser_chat_e2e.py" in text
     assert "tests/functional/test_live_channel_telegram_smoke.py" in text
+    assert "playwright install --with-deps chromium" in text
     assert "OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}" in text
     assert (
         "OPENSQUILLA_LIVE_TELEGRAM_BOT_TOKEN: "

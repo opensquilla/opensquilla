@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 20
     env:
       OPENSQUILLA_WEBUI_BROWSER_E2E: "1"
+      OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E: "1"
       OPENSQUILLA_TURN_CALL_LOG: "0"
       TMPDIR: /tmp
 
@@ -41,7 +42,11 @@ jobs:
         run: uv sync --extra dev --frozen
 
       - name: Install Playwright browser
-        run: npx --yes playwright install chromium
+        run: npx --yes playwright install --with-deps chromium
 
-      - name: Run Web UI browser smoke
-        run: uv run pytest tests/functional/test_webui_browser_e2e.py -q -s
+      - name: Run Web UI browser smokes
+        run: >
+          uv run pytest
+          tests/functional/test_webui_browser_e2e.py
+          tests/functional/test_webui_browser_chat_e2e.py
+          -q -s

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from _webui_browser_playwright import install_playwright, node_command
 
 pytestmark = pytest.mark.webui_browser
 
@@ -21,26 +22,6 @@ def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
-
-
-def _npm() -> str:
-    return "npm.cmd" if os.name == "nt" else "npm"
-
-
-def _node() -> str:
-    return "node.exe" if os.name == "nt" else "node"
-
-
-def _install_playwright(work_dir: Path) -> None:
-    result = subprocess.run(
-        [_npm(), "--prefix", str(work_dir), "install", "playwright"],
-        cwd=Path.cwd(),
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def _wait_for_health(port: int, server: subprocess.Popen[str]) -> None:
@@ -161,9 +142,9 @@ def test_chat_view_loads_and_reaches_gateway_http_status_in_real_browser(tmp_pat
     )
     try:
         _wait_for_health(port, server)
-        _install_playwright(tmp_path)
+        install_playwright(tmp_path)
         result = subprocess.run(
-            [_node(), str(browser_script)],
+            [node_command(), str(browser_script)],
             cwd=tmp_path,
             env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/chat"),
             check=False,

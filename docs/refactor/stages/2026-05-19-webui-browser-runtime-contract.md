@@ -202,13 +202,15 @@ Co-authored-by: Codex <noreply@openai.com>
   - Full integration gate passed with ruff, mypy over 577 source files,
     whitespace, pytest `2822 passed, 6 skipped, 2 warnings`, gateway smoke on
     `127.0.0.1:61875`, and final line `Refactor gate complete.`
-  - Optional functional browser attempt: `OPENSQUILLA_WEBUI_BROWSER_E2E=1 OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 uv run --extra dev pytest tests/functional/test_webui_browser_e2e.py tests/functional/test_webui_browser_chat_e2e.py -q` failed before page execution because Playwright Chromium was not installed in the local cache (`npx playwright install` required).
+  - Optional functional browser attempt: `OPENSQUILLA_WEBUI_BROWSER_E2E=1 OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 uv run --extra dev pytest tests/functional/test_webui_browser_e2e.py tests/functional/test_webui_browser_chat_e2e.py -q` failed before page execution because Playwright Chromium was not installed in the local cache (`npx playwright install` required). This residual risk was closed by `docs/refactor/stages/2026-05-19-webui-playwright-browser-e2e.md`.
 - Residual risk:
-  - Real-browser Playwright smoke did not run to completion in this environment because the Chromium binary is missing; the new Node VM harness covers browser-like execution of the core runtime modules but does not replace a visual/browser rendering pass.
+  - Closed by the follow-up Web UI Playwright browser E2E stage: both opt-in
+    control and chat browser tests now install Chromium through the local
+    Playwright CLI and pass in this environment.
   - The runtime contract intentionally adds only a no-op diagnostic global; future refactors should avoid treating it as a replacement for the existing RPC/HTTP/app modules.
 - Cleanup evidence:
   - Web UI worker branch/worktree were removed and `git worktree prune`
     completed; only the integration refactor worktree remained for this refactor
     line.
 - Next recommended slice:
-  - Install or provision Playwright Chromium in the test environment and promote the existing opt-in Web UI browser smokes into a routinely runnable browser gate, or continue with a larger Web UI view-module runtime harness for selected views.
+  - Continue with a larger Web UI view-module runtime harness for selected views if broader interaction coverage is desired.

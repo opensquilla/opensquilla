@@ -21,6 +21,12 @@ from opensquilla.cli.diagnostics_cmd import diagnostics_app  # noqa: E402
 from opensquilla.cli.dist_cmd import app as dist_app  # noqa: E402
 from opensquilla.cli.init_cmd import init_command  # noqa: E402
 from opensquilla.cli.memory_flush_cmd import memory_flush_session_cmd  # noqa: E402
+from opensquilla.cli.memory_workflows import (  # noqa: E402
+    list_memory_sources_for_cli,
+    search_memory_sources_for_cli,
+    show_memory_source_for_cli,
+    show_memory_status_for_cli,
+)
 from opensquilla.cli.models_cmd import app as models_app  # noqa: E402
 from opensquilla.cli.onboard_cmd import configure_command, onboard_command  # noqa: E402
 from opensquilla.cli.providers_cmd import providers_app  # noqa: E402
@@ -103,34 +109,7 @@ def memory_status_cmd(
 ) -> None:
     """Show read-only memory backend status from the running gateway."""
 
-    from rich.table import Table
-
-    from opensquilla.cli.gateway_rpc import run_gateway_sync
-    from opensquilla.cli.output import print_json
-    from opensquilla.cli.ui import console
-
-    async def _run(client):
-        return await client.call("doctor.memory.status", {"agentId": agent_id})
-
-    payload = run_gateway_sync(_run, json_output=json_output)
-    if json_output:
-        print_json(payload)
-        return
-
-    table = Table(title=f"Memory status — agent={agent_id}", show_header=True)
-    table.add_column("Backend")
-    table.add_column("Status")
-    table.add_column("Entries", justify="right")
-    table.add_column("Size bytes", justify="right")
-    table.add_column("Error")
-    table.add_row(
-        str(payload.get("backend") or ""),
-        str(payload.get("status") or ""),
-        "" if payload.get("entryCount") is None else str(payload.get("entryCount")),
-        "" if payload.get("sizeBytes") is None else str(payload.get("sizeBytes")),
-        str(payload.get("error") or ""),
-    )
-    console.print(table)
+    show_memory_status_for_cli(agent_id, json_output=json_output)
 
 
 @memory_app.command("list")
@@ -140,33 +119,7 @@ def memory_list_cmd(
 ) -> None:
     """List durable memory source files from the running gateway."""
 
-    from rich.table import Table
-
-    from opensquilla.cli.gateway_rpc import run_gateway_sync
-    from opensquilla.cli.output import print_json
-    from opensquilla.cli.ui import console
-
-    async def _run(client):
-        return await client.call("memory.list", {"agentId": agent_id})
-
-    payload = run_gateway_sync(_run, json_output=json_output)
-    if json_output:
-        print_json(payload)
-        return
-
-    table = Table(title=f"Memory sources - agent={agent_id}", show_header=True)
-    table.add_column("Path")
-    table.add_column("Lines", justify="right")
-    table.add_column("Size bytes", justify="right")
-    table.add_column("Modified")
-    for row in payload.get("files", []):
-        table.add_row(
-            str(row.get("path") or ""),
-            "" if row.get("lineCount") is None else str(row.get("lineCount")),
-            "" if row.get("sizeBytes") is None else str(row.get("sizeBytes")),
-            str(row.get("modifiedAt") or ""),
-        )
-    console.print(table)
+    list_memory_sources_for_cli(agent_id, json_output=json_output)
 
 
 @memory_app.command("search")
@@ -178,36 +131,12 @@ def memory_search_cmd(
 ) -> None:
     """Search durable memory from the running gateway."""
 
-    from rich.table import Table
-
-    from opensquilla.cli.gateway_rpc import run_gateway_sync
-    from opensquilla.cli.output import print_json
-    from opensquilla.cli.ui import console
-
-    async def _run(client):
-        return await client.call(
-            "memory.search",
-            {"query": query, "agentId": agent_id, "limit": limit},
-        )
-
-    payload = run_gateway_sync(_run, json_output=json_output)
-    if json_output:
-        print_json(payload)
-        return
-
-    table = Table(title=f"Memory search - agent={agent_id}", show_header=True)
-    table.add_column("Path")
-    table.add_column("Lines")
-    table.add_column("Score", justify="right")
-    table.add_column("Snippet")
-    for row in payload.get("results", []):
-        table.add_row(
-            str(row.get("path") or ""),
-            f"{row.get('startLine', '')}-{row.get('endLine', '')}",
-            f"{float(row.get('score') or 0.0):.3f}",
-            str(row.get("snippet") or "")[:120],
-        )
-    console.print(table)
+    search_memory_sources_for_cli(
+        query,
+        agent_id=agent_id,
+        limit=limit,
+        json_output=json_output,
+    )
 
 
 @memory_app.command("show")
@@ -220,25 +149,13 @@ def memory_show_cmd(
 ) -> None:
     """Show one durable memory source from the running gateway."""
 
-    from opensquilla.cli.gateway_rpc import run_gateway_sync
-    from opensquilla.cli.output import print_json
-    from opensquilla.cli.ui import console
-
-    async def _run(client):
-        params: dict[str, object] = {"path": path, "agentId": agent_id}
-        if from_line is not None:
-            params["fromLine"] = from_line
-        if lines is not None:
-            params["lines"] = lines
-        return await client.call("memory.show", params)
-
-    payload = run_gateway_sync(_run, json_output=json_output)
-    if json_output:
-        print_json(payload)
-        return
-    console.print(str(payload.get("content") or ""))
-    if payload.get("truncated"):
-        console.print("[dim]... truncated[/dim]")
+    show_memory_source_for_cli(
+        path,
+        agent_id=agent_id,
+        from_line=from_line,
+        lines=lines,
+        json_output=json_output,
+    )
 
 
 @memory_app.command("dream")

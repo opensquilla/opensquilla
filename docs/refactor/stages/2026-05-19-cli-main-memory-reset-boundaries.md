@@ -93,11 +93,21 @@ commands with different service dependencies and are not part of this batch.
 - `superpowers:test-driven-development`:
   - Evidence: both workers must add RED boundary tests and record the expected
     failure before moving production logic.
+  - Memory worker evidence: read `superpowers:test-driven-development`, added
+    `tests/test_cli/test_memory_cli_boundary.py` before production edits, then
+    ran the required focused command. RED failed with 3 boundary-test failures
+    because `src/opensquilla/cli/memory_workflows.py` and
+    `src/opensquilla/cli/memory_presenters.py` did not exist and `main.py` did
+    not import the memory workflow functions; the 3 existing memory
+    compatibility tests passed.
 - `superpowers:verification-before-completion`:
   - Evidence: focused tests, touched-file checks, child
     `scripts/refactor_gate.sh`, integration `scripts/refactor_gate.sh`, merge
     hashes, and cleanup evidence are required before claiming this stage
     complete.
+  - Memory worker evidence: read `superpowers:verification-before-completion`;
+    after extracting memory RPC workflows and presenters, reran the same
+    focused command and got 6 passed.
 - Parallelism decision:
   - `superpowers:dispatching-parallel-agents` used: yes. Memory and reset
     command bodies are independent command domains with separate new modules and
@@ -186,6 +196,11 @@ changes and must not revert unrelated edits.
 - Failing test commands:
   - Memory worker:
     `uv run --extra dev pytest tests/test_cli/test_memory_cli_boundary.py tests/test_cli/test_cli_product_completeness.py::test_memory_status_json_reuses_doctor_rpc tests/test_cli/test_cli_product_completeness.py::test_memory_list_json_uses_gateway_rpc tests/test_cli/test_cli_product_completeness.py::test_memory_search_and_show_use_gateway_rpcs -q`
+    - RED result from `codex/refactor-cli-memory-boundary-worker`: exit 1,
+      3 failed and 3 passed. Failures were
+      `test_memory_commands_delegate_to_workflow_boundary`,
+      `test_memory_workflow_owns_rpc_methods_and_payload_keys`, and
+      `test_memory_presenter_owns_json_table_and_truncated_rendering`.
   - Reset worker:
     `uv run --extra dev pytest tests/test_cli/test_reset_cli_boundary.py -q`
 - Expected red failures:
@@ -202,10 +217,31 @@ changes and must not revert unrelated edits.
   - Preserve exact user-facing text and exit codes.
 - Focused green command after both workers are merged:
   - `uv run --extra dev pytest tests/test_cli/test_memory_cli_boundary.py tests/test_cli/test_reset_cli_boundary.py tests/test_cli/test_cli_product_completeness.py::test_memory_status_json_reuses_doctor_rpc tests/test_cli/test_cli_product_completeness.py::test_memory_list_json_uses_gateway_rpc tests/test_cli/test_cli_product_completeness.py::test_memory_search_and_show_use_gateway_rpcs -q`
+  - Memory worker GREEN result before reset-worker merge:
+    `uv run --extra dev pytest tests/test_cli/test_memory_cli_boundary.py tests/test_cli/test_cli_product_completeness.py::test_memory_status_json_reuses_doctor_rpc tests/test_cli/test_cli_product_completeness.py::test_memory_list_json_uses_gateway_rpc tests/test_cli/test_cli_product_completeness.py::test_memory_search_and_show_use_gateway_rpcs -q`
+    exited 0 with 6 passed.
+  - Memory worker reran the same focused command after ruff's import-order fix:
+    exit 0, 6 passed.
 - Additional touched-file checks:
   - `uv run --extra dev ruff check src/opensquilla/cli/main.py src/opensquilla/cli/memory_workflows.py src/opensquilla/cli/memory_presenters.py src/opensquilla/cli/reset_workflows.py src/opensquilla/cli/reset_presenters.py tests/test_cli/test_memory_cli_boundary.py tests/test_cli/test_reset_cli_boundary.py tests/test_cli/test_cli_product_completeness.py`
   - `uv run --extra dev mypy src/opensquilla/cli --show-error-codes`
   - `git diff --check`
+  - Memory worker touched-file checks:
+    - `uv run --extra dev ruff check src/opensquilla/cli/main.py src/opensquilla/cli/memory_workflows.py src/opensquilla/cli/memory_presenters.py tests/test_cli/test_memory_cli_boundary.py tests/test_cli/test_cli_product_completeness.py`
+      exited 0, all checks passed.
+    - `uv run --extra dev mypy src/opensquilla/cli --show-error-codes`
+      exited 0, no issues found in 124 source files.
+    - `git diff --check` exited 0.
+  - Memory worker full gate:
+    - `scripts/refactor_gate.sh` exited 1 after ruff, mypy, and whitespace
+      passed and pytest reported 2673 passed, 8 skipped, 1 failed.
+    - The failing test was
+      `tests/test_public_release_hygiene.py::test_tracked_public_files_do_not_contain_real_secret_shapes_or_local_paths`
+      for a pre-existing local path in
+      `docs/refactor/stages/2026-05-19-cli-lifecycle-cron-boundaries.md`.
+      `git show HEAD:docs/refactor/stages/2026-05-19-cli-lifecycle-cron-boundaries.md`
+      confirms the same local-home path lines already exist at HEAD, and that
+      file is outside the memory worker ownership boundary.
 
 ## Files
 

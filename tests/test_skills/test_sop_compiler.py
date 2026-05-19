@@ -858,3 +858,116 @@ def test_cli_skills_inspect_prints_compiled_dag(tmp_path: Path) -> None:
     output = inspect_compiled_dag(name="meta-tiny", bundled_dir=bundled)
     assert "s1" in output
     assert "tiny-runner" in output
+
+
+# ---------------------------------------------------------------------------
+# Acceptance test
+# ---------------------------------------------------------------------------
+
+
+def _normalize_plan(plan: Any) -> dict[str, Any]:
+    """Reduce a MetaPlan to a dict that's comparable across YAML key orderings.
+
+    We don't compare top-level `name` / `priority` / `triggers` because
+    the SOP and handwritten variants share those frontmatter fields.
+    Only the per-step content matters for acceptance.
+    """
+
+    return {
+        step.id: {
+            "kind": step.kind,
+            "skill": step.skill,
+            "depends_on": sorted(step.depends_on),
+            "with_args": dict(step.with_args),
+            "route": [(c.when, c.to) for c in step.route],
+            "tool": step.tool,
+            "tool_args": dict(step.tool_args),
+            "tool_allowlist": sorted(step.tool_allowlist),
+            "output_choices": list(step.output_choices),
+        }
+        for step in plan.steps
+    }
+
+
+def test_acceptance_meta_paper_write_sop_compiles_to_equivalent_dag() -> None:
+    """The SOP-form meta-paper-write must compile to a MetaPlan
+    semantically equivalent to the handwritten YAML version."""
+
+    from opensquilla.skills.loader import SkillLoader
+    from opensquilla.skills.meta.parser import parse_meta_plan
+
+    project_root = Path(__file__).resolve().parents[2]
+    bundled = project_root / "src" / "opensquilla" / "skills" / "bundled"
+
+    snapshot = Path("/tmp/_sop_acceptance_snap.json")
+    if snapshot.exists():
+        snapshot.unlink()
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=snapshot)
+    loader.invalidate_cache()
+    loader.load_all()
+    sop_spec = loader.get_by_name("meta-paper-write")
+    assert sop_spec is not None
+    assert sop_spec.kind == "meta"  # after compilation
+    sop_plan = parse_meta_plan(sop_spec)
+    assert sop_plan is not None
+
+    # Load the handwritten fixture as a bare meta SkillSpec
+    fixture_path = (
+        project_root / "tests" / "_fixtures" / "meta-paper-write-handwritten.SKILL.md"
+    )
+    handwritten_text = fixture_path.read_text()
+    import yaml as _yaml
+
+    _, _, after_frontmatter = handwritten_text.partition("---")
+    fm_yaml, _, _ = after_frontmatter.partition("---")
+    fm = _yaml.safe_load(fm_yaml)
+
+    from opensquilla.skills.types import SkillLayer, SkillSpec
+
+    handwritten_spec = SkillSpec(
+        name=fm["name"],
+        description=fm.get("description", ""),
+        layer=SkillLayer.BUNDLED,
+        always=False,
+        triggers=fm.get("triggers", []),
+        content="",
+        kind=fm.get("kind", "meta"),
+        composition_raw=fm.get("composition"),
+    )
+    handwritten_plan = parse_meta_plan(handwritten_spec)
+    assert handwritten_plan is not None
+
+    sop_norm = _normalize_plan(sop_plan)
+    handwritten_norm = _normalize_plan(handwritten_plan)
+
+    assert set(sop_norm.keys()) == set(handwritten_norm.keys()), (
+        f"step id sets differ:\n"
+        f"  SOP only: {set(sop_norm.keys()) - set(handwritten_norm.keys())}\n"
+        f"  Hand only: {set(handwritten_norm.keys()) - set(sop_norm.keys())}"
+    )
+
+    # Acceptance allows the SOP to have STRICTER depends_on (more deps)
+    # than the handwritten YAML — the SOP's sequential phase defaults add
+    # safe dependencies. We assert handwritten.depends_on ⊆ SOP.depends_on
+    # and equal otherwise.
+    for step_id, hand in handwritten_norm.items():
+        sop = sop_norm[step_id]
+        for key in (
+            "kind",
+            "skill",
+            "with_args",
+            "route",
+            "tool",
+            "tool_args",
+            "tool_allowlist",
+            "output_choices",
+        ):
+            assert sop[key] == hand[key], (
+                f"step {step_id} field {key} differs:\n"
+                f"  SOP:  {sop[key]!r}\n"
+                f"  Hand: {hand[key]!r}"
+            )
+        assert set(hand["depends_on"]) <= set(sop["depends_on"]), (
+            f"step {step_id} depends_on: handwritten {hand['depends_on']!r} "
+            f"not subset of SOP {sop['depends_on']!r}"
+        )

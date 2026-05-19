@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import getpass
-import inspect
-import json
 import os
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
@@ -22,6 +20,8 @@ import typer
 from rich.panel import Panel
 
 from opensquilla.cli import attachments as _cli_attachments
+from opensquilla.cli import chat_approval_prompts as _chat_approval_prompts
+from opensquilla.cli import chat_standalone_transcript_rewrite as _chat_transcript_rewrite
 from opensquilla.cli import chat_stream_presenters
 from opensquilla.cli import chat_stream_support as _chat_stream_support
 from opensquilla.cli.chat_gateway_approvals_workflows import (
@@ -83,7 +83,7 @@ from opensquilla.cli.chat_standalone_utility_route_workflows import (
     handle_standalone_utility_route_command,
 )
 from opensquilla.cli.repl.commands import is_exit_command, render_help_table
-from opensquilla.cli.repl.prompt import prompt_approval, prompt_user
+from opensquilla.cli.repl.prompt import prompt_user
 from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.cli.repl.stream import StreamingRenderer, TurnResult, UsageSummary
 from opensquilla.cli.ui import ACCENT, console, error_panel
@@ -107,6 +107,10 @@ _optional_positive_config_float = _chat_stream_support._optional_positive_config
 _timeout_exception_message = _chat_stream_support._timeout_exception_message
 _turn_stream_error_message = _chat_stream_support._turn_stream_error_message
 _wrap_cli_turn_stream = _chat_stream_support._wrap_cli_turn_stream
+_maybe_handle_approval = _chat_approval_prompts.maybe_handle_approval
+_local_approval_resolver = _chat_approval_prompts.local_approval_resolver
+_read_standalone_transcript = _chat_transcript_rewrite.read_standalone_transcript
+_flush_before_standalone_rewrite = _chat_transcript_rewrite.flush_before_standalone_rewrite
 
 
 class _GatewayClientLike(Protocol):
@@ -187,127 +191,6 @@ def _resolve_compaction_provider(
         return resolver()
     except Exception:  # noqa: BLE001
         return None
-
-
-async def _maybe_handle_approval(
-    result: Any,
-    live: Any,
-    resolver: Callable[..., Awaitable[Any]],
-    elevated_state: dict[str, str | None] | None = None,
-) -> None:
-    """If *result* is an approval-required/pending payload, prompt/notify the user.
-
-    The prompt offers four approval choices:
-
-    * ``o`` / ``y`` — allow once (approve only this specific call)
-    * ``a``         — allow always (cache intent for the session lifetime)
-    * ``b``         — bypass (approve + flip session into /elevated bypass mode;
-                      future destructive ops auto-approve, sensitive paths still
-                      hard-blocked)
-    * ``d`` / ``n`` — deny
-
-    ``resolver(approval_id, approved, allow_always=...)`` is called with the
-    user's decision. The Live display is paused during input and resumed
-    afterwards so the prompt isn't mangled by the refresh loop.
-    """
-    payload: dict[str, Any]
-    if isinstance(result, str):
-        try:
-            parsed = json.loads(result)
-        except (ValueError, TypeError):
-            return
-        if not isinstance(parsed, dict):
-            return
-        payload = parsed
-    elif isinstance(result, dict):
-        payload = result
-    else:
-        return
-
-    # Hard-block envelope (sensitive path, etc.) — just show the refusal,
-    # no prompt to offer.
-    if payload.get("status") == "blocked":
-        live.stop()
-        try:
-            console.print()
-            console.print(
-                Panel(
-                    f"[bold]Command:[/bold] {str(payload.get('command', '')).strip()}\n"
-                    f"[dim]{payload.get('message', '')}[/dim]",
-                    title="[red]Blocked (sensitive path)[/red]",
-                    border_style="red",
-                )
-            )
-        finally:
-            live.start()
-        return
-
-    status = str(payload.get("status") or "")
-    if status not in {"approval_required", "approval_pending"}:
-        return
-    approval_id = payload.get("approval_id")
-    if not isinstance(approval_id, str) or not approval_id:
-        return
-    command = str(payload.get("command", "")).strip()
-    warning = str(payload.get("warning") or payload.get("message") or "").strip()
-
-    live.stop()
-    try:
-        console.print()
-        body = f"[bold]Command:[/bold] {command or '(not shown)'}"
-        if warning:
-            body += f"\n[dim]{warning}[/dim]"
-        console.print(
-            Panel(
-                body,
-                title=(
-                    "[yellow]Approval pending[/yellow]"
-                    if status == "approval_pending"
-                    else "[yellow]Approval required[/yellow]"
-                ),
-                border_style="yellow",
-            )
-        )
-        console.print(
-            "[dim]  [bold]o[/bold]nce    allow this call only[/dim]\n"
-            "[dim]  [bold]a[/bold]lways  allow this intent for the session[/dim]\n"
-            "[dim]  [bold]b[/bold]ypass  approve + skip future approvals "
-            "(sensitive paths still blocked)[/dim]\n"
-            "[dim]  [bold]d[/bold]eny    reject[/dim]"
-        )
-        answer = await prompt_approval("Decision [o/a/b/d]: ")
-
-        flip_to_bypass = False
-        # Backwards compatibility: y still means once, n still means deny.
-        if answer in ("b", "bypass"):
-            approved, allow_always, label = True, True, "Approved + bypass mode"
-            flip_to_bypass = True
-        elif answer in ("a", "always"):
-            approved, allow_always, label = True, True, "Always approved"
-        elif answer in ("o", "y", "yes", "once", ""):
-            approved, allow_always, label = True, False, "Approved (once)"
-        else:
-            approved, allow_always, label = False, False, "Denied"
-
-        try:
-            await resolver(approval_id, approved, allow_always=allow_always)
-            color = "green" if approved else "red"
-            if flip_to_bypass:
-                if elevated_state is not None:
-                    elevated_state["mode"] = "bypass"
-                suffix = (
-                    " — session now in [red]bypass[/red] mode. "
-                    "Sensitive paths still blocked. Use /elevated off to revert."
-                )
-            elif allow_always:
-                suffix = " — future similar intents auto-approve."
-            else:
-                suffix = ""
-            console.print(f"[{color}]{label}[/{color}]{suffix}")
-        except Exception as exc:  # pragma: no cover — RPC/queue transport errors
-            console.print(f"[red]Failed to resolve approval:[/red] {exc}")
-    finally:
-        live.start()
 
 
 def _cli_sender_id() -> str:
@@ -409,76 +292,6 @@ def run_chat(
 # ---------------------------------------------------------------------------
 # Standalone mode (--standalone) — TurnRunner + build_services, no daemon
 # ---------------------------------------------------------------------------
-
-
-async def _read_standalone_transcript(
-    session_manager: Any,
-    session_key: str,
-) -> list[Any] | None:
-    """Read the durable transcript before a destructive standalone command."""
-    if session_manager is None:
-        return []
-    for method_name in ("get_transcript", "read_transcript"):
-        reader = getattr(session_manager, method_name, None)
-        if not callable(reader):
-            continue
-        try:
-            result = reader(session_key)
-            if inspect.isawaitable(result):
-                result = await result
-        except KeyError:
-            return []
-        except Exception:  # noqa: BLE001
-            return None
-        return list(result or [])
-    return None
-
-
-async def _flush_before_standalone_rewrite(
-    svc: Any,
-    session_key: str,
-    *,
-    operation: str,
-) -> bool:
-    """Fail closed before reset/compact when a durable transcript exists."""
-    transcript = await _read_standalone_transcript(
-        getattr(svc, "session_manager", None),
-        session_key,
-    )
-    if transcript is None:
-        console.print(
-            f"[yellow]{operation} aborted: could not inspect the durable transcript.[/yellow]"
-        )
-        return False
-    if not transcript:
-        return True
-
-    flush_service = getattr(svc, "flush_service", None)
-    if flush_service is None:
-        console.print(
-            f"[yellow]{operation} aborted: flush service is unavailable and "
-            "the durable transcript is non-empty.[/yellow]"
-        )
-        return False
-
-    try:
-        receipt = await flush_service.execute(
-            transcript,
-            session_key,
-            agent_id="main",
-            timeout=30.0,
-            message_window=0,
-            segment_mode="auto",
-        )
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[yellow]{operation} aborted: flush failed ({exc}).[/yellow]")
-        return False
-
-    if getattr(receipt, "mode", None) == "error":
-        error = getattr(receipt, "error", None) or "unknown error"
-        console.print(f"[yellow]{operation} aborted: flush failed ({error}).[/yellow]")
-        return False
-    return True
 
 
 async def _standalone_repl(
@@ -942,25 +755,6 @@ async def _stream_response_gateway(
         cancelled=cancelled,
         artifacts=artifacts,
     )
-
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
-
-def _local_approval_resolver() -> Callable[..., Awaitable[None]]:
-    """Return a resolver that talks directly to the in-process approval queue.
-
-    Used in --standalone mode where there is no gateway RPC to call.
-    """
-
-    async def _resolve(approval_id: str, approved: bool, *, allow_always: bool = False) -> None:
-        from opensquilla.application.approval_queue import get_approval_queue
-
-        get_approval_queue().resolve(approval_id, approved, allow_always=allow_always)
-
-    return _resolve
 
 
 async def _stream_response_turnrunner(

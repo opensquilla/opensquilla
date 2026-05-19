@@ -11,7 +11,7 @@
 - Date: 2026-05-19
 - Integration branch: `codex/refactor-architecture`
 - Child branch: `codex/refactor-gateway-websocket-connection-core`
-- Child worktree: `/Users/cwan0785/opensquilla-refactor-agent-gateway`
+- Child worktree: `../opensquilla-refactor-agent-gateway`
 - Owner: Codex gateway worker
 
 ## Goal
@@ -55,7 +55,7 @@ behavior, or compatibility imports used by existing tests/callers.
 - `superpowers:using-git-worktrees`:
   - Evidence: Read the skill instructions, confirmed the requested fixed
     worktree path with `git worktree list`, and worked only in
-    `/Users/cwan0785/opensquilla-refactor-agent-gateway` on
+    `../opensquilla-refactor-agent-gateway` on
     `codex/refactor-gateway-websocket-connection-core`.
 - `superpowers:writing-plans`:
   - Evidence: Read the skill instructions and used this stage record as the
@@ -168,10 +168,10 @@ behavior, or compatibility imports used by existing tests/callers.
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`, run
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
+- [x] Remove `../opensquilla-refactor-active`, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
 
@@ -185,8 +185,17 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Integration gate
 
-- Not run in this child worker. User explicitly requested not to merge to
-  integration.
+- Integration merge: `eb42b10` (`Merge gateway WebSocket connection core`).
+- Batch focused verification after merging Channels, Provider, Session,
+  Gateway, and Web UI: focused pytest group passed with `110 passed`.
+- Full integration gate after the coarse batch and stage-record path cleanup:
+  `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues
+  in 577 source files; whitespace passed; pytest `2822 passed, 6 skipped, 2
+  warnings`; gateway smoke start/status/stop/status passed on
+  `127.0.0.1:61875`; final line `Refactor gate complete.`
+- Cleanup evidence: the Gateway worker worktree and child branch were removed,
+  `git worktree prune` was run, and no `opensquilla-refactor-agent-*`
+  worktrees remained after cleanup.
 
 ## Rollback
 
@@ -197,9 +206,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit: Recorded in the worker final response. The commit cannot
-  embed its own final hash without changing that hash.
-- Integration merge: Not performed by request.
+- Child commit: `8094ba2` (`Refactor gateway WebSocket connection core`).
+- Integration merge: `eb42b10` (`Merge gateway WebSocket connection core`).
 - Verification evidence:
   - RED boundary test:
     `uv run --extra dev pytest tests/test_gateway/test_websocket_connection_core_boundary.py -q`
@@ -212,13 +220,21 @@ Co-authored-by: Codex <noreply@openai.com>
   - `git diff --check` passed.
   - `scripts/refactor_gate.sh` passed with full ruff, full mypy, full pytest
     `2805 passed, 8 skipped`, and gateway smoke.
+  - Integration coarse-batch focused tests passed with `110 passed`.
+  - Full integration gate passed with ruff, mypy over 577 source files,
+    whitespace, pytest `2822 passed, 6 skipped, 2 warnings`, gateway smoke on
+    `127.0.0.1:61875`, and final line `Refactor gate complete.`
 - Residual risk:
   - This is a behavior-compatible extraction, so the main risk is import
     compatibility for private symbols. The new boundary test covers the private
     symbols already imported by focused writer queue tests from
     `opensquilla.gateway.websocket`.
-  - Integration merge/gate intentionally not performed in this worker per user
-    instruction.
+  - Integration gate evidence covers the merged Gateway extraction together with
+    the parallel Channels, Provider, Session, and Web UI changes.
+- Cleanup evidence:
+  - Gateway worker branch/worktree were removed and `git worktree prune`
+    completed; only the integration refactor worktree remained for this refactor
+    line.
 - Next recommended slice: Keep gateway handler concerns separate from
   connection-core mechanics; future slices can consider handshake/message-loop
   helpers only with explicit public wire compatibility coverage.

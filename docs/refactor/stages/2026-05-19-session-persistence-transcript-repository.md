@@ -152,10 +152,10 @@ storage-routing decisions for this boundary.
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`, run
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
+- [x] Remove `../opensquilla-refactor-active`, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
 
@@ -177,7 +177,18 @@ Result: `scripts/refactor_gate.sh` passed. Full gate evidence:
 
 ## Integration gate
 
-- Not run by this child worker; do not merge to integration from this slice.
+- Integration merge: `f4c3450` (`Merge session persistence transcript
+  repository`).
+- Batch focused verification after merging Channels, Provider, Session,
+  Gateway, and Web UI: focused pytest group passed with `110 passed`.
+- Full integration gate after the coarse batch and stage-record path cleanup:
+  `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues
+  in 577 source files; whitespace passed; pytest `2822 passed, 6 skipped, 2
+  warnings`; gateway smoke start/status/stop/status passed on
+  `127.0.0.1:61875`; final line `Refactor gate complete.`
+- Cleanup evidence: the Session worker worktree and child branch were removed,
+  `git worktree prune` was run, and no `opensquilla-refactor-agent-*`
+  worktrees remained after cleanup.
 
 ## Rollback
 
@@ -187,19 +198,27 @@ Result: `scripts/refactor_gate.sh` passed. Full gate evidence:
 
 ## Completion record
 
-- Child commit: `26842c4866ac10f04178106771b48ff1e238d460`
-- Integration merge: not performed by this worker
+- Child commits:
+  - `26842c4` (`Extract session persistence repository`)
+  - `28f4316` (`Record session persistence repository stage`)
+- Integration merge: `f4c3450` (`Merge session persistence transcript repository`)
 - Verification evidence:
   - RED boundary test failed before implementation because
     `opensquilla.session.repository` did not exist.
   - Focused manager/epoch tests passed after implementation.
   - Touched-file ruff, mypy, and diff checks passed.
   - Full `scripts/refactor_gate.sh` passed, including gateway smoke.
+  - Integration coarse-batch focused tests passed with `110 passed`.
+  - Full integration gate passed with ruff, mypy over 577 source files,
+    whitespace, pytest `2822 passed, 6 skipped, 2 warnings`, gateway smoke on
+    `127.0.0.1:61875`, and final line `Refactor gate complete.`
 - Residual risk:
   - Repository facade is intentionally thin; storage transaction/schema
     ownership remains in `SessionStorage`.
-  - Integration merge/gate/cleanup were intentionally not performed by this
-    child worker per slice instruction.
+- Cleanup evidence:
+  - Session worker branch/worktree were removed and `git worktree prune`
+    completed; only the integration refactor worktree remained for this refactor
+    line.
 - Next recommended slice:
   - Consider a later session slice for task-runtime repository boundaries if
     the integration owner wants the remaining ledger methods pulled out of

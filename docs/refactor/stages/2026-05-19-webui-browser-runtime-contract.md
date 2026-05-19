@@ -148,7 +148,13 @@ Create a coarse browser runtime contract harness for the Web UI core runtime mod
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [x] Record child hash, verification, residual risk, and next recommended slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, residual risk, and
+      next recommended slice.
+- [x] Remove the Web UI worker worktree, run `git worktree prune`, and verify no
+      extra refactor worktree directories remain beyond
+      `../opensquilla-refactor-integration`.
 
 ## Child gate
 
@@ -157,6 +163,20 @@ Co-authored-by: Codex <noreply@openai.com>
 - `git diff --check`
 - `uv run --extra dev pytest`
 - gateway smoke through `scripts/refactor_gate.sh`
+
+## Integration gate
+
+- Integration merge: `512f5a6` (`Merge Web UI browser runtime contract`).
+- Batch focused verification after merging Channels, Provider, Session,
+  Gateway, and Web UI: focused pytest group passed with `110 passed`.
+- Full integration gate after the coarse batch and stage-record path cleanup:
+  `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues
+  in 577 source files; whitespace passed; pytest `2822 passed, 6 skipped, 2
+  warnings`; gateway smoke start/status/stop/status passed on
+  `127.0.0.1:61875`; final line `Refactor gate complete.`
+- Cleanup evidence: the Web UI worker worktree and child branch were removed,
+  `git worktree prune` was run, and no `opensquilla-refactor-agent-*`
+  worktrees remained after cleanup.
 
 ## Rollback
 
@@ -167,6 +187,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 - Child commit:
   - `9846b294406aaa547fa3001d27c14ea365ecf349` (`9846b29`, `Add Web UI browser runtime contract`).
+- Integration merge:
+  - `512f5a6` (`Merge Web UI browser runtime contract`).
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --allow-dirty` passed on branch `codex/refactor-webui-browser-runtime-contract` at `b7422a3`.
   - RED: `uv run --extra dev pytest tests/test_gateway/test_webui_browser_runtime_static.py -q` failed as expected with `2 failed`; the template did not load `static/js/browser_runtime.js` and the Node VM harness could not read `src/opensquilla/gateway/static/js/browser_runtime.js`.
@@ -176,9 +198,17 @@ Co-authored-by: Codex <noreply@openai.com>
   - Touched Ruff: `uv run --extra dev ruff check tests/test_gateway/test_webui_browser_runtime_static.py` passed.
   - Whitespace: `git diff --check` passed.
   - Full child gate: `scripts/refactor_gate.sh` passed; Ruff passed; mypy passed with no issues in 574 source files; whitespace passed; pytest `2806 passed, 8 skipped, 2 warnings in 58.13s`; gateway smoke start/status/stop passed on `127.0.0.1:61054`; refactor gate complete.
+  - Integration coarse-batch focused tests passed with `110 passed`.
+  - Full integration gate passed with ruff, mypy over 577 source files,
+    whitespace, pytest `2822 passed, 6 skipped, 2 warnings`, gateway smoke on
+    `127.0.0.1:61875`, and final line `Refactor gate complete.`
   - Optional functional browser attempt: `OPENSQUILLA_WEBUI_BROWSER_E2E=1 OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 uv run --extra dev pytest tests/functional/test_webui_browser_e2e.py tests/functional/test_webui_browser_chat_e2e.py -q` failed before page execution because Playwright Chromium was not installed in the local cache (`npx playwright install` required).
 - Residual risk:
   - Real-browser Playwright smoke did not run to completion in this environment because the Chromium binary is missing; the new Node VM harness covers browser-like execution of the core runtime modules but does not replace a visual/browser rendering pass.
   - The runtime contract intentionally adds only a no-op diagnostic global; future refactors should avoid treating it as a replacement for the existing RPC/HTTP/app modules.
+- Cleanup evidence:
+  - Web UI worker branch/worktree were removed and `git worktree prune`
+    completed; only the integration refactor worktree remained for this refactor
+    line.
 - Next recommended slice:
   - Install or provision Playwright Chromium in the test environment and promote the existing opt-in Web UI browser smokes into a routinely runnable browser gate, or continue with a larger Web UI view-module runtime harness for selected views.

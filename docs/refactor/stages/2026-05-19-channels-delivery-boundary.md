@@ -11,7 +11,7 @@
 - Date: 2026-05-19
 - Integration branch: `codex/refactor-architecture`
 - Child branch: `codex/refactor-channels-delivery-boundary`
-- Child worktree: `/Users/cwan0785/opensquilla-refactor-agent-channels`
+- Child worktree: `../opensquilla-refactor-agent-channels`
 - Owner: Codex worker for Channels delivery/manager boundary only.
 
 ## Goal
@@ -68,7 +68,7 @@ channel replies/events, and public RPC payload compatibility.
 
 - `superpowers:using-git-worktrees`:
   - Evidence: Existing isolated worktree verified at
-    `/Users/cwan0785/opensquilla-refactor-agent-channels` on branch
+    `../opensquilla-refactor-agent-channels` on branch
     `codex/refactor-channels-delivery-boundary`; no new worktree created.
 - `superpowers:writing-plans`:
   - Evidence: This stage file was created from `docs/refactor/stage-template.md`
@@ -177,10 +177,10 @@ channel replies/events, and public RPC payload compatibility.
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`, run
+- [x] Remove `../opensquilla-refactor-active`, run
       `git worktree prune`, and verify no extra refactor worktree directories
       remain beyond `../opensquilla-refactor-integration`.
 
@@ -194,7 +194,17 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Integration gate
 
-- Not run by this worker. User explicitly requested no integration merge.
+- Integration merge: `0a4d058` (`Merge channels delivery boundary`).
+- Batch focused verification after merging Channels, Provider, Session,
+  Gateway, and Web UI: focused pytest group passed with `110 passed`.
+- Full integration gate after the coarse batch and stage-record path cleanup:
+  `scripts/refactor_gate.sh` passed; ruff passed; mypy passed with no issues
+  in 577 source files; whitespace passed; pytest `2822 passed, 6 skipped, 2
+  warnings`; gateway smoke start/status/stop/status passed on
+  `127.0.0.1:61875`; final line `Refactor gate complete.`
+- Cleanup evidence: the Channels worker worktree and child branch were removed,
+  `git worktree prune` was run, and no `opensquilla-refactor-agent-*`
+  worktrees remained after cleanup.
 
 ## Rollback
 
@@ -204,8 +214,8 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Child commit: this worker commit; see final response or `git log -1`.
-- Integration merge: intentionally not performed by this worker.
+- Child commit: `9918fd1` (`Refactor channels delivery boundary`).
+- Integration merge: `0a4d058` (`Merge channels delivery boundary`).
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --allow-dirty` completed on
     branch `codex/refactor-channels-delivery-boundary` at HEAD `b7422a3`.
@@ -224,10 +234,18 @@ Co-authored-by: Codex <noreply@openai.com>
   - Full gate: `scripts/refactor_gate.sh` passed ruff, mypy, whitespace,
     pytest `2807 passed, 8 skipped, 2 warnings`, gateway smoke start/status/
     stop/status, and final line `Refactor gate complete.`
+- Integration verification:
+  - Coarse-batch focused tests passed with `110 passed`.
+  - Full integration gate passed with ruff, mypy over 577 source files,
+    whitespace, pytest `2822 passed, 6 skipped, 2 warnings`, gateway smoke on
+    `127.0.0.1:61875`, and final line `Refactor gate complete.`
+- Cleanup evidence:
+  - Channels worker branch/worktree were removed and `git worktree prune`
+    completed; only the integration refactor worktree remained for this refactor
+    line.
 - Residual risk: Behavior is preserved by direct helper tests, manager
-  delegation coverage, focused channel manager/RPC compatibility tests, and the
-  full gate. Integration merge/gate and cleanup are intentionally not performed
-  in this worker per user instruction.
-- Next recommended slice: integrate this child branch into
-  `codex/refactor-architecture` from the integration worktree, then run the
-  integration gate there.
+  delegation coverage, focused channel manager/RPC compatibility tests, the
+  coarse-batch focused suite, and the full integration gate.
+- Next recommended slice: continue with the next coarse module batch only after
+  checking that its ownership boundaries do not overlap already merged
+  Channels, Provider, Session, Gateway, Web UI, or Tools files.

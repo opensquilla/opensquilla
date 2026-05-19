@@ -147,7 +147,7 @@ Create a behavior-compatible Provider-domain boundary between runtime status mod
 - [x] Implement the cohesive behavior-compatible module batch without dropping existing feature coverage.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
@@ -182,7 +182,7 @@ The final four integration/cleanup steps are intentionally left unchecked for th
 
 ## Completion record
 
-- Child commit: pending.
+- Child commit: `3d6726eed1f2d6bebb3b308fe9a83facab34b882`.
 - Integration merge: not run by this worker.
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --allow-dirty` passed on branch `codex/refactor-provider-runtime-status-boundary` at `b7422a3`.

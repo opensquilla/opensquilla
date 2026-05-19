@@ -831,3 +831,30 @@ def test_loader_skips_malformed_meta_sop(tmp_path: Path) -> None:
 
     # Compilation failed → the skill is not in the loaded set.
     assert "meta-broken" not in specs
+
+
+# ---------------------------------------------------------------------------
+# CLI subcommands
+# ---------------------------------------------------------------------------
+
+
+def test_cli_skills_inspect_prints_compiled_dag(tmp_path: Path) -> None:
+    """`opensquilla skills inspect <name>` writes the compiled composition to stdout."""
+
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "tiny-runner").mkdir()
+    (bundled / "tiny-runner" / "SKILL.md").write_text(
+        "---\nname: tiny-runner\ndescription: x\nentrypoint:\n  command: python -c 'pass'\n---\n",
+    )
+    (bundled / "meta-tiny").mkdir()
+    (bundled / "meta-tiny" / "SKILL.md").write_text(
+        "---\nname: meta-tiny\ndescription: t\nkind: meta_sop\ntriggers: [t]\n---\n"
+        "## Phase 1: First\nRun `tiny-runner`. Save as `s1`.\n",
+    )
+
+    from opensquilla.cli.skills_cmd import inspect_compiled_dag
+
+    output = inspect_compiled_dag(name="meta-tiny", bundled_dir=bundled)
+    assert "s1" in output
+    assert "tiny-runner" in output

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -150,6 +151,28 @@ def _load_skill_rows() -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def inspect_compiled_dag(*, name: str, bundled_dir: Path | None = None) -> str:
+    """Return the compiled composition for a meta-skill as YAML text.
+
+    Helper used by both the CLI command and tests; isolating the logic
+    keeps the Typer command body minimal and verifiable.
+    """
+
+    import yaml as _yaml
+
+    from opensquilla.skills.loader import SkillLoader
+
+    loader = SkillLoader(bundled_dir=bundled_dir)
+    loader.invalidate_cache()
+    loader.load_all()
+    spec = loader.get_by_name(name)
+    if spec is None:
+        return f"skill {name!r} not loaded"
+    if spec.composition_raw is None:
+        return f"skill {name!r} has no composition (not a meta skill)"
+    return str(_yaml.safe_dump(spec.composition_raw, sort_keys=False))
 
 
 @skills_app.command("list")
@@ -484,3 +507,12 @@ def skills_publish(
             console.print(f"[red]Failed:[/] {result.message}")
 
     asyncio.run(_publish())
+
+
+@skills_app.command("inspect")
+def cli_inspect(
+    name: str = typer.Argument(..., help="Meta-skill name to inspect"),
+) -> None:
+    """Print the compiled composition.steps for a meta-skill."""
+
+    typer.echo(inspect_compiled_dag(name=name))

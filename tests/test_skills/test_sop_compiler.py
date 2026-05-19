@@ -474,3 +474,119 @@ def test_emit_parallel_phase_yields_sibling_steps() -> None:
     assert steps["s2b"]["depends_on"] == ["s1"]
     # s3 depends on both s2 steps
     assert set(steps["s3"]["depends_on"]) == {"s2a", "s2b"}
+
+
+def test_emit_for_each_expands_into_n_steps_with_loop_substitution() -> None:
+    from opensquilla.skills.meta.sop_compiler import _emit, _lex, _parse
+
+    body = (
+        "## Phase 1: First\n"
+        "Run `paper-experiment-stub`. Save as `s1`.\n"
+        "## Phase 2: Drafting [parallel for_each: section]\n"
+        "```yaml for_each\n"
+        "section:\n"
+        "  - {id: draft_a, name: abstract}\n"
+        "  - {id: draft_b, name: introduction}\n"
+        "```\n"
+        "Invoke `paper-outline-author` with:\n"
+        "- section: `{{ section.name }}`\n"
+        "- outline: `{{ outputs.s1 }}`\n"
+        "Save as `{{ section.id }}`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    loader = _StubSkillLoader(
+        {
+            "paper-experiment-stub": {"entrypoint": {"command": "x"}},
+            "paper-outline-author": {},
+        },
+    )
+    composition = _emit(doc, skill_loader=loader, skill_name="meta-x")
+    steps = {s["id"]: s for s in composition["steps"]}
+    assert set(steps.keys()) == {"s1", "draft_a", "draft_b"}
+    # Loop substitution happens at compile time: section.name → literal string
+    assert steps["draft_a"]["with"]["section"] == "abstract"
+    assert steps["draft_b"]["with"]["section"] == "introduction"
+    # Runtime templates pass through unchanged
+    assert steps["draft_a"]["with"]["outline"] == "{{ outputs.s1 }}"
+    assert steps["draft_b"]["with"]["outline"] == "{{ outputs.s1 }}"
+    # Both drafts depend on the previous phase
+    assert steps["draft_a"]["depends_on"] == ["s1"]
+    assert steps["draft_b"]["depends_on"] == ["s1"]
+
+
+def test_emit_for_each_field_omission_drops_missing_keys() -> None:
+    """The acceptance case: figure_path is only emitted for items that
+    define it. Other items have NO figure_path key in their with_args."""
+    from opensquilla.skills.meta.sop_compiler import _emit, _lex, _parse
+
+    body = (
+        "## Phase 1: Drafting [parallel for_each: section]\n"
+        "```yaml for_each\n"
+        "section:\n"
+        "  - {id: draft_a, name: abstract}\n"
+        "  - {id: draft_b, name: results, figure_path: paper/figure_1.pdf}\n"
+        "```\n"
+        "Invoke `paper-outline-author` with:\n"
+        "- section: `{{ section.name }}`\n"
+        "- figure_path: `{{ section.figure_path }}`\n"
+        "Save as `{{ section.id }}`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    loader = _StubSkillLoader({"paper-outline-author": {}})
+    composition = _emit(doc, skill_loader=loader, skill_name="meta-x")
+    steps = {s["id"]: s for s in composition["steps"]}
+    # draft_a does NOT define figure_path → key dropped
+    assert "figure_path" not in steps["draft_a"]["with"]
+    assert steps["draft_a"]["with"]["section"] == "abstract"
+    # draft_b defines figure_path → emitted with the literal value
+    assert steps["draft_b"]["with"]["figure_path"] == "paper/figure_1.pdf"
+    assert steps["draft_b"]["with"]["section"] == "results"
+
+
+def test_emit_for_each_mixed_template_rejected() -> None:
+    """A bullet that mixes a missing loop-var ref with other content must
+    raise — silent emission with empty interpolation would be confusing."""
+    from opensquilla.skills.meta.sop_compiler import SOPCompileError, _emit, _lex, _parse
+
+    body = (
+        "## Phase 1: Drafting [parallel for_each: section]\n"
+        "```yaml for_each\n"
+        "section:\n"
+        "  - {id: draft_a, name: abstract}\n"
+        "```\n"
+        "Invoke `paper-outline-author` with:\n"
+        "- caption: `Figure for {{ section.figure_path }}`\n"
+        "Save as `{{ section.id }}`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    loader = _StubSkillLoader({"paper-outline-author": {}})
+    with pytest.raises(SOPCompileError, match="missing"):
+        _emit(doc, skill_loader=loader, skill_name="meta-x")
+
+
+def test_emit_for_each_duplicate_generated_id_rejected() -> None:
+    """If loop expansion produces a step id that clashes with an existing
+    step elsewhere, raise with a clear cross-reference."""
+    from opensquilla.skills.meta.sop_compiler import SOPCompileError, _emit, _lex, _parse
+
+    body = (
+        "## Phase 1: First\n"
+        "Run `paper-experiment-stub`. Save as `draft_a`.\n"
+        "## Phase 2: Drafting [parallel for_each: section]\n"
+        "```yaml for_each\n"
+        "section:\n"
+        "  - {id: draft_a, name: abstract}\n"
+        "```\n"
+        "Invoke `paper-outline-author` with:\n"
+        "- section: `{{ section.name }}`\n"
+        "Save as `{{ section.id }}`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    loader = _StubSkillLoader(
+        {
+            "paper-experiment-stub": {"entrypoint": {"command": "x"}},
+            "paper-outline-author": {},
+        },
+    )
+    with pytest.raises(SOPCompileError, match="duplicate"):
+        _emit(doc, skill_loader=loader, skill_name="meta-x")

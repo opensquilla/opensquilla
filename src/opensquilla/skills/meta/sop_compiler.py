@@ -735,32 +735,90 @@ def _emit_step_from_invocation(
     return step
 
 
+_LOOP_REF_RE = re.compile(
+    r"\{\{\s*(?P<var>[A-Za-z_][A-Za-z0-9_]*)\.(?P<field>[A-Za-z_][A-Za-z0-9_]*)\s*\}\}",
+)
+
+
+def _substitute_loop_vars(
+    template: str,
+    *,
+    loop_var: str,
+    item: dict[str, str],
+    skill_name: str,
+    phase_index: int,
+    span: SourceSpan,
+) -> str | None:
+    """Resolve ``{{ <loop_var>.<field> }}`` references at compile time.
+
+    Returns the substituted string, or ``None`` if the template is *just*
+    a single loop reference and that field is missing from ``item``
+    (signals: drop the bullet entirely).
+
+    If the template mixes a missing loop reference with other content
+    (e.g. ``"Figure for {{ section.figure_path }}"``), raises an error.
+
+    Non-loop templates (``{{ outputs.foo }}``, ``{{ inputs.bar }}``) pass
+    through unchanged.
+    """
+
+    matches = list(_LOOP_REF_RE.finditer(template))
+    relevant = [m for m in matches if m.group("var") == loop_var]
+    if not relevant:
+        # No loop-var references: pass through as a runtime template.
+        return template
+
+    # Check for missing fields.
+    missing: list[str] = []
+    for m in relevant:
+        if m.group("field") not in item:
+            missing.append(m.group("field"))
+
+    if missing:
+        # If the ENTIRE template is a single missing loop reference,
+        # signal "drop this bullet" by returning None.
+        stripped_inner = template.strip()
+        if (
+            len(relevant) == 1
+            and stripped_inner.startswith("{{")
+            and stripped_inner.endswith("}}")
+            and stripped_inner.count("{{") == 1
+        ):
+            return None
+        # Otherwise mixed content: raise.
+        raise SOPCompileError(
+            skill_name=skill_name,
+            phase_index=phase_index,
+            span=span,
+            reason=(
+                f"for_each item {item.get('id', '?')!r} missing field(s) "
+                f"{missing!r} referenced in template; either define all "
+                f"items with this field or move the reference to its "
+                f"own bullet so the omission rule can drop it"
+            ),
+        )
+
+    # All fields present — substitute (only the loop-var refs; runtime
+    # templates pass through).
+    def _replace(m: re.Match[str]) -> str:
+        if m.group("var") != loop_var:
+            return m.group(0)  # leave runtime templates untouched
+        return item[m.group("field")]
+
+    return _LOOP_REF_RE.sub(_replace, template)
+
+
 def _emit(
     doc: SOPDocument,
     *,
     skill_loader: _LoaderProtocol,
     skill_name: str,
 ) -> dict[str, list[dict[str, object]]]:
-    """Convert a parsed/resolved SOP document into ``composition_raw``.
-
-    Sequential phases: each phase's steps depend on every step in the
-    previous phase. ``[parallel]`` and ``[parallel for_each: ...]``
-    handling lands in Task 6 / Task 7.
-
-    ``[depends_on: ...]`` annotation override lands in Task 8.
-    """
-
     all_steps: list[dict[str, object]] = []
     previous_phase_step_ids: list[str] = []
+    seen_ids: set[str] = set()
 
     for phase in doc.phases:
-        if phase.for_each_var is not None:
-            raise SOPCompileError(
-                skill_name=skill_name,
-                phase_index=phase.index,
-                span=phase.span,
-                reason="for_each emitter not implemented yet (Task 7)",
-            )
         if "depends_on" in phase.annotations:
             raise SOPCompileError(
                 skill_name=skill_name,
@@ -769,43 +827,120 @@ def _emit(
                 reason="`depends_on` annotation emitter not implemented yet (Task 8)",
             )
 
-        is_parallel = "parallel" in phase.annotations
-        # In both sequential AND parallel phases, every step in this phase
-        # depends on every step in the previous phase. The difference is
-        # only how within-phase steps relate to each other — but the spec
-        # does not allow within-phase chaining (you'd use multiple phases
-        # for that). So parallel and sequential phases produce the same
-        # depends_on output; ``[parallel]`` is mostly an author signal.
         depends_on = list(previous_phase_step_ids)
         phase_step_ids: list[str] = []
 
-        if not is_parallel and len(phase.invocations) > 1:
-            raise SOPCompileError(
-                skill_name=skill_name,
-                phase_index=phase.index,
-                span=phase.span,
-                reason=(
-                    f"phase has {len(phase.invocations)} invocations but no "
-                    f"[parallel] annotation — add [parallel] or split into "
-                    f"multiple phases"
-                ),
-            )
-
-        for inv in phase.invocations:
+        if phase.for_each_var is not None:
+            # Fan-out: each item produces one step.
+            if len(phase.invocations) != 1:
+                raise SOPCompileError(
+                    skill_name=skill_name,
+                    phase_index=phase.index,
+                    span=phase.span,
+                    reason="for_each phase must have exactly one invocation block",
+                )
+            inv = phase.invocations[0]
             kind = _resolve_kind(
                 inv,
                 skill_loader=skill_loader,
                 skill_name=skill_name,
                 phase_index=phase.index,
             )
-            step = _emit_step_from_invocation(
-                inv,
-                kind=kind,
-                depends_on=depends_on,
-                step_id=inv.step_id_template,
-            )
-            all_steps.append(step)
-            phase_step_ids.append(inv.step_id_template)
+            for item in phase.for_each_items:
+                # Substitute step id template
+                step_id_resolved = _substitute_loop_vars(
+                    inv.step_id_template,
+                    loop_var=phase.for_each_var,
+                    item=item,
+                    skill_name=skill_name,
+                    phase_index=phase.index,
+                    span=inv.span,
+                )
+                if step_id_resolved is None:
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase.index,
+                        span=inv.span,
+                        reason=(
+                            f"for_each item {item.get('id', '?')!r} produces an "
+                            f"empty step id"
+                        ),
+                    )
+                if step_id_resolved in seen_ids:
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase.index,
+                        span=inv.span,
+                        reason=(
+                            f"duplicate step id {step_id_resolved!r} (already "
+                            f"defined in an earlier phase)"
+                        ),
+                    )
+                seen_ids.add(step_id_resolved)
+
+                # Build per-item with_args; drop bullets that reduce to None
+                final_with: dict[str, str] = {}
+                for key, value in inv.with_args.items():
+                    unwrapped = _strip_inline_backticks(value)
+                    substituted = _substitute_loop_vars(
+                        unwrapped,
+                        loop_var=phase.for_each_var,
+                        item=item,
+                        skill_name=skill_name,
+                        phase_index=phase.index,
+                        span=inv.span,
+                    )
+                    if substituted is None:
+                        continue  # field omission rule
+                    final_with[key] = substituted
+
+                step: dict[str, object] = {
+                    "id": step_id_resolved,
+                    "kind": kind,
+                    "skill": inv.skill_name,
+                    "depends_on": depends_on,
+                }
+                if final_with:
+                    step["with"] = final_with
+                all_steps.append(step)
+                phase_step_ids.append(step_id_resolved)
+        else:
+            # Plain phase
+            is_parallel = "parallel" in phase.annotations
+            if not is_parallel and len(phase.invocations) > 1:
+                raise SOPCompileError(
+                    skill_name=skill_name,
+                    phase_index=phase.index,
+                    span=phase.span,
+                    reason=(
+                        f"phase has {len(phase.invocations)} invocations but no "
+                        f"[parallel] annotation — add [parallel] or split into "
+                        f"multiple phases"
+                    ),
+                )
+            for inv in phase.invocations:
+                if inv.step_id_template in seen_ids:
+                    raise SOPCompileError(
+                        skill_name=skill_name,
+                        phase_index=phase.index,
+                        span=inv.span,
+                        reason=f"duplicate step id {inv.step_id_template!r}",
+                    )
+                seen_ids.add(inv.step_id_template)
+                kind = _resolve_kind(
+                    inv,
+                    skill_loader=skill_loader,
+                    skill_name=skill_name,
+                    phase_index=phase.index,
+                )
+                step = _emit_step_from_invocation(
+                    inv,
+                    kind=kind,
+                    depends_on=depends_on,
+                    step_id=inv.step_id_template,
+                )
+                all_steps.append(step)
+                phase_step_ids.append(inv.step_id_template)
         previous_phase_step_ids = phase_step_ids
 
     return {"steps": all_steps}

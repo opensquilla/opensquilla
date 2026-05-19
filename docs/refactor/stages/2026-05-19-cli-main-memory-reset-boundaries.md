@@ -328,15 +328,15 @@ changes and must not revert unrelated edits.
 - [x] Merge both worker branches into the active child.
 - [x] Run focused green command and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh` in the active child worktree.
-- [ ] Commit child verification/stage record update with:
+- [x] Commit child verification/stage record update with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 - [ ] Remove `../opensquilla-refactor-active`,
       `../opensquilla-refactor-agent-cli-memory`, and
       `../opensquilla-refactor-agent-cli-reset`; run `git worktree prune`; verify
@@ -388,6 +388,25 @@ Co-authored-by: Codex <noreply@openai.com>
 - `uv run --extra dev pytest`
 - gateway smoke through `scripts/refactor_gate.sh`
 
+### Integration verification evidence
+
+- Integration merge:
+  - `91a955e` merged `codex/refactor-cli-main-memory-reset-boundaries` into
+    `codex/refactor-architecture`.
+- Merge checks:
+  - `git diff --check HEAD^ HEAD` result: passed.
+  - `rg -n "/Users/<user>" docs/refactor/stages/2026-05-19-cli-main-memory-reset-boundaries.md docs/refactor/stages/2026-05-19-cli-lifecycle-cron-boundaries.md`
+    returned no matches.
+  - Anchored conflict marker scan
+    `git grep -n "^<<<<<<<\\|^=======\\|^>>>>>>>" -- src/opensquilla/cli docs/refactor/stages/2026-05-19-cli-main-memory-reset-boundaries.md docs/refactor/stages/2026-05-19-cli-lifecycle-cron-boundaries.md`
+    returned no matches.
+- Full integration gate:
+  - Command: `scripts/refactor_gate.sh`
+  - Result: passed.
+  - Gate evidence: ruff passed, mypy passed (`559 source files`), whitespace
+    passed, pytest `2684 passed, 6 skipped`, gateway smoke passed, refactor gate
+    complete.
+
 ## Rollback
 
 - Revert the integration merge commit if memory CLI commands or reset command
@@ -407,13 +426,22 @@ Co-authored-by: Codex <noreply@openai.com>
 - `88c7cee` (`Merge CLI memory boundary worker`)
 - `06e44ae` (`Merge CLI reset boundary worker`)
 - Child verification commit:
-- pending
+- `6c7b587` (`Record CLI main memory reset child verification`)
 - Integration merge:
+- `91a955e` (`Merge CLI main memory reset boundaries`)
 - Integration record:
+- pending
 - Verification evidence:
 - Active child focused command: `14 passed`.
 - Active child full `scripts/refactor_gate.sh`: `2682 passed, 8 skipped`,
   gateway smoke passed.
+- Integration full `scripts/refactor_gate.sh`: `2684 passed, 6 skipped`,
+  gateway smoke passed.
 - Cleanup evidence:
 - Residual risk:
+- Low. CLI memory gateway RPC commands and top-level reset now delegate to
+  workflow/presenter modules while preserving command names, flags, RPC payload
+  keys, exact output text, and reset failure exit code.
 - Next recommended slice:
+- Continue CLI command thinning with the next independent command domain that
+  still mixes Typer declarations with gateway/client/rendering behavior.

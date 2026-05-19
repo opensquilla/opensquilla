@@ -1800,6 +1800,18 @@ class Agent:
                         # resolution but adds a permissive MVP fallback to
                         # ToolContext() so gates 1-2 still fire when
                         # nothing has been plumbed in.
+                        #
+                        # Precedence rationale: current_tool_context wins
+                        # because it is the canonical request-scoped value —
+                        # callers (dispatch.build_tool_handler:290, the
+                        # subagent handler at _make_child_agent) set it
+                        # deliberately so that nested execution sees the
+                        # narrowest ctx that applies to *this* dispatch.
+                        # ``self._tool_context`` is the per-Agent fallback
+                        # plumbed by runtime.py for the outermost turn;
+                        # ``ToolContext()`` is the last-resort permissive
+                        # default for test/embedded callers that didn't
+                        # plumb either.
                         active_ctx = (
                             current_tool_context.get()
                             or self._tool_context

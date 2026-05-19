@@ -479,3 +479,14 @@ async def test_dispatch_intercepts_meta_invoke_and_terminates_turn(
         f"meta_invoke ToolResultEvent must be success; got error contents: "
         f"{[r.result for r in meta_invoke_results if r.is_error]}"
     )
+
+    # Positive evidence: the meta-skill's single llm_classify step is
+    # overridden to return "A" (see fake_llm_chat). On success that text
+    # must surface in the meta_invoke ToolResultEvent content — proves
+    # the orchestrator actually ran the composition, not just that the
+    # dispatch interceptor silently returned an empty success.
+    success_contents = " | ".join(r.result or "" for r in meta_invoke_results)
+    assert "A" in success_contents, (
+        "Expected llm_classify result 'A' in meta_invoke ToolResultEvent; "
+        f"got: {success_contents[:300]!r}"
+    )

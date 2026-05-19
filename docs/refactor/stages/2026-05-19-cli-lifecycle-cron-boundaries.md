@@ -148,6 +148,34 @@ Thin two independent CLI command surfaces in parallel:
   - New workflow/presenter boundary modules or delegation tests are absent.
   - Existing command behavior tests must remain green except the intentional new
     boundary assertions.
+- Gateway lifecycle worker RED evidence:
+  - Command:
+    `uv run --extra dev pytest tests/test_cli/test_gateway_cmd.py tests/test_cli/test_gateway_lifecycle_cli_boundary.py -q`
+  - Result: failed as expected with 3 boundary failures and 17 existing gateway
+    tests passing.
+  - Failure: `Failed: missing gateway lifecycle boundary module:
+    opensquilla.cli.gateway_lifecycle_workflows`.
+- Gateway lifecycle worker GREEN evidence:
+  - Command:
+    `uv run --extra dev pytest tests/test_cli/test_gateway_cmd.py tests/test_cli/test_gateway_lifecycle_cli_boundary.py -q`
+  - Result: `20 passed in 0.76s`.
+- Gateway lifecycle worker touched-file checks:
+  - Command:
+    `uv run --extra dev ruff check src/opensquilla/cli/gateway_cmd.py src/opensquilla/cli/gateway_lifecycle_workflows.py src/opensquilla/cli/gateway_lifecycle_presenters.py tests/test_cli/test_gateway_cmd.py tests/test_cli/test_gateway_lifecycle_cli_boundary.py`
+  - Result: `All checks passed!`
+  - Command:
+    `uv run --extra dev mypy src/opensquilla/cli --show-error-codes`
+  - Result: `Success: no issues found in 120 source files` with existing mypy
+    notes for untyped function bodies and unused pyproject sections.
+  - Command: `git diff --check`
+  - Result: passed with no output.
+- Gateway lifecycle worker full child gate evidence:
+  - Command: `scripts/refactor_gate.sh`
+  - Result: passed. Gate completed ruff, mypy, whitespace, pytest, and gateway
+    smoke.
+  - Pytest summary: `2666 passed, 8 skipped, 2 warnings in 54.14s`.
+  - Gateway smoke: start/status/stop/status JSON flow succeeded on port
+    `63964`.
 - Focused green command after both workers are merged:
   - `uv run --extra dev pytest tests/test_cli/test_gateway_cmd.py tests/test_cli/test_gateway_lifecycle_cli_boundary.py tests/test_cli/test_cron_cmd.py tests/test_cli/test_cron_cli_boundary.py -q`
 - Additional touched-file checks:

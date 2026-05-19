@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 
 import typer
 
-from opensquilla.cli.gateway_lifecycle import GatewayLifecycleManager, GatewayLifecycleResult
+from opensquilla.cli import gateway_lifecycle_workflows
 from opensquilla.cli.ui import console
 from opensquilla.gateway.boot import start_gateway_server
 from opensquilla.gateway.config import GatewayConfig, is_public_bind, resolve_listen_address
@@ -95,40 +94,6 @@ def run_gateway(
         console.print("\n[yellow]Gateway stopped.[/yellow]")
 
 
-def _resolve_lifecycle_host(*, bind: str, listen: str) -> str:
-    explicit_flag: str | None = listen or (bind if bind != "127.0.0.1" else None)
-    return resolve_listen_address(explicit_flag)
-
-
-def _lifecycle_manager(
-    *,
-    port: int,
-    bind: str,
-    listen: str,
-    health_timeout: float = 60.0,
-    shutdown_timeout: float = 10.0,
-) -> GatewayLifecycleManager:
-    return GatewayLifecycleManager(
-        host=_resolve_lifecycle_host(bind=bind, listen=listen),
-        port=port,
-        config_path=os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH") or None,
-        health_timeout=health_timeout,
-        shutdown_timeout=shutdown_timeout,
-    )
-
-
-def _emit_lifecycle_result(result: GatewayLifecycleResult, *, json_output: bool) -> None:
-    if json_output:
-        typer.echo(json.dumps(result.to_payload(), ensure_ascii=False, default=str))
-    elif result.ok:
-        typer.echo(f"{result.state}: {result.url}")
-    else:
-        typer.echo(f"Error: {result.message or result.code or result.state}", err=True)
-
-    if result.exit_code != 0:
-        raise typer.Exit(code=result.exit_code)
-
-
 def start_gateway(
     port: int = typer.Option(18790, "--port", "-p", help="Port to bind"),
     bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to bind"),
@@ -138,13 +103,13 @@ def start_gateway(
 ) -> None:
     """Start the gateway in the background and wait for readiness."""
 
-    manager = _lifecycle_manager(
+    gateway_lifecycle_workflows.start_gateway_for_cli(
         port=port,
         bind=bind,
         listen=listen,
         health_timeout=health_timeout,
+        json_output=json_output,
     )
-    _emit_lifecycle_result(manager.start(), json_output=json_output)
 
 
 def status_gateway(
@@ -155,8 +120,12 @@ def status_gateway(
 ) -> None:
     """Inspect the managed gateway process without mutating state."""
 
-    manager = _lifecycle_manager(port=port, bind=bind, listen=listen)
-    _emit_lifecycle_result(manager.status(), json_output=json_output)
+    gateway_lifecycle_workflows.status_gateway_for_cli(
+        port=port,
+        bind=bind,
+        listen=listen,
+        json_output=json_output,
+    )
 
 
 def stop_gateway(
@@ -168,13 +137,13 @@ def stop_gateway(
 ) -> None:
     """Stop the recorded gateway process."""
 
-    manager = _lifecycle_manager(
+    gateway_lifecycle_workflows.stop_gateway_for_cli(
         port=port,
         bind=bind,
         listen=listen,
         shutdown_timeout=shutdown_timeout,
+        json_output=json_output,
     )
-    _emit_lifecycle_result(manager.stop(), json_output=json_output)
 
 
 def restart_gateway(
@@ -189,11 +158,11 @@ def restart_gateway(
 ) -> None:
     """Restart the recorded gateway process."""
 
-    manager = _lifecycle_manager(
+    gateway_lifecycle_workflows.restart_gateway_for_cli(
         port=port,
         bind=bind,
         listen=listen,
         health_timeout=health_timeout,
         shutdown_timeout=shutdown_timeout,
+        json_output=json_output,
     )
-    _emit_lifecycle_result(manager.restart(), json_output=json_output)

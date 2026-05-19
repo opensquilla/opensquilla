@@ -209,6 +209,40 @@ changes and must not revert unrelated edits.
   - `uv run --extra dev mypy src/opensquilla/cli --show-error-codes`
   - `git diff --check`
 
+### Chat-stream worker evidence
+
+- Superpowers used:
+  - `superpowers:using-superpowers`
+  - `superpowers:using-git-worktrees`
+  - `superpowers:writing-plans`
+  - `superpowers:test-driven-development`
+  - `superpowers:verification-before-completion`
+- RED:
+  - Command:
+    `uv run --extra dev pytest tests/test_cli/test_chat_stream_boundary.py tests/test_cli/test_chat_cmd.py::test_gateway_stream_renders_task_group_status_without_buffer_pollution tests/test_cli/test_chat_cmd.py::test_gateway_stream_collects_artifact_events tests/test_cli/test_chat_cmd.py::test_standalone_turnrunner_stream_collects_artifacts -q`
+  - Result: `6 failed, 3 passed`.
+  - Expected failures: `chat_stream_presenters.py` was missing, `chat_cmd.py`
+    had no stream-presenter import/delegation, and old helper bodies still
+    owned task-group status strings and artifact payload construction.
+- GREEN:
+  - Command:
+    `uv run --extra dev pytest tests/test_cli/test_chat_stream_boundary.py tests/test_cli/test_chat_cmd.py::test_gateway_stream_renders_task_group_status_without_buffer_pollution tests/test_cli/test_chat_cmd.py::test_gateway_stream_collects_artifact_events tests/test_cli/test_chat_cmd.py::test_standalone_turnrunner_stream_collects_artifacts -q`
+  - Result: `9 passed in 0.58s`.
+- Touched checks:
+  - `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_stream_presenters.py tests/test_cli/test_chat_stream_boundary.py tests/test_cli/test_chat_cmd.py`
+    -> `All checks passed!`
+  - `uv run --extra dev mypy src/opensquilla/cli --show-error-codes`
+    -> `Success: no issues found in 127 source files`.
+  - `git diff --check` -> no output.
+- Full gate:
+  - `scripts/refactor_gate.sh`
+  - `ruff`: `All checks passed!`
+  - `mypy`: `Success: no issues found in 560 source files`.
+  - `git diff --check`: no output.
+  - `pytest`: `2688 passed, 8 skipped, 2 warnings in 56.86s`.
+  - Gateway smoke: start/status/stop/status all returned `ok: true`.
+  - Final line: `Refactor gate complete.`
+
 ## Files
 
 - Create:
@@ -234,7 +268,9 @@ changes and must not revert unrelated edits.
 - [ ] Commit this stage plan as the worker base.
 - [ ] Launch two external workers with `scripts/refactor_external_agent.sh`.
 - [ ] Gateway-run worker writes RED boundary tests and records RED output.
-- [ ] Chat-stream worker writes RED boundary tests and records RED output.
+- [x] Chat-stream worker writes RED boundary tests and records RED output.
+- [x] Chat-stream worker implements presenter extraction and records
+      GREEN/check/gate evidence.
 - [ ] Workers implement their disjoint boundaries and record GREEN/check/gate evidence.
 - [ ] Main thread reviews both diffs for behavior compatibility and ownership.
 - [ ] Merge both worker branches into the active child.

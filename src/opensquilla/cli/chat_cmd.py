@@ -22,6 +22,7 @@ import typer
 from rich.panel import Panel
 
 from opensquilla.cli import attachments as _cli_attachments
+from opensquilla.cli import chat_stream_presenters
 from opensquilla.cli.chat_gateway_approvals_workflows import (
     handle_gateway_approvals_command,
 )
@@ -964,49 +965,19 @@ def _render_gateway_task_group_status(
     event: dict[str, Any],
     renderer: StreamingRenderer,
 ) -> None:
-    phase = event_name.rsplit(".", 1)[-1]
-    style = "dim"
-    if phase == "waiting":
-        pending = event.get("pending_count")
-        suffix = f" ({pending} pending)" if isinstance(pending, int) and pending >= 0 else ""
-        message = f"subagents waiting{suffix}"
-    elif phase == "synthesizing":
-        child_count = event.get("child_count")
-        suffix = f" from {child_count} children" if isinstance(child_count, int) else ""
-        message = f"subagents complete; synthesizing final answer{suffix}"
-    elif phase == "done":
-        delivery_status = event.get("delivery_status")
-        suffix = f" (delivery: {delivery_status})" if isinstance(delivery_status, str) else ""
-        message = f"background synthesis complete{suffix}"
-    elif phase == "failed":
-        error_message = event.get("error_message")
-        suffix = f": {error_message}" if isinstance(error_message, str) and error_message else ""
-        message = f"background synthesis failed{suffix}"
-        style = "yellow"
-    else:
-        return
-    status = getattr(renderer, "status", None)
-    if callable(status):
-        status(message, style=style)
-    else:
-        console.print(f"[{style}]{message}[/]")
+    chat_stream_presenters.render_gateway_task_group_status(event_name, event, renderer)
 
 
 def _artifact_event_payload(event: Any) -> dict[str, Any]:
-    from opensquilla.artifacts import artifact_payload
-
-    if isinstance(event, dict):
-        return artifact_payload(
-            {key: value for key, value in event.items() if key not in {"event", "payload"}}
-        )
-
-    return artifact_payload(event)
+    return chat_stream_presenters.artifact_event_payload(event)
 
 
 def _artifact_status_line(artifact: dict[str, Any]) -> str:
-    name = artifact.get("name") if isinstance(artifact.get("name"), str) else "artifact"
-    target = artifact.get("download_url") if isinstance(artifact.get("download_url"), str) else ""
-    return f"Generated file: {name} -> {target or artifact.get('id', '')}"
+    return chat_stream_presenters.artifact_status_line(artifact)
+
+
+def _render_artifact_status(artifact: dict[str, Any], renderer: StreamingRenderer) -> None:
+    chat_stream_presenters.render_artifact_status(artifact, renderer)
 
 
 async def _stream_response_gateway(
@@ -1042,11 +1013,7 @@ async def _stream_response_gateway(
                 elif event_name == "session.event.artifact":
                     artifact = _artifact_event_payload(event)
                     artifacts.append(artifact)
-                    status = getattr(renderer, "status", None)
-                    if callable(status):
-                        status(_artifact_status_line(artifact))
-                    else:
-                        console.print(_artifact_status_line(artifact))
+                    _render_artifact_status(artifact, renderer)
                 elif event_name.startswith("session.event.task_group."):
                     _render_gateway_task_group_status(event_name, event, renderer)
                 elif event_name == "session.event.error":
@@ -1150,11 +1117,7 @@ async def _stream_response_turnrunner(
                 elif isinstance(event, ArtifactEvent):
                     artifact = _artifact_event_payload(event)
                     artifacts.append(artifact)
-                    status = getattr(renderer, "status", None)
-                    if callable(status):
-                        status(_artifact_status_line(artifact))
-                    else:
-                        console.print(_artifact_status_line(artifact))
+                    _render_artifact_status(artifact, renderer)
                 elif isinstance(event, WarningEvent):
                     console.print(f"[yellow]{event.message}[/yellow]")
                 elif isinstance(event, ErrorEvent):

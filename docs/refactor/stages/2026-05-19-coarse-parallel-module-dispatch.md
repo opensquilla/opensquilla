@@ -92,9 +92,8 @@ ownership.
   - Agent route: external fallback because same-thread `spawn_agent` hit
     `agent thread limit reached`.
   - External worker PID: `39885`
-  - Log: `/Users/cwan0785/opensquilla/.git/refactor-agents/20260519T133008+1000-webui.log`
-  - Last message:
-    `/Users/cwan0785/opensquilla/.git/refactor-agents/20260519T133008+1000-webui.last.md`
+  - Log: `.git/refactor-agents/20260519T133008+1000-webui.log`
+  - Last message: `.git/refactor-agents/20260519T133008+1000-webui.last.md`
   - Ownership: gateway static JS/browser runtime contract harness and static
     Web UI tests.
 

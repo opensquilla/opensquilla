@@ -178,16 +178,17 @@ changing public tool names, schemas, policies, or failure envelopes.
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`. Not applicable:
-      this worker was instructed not to merge to integration.
-- [ ] Run `scripts/refactor_gate.sh` in integration. Not applicable:
-      this worker was instructed not to merge to integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
-      Child hash is recorded in the final worker response after commit.
-- [ ] Remove `../opensquilla-refactor-active`, run
-      `git worktree prune`, and verify no extra refactor worktree directories
-      remain beyond `../opensquilla-refactor-integration`. Not applicable:
-      this worker was instructed not to cleanup.
+- [x] Merge child into integration with `git merge --no-ff`.
+      Merge: `1b5e36c` (`Merge tools MCP registry boundary`).
+- [x] Run `scripts/refactor_gate.sh` in integration.
+      Result: ruff all checks passed; mypy success for 574 source files;
+      pytest `2813 passed, 6 skipped, 2 warnings`; gateway smoke passed on
+      port `61461`.
+- [x] Record child hash, integration hash, verification, and next slice.
+- [x] Remove worker worktree, run `git worktree prune`, and verify cleanup.
+      Removed `../opensquilla-refactor-agent-tools`; deleted
+      `codex/refactor-tools-mcp-registry-boundary`; `git worktree list`
+      verified no tools worker worktree remains.
 
 ## Child gate
 
@@ -212,7 +213,9 @@ Co-authored-by: Codex <noreply@openai.com>
 ## Completion record
 
 - Child commit:
-- Integration merge: not applicable for this worker.
+- `585489c` (`Refactor tools MCP registry lifecycle boundary`).
+- Integration merge:
+- `1b5e36c` (`Merge tools MCP registry boundary`).
 - Verification evidence:
 - Red: `uv run --extra dev pytest tests/test_tools/test_registry_lifecycle_boundary.py tests/test_mcp/test_discovery_lifecycle.py::test_tool_registry_lifecycle_owner_can_remove_mcp_registered_surface -q`
   failed as expected with `TypeError: ToolRegistry.register() got an unexpected keyword argument 'owner'`
@@ -232,6 +235,16 @@ Co-authored-by: Codex <noreply@openai.com>
   no issues in 574 source files; whitespace passed; pytest passed with
   `2811 passed, 8 skipped, 2 warnings in 64.80s`; gateway smoke
   start/status/stop passed on port `60730`.
+- Integration gate: `scripts/refactor_gate.sh` passed after replacing local
+  absolute paths in the dispatch record; ruff passed; mypy passed with no
+  issues in 574 source files; whitespace passed; pytest passed with
+  `2813 passed, 6 skipped, 2 warnings`; gateway smoke start/status/stop
+  passed on port `61461`.
+- Cleanup evidence:
+- Removed `../opensquilla-refactor-agent-tools`.
+- Deleted `codex/refactor-tools-mcp-registry-boundary`.
+- Ran `git worktree prune`.
+- Verified `git worktree list` contains no tools worker worktree.
 - Residual risk:
 - Low. MCP client lifecycle remains in `opensquilla.mcp.discovery`; this slice
   gives Tools first-class registry ownership/unregister semantics for lifecycle

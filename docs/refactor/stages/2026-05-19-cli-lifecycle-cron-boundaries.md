@@ -100,6 +100,15 @@ Thin two independent CLI command surfaces in parallel:
     slots `cli-gateway` and `cli-cron`.
 - Historical evidence note:
   - Missing per-substage Superpowers evidence is a blocker.
+- Main-thread resumed Superpowers evidence:
+  - Re-read `superpowers:using-superpowers`,
+    `superpowers:dispatching-parallel-agents`,
+    `superpowers:subagent-driven-development`,
+    `superpowers:using-git-worktrees`, and
+    `superpowers:test-driven-development` before reviewing worker outputs.
+  - Re-ran the `spawn_agent` availability probe in this resumed turn; it still
+    failed with `collab spawn failed: agent thread limit reached`, so this
+    stage continued through the external worker pool.
 
 ## Boundary decision
 
@@ -221,6 +230,38 @@ Thin two independent CLI command surfaces in parallel:
   - Gateway smoke: start/status/stop/status completed.
   - Final line: `Refactor gate complete.`
 
+## Main-thread review and child verification
+
+- Gateway worker commit:
+  - `27daf79` (`Refactor gateway lifecycle CLI boundary`)
+  - Review: touched only the gateway lifecycle ownership set and this stage
+    record; commit trailer appears exactly once.
+- Cron worker commit:
+  - `d848ba0` (`refactor(cli): split cron workflows and presenters`)
+  - Review: touched only the cron CLI ownership set and this stage record;
+    commit trailer appears exactly once.
+- Worker merges into active child:
+  - `fcb39f5` (`Merge gateway lifecycle CLI boundary worker`)
+  - `d2ce4dc` (`Merge cron CLI boundary worker`)
+- Focused merged GREEN command:
+  - `uv run --extra dev pytest tests/test_cli/test_gateway_cmd.py tests/test_cli/test_gateway_lifecycle_cli_boundary.py tests/test_cli/test_cron_cmd.py tests/test_cli/test_cron_cli_boundary.py -q`
+  - Result: `25 passed in 3.67s`.
+- Merged touched-file checks:
+  - `uv run --extra dev ruff check src/opensquilla/cli/gateway_cmd.py src/opensquilla/cli/gateway_lifecycle_workflows.py src/opensquilla/cli/gateway_lifecycle_presenters.py src/opensquilla/cli/cron_cmd.py src/opensquilla/cli/cron_workflows.py src/opensquilla/cli/cron_presenters.py tests/test_cli/test_gateway_cmd.py tests/test_cli/test_gateway_lifecycle_cli_boundary.py tests/test_cli/test_cron_cmd.py tests/test_cli/test_cron_cli_boundary.py`
+    - Result: `All checks passed!`
+  - `uv run --extra dev mypy src/opensquilla/cli --show-error-codes`
+    - Result: `Success: no issues found in 122 source files`.
+  - `git diff --check`
+    - Result: no output.
+- Active child full gate:
+  - Command: `scripts/refactor_gate.sh`
+  - Result: passed.
+  - Mypy: `Success: no issues found in 555 source files`.
+  - Pytest: `2671 passed, 8 skipped, 2 warnings in 51.63s`.
+  - Gateway smoke: start/status/stop/status JSON flow succeeded on port
+    `64403`.
+  - Final line: `Refactor gate complete.`
+
 ## Files
 
 - Create:
@@ -239,17 +280,17 @@ Thin two independent CLI command surfaces in parallel:
 
 ## Steps
 
-- [ ] Run `scripts/refactor_preflight.sh --allow-dirty`.
-- [ ] Commit this stage plan on the active child branch.
-- [ ] Create two external worker worktrees from the active child branch.
-- [ ] Gateway worker writes failing boundary tests and records RED output.
-- [ ] Cron worker writes failing boundary tests and records RED output.
-- [ ] Workers implement their disjoint boundaries and record GREEN/check/gate
+- [x] Run `scripts/refactor_preflight.sh --allow-dirty`.
+- [x] Commit this stage plan on the active child branch.
+- [x] Create two external worker worktrees from the active child branch.
+- [x] Gateway worker writes failing boundary tests and records RED output.
+- [x] Cron worker writes failing boundary tests and records RED output.
+- [x] Workers implement their disjoint boundaries and record GREEN/check/gate
       evidence.
-- [ ] Main thread reviews both diffs for behavior compatibility and ownership.
-- [ ] Merge both worker branches into the active child.
-- [ ] Run focused green command and touched-file checks.
-- [ ] Run `scripts/refactor_gate.sh` in the active child worktree.
+- [x] Main thread reviews both diffs for behavior compatibility and ownership.
+- [x] Merge both worker branches into the active child.
+- [x] Run focused green command and touched-file checks.
+- [x] Run `scripts/refactor_gate.sh` in the active child worktree.
 - [ ] Commit child verification/stage record update with:
 
 ```text
@@ -293,12 +334,27 @@ Co-authored-by: Codex <noreply@openai.com>
 ## Completion record
 
 - Gateway worker commit:
+  - `27daf79` (`Refactor gateway lifecycle CLI boundary`)
 - Cron worker commit:
+  - `d848ba0` (`refactor(cli): split cron workflows and presenters`)
 - Active child support commits:
+  - `44a8a41` (`Plan CLI lifecycle and cron boundaries`)
+  - `fcb39f5` (`Merge gateway lifecycle CLI boundary worker`)
+  - `d2ce4dc` (`Merge cron CLI boundary worker`)
 - Child verification commit:
 - Integration merge:
 - Integration record:
 - Verification evidence:
+  - Child focused CLI suite: `25 passed in 3.67s`.
+  - Child `scripts/refactor_gate.sh`: `2671 passed, 8 skipped, 2 warnings in
+    51.63s`; gateway smoke completed on port `64403`.
 - Cleanup evidence:
 - Residual risk:
+  - Low. Cron/gateway CLI command shells now delegate to workflow/presenter
+    modules; existing command names, flags, RPC method names, payload keys,
+    JSON output, table titles, empty states, lifecycle exit codes, and gateway
+    smoke behavior are covered by focused and full gates.
 - Next recommended slice:
+  - Continue with another coarse independent CLI or gateway module family,
+    using the same per-substage Superpowers evidence requirement and external
+    worker fallback while `spawn_agent` is thread-limited.

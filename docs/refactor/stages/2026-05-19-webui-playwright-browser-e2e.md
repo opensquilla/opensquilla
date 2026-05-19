@@ -197,7 +197,7 @@ run locally, and be represented in the standalone Web UI browser smoke workflow.
       existing feature coverage.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
@@ -206,8 +206,8 @@ Co-authored-by: Codex <noreply@openai.com>
 - [x] Merge child into integration with `git merge --no-ff` was not applicable
       because this direct integration cleanup did not create a child branch.
 - [x] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record integration hash, verification, and next slice.
-- [ ] Verify no temporary refactor worktree was left behind.
+- [x] Record integration hash, verification, and next slice.
+- [x] Verify no temporary refactor worktree was left behind.
 
 ## Integration gate
 
@@ -224,6 +224,10 @@ Co-authored-by: Codex <noreply@openai.com>
     source files; whitespace passed; pytest `2823 passed, 6 skipped, 2
     warnings in 32.07s`; gateway smoke start/status/stop/status passed on
     `127.0.0.1:52362`; final line `Refactor gate complete.`
+- Cleanup:
+  - `git worktree list --porcelain` showed no `opensquilla-refactor-agent-*`
+    worktrees.
+  - `ls -d ../opensquilla-refactor-*` showed only the integration worktree.
 
 ## Rollback
 
@@ -234,7 +238,7 @@ Co-authored-by: Codex <noreply@openai.com>
 ## Completion record
 
 - Integration commit:
-  - Pending.
+  - `cc665c0` (`Fix Web UI Playwright browser E2E harness`).
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --allow-dirty` passed on branch
     `codex/refactor-architecture` at `d1613c3`.

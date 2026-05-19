@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from opensquilla.cli import gateway_lifecycle
-from opensquilla.cli.gateway_cmd import gateway_startup_guidance
+from opensquilla.cli.gateway_run_presenters import gateway_startup_guidance
 from opensquilla.cli.main import app
 from opensquilla.paths import default_opensquilla_home
 

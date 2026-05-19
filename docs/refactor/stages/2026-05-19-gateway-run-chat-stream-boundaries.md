@@ -280,6 +280,26 @@ Co-authored-by: Codex <noreply@openai.com>
 - Keep child and worker branches for diagnosis until a replacement slice is ready.
 - Do not rewrite `main` or unrelated worktrees.
 
+## Gateway-run evidence
+
+- Superpowers used: `superpowers:using-superpowers`, `superpowers:using-git-worktrees`,
+  `superpowers:writing-plans`, `superpowers:test-driven-development`, and
+  `superpowers:verification-before-completion`.
+- RED command:
+  `uv run --extra dev pytest tests/test_cli/test_gateway_run_cli_boundary.py tests/test_cli/test_gateway_cmd.py::test_gateway_startup_guidance_shows_operator_next_steps tests/test_cli/test_gateway_cmd.py::test_gateway_start_with_wildcard_listen_keeps_bind_and_reports_probe_host -q`
+  - Expected failures: new workflow/presenter modules missing and `run_gateway`
+    still owning banner/config/server logic.
+- GREEN command:
+  `uv run --extra dev pytest tests/test_cli/test_gateway_run_cli_boundary.py tests/test_cli/test_gateway_cmd.py::test_gateway_startup_guidance_shows_operator_next_steps tests/test_cli/test_gateway_cmd.py::test_gateway_start_with_wildcard_listen_keeps_bind_and_reports_probe_host -q`
+  - Result: `9 passed in 0.66s`
+- Touched checks:
+  - `uv run --extra dev ruff check src/opensquilla/cli/gateway_cmd.py src/opensquilla/cli/gateway_run_workflows.py src/opensquilla/cli/gateway_run_presenters.py tests/test_cli/test_gateway_run_cli_boundary.py tests/test_cli/test_gateway_cmd.py`
+  - `uv run --extra dev mypy src/opensquilla/cli --show-error-codes`
+  - `git diff --check`
+- Full gate:
+  - `scripts/refactor_gate.sh`
+  - Result: passed; `ruff`, `mypy`, `whitespace`, `pytest`, and gateway smoke all completed successfully.
+
 ## Completion record
 
 - Gateway-run worker commit:

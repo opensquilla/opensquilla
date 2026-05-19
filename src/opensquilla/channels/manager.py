@@ -15,7 +15,10 @@ from starlette.routing import Route
 from opensquilla.channels.debounce import _DefaultDebounceCoordinator
 from opensquilla.channels.delivery import resolve_delivery_target as resolve_channel_delivery_target
 from opensquilla.channels.ingress import ChannelInFlightSetPort, ChannelIngressPort
-from opensquilla.channels.registry import build_managed_channel
+from opensquilla.channels.runtime_assembly import (
+    build_channel_runtime_assembly,
+    collect_channel_webhook_routes,
+)
 from opensquilla.channels.types import ChannelHealth, DeliveryTargetResolution, ManagedChannel
 from opensquilla.session.keys import DmScope, build_direct_key, build_group_key, build_thread_key
 
@@ -27,8 +30,8 @@ class ChannelManager:
     """Manages lifecycle of ManagedChannel instances.
 
     Responsibilities:
-    - Build adapters from gateway config entries (from_config)
-    - Collect webhook routes for Starlette registration
+    - Hold adapters assembled from gateway config entries (from_config)
+    - Expose collected webhook routes for Starlette registration
     - Start/stop/restart individual channels or all at once
     - Run dispatch loops with exponential-backoff retry
     - Build proper session keys via session/keys.py
@@ -88,27 +91,10 @@ class ChannelManager:
         Each entry's ``type`` field selects the adapter class.
         Disabled entries are skipped.
         """
-        channels: dict[str, ManagedChannel] = {}
-        agent_ids: dict[str, str] = {}
-        channel_types: dict[str, str] = {}
-        for entry in entries:
-            if not entry.enabled:
-                log.info("channel.skipped_disabled", name=entry.name)
-                continue
-
-            adapter = build_managed_channel(entry)
-            if adapter is None:
-                log.warning("channel.unknown_type", type=entry.type, name=entry.name)
-                continue
-
-            channels[entry.name] = adapter
-            agent_ids[entry.name] = getattr(entry, "agent_id", "main")
-            channel_types[entry.name] = entry.type
-            setattr(adapter, "debounce_window_s", getattr(entry, "debounce_window_s", 0.0))
-            log.info("channel.adapter_created", name=entry.name, type=entry.type)
+        assembly = build_channel_runtime_assembly(entries, logger=log)
 
         return cls(
-            _channels=channels,
+            _channels=assembly.channels,
             _turn_runner=turn_runner,
             _session_manager=session_manager,
             _event_bridge=event_bridge,
@@ -117,8 +103,8 @@ class ChannelManager:
             _rpc_dispatcher=rpc_dispatcher,
             _channel_rpc_context_factory=channel_rpc_context_factory,
             _channel_ingress=channel_ingress,
-            _agent_ids=agent_ids,
-            _channel_types=channel_types,
+            _agent_ids=assembly.agent_ids,
+            _channel_types=assembly.channel_types,
         )
 
     # ── Webhook routes ───────────────────────────────────────
@@ -126,18 +112,11 @@ class ChannelManager:
     def collect_webhook_routes(self) -> list[Route]:
         """Extract Starlette Routes from adapters that support webhooks.
 
-        Slack and Feishu adapters expose ``create_webhook_route()``;
-        Discord uses a persistent WebSocket and has no webhook.
+        Webhook-capable adapters expose their Starlette route through the
+        channels runtime assembly boundary; persistent WebSocket adapters do
+        not contribute webhook routes.
         """
-        routes: list[Route] = []
-        for name, adapter in self._channels.items():
-            if getattr(adapter, "transport_name", "webhook") != "webhook":
-                continue
-            if hasattr(adapter, "create_webhook_route"):
-                route = adapter.create_webhook_route()
-                routes.append(route)
-                log.info("channel.webhook_route_collected", channel=name, path=route.path)
-        return routes
+        return collect_channel_webhook_routes(self._channels, logger=log)
 
     # ── Lifecycle ────────────────────────────────────────────
 

@@ -120,6 +120,7 @@ markers = [
     "llm_reasoning: live reasoning-capable model tests",
     "llm_gateway: live gateway/end-to-end runtime tests",
     "llm_image: live image-generation model API tests",
+    "llm_router_acc: live multi-model routing accuracy tests (D.2 follow-up to test_meta_router_accuracy.py)",
     "webui_browser: real browser Web UI tests driven by Playwright",
     "live_channel: marks tests that hit a real channel platform (deselect with '-m \"not live_channel\"')",
 ]

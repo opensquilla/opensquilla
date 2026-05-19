@@ -695,3 +695,105 @@ def _resolve_kind(
     if isinstance(entrypoint, dict) and entrypoint:
         return "skill_exec"
     return "agent"
+
+
+def _strip_inline_backticks(value: str) -> str:
+    """Strip surrounding backticks from a ``with:`` bullet value if present.
+
+    Authors often write `` - section: `{{ inputs.x }}` `` for readability;
+    the emitted YAML should hold the raw template, not the backticks.
+    """
+
+    if len(value) >= 2 and value[0] == "`" and value[-1] == "`":
+        return value[1:-1]
+    return value
+
+
+def _emit_step_from_invocation(
+    inv: SOPInvocation,
+    *,
+    kind: str,
+    depends_on: list[str],
+    step_id: str,
+    with_overrides: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Build a single ``composition.steps`` entry from an SOPInvocation."""
+
+    final_with: dict[str, str] = {
+        k: _strip_inline_backticks(v) for k, v in inv.with_args.items()
+    }
+    if with_overrides:
+        final_with.update(with_overrides)
+    step: dict[str, object] = {
+        "id": step_id,
+        "kind": kind,
+        "skill": inv.skill_name,
+        "depends_on": depends_on,
+    }
+    if final_with:
+        step["with"] = final_with
+    return step
+
+
+def _emit(
+    doc: SOPDocument,
+    *,
+    skill_loader: _LoaderProtocol,
+    skill_name: str,
+) -> dict[str, list[dict[str, object]]]:
+    """Convert a parsed/resolved SOP document into ``composition_raw``.
+
+    Sequential phases: each phase's steps depend on every step in the
+    previous phase. ``[parallel]`` and ``[parallel for_each: ...]``
+    handling lands in Task 6 / Task 7.
+
+    ``[depends_on: ...]`` annotation override lands in Task 8.
+    """
+
+    all_steps: list[dict[str, object]] = []
+    previous_phase_step_ids: list[str] = []
+
+    for phase in doc.phases:
+        # Validate annotation set is supported by this emitter version.
+        if phase.for_each_var is not None:
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase.index,
+                span=phase.span,
+                reason="for_each emitter not implemented yet (Task 7)",
+            )
+        if "parallel" in phase.annotations and "parallel for_each" not in phase.annotations:
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase.index,
+                span=phase.span,
+                reason="`parallel` emitter not implemented yet (Task 6)",
+            )
+        if "depends_on" in phase.annotations:
+            raise SOPCompileError(
+                skill_name=skill_name,
+                phase_index=phase.index,
+                span=phase.span,
+                reason="`depends_on` annotation emitter not implemented yet (Task 8)",
+            )
+
+        depends_on = list(previous_phase_step_ids)
+        phase_step_ids: list[str] = []
+        for inv in phase.invocations:
+            kind = _resolve_kind(
+                inv,
+                skill_loader=skill_loader,
+                skill_name=skill_name,
+                phase_index=phase.index,
+            )
+            step = _emit_step_from_invocation(
+                inv,
+                kind=kind,
+                depends_on=depends_on,
+                step_id=inv.step_id_template,
+            )
+            all_steps.append(step)
+            phase_step_ids.append(inv.step_id_template)
+        previous_phase_step_ids = phase_step_ids
+
+    return {"steps": all_steps}

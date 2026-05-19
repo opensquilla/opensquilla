@@ -408,3 +408,40 @@ def test_resolve_kind_unknown_skill_raises() -> None:
     loader = _StubSkillLoader({})
     with pytest.raises(SOPCompileError, match="not registered"):
         _resolve_kind(inv, skill_loader=loader, skill_name="meta-x", phase_index=1)
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: Emitter (sequential)
+# ---------------------------------------------------------------------------
+
+
+def test_emit_sequential_phases_default_depends_on() -> None:
+    from opensquilla.skills.meta.sop_compiler import _emit, _lex, _parse
+
+    body = (
+        "## Phase 1: First\n"
+        "Run `paper-experiment-stub`. Save as `s1`.\n"
+        "## Phase 2: Second\n"
+        "Run `paper-plot-stub`. Save as `s2`.\n"
+        "## Phase 3: Third\n"
+        "Invoke `paper-outline-author` as agent with:\n"
+        "- topic: `t`\n"
+        "Save as `s3`.\n"
+    )
+    doc = _parse(list(_lex(body)), skill_name="meta-x")
+    loader = _StubSkillLoader(
+        {
+            "paper-experiment-stub": {"entrypoint": {"command": "x"}},
+            "paper-plot-stub": {"entrypoint": {"command": "x"}},
+            "paper-outline-author": {},
+        },
+    )
+    composition = _emit(doc, skill_loader=loader, skill_name="meta-x")
+    steps = composition["steps"]
+    assert [s["id"] for s in steps] == ["s1", "s2", "s3"]
+    assert steps[0].get("depends_on", []) == []
+    assert steps[1]["depends_on"] == ["s1"]
+    assert steps[2]["depends_on"] == ["s2"]
+    assert steps[0]["kind"] == "skill_exec"
+    assert steps[2]["kind"] == "agent"
+    assert steps[2]["with"] == {"topic": "`t`"} or steps[2]["with"] == {"topic": "t"}

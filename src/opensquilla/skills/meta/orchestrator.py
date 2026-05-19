@@ -35,7 +35,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass as _dataclass
 from typing import Any
 
 import jinja2
@@ -49,6 +48,7 @@ from opensquilla.engine.types import (
     ToolUseStartEvent,
 )
 from opensquilla.provider.protocol import LLMProvider
+from opensquilla.skills.meta.events import _StepDone
 from opensquilla.skills.meta.parser import topological_order
 from opensquilla.skills.meta.templating import (
     _JINJA_ENV,
@@ -88,19 +88,6 @@ LLMChat = Callable[[str, str], Awaitable[str]]
 
 #: Direct tool invoker — bypasses the LLM. Returns the tool's result as string.
 ToolInvoker = Callable[[str, dict[str, Any]], Awaitable[str]]
-
-
-@_dataclass(frozen=True)
-class _StepDone:
-    """Internal sentinel — terminates a step's streaming sub-iterator.
-
-    Not a public event type; the orchestrator strips these before forwarding
-    the outer stream to callers. Carrying the text inline avoids needing a
-    side-channel (mutable holder / instance variable) to communicate the
-    step's final string output back to ``iter_events``.
-    """
-
-    text: str
 
 
 class MetaOrchestrator:

@@ -37,28 +37,27 @@ import contextlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-import jinja2
 import structlog
 
 from opensquilla.engine.types import (
     AgentConfig,
     AgentEvent,
-    TextDeltaEvent,
     ToolResultEvent,
     ToolUseStartEvent,
 )
 from opensquilla.provider.protocol import LLMProvider
 from opensquilla.skills.meta.events import _StepDone
+from opensquilla.skills.meta.executors.agent import run_step_with_skill_stream
 from opensquilla.skills.meta.executors.llm_classify import run_llm_classify_step
+from opensquilla.skills.meta.executors.skill_exec import run_skill_exec_step
 from opensquilla.skills.meta.executors.tool_call import run_tool_call_step
 from opensquilla.skills.meta.parser import topological_order
 from opensquilla.skills.meta.templating import (
-    _JINJA_ENV,
     _coerce_to_choice,  # noqa: F401 — re-exported for tests/back-compat
-    _expand_skill_placeholders,
+    _expand_skill_placeholders,  # noqa: F401 — re-exported for tests/back-compat
     _format_classify_prompt,  # noqa: F401 — re-exported for back-compat
-    format_step_prompt,
-    render_with_args,
+    format_step_prompt,  # noqa: F401 — re-exported in __all__
+    render_with_args,  # noqa: F401 — re-exported in __all__
     resolve_route,
 )
 from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
@@ -494,62 +493,15 @@ class MetaOrchestrator:
         inputs: dict[str, Any],
         outputs: dict[str, str],
     ) -> AsyncIterator[AgentEvent | _StepDone]:
-        """Streaming sub-Agent step: forward sub-Agent events + capture final text.
-
-        The sub-Agent's own ``ToolUseStart`` / ``ToolUseEnd`` / ``ToolResult``
-        and ``TextDelta`` events flow straight through so the outer caller
-        (and the UI) can see the inner activity. Once the sub-Agent finishes
-        we yield a single :class:`_StepDone` carrying the consolidated text.
-        """
-
-        skill_spec = self._skill_loader.get_by_name(effective_skill)
-        if skill_spec is None:
-            raise ValueError(
-                f"step {step.id!r}: skill {effective_skill!r} not found in loader",
-            )
-        if getattr(skill_spec, "kind", "skill") == "meta":
-            raise ValueError(
-                f"step {step.id!r}: cannot compose another meta-skill ({effective_skill!r})",
-            )
-
-        rendered_args = render_with_args(
-            step.with_args,
-            inputs=inputs,
-            outputs=outputs,
-        )
-        user_message = format_step_prompt(effective_skill, rendered_args)
-        system_prompt = _expand_skill_placeholders(skill_spec)
-
-        final_text_parts: list[str] = []
-        last_error_tool_result: str = ""
-        async for event in self._agent_runner(system_prompt, user_message):
-            # Suppress sub-Agent's terminal DoneEvent — it would prematurely
-            # close the WS turn from the user's point of view. Everything
-            # else (text deltas, tool use, tool results) is forwarded.
-            from opensquilla.engine.types import DoneEvent as _DoneEvent
-
-            if isinstance(event, _DoneEvent):
-                continue
-            if isinstance(event, TextDeltaEvent):
-                final_text_parts.append(event.text)
-            elif isinstance(event, ToolResultEvent):
-                result_text = event.result if isinstance(event.result, str) else ""
-                if result_text.strip() and getattr(event, "is_error", False):
-                    last_error_tool_result = result_text
-            yield event
-
-        text = "".join(final_text_parts).strip()
-        if text:
-            yield _StepDone(text=text)
-            return
-        if last_error_tool_result:
-            raise RuntimeError(
-                f"sub-agent produced no plain-text output; last tool error: "
-                f"{last_error_tool_result[:200]}",
-            )
-        raise RuntimeError(
-            "sub-agent produced no plain-text output and no tool results",
-        )
+        async for item in run_step_with_skill_stream(
+            step,
+            effective_skill,
+            inputs,
+            outputs,
+            agent_runner=self._agent_runner,
+            skill_loader=self._skill_loader,
+        ):
+            yield item
 
     async def _run_llm_classify_step(
         self,
@@ -586,221 +538,15 @@ class MetaOrchestrator:
         inputs: dict[str, Any],
         outputs: dict[str, str],
     ) -> str:
-        """Run a wrapped-CLI skill via its ``entrypoint`` manifest — no LLM.
-
-        Resolves ``skill.entrypoint`` from the loader, renders ``command`` /
-        ``args`` against ``inputs`` + ``outputs`` + ``with`` (the step's
-        rendered ``with_args``), then ``asyncio.create_subprocess_exec``\\s
-        the process. Stdout is interpreted per ``parse`` (``text`` |
-        ``json`` | ``lines``) and returned as the step output.
-
-        Optional features:
-
-        * ``entrypoint.stdin`` — Jinja-rendered template (with ``{baseDir}``
-          substitution) piped to the subprocess's stdin.
-        * ``entrypoint.assemble`` — a list of ``{into, from_template}``
-          entries; each ``from_template`` is rendered and written to ``into``
-          (resolved against ``workdir`` for relative paths) before the
-          subprocess starts.
-
-        Errors (missing entrypoint, non-zero exit, timeout, invalid JSON
-        when ``parse=json``, invalid ``stdin``/``assemble`` shape) raise
-        :class:`RuntimeError` so the orchestrator's step-failure path catches
-        them and the meta-skill falls back to a normal turn instead of
-        silently feeding garbage downstream.
-        """
-
-        import asyncio
-        import json as _json
-        import shlex
-        from pathlib import Path as _Path
-
-        skill_spec = self._skill_loader.get_by_name(effective_skill)
-        if skill_spec is None:
-            raise RuntimeError(
-                f"step {step.id!r}: skill {effective_skill!r} not found in loader",
-            )
-        entrypoint = getattr(skill_spec, "entrypoint", None)
-        if not isinstance(entrypoint, dict) or not entrypoint:
-            raise RuntimeError(
-                f"step {step.id!r}: skill {effective_skill!r} has no "
-                f"entrypoint manifest — cannot run as skill_exec",
-            )
-        command_raw = entrypoint.get("command")
-        if not isinstance(command_raw, str) or not command_raw.strip():
-            raise RuntimeError(
-                f"step {step.id!r}: skill {effective_skill!r} entrypoint "
-                f"missing non-empty 'command'",
-            )
-
-        # Render with_args first so it becomes part of the Jinja context for
-        # the entrypoint templates (lets the entrypoint reference ``with.q``
-        # in addition to the global ``inputs`` / ``outputs``).
-        rendered_with = render_with_args(step.with_args, inputs=inputs, outputs=outputs)
-        base_dir = str(getattr(skill_spec, "base_dir", "") or "")
-        context = {
-            "inputs": inputs,
-            "outputs": outputs,
-            "with": rendered_with,
-            "baseDir": base_dir,
-        }
-
-        def _render(value: str) -> str:
-            try:
-                return _JINJA_ENV.from_string(value).render(**context)
-            except jinja2.UndefinedError as exc:
-                raise RuntimeError(f"entrypoint template undefined: {exc}") from exc
-            except jinja2.TemplateSyntaxError as exc:
-                raise RuntimeError(f"entrypoint template syntax error: {exc}") from exc
-
-        # `{baseDir}` is a static placeholder (not Jinja) — substitute before
-        # rendering so it survives shlex.split() below.
-        command_str = command_raw.replace("{baseDir}", base_dir)
-        command_str = _render(command_str)
-
-        raw_args = entrypoint.get("args") or []
-        if not isinstance(raw_args, list):
-            raise RuntimeError(
-                f"step {step.id!r}: entrypoint.args must be a list",
-            )
-        rendered_args: list[str] = []
-        for index, item in enumerate(raw_args):
-            if not isinstance(item, str):
-                raise RuntimeError(
-                    f"step {step.id!r}: entrypoint.args[{index}] must be a string",
-                )
-            rendered_args.append(_render(item.replace("{baseDir}", base_dir)))
-
-        # Resolve cwd early so assemble's relative-path anchoring matches the
-        # subprocess's working directory. Precedence:
-        # 1. ``entrypoint.cwd`` — skill-author override, wins everything.
-        # 2. orchestrator-level ``workspace_dir`` — shared workspace for the
-        #    whole meta-skill so cross-skill files (results.csv → plot,
-        #    references.bib → bibtex, etc.) land in the same tree.
-        # 3. ``base_dir`` — fallback to the skill's own directory.
-        cwd = entrypoint.get("cwd")
-        if isinstance(cwd, str) and cwd:
-            cwd = cwd.replace("{baseDir}", base_dir)
-            workdir: str | None = cwd
-        elif self._workspace_dir:
-            workdir = self._workspace_dir
-        else:
-            workdir = base_dir or None
-
-        # Optional assemble: render templated files to disk before exec.
-        assemble_raw = entrypoint.get("assemble") or []
-        if assemble_raw and not isinstance(assemble_raw, list):
-            raise RuntimeError(
-                f"step {step.id!r}: entrypoint.assemble must be a list of mappings",
-            )
-        for index, entry in enumerate(assemble_raw):
-            if not isinstance(entry, dict):
-                raise RuntimeError(
-                    f"step {step.id!r}: entrypoint.assemble[{index}] must be a mapping",
-                )
-            into_raw = entry.get("into")
-            template_raw = entry.get("from_template")
-            if not isinstance(into_raw, str) or not into_raw:
-                raise RuntimeError(
-                    f"step {step.id!r}: entrypoint.assemble[{index}] missing 'into'",
-                )
-            if not isinstance(template_raw, str):
-                raise RuntimeError(
-                    f"step {step.id!r}: entrypoint.assemble[{index}] missing "
-                    f"'from_template'",
-                )
-            into_path_str = _render(into_raw.replace("{baseDir}", base_dir))
-            template_body = _render(template_raw.replace("{baseDir}", base_dir))
-            # Relative paths anchor to cwd (workdir), absolute paths pass through.
-            target = _Path(into_path_str)
-            if not target.is_absolute() and workdir:
-                target = _Path(workdir) / target
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(template_body, encoding="utf-8")
-            log.info(
-                "meta_orchestrator.skill_exec_assemble",
-                step=step.id,
-                into=str(target),
-                bytes=len(template_body),
-            )
-
-        argv = shlex.split(command_str) + rendered_args
-        if not argv:
-            raise RuntimeError(f"step {step.id!r}: empty argv after rendering")
-
-        timeout_raw = entrypoint.get("timeout", 60.0)
-        try:
-            timeout = float(timeout_raw)
-        except (TypeError, ValueError):
-            timeout = 60.0
-        parse_mode = str(entrypoint.get("parse", "text"))
-
-        # Optional stdin: render Jinja template and pipe to the subprocess.
-        stdin_raw = entrypoint.get("stdin")
-        stdin_bytes: bytes | None = None
-        if isinstance(stdin_raw, str) and stdin_raw:
-            stdin_text = _render(stdin_raw.replace("{baseDir}", base_dir))
-            try:
-                stdin_bytes = stdin_text.encode("utf-8")
-            except UnicodeEncodeError as exc:
-                raise RuntimeError(
-                    f"step {step.id!r}: entrypoint.stdin rendered to text that "
-                    f"cannot be encoded as UTF-8: {exc}",
-                ) from exc
-        elif stdin_raw not in (None, ""):
-            raise RuntimeError(
-                f"step {step.id!r}: entrypoint.stdin must be a string template",
-            )
-
-        log.info(
-            "meta_orchestrator.skill_exec_spawn",
-            step=step.id,
-            skill=effective_skill,
-            argv_head=argv[0],
-            argc=len(argv),
-            timeout=timeout,
-            parse=parse_mode,
-            stdin_bytes=len(stdin_bytes) if stdin_bytes is not None else 0,
+        return await run_skill_exec_step(
+            step,
+            effective_skill,
+            inputs,
+            outputs,
+            skill_loader=self._skill_loader,
+            workspace_dir=self._workspace_dir,
         )
 
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=workdir,
-        )
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(input=stdin_bytes), timeout=timeout,
-            )
-        except TimeoutError as exc:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            raise RuntimeError(
-                f"skill {effective_skill!r} timed out after {timeout}s",
-            ) from exc
-
-        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
-        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"skill {effective_skill!r} exited {proc.returncode}: "
-                f"{stderr_text[:500]}",
-            )
-
-        if parse_mode == "json":
-            try:
-                parsed = _json.loads(stdout_text)
-            except _json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"skill {effective_skill!r} stdout was not valid JSON: {exc}",
-                ) from exc
-            return _json.dumps(parsed, ensure_ascii=False)
-        if parse_mode == "lines":
-            lines = [ln for ln in stdout_text.splitlines() if ln.strip()]
-            return _json.dumps(lines, ensure_ascii=False)
-        return stdout_text.strip()
 
 def make_agent_runner_from_parent(
     *,

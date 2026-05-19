@@ -243,11 +243,17 @@ public compatibility imports.
     pytest `2762 passed, 8 skipped, 2 warnings in 57.46s`; gateway smoke
     start/status/stop/status passed on `127.0.0.1:56759`; final line
     `Refactor gate complete`.
-- [ ] Commit child verification/stage record update.
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, residual risk, and next slice.
-- [ ] Remove temporary child/worker worktrees; run `git worktree prune`; verify
+- [x] Commit child verification/stage record update.
+  - Commit: `2da61e7` (`Record agent CLI command runtime child verification`).
+- [x] Merge child into integration with `git merge --no-ff`.
+  - Merge commit: `62c53f5` (`Merge agent CLI command runtime boundaries`).
+- [x] Run `scripts/refactor_gate.sh` in integration.
+  - Result: ruff passed; mypy success on 570 source files; whitespace clean;
+    pytest `2764 passed, 6 skipped, 2 warnings in 28.47s`; gateway smoke
+    start/status/stop/status passed on `127.0.0.1:56875`; final line
+    `Refactor gate complete`.
+- [x] Record child hash, integration hash, verification, residual risk, and next slice.
+- [x] Remove temporary child/worker worktrees; run `git worktree prune`; verify
       no extra refactor worktree directories remain beyond integration.
 
 ## Child Gate
@@ -288,9 +294,12 @@ public compatibility imports.
 - Main facade commit:
   - `bc12168` (`Refactor agent command facade`).
 - Child verification commit:
-  - Pending this record update.
+  - `2da61e7` (`Record agent CLI command runtime child verification`).
 - Integration merge:
+  - `62c53f5e45733d9192fb9fae31c4fb7897027d53` (`Merge agent CLI command
+    runtime boundaries`).
 - Integration record:
+  - This record update after the integration gate and worktree cleanup.
 - Verification evidence:
   - Runtime worker RED: missing `opensquilla.cli.agent_run_runtime` module.
   - Runtime worker GREEN: `19 passed in 3.00s`; ruff, mypy, and
@@ -308,11 +317,24 @@ public compatibility imports.
   - Child full `scripts/refactor_gate.sh`: ruff passed; mypy success on 570
     source files; whitespace clean; pytest `2762 passed, 8 skipped, 2
     warnings in 57.46s`; gateway smoke passed.
+  - Integration full `scripts/refactor_gate.sh`: ruff passed; mypy success on
+    570 source files; whitespace clean; pytest `2764 passed, 6 skipped, 2
+    warnings in 28.47s`; gateway smoke passed on `127.0.0.1:56875`.
 - Cleanup evidence:
+  - Removed `../opensquilla-refactor-active`.
+  - Removed `../opensquilla-refactor-agent-run-runtime`.
+  - Removed `../opensquilla-refactor-agent-command-output`.
+  - Deleted merged branches:
+    `codex/refactor-agent-cli-command-runtime-boundaries`,
+    `codex/refactor-agent-run-runtime-worker`, and
+    `codex/refactor-agent-command-output-worker`.
+  - Ran `git worktree prune`.
+  - `git worktree list --porcelain` shows no `opensquilla-refactor-*`
+    worktrees beyond `../opensquilla-refactor-integration`.
 - Residual risk:
-  - Low before integration merge; `agent_cmd.py` keeps the Typer command
-    signature and compatibility re-exports, while runtime execution and output
-    rendering now live behind focused modules covered by boundary tests.
+  - Low; `agent_cmd.py` keeps the Typer command signature and compatibility
+    re-exports, while runtime execution and output rendering now live behind
+    focused modules covered by boundary tests and the full integration gate.
 - Next recommended slice:
   - Continue CLI boundary thinning by extracting remaining `chat_cmd.py`
     approval/elevated/gateway REPL orchestration, or move another

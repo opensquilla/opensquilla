@@ -98,6 +98,25 @@ async def preflight_tool_call(
     shared by :func:`build_tool_handler` and by callers that need to
     short-circuit on policy before dispatch (e.g. streaming tool
     interceptors that bypass the regular handler).
+
+    Used by:
+    - build_tool_handler (standard dispatch path) — preflight then handler call
+    - Agent._run_one_streaming (Task 5: meta_invoke special path)
+
+    Caller responsibilities — IMPORTANT:
+
+    * **Contextvar resolution**: this function does NOT consult
+      ``current_tool_context``. Callers must resolve the effective
+      context themselves with ``current_tool_context.get() or ctx``
+      BEFORE passing ``ctx``. Otherwise per-request overrides set by
+      channel adapters are silently ignored.
+
+    * **ctx=None bypasses gates 3-6**: when ``ctx`` is None, the
+      ``owner_only``, ``denied_tools``, ``allowed_tools``, and channel
+      permission matrix gates are SKIPPED. Gates 1 and 2 (untrusted
+      origin, registry lookup) still fire. This matches the
+      pre-extraction inline behaviour but is hazardous in production
+      callers — never pass ``ctx=None`` outside test code.
     """
 
     # Ingress-path injection guard:

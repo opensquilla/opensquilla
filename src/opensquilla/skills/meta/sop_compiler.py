@@ -967,3 +967,47 @@ def _emit(
         previous_phase_step_ids = phase_step_ids
 
     return {"steps": all_steps}
+
+
+def compile(  # noqa: A001 — public API; standard `compile` shadow is acceptable here
+    spec: SkillSpec,
+    *,
+    skill_loader: _LoaderProtocol,
+) -> SkillSpec:
+    """Compile a ``kind: meta_sop`` SkillSpec into a normalised ``kind: meta`` one.
+
+    The returned spec has:
+    - ``kind = "meta"`` so the existing parser/orchestrator accept it
+    - ``composition_raw`` populated with the compiled DAG
+    - All other frontmatter fields (triggers, priority, etc.) preserved
+
+    The input spec is NOT mutated; a fresh ``SkillSpec`` is returned.
+    """
+
+    if spec.kind != "meta_sop":
+        raise ValueError(
+            f"sop_compiler.compile expects kind='meta_sop', got {spec.kind!r}",
+        )
+
+    body = spec.content or ""
+    tokens = list(_lex(body))
+    doc = _parse(tokens, skill_name=spec.name)
+    composition_raw: dict[str, object] = dict(
+        _emit(doc, skill_loader=skill_loader, skill_name=spec.name),
+    )
+
+    # Build a new SkillSpec; do not mutate the input.
+    from dataclasses import replace
+
+    return replace(
+        spec,
+        kind="meta",
+        composition_raw=composition_raw,
+    )
+
+
+__all__ = [
+    "SOPCompileError",
+    "SourceSpan",
+    "compile",
+]

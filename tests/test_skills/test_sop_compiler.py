@@ -658,3 +658,83 @@ def test_emit_depends_on_unknown_id_rejected() -> None:
     )
     with pytest.raises(SOPCompileError, match="nonexistent"):
         _emit(doc, skill_loader=loader, skill_name="meta-x")
+
+
+# ---------------------------------------------------------------------------
+# Public compile() API
+# ---------------------------------------------------------------------------
+
+
+def test_compile_produces_meta_spec_from_meta_sop() -> None:
+    from opensquilla.skills.meta.sop_compiler import compile as sop_compile
+    from opensquilla.skills.types import SkillLayer, SkillSpec
+
+    body = (
+        "## Phase 1: First\n"
+        "Run `paper-experiment-stub`. Save as `s1`.\n"
+        "## Phase 2: Second\n"
+        "Run `paper-plot-stub`. Save as `s2`.\n"
+    )
+    spec_in = SkillSpec(
+        name="meta-tiny",
+        description="t",
+        layer=SkillLayer.BUNDLED,
+        always=False,
+        triggers=["test"],
+        content=body,
+        kind="meta_sop",
+    )
+    loader = _StubSkillLoader(
+        {
+            "paper-experiment-stub": {"entrypoint": {"command": "x"}},
+            "paper-plot-stub": {"entrypoint": {"command": "x"}},
+        },
+    )
+    spec_out = sop_compile(spec_in, skill_loader=loader)
+    assert spec_out.kind == "meta"
+    assert spec_out.name == "meta-tiny"
+    assert spec_out.composition_raw is not None
+    steps = spec_out.composition_raw["steps"]
+    assert [s["id"] for s in steps] == ["s1", "s2"]
+
+
+def test_compile_preserves_triggers_and_priority() -> None:
+    from opensquilla.skills.meta.sop_compiler import compile as sop_compile
+    from opensquilla.skills.types import SkillLayer, SkillSpec
+
+    body = (
+        "## Phase 1: Only\n"
+        "Run `paper-experiment-stub`. Save as `s`.\n"
+    )
+    spec_in = SkillSpec(
+        name="meta-tiny",
+        description="t",
+        layer=SkillLayer.BUNDLED,
+        always=False,
+        triggers=["t1", "t2"],
+        content=body,
+        kind="meta_sop",
+        meta_priority=42,
+    )
+    loader = _StubSkillLoader({"paper-experiment-stub": {"entrypoint": {"command": "x"}}})
+    spec_out = sop_compile(spec_in, skill_loader=loader)
+    assert spec_out.triggers == ["t1", "t2"]
+    assert spec_out.meta_priority == 42
+
+
+def test_compile_rejects_non_meta_sop_input() -> None:
+    """Calling compile on a regular meta skill is a programmer error."""
+    from opensquilla.skills.meta.sop_compiler import compile as sop_compile
+    from opensquilla.skills.types import SkillLayer, SkillSpec
+
+    spec_in = SkillSpec(
+        name="meta-regular",
+        description="t",
+        layer=SkillLayer.BUNDLED,
+        always=False,
+        triggers=["t"],
+        content="",
+        kind="meta",
+    )
+    with pytest.raises(ValueError, match="meta_sop"):
+        sop_compile(spec_in, skill_loader=_StubSkillLoader({}))

@@ -2635,11 +2635,22 @@ class Agent:
         match = MetaMatch(plan=plan, inputs={"user_message": user_message})
 
         # Stream events; capture final MetaResult sentinel.
+        # Suppress nested TextDeltaEvents from sub-Agent steps: when the
+        # plan fans out to N parallel kind=agent steps (e.g. meta-paper-write
+        # drafts 5 sections in parallel), each sub-Agent streams its own
+        # LaTeX text deltas into the shared parent surface, where they
+        # interleave into unreadable chaos. The per-step output is still
+        # captured into the step's ToolResultEvent.result preview (capped
+        # in scheduler.py) and into MetaResult.step_outputs for downstream
+        # steps, so dropping the raw text deltas here costs no information
+        # — it only stops the visual interleaving in the chat surface.
         result: MetaResult | None = None
         try:
             async for ev in orch.iter_events(match):
                 if isinstance(ev, MetaResult):
                     result = ev
+                elif isinstance(ev, TextDeltaEvent):
+                    continue
                 else:
                     yield ev
         except Exception as exc:  # noqa: BLE001

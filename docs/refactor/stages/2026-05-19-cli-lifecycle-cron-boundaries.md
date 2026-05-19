@@ -144,6 +144,15 @@ Thin two independent CLI command surfaces in parallel:
   - `uv run --extra dev pytest tests/test_cli/test_gateway_cmd.py tests/test_cli/test_gateway_lifecycle_cli_boundary.py -q`
 - Cron worker RED command:
   - `uv run --extra dev pytest tests/test_cli/test_cron_cmd.py tests/test_cli/test_cron_cli_boundary.py -q`
+- Cron worker RED output:
+  - Exit code: 1
+  - Result: `2 failed, 3 passed in 4.57s`
+  - Expected failures:
+    - `test_cron_cli_has_workflow_and_presenter_boundaries` failed because
+      `src/opensquilla/cli/cron_workflows.py` did not exist.
+    - `test_cron_commands_delegate_without_inline_rpc_or_rendering` failed
+      because `cron_cmd.py` still called inline RPC/rendering helpers instead
+      of `list_cron_jobs_for_cli`.
 - Expected red failures:
   - New workflow/presenter boundary modules or delegation tests are absent.
   - Existing command behavior tests must remain green except the intentional new
@@ -178,10 +187,39 @@ Thin two independent CLI command surfaces in parallel:
     `63964`.
 - Focused green command after both workers are merged:
   - `uv run --extra dev pytest tests/test_cli/test_gateway_cmd.py tests/test_cli/test_gateway_lifecycle_cli_boundary.py tests/test_cli/test_cron_cmd.py tests/test_cli/test_cron_cli_boundary.py -q`
+- Cron worker focused GREEN command:
+  - `uv run --extra dev pytest tests/test_cli/test_cron_cmd.py tests/test_cli/test_cron_cli_boundary.py -q`
+- Cron worker focused GREEN output:
+  - Exit code: 0
+  - Result: `5 passed in 0.75s`
 - Additional touched-file checks:
   - `uv run --extra dev ruff check src/opensquilla/cli/gateway_cmd.py src/opensquilla/cli/gateway_lifecycle_workflows.py src/opensquilla/cli/gateway_lifecycle_presenters.py src/opensquilla/cli/cron_cmd.py src/opensquilla/cli/cron_workflows.py src/opensquilla/cli/cron_presenters.py tests/test_cli/test_gateway_cmd.py tests/test_cli/test_gateway_lifecycle_cli_boundary.py tests/test_cli/test_cron_cmd.py tests/test_cli/test_cron_cli_boundary.py`
   - `uv run --extra dev mypy src/opensquilla/cli --show-error-codes`
   - `git diff --check`
+- Cron worker touched-file check output:
+  - `uv run --extra dev ruff check src/opensquilla/cli/cron_cmd.py src/opensquilla/cli/cron_workflows.py src/opensquilla/cli/cron_presenters.py tests/test_cli/test_cron_cmd.py tests/test_cli/test_cron_cli_boundary.py`
+    - Exit code: 0
+    - Result: `All checks passed!`
+  - `uv run --extra dev mypy src/opensquilla/cli --show-error-codes`
+    - Exit code: 0
+    - Result: `Success: no issues found in 120 source files`
+    - Notes: mypy also reported the existing unchecked-body note for
+      `src/opensquilla/cli/main.py:228` and unused `pyproject.toml` sections.
+  - `git diff --check`
+    - Exit code: 0
+    - Result: no output.
+
+## Cron worker gate evidence
+
+- Full child gate command:
+  - `scripts/refactor_gate.sh`
+- Full child gate output:
+  - Exit code: 0
+  - Ruff: `All checks passed!`
+  - Mypy: `Success: no issues found in 553 source files`
+  - Pytest: `2668 passed, 8 skipped, 2 warnings in 54.63s`
+  - Gateway smoke: start/status/stop/status completed.
+  - Final line: `Refactor gate complete.`
 
 ## Files
 

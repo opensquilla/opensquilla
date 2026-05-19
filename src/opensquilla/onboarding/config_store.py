@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +17,11 @@ except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[import-not-found, no-redef]
 
 from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.config_migration import (
+    backup_and_write_migrated_config,
+    make_config_backup,
+    migrate_config_payload,
+)
 from opensquilla.paths import default_opensquilla_home
 
 log = structlog.get_logger(__name__)
@@ -67,7 +71,10 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         return cfg
     with target.open("rb") as fh:
         data = tomllib.load(fh)
-    cfg = GatewayConfig.model_validate(data)
+    migration = migrate_config_payload(data)
+    cfg = GatewayConfig.model_validate(migration.payload)
+    if migration.changed:
+        backup_and_write_migrated_config(target, migration.payload, migration)
     llm_payload = data.get("llm") if isinstance(data, dict) else None
     if (
         (not isinstance(llm_payload, dict) or "api_key" not in llm_payload)
@@ -106,14 +113,6 @@ def _config_to_toml_dict(cfg: GatewayConfig) -> dict[str, Any]:
     return coerced
 
 
-def _make_backup(target: Path) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    backup = target.with_name(f"{target.name}.backup.{stamp}")
-    backup.write_bytes(target.read_bytes())
-    backup.chmod(0o600)
-    return backup
-
-
 def persist_config(
     config: GatewayConfig,
     *,
@@ -130,7 +129,7 @@ def persist_config(
 
     backup_path: Path | None = None
     if backup and target.exists():
-        backup_path = _make_backup(target)
+        backup_path = make_config_backup(target)
 
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)

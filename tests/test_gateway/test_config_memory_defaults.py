@@ -27,8 +27,12 @@ def test_memory_core_defaults_keep_single_stable_path() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        # profile and recall_frequency are deprecated and silently dropped (not raised).
-        # Unknown non-deprecated cost sub-fields are still rejected.
+        {"profile": "legacy"},
+        {"recall_frequency": "always"},
+        {"prefetch_enabled": True},
+        {"prefetch_max_results": 3},
+        {"prefetch_min_score": 0.3},
+        {"cost": {"embedding_cache": True}},
         {"cost": {"derived_cache": "shadow"}},
         {"cost": {"facts_lane": "shadow"}},
         {"cost": {"cheap_model_lane": "shadow"}},

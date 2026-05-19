@@ -7,6 +7,7 @@ plus integration and acceptance tests.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -738,3 +739,95 @@ def test_compile_rejects_non_meta_sop_input() -> None:
     )
     with pytest.raises(ValueError, match="meta_sop"):
         sop_compile(spec_in, skill_loader=_StubSkillLoader({}))
+
+
+# ---------------------------------------------------------------------------
+# Loader integration
+# ---------------------------------------------------------------------------
+
+
+def test_loader_compiles_meta_sop_at_load_time(tmp_path: Path) -> None:
+    """A SKILL.md with kind: meta_sop is detected by the loader and
+    compiled before downstream callers see it."""
+
+    # Bundle two skills the SOP will reference + the SOP skill itself.
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+
+    (bundled / "tiny-runner").mkdir()
+    (bundled / "tiny-runner" / "SKILL.md").write_text(
+        "---\n"
+        "name: tiny-runner\n"
+        "description: stub\n"
+        "entrypoint:\n"
+        "  command: python -c 'pass'\n"
+        "---\n"
+        "# tiny-runner\n",
+    )
+
+    (bundled / "meta-tiny").mkdir()
+    (bundled / "meta-tiny" / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-tiny\n"
+        "description: tiny SOP\n"
+        "kind: meta_sop\n"
+        "triggers: [tiny]\n"
+        "---\n"
+        "## Phase 1: First\n"
+        "Run `tiny-runner`. Save as `s1`.\n",
+    )
+
+    from opensquilla.skills.loader import SkillLoader
+
+    snapshot = tmp_path / "snap.json"
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=snapshot)
+    loader.invalidate_cache()
+    specs = {s.name: s for s in loader.load_all()}
+
+    sop = specs.get("meta-tiny")
+    assert sop is not None
+    # After compilation, the spec should look like a regular meta skill
+    assert sop.kind == "meta"
+    assert sop.composition_raw is not None
+    assert sop.composition_raw["steps"][0]["id"] == "s1"
+
+
+def test_loader_skips_malformed_meta_sop(tmp_path: Path) -> None:
+    """If the SOP fails to compile, the loader logs and skips the skill
+    (matches behaviour for malformed regular skills)."""
+
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+
+    (bundled / "tiny-runner").mkdir()
+    (bundled / "tiny-runner" / "SKILL.md").write_text(
+        "---\n"
+        "name: tiny-runner\n"
+        "description: stub\n"
+        "entrypoint:\n"
+        "  command: python -c 'pass'\n"
+        "---\n"
+        "# tiny-runner\n",
+    )
+
+    (bundled / "meta-broken").mkdir()
+    (bundled / "meta-broken" / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-broken\n"
+        "description: broken SOP\n"
+        "kind: meta_sop\n"
+        "triggers: [broken]\n"
+        "---\n"
+        "## Phase 1: Has when annotation [when: outputs.x == 'no']\n"
+        "Run `tiny-runner`. Save as `s1`.\n",
+    )
+
+    from opensquilla.skills.loader import SkillLoader
+
+    snapshot = tmp_path / "snap.json"
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=snapshot)
+    loader.invalidate_cache()
+    specs = {s.name: s for s in loader.load_all()}
+
+    # Compilation failed → the skill is not in the loaded set.
+    assert "meta-broken" not in specs

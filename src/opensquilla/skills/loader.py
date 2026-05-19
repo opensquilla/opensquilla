@@ -10,6 +10,12 @@ import structlog
 import yaml
 
 from opensquilla.paths import default_opensquilla_home
+from opensquilla.skills.meta.sop_compiler import (
+    SOPCompileError,
+)
+from opensquilla.skills.meta.sop_compiler import (
+    compile as _sop_compile,
+)
 from opensquilla.skills.types import (
     SkillInstallSpec,
     SkillLayer,
@@ -384,6 +390,27 @@ class SkillLoader:
                         if spec:
                             merged[spec.name] = spec
                             layer_count += 1
+
+        # Pass 1 cache: populate so `get_by_name` works for SOP compilation
+        # (compile needs to resolve referenced skills, which may not have
+        # been encountered yet when the meta_sop was loaded — meta_sop
+        # skills sort before their referenced regular skills in many cases).
+        self._cached = list(merged.values())
+
+        # Pass 2: compile any `kind: meta_sop` skills into normalised meta
+        # skills. Failures are logged and the offending skill is dropped
+        # from the loaded set (mirrors malformed regular skill handling).
+        for sop_name in [n for n, s in merged.items() if s.kind == "meta_sop"]:
+            sop_spec = merged[sop_name]
+            try:
+                merged[sop_name] = _sop_compile(sop_spec, skill_loader=self)
+            except SOPCompileError as exc:
+                log.warning(
+                    "sop_compile_failed",
+                    skill=sop_name,
+                    error=str(exc),
+                )
+                del merged[sop_name]
 
         skills = list(merged.values())
         self._cached = list(skills)

@@ -205,17 +205,44 @@ public compatibility imports.
 - [x] Create fixed active worktree on
       `codex/refactor-agent-cli-command-runtime-boundaries`.
 - [x] Write this stage plan before production edits.
-- [ ] Commit this stage plan as the worker base.
-- [ ] Dispatch two same-thread workers with explicit worktree/branch ownership.
-- [ ] Runtime worker writes RED boundary tests and records RED output.
-- [ ] Output worker writes RED boundary tests and records RED output.
-- [ ] Runtime worker implements boundary and records GREEN/check evidence.
-- [ ] Output worker implements boundary and records GREEN/check evidence.
-- [ ] Main thread reviews both worker diffs for behavior compatibility and ownership.
-- [ ] Merge both worker branches into the active child.
-- [ ] Main thread writes and verifies facade RED/GREEN.
-- [ ] Run focused green command and touched-file checks.
-- [ ] Run `scripts/refactor_gate.sh` in the active child worktree.
+- [x] Commit this stage plan as the worker base.
+  - Commit: `36a7fc3` (`Plan agent CLI command runtime boundaries`).
+- [x] Dispatch two same-thread workers with explicit worktree/branch ownership.
+  - Runtime worker: `Beauvoir`.
+  - Output worker: `Volta`.
+- [x] Runtime worker writes RED boundary tests and records RED output.
+  - RED: expected collection/import failure because
+    `opensquilla.cli.agent_run_runtime` did not exist.
+- [x] Output worker writes RED boundary tests and records RED output.
+  - RED: expected collection/import failure because
+    `opensquilla.cli.agent_command_output` did not exist.
+- [x] Runtime worker implements boundary and records GREEN/check evidence.
+  - Commit: `67626fe` (`refactor: extract agent run runtime module`).
+  - Focused GREEN: `19 passed in 3.00s`; ruff, mypy, and `git diff --check`
+    passed.
+- [x] Output worker implements boundary and records GREEN/check evidence.
+  - Commit: `9dff804` (`refactor: add agent command output boundary`).
+  - Focused GREEN: `10 passed`; ruff, mypy, `git diff --check`, and
+    `git diff --cached --check` passed.
+- [x] Main thread reviews both worker diffs for behavior compatibility and ownership.
+  - Review found disjoint ownership and no forbidden file edits.
+- [x] Merge both worker branches into the active child.
+  - `b230f71` (`Merge agent run runtime worker`).
+  - `c2eaeff` (`Merge agent command output worker`).
+- [x] Main thread writes and verifies facade RED/GREEN.
+  - RED: `2 failed`; `agent_cmd.run_agent_once` was still local and
+    `agent_cmd.agent_result_payload` did not exist.
+  - GREEN: `tests/test_cli/test_agent_cmd_facade_boundary.py` -> `2 passed`.
+- [x] Run focused green command and touched-file checks.
+  - Focused merged command: `42 passed in 0.69s`.
+  - Touched-file ruff: all checks passed.
+  - Touched-file mypy: success, no issues in 3 source files.
+  - `git diff --check`: passed.
+- [x] Run `scripts/refactor_gate.sh` in the active child worktree.
+  - Result: ruff passed; mypy success on 570 source files; whitespace clean;
+    pytest `2762 passed, 8 skipped, 2 warnings in 57.46s`; gateway smoke
+    start/status/stop/status passed on `127.0.0.1:56759`; final line
+    `Refactor gate complete`.
 - [ ] Commit child verification/stage record update.
 - [ ] Merge child into integration with `git merge --no-ff`.
 - [ ] Run `scripts/refactor_gate.sh` in integration.
@@ -252,13 +279,42 @@ public compatibility imports.
 ## Completion Record
 
 - Runtime worker commit:
+  - `67626fe` (`refactor: extract agent run runtime module`).
 - Output worker commit:
+  - `9dff804` (`refactor: add agent command output boundary`).
 - Active child worker merges:
+  - `b230f71` (`Merge agent run runtime worker`).
+  - `c2eaeff` (`Merge agent command output worker`).
 - Main facade commit:
+  - `bc12168` (`Refactor agent command facade`).
 - Child verification commit:
+  - Pending this record update.
 - Integration merge:
 - Integration record:
 - Verification evidence:
+  - Runtime worker RED: missing `opensquilla.cli.agent_run_runtime` module.
+  - Runtime worker GREEN: `19 passed in 3.00s`; ruff, mypy, and
+    `git diff --check` passed.
+  - Output worker RED: missing `opensquilla.cli.agent_command_output` module.
+  - Output worker GREEN: `10 passed`; ruff, mypy, and `git diff --check`
+    passed.
+  - Main facade RED: `2 failed`; old facade still owned `run_agent_once` and
+    did not expose `agent_result_payload`.
+  - Main facade GREEN: `2 passed`.
+  - Focused merged command: `42 passed in 0.69s`.
+  - Touched-file ruff: all checks passed.
+  - Touched-file mypy: success, no issues in 3 source files.
+  - `git diff --check`: passed.
+  - Child full `scripts/refactor_gate.sh`: ruff passed; mypy success on 570
+    source files; whitespace clean; pytest `2762 passed, 8 skipped, 2
+    warnings in 57.46s`; gateway smoke passed.
 - Cleanup evidence:
 - Residual risk:
+  - Low before integration merge; `agent_cmd.py` keeps the Typer command
+    signature and compatibility re-exports, while runtime execution and output
+    rendering now live behind focused modules covered by boundary tests.
 - Next recommended slice:
+  - Continue CLI boundary thinning by extracting remaining `chat_cmd.py`
+    approval/elevated/gateway REPL orchestration, or move another
+    `agent_cmd.py` compatibility import only after downstream import coverage
+    is stable.

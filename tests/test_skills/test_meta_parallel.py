@@ -290,3 +290,89 @@ async def test_linear_dag_event_order_preserved() -> None:
         ("start", "meta-step:c"),
         ("end", "meta-step:c"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_max_parallelism_caps_concurrent_steps() -> None:
+    """With max_parallelism=2 and 4 independent steps, no more than 2 are
+    in-flight at any moment."""
+
+    spec = _meta_spec(
+        [
+            {"id": f"s{i}", "skill": f"skill_{i}", "with": {}}
+            for i in range(4)
+        ],
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+
+    in_flight = 0
+    high_water_mark = 0
+    lock = asyncio.Lock()
+
+    async def runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        nonlocal in_flight, high_water_mark
+        async with lock:
+            in_flight += 1
+            high_water_mark = max(high_water_mark, in_flight)
+        try:
+            await asyncio.sleep(0.05)
+            yield TextDeltaEvent(text="done")
+            yield DoneEvent(text="")
+        finally:
+            async with lock:
+                in_flight -= 1
+
+    loader = _FakeLoader([_skill(f"skill_{i}") for i in range(4)])
+    orch = MetaOrchestrator(
+        agent_runner=runner,
+        skill_loader=loader,
+        max_parallelism=2,
+    )
+
+    async for _ in orch.iter_events(MetaMatch(plan=plan, inputs={})):
+        pass
+
+    assert high_water_mark <= 2, f"high_water_mark={high_water_mark}"
+
+
+@pytest.mark.asyncio
+async def test_max_parallelism_none_unbounded() -> None:
+    """max_parallelism=None preserves the current 5-way fan-out."""
+
+    spec = _meta_spec(
+        [
+            {"id": f"s{i}", "skill": f"skill_{i}", "with": {}}
+            for i in range(5)
+        ],
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+
+    started_count = 0
+    target_lock = asyncio.Lock()
+    all_started = asyncio.Event()
+
+    async def runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        nonlocal started_count
+        async with target_lock:
+            started_count += 1
+            if started_count == 5:
+                all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=1.0)
+        yield TextDeltaEvent(text="done")
+        yield DoneEvent(text="")
+
+    loader = _FakeLoader([_skill(f"skill_{i}") for i in range(5)])
+    orch = MetaOrchestrator(
+        agent_runner=runner,
+        skill_loader=loader,
+        max_parallelism=None,
+    )
+
+    final: MetaResult | None = None
+    async for ev in orch.iter_events(MetaMatch(plan=plan, inputs={})):
+        if isinstance(ev, MetaResult):
+            final = ev
+
+    assert final is not None and final.ok

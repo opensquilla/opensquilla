@@ -45,6 +45,7 @@ async def run_dag(
     yield_skill_view_preface: Callable[
         [str, str], AsyncIterator[AgentEvent],
     ],
+    max_parallelism: int | None = None,
 ) -> AsyncIterator[AgentEvent | MetaResult]:
     """Run the plan and stream a flat sequence of events for the UI.
 
@@ -55,6 +56,15 @@ async def run_dag(
 
     Failure of any step cancels all in-flight sibling tasks and yields
     one terminal ``MetaResult(ok=False)``.
+
+    ``max_parallelism``: optional concurrency cap. ``None`` (default) is
+    unbounded — every step whose deps are satisfied is spawned
+    immediately. An integer ``N`` limits the in-flight task pool to at
+    most ``N``; any extra ready steps stay queued in ``unstarted`` and
+    are picked up on the next ``_spawn_ready()`` (called after each
+    ``_StepDone``). Guardrails fan-out for meta-skills with many
+    independent steps so we don't fan token usage past provider rate
+    limits.
     """
     outputs: dict[str, str] = {}
     try:
@@ -182,6 +192,10 @@ async def run_dag(
 
     def _spawn_ready() -> None:
         for sid in list(unstarted):
+            if max_parallelism is not None and len(running) >= max_parallelism:
+                # Cap reached — leave remaining ready steps in
+                # ``unstarted`` for the next _spawn_ready() call.
+                break
             if not pending_deps[sid]:
                 unstarted.discard(sid)
                 task = asyncio.create_task(_run_one(steps_by_id[sid]))

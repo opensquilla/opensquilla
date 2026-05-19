@@ -85,6 +85,7 @@ class MetaOrchestrator:
         llm_chat: LLMChat | None = None,
         tool_invoker: ToolInvoker | None = None,
         workspace_dir: str | None = None,
+        max_parallelism: int | None = 8,
     ) -> None:
         self._agent_runner = agent_runner
         self._skill_loader = skill_loader
@@ -96,6 +97,11 @@ class MetaOrchestrator:
         # ``base_dir`` default so all steps share one workspace tree.
         # ``entrypoint.cwd`` on the individual skill still wins if set.
         self._workspace_dir = workspace_dir
+        # Concurrency cap fed into ``scheduler.run_dag``. Default 8
+        # accommodates a 5-way fan-out (meta-paper-write needs 5) with
+        # headroom while still containing pathological 20-way fans.
+        # ``None`` = unbounded (preserved for advanced callers).
+        self._max_parallelism = max_parallelism
 
     async def run(self, match: MetaMatch) -> MetaResult:
         """Execute the plan, draining the streaming generator for the final result.
@@ -128,6 +134,7 @@ class MetaOrchestrator:
             match,
             dispatch_step_stream=self._dispatch_step_stream,
             yield_skill_view_preface=self._yield_skill_view_preface,
+            max_parallelism=self._max_parallelism,
         ):
             yield item
 

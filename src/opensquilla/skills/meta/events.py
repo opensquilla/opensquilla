@@ -36,6 +36,27 @@ class _StepDone:
     text: str
 
 
+@_dataclass(frozen=True)
+class _FailoverTriggered:
+    """Internal sentinel — a step failed but declared an ``on_failure``
+    substitute.
+
+    Pushed by ``_run_one`` after emitting the failing step's
+    ``ToolResultEvent`` so the scheduler's main loop can dispatch the
+    substitute step rather than cascade to plan-level failure. The
+    substitute's output is later mirrored into the failed step's output
+    slot so downstream ``depends_on`` consumers unblock as if the
+    original had succeeded.
+
+    Not a public event type; the orchestrator does not forward these to
+    callers.
+    """
+
+    failed_step_id: str
+    substitute_step_id: str
+    error: str
+
+
 async def yield_skill_view_preface(
     step_id: str,
     effective_skill: str,
@@ -88,4 +109,4 @@ async def yield_skill_view_preface(
     )
 
 
-__all__ = ["_StepDone", "yield_skill_view_preface"]
+__all__ = ["_FailoverTriggered", "_StepDone", "yield_skill_view_preface"]

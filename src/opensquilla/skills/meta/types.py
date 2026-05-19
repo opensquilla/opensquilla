@@ -64,6 +64,11 @@ class MetaStep:
     # ``tool`` is one of these names; the runtime executor also
     # double-checks defensively.
     tool_allowlist: tuple[str, ...] = ()
+    # Optional. Names another step in the same plan that should be spawned
+    # if this step fails. The substitute's output is mirrored to outputs under
+    # THIS step's id, so downstream depends_on links remain satisfied.
+    # Empty string = no substitute (DAG fails normally on error).
+    on_failure: str = ""
 
 
 @dataclass(frozen=True)

@@ -27,7 +27,7 @@ from opensquilla.engine.types import (
     ToolResultEvent,
     ToolUseStartEvent,
 )
-from opensquilla.skills.meta.events import _StepDone
+from opensquilla.skills.meta.events import _FailoverTriggered, _StepDone
 from opensquilla.skills.meta.parser import topological_order
 from opensquilla.skills.meta.templating import resolve_route
 from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
@@ -82,12 +82,33 @@ async def run_dag(
     pending_deps: dict[str, set[str]] = {
         s.id: set(s.depends_on) for s in ordered
     }
-    unstarted: set[str] = set(steps_by_id.keys())
+    # Steps that are *only* reachable as another step's ``on_failure``
+    # substitute must not run autonomously — they exist on the DAG so
+    # downstream consumers can declare ``depends_on`` against them, but
+    # they only fire when the scheduler dispatches them via the failover
+    # path. We pull them out of the initial ready set and re-add them on
+    # ``_FailoverTriggered``.
+    substitute_only: set[str] = {
+        s.on_failure for s in ordered if s.on_failure
+    }
+    unstarted: set[str] = set(steps_by_id.keys()) - substitute_only
     running: dict[str, asyncio.Task[None]] = {}
-    last_step_id = ordered[-1].id
+    # Aliases populated when a step fails over: maps the substitute step
+    # id to the original failed step id. On the substitute's ``_StepDone``
+    # we mirror its output into the original's slot so downstream
+    # ``depends_on`` links see a value as if the original had succeeded.
+    failover_aliases: dict[str, str] = {}
+    # ``final_text`` is taken from the last non-substitute step in topological
+    # order. Substitute-only steps would yield an empty string if they never
+    # fire (their primary succeeded), so they cannot serve as the deliverable.
+    non_substitute_order = [s.id for s in ordered if s.id not in substitute_only]
+    last_step_id = non_substitute_order[-1] if non_substitute_order else ordered[-1].id
 
     event_queue: asyncio.Queue[
-        tuple[str, AgentEvent | MetaResult | _StepDone | Exception]
+        tuple[
+            str,
+            AgentEvent | MetaResult | _StepDone | _FailoverTriggered | Exception,
+        ]
     ] = asyncio.Queue()
 
     async def _run_one(step: MetaStep) -> None:
@@ -177,10 +198,13 @@ async def run_dag(
             # that never completed.
             raise
         except Exception as exc:  # noqa: BLE001
+            has_substitute = bool(step.on_failure)
             log.warning(
                 "meta_orchestrator.step_failed",
                 step=step.id,
                 error=str(exc),
+                failover=has_substitute,
+                substitute=step.on_failure or None,
             )
             step_use_id = f"meta_step_{step.id}"
             step_tool_name = f"meta-step:{step.id}"
@@ -192,11 +216,29 @@ async def run_dag(
                         tool_name=step_tool_name,
                         result=str(exc),
                         is_error=True,
-                        arguments={"step": step.id},
+                        arguments={
+                            "step": step.id,
+                            "failover": has_substitute,
+                        },
                     ),
                 ),
             )
-            await event_queue.put((step.id, exc))
+            if has_substitute:
+                # Soft failure — defer to the substitute. The main loop
+                # will dispatch ``step.on_failure`` and alias its output
+                # back to this step's slot.
+                await event_queue.put(
+                    (
+                        step.id,
+                        _FailoverTriggered(
+                            failed_step_id=step.id,
+                            substitute_step_id=step.on_failure,
+                            error=str(exc),
+                        ),
+                    ),
+                )
+            else:
+                await event_queue.put((step.id, exc))
 
     def _spawn_ready() -> None:
         for sid in list(unstarted):
@@ -243,8 +285,44 @@ async def run_dag(
                 task = running.pop(step_id, None)
                 if task is not None and not task.done():
                     await task
-                for dependent_id, deps in pending_deps.items():
+                # Failover alias propagation: if this completing step is
+                # a substitute spawned for a previously-failed step, mirror
+                # its output into the failed step's slot AND treat the
+                # failed step's id as resolved for any dependent's deps
+                # set. (Downstream steps declared ``depends_on`` against
+                # the original id, not the substitute.)
+                aliased_failed = failover_aliases.get(step_id)
+                if aliased_failed is not None:
+                    outputs[aliased_failed] = item.text
+                for deps in pending_deps.values():
                     deps.discard(step_id)
+                    if aliased_failed is not None:
+                        deps.discard(aliased_failed)
+                _spawn_ready()
+                continue
+            if isinstance(item, _FailoverTriggered):
+                # The original step's _run_one task has finished (it
+                # already published its failing ToolResultEvent ahead of
+                # this sentinel). Remove it from ``running``, record the
+                # alias, force-clear the substitute's pending deps
+                # (substitute fires when its parent fails, not when the
+                # substitute's own depends_on resolves — the minimal
+                # subset semantic), move the substitute out of
+                # ``substitute_only`` into ``unstarted``, and spawn.
+                failed_task = running.pop(item.failed_step_id, None)
+                if failed_task is not None and not failed_task.done():
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await failed_task
+                failover_aliases[item.substitute_step_id] = item.failed_step_id
+                if item.substitute_step_id in pending_deps:
+                    pending_deps[item.substitute_step_id] = set()
+                if item.substitute_step_id in substitute_only:
+                    substitute_only.discard(item.substitute_step_id)
+                if (
+                    item.substitute_step_id in steps_by_id
+                    and item.substitute_step_id not in running
+                ):
+                    unstarted.add(item.substitute_step_id)
                 _spawn_ready()
                 continue
             if isinstance(item, Exception):

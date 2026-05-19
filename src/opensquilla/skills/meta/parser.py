@@ -103,6 +103,17 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
             tool,
         )
 
+        on_failure_raw = raw.get("on_failure")
+        if on_failure_raw is None or on_failure_raw == "":
+            on_failure = ""
+        elif isinstance(on_failure_raw, str) and on_failure_raw.strip():
+            on_failure = on_failure_raw.strip()
+        else:
+            raise MetaPlanError(
+                f"meta-skill {spec.name!r}: step {step_id!r} on_failure must be "
+                f"a non-empty string (target step id) or omitted",
+            )
+
         steps.append(
             MetaStep(
                 id=step_id,
@@ -115,10 +126,12 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 tool=tool,
                 tool_args=tool_args,
                 tool_allowlist=tool_allowlist,
+                on_failure=on_failure,
             ),
         )
 
     _ensure_acyclic(spec.name, steps)
+    _ensure_on_failure_valid(spec.name, steps)
 
     triggers_raw: Any = getattr(spec, "triggers", None) or []
     if not isinstance(triggers_raw, list):
@@ -307,6 +320,61 @@ def _parse_tool_allowlist(
             f"not in tool_allowlist {items!r}",
         )
     return tuple(items)
+
+
+def _ensure_on_failure_valid(name: str, steps: list[MetaStep]) -> None:
+    """Cross-validate ``on_failure`` references after all steps are parsed.
+
+    Five rules (minimum subset for Step A.3):
+
+    1. The target step id must exist in the same plan.
+    2. A step cannot name itself as its own substitute.
+    3. A substitute step cannot itself have ``on_failure`` (no chains).
+    4. Each substitute step may be designated by at most ONE primary
+       (no shared substitutes) — otherwise concurrent failovers would
+       overwrite the alias and silently strand one parent's output slot.
+    5. A substitute step cannot declare ``depends_on`` — the scheduler
+       force-clears its pending deps on failover, so honouring them would
+       require a more elaborate semantic than the minimum subset offers.
+    """
+
+    by_id = {s.id: s for s in steps}
+    designated_by: dict[str, str] = {}
+    for s in steps:
+        if not s.on_failure:
+            continue
+        if s.on_failure == s.id:
+            raise MetaPlanError(
+                f"meta-skill {name!r}: step {s.id!r} on_failure cannot "
+                f"target itself",
+            )
+        if s.on_failure not in by_id:
+            raise MetaPlanError(
+                f"meta-skill {name!r}: step {s.id!r} on_failure target "
+                f"{s.on_failure!r} is not a step in this plan",
+            )
+        substitute = by_id[s.on_failure]
+        if substitute.on_failure:
+            raise MetaPlanError(
+                f"meta-skill {name!r}: step {s.id!r} on_failure target "
+                f"{s.on_failure!r} may not have its own on_failure "
+                f"(nested substitution is not supported)",
+            )
+        if substitute.depends_on:
+            raise MetaPlanError(
+                f"meta-skill {name!r}: step {s.id!r} on_failure target "
+                f"{s.on_failure!r} must not declare depends_on "
+                f"(substitute steps are dispatched on failover, not by "
+                f"dependency resolution)",
+            )
+        prior = designated_by.get(s.on_failure)
+        if prior is not None:
+            raise MetaPlanError(
+                f"meta-skill {name!r}: step {s.on_failure!r} is already "
+                f"designated as on_failure substitute by step {prior!r}; "
+                f"a substitute may only be referenced by one primary",
+            )
+        designated_by[s.on_failure] = s.id
 
 
 def _ensure_acyclic(name: str, steps: list[MetaStep]) -> None:

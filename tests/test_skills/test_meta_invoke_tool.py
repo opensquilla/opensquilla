@@ -321,6 +321,111 @@ async def test_run_one_streaming_unknown_meta_skill_returns_error_result(
     assert "not a registered meta-skill" in final.content
 
 
+@pytest.mark.asyncio
+async def test_run_one_streaming_propagates_current_turn_message_to_inputs(
+    tmp_path,
+) -> None:
+    """The user's run_turn(message=...) text must flow into MetaMatch.inputs
+    as user_message — otherwise the meta-skill's first step (e.g.
+    multi-search-engine reading {{ inputs.user_message }}) gets an empty
+    query and the whole DAG produces an empty deliverable.
+
+    The Agent stores message in self._current_turn_message at the top of
+    _turn_generator; _run_one_streaming reads it back from there. This test
+    sets the attribute directly (without going through run_turn) and
+    verifies the value reaches MetaOrchestrator via a captured iter_events
+    spy.
+    """
+    from opensquilla.engine.agent import Agent
+    from opensquilla.engine.types import AgentConfig
+    from opensquilla.skills.loader import SkillLoader
+    from opensquilla.tool_boundary import ToolCall, ToolResult
+    from opensquilla.tools.builtin import meta_tools  # noqa: F401
+    from opensquilla.tools.registry import get_default_registry
+    from opensquilla.tools.types import ToolContext
+
+    bundled = tmp_path / "skills" / "bundled"
+    bundled.mkdir(parents=True)
+    skill_dir = bundled / "meta-tiny"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-tiny\n"
+        "kind: meta\n"
+        "description: t\n"
+        "triggers: [t]\n"
+        "composition:\n"
+        "  steps:\n"
+        "    - id: c\n"
+        "      kind: llm_classify\n"
+        "      output_choices: [A, B]\n"
+        "      with: {text: x}\n"
+        "---\n# meta-tiny\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    loader.load_all()
+
+    class _NullProvider:
+        provider_name = "null"
+
+        async def chat(self, *_a, **_kw):
+            raise AssertionError("provider.chat must not fire")
+
+        async def list_models(self):
+            return []
+
+    registry = get_default_registry()
+    config = AgentConfig(
+        model_id="stub", max_iterations=1, system_prompt="",
+        metadata={"skill_loader": loader, "bootstrap_workspace_dir": str(tmp_path)},
+    )
+    agent = Agent(
+        provider=_NullProvider(),  # type: ignore[arg-type]
+        config=config,
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=registry,
+    )
+    # Simulate what _turn_generator does on its first line.
+    agent._current_turn_message = "RAG in low-resource settings"  # type: ignore[attr-defined]
+
+    captured: dict[str, object] = {}
+
+    # Patch MetaOrchestrator.iter_events to capture the MetaMatch then
+    # yield a successful MetaResult sentinel without running real steps.
+    import opensquilla.skills.meta.orchestrator as orch_mod
+    from opensquilla.skills.meta.types import MetaResult
+
+    original_iter_events = orch_mod.MetaOrchestrator.iter_events
+
+    async def fake_iter_events(self, match):  # noqa: ARG001
+        captured["inputs"] = dict(match.inputs)
+        yield MetaResult(ok=True, final_text="captured")
+
+    orch_mod.MetaOrchestrator.iter_events = fake_iter_events  # type: ignore[assignment]
+    try:
+        tc = ToolCall(
+            tool_use_id="u1", tool_name="meta_invoke",
+            arguments={"name": "meta-tiny"},
+        )
+        tool_ctx = ToolContext(workspace_dir=str(tmp_path), is_owner=True)
+
+        final: ToolResult | None = None
+        async for ev in agent._run_one_streaming(tc, tool_ctx):
+            if isinstance(ev, ToolResult):
+                final = ev
+    finally:
+        orch_mod.MetaOrchestrator.iter_events = original_iter_events  # type: ignore[assignment]
+
+    assert final is not None
+    assert final.is_error is False
+    assert captured.get("inputs", {}).get("user_message") == "RAG in low-resource settings", (
+        f"expected user_message to propagate from _current_turn_message; got {captured!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 6: Dispatch loop intercepts meta_invoke and terminates turn on success
 # ---------------------------------------------------------------------------

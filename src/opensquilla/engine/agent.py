@@ -709,6 +709,12 @@ class Agent:
         semantic_message: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Async generator that drives the state machine."""
+        # Capture the user-facing turn message so streaming dispatch helpers
+        # (notably _run_one_streaming, the meta_invoke interceptor) can read
+        # it as the canonical user_message input to MetaOrchestrator without
+        # having to round-trip through AgentConfig.metadata. Cleared after
+        # the turn so it can't leak across turns.
+        self._current_turn_message: str = message
         # ------ IDLE → THINKING ------
         yield self._transition(AgentState.THINKING)
 
@@ -2619,7 +2625,13 @@ class Agent:
             workspace_dir=str(workspace_dir) if workspace_dir else None,
         )
 
-        user_message = metadata.get("user_message", "")
+        # Prefer the live turn message captured at run_turn entry (canonical
+        # source). Fall back to AgentConfig.metadata for test callers that
+        # invoke _run_one_streaming directly without going through run_turn.
+        user_message = (
+            getattr(self, "_current_turn_message", "")
+            or metadata.get("user_message", "")
+        )
         match = MetaMatch(plan=plan, inputs={"user_message": user_message})
 
         # Stream events; capture final MetaResult sentinel.

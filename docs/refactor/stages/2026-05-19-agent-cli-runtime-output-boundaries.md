@@ -212,6 +212,39 @@ changes and must not revert unrelated edits.
   - Refactor gate: `scripts/refactor_gate.sh` -> ruff passed, mypy passed,
     whitespace clean, `2713 passed, 8 skipped, 2 warnings in 58.29s`, gateway
     smoke start/status/stop/status passed, `Refactor gate complete`.
+- Agent-output worker evidence:
+  - RED command, reconstructed in a temporary detached worktree from
+    `08e517c^` with only `tests/test_cli/test_agent_output_boundary.py`
+    restored from the worker commit:
+    `uv run --extra dev pytest tests/test_cli/test_agent_output_boundary.py tests/test_cli/test_agent_cmd.py::test_run_agent_command_json_includes_artifacts tests/test_cli/test_agent_cmd.py::test_run_agent_once_collects_artifact_events tests/test_agent_cmd_no_key.py -q`
+  - RED result: failed during collection with
+    `ImportError: cannot import name 'agent_outputs' from 'opensquilla.cli'`.
+  - Temporary RED worktree cleanup: `git worktree remove --force
+    /Users/cwan0785/opensquilla-refactor-red-agent-output` and
+    `git worktree prune` completed after the expected failure was captured.
+  - GREEN command, verified by the main thread after merging both workers:
+    `uv run --extra dev pytest tests/test_cli/test_agent_runtime_config_boundary.py tests/test_cli/test_agent_output_boundary.py tests/test_cli/test_agent_cmd.py tests/test_agent_cmd_no_key.py -q`
+  - GREEN result: `32 passed in 0.67s`.
+  - Touched-file ruff:
+    `uv run --extra dev ruff check src/opensquilla/cli/agent_cmd.py src/opensquilla/cli/agent_runtime_config.py src/opensquilla/cli/agent_outputs.py tests/test_cli/test_agent_runtime_config_boundary.py tests/test_cli/test_agent_output_boundary.py tests/test_cli/test_agent_cmd.py tests/test_agent_cmd_no_key.py`
+    -> `All checks passed!`.
+  - Touched CLI mypy:
+    `uv run --extra dev mypy src/opensquilla/cli --show-error-codes` ->
+    `Success: no issues found in 133 source files`.
+  - Whitespace check: `git diff --check` -> clean.
+- Main-thread merge evidence:
+  - Runtime config worker merge: `72ce560` (`Merge agent runtime config worker`).
+  - Output worker merge: `b7a094a` (`Merge agent output worker`).
+  - Conflict resolution: `src/opensquilla/cli/agent_cmd.py` keeps
+    compatibility aliases for both `agent_runtime_config` and `agent_outputs`
+    while removing the moved helper bodies from the command module.
+- Child full `scripts/refactor_gate.sh`:
+  - ruff: `All checks passed!`.
+  - mypy: `Success: no issues found in 566 source files`.
+  - whitespace: clean.
+  - pytest: `2717 passed, 8 skipped, 2 warnings in 56.46s`.
+  - gateway smoke: start/status/stop/status passed on `127.0.0.1:54109`.
+  - Result: `Refactor gate complete`.
 
 ## Files
 
@@ -233,16 +266,16 @@ changes and must not revert unrelated edits.
 - [x] Confirm `spawn_agent` status.
 - [x] Create fixed active worktree on `codex/refactor-agent-cli-runtime-output-boundaries`.
 - [x] Write this stage plan before production edits.
-- [ ] Commit this stage plan as the worker base.
-- [ ] Launch two external workers with `scripts/refactor_external_agent.sh`.
+- [x] Commit this stage plan as the worker base.
+- [x] Launch two external workers with `scripts/refactor_external_agent.sh`.
 - [x] Agent-runtime-config worker writes RED boundary tests and records RED output.
-- [ ] Agent-output worker writes RED boundary tests and records RED output.
+- [x] Agent-output worker writes RED boundary tests and records RED output.
 - [x] Agent-runtime-config worker implements boundary and records GREEN/check/gate evidence.
-- [ ] Agent-output worker implements boundary and records GREEN/check/gate evidence.
-- [ ] Main thread reviews both diffs for behavior compatibility and ownership.
-- [ ] Merge both worker branches into the active child.
-- [ ] Run focused green command and touched-file checks.
-- [ ] Run `scripts/refactor_gate.sh` in the active child worktree.
+- [x] Agent-output worker implements boundary and records GREEN/check/gate evidence.
+- [x] Main thread reviews both diffs for behavior compatibility and ownership.
+- [x] Merge both worker branches into the active child.
+- [x] Run focused green command and touched-file checks.
+- [x] Run `scripts/refactor_gate.sh` in the active child worktree.
 - [ ] Commit child verification/stage record update with:
 
 ```text
@@ -284,13 +317,29 @@ Co-authored-by: Codex <noreply@openai.com>
 
 ## Completion record
 
-- Agent-runtime-config worker commit:
-- Agent-output worker commit:
+- Agent-runtime-config worker commit: `870f9097924a07522b71afe91315485ec5193873`
+  (`refactor: extract agent runtime config helpers`).
+- Agent-output worker commit: `08e517c9d19c5f312ffe67a0aee71330ae2d1eac`
+  (`Refactor agent CLI output helpers`).
 - Active child worker merges:
-- Child verification commit:
+  - `72ce560` (`Merge agent runtime config worker`).
+  - `b7a094a` (`Merge agent output worker`).
+- Child verification commit: this record update, committed after the child gate.
 - Integration merge:
 - Integration record:
 - Verification evidence:
+  - Focused command: `uv run --extra dev pytest tests/test_cli/test_agent_runtime_config_boundary.py tests/test_cli/test_agent_output_boundary.py tests/test_cli/test_agent_cmd.py tests/test_agent_cmd_no_key.py -q`
+    -> `32 passed in 0.67s`.
+  - Touched-file ruff: all checks passed.
+  - Touched CLI mypy: `Success: no issues found in 133 source files`.
+  - Child full `scripts/refactor_gate.sh`: ruff passed; mypy passed with no
+    issues in 566 source files; whitespace clean; pytest `2717 passed, 8
+    skipped, 2 warnings in 56.46s`; gateway smoke start/status/stop/status
+    passed.
 - Cleanup evidence:
-- Residual risk:
-- Next recommended slice:
+- Residual risk: low; this is a private-helper relocation with compatibility
+  aliases and focused boundary tests for helper ownership/payload shapes.
+- Next recommended slice: continue CLI boundary thinning with a coarse command
+  family whose helper ownership can be split cleanly across fixed worker slots,
+  re-probing `spawn_agent` first and otherwise using
+  `scripts/refactor_external_agent.sh`.

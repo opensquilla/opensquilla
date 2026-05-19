@@ -494,6 +494,26 @@ def test_chat_surfaces_manual_and_passive_compaction_toasts() -> None:
     assert "Compact cancelled" in source
 
 
+def test_chat_compaction_token_details_are_success_only() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _showCompactionToast(payload, meta = {})")
+    end = source.index("  /* ── RPC Event Subscriptions", start)
+    body = source[start:end]
+    stats_start = source.index("function _compactionTokenStats(payload)")
+    stats_end = source.index("function _showCompactionToast(payload, meta = {})", stats_start)
+    stats_body = source[stats_start:stats_end]
+    skipped_start = body.index("if (status === 'skipped')")
+    skipped_end = body.index("if (status === 'failed'", skipped_start)
+    skipped_block = body[skipped_start:skipped_end]
+
+    assert "UI.toast('No compaction needed', 'info', 4500);" in skipped_block
+    assert "No compaction needed' + details" not in skipped_block
+    assert "payload && payload.tokens_after || 0" not in stats_body
+    assert body.index("_compactionTokenStats(payload || {})") > body.index(
+        "if (status === 'cancelled')"
+    )
+
+
 def test_chat_clears_background_task_groups_on_state_reset_paths() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 

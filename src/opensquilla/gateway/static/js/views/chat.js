@@ -2218,12 +2218,23 @@ const ChatView = (() => {
   }
 
   function _compactionTokenStats(payload) {
-    const before = Number(payload && payload.tokens_before || 0);
-    const after = Number(payload && payload.tokens_after || 0);
+    const beforeRaw = payload ? payload.tokens_before : undefined;
+    const afterRaw = payload ? payload.tokens_after : undefined;
+    const before = Number(beforeRaw);
+    const after = Number(afterRaw);
     const remaining = Number(payload && payload.remaining_budget_tokens || 0);
     const source = payload && payload.summary_source || '';
     const summaryLen = Number(payload && payload.summary_len || 0);
-    if (before || after) {
+    if (
+      beforeRaw !== undefined &&
+      beforeRaw !== null &&
+      beforeRaw !== '' &&
+      afterRaw !== undefined &&
+      afterRaw !== null &&
+      afterRaw !== '' &&
+      Number.isFinite(before) &&
+      Number.isFinite(after)
+    ) {
       const remain = remaining ? ', ' + remaining + ' remaining' : '';
       const by = source ? ', ' + source : '';
       return ' (' + before + ' -> ' + after + ' tokens' + remain + by + ')';
@@ -2236,13 +2247,12 @@ const ChatView = (() => {
     if (meta && meta.replayed) return;
     const status = String(payload && payload.status || '').toLowerCase();
     const source = String(payload && payload.source || '').toLowerCase();
-    const details = _compactionTokenStats(payload || {});
     if (status === 'started') {
       UI.toast('Checking whether compaction is needed...', 'info', 1800);
       return;
     }
     if (status === 'skipped') {
-      UI.toast('No compaction needed' + details, 'info', 4500);
+      UI.toast('No compaction needed', 'info', 4500);
       return;
     }
     if (status === 'failed' || status === 'error') {
@@ -2254,6 +2264,8 @@ const ChatView = (() => {
       UI.toast('Compact cancelled', 'info', 4500);
       return;
     }
+    if (status !== 'completed') return;
+    const details = _compactionTokenStats(payload || {});
     if (source === 'manual') {
       UI.toast('Context compacted' + details, 'info', 4500);
       return;

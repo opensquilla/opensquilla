@@ -7,6 +7,8 @@ plus integration and acceptance tests.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from opensquilla.skills.meta.parser import MetaPlanError
@@ -299,3 +301,110 @@ def test_parse_stdin_prose_rejected() -> None:
     )
     with pytest.raises(SOPCompileError, match="stdin"):
         _parse(list(_lex(body)), skill_name="meta-x")
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Resolver
+# ---------------------------------------------------------------------------
+
+
+class _StubSkillLoader:
+    """Minimal SkillLoader stub for resolver tests.
+
+    Real SkillLoader is heavy; resolver only needs ``get_by_name``.
+    """
+
+    def __init__(self, specs: dict[str, dict[str, Any]]) -> None:
+        self._specs = specs
+
+    def get_by_name(self, name: str) -> Any:
+        spec = self._specs.get(name)
+        if spec is None:
+            return None
+        from opensquilla.skills.types import SkillLayer, SkillSpec
+
+        return SkillSpec(
+            name=name,
+            description=f"{name} description",
+            layer=SkillLayer.BUNDLED,
+            always=False,
+            triggers=[],
+            content="",
+            kind="skill",
+            entrypoint=spec.get("entrypoint"),
+        )
+
+
+def test_resolve_kind_skill_exec_when_skill_has_entrypoint() -> None:
+    from opensquilla.skills.meta.sop_compiler import (
+        SOPInvocation,
+        SourceSpan,
+        _resolve_kind,
+    )
+
+    inv = SOPInvocation(
+        skill_name="multi-search-engine",
+        kind_hint=None,
+        with_args={},
+        step_id_template="s",
+        span=SourceSpan(1, 0, 1, 10, ""),
+    )
+    loader = _StubSkillLoader({"multi-search-engine": {"entrypoint": {"command": "x"}}})
+    result = _resolve_kind(inv, skill_loader=loader, skill_name="meta-x", phase_index=1)
+    assert result == "skill_exec"
+
+
+def test_resolve_kind_agent_when_no_entrypoint() -> None:
+    from opensquilla.skills.meta.sop_compiler import (
+        SOPInvocation,
+        SourceSpan,
+        _resolve_kind,
+    )
+
+    inv = SOPInvocation(
+        skill_name="paper-outline-author",
+        kind_hint=None,
+        with_args={},
+        step_id_template="o",
+        span=SourceSpan(1, 0, 1, 10, ""),
+    )
+    loader = _StubSkillLoader({"paper-outline-author": {}})
+    assert _resolve_kind(inv, skill_loader=loader, skill_name="meta-x", phase_index=1) == "agent"
+
+
+def test_resolve_kind_explicit_as_agent_overrides_entrypoint() -> None:
+    from opensquilla.skills.meta.sop_compiler import (
+        SOPInvocation,
+        SourceSpan,
+        _resolve_kind,
+    )
+
+    inv = SOPInvocation(
+        skill_name="multi-search-engine",
+        kind_hint="agent",  # explicit override
+        with_args={},
+        step_id_template="s",
+        span=SourceSpan(1, 0, 1, 10, ""),
+    )
+    loader = _StubSkillLoader({"multi-search-engine": {"entrypoint": {"command": "x"}}})
+    assert _resolve_kind(inv, skill_loader=loader, skill_name="meta-x", phase_index=1) == "agent"
+
+
+def test_resolve_kind_unknown_skill_raises() -> None:
+    from opensquilla.skills.meta.sop_compiler import (
+        SOPCompileError,
+        SOPInvocation,
+        SourceSpan,
+        _resolve_kind,
+    )
+
+    inv = SOPInvocation(
+        skill_name="nonexistent-skill",
+        kind_hint=None,
+        with_args={},
+        step_id_template="x",
+        span=SourceSpan(5, 0, 5, 30, "Run `nonexistent-skill`. Save as `x`."),
+    )
+    loader = _StubSkillLoader({})
+    with pytest.raises(SOPCompileError, match="not registered"):
+        _resolve_kind(inv, skill_loader=loader, skill_name="meta-x", phase_index=1)

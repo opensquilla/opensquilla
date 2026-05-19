@@ -24,10 +24,14 @@ import enum
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol
 
 import yaml
 
 from opensquilla.skills.meta.parser import MetaPlanError
+
+if TYPE_CHECKING:
+    from opensquilla.skills.types import SkillSpec
 
 
 @dataclass(frozen=True)
@@ -648,3 +652,46 @@ def _parse(tokens: list[Token], *, skill_name: str) -> SOPDocument:
             reason="no '## Phase N:' headings found in SOP body",
         )
     return SOPDocument(phases=tuple(phases))
+
+
+class _LoaderProtocol(Protocol):
+    """Minimal interface the SOP compiler needs from a SkillLoader."""
+
+    def get_by_name(self, name: str) -> SkillSpec | None: ...
+
+
+def _resolve_kind(
+    invocation: SOPInvocation,
+    *,
+    skill_loader: _LoaderProtocol,
+    skill_name: str,
+    phase_index: int,
+) -> str:
+    """Return the effective step ``kind`` for an invocation.
+
+    Precedence:
+        1. Explicit ``as <kind>`` on the invocation line.
+        2. Skill has ``entrypoint:`` → ``skill_exec``.
+        3. Default → ``agent``.
+
+    Raises :class:`SOPCompileError` if the referenced skill is not
+    registered with the loader (so authors get a clear error pointing
+    to the offending phase + line + excerpt).
+    """
+
+    spec = skill_loader.get_by_name(invocation.skill_name)
+    if spec is None:
+        raise SOPCompileError(
+            skill_name=skill_name,
+            phase_index=phase_index,
+            span=invocation.span,
+            reason=f"skill {invocation.skill_name!r} not registered in the loader",
+        )
+
+    if invocation.kind_hint is not None:
+        return invocation.kind_hint
+
+    entrypoint = getattr(spec, "entrypoint", None)
+    if isinstance(entrypoint, dict) and entrypoint:
+        return "skill_exec"
+    return "agent"

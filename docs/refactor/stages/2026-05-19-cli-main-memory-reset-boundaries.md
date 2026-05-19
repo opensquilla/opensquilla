@@ -243,6 +243,55 @@ changes and must not revert unrelated edits.
       confirms the same local-home path lines already exist at HEAD, and that
       file is outside the memory worker ownership boundary.
 
+### Reset worker evidence
+
+- Superpowers:
+  - `superpowers:using-superpowers` read before implementation.
+  - `superpowers:test-driven-development` read before writing reset boundary
+    tests.
+  - `superpowers:verification-before-completion` read before running checks.
+- Current-state audit:
+  - Branch: `codex/refactor-cli-reset-boundary-worker`.
+  - Recent HEAD before reset edits: `30a7804` (`Plan CLI main memory reset boundaries`).
+  - In-scope `AGENTS.md`: root `AGENTS.md`.
+  - Reset command inspected in `src/opensquilla/cli/main.py`.
+  - Existing presenter/workflow patterns inspected:
+    `cron_workflows.py`, `cron_presenters.py`, `diagnostics_workflows.py`,
+    and `diagnostics_presenters.py`.
+- RED:
+  - Command:
+    `uv run --extra dev pytest tests/test_cli/test_reset_cli_boundary.py -q`
+  - Result: expected failure, `8 failed`.
+  - Failure reason: missing `opensquilla.cli.reset_workflows` and
+    `opensquilla.cli.reset_presenters`; `reset_cmd` still owned inline
+    gateway workflow/rendering before extraction.
+- GREEN:
+  - Command:
+    `uv run --extra dev pytest tests/test_cli/test_reset_cli_boundary.py -q`
+  - Result: `8 passed in 0.64s`.
+- Reset boundary implementation:
+  - Created `src/opensquilla/cli/reset_workflows.py` for `asyncio.run`,
+    `GatewayClient`, `GatewayRPCError`, `normalize_gateway_url`, connect/reset/
+    close, success handoff, and RPC failure handoff.
+  - Created `src/opensquilla/cli/reset_presenters.py` for exact success/error
+    terminal text and `typer.Exit(1)`.
+  - Updated only the top-level `reset_cmd` region in `src/opensquilla/cli/main.py`
+    to delegate to `reset_session_for_cli(key, gateway_url=gateway_url)`.
+- Touched checks:
+  - `uv run --extra dev ruff check src/opensquilla/cli/main.py src/opensquilla/cli/reset_workflows.py src/opensquilla/cli/reset_presenters.py tests/test_cli/test_reset_cli_boundary.py`
+    result: passed.
+  - `uv run --extra dev mypy src/opensquilla/cli --show-error-codes`
+    result: passed, no issues found in 124 source files.
+  - `git diff --check` result: passed.
+- Full gate:
+  - Pre-gate hygiene fix: cherry-picked active child commit `0272bef` to remove
+    a tracked local home path from the prior CLI lifecycle cron stage record.
+  - Command: `scripts/refactor_gate.sh`
+  - Result after hygiene fix: passed.
+  - Gate evidence: ruff passed, mypy passed (`557 source files`), whitespace
+    passed, pytest `2679 passed, 8 skipped`, gateway smoke passed, refactor gate
+    complete.
+
 ## Files
 
 - Create:
@@ -271,8 +320,8 @@ changes and must not revert unrelated edits.
 - [ ] Commit this stage plan as the worker base.
 - [ ] Launch two external workers with `scripts/refactor_external_agent.sh`.
 - [ ] Memory worker writes RED boundary tests and records RED output.
-- [ ] Reset worker writes RED boundary tests and records RED output.
-- [ ] Workers implement their disjoint boundaries and record GREEN/check/gate evidence.
+- [x] Reset worker writes RED boundary tests and records RED output.
+- [x] Workers implement their disjoint boundaries and record GREEN/check/gate evidence.
 - [ ] Main thread reviews both diffs for behavior compatibility and ownership.
 - [ ] Merge both worker branches into the active child.
 - [ ] Run focused green command and touched-file checks.

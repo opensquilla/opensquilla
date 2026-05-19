@@ -49,12 +49,14 @@ from opensquilla.engine.types import (
 )
 from opensquilla.provider.protocol import LLMProvider
 from opensquilla.skills.meta.events import _StepDone
+from opensquilla.skills.meta.executors.llm_classify import run_llm_classify_step
+from opensquilla.skills.meta.executors.tool_call import run_tool_call_step
 from opensquilla.skills.meta.parser import topological_order
 from opensquilla.skills.meta.templating import (
     _JINJA_ENV,
-    _coerce_to_choice,
+    _coerce_to_choice,  # noqa: F401 — re-exported for tests/back-compat
     _expand_skill_placeholders,
-    _format_classify_prompt,
+    _format_classify_prompt,  # noqa: F401 — re-exported for back-compat
     format_step_prompt,
     render_with_args,
     resolve_route,
@@ -555,30 +557,13 @@ class MetaOrchestrator:
         inputs: dict[str, Any],
         outputs: dict[str, str],
     ) -> str:
-        """Single constrained LLM call — no tool loop, no sub-Agent overhead.
-
-        The model is told to reply with exactly one label from
-        ``step.output_choices``. The reply is normalised and coerced via
-        :func:`_coerce_to_choice`. Falls back to the agent runner when
-        ``llm_chat`` was not wired (degraded mode).
-        """
-
-        rendered_args = render_with_args(step.with_args, inputs=inputs, outputs=outputs)
-        user_message = _format_classify_prompt(step, rendered_args)
-        choices = list(step.output_choices)
-        choices_str = " | ".join(choices)
-        system_prompt = (
-            "You are a deterministic classifier. Read the user's input and decide "
-            f"which single label applies. Reply with EXACTLY ONE of: {choices_str}\n"
-            "Do not add quotes, punctuation, prefixes, or explanations — emit only "
-            "the label."
+        return await run_llm_classify_step(
+            step,
+            inputs,
+            outputs,
+            llm_chat=self._llm_chat,
+            agent_runner=self._agent_runner,
         )
-
-        if self._llm_chat is None:
-            raw = await self._drain_agent_runner(system_prompt, user_message)
-        else:
-            raw = await self._llm_chat(system_prompt, user_message)
-        return _coerce_to_choice(raw, choices)
 
     async def _run_tool_call_step(
         self,
@@ -586,28 +571,13 @@ class MetaOrchestrator:
         inputs: dict[str, Any],
         outputs: dict[str, str],
     ) -> str:
-        """Direct tool invocation — bypasses the LLM entirely.
-
-        ``step.tool_args`` are Jinja-rendered against ``inputs`` + ``outputs``
-        then passed to ``self._tool_invoker``. Falls back to the agent runner
-        with a one-shot tool-call instruction when ``tool_invoker`` is None.
-        """
-
-        rendered_args = render_with_args(step.tool_args, inputs=inputs, outputs=outputs)
-
-        if self._tool_invoker is None:
-            import json as _json
-
-            args_blob = _json.dumps(rendered_args, ensure_ascii=False, default=str)
-            system_prompt = (
-                f"Invoke the {step.tool!r} tool exactly once with the JSON "
-                "arguments provided. Do not call any other tools. After the tool "
-                "returns, reply with its result as plain text."
-            )
-            user_message = f"Tool: {step.tool}\nArguments: {args_blob}"
-            return await self._drain_agent_runner(system_prompt, user_message)
-
-        return await self._tool_invoker(step.tool, rendered_args)
+        return await run_tool_call_step(
+            step,
+            inputs,
+            outputs,
+            tool_invoker=self._tool_invoker,
+            agent_runner=self._agent_runner,
+        )
 
     async def _run_skill_exec_step(
         self,
@@ -831,43 +801,6 @@ class MetaOrchestrator:
             lines = [ln for ln in stdout_text.splitlines() if ln.strip()]
             return _json.dumps(lines, ensure_ascii=False)
         return stdout_text.strip()
-
-    async def _drain_agent_runner(self, system_prompt: str, user_message: str) -> str:
-        """Run the sub-Agent and concatenate its text output.
-
-        Plain-text output is the contract: sub-Agents are instructed to write
-        a final-deliverable summary even when their real work happens through
-        tools. If the sub-Agent ends without any plain text we raise
-        :class:`RuntimeError` so the orchestrator short-circuits to its
-        fallback path instead of feeding the next step whatever the last tool
-        happened to print (which is usually noise from an introspection
-        probe like ``glob_search`` or ``list_dir``).
-
-        Trailing-error context is included in the exception message to make
-        the failure diagnosable from the fallback turn.
-        """
-
-        final_text_parts: list[str] = []
-        last_error_tool_result: str = ""
-        async for event in self._agent_runner(system_prompt, user_message):
-            if isinstance(event, TextDeltaEvent):
-                final_text_parts.append(event.text)
-            elif isinstance(event, ToolResultEvent):
-                result_text = event.result if isinstance(event.result, str) else ""
-                if result_text.strip() and getattr(event, "is_error", False):
-                    last_error_tool_result = result_text
-        text = "".join(final_text_parts).strip()
-        if text:
-            return text
-        if last_error_tool_result:
-            raise RuntimeError(
-                f"sub-agent produced no plain-text output; last tool error: "
-                f"{last_error_tool_result[:200]}",
-            )
-        raise RuntimeError(
-            "sub-agent produced no plain-text output and no tool results",
-        )
-
 
 def make_agent_runner_from_parent(
     *,

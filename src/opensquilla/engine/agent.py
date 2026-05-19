@@ -68,6 +68,7 @@ from opensquilla.session.compaction import (
     compact_context,
 )
 from opensquilla.tool_boundary import AgentToolHandler as ToolHandler
+from opensquilla.tools.registry import ToolRegistry
 
 from .context import ContextAssembly
 from .subagent import SubagentManager, SubagentSpec
@@ -374,6 +375,7 @@ class Agent:
         session_key: str | None = None,
         turn_call_logger: TurnCallLogger | None = None,
         tool_result_summarizer_provider: LLMProvider | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
@@ -385,6 +387,7 @@ class Agent:
         self._session_key = session_key
         self._turn_call_logger = turn_call_logger
         self._tool_result_summarizer_provider = tool_result_summarizer_provider
+        self._tool_registry: ToolRegistry | None = tool_registry
         self._pending_warnings: list[WarningEvent] = []
 
         self._state: AgentState = AgentState.IDLE
@@ -2405,6 +2408,263 @@ class Agent:
                 content=f"Tool '{tc.tool_name}' raised: {exc}",
                 is_error=True,
             )
+
+    # ------------------------------------------------------------------
+    # meta_invoke streaming dispatch (Task 5)
+    # ------------------------------------------------------------------
+
+    async def _run_one_streaming(
+        self,
+        tc: ToolCall,
+        tool_context: Any,
+    ) -> AsyncIterator[AgentEvent | ToolResult]:
+        """Stream-aware sibling of ``_execute_tool`` for the ``meta_invoke`` tool.
+
+        Used only when ``tc.tool_name == 'meta_invoke'``. Yields nested
+        :class:`AgentEvent` objects forwarded from
+        :meth:`MetaOrchestrator.iter_events`, then a final :class:`ToolResult`.
+
+        On success (A path): yields ``TextDeltaEvent(text=result.final_text)``
+        so the deliverable streams into the parent turn's transcript, then a
+        ``ToolResult`` with ``terminates_turn=True`` and ``is_error=False``.
+
+        On failure (B path): yields a single ``ToolResult`` with structured
+        recovery hints, ``terminates_turn=False`` and ``is_error=True`` so
+        the LLM can continue (retry / explain / fall back).
+        """
+
+        from opensquilla.skills.meta.orchestrator import (
+            MetaOrchestrator,
+            make_agent_runner_from_parent,
+            make_llm_chat_from_provider,
+            make_tool_invoker_from_handler,
+        )
+        from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
+        from opensquilla.skills.meta.types import MetaMatch, MetaResult
+        from opensquilla.tools.dispatch import preflight_tool_call
+        from opensquilla.tools.types import current_tool_context
+
+        # Fail closed if no registry was wired in (existing callers that
+        # construct Agent without `tool_registry=` get this path).
+        if self._tool_registry is None:
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content=(
+                    "meta_invoke requires Agent to be constructed with tool_registry"
+                ),
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+
+        # Resolve effective tool context (mirrors build_tool_handler).
+        effective_ctx = current_tool_context.get() or tool_context
+
+        # Policy preflight — all 6 gates.
+        policy_err = await preflight_tool_call(
+            registry=self._tool_registry,
+            ctx=effective_ctx,
+            tool_call=tc,
+        )
+        if policy_err is not None:
+            yield policy_err
+            return
+
+        # Resolve skill_loader.
+        metadata = self.config.metadata or {}
+        skill_loader = metadata.get("skill_loader")
+        if skill_loader is None:
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content=(
+                    "meta_invoke unavailable: skill_loader missing from "
+                    "AgentConfig.metadata"
+                ),
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+
+        # Resolve workspace_dir (ToolContext > metadata > AgentConfig).
+        workspace_dir = (
+            getattr(effective_ctx, "workspace_dir", None)
+            or metadata.get("bootstrap_workspace_dir")
+            or getattr(self.config, "workspace_dir", None)
+        )
+
+        # Validate name argument.
+        name = tc.arguments.get("name")
+        if not isinstance(name, str) or not name:
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content="meta_invoke requires a non-empty 'name' argument",
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+
+        # Resolve meta-skill spec.
+        skill_spec = skill_loader.get_by_name(name)
+        if skill_spec is None or getattr(skill_spec, "kind", "skill") != "meta":
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content=f"meta_invoke: {name!r} is not a registered meta-skill",
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+
+        # Parse plan.
+        try:
+            plan = parse_meta_plan(skill_spec)
+        except MetaPlanError as exc:
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content=f"meta-skill {name!r} plan invalid: {exc}",
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+        if plan is None:
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content=f"meta-skill {name!r} parsed to None",
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+
+        # Build orchestrator using the existing factories.
+        runner = make_agent_runner_from_parent(
+            provider=self.provider,
+            base_config=self.config,
+            tool_definitions=self.tool_definitions,
+            tool_handler=self.tool_handler,
+            agent_factory=type(self),
+        )
+        llm_chat = (
+            getattr(self, "_test_llm_chat_override", None)
+            or (
+                make_llm_chat_from_provider(
+                    provider=self.provider, base_config=self.config
+                )
+                if self.provider is not None
+                else None
+            )
+        )
+        tool_invoker = (
+            make_tool_invoker_from_handler(tool_handler=self.tool_handler)
+            if self.tool_handler is not None
+            else None
+        )
+        orch = MetaOrchestrator(
+            agent_runner=runner,
+            skill_loader=skill_loader,
+            llm_chat=llm_chat,
+            tool_invoker=tool_invoker,
+            workspace_dir=str(workspace_dir) if workspace_dir else None,
+        )
+
+        user_message = metadata.get("user_message", "")
+        match = MetaMatch(plan=plan, inputs={"user_message": user_message})
+
+        # Stream events; capture final MetaResult sentinel.
+        result: MetaResult | None = None
+        try:
+            async for ev in orch.iter_events(match):
+                if isinstance(ev, MetaResult):
+                    result = ev
+                else:
+                    yield ev
+        except Exception as exc:  # noqa: BLE001
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content=f"meta-skill {name!r} raised: {exc}",
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+
+        if result is None:
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content="orchestrator produced no MetaResult sentinel",
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+
+        if not result.ok:
+            # B path: failure → structured payload, LLM continues.
+            yield self._format_meta_invoke_failure(tc, result, plan)
+            return
+
+        # A path: success → final_text streams into the turn; turn terminates.
+        if result.final_text:
+            yield TextDeltaEvent(text=result.final_text)
+        yield ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name="meta_invoke",
+            content=result.final_text or "(meta-skill completed with no output text)",
+            is_error=False,
+            terminates_turn=True,
+        )
+
+    def _format_meta_invoke_failure(
+        self,
+        tc: ToolCall,
+        result: Any,
+        plan: Any,
+    ) -> ToolResult:
+        """Render a bounded structured payload for a failed meta-skill.
+
+        Gives the LLM enough information to retry, switch approach, or ask
+        the user. Bounded to keep token cost predictable.
+        """
+
+        per_step_cap = 400
+        fallback_cap = 600
+        lines: list[str] = [
+            f"Meta-skill {getattr(plan, 'name', '?')!r} failed at step "
+            f"{result.failed_step_id!r}.",
+            f"Error: {result.error}",
+            "",
+            "Partial outputs (from completed steps):",
+        ]
+        for sid, text in (result.step_outputs or {}).items():
+            snippet = text if len(text) <= per_step_cap else text[:per_step_cap] + "…"
+            lines.append(f"  {sid}: {snippet}")
+        fb = getattr(plan, "fallback_body", "") or ""
+        if fb.strip():
+            fb_short = fb if len(fb) <= fallback_cap else fb[:fallback_cap] + "…"
+            lines += [
+                "",
+                "Recovery hint (from meta-skill SKILL.md fallback):",
+                fb_short,
+            ]
+        lines += [
+            "",
+            f"Original meta-skill requested: {tc.arguments.get('name', '')}",
+            "",
+            "You may: (a) retry meta_invoke (if env issue may resolve), "
+            "(b) suggest a fix to the user, (c) construct a partial deliverable "
+            "from the listed step outputs, or (d) ask the user for guidance.",
+        ]
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name="meta_invoke",
+            content="\n".join(lines),
+            is_error=True,
+            terminates_turn=False,
+        )
 
     # ------------------------------------------------------------------
     # Subagent factory

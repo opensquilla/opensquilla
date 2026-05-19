@@ -151,3 +151,171 @@ async def test_compress_tool_result_preserves_terminates_turn_when_compressed() 
     assert compressed.terminates_turn is True, (
         "terminates_turn lost during ToolResult compression rebuild"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Agent._run_one_streaming for meta_invoke
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_one_streaming_success_yields_events_then_terminating_result(
+    tmp_path,
+) -> None:
+    """Agent._run_one_streaming for a successful meta-skill yields nested
+    events then a ToolResult with terminates_turn=True and is_error=False."""
+    from opensquilla.engine.agent import Agent
+    from opensquilla.engine.types import AgentConfig
+    from opensquilla.skills.loader import SkillLoader
+    from opensquilla.tool_boundary import ToolCall, ToolResult
+    from opensquilla.tools.builtin import meta_tools  # noqa: F401 — registers meta_invoke
+    from opensquilla.tools.registry import get_default_registry
+    from opensquilla.tools.types import ToolContext
+
+    # Synthesize a tiny meta-skill using kind: meta directly (bypassing
+    # the SOP markdown compiler so llm_classify is supported).
+    bundled = tmp_path / "skills" / "bundled"
+    bundled.mkdir(parents=True)
+    skill_dir = bundled / "meta-tiny"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-tiny\n"
+        "kind: meta\n"
+        "description: tiny meta-skill\n"
+        "triggers: [tiny-meta-trigger]\n"
+        "composition:\n"
+        "  steps:\n"
+        "    - id: c\n"
+        "      kind: llm_classify\n"
+        "      output_choices: [A, B]\n"
+        "      with: {text: \"x\"}\n"
+        "---\n"
+        "# meta-tiny\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    loader.load_all()
+
+    spec = loader.get_by_name("meta-tiny")
+    assert spec is not None
+    assert getattr(spec, "kind", None) == "meta"
+
+    class _NullProvider:
+        provider_name = "null"
+
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("provider.chat must not be called in this test")
+
+        async def list_models(self):
+            return []
+
+    registry = get_default_registry()
+    assert registry.get("meta_invoke") is not None
+
+    config = AgentConfig(
+        model_id="stub",
+        max_iterations=1,
+        system_prompt="",
+        metadata={"skill_loader": loader, "bootstrap_workspace_dir": str(tmp_path)},
+    )
+
+    agent = Agent(
+        provider=_NullProvider(),  # type: ignore[arg-type]
+        config=config,
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=registry,
+    )
+
+    async def fake_llm_chat(_s: str, _u: str) -> str:
+        return "A"
+
+    agent._test_llm_chat_override = fake_llm_chat  # type: ignore[attr-defined]
+
+    tc = ToolCall(
+        tool_use_id="u1",
+        tool_name="meta_invoke",
+        arguments={"name": "meta-tiny"},
+    )
+    tool_ctx = ToolContext(workspace_dir=str(tmp_path), is_owner=True)
+
+    events = []
+    final = None
+    async for ev in agent._run_one_streaming(tc, tool_ctx):
+        if isinstance(ev, ToolResult):
+            final = ev
+        else:
+            events.append(ev)
+
+    assert final is not None, "should yield a final ToolResult"
+    assert final.is_error is False, f"expected success but got: {final.content!r}"
+    assert final.terminates_turn is True
+    # Permissive content check — the deliverable should mention or carry the
+    # classifier output, but exact wording depends on orchestrator framing.
+    assert final.content
+
+
+@pytest.mark.asyncio
+async def test_run_one_streaming_unknown_meta_skill_returns_error_result(
+    tmp_path,
+) -> None:
+    """meta_invoke with an unknown name yields ToolResult(is_error=True,
+    terminates_turn=False)."""
+    from opensquilla.engine.agent import Agent
+    from opensquilla.engine.types import AgentConfig
+    from opensquilla.skills.loader import SkillLoader
+    from opensquilla.tool_boundary import ToolCall, ToolResult
+    from opensquilla.tools.builtin import meta_tools  # noqa: F401 — registers meta_invoke
+    from opensquilla.tools.registry import get_default_registry
+    from opensquilla.tools.types import ToolContext
+
+    bundled = tmp_path / "skills" / "bundled"
+    bundled.mkdir(parents=True)
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    loader.load_all()
+
+    class _NullProvider:
+        provider_name = "null"
+
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("provider.chat must not be called in this test")
+
+        async def list_models(self):
+            return []
+
+    registry = get_default_registry()
+    assert registry.get("meta_invoke") is not None
+
+    config = AgentConfig(
+        model_id="stub",
+        max_iterations=1,
+        system_prompt="",
+        metadata={"skill_loader": loader, "bootstrap_workspace_dir": str(tmp_path)},
+    )
+    agent = Agent(
+        provider=_NullProvider(),  # type: ignore[arg-type]
+        config=config,
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=registry,
+    )
+
+    tc = ToolCall(
+        tool_use_id="u1",
+        tool_name="meta_invoke",
+        arguments={"name": "nonexistent-meta-skill"},
+    )
+    tool_ctx = ToolContext(workspace_dir=str(tmp_path), is_owner=True)
+
+    final = None
+    async for ev in agent._run_one_streaming(tc, tool_ctx):
+        if isinstance(ev, ToolResult):
+            final = ev
+
+    assert final is not None
+    assert final.is_error is True
+    assert final.terminates_turn is False
+    assert "not a registered meta-skill" in final.content

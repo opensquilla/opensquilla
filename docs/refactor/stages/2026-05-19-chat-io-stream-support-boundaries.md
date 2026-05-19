@@ -284,15 +284,15 @@ changes and must not revert unrelated edits.
 - [x] Merge both worker branches into the active child.
 - [x] Run focused green command and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh` in the active child worktree.
-- [ ] Commit child verification/stage record update with:
+- [x] Commit child verification/stage record update with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
 - [ ] Remove `../opensquilla-refactor-active`,
       `../opensquilla-refactor-agent-chat-stream-support`, and
       `../opensquilla-refactor-agent-chat-input-builders`; run
@@ -333,9 +333,11 @@ Co-authored-by: Codex <noreply@openai.com>
 - `774224c` (`Merge chat stream support worker`)
 - `49175ff` (`Merge chat input builders worker`)
 - Child verification commit:
-- pending
+- `86f4678` (`Record chat IO stream support child verification`)
 - Integration merge:
+- `314b6fc` (`Merge chat IO and stream support boundaries`)
 - Integration record:
+- pending
 - Verification evidence:
 - Focused merged command: `50 passed in 3.55s`.
 - Touched-file ruff: `All checks passed!`.
@@ -345,6 +347,10 @@ Co-authored-by: Codex <noreply@openai.com>
   issues in `564 source files`, whitespace passed, pytest `2709 passed, 8
   skipped, 2 warnings`, gateway smoke start/status/stop/status passed, final
   line `Refactor gate complete.`
+- Integration full `scripts/refactor_gate.sh`: ruff passed, mypy passed with no
+  issues in `564 source files`, whitespace passed, pytest `2711 passed, 6
+  skipped, 2 warnings`, gateway smoke start/status/stop/status passed, final
+  line `Refactor gate complete.`
 - Cleanup evidence:
 - Residual risk:
 - Low. The moved helpers remain available as private compatibility aliases from
@@ -352,3 +358,7 @@ Co-authored-by: Codex <noreply@openai.com>
   stream wrapping, timeout terminal text, image/path/file payloads, local gateway
   detection, uploads, and artifact collection.
 - Next recommended slice:
+- Continue shrinking the remaining `chat_cmd.py` REPL/session orchestration or
+  move to `agent_cmd.py` runtime/export boundaries; re-check `spawn_agent`
+  first and use the external worker pool while same-thread agents remain
+  thread-limited.

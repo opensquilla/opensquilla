@@ -200,18 +200,45 @@ surfaces.
       `codex/refactor-chat-repl-orchestration-boundaries`.
 - [x] Run child preflight.
 - [x] Write this stage plan before production edits.
-- [ ] Commit this stage plan as the worker base.
-- [ ] Dispatch two same-thread workers with explicit worktree/branch ownership.
-- [ ] Gateway worker writes RED boundary tests and records RED output.
-- [ ] Standalone worker writes RED boundary tests and records RED output.
-- [ ] Gateway worker implements boundary and records GREEN/check evidence.
-- [ ] Standalone worker implements boundary and records GREEN/check evidence.
-- [ ] Merge gateway worker branch into child with `git merge --no-ff`.
-- [ ] Merge standalone worker branch into child with `git merge --no-ff`.
-- [ ] Main thread writes RED facade boundary test.
-- [ ] Main thread converts `chat_cmd.py` REPL bodies to compatibility wrappers.
-- [ ] Run focused tests and touched-file checks.
-- [ ] Run child `scripts/refactor_gate.sh`.
+- [x] Commit this stage plan as the worker base.
+      Commit: `0ea4e16` (`Plan chat REPL orchestration boundaries`).
+- [x] Dispatch two same-thread workers with explicit worktree/branch ownership.
+      Workers: gateway branch
+      `codex/refactor-chat-gateway-repl-worker`; standalone branch
+      `codex/refactor-chat-standalone-repl-worker`.
+- [x] Gateway worker writes RED boundary tests and records RED output.
+      RED: `uv run --extra dev pytest tests/test_cli/test_chat_gateway_repl_boundary.py -q`
+      failed on missing `opensquilla.cli.chat_gateway_repl`.
+- [x] Standalone worker writes RED boundary tests and records RED output.
+      RED: `uv run --extra dev pytest tests/test_cli/test_chat_standalone_repl_boundary.py -q`
+      failed on missing `opensquilla.cli.chat_standalone_repl`.
+- [x] Gateway worker implements boundary and records GREEN/check evidence.
+      Commit: `4571521` (`Extract gateway chat REPL orchestration`);
+      focused GREEN: `9 passed`.
+- [x] Standalone worker implements boundary and records GREEN/check evidence.
+      Commit: `d12acfb` (`Extract standalone chat REPL orchestration`);
+      focused GREEN: `10 passed`.
+- [x] Merge gateway worker branch into child with `git merge --no-ff`.
+      Merge: `f3b8012` (`Merge chat gateway REPL worker`).
+- [x] Merge standalone worker branch into child with `git merge --no-ff`.
+      Merge: `46db55f` (`Merge chat standalone REPL worker`).
+- [x] Main thread writes RED facade boundary test.
+      RED: `uv run --extra dev pytest tests/test_cli/test_chat_repl_facade_boundary.py -q`
+      failed with `2 failed`, proving `chat_cmd.py` still owned full
+      `_gateway_chat` and `_standalone_repl` loops.
+- [x] Main thread converts `chat_cmd.py` REPL bodies to compatibility wrappers.
+      Commit: `fe15411` (`Refactor chat command REPL facade boundaries`).
+- [x] Run focused tests and touched-file checks.
+      Focused GREEN:
+      `uv run --extra dev pytest tests/test_cli/test_chat_gateway_repl_boundary.py tests/test_cli/test_chat_standalone_repl_boundary.py tests/test_cli/test_chat_repl_facade_boundary.py tests/test_cli/test_chat_cmd.py -q`
+      -> `153 passed`.
+      Touched-file `ruff check` -> all checks passed.
+      Touched-file `mypy ... --show-error-codes` -> success, no issues found.
+      `git diff --check` -> clean.
+- [x] Run child `scripts/refactor_gate.sh`.
+      Result: ruff all checks passed; mypy success for 574 source files;
+      pytest `2804 passed, 8 skipped, 2 warnings`; gateway smoke passed on
+      port `59799`.
 - [ ] Commit child verification record.
 - [ ] Merge child into integration with `git merge --no-ff`.
 - [ ] Run integration `scripts/refactor_gate.sh`.
@@ -246,13 +273,33 @@ surfaces.
 ## Completion record
 
 - Gateway worker commit:
+- `4571521` (`Extract gateway chat REPL orchestration`).
 - Standalone worker commit:
+- `d12acfb` (`Extract standalone chat REPL orchestration`).
 - Active child worker merges:
+- `f3b8012` (`Merge chat gateway REPL worker`).
+- `46db55f` (`Merge chat standalone REPL worker`).
 - Main facade commit:
+- `fe15411` (`Refactor chat command REPL facade boundaries`).
 - Child verification commit:
 - Integration merge:
 - Integration record:
 - Verification evidence:
+- Focused tests:
+  `uv run --extra dev pytest tests/test_cli/test_chat_gateway_repl_boundary.py tests/test_cli/test_chat_standalone_repl_boundary.py tests/test_cli/test_chat_repl_facade_boundary.py tests/test_cli/test_chat_cmd.py -q`
+  -> `153 passed`.
+- Touched-file ruff:
+  `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_gateway_repl.py src/opensquilla/cli/chat_standalone_repl.py tests/test_cli/test_chat_gateway_repl_boundary.py tests/test_cli/test_chat_standalone_repl_boundary.py tests/test_cli/test_chat_repl_facade_boundary.py tests/test_cli/test_chat_cmd.py`
+  -> all checks passed.
+- Touched-file mypy:
+  `uv run --extra dev mypy src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_gateway_repl.py src/opensquilla/cli/chat_standalone_repl.py --show-error-codes`
+  -> success, no issues found.
+- `git diff --check` -> clean.
+- Child gate:
+  `scripts/refactor_gate.sh` -> ruff all checks passed; mypy success for 574
+  source files; pytest `2804 passed, 8 skipped, 2 warnings`; gateway smoke
+  start/status/stop/status succeeded on port `59799`.
 - Cleanup evidence:
 - Residual risk:
+- Integration gate is not yet recorded.
 - Next recommended slice:

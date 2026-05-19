@@ -264,13 +264,12 @@ jobs:
         run: |
           python - <<'PY'
           import hashlib
+          import os
           import re
-          import tomllib
           from pathlib import Path
 
           dist = Path("dist")
-          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-          version = project["project"]["version"]
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
           is_prerelease = bool(re.search(r"(?:a|b|rc)[0-9]+$", version))
           versioned_zips = sorted(
               path for path in dist.glob("OpenSquilla-*.zip")

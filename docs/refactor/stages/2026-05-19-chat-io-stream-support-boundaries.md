@@ -221,6 +221,31 @@ changes and must not revert unrelated edits.
 - Documentation:
   - This stage record.
 
+## Chat-stream-support worker evidence
+
+- Worker branch: `codex/refactor-chat-stream-support-worker`.
+- Worker worktree: `../opensquilla-refactor-agent-chat-stream-support`.
+- Worker HEAD before edits: `e04a349` (`Plan chat IO and stream support boundaries`).
+- RED command:
+  - `uv run --extra dev pytest tests/test_cli/test_chat_stream_support_boundary.py tests/test_cli/test_chat_cmd.py::test_standalone_turnrunner_stream_uses_heartbeat_wrapper tests/test_cli/test_chat_cmd.py::test_standalone_turnrunner_stream_collects_artifacts -q`
+  - Result: `9 failed, 2 passed`; expected failures reported
+    `chat stream support helpers were not extracted` and missing
+    `src/opensquilla/cli/chat_stream_support.py`.
+- GREEN command:
+  - `uv run --extra dev pytest tests/test_cli/test_chat_stream_support_boundary.py tests/test_cli/test_chat_cmd.py::test_standalone_turnrunner_stream_uses_heartbeat_wrapper tests/test_cli/test_chat_cmd.py::test_standalone_turnrunner_stream_collects_artifacts -q`
+  - Result: `11 passed in 0.70s`.
+- Touched-file ruff:
+  - `uv run --extra dev ruff check src/opensquilla/cli/chat_cmd.py src/opensquilla/cli/chat_stream_support.py tests/test_cli/test_chat_stream_support_boundary.py`
+  - Result: `All checks passed!`.
+- Whitespace:
+  - `git diff --check`
+  - Result: passed.
+- Full worker gate:
+  - `scripts/refactor_gate.sh`
+  - Result: ruff passed; mypy passed with no issues in 563 source files;
+    pytest `2704 passed, 8 skipped, 2 warnings`; gateway smoke start/status/stop
+    completed; `Refactor gate complete.`
+
 ## Steps
 
 - [x] Run `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture`.

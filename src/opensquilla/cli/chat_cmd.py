@@ -23,6 +23,7 @@ from rich.panel import Panel
 
 from opensquilla.cli import attachments as _cli_attachments
 from opensquilla.cli import chat_stream_presenters
+from opensquilla.cli import chat_stream_support as _chat_stream_support
 from opensquilla.cli.chat_gateway_approvals_workflows import (
     handle_gateway_approvals_command,
 )
@@ -76,42 +77,16 @@ from opensquilla.cli.repl.prompt import prompt_approval, prompt_user
 from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.cli.repl.stream import StreamingRenderer, TurnResult, UsageSummary
 from opensquilla.cli.ui import ACCENT, console, error_panel
-from opensquilla.session.terminal_reply import build_terminal_reply
 
 _CLI_ALLOWED_FILE_MIMES = _cli_attachments.CLI_ALLOWED_FILE_MIMES
 _CLI_INLINE_THRESHOLD_BYTES = _cli_attachments.CLI_INLINE_THRESHOLD_BYTES
 _PATH_REMOTE_GATEWAY_MESSAGE = _cli_attachments.PATH_REMOTE_GATEWAY_MESSAGE
 _CLI_ATTACHMENT_COMPAT_EXPORTS = (_CLI_ALLOWED_FILE_MIMES, _CLI_INLINE_THRESHOLD_BYTES)
 
-_DEFAULT_STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
-_DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 180.0
-
-
-def _turn_stream_error_message(event: Any) -> str:
-    message = getattr(event, "message", "")
-    code = str(getattr(event, "code", "") or "").lower()
-    message_text = str(message)
-    if "timeout" in code or "stream idle" in message_text.lower():
-        return build_terminal_reply(
-            {
-                "status": "timeout",
-                "terminal_reason": "timeout",
-                "error_class": getattr(event, "code", None),
-                "error_message": message_text,
-            }
-        )
-    return message_text
-
-
-def _timeout_exception_message(exc: BaseException) -> str:
-    return build_terminal_reply(
-        {
-            "status": "timeout",
-            "terminal_reason": "timeout",
-            "error_class": exc.__class__.__name__,
-            "error_message": str(exc),
-        }
-    )
+_optional_positive_config_float = _chat_stream_support._optional_positive_config_float
+_timeout_exception_message = _chat_stream_support._timeout_exception_message
+_turn_stream_error_message = _chat_stream_support._turn_stream_error_message
+_wrap_cli_turn_stream = _chat_stream_support._wrap_cli_turn_stream
 
 
 class _GatewayClientLike(Protocol):
@@ -163,36 +138,6 @@ class _GatewayClientLike(Protocol):
     async def abort_session(self, key: str) -> dict[str, Any]: ...
 
     async def session_history(self, session_key: str, limit: int = 1000) -> dict[str, Any]: ...
-
-
-def _optional_positive_config_float(config_source: Any, attr: str, default: float) -> float | None:
-    config = getattr(config_source, "config", config_source)
-    raw = getattr(config, attr, default)
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        value = default
-    return value if value > 0 else None
-
-
-def _wrap_cli_turn_stream(stream: Any, config_source: Any) -> Any:
-    from opensquilla.runtime.stream_wrappers import wrap_stream
-
-    return wrap_stream(
-        stream,
-        idle_timeout=_optional_positive_config_float(
-            config_source,
-            "agent_stream_idle_timeout_seconds",
-            _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
-        ),
-        heartbeat_interval=_optional_positive_config_float(
-            config_source,
-            "agent_stream_heartbeat_interval_seconds",
-            _DEFAULT_STREAM_HEARTBEAT_INTERVAL_SECONDS,
-        ),
-        heartbeat_phase="cli",
-        heartbeat_message="Still working",
-    )
 
 
 def _resolve_compaction_provider(

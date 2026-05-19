@@ -26,6 +26,7 @@ class SkillInjector:
         if not visible:
             return system_prompt
 
+        has_meta = any(getattr(s, "kind", "skill") == "meta" for s in visible)
         lines = [
             "\n\n## Skills",
             "Skills are optional task playbooks. Use them only when a listed entry "
@@ -35,12 +36,25 @@ class SkillInjector:
             'When one entry is clearly relevant, call skill_view(name="<skill_name>") '
             "to load that skill's instructions, then use only the tools available "
             "in this session.",
-            "When no entry is relevant, answer without loading a skill.",
-            "",
-            "<available_skills>",
         ]
+        if has_meta:
+            lines.append(
+                'Meta-skills (kind="meta"): call `meta_invoke(name="<name>")` to run '
+                "the playbook end-to-end. The framework drives the multi-step DAG; do "
+                "NOT call skill_view for sub-skills inside. On success the meta-skill's "
+                "deliverable IS the assistant's reply for this turn — no further "
+                "commentary needed."
+            )
+        lines.extend(
+            [
+                "When no entry is relevant, answer without loading a skill.",
+                "",
+                "<available_skills>",
+            ]
+        )
         for s in visible:
-            lines.append("  <skill>")
+            kind = _escape_xml(getattr(s, "kind", "skill"))
+            lines.append(f'  <skill kind="{kind}">')
             lines.append(f"    <name>{_escape_xml(s.name)}</name>")
             lines.append(f"    <description>{_escape_xml(s.description)}</description>")
             location = _skill_location(s)
@@ -56,16 +70,22 @@ class SkillInjector:
         if not visible:
             return system_prompt
 
+        has_meta = any(getattr(s, "kind", "skill") == "meta" for s in visible)
         lines = [
             "\n\nSkills are optional task playbooks for specific request types.",
             "Skill names are identifiers for `skill_view`; they are not callable tools.",
             'Call skill_view(name="<skill_name>") only when the current request '
             "matches a listed entry.",
-            "",
-            "<available_skills>",
         ]
+        if has_meta:
+            lines.append(
+                'For kind="meta" entries, call `meta_invoke(name="<name>")` instead; '
+                "the framework runs the DAG and the deliverable is the turn reply."
+            )
+        lines.extend(["", "<available_skills>"])
         for s in visible:
-            lines.append("  <skill>")
+            kind = _escape_xml(getattr(s, "kind", "skill"))
+            lines.append(f'  <skill kind="{kind}">')
             lines.append(f"    <name>{_escape_xml(s.name)}</name>")
             location = _skill_location(s)
             if location:

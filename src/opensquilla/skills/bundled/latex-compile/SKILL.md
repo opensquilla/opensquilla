@@ -19,7 +19,10 @@ entrypoint:
     - into: "paper/paper.tex"
       from_template: |
         \documentclass[11pt]{article}
-        \usepackage[utf8]{inputenc}
+        % xelatex is Unicode-native — do NOT use inputenc (incompatible)
+        \usepackage{amsmath}
+        \usepackage{amssymb}
+        \usepackage{amsfonts}
         \usepackage{graphicx}
         \usepackage{hyperref}
         \title{ {{ inputs.user_message | truncate(80) }} }

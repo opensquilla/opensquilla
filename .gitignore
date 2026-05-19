@@ -17,9 +17,6 @@ opensquilla.toml
 *.sqlite-wal
 .DS_Store
 .*/
-# Local git worktrees for agent/refactor slices.
-.worktrees/
-worktrees/
 !.github/
 !.github/workflows/
 !.github/workflows/*.yml
@@ -29,7 +26,6 @@ benchmarks/
 specs/
 # Local agent/editor instructions and runtime state.
 AGENTS.md
-!/AGENTS.md
 !src/opensquilla/identity/templates/bootstrap/AGENTS.md
 CLAUDE.md
 GEMINI.md
@@ -55,10 +51,6 @@ plugins/
 crontab-*
 ~/
 /docs/
-!/docs/
-/docs/*
-!/docs/refactor/
-!/docs/refactor/**
 /reference-*
 /reference-mem
 /bench-mem

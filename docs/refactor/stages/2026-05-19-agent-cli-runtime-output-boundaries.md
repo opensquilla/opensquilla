@@ -220,7 +220,7 @@ changes and must not revert unrelated edits.
   - RED result: failed during collection with
     `ImportError: cannot import name 'agent_outputs' from 'opensquilla.cli'`.
   - Temporary RED worktree cleanup: `git worktree remove --force
-    /Users/cwan0785/opensquilla-refactor-red-agent-output` and
+    <temporary-detached-red-worktree>` and
     `git worktree prune` completed after the expected failure was captured.
   - GREEN command, verified by the main thread after merging both workers:
     `uv run --extra dev pytest tests/test_cli/test_agent_runtime_config_boundary.py tests/test_cli/test_agent_output_boundary.py tests/test_cli/test_agent_cmd.py tests/test_agent_cmd_no_key.py -q`
@@ -276,16 +276,16 @@ changes and must not revert unrelated edits.
 - [x] Merge both worker branches into the active child.
 - [x] Run focused green command and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh` in the active child worktree.
-- [ ] Commit child verification/stage record update with:
+- [x] Commit child verification/stage record update with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
 
-- [ ] Merge child into integration with `git merge --no-ff`.
-- [ ] Run `scripts/refactor_gate.sh` in integration.
-- [ ] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`,
+- [x] Merge child into integration with `git merge --no-ff`.
+- [x] Run `scripts/refactor_gate.sh` in integration.
+- [x] Record child hash, integration hash, verification, and next slice.
+- [x] Remove `../opensquilla-refactor-active`,
       `../opensquilla-refactor-agent-agent-runtime-config`, and
       `../opensquilla-refactor-agent-agent-output`; run `git worktree prune`;
       verify no extra refactor worktree directories remain beyond
@@ -325,8 +325,9 @@ Co-authored-by: Codex <noreply@openai.com>
   - `72ce560` (`Merge agent runtime config worker`).
   - `b7a094a` (`Merge agent output worker`).
 - Child verification commit: this record update, committed after the child gate.
-- Integration merge:
-- Integration record:
+- Integration merge: `8ad0ee0e66405c9bd0708e22c4427805d9fbb45e`
+  (`Merge agent CLI runtime output boundaries`).
+- Integration record: this record update after the integration gate.
 - Verification evidence:
   - Focused command: `uv run --extra dev pytest tests/test_cli/test_agent_runtime_config_boundary.py tests/test_cli/test_agent_output_boundary.py tests/test_cli/test_agent_cmd.py tests/test_agent_cmd_no_key.py -q`
     -> `32 passed in 0.67s`.
@@ -336,7 +337,30 @@ Co-authored-by: Codex <noreply@openai.com>
     issues in 566 source files; whitespace clean; pytest `2717 passed, 8
     skipped, 2 warnings in 56.46s`; gateway smoke start/status/stop/status
     passed.
+  - First integration `scripts/refactor_gate.sh`: ruff passed; mypy passed;
+    whitespace clean; pytest failed only
+    `tests/test_public_release_hygiene.py::test_tracked_public_files_do_not_contain_real_secret_shapes_or_local_paths`
+    because the stage record contained a local absolute temporary worktree path.
+  - Focused hygiene fix verification:
+    `uv run --extra dev pytest tests/test_public_release_hygiene.py::test_tracked_public_files_do_not_contain_real_secret_shapes_or_local_paths -q`
+    -> `1 passed in 0.35s`.
+  - Final integration full `scripts/refactor_gate.sh`: ruff passed; mypy passed
+    with no issues in 566 source files; whitespace clean; pytest `2719 passed,
+    6 skipped, 2 warnings in 27.76s`; gateway smoke start/status/stop/status
+    passed on `127.0.0.1:54351`; result `Refactor gate complete`.
 - Cleanup evidence:
+  - Removed worktrees:
+    - `../opensquilla-refactor-active`
+    - `../opensquilla-refactor-agent-agent-runtime-config`
+    - `../opensquilla-refactor-agent-agent-output`
+  - Deleted merged branches:
+    - `codex/refactor-agent-cli-runtime-output-boundaries`
+    - `codex/refactor-agent-runtime-config-worker`
+    - `codex/refactor-agent-output-worker`
+  - Ran `git worktree prune`.
+  - Verified `find <workspace-parent> -maxdepth 1 -type d -name
+    'opensquilla-refactor-*' -print | sort` returns only
+    `../opensquilla-refactor-integration`.
 - Residual risk: low; this is a private-helper relocation with compatibility
   aliases and focused boundary tests for helper ownership/payload shapes.
 - Next recommended slice: continue CLI boundary thinning with a coarse command

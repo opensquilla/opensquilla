@@ -61,7 +61,7 @@ This audit deliberately favors larger module-family batches over helper-sized fo
 
 ## Serena evidence
 
-- Serena `initial_instructions` was read and project `/Users/cwan0785/opensquilla` was activated.
+- Serena `initial_instructions` was read and the repository root was activated.
 - Serena project memories read:
   - `refactor/multi_branch_parallel_refactor_preference`
   - `refactor/serena_usage_preference`

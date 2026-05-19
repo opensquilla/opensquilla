@@ -21,6 +21,7 @@ from opensquilla.tools.builtin import skill_tools
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_TOOLS = ROOT / "src/opensquilla/tools/builtin/skill_tools.py"
 BOOT = ROOT / "src/opensquilla/gateway/boot.py"
+EXTENSION_RUNTIME = ROOT / "src/opensquilla/extension_services/gateway_runtime.py"
 CLI_SKILLS = ROOT / "src/opensquilla/cli/skills_cmd.py"
 CLI_SKILLS_ROWS = ROOT / "src/opensquilla/cli/skills_rows.py"
 SKILLS_RUNTIME_FACADE = ROOT / "src/opensquilla/skills/runtime_facade.py"
@@ -149,17 +150,24 @@ def test_skill_tool_uses_skills_runtime_boundary() -> None:
 def test_boot_documents_skills_runtime_side_effect() -> None:
     source = BOOT.read_text(encoding="utf-8")
 
-    assert "- skills.runtime" in source
-    assert "create_configured_skill_loader + configure_skill_loader" in source
-    assert "via create_skill_tools" in source
+    assert "- extension_services.gateway_runtime" in source
+    assert "skills runtime" in source
 
 
-def test_boot_delegates_skill_loader_construction_to_skills_runtime() -> None:
-    imports = _runtime_imports_from(BOOT)
+def test_extension_services_delegates_skill_loader_construction_to_skills_runtime() -> None:
+    boot_imports = _runtime_imports_from(BOOT)
+    extension_imports = _runtime_imports_from(EXTENSION_RUNTIME)
 
-    assert ("opensquilla.skills.runtime", "create_configured_skill_loader") in imports
-    assert ("opensquilla.skills.loader", "SkillLoader") not in imports
-    assert ("opensquilla.skills.paths", "resolve_skill_layer_dirs") not in imports
+    assert (
+        "opensquilla.extension_services.gateway_runtime",
+        "build_extension_services_runtime",
+    ) in boot_imports
+    assert ("opensquilla.skills.runtime", "create_configured_skill_loader") not in boot_imports
+    assert ("opensquilla.skills.runtime", "create_configured_skill_loader") in extension_imports
+    assert ("opensquilla.skills.loader", "SkillLoader") not in boot_imports
+    assert ("opensquilla.skills.loader", "SkillLoader") not in extension_imports
+    assert ("opensquilla.skills.paths", "resolve_skill_layer_dirs") not in boot_imports
+    assert ("opensquilla.skills.paths", "resolve_skill_layer_dirs") not in extension_imports
 
 
 def test_cli_delegates_skill_loader_construction_to_skills_runtime() -> None:

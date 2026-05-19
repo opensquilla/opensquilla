@@ -11,6 +11,7 @@ from opensquilla.tools.builtin import web
 ROOT = Path(__file__).resolve().parents[2]
 WEB_TOOL = ROOT / "src/opensquilla/tools/builtin/web.py"
 BOOT = ROOT / "src/opensquilla/gateway/boot.py"
+EXTENSION_RUNTIME = ROOT / "src/opensquilla/extension_services/gateway_runtime.py"
 RPC_ONBOARDING = ROOT / "src/opensquilla/gateway/rpc_onboarding.py"
 RPC_ONBOARDING_SEARCH = ROOT / "src/opensquilla/gateway/rpc_onboarding_search.py"
 RPC_TOOLS = ROOT / "src/opensquilla/gateway/rpc_tools.py"
@@ -82,7 +83,8 @@ def test_gateway_configures_search_runtime_boundary() -> None:
     assert runtime_forbidden not in _imports_from(BOOT)
     assert runtime_forbidden not in _imports_from(RPC_ONBOARDING)
     assert runtime_forbidden not in _imports_from(RPC_ONBOARDING_SEARCH)
-    assert runtime_sync in _imports_from(BOOT)
+    assert runtime_sync not in _imports_from(BOOT)
+    assert runtime_sync in _imports_from(EXTENSION_RUNTIME)
     assert runtime_sync in _imports_from(RPC_ONBOARDING_SEARCH)
 
 

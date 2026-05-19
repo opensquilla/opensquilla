@@ -33,6 +33,7 @@ from starlette.applications import Starlette
 from opensquilla.agents.scope import resolve_agent_model, resolve_agent_workspace_dir
 from opensquilla.asyncio_utils import create_background_task
 from opensquilla.engine.usage import UsageTracker as _UsageTracker
+from opensquilla.extension_services.gateway_runtime import build_extension_services_runtime
 from opensquilla.gateway.app_server_wiring import build_gateway_app_server
 from opensquilla.gateway.boot_prelude_wiring import build_gateway_boot_prelude
 from opensquilla.gateway.channel_manager_wiring import (
@@ -230,11 +231,9 @@ class ServiceContainer:
 
     WARNING: build_services() mutates module-level state:
     - provider.image_generation_runtime (configure_image_generation)
-    - memory.runtime (configure_memory_tools_runtime via memory.gateway_runtime)
-    - skills.runtime
-      (create_configured_skill_loader + configure_skill_loader via create_skill_tools)
+    - extension_services.gateway_runtime
+      (memory runtime, skills runtime, scheduler runtime, search runtime)
     - tools.services (configure_tool_services)
-    - search.runtime (sync_search_runtime_from_config)
     Do not call build_services() twice in the same process without
     understanding these side effects.
     """
@@ -1018,100 +1017,28 @@ async def build_services(
 
         tool_registry = get_default_registry()
 
-    # ── Memory tools (boot order 18) — per-agent stores ──────────────
-    # Pre-bind to empty defaults so the ServiceContainer init below and
-    # the deferred TurnRunner-ref callback both work even if the try
-    # block aborts.
-    memory_managers: dict[str, MemoryManager] = {}
-    memory_stores: dict[str, Any] = {}
-    memory_retrievers: dict[str, Any] = {}
-    memory_sync_managers: dict[str, Any] = {}
-    turn_capture_services: dict[str, Any] = {}
-    memory_watchers: list[Any] = []
-    _turn_runner_ref: list = []
-    try:
-        from opensquilla.memory.gateway_runtime import build_memory_gateway_runtime
-
-        agent_ids = _configured_agent_ids(config, extra_agent_ids)
-        memory_runtime = await build_memory_gateway_runtime(
-            config=config,
-            tool_registry=tool_registry,
-            agent_ids=agent_ids,
-            turn_runner_ref=_turn_runner_ref,
-        )
-        memory_managers = memory_runtime.memory_managers
-        memory_stores = memory_runtime.memory_stores
-        memory_retrievers = memory_runtime.memory_retrievers
-        memory_sync_managers = memory_runtime.memory_sync_managers
-        turn_capture_services = memory_runtime.turn_capture_services
-        memory_watchers = memory_runtime.memory_watchers
-    except Exception as e:
-        log.warning("build_services.memory_tools_failed", error=str(e))
-
-    # ── Skill loader (boot order 19) ────────────────────────────────
-    skill_loader = None
-    try:
-        from opensquilla.skills.runtime import create_configured_skill_loader
-
-        skill_setup = create_configured_skill_loader(
-            config.skills,
-            workspace_dir=getattr(config, "workspace_dir", None),
-        )
-        skill_loader = skill_setup.loader
-        log.info(
-            "build_services.skill_loader_initialized",
-            bundled_dir=str(skill_setup.layer_dirs.bundled_dir),
-        )
-
-        # Register skill_list and skill_view tools
-        from opensquilla.tools.builtin.skill_tools import create_skill_tools
-
-        create_skill_tools(skill_loader)
-        log.info("build_services.skill_tools_registered")
-    except Exception as e:
-        log.warning("build_services.skill_loader_failed", error=str(e))
-
-    # ── Cron scheduler (boot order 20) ──────────────────────────────
-    cron_scheduler = None
-    try:
-        from opensquilla.scheduler import JobStore, SchedulerEngine
-
-        scheduler_db = Path(
-            os.environ.get("OPENSQUILLA_SCHEDULER_DB", str(_state_path(config, "scheduler.db")))
-        )
-        scheduler_db.parent.mkdir(parents=True, exist_ok=True)
-        job_store = JobStore(db_path=str(scheduler_db))
-        await job_store.open()
-        cron_scheduler = SchedulerEngine(
-            store=job_store,
-            session_store=storage,  # SessionStorage instance from session manager boot
-            config={
-                "max_concurrent_runs": int(os.environ.get("OPENSQUILLA_CRON_MAX_CONCURRENT", "3")),
-                "max_catchup_jobs": int(os.environ.get("OPENSQUILLA_CRON_MAX_CATCHUP", "5")),
-                "session_retention": int(
-                    os.environ.get("OPENSQUILLA_CRON_SESSION_RETENTION", "86400")
-                ),
-            },
-        )
-        await cron_scheduler.start()
-        # Expose the scheduler to the cron tool through the shared services handle.
-        configure_tool_services(scheduler=cron_scheduler)
-        log.info("build_services.cron_scheduler_started")
-    except Exception as e:
-        log.warning("build_services.cron_scheduler_failed", error=str(e))
+    # ── Extension services (boot orders 18-21) ──────────────────────
+    extension_runtime = await build_extension_services_runtime(
+        config=config,
+        tool_registry=tool_registry,
+        session_storage=get_session_storage(session_manager),
+        agent_ids=_configured_agent_ids(config, extra_agent_ids),
+        state_path_factory=_state_path,
+        logger=log,
+    )
+    memory_managers = extension_runtime.memory_managers
+    memory_stores = extension_runtime.memory_stores
+    memory_retrievers = extension_runtime.memory_retrievers
+    memory_sync_managers = extension_runtime.memory_sync_managers
+    turn_capture_services = extension_runtime.turn_capture_services
+    memory_watchers = extension_runtime.memory_watchers
+    skill_loader = extension_runtime.skill_loader
+    cron_scheduler = extension_runtime.cron_scheduler
+    _turn_runner_ref = extension_runtime.turn_runner_ref
 
     # ── Usage tracker ───────────────────────────────────────────────
     if usage_tracker is None:
         usage_tracker = _UsageTracker()
-
-    # ── Search provider (brave > duckduckgo fallback) ───────────────
-    try:
-        from opensquilla.search.runtime import sync_search_runtime_from_config
-
-        runtime = sync_search_runtime_from_config(config)
-        log.info("build_services.search_provider_initialized", provider=runtime.provider_name)
-    except Exception as e:
-        log.warning("build_services.search_provider_failed", error=str(e))
 
     # ── MCP discovery (boot order 22) ───────────────────────────────
     if config.mcp.enabled and config.mcp.servers:

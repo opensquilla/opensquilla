@@ -28,6 +28,7 @@ from opensquilla.tools.registry import ToolRegistry
 
 ROOT = Path(__file__).resolve().parents[2]
 BOOT = ROOT / "src/opensquilla/gateway/boot.py"
+EXTENSION_RUNTIME = ROOT / "src/opensquilla/extension_services/gateway_runtime.py"
 
 
 class _FakeDreamScheduler:
@@ -60,20 +61,37 @@ def _imports_from(path: Path) -> set[tuple[str, str]]:
 
 
 def test_gateway_boot_delegates_memory_runtime_to_memory_boundary() -> None:
-    imports = _imports_from(BOOT)
+    boot_imports = _imports_from(BOOT)
+    extension_imports = _imports_from(EXTENSION_RUNTIME)
 
+    assert (
+        "opensquilla.extension_services.gateway_runtime",
+        "build_extension_services_runtime",
+    ) in boot_imports
     assert (
         "opensquilla.memory.gateway_runtime",
         "build_memory_gateway_runtime",
-    ) in imports
+    ) not in boot_imports
+    assert (
+        "opensquilla.memory.gateway_runtime",
+        "build_memory_gateway_runtime",
+    ) in extension_imports
     assert (
         "opensquilla.tools.builtin.memory_tools",
         "create_memory_tools",
-    ) not in imports
+    ) not in boot_imports
+    assert (
+        "opensquilla.tools.builtin.memory_tools",
+        "create_memory_tools",
+    ) not in extension_imports
     assert (
         "opensquilla.memory.manager",
         "build_memory_managers",
-    ) not in imports
+    ) not in boot_imports
+    assert (
+        "opensquilla.memory.manager",
+        "build_memory_managers",
+    ) not in extension_imports
 
 
 def test_build_turn_runner_from_services_wires_memory_services(

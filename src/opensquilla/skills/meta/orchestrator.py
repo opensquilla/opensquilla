@@ -34,8 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import html
-import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass as _dataclass
 from typing import Any
@@ -52,220 +50,18 @@ from opensquilla.engine.types import (
 )
 from opensquilla.provider.protocol import LLMProvider
 from opensquilla.skills.meta.parser import topological_order
-from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep, RouteCase
+from opensquilla.skills.meta.templating import (
+    _JINJA_ENV,
+    _coerce_to_choice,
+    _expand_skill_placeholders,
+    _format_classify_prompt,
+    format_step_prompt,
+    render_with_args,
+    resolve_route,
+)
+from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
 
 log = structlog.get_logger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Restricted Jinja environment for ``with_args`` rendering
-# ---------------------------------------------------------------------------
-
-_SLUG_RE = re.compile(r"[^a-zA-Z0-9_-]+")
-
-
-def _filter_xml_escape(value: object) -> str:
-    return html.escape(str(value), quote=True)
-
-
-def _filter_truncate(value: object, length: int = 1024) -> str:
-    text = str(value)
-    if length <= 0 or len(text) <= length:
-        return text
-    return text[:length]
-
-
-def _filter_slugify(value: object) -> str:
-    return _SLUG_RE.sub("-", str(value)).strip("-").lower()[:128]
-
-
-def _build_jinja_env() -> jinja2.Environment:
-    env = jinja2.Environment(
-        undefined=jinja2.StrictUndefined,
-        autoescape=False,
-        extensions=[],
-        keep_trailing_newline=False,
-    )
-    # Strip unsafe globals/filters; install our allowlist.
-    env.globals.clear()
-    env.filters = {
-        "xml_escape": _filter_xml_escape,
-        "truncate": _filter_truncate,
-        "slugify": _filter_slugify,
-        "tojson": jinja2.filters.do_tojson,
-        "default": jinja2.filters.do_default,
-        "length": len,
-        "join": jinja2.filters.do_join,
-    }
-    return env
-
-
-_JINJA_ENV = _build_jinja_env()
-
-
-def render_with_args(
-    template_map: dict[str, Any],
-    *,
-    inputs: dict[str, Any],
-    outputs: dict[str, str],
-) -> dict[str, Any]:
-    """Render every leaf string in ``template_map`` against ``inputs/outputs``.
-
-    Non-string leaves pass through unchanged. Nested dicts / lists are walked
-    recursively. A ``jinja2.UndefinedError`` becomes a regular ValueError so
-    the orchestrator's StepFailure handling treats it as a normal failure.
-    """
-
-    context = {
-        "inputs": inputs,
-        "outputs": outputs,
-    }
-
-    def _render(value: Any) -> Any:
-        if isinstance(value, str):
-            try:
-                return _JINJA_ENV.from_string(value).render(**context)
-            except jinja2.UndefinedError as exc:
-                raise ValueError(f"undefined template variable: {exc}") from exc
-            except jinja2.TemplateSyntaxError as exc:
-                raise ValueError(f"template syntax error: {exc}") from exc
-        if isinstance(value, dict):
-            return {k: _render(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [_render(item) for item in value]
-        return value
-
-    rendered = _render(template_map)
-    assert isinstance(rendered, dict)
-    return rendered
-
-
-def resolve_route(
-    cases: tuple[RouteCase, ...],
-    *,
-    inputs: dict[str, Any],
-    outputs: dict[str, str],
-) -> str | None:
-    """Return the ``to`` skill of the first case whose ``when`` evaluates truthy.
-
-    Returns ``None`` when ``cases`` is empty or no case matches — caller falls
-    back to the step's default ``skill`` name.  Jinja errors are surfaced as
-    :class:`ValueError` so the orchestrator's step-failure path catches them.
-    """
-
-    if not cases:
-        return None
-    context = {"inputs": inputs, "outputs": outputs}
-    for index, case in enumerate(cases):
-        # Wrap the expression as ``{{ (<expr>) | tojson }}`` is overkill; use
-        # Jinja's ``compile_expression`` so the user writes a real expression
-        # (``outputs.classify == 'URL'``) rather than a template.
-        try:
-            expr = _JINJA_ENV.compile_expression(case.when)
-        except jinja2.TemplateSyntaxError as exc:
-            raise ValueError(
-                f"route[{index}] when expression syntax error: {exc}",
-            ) from exc
-        try:
-            value = expr(**context)
-        except jinja2.UndefinedError as exc:
-            raise ValueError(
-                f"route[{index}] when references undefined variable: {exc}",
-            ) from exc
-        if value:
-            return case.to
-    return None
-
-
-def format_step_prompt(skill_name: str, args: dict[str, Any]) -> str:
-    """Render the user-message payload that drives one sub-Agent turn."""
-
-    if not args:
-        return (
-            f"Run the {skill_name} skill with no arguments. "
-            "Produce the deliverable described in its SKILL.md."
-        )
-
-    lines = [f"Invoke the {skill_name} skill with the following arguments:"]
-    for key, value in args.items():
-        if isinstance(value, str):
-            lines.append(f"- {key}: {value}")
-        else:
-            lines.append(f"- {key}: {value!r}")
-    lines.append(
-        "\nWhen the work is complete, reply with the final deliverable as plain text. "
-        "If the skill produced a file, include the absolute path on the last line.",
-    )
-    return "\n".join(lines)
-
-
-def _format_classify_prompt(step: MetaStep, args: dict[str, Any]) -> str:
-    """Render the user-message body for an ``llm_classify`` step.
-
-    Concatenates the rendered ``with_args`` values into a flat prompt — the
-    classifier system prompt already constrains the output, so we don't
-    re-state the choices here.
-    """
-
-    if not args:
-        return ""
-    parts: list[str] = []
-    for key, value in args.items():
-        text = value if isinstance(value, str) else repr(value)
-        # Skip purely-decorative keys; otherwise prefix with the key for clarity.
-        if key in ("text", "prompt", "task", "input"):
-            parts.append(text)
-        else:
-            parts.append(f"{key}: {text}")
-    return "\n".join(parts).strip()
-
-
-def _expand_skill_placeholders(skill_spec: Any) -> str:
-    """Substitute ``{baseDir}`` (and aliases) in a skill body with its real path.
-
-    Bundled SKILL.md files reference helper scripts via ``{baseDir}/scripts/foo.py``.
-    Regular skill invocation routes the body through tooling that resolves
-    these placeholders; meta-skill composition injects the body directly into
-    a sub-Agent system prompt, so we must do the same substitution here —
-    otherwise the sub-Agent sees a literal ``{baseDir}`` and tries to glob
-    the workspace for it.
-    """
-
-    body = (getattr(skill_spec, "content", "") or "").strip()
-    base_dir = str(getattr(skill_spec, "base_dir", "") or "").rstrip("/")
-    if not base_dir:
-        return body
-    # Cover both the canonical ``{baseDir}`` and the snake-case alias some
-    # internal tools emit; keep substitution simple (no regex) so the body
-    # remains byte-stable for callers that hash it.
-    return body.replace("{baseDir}", base_dir).replace("{base_dir}", base_dir)
-
-
-def _coerce_to_choice(raw: str, choices: list[str]) -> str:
-    """Normalise a model reply to one of the allowed labels.
-
-    Match precedence: exact → quote/punctuation-stripped → case-insensitive →
-    uppercase-substring containment. When nothing matches the original trimmed
-    text is returned — downstream route ``when`` clauses use Python's ``in``
-    against it and can still succeed.
-    """
-
-    if not choices:
-        return raw.strip()
-    text = raw.strip()
-    if text in choices:
-        return text
-    stripped = text.strip("'\"`.,!? \t\r\n")
-    if stripped in choices:
-        return stripped
-    upper = stripped.upper()
-    for choice in choices:
-        if upper == choice.upper():
-            return choice
-    for choice in choices:
-        if choice.upper() in upper:
-            return choice
-    return stripped or text
 
 
 # ---------------------------------------------------------------------------
@@ -328,11 +124,18 @@ class MetaOrchestrator:
         *,
         llm_chat: LLMChat | None = None,
         tool_invoker: ToolInvoker | None = None,
+        workspace_dir: str | None = None,
     ) -> None:
         self._agent_runner = agent_runner
         self._skill_loader = skill_loader
         self._llm_chat = llm_chat
         self._tool_invoker = tool_invoker
+        # Shared filesystem root for ``skill_exec`` steps that write
+        # cross-skill artefacts (results.csv → plot, references.bib →
+        # bibtex, etc.). When set, this overrides the per-skill
+        # ``base_dir`` default so all steps share one workspace tree.
+        # ``entrypoint.cwd`` on the individual skill still wins if set.
+        self._workspace_dir = workspace_dir
 
     async def run(self, match: MetaMatch) -> MetaResult:
         """Execute the plan, draining the streaming generator for the final result.
@@ -912,11 +715,18 @@ class MetaOrchestrator:
             rendered_args.append(_render(item.replace("{baseDir}", base_dir)))
 
         # Resolve cwd early so assemble's relative-path anchoring matches the
-        # subprocess's working directory.
+        # subprocess's working directory. Precedence:
+        # 1. ``entrypoint.cwd`` — skill-author override, wins everything.
+        # 2. orchestrator-level ``workspace_dir`` — shared workspace for the
+        #    whole meta-skill so cross-skill files (results.csv → plot,
+        #    references.bib → bibtex, etc.) land in the same tree.
+        # 3. ``base_dir`` — fallback to the skill's own directory.
         cwd = entrypoint.get("cwd")
         if isinstance(cwd, str) and cwd:
             cwd = cwd.replace("{baseDir}", base_dir)
             workdir: str | None = cwd
+        elif self._workspace_dir:
+            workdir = self._workspace_dir
         else:
             workdir = base_dir or None
 

@@ -142,7 +142,7 @@ Create a coarse browser runtime contract harness for the Web UI core runtime mod
 - [x] Implement the cohesive behavior-compatible module batch without dropping existing feature coverage.
 - [x] Run the focused test and touched-file checks.
 - [x] Run `scripts/refactor_gate.sh`.
-- [ ] Commit with:
+- [x] Commit with:
 
 ```text
 Co-authored-by: Codex <noreply@openai.com>
@@ -166,6 +166,7 @@ Co-authored-by: Codex <noreply@openai.com>
 ## Completion record
 
 - Child commit:
+  - `9846b294406aaa547fa3001d27c14ea365ecf349` (`9846b29`, `Add Web UI browser runtime contract`).
 - Verification evidence:
   - Preflight: `scripts/refactor_preflight.sh --allow-dirty` passed on branch `codex/refactor-webui-browser-runtime-contract` at `b7422a3`.
   - RED: `uv run --extra dev pytest tests/test_gateway/test_webui_browser_runtime_static.py -q` failed as expected with `2 failed`; the template did not load `static/js/browser_runtime.js` and the Node VM harness could not read `src/opensquilla/gateway/static/js/browser_runtime.js`.

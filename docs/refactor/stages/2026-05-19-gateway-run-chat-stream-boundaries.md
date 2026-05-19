@@ -285,7 +285,7 @@ Co-authored-by: Codex <noreply@openai.com>
 - [x] Merge child into integration with `git merge --no-ff`.
 - [x] Run `scripts/refactor_gate.sh` in integration.
 - [x] Record child hash, integration hash, verification, and next slice.
-- [ ] Remove `../opensquilla-refactor-active`,
+- [x] Remove `../opensquilla-refactor-active`,
       `../opensquilla-refactor-agent-gateway-run`, and
       `../opensquilla-refactor-agent-chat-stream`; run `git worktree prune`;
       verify no extra refactor worktree directories remain beyond
@@ -397,7 +397,7 @@ Co-authored-by: Codex <noreply@openai.com>
 - Integration merge:
 - `0d42412` (`Merge gateway run chat stream boundaries`)
 - Integration record:
-- pending
+- `fac0ef3` (`Record gateway run chat stream integration verification`)
 - Verification evidence:
 - Active child focused command: `18 passed`.
 - Active child full `scripts/refactor_gate.sh`: `2695 passed, 8 skipped`,
@@ -405,7 +405,11 @@ Co-authored-by: Codex <noreply@openai.com>
 - Integration full `scripts/refactor_gate.sh`: `2697 passed, 6 skipped`,
   gateway smoke passed.
 - Cleanup evidence:
-- pending
+- Removed `../opensquilla-refactor-active` and both worker worktrees, then ran
+  `git worktree prune`.
+- Final `git worktree list` shows only the persistent integration and unrelated
+  non-refactor worktrees remain; no `opensquilla-refactor-*` temp worktrees
+  survive beyond `../opensquilla-refactor-integration`.
 - Residual risk:
 - Low. The main compatibility risk was the existing
   `gateway_cmd.gateway_startup_guidance` import path; it is preserved through a

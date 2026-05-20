@@ -89,7 +89,7 @@ def test_meta_usage_counts_meta_skill_invocations(tmp_path: Path) -> None:
     assert usage["meta-travel-planner"] == 1
 
 
-def test_router_misses_surfaces_fixture_files(tmp_path: Path) -> None:
+def test_router_fixtures_surfaces_fixture_files(tmp_path: Path) -> None:
     """Just verify the keys exist and the script doesn't crash."""
     out = _run_explore(tmp_path, "anything")
-    assert isinstance(out["router_misses"], list)
+    assert isinstance(out["router_fixtures"], list)

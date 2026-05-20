@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """History explorer: aggregate DecisionEntry.skills_invoked.
 
-Produces co-occurrence data, meta-skill usage stats, and router misses;
+Produces co-occurrence data, meta-skill usage stats, and router fixtures;
 emits JSON to stdout.
 """
 
@@ -69,7 +69,7 @@ def aggregate_meta_usage(log_dir: Path, window_days: int) -> list[dict]:
     return [{"meta_skill_id": name, "invocation_count": ct} for name, ct in counter.most_common()]
 
 
-def aggregate_router_misses(repo_root: Path | None = None) -> list[dict]:
+def aggregate_router_fixtures(repo_root: Path | None = None) -> list[dict]:
     """Surface the D.2 router-fixture corpus."""
     if repo_root is None:
         # explore.py lives at:
@@ -78,17 +78,17 @@ def aggregate_router_misses(repo_root: Path | None = None) -> list[dict]:
         #          [4]=opensquilla, [5]=src, [6]=<repo root>
         repo_root = Path(__file__).resolve().parents[6]
     fixtures_dir = repo_root / "tests" / "test_skills" / "router_fixtures"
-    misses: list[dict] = []
+    fixtures: list[dict] = []
     if not fixtures_dir.is_dir():
-        return misses
+        return fixtures
     for fixture_file in fixtures_dir.glob("*.py"):
         if fixture_file.name.startswith("_"):
             continue
         text = fixture_file.read_text(encoding="utf-8")
         if "expected_choice" not in text:
             continue
-        misses.append({"fixture_file": fixture_file.name, "note": "see fixture file for details"})
-    return misses
+        fixtures.append({"fixture_file": fixture_file.name, "note": "see fixture file for details"})
+    return fixtures
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -96,21 +96,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log-dir", required=True, type=Path)
     parser.add_argument("--query", required=True)
     parser.add_argument("--window-days", type=int, default=30)
-    parser.add_argument("--include", default="co_occurrence,meta_usage,router_misses")
+    parser.add_argument("--include", default="co_occurrences,meta_usage,router_fixtures")
     parser.add_argument("--top-k", type=int, default=10)
     args = parser.parse_args(argv)
 
     include = set(args.include.split(","))
     result: dict = {"query": args.query}
 
-    if "co_occurrence" in include:
+    if "co_occurrences" in include:
         result["co_occurrences"] = aggregate_co_occurrences(
             args.log_dir, args.window_days, args.top_k
         )
     if "meta_usage" in include:
         result["meta_usage"] = aggregate_meta_usage(args.log_dir, args.window_days)
-    if "router_misses" in include:
-        result["router_misses"] = aggregate_router_misses()
+    if "router_fixtures" in include:
+        result["router_fixtures"] = aggregate_router_fixtures()
 
     if not result.get("co_occurrences") and not result.get("meta_usage"):
         result["placeholder"] = "no history available; downstream should rely on user intent only"

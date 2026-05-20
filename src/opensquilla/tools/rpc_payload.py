@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from opensquilla.tools.policy import ToolSurfaceCapabilities
+from opensquilla.tools.policy_runtime import (
+    ToolSurfaceCapabilities,
+    tool_surface_capabilities_from_runtime,
+)
 from opensquilla.tools.registry import ToolRegistry, get_default_registry
 
 
@@ -33,19 +36,13 @@ def tool_surface_capabilities_for_runtime(
 
     if tool_surface_capabilities is not None:
         return tool_surface_capabilities
-    try:
-        from opensquilla.tools.builtin.media import image_generation_available
-
-        image_generation = image_generation_available()
-    except Exception:
-        image_generation = False
-    return ToolSurfaceCapabilities(
-        session_manager=session_manager is not None,
-        task_runtime=task_runtime is not None,
-        scheduler=scheduler is not None,
-        gateway_config=gateway_config is not None,
-        channel_backing=channel_manager is not None or originating_envelope is not None,
-        image_generation=image_generation,
+    return tool_surface_capabilities_from_runtime(
+        session_manager=session_manager,
+        task_runtime=task_runtime,
+        scheduler=scheduler,
+        gateway_config=gateway_config,
+        channel_manager=channel_manager,
+        originating_envelope=originating_envelope,
     )
 
 

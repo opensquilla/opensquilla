@@ -11,7 +11,7 @@ import structlog
 
 from opensquilla.provider.types import ToolDefinition, ToolInputSchema
 from opensquilla.tools import visibility as visibility_policy
-from opensquilla.tools.policy import ToolSurfaceCapabilities
+from opensquilla.tools.policy_runtime import ToolSurfaceCapabilities
 from opensquilla.tools.types import (
     CallerKind,
     InteractionMode,

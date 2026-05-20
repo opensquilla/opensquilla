@@ -2,143 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
-from opensquilla.tools import policy_config
-from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext
+from opensquilla.tools import policy_config, policy_runtime
+from opensquilla.tools.types import ToolContext
 
 ToolPolicy = policy_config.ToolPolicy
-
-_PRIVATE_MEMORY_READ_TOOL_NAMES: frozenset[str] = frozenset(
-    {"memory_get", "memory_search", "session_search"}
+ToolSurfaceCapabilities = policy_runtime.ToolSurfaceCapabilities
+detect_runtime_tool_surface_capabilities = (
+    policy_runtime.detect_runtime_tool_surface_capabilities
 )
-_IMAGE_GENERATION_TOOL_NAMES: frozenset[str] = frozenset(
-    {"image_generate"}
+private_memory_read_tool_denied = policy_runtime.private_memory_read_tool_denied
+private_memory_read_tools_blocked = policy_runtime.private_memory_read_tools_blocked
+resolve_runtime_tool_surface = policy_runtime.resolve_runtime_tool_surface
+tool_surface_capabilities_from_runtime = (
+    policy_runtime.tool_surface_capabilities_from_runtime
 )
-_SESSION_READ_TOOL_NAMES: frozenset[str] = frozenset(
-    {"session_status", "sessions_history", "sessions_list"}
-)
-_SESSION_RUNTIME_TOOL_NAMES: frozenset[str] = frozenset(
-    {"sessions_send", "sessions_spawn", "sessions_yield"}
-)
-_CHANNEL_RUNTIME_TOOL_NAMES: frozenset[str] = frozenset({"message"})
-_ADMIN_RUNTIME_TOOL_NAMES: frozenset[str] = frozenset({"agents_list", "subagents"})
-_GATEWAY_RUNTIME_TOOL_NAMES: frozenset[str] = frozenset({"gateway"})
-_SCHEDULER_RUNTIME_TOOL_NAMES: frozenset[str] = frozenset({"cron"})
-
-
-def private_memory_read_tools_blocked(ctx: ToolContext | None) -> bool:
-    """Return True when this context must not read private memory sources."""
-
-    if ctx is None:
-        return False
-    if ctx.caller_kind is CallerKind.SUBAGENT:
-        return True
-    if ctx.caller_kind is CallerKind.CRON:
-        return not ctx.is_owner
-    if ctx.caller_kind is CallerKind.CHANNEL and not ctx.session_key:
-        return True
-    if not ctx.session_key:
-        return False
-
-    from opensquilla.session.keys import allows_private_memory_prompt_injection
-
-    return not allows_private_memory_prompt_injection(ctx.session_key)
-
-
-def private_memory_read_tool_denied(ctx: ToolContext | None, tool_name: str) -> bool:
-    """Return True when a specific tool call would read blocked private memory."""
-
-    return (
-        tool_name in _PRIVATE_MEMORY_READ_TOOL_NAMES
-        and private_memory_read_tools_blocked(ctx)
-    )
-
-
-@dataclass(frozen=True)
-class ToolSurfaceCapabilities:
-    """Runtime dependencies that determine whether registered tools can work."""
-
-    session_manager: bool = False
-    task_runtime: bool = False
-    scheduler: bool = False
-    gateway_config: bool = False
-    channel_backing: bool = False
-    image_generation: bool = True
-
-
-def resolve_runtime_tool_surface(
-    ctx: ToolContext,
-    *,
-    capabilities: ToolSurfaceCapabilities | None = None,
-) -> ToolContext:
-    """Resolve runtime-capability tool visibility into the context denylist."""
-
-    caps = capabilities or ToolSurfaceCapabilities()
-    denied_tools = set(ctx.denied_tools)
-    allowed_tools = set(ctx.allowed_tools) if ctx.allowed_tools is not None else None
-
-    if not caps.image_generation:
-        denied_tools |= set(_IMAGE_GENERATION_TOOL_NAMES)
-    if not caps.session_manager:
-        denied_tools |= set(_SESSION_READ_TOOL_NAMES | _SESSION_RUNTIME_TOOL_NAMES)
-    if not caps.task_runtime:
-        denied_tools |= set(_SESSION_RUNTIME_TOOL_NAMES)
-    if not caps.scheduler:
-        denied_tools |= set(_SCHEDULER_RUNTIME_TOOL_NAMES)
-    if not caps.gateway_config:
-        denied_tools |= set(_GATEWAY_RUNTIME_TOOL_NAMES)
-
-    if ctx.interaction_mode is InteractionMode.UNATTENDED:
-        if not caps.channel_backing:
-            denied_tools |= set(_CHANNEL_RUNTIME_TOOL_NAMES)
-        denied_tools |= set(_ADMIN_RUNTIME_TOOL_NAMES)
-    if private_memory_read_tools_blocked(ctx):
-        denied_tools |= set(_PRIVATE_MEMORY_READ_TOOL_NAMES)
-
-    allowed_tools = policy_config.remove_denied_from_allowed(allowed_tools, denied_tools)
-    return replace(ctx, allowed_tools=allowed_tools, denied_tools=denied_tools)
-
-
-def detect_runtime_tool_surface_capabilities(
-    *,
-    channel_backing: bool = False,
-) -> ToolSurfaceCapabilities:
-    """Detect tool runtime dependencies from the currently wired built-ins."""
-
-    session_manager = False
-    task_runtime = False
-    scheduler = False
-    gateway_config = False
-    image_generation = True
-    try:
-        from opensquilla.tools.builtin import sessions
-
-        session_manager = sessions.session_manager_available()
-        task_runtime = sessions.task_runtime_available()
-    except Exception:
-        pass
-    try:
-        from opensquilla.tools.builtin import admin
-
-        scheduler = admin.scheduler_available()
-        gateway_config = admin.gateway_config_available()
-    except Exception:
-        pass
-    try:
-        from opensquilla.tools.builtin.media import image_generation_available
-
-        image_generation = image_generation_available()
-    except Exception:
-        image_generation = False
-    return ToolSurfaceCapabilities(
-        session_manager=session_manager,
-        task_runtime=task_runtime,
-        scheduler=scheduler,
-        gateway_config=gateway_config,
-        channel_backing=channel_backing,
-        image_generation=image_generation,
-    )
 
 
 def apply_tool_policy(

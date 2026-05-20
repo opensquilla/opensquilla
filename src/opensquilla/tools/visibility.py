@@ -9,7 +9,7 @@ from enum import StrEnum
 import structlog
 
 from opensquilla.provider.types import ToolDefinition
-from opensquilla.tools.policy import (
+from opensquilla.tools.policy_runtime import (
     ToolSurfaceCapabilities,
     resolve_runtime_tool_surface,
 )

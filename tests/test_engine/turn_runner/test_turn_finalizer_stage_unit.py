@@ -183,7 +183,7 @@ def _make_input(
     runtime_message: str = "hi",
     input_mode: str = "user",
     input_provenance: dict[str, Any] | None = None,
-    resolved_model: str = "claude-sonnet-4.5",
+    resolved_model: str = "synthetic-turn-model-4.5",
     agent_id: str = "agent:main",
     session_key: str = "agent:main:s1",
     run_kind: str = "default",
@@ -254,7 +254,7 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
         missing_cost_entries=0,
         cache_read=0,
         cache_write=0,
-        model_override="claude-sonnet-4.5",
+        model_override="synthetic-turn-model-4.5",
     )
     stage, recs = _make_stage(
         session_totals=_RecordingSessionTotals(return_value=rollup_value),
@@ -263,7 +263,7 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
         text="hi",
         input_tokens=5,
         output_tokens=3,
-        model="claude-sonnet-4.5",
+        model="synthetic-turn-model-4.5",
     )
     inp = _make_input(final_text_parts=["hi"], done_event=done)
     outcome = await stage.run(inp)
@@ -276,7 +276,7 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
     assert recs["transcript_append"].calls[0]["token_count"] == 3
     assert recs["transcript_append"].calls[0]["turn_usage"]["input_tokens"] == 5
     assert recs["transcript_append"].calls[0]["turn_usage"]["output_tokens"] == 3
-    assert recs["transcript_append"].calls[0]["turn_usage"]["model"] == "claude-sonnet-4.5"
+    assert recs["transcript_append"].calls[0]["turn_usage"]["model"] == "synthetic-turn-model-4.5"
 
 
 @pytest.mark.asyncio
@@ -472,13 +472,13 @@ async def test_reasoning_content_excluded_for_non_deepseek_model() -> None:
         text="hi",
         input_tokens=1,
         output_tokens=1,
-        model="claude-opus-4",
+        model="synthetic-long-model-4",
         reasoning_content="thinking...",
     )
     inp = _make_input(
         final_text_parts=["hi"],
         done_event=done,
-        resolved_model="claude-opus-4",
+        resolved_model="synthetic-long-model-4",
     )
     await stage.run(inp)
     assert recs["transcript_append"].calls[0]["reasoning_content"] is None

@@ -1,0 +1,28 @@
+---
+name: meta-skill-proposals
+description: "Manage ~/.opensquilla/proposals/ directory: write_proposal / list / accept. Used by meta-skill-creator's persist step and (Phase 2) by `opensquilla meta accept` CLI."
+provenance:
+  origin: opensquilla-original
+  license: Apache-2.0
+metadata:
+  requires:
+    anyBins: ["python", "python3"]
+---
+
+# Meta-Skill Proposals
+
+CRUD for meta-skill proposal candidates at `~/.opensquilla/proposals/<id>/`.
+
+## Actions
+
+- `write_proposal --skill-md path --lint-result json --smoke-result json` — atomic write to `~/.opensquilla/proposals/<uuid8>/{SKILL.md,gates.json}`. Returns `{proposal_id, auto_enable_eligible}`.
+- `list` — enumerate proposals with their eligibility flag
+- `accept --proposal-id <id> [--force]` — move proposal to `~/.opensquilla/skills/<name>/` so it gets loaded by MANAGED layer; refuses if any gate failed (unless `--force`)
+
+## Atomicity
+
+write_proposal writes to `~/.opensquilla/.tmp/proposal-<id>/` then `os.rename()` to the final location, so a partial write leaves no orphan proposal dir.
+
+## Fallback
+
+If invoked from chat, manually create the proposals dir, copy SKILL.md, run the meta-skill-linter to populate gates.json by hand.

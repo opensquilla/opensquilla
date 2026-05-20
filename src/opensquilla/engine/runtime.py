@@ -121,19 +121,24 @@ def _is_deepseek_model_id(model: str) -> bool:
     return normalized.startswith("deepseek") or "/deepseek" in normalized
 
 
-def collect_invoked_skills(tool_calls: list[dict]) -> list[str]:
+def collect_invoked_skills(turn_segments: list[dict]) -> list[str]:
     """Extract bundled-skill names that were resolved via skill_view tool calls.
+
+    Args:
+        turn_segments: the heterogeneous per-turn segments list as produced by
+            the LLM (may contain text, tool_use, and tool_result entries mixed
+            together — not a pre-filtered tool-call list).
 
     Returns a deduplicated list preserving first-occurrence order. Used by
     DecisionEntry.skills_invoked (SCHEMA_VERSION 10).
     """
     seen: set[str] = set()
     result: list[str] = []
-    for call in tool_calls:
-        if call.get("name") != "skill_view":
+    for segment in turn_segments:
+        if segment.get("name") != "skill_view":
             continue
-        skill_name = (call.get("input") or {}).get("name")
-        if not isinstance(skill_name, str) or skill_name in seen:
+        skill_name = (segment.get("input") or {}).get("name")
+        if not isinstance(skill_name, str) or not skill_name or skill_name in seen:
             continue
         seen.add(skill_name)
         result.append(skill_name)

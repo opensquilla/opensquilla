@@ -66,16 +66,24 @@ def test_old_schema_v9_row_reads_with_empty_skills_invoked(tmp_path: Path) -> No
     assert loaded[0].skills_invoked == []
 
 
-def test_runtime_writes_skills_invoked(tmp_path, monkeypatch) -> None:
-    """Integration: a turn where 2 skills are invoked writes both names to
-    skills_invoked. Uses a stubbed turn runner."""
-    monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))
+def test_collect_invoked_skills_filters_non_skill_view() -> None:
+    """collect_invoked_skills returns only skill_view-resolved names, in order."""
     from opensquilla.engine.runtime import collect_invoked_skills
-    invoked = collect_invoked_skills(
-        tool_calls=[
-            {"name": "skill_view", "input": {"name": "pdf-toolkit"}},
-            {"name": "skill_view", "input": {"name": "summarize"}},
-            {"name": "other_tool", "input": {}},
-        ]
-    )
+    invoked = collect_invoked_skills([
+        {"name": "skill_view", "input": {"name": "pdf-toolkit"}},
+        {"name": "skill_view", "input": {"name": "summarize"}},
+        {"name": "other_tool", "input": {}},
+    ])
     assert invoked == ["pdf-toolkit", "summarize"]
+
+
+def test_collect_invoked_skills_dedups_repeated_calls() -> None:
+    """A skill invoked multiple times in one turn appears once, at first position."""
+    from opensquilla.engine.runtime import collect_invoked_skills
+    invoked = collect_invoked_skills([
+        {"name": "skill_view", "input": {"name": "pdf-toolkit"}},
+        {"name": "skill_view", "input": {"name": "summarize"}},
+        {"name": "skill_view", "input": {"name": "pdf-toolkit"}},  # dup
+        {"name": "skill_view", "input": {"name": "memory"}},
+    ])
+    assert invoked == ["pdf-toolkit", "summarize", "memory"]

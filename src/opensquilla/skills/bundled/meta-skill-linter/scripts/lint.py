@@ -33,10 +33,9 @@ from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan  # noq
 
 BUNDLED = REPO / "src" / "opensquilla" / "skills" / "bundled"
 
-# G1.6 xml_escape rule: flag bare {{ inputs.user_message }} with no filter at all.
-# Only unfiltered usage is flagged — existing bundles legitimately use
-# | slugify, | truncate, | xml_escape etc., all of which are acceptable.
-_XML_ESCAPE_RE = re.compile(r"\{\{\s*inputs\.user_message\s*\}\}")
+# G1.6 xml_escape rule: any `{{ inputs.user_message ` literal must be
+# IMMEDIATELY followed by `| xml_escape` as the first filter.
+_XML_ESCAPE_RE = re.compile(r"\{\{\s*inputs\.user_message(?!\s*\|\s*xml_escape)")
 
 
 def _load_main_catalog() -> set[str]:

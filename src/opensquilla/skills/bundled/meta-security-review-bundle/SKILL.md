@@ -98,7 +98,7 @@ composition:
         topic: "security-review"
         content: |
           === security review audit ===
-          operation: {{ inputs.user_message | truncate(400) }}
+          operation: {{ inputs.user_message | xml_escape | truncate(400) }}
           policy_review: {{ outputs.policy_review | truncate(200) }}
           secret_scan: {{ outputs.secret_scan | truncate(200) }}
           verdict: {{ outputs.arbitrate | truncate(400) }}

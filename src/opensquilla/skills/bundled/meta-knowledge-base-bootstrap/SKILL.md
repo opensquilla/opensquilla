@@ -39,7 +39,7 @@ composition:
       depends_on: [ingest]
       tool_args:
         content: |
-          # KB Bootstrap: {{ inputs.user_message | truncate(80) }}
+          # KB Bootstrap: {{ inputs.user_message | xml_escape | truncate(80) }}
           Classifier verdict: {{ outputs.classify }}
           Ingestion (multi-search-engine, JSON):
           {{ outputs.ingest | truncate(2000) }}

@@ -36,7 +36,7 @@ composition:
       skill: xlsx
       depends_on: [model]
       with:
-        task: "Create a workbook named '{{ inputs.user_message | slugify | truncate(64) }}-data.xlsx' from this structured content: {{ outputs.model }}"
+        task: "Create a workbook named '{{ inputs.user_message | xml_escape | slugify | truncate(64) }}-data.xlsx' from this structured content: {{ outputs.model }}"
     - id: to_pdf
       skill: html-to-pdf
       depends_on: [model]

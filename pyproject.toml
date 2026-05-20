@@ -114,13 +114,8 @@ norecursedirs = ["tests/_private", ".omx", ".codex", ".claude"]
 markers = [
     "llm: marks tests that make real external model/provider API calls (deselect with '-m \"not llm\"')",
     "llm_smoke: low-cost live LLM smoke tests",
-    "llm_costly: slower or more expensive live model/provider tests",
-    "llm_tools: live model tests that exercise tool calling",
-    "llm_embedding: live embedding/vector-provider tests",
-    "llm_reasoning: live reasoning-capable model tests",
     "llm_gateway: live gateway/end-to-end runtime tests",
-    "llm_image: live image-generation model API tests",
-    "llm_router_acc: live multi-model routing accuracy tests (D.2 follow-up to test_meta_router_accuracy.py)",
+    "llm_router_acc: live multi-model routing accuracy tests (D.2; see tests/test_skills/test_meta_router_live.py)",
     "webui_browser: real browser Web UI tests driven by Playwright",
     "live_channel: marks tests that hit a real channel platform (deselect with '-m \"not live_channel\"')",
 ]

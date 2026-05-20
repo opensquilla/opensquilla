@@ -114,8 +114,10 @@ def test_meta_skill_fill_slots_retries_once_on_validation_error(monkeypatch) -> 
             ],
         }),
     ])
+    prompts: list[str] = []
 
     def stub_llm(prompt: str, **_kwargs) -> str:
+        prompts.append(prompt)
         return next(responses)
 
     monkeypatch.setattr(proposer, "_call_llm_for_slots", stub_llm)
@@ -127,3 +129,6 @@ def test_meta_skill_fill_slots_retries_once_on_validation_error(monkeypatch) -> 
     )
     data = json.loads(result)
     assert data["name"] == "synth-pipeline"
+    assert len(prompts) == 2
+    # Retry prompt must include the ValidationError feedback
+    assert "failed schema validation" in prompts[1] or "errors" in prompts[1]

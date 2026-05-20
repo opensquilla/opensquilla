@@ -56,7 +56,7 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
     import os
 
     from opensquilla.engine.types import AgentConfig
-    from opensquilla.provider.selector import ProviderConfig, _build_provider
+    from opensquilla.provider.selector import build_provider
     from opensquilla.skills.meta.orchestrator import make_llm_chat_from_provider
 
     # Resolve provider + API key from environment (mirrors gateway behaviour).
@@ -79,10 +79,11 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
             "Set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY."
         )
 
-    cfg = ProviderConfig(provider=provider_name, model=model, api_key=api_key)
-    provider = _build_provider(cfg)
+    provider = build_provider(provider=provider_name, model=model, api_key=api_key)
     base_config = AgentConfig(model_id=model)
-    llm_chat = make_llm_chat_from_provider(provider=provider, base_config=base_config)
+    llm_chat = make_llm_chat_from_provider(
+        provider=provider, base_config=base_config, max_tokens=2048
+    )
 
     async def _drive() -> str:
         return await llm_chat("", prompt)

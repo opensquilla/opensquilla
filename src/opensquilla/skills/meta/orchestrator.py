@@ -263,11 +263,15 @@ def make_llm_chat_from_provider(
     *,
     provider: LLMProvider,
     base_config: AgentConfig,
+    max_tokens: int = 256,
 ) -> LLMChat:
     """Build a single-turn LLM caller — no tools, no agent loop.
 
     Concatenates the streamed ``TextDeltaEvent`` payloads and returns the
     final text. Used by ``llm_classify`` steps to avoid sub-Agent overhead.
+    ``max_tokens`` defaults to 256 (sufficient for classification); callers
+    that need full JSON payloads (e.g. slot-filling) should pass a larger
+    value.
     """
 
     from opensquilla.provider.types import ChatConfig, Message
@@ -276,7 +280,7 @@ def make_llm_chat_from_provider(
     async def _chat(system_prompt: str, user_message: str) -> str:
         config = ChatConfig(
             system=system_prompt,
-            max_tokens=256,
+            max_tokens=max_tokens,
             temperature=0.0,
         )
         messages = [Message(role="user", content=user_message)]

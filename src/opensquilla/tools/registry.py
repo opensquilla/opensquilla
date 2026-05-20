@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import os
+from collections.abc import Mapping
 from dataclasses import replace
 from enum import StrEnum
 from typing import Any
@@ -438,6 +439,93 @@ def _parse_interaction_mode(value: InteractionMode | str | None) -> InteractionM
 
 def get_default_registry() -> ToolRegistry:
     return _default_registry
+
+
+def _tool_rpc_params(params: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    from opensquilla.tools.rpc_payload import tool_rpc_params
+
+    return tool_rpc_params(params)
+
+
+def _tool_surface_capabilities_for_runtime(
+    *,
+    tool_surface_capabilities: ToolSurfaceCapabilities | None = None,
+    session_manager: object | None = None,
+    task_runtime: object | None = None,
+    scheduler: object | None = None,
+    gateway_config: object | None = None,
+    channel_manager: object | None = None,
+    originating_envelope: object | None = None,
+) -> ToolSurfaceCapabilities:
+    from opensquilla.tools.rpc_payload import tool_surface_capabilities_for_runtime
+
+    return tool_surface_capabilities_for_runtime(
+        tool_surface_capabilities=tool_surface_capabilities,
+        session_manager=session_manager,
+        task_runtime=task_runtime,
+        scheduler=scheduler,
+        gateway_config=gateway_config,
+        channel_manager=channel_manager,
+        originating_envelope=originating_envelope,
+    )
+
+
+async def tools_catalog_payload(
+    params: Mapping[str, Any] | None,
+    *,
+    tool_registry: ToolRegistry | None = None,
+    is_owner: bool = True,
+    tool_surface_capabilities: ToolSurfaceCapabilities | None = None,
+    session_manager: object | None = None,
+    task_runtime: object | None = None,
+    scheduler: object | None = None,
+    gateway_config: object | None = None,
+    channel_manager: object | None = None,
+    originating_envelope: object | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    from opensquilla.tools.rpc_payload import tools_catalog_payload as build_payload
+
+    return await build_payload(
+        params,
+        tool_registry=tool_registry,
+        is_owner=is_owner,
+        tool_surface_capabilities=tool_surface_capabilities,
+        session_manager=session_manager,
+        task_runtime=task_runtime,
+        scheduler=scheduler,
+        gateway_config=gateway_config,
+        channel_manager=channel_manager,
+        originating_envelope=originating_envelope,
+    )
+
+
+async def tools_effective_payload(
+    params: Mapping[str, Any] | None,
+    *,
+    tool_registry: ToolRegistry | None = None,
+    is_owner: bool = True,
+    tool_surface_capabilities: ToolSurfaceCapabilities | None = None,
+    session_manager: object | None = None,
+    task_runtime: object | None = None,
+    scheduler: object | None = None,
+    gateway_config: object | None = None,
+    channel_manager: object | None = None,
+    originating_envelope: object | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    from opensquilla.tools.rpc_payload import tools_effective_payload as build_payload
+
+    return await build_payload(
+        params,
+        tool_registry=tool_registry,
+        is_owner=is_owner,
+        tool_surface_capabilities=tool_surface_capabilities,
+        session_manager=session_manager,
+        task_runtime=task_runtime,
+        scheduler=scheduler,
+        gateway_config=gateway_config,
+        channel_manager=channel_manager,
+        originating_envelope=originating_envelope,
+    )
 
 
 def tool(

@@ -11,66 +11,45 @@ from opensquilla.tools.builtin.web import (
     run_web_search_payload,
     search_runtime_status,
 )
-from opensquilla.tools.policy import ToolSurfaceCapabilities
 from opensquilla.tools.registry import get_default_registry
+from opensquilla.tools.rpc_payload import (
+    tools_catalog_payload,
+    tools_effective_payload,
+)
 
 _d = get_dispatcher()
 
 
-def _tool_surface_capabilities(ctx: RpcContext) -> ToolSurfaceCapabilities:
-    try:
-        from opensquilla.tools.builtin.media import image_generation_available
-
-        image_generation = image_generation_available()
-    except Exception:
-        image_generation = False
-    return ToolSurfaceCapabilities(
-        session_manager=getattr(ctx, "session_manager", None) is not None,
-        task_runtime=getattr(ctx, "task_runtime", None) is not None,
-        scheduler=getattr(ctx, "cron_scheduler", None) is not None,
-        gateway_config=getattr(ctx, "config", None) is not None,
-        channel_backing=(
-            getattr(ctx, "channel_manager", None) is not None
-            or getattr(ctx, "originating_envelope", None) is not None
-        ),
-        image_generation=image_generation,
-    )
-
-
 @_d.method("tools.catalog", scope="operator.read")
 async def _handle_tools_catalog(params: dict | None, ctx: RpcContext) -> dict:
-    raw = params or {}
-    profile = raw.get("profile")
     tool_registry = getattr(ctx, "tool_registry", None) or get_default_registry()
-    tools = await tool_registry.list_tools(
-        profile=profile,
-        session_key=raw.get("sessionKey"),
-        agent_id=raw.get("agentId"),
-        caller_kind=raw.get("callerKind"),
-        interaction_mode=raw.get("interactionMode"),
-        tool_surface_capabilities=_tool_surface_capabilities(ctx),
+    return await tools_catalog_payload(
+        params,
+        tool_registry=tool_registry,
+        session_manager=getattr(ctx, "session_manager", None),
+        task_runtime=getattr(ctx, "task_runtime", None),
+        scheduler=getattr(ctx, "cron_scheduler", None),
+        gateway_config=getattr(ctx, "config", None),
+        channel_manager=getattr(ctx, "channel_manager", None),
+        originating_envelope=getattr(ctx, "originating_envelope", None),
         is_owner=ctx.principal.is_owner,
     )
-    return {"tools": tools}
 
 
 @_d.method("tools.effective", scope="operator.read")
 async def _handle_tools_effective(params: dict | None, ctx: RpcContext) -> dict:
-    raw = params or {}
-    session_key = raw.get("sessionKey")
-    agent_id = raw.get("agentId")
-    caller_kind = raw.get("callerKind")
-    interaction_mode = raw.get("interactionMode")
     tool_registry = getattr(ctx, "tool_registry", None) or get_default_registry()
-    tools = await tool_registry.effective_tools(
-        session_key=session_key,
-        agent_id=agent_id,
-        caller_kind=caller_kind,
-        interaction_mode=interaction_mode,
-        tool_surface_capabilities=_tool_surface_capabilities(ctx),
+    return await tools_effective_payload(
+        params,
+        tool_registry=tool_registry,
+        session_manager=getattr(ctx, "session_manager", None),
+        task_runtime=getattr(ctx, "task_runtime", None),
+        scheduler=getattr(ctx, "cron_scheduler", None),
+        gateway_config=getattr(ctx, "config", None),
+        channel_manager=getattr(ctx, "channel_manager", None),
+        originating_envelope=getattr(ctx, "originating_envelope", None),
         is_owner=ctx.principal.is_owner,
     )
-    return {"tools": tools}
 
 
 @_d.method("tools.search_provider", scope="operator.read")

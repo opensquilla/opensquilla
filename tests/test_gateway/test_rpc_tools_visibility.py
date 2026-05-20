@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -34,6 +36,51 @@ def _ctx(*, tool_registry: Any, is_owner: bool) -> RpcContext:
 
 def _tool_names(payload: dict[str, Any]) -> set[str]:
     return {tool["name"] for tool in payload["tools"]}
+
+
+def test_tools_rpc_delegates_payloads_to_tools_boundary() -> None:
+    from opensquilla.gateway import rpc_tools
+    from opensquilla.tools import registry
+
+    source = Path(rpc_tools.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    registry_tree = ast.parse(Path(registry.__file__).read_text(encoding="utf-8"))
+    boundary_path = Path(registry.__file__).with_name("rpc_payload.py")
+
+    assert boundary_path.exists()
+
+    boundary_tree = ast.parse(boundary_path.read_text(encoding="utf-8"))
+    imports = {
+        (node.module, alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+    registry_defs = {
+        node.name
+        for node in registry_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    boundary_defs = {
+        node.name
+        for node in boundary_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert {
+        ("opensquilla.tools.rpc_payload", "tools_catalog_payload"),
+        ("opensquilla.tools.rpc_payload", "tools_effective_payload"),
+    } <= imports
+    assert {
+        "tools_catalog_payload",
+        "tools_effective_payload",
+    } <= registry_defs
+    assert {
+        "tool_rpc_params",
+        "tool_surface_capabilities_for_runtime",
+        "tools_catalog_payload",
+        "tools_effective_payload",
+    } <= boundary_defs
 
 
 def _registry_with_owner_only_probe() -> ToolRegistry:

@@ -296,8 +296,25 @@ def build_wheel(repo_root: Path, wheel_dir: Path, env: dict[str, str]) -> Path:
     return find_built_wheel(wheel_dir)
 
 
-def pip_command(*args: str) -> list[str]:
-    return ["uv", "run", "--with", "pip", "python", "-m", "pip", *args]
+def pip_command(python_major: int, python_minor: int, *args: str) -> list[str]:
+    if sys.version_info[:2] != (python_major, python_minor):
+        raise SystemExit(
+            "Wheelhouse Python mismatch: "
+            f"running {sys.version_info.major}.{sys.version_info.minor}, "
+            f"target is {python_major}.{python_minor}."
+        )
+    return [
+        "uv",
+        "run",
+        "--python",
+        sys.executable,
+        "--with",
+        "pip",
+        "python",
+        "-m",
+        "pip",
+        *args,
+    ]
 
 
 def build_wheelhouse_command(
@@ -313,7 +330,14 @@ def build_wheelhouse_command(
     validate_wheelhouse_target_platform(target_platform_tag)
     extras = tuple(extra for extra in (profile, *extra_extras) if extra != "core")
     target = str(wheel_path if not extras else f"{wheel_path}[{','.join(extras)}]")
-    return pip_command("wheel", "--wheel-dir", str(package_dir), target)
+    return pip_command(
+        python_major,
+        python_minor,
+        "wheel",
+        "--wheel-dir",
+        str(package_dir),
+        target,
+    )
 
 
 def validate_wheelhouse_target_platform(target_platform_tag: str) -> None:
@@ -887,23 +911,138 @@ function Test-WindowsVCRedistInstalled {
     return $false
 }
 
+function Test-WindowsAdmin {
+    if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+        [System.Runtime.InteropServices.OSPlatform]::Windows
+    )) {
+        return $true
+    }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-WindowsVCRedistInstaller {
+    $redistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+    $candidateInstallers = @(
+        (Join-Path $ScriptDir 'vc_redist.x64.exe'),
+        (Join-Path $ScriptDir 'redist\\vc_redist.x64.exe'),
+        (Join-Path $ScriptDir 'runtime\\vc_redist.x64.exe')
+    )
+    $installerPath = $candidateInstallers |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+    if ($installerPath) {
+        return $installerPath
+    }
+
+    $downloadDir = Join-Path ([System.IO.Path]::GetTempPath()) 'OpenSquilla'
+    $installerPath = Join-Path $downloadDir 'vc_redist.x64.exe'
+    New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+    Write-Host (
+        'OpenSquilla: downloading Microsoft Visual C++ Redistributable ' +
+        '2015-2022 x64 from Microsoft.'
+    )
+    try {
+        Invoke-WebRequest -Uri $redistUrl -OutFile $installerPath -UseBasicParsing
+        return $installerPath
+    } catch {
+        Write-Warning (
+            'OpenSquilla: could not download Microsoft Visual C++ ' +
+            "Redistributable from $redistUrl. Error: $($_.Exception.Message)"
+        )
+        return $null
+    }
+}
+
+function Install-WindowsVCRedistWithInstaller {
+    param(
+        [switch]$Repair
+    )
+
+    $installerPath = Get-WindowsVCRedistInstaller
+    if (-not $installerPath) {
+        return $false
+    }
+
+    $action = if ($Repair) { 'repairing' } else { 'installing' }
+    Write-Host (
+        "OpenSquilla: $action Microsoft Visual C++ Redistributable 2015-2022 x64..."
+    )
+    $redistArgs = if ($Repair) {
+        @('/repair', '/quiet', '/norestart')
+    } else {
+        @('/install', '/quiet', '/norestart')
+    }
+    try {
+        if (Test-WindowsAdmin) {
+            $process = Start-Process -FilePath $installerPath -ArgumentList $redistArgs -Wait -PassThru
+        } else {
+            Write-Host (
+                'OpenSquilla: administrator approval may be requested to ' +
+                'install or repair Microsoft Visual C++ Redistributable.'
+            )
+            $process = Start-Process -FilePath $installerPath `
+                -ArgumentList $redistArgs `
+                -Verb RunAs `
+                -Wait `
+                -PassThru
+        }
+    } catch {
+        Write-Warning (
+            'OpenSquilla: Visual C++ Redistributable installer could not be ' +
+            "started. Error: $($_.Exception.Message)"
+        )
+        return $false
+    }
+
+    if ($process.ExitCode -in @(0, 1638, 3010)) {
+        Write-Host 'OpenSquilla: Microsoft Visual C++ Redistributable is ready.'
+        if ($process.ExitCode -eq 3010) {
+            Write-Warning (
+                'OpenSquilla: the Visual C++ installer requested a reboot; ' +
+                'restart Windows if ONNX Runtime still fails to load.'
+            )
+        }
+        return $true
+    }
+
+    Write-Warning (
+        'OpenSquilla: Microsoft Visual C++ Redistributable installer exited ' +
+        "with code $($process.ExitCode)."
+    )
+    return $false
+}
+
 function Install-WindowsVCRedistIfNeeded {
+    param(
+        [switch]$Repair
+    )
+
     if (-not $RequiresRouterRuntime) {
-        return
+        return $true
     }
     if ($env:OPENSQUILLA_SKIP_VC_REDIST -eq '1') {
         Write-Host (
             'OpenSquilla: skipping Microsoft Visual C++ Redistributable check ' +
             'because OPENSQUILLA_SKIP_VC_REDIST=1.'
         )
-        return
+        return $true
     }
-    if (Test-WindowsVCRedistInstalled) {
-        return
+    if ((Test-WindowsVCRedistInstalled) -and -not $Repair) {
+        return $true
     }
 
     $redistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
-    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($Repair) {
+        if (Install-WindowsVCRedistWithInstaller -Repair) {
+            return $true
+        }
+    } elseif (Install-WindowsVCRedistWithInstaller) {
+        return $true
+    }
+
+    $winget = if ($Repair) { $null } else { Get-Command winget -ErrorAction SilentlyContinue }
     if ($winget) {
         Write-Host (
             'OpenSquilla: Microsoft Visual C++ Redistributable not detected; ' +
@@ -921,7 +1060,7 @@ function Install-WindowsVCRedistIfNeeded {
         & winget @wingetArgs
         if ($LASTEXITCODE -eq 0) {
             Write-Host 'OpenSquilla: Microsoft Visual C++ Redistributable installation completed.'
-            return
+            return $true
         }
         Write-Warning (
             'OpenSquilla: winget could not install Microsoft Visual C++ ' +
@@ -942,6 +1081,43 @@ function Install-WindowsVCRedistIfNeeded {
     )
     Write-Warning (
         'After installing, reopen PowerShell and restart OpenSquilla.'
+    )
+    return $false
+}
+
+function Test-OnnxRuntimeImport {
+    if (-not (Test-Path $VenvPython)) {
+        return $false
+    }
+    & $VenvPython -c "import onnxruntime as ort; print('onnxruntime', ort.__version__)" | Out-Host
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Repair-WindowsVCRedistForOnnxIfNeeded {
+    if (-not $RequiresRouterRuntime) {
+        return
+    }
+    if ($env:OPENSQUILLA_SKIP_VC_REDIST -eq '1') {
+        return
+    }
+    if (Test-OnnxRuntimeImport) {
+        return
+    }
+
+    Write-Warning (
+        'OpenSquilla: ONNX Runtime failed to import after setup. Attempting ' +
+        'Visual C++ Redistributable repair before starting the gateway.'
+    )
+    Install-WindowsVCRedistIfNeeded -Repair | Out-Null
+    if (Test-OnnxRuntimeImport) {
+        return
+    }
+
+    Write-Warning (
+        'OpenSquilla: ONNX Runtime still failed after Visual C++ repair. If ' +
+        'the router warning remains, check CPU/VM AVX compatibility or install ' +
+        'the Microsoft Visual C++ Redistributable manually: ' +
+        'https://aka.ms/vs/17/release/vc_redist.x64.exe'
     )
 }
 
@@ -992,7 +1168,7 @@ if (-not $env:OPENSQUILLA_GATEWAY_WORKSPACE_DIR) {
     $env:OPENSQUILLA_GATEWAY_WORKSPACE_DIR = Join-Path $env:OPENSQUILLA_STATE_DIR 'workspace'
 }
 New-Item -ItemType Directory -Path $env:OPENSQUILLA_STATE_DIR -Force | Out-Null
-Install-WindowsVCRedistIfNeeded
+Install-WindowsVCRedistIfNeeded | Out-Null
 
 if (-not (Test-Path $VenvPython)) {
     Write-Host "Creating local OpenSquilla environment..."
@@ -1042,6 +1218,7 @@ for wheel_path in sorted(package_dir.glob("*.whl")):
     }
     New-Item -ItemType File -Path $InstallMarker -Force | Out-Null
 }
+Repair-WindowsVCRedistForOnnxIfNeeded
 
 $OpenSquillaArgs = @("-m", "opensquilla.cli.main")
 
@@ -1093,6 +1270,7 @@ if (-not $OutputRedirected) {
     }
 }
 exit $GatewayExitCode
+
 """
     return script.replace("__TARGET__", target).replace(
         "__REQUIRES_ROUTER_RUNTIME__", requires_router_runtime

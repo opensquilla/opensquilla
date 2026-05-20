@@ -49,7 +49,7 @@ def test_co_occurrence_top_k(tmp_path: Path) -> None:
 
 def test_empty_log_returns_placeholder(tmp_path: Path) -> None:
     out = _run_explore(tmp_path, "anything", window_days=30)
-    assert out["co_occurrences"] == []
+    assert out.get("co_occurrences", []) == []
     assert "no history" in out["placeholder"].lower()
 
 

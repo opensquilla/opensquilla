@@ -1,6 +1,6 @@
 ---
 name: history-explorer
-description: "Query the per-turn DecisionEntry log for skill co-occurrence patterns, meta-skill usage stats, and router fixture misses. Returns a Markdown summary suitable for downstream LLM consumption. Used by meta-skill-creator's harvest step but also useful standalone for 'which skills did I use most this week?'"
+description: "Query the per-turn DecisionEntry log for skill co-occurrence patterns, meta-skill usage stats, and router fixture misses. Returns a JSON summary suitable for downstream LLM consumption. Used by meta-skill-creator's harvest step but also useful standalone for 'which skills did I use most this week?'"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

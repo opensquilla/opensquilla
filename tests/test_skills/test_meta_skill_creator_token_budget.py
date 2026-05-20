@@ -31,7 +31,7 @@ INPUT_TOKEN_BUDGET = 25_000
 OUTPUT_TOKEN_BUDGET = 4_000
 
 
-def test_total_pipeline_within_token_budget(monkeypatch, tmp_path) -> None:
+def test_total_pipeline_within_token_budget(monkeypatch) -> None:
     recorder = _RecordingChat()
     monkeypatch.setattr(proposer, "_call_llm_for_slots", recorder)
 

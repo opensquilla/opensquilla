@@ -14,6 +14,10 @@ from pathlib import Path
 # Path from scripts dir: scripts→linter→bundled→skills→opensquilla→src→repo
 # That's 6 parents. Verify by checking that REPO/src/opensquilla exists.
 REPO = Path(__file__).resolve().parents[6]
+# lint.py is invoked as a subprocess (uv run python scripts/lint.py ...)
+# rather than imported as a module. opensquilla is not on sys.path in the
+# subprocess until we add it here; the in-process test harness avoids this
+# by using subprocess.run + --skill-md-stdin.
 sys.path.insert(0, str(REPO / "src"))
 
 # Redirect all logging to stderr before importing opensquilla modules so that
@@ -35,7 +39,10 @@ BUNDLED = REPO / "src" / "opensquilla" / "skills" / "bundled"
 
 # G1.6 xml_escape rule: any `{{ inputs.user_message ` literal must be
 # IMMEDIATELY followed by `| xml_escape` as the first filter.
-_XML_ESCAPE_RE = re.compile(r"\{\{\s*inputs\.user_message(?!\s*\|\s*xml_escape)")
+# The positive lookahead (?=[\s|}]) adds a word boundary so that fields
+# with a user_message prefix (e.g. inputs.user_message_body) are not
+# false-positively matched.
+_XML_ESCAPE_RE = re.compile(r"\{\{\s*inputs\.user_message(?=[\s|}])(?!\s*\|\s*xml_escape)")
 
 
 def _load_main_catalog() -> set[str]:
@@ -51,11 +58,13 @@ def _load_main_catalog() -> set[str]:
 def run_g1(skill_md: str, catalog: set[str]) -> dict:
     diagnostics: list[str] = []
 
-    # Rule G1.6 (xml_escape grep) — check BEFORE parse for actionable diagnostic
-    if _XML_ESCAPE_RE.search(skill_md):
+    # G1.6 xml_escape rule: only applicable to kind=meta skills (the meta-skill
+    # DSL is where untrusted user_message flows through Jinja into prompts).
+    # Non-meta skills escape at different layers and may use other filters.
+    _is_meta = bool(re.search(r"^kind:\s*meta\b", skill_md, re.MULTILINE))
+    if _is_meta and _XML_ESCAPE_RE.search(skill_md):
         diagnostics.append(
-            "G1.6: bare `{{ inputs.user_message }}` found — add `| xml_escape` "
-            "(or another sanitising filter) to prevent prompt injection"
+            "G1.6: every `{{ inputs.user_message ` must be immediately followed by `| xml_escape`"
         )
 
     # Rule G1.1: parse_meta_plan succeeds

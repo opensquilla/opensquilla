@@ -22,7 +22,7 @@ Validates a candidate meta-skill SKILL.md before it gets registered.
 | G1.3 | Template variables resolve at render time (covered by G1.1) |
 | G1.4 | `on_failure` parser rules (covered by G1.1) |
 | G1.5 | step `kind:` consistency (covered by G1.1) |
-| G1.6 | Grep: bare `{{ inputs.user_message }}` (no filter) triggers prompt-injection warning |
+| G1.6 | Grep: every `{{ inputs.user_message ` literal must be IMMEDIATELY followed by `| xml_escape` as the first filter. Violations are reported as G1 errors (block linter). |
 
 ## G2 dry-run
 

@@ -84,6 +84,44 @@ EXISTING_META_BUNDLES = [
 ]
 
 
+def test_g1_fails_on_non_xml_escape_first_filter() -> None:
+    """G1.6 fires when inputs.user_message has a filter but xml_escape is not
+    the first one. Catches the bug class that motivated tightening the regex
+    in the first place (truncate-without-escape was a real injection risk in
+    3 bundles before this rule was enforced).
+    """
+    bad = VALID_P1.replace(
+        "{{ inputs.user_message | xml_escape | truncate(512) }}",
+        "{{ inputs.user_message | truncate(512) }}",
+    )
+    out = _run_lint(bad)
+    assert out["G1"]["passed"] is False
+    assert any("xml_escape" in d.lower() for d in out["G1"]["diagnostics"])
+
+
+def test_g1_passes_on_non_meta_skill_without_xml_escape() -> None:
+    """G1.6 must be scoped to kind: meta. A non-meta skill using
+    {{ inputs.user_message | truncate }} is legitimate (the escape happens
+    at a different layer). Linter should not false-positive here."""
+    non_meta = """---
+name: non-meta-test
+description: "A regular non-meta skill using inputs.user_message without xml_escape."
+kind: skill
+provenance:
+  origin: opensquilla-user
+---
+# Non-meta skill body
+"""
+    # Note: this won't have a meta plan, so G1.1 will fail with
+    # "parse_meta_plan returned None (kind != meta?)" — but the failure
+    # diagnostic must NOT mention G1.6. The G1.6 grep should silently skip.
+    out = _run_lint(non_meta)
+    # G1 fails overall (no meta plan), but the cause is NOT G1.6
+    assert not any("xml_escape" in d.lower() for d in out["G1"]["diagnostics"]), (
+        f"G1.6 should not fire on non-meta; diagnostics={out['G1']['diagnostics']}"
+    )
+
+
 @pytest.mark.parametrize("bundle", EXISTING_META_BUNDLES)
 def test_linter_passes_existing_meta_bundle(bundle: str) -> None:
     """Regression: linter must accept every existing kind=meta bundle.

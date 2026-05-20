@@ -1,0 +1,33 @@
+---
+name: history-explorer
+description: "Query the per-turn DecisionEntry log for skill co-occurrence patterns, meta-skill usage stats, and router fixture misses. Returns a Markdown summary suitable for downstream LLM consumption. Used by meta-skill-creator's harvest step but also useful standalone for 'which skills did I use most this week?'"
+provenance:
+  origin: opensquilla-original
+  license: Apache-2.0
+metadata:
+  requires:
+    anyBins: ["python", "python3"]
+---
+
+# History Explorer
+
+Lightweight read-only view over `~/.opensquilla/logs/decisions-*.jsonl`. Aggregates `DecisionEntry.skills_invoked` (SCHEMA_VERSION 10) into co-occurrence frequencies, joins with `SkillLoader.list_meta_specs()` for meta-skill usage stats, and surfaces `tests/test_skills/router_fixtures/` misclassifications.
+
+## Usage
+
+```
+uv run python scripts/explore.py \
+  --log-dir ~/.opensquilla/logs \
+  --query "Co-occurring chains for PDF workflows" \
+  --window-days 30 \
+  --include co_occurrence,meta_usage,router_misses \
+  --top-k 10
+```
+
+## Output
+
+JSON to stdout with keys `co_occurrences`, `meta_usage`, `router_misses`, and a `placeholder` string when the log is empty.
+
+## Fallback
+
+If no decision-log exists, return an empty result with a placeholder string explaining "no history; downstream should rely on user intent only".

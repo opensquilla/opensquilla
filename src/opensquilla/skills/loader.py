@@ -608,3 +608,13 @@ class SkillLoader:
             if skill.name == name:
                 return skill
         return None
+
+    def list_meta_specs(self) -> list[SkillSpec]:
+        """Return all loaded specs with kind == 'meta'.
+
+        Note: loader Pass 2 compiles authored 'meta_sop' specs into
+        'meta' shape before they reach this function, so meta_sop authors
+        ARE included. The helper exists to centralize that contract — do
+        not filter against 'meta_sop' here.
+        """
+        return [spec for spec in self.load_all() if spec.kind == "meta"]

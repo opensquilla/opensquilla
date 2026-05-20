@@ -1827,11 +1827,125 @@ class TurnRunner:
             agent_run_kwargs: dict[str, Any] = {}
             if _accepts_keyword_arg(agent.run_turn, "semantic_message"):
                 agent_run_kwargs["semantic_message"] = semantic_input
-            async for event in agent.run_turn(
-                turn_input,
-                extra_messages=extra_msgs,
-                **agent_run_kwargs,
-            ):
+
+            # ── Meta-Skill branch ─────────────────────────────────────────
+            # If meta_resolution matched a Meta-Skill during pipeline,
+            # route the turn through MetaOrchestrator instead of letting
+            # the LLM agent drive the work. Failures fall back to the
+            # normal agent with the SKILL.md body + partial outputs
+            # injected as context so the LLM can finish the task.
+            meta_match = turn.metadata.get("meta_match")
+
+            async def _build_event_source() -> AsyncIterator[AgentEvent]:
+                if meta_match is None:
+                    async for ev in agent.run_turn(
+                        turn_input,
+                        extra_messages=extra_msgs,
+                        **agent_run_kwargs,
+                    ):
+                        yield ev
+                    return
+
+                from opensquilla.skills.meta.orchestrator import (
+                    MetaOrchestrator,
+                    make_agent_runner_from_parent,
+                    make_llm_chat_from_provider,
+                    make_tool_invoker_from_handler,
+                )
+
+                runner = make_agent_runner_from_parent(
+                    provider=cast(LLMProvider, provider),
+                    base_config=agent.config,
+                    tool_definitions=agent.tool_definitions,
+                    tool_handler=agent.tool_handler,
+                    agent_factory=Agent,
+                )
+                llm_chat = make_llm_chat_from_provider(
+                    provider=cast(LLMProvider, provider),
+                    base_config=agent.config,
+                )
+                tool_invoker = (
+                    make_tool_invoker_from_handler(tool_handler=agent.tool_handler)
+                    if agent.tool_handler is not None
+                    else None
+                )
+                # The meta-orchestrator runs cross-skill pipelines whose
+                # ``skill_exec`` steps need to share a workspace (e.g.
+                # results.csv produced by one step is consumed by plot).
+                # Pass the agent's bootstrap workspace dir so each step's
+                # subprocess defaults to the same cwd.
+                try:
+                    _meta_workspace_dir: str | None = str(
+                        self._resolve_bootstrap_workspace_dir(agent_id),
+                    )
+                except Exception:  # noqa: BLE001 — workspace is optional
+                    _meta_workspace_dir = None
+
+                orch = MetaOrchestrator(
+                    agent_runner=runner,
+                    skill_loader=self._skill_loader,
+                    llm_chat=llm_chat,
+                    tool_invoker=tool_invoker,
+                    workspace_dir=_meta_workspace_dir,
+                )
+
+                # Stream each step as a tool-call card so the UI can show
+                # classify → ingest → memorize → index in real time, and
+                # forward nested sub-Agent events (skill_view, real tool
+                # calls, text deltas) verbatim. The orchestrator terminates
+                # its event stream with a single MetaResult sentinel.
+                from opensquilla.skills.meta.types import MetaResult as _MetaResult
+
+                result: _MetaResult | None = None
+                async for orch_ev in orch.iter_events(meta_match):
+                    if isinstance(orch_ev, _MetaResult):
+                        result = orch_ev
+                        continue
+                    yield orch_ev
+
+                if result is None:
+                    result = _MetaResult(
+                        ok=False,
+                        error="orchestrator stream ended without a result",
+                    )
+
+                if result.ok:
+                    yield TextDeltaEvent(text=result.final_text)
+                    yield DoneEvent(
+                        text="",
+                        model=getattr(agent.config, "model_id", None) or "",
+                    )
+                    return
+
+                fallback_lines = [
+                    (
+                        f"[Meta-Skill {meta_match.plan.name!r} failed at step "
+                        f"{result.failed_step_id!r}: {result.error}]"
+                    ),
+                    "",
+                    "Partial outputs from completed steps:",
+                ]
+                for sid, text in result.step_outputs.items():
+                    snippet = text if len(text) <= 400 else text[:400] + "..."
+                    fallback_lines.append(f"  [{sid}] {snippet}")
+                fallback_lines.extend(
+                    [
+                        "",
+                        "Fallback instructions (from the Meta-Skill body):",
+                        meta_match.plan.fallback_body[:2000],
+                        "",
+                        f"Original user request: {turn_input}",
+                    ],
+                )
+                fallback_msg = "\n".join(fallback_lines)
+                async for ev in agent.run_turn(
+                    fallback_msg,
+                    extra_messages=extra_msgs,
+                    **agent_run_kwargs,
+                ):
+                    yield ev
+
+            async for event in _build_event_source():
                 if isinstance(event, TextDeltaEvent):
                     final_text_parts.append(event.text)
                     current_text_parts.append(event.text)
@@ -2681,11 +2795,10 @@ class TurnRunner:
 
         # Load skills once and surface meta_invoke when any kind="meta"
         # skill is registered. meta_invoke is exposed_by_default=False to
-        # keep the catalogue clean in deployments without meta-skills;
-        # we conditionally lift that gate here BEFORE apply_tool_policy_from_config
-        # so the policy clone (dataclasses.replace) inherits the
-        # surfaced_tools set reference and the visibility check at
-        # to_tool_definitions sees the addition.
+        # keep the tool catalogue clean in deployments without meta-skills;
+        # we conditionally lift that gate here, BEFORE apply_tool_policy_from_config
+        # so the policy clone (which uses dataclasses.replace) inherits the
+        # mutation, and the visibility check at to_tool_definitions sees it.
         loaded_skills: list[Any] = []
         if self._skill_loader is not None:
             try:
@@ -2717,6 +2830,7 @@ class TurnRunner:
             caller_kind=ctx.caller_kind if ctx else "none",
             denied_count=len(ctx.denied_tools) if ctx else 0,
         )
+
         tool_defs = self._tool_registry.to_tool_definitions(ctx)
         profile = resolve_profile(ctx)
         tool_defs = filter_by_profile(tool_defs, profile)
@@ -3157,6 +3271,7 @@ class TurnRunner:
             filter_skills,
             inject_platform_hint,
             inject_subagent_grounding,
+            meta_resolution,
             observe_reasoning_hint,
             resolve_model,
         )
@@ -3194,6 +3309,7 @@ class TurnRunner:
                 resolve_model,
                 apply_squilla_router,
                 observe_reasoning_hint,
+                meta_resolution,
                 filter_skills,
                 inject_subagent_grounding,
                 inject_platform_hint,

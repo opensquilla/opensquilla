@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 
 class SkillLayer(StrEnum):
@@ -90,3 +91,16 @@ class SkillSpec:
     # Conditional activation metadata
     requires_tools: list[str] = field(default_factory=list)
     fallback_for_toolsets: list[str] = field(default_factory=list)
+    # Meta-Skill metadata (MVP — non-meta skills keep defaults)
+    kind: str = "skill"
+    meta_priority: int = 0
+    composition_raw: dict[str, object] | None = None
+    # Wrapped-CLI manifest: when present, the skill can be invoked
+    # deterministically by meta-skill ``skill_exec`` steps without spinning up
+    # a sub-Agent. Schema (all keys optional except ``command``):
+    #   command: str           — base executable + flags (Jinja-rendered)
+    #   args: list[str]        — extra arguments (each Jinja-rendered)
+    #   parse: "text" | "json" | "lines"  — how to interpret stdout (default text)
+    #   timeout: float         — seconds before the subprocess is killed
+    #   cwd: str               — working directory (defaults to base_dir)
+    entrypoint: dict[str, Any] | None = None

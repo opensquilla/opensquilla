@@ -75,6 +75,15 @@ def _deterministic_gate(
 
 async def filter_skills(ctx: TurnContext) -> TurnContext:
     """Gate, optionally filter, and inject skills into the system prompt."""
+    # MVP: a Meta-Skill match has taken over this turn; skip normal skill
+    # injection entirely so the orchestrator sees a clean prompt.
+    if ctx.metadata.get("meta_match") is not None:
+        ctx.metadata["filtered_skill_ids"] = []
+        ctx.metadata["skill_count"] = 0
+        ctx.metadata["skills_prompt_chars"] = 0
+        log.debug("skills_filter.skipped", reason="meta_match_active")
+        return ctx
+
     skill_loader = ctx.metadata.get("skill_loader")
     if skill_loader is None:
         return ctx

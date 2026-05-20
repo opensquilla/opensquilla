@@ -32,7 +32,8 @@ MAX_SKILLS_PER_SOURCE = 200  # per layer cap
 
 # Bump when on-disk snapshot fields change so stale caches are invalidated
 # instead of silently losing new fields.
-_SNAPSHOT_SCHEMA_VERSION = 3
+# v4 (Meta-Skill MVP): added kind, meta_priority, composition_raw.
+_SNAPSHOT_SCHEMA_VERSION = 5  # v5: adds SkillSpec.entrypoint manifest
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -275,6 +276,10 @@ class SkillLoader:
                     else None,
                     "requires_tools": s.requires_tools,
                     "fallback_for_toolsets": s.fallback_for_toolsets,
+                    "kind": s.kind,
+                    "meta_priority": s.meta_priority,
+                    "composition_raw": s.composition_raw,
+                    "entrypoint": s.entrypoint,
                 }
                 for s in skills
             ],
@@ -354,6 +359,14 @@ class SkillLoader:
                     provenance=_snapshot_provenance(s.get("provenance")),
                     requires_tools=s.get("requires_tools", []),
                     fallback_for_toolsets=s.get("fallback_for_toolsets", []),
+                    kind=s.get("kind", "skill"),
+                    meta_priority=int(s.get("meta_priority", 0) or 0),
+                    composition_raw=s.get("composition_raw"),
+                    entrypoint=(
+                        s["entrypoint"]
+                        if isinstance(s.get("entrypoint"), dict)
+                        else None
+                    ),
                 )
             )
         return skills
@@ -388,6 +401,13 @@ class SkillLoader:
                     if skill_dir.is_dir() and not skill_dir.name.startswith("."):
                         spec = self._load_skill(skill_dir, layer, root=dir_path)
                         if spec:
+                            prev = merged.get(spec.name)
+                            if prev is not None and prev.kind != spec.kind:
+                                raise RuntimeError(
+                                    f"skill {spec.name!r}: kind conflict across layers "
+                                    f"({prev.layer.value}={prev.kind} -> "
+                                    f"{spec.layer.value}={spec.kind})",
+                                )
                             merged[spec.name] = spec
                             layer_count += 1
 
@@ -495,6 +515,22 @@ class SkillLoader:
             requires_tools = activation_meta.get("requires_tools", [])
             fallback_for_toolsets = activation_meta.get("fallback_for_toolsets", [])
 
+            # Meta-Skill fields (MVP): kind, meta_priority, composition_raw.
+            # Non-meta skills get the defaults; behavior unchanged.
+            kind_raw = frontmatter.get("kind", "skill")
+            kind = str(kind_raw) if isinstance(kind_raw, str) else "skill"
+            meta_priority_raw = frontmatter.get("meta_priority", 0)
+            try:
+                meta_priority = int(meta_priority_raw) if meta_priority_raw is not None else 0
+            except (TypeError, ValueError):
+                meta_priority = 0
+            composition_raw = frontmatter.get("composition")
+            if not isinstance(composition_raw, dict):
+                composition_raw = None
+
+            entrypoint_raw = frontmatter.get("entrypoint")
+            entrypoint = entrypoint_raw if isinstance(entrypoint_raw, dict) else None
+
             return SkillSpec(
                 name=name,
                 description=description,
@@ -514,6 +550,10 @@ class SkillLoader:
                 fallback_for_toolsets=fallback_for_toolsets
                 if isinstance(fallback_for_toolsets, list)
                 else [],
+                kind=kind,
+                meta_priority=meta_priority,
+                composition_raw=composition_raw,
+                entrypoint=entrypoint,
             )
         except Exception as exc:
             log.debug("skill.load_failed", dir=str(skill_dir), error=str(exc))

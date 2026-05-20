@@ -240,6 +240,12 @@ class AgentConfig:
     # unbounded fan-out can overload local/network resources.
     max_safe_tool_concurrency: int = 6
     max_tokens: int = 8192
+    # Optional per-turn operator budgets. 0 disables the corresponding budget.
+    max_turn_llm_calls: int = 0
+    max_turn_input_tokens: int = 0
+    max_turn_output_tokens: int = 0
+    max_turn_billed_cost_usd: float = 0.0
+    max_turn_tool_errors: int = 0
     temperature: float | None = None
     thinking: bool | ThinkingLevel = False
     thinking_budget_tokens: int = _THINKING_BUDGET_DEFAULT

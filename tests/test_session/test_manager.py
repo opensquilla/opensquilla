@@ -467,7 +467,7 @@ async def test_compact_counts_tool_calls_when_token_count_is_underreported(manag
 
     result = await manager.compact_with_result(
         "agent:main:main",
-        context_window_tokens=400,
+        context_window_tokens=50,
         config=CompactionConfig(safety_margin=1.0),
     )
 

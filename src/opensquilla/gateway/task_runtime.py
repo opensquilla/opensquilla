@@ -260,6 +260,7 @@ class TaskRuntime:
         max_pending_per_session: int | None = 64,
         subagent_reserved_slots: int = 0,
         turn_hard_deadline_s: float | None = None,
+        running_heartbeat_interval_s: float | None = 30.0,
         pending_overflow_policy: PendingOverflowPolicy | str = (
             PendingOverflowPolicy.REJECT_NEWEST
         ),
@@ -272,6 +273,8 @@ class TaskRuntime:
             raise ValueError("subagent_reserved_slots must be >= 0")
         if turn_hard_deadline_s is not None and turn_hard_deadline_s <= 0:
             raise ValueError("turn_hard_deadline_s must be > 0 or None")
+        if running_heartbeat_interval_s is not None and running_heartbeat_interval_s <= 0:
+            raise ValueError("running_heartbeat_interval_s must be > 0 or None")
         try:
             pending_overflow_policy = PendingOverflowPolicy(pending_overflow_policy)
         except ValueError as exc:
@@ -300,6 +303,7 @@ class TaskRuntime:
         self._max_concurrency = max_concurrency
         self._subagent_reserved_slots = subagent_reserved_slots
         self._turn_hard_deadline_s = turn_hard_deadline_s
+        self._running_heartbeat_interval_s = running_heartbeat_interval_s
         self._pending_overflow_policy = pending_overflow_policy
         # OUTER per-session lock dict (see Lock ordering invariant in class docstring).
         # Protects: task dispatch serialization within a session — ensures at most
@@ -794,9 +798,11 @@ class TaskRuntime:
                         return
                     await self._wait_for_subagent_slot(task)
                     acquired = False
+                    heartbeat_task: asyncio.Task[None] | None = None
                     try:
                         await self._acquire_fair_slot(task)
                         acquired = True
+                        heartbeat_task = self._start_running_heartbeat(task)
                         run = TaskRun(
                             task_id=task.task_id,
                             envelope=task.envelope,
@@ -839,6 +845,8 @@ class TaskRuntime:
                             terminal_reason="completed",
                         )
                     finally:
+                        if heartbeat_task is not None:
+                            await self._stop_running_heartbeat(heartbeat_task)
                         if acquired:
                             await self._release_slot(task)
                 finally:
@@ -1020,6 +1028,52 @@ class TaskRuntime:
         ``setdefault`` is atomic in CPython — avoids TOCTOU race on insertion.
         """
         return self._session_locks.setdefault(session_key, asyncio.Lock())
+
+    def _start_running_heartbeat(
+        self, task: _RuntimeTask
+    ) -> asyncio.Task[None] | None:
+        interval = self._running_heartbeat_interval_s
+        if interval is None:
+            return None
+        return asyncio.create_task(
+            self._heartbeat_running_task(task, interval),
+            name=f"opensquilla-task-heartbeat:{task.task_id}",
+        )
+
+    async def _stop_running_heartbeat(self, heartbeat_task: asyncio.Task[None]) -> None:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            return
+
+    async def _heartbeat_running_task(
+        self,
+        task: _RuntimeTask,
+        interval: float,
+    ) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            async with self._state_lock:
+                still_running = (
+                    not task.terminal_emitted
+                    and task.status == AgentTaskStatus.RUNNING
+                    and self._running_by_session.get(task.envelope.session_key) is task
+                )
+            if not still_running:
+                return
+            try:
+                await self._storage.update_agent_task(
+                    task.task_id,
+                    updated_at=_epoch_time_ms(),
+                )
+            except Exception as exc:  # noqa: BLE001 - heartbeat is best-effort
+                log.warning(
+                    "task_runtime.running_heartbeat_failed",
+                    task_id=task.task_id,
+                    session_key=task.envelope.session_key,
+                    error=str(exc),
+                )
 
     async def _mark_running(self, task: _RuntimeTask) -> None:
         async with self._state_lock:

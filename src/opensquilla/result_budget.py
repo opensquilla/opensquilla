@@ -1,7 +1,8 @@
-"""Shared tool-result budget helpers.
+"""Shared tool runtime/result guard helpers.
 
-The budget applies at tool boundaries, not at skill boundaries, so installed
-skills cannot bypass it by asking for more fetches or larger outputs.
+The runtime guards apply at tool boundaries, not at skill boundaries, so
+installed skills cannot bypass explicit per-call resource caps. Model-context
+budgeting is handled later in the agent/provider request view.
 
 Lives at the top level (rather than inside ``opensquilla.tools``) so that the
 engine layer can import these helpers without triggering the tool-registry
@@ -46,14 +47,12 @@ CONTROL_TOOL_NAMES: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class ToolResultBudgetPolicy:
-    max_single_tool_result_chars: int = 16_000
-    max_single_external_result_chars: int = 12_000
-    max_tool_result_chars_per_turn: int = 96_000
-    max_external_tool_result_chars_per_turn: int = 48_000
+    max_single_tool_result_chars: int | None = None
+    max_single_external_result_chars: int | None = None
+    max_tool_result_chars_per_turn: int | None = None
+    max_external_tool_result_chars_per_turn: int | None = None
     min_error_result_chars: int = 512
     min_control_result_chars: int = 512
-    max_web_fetch_chars: int = 12_000
-    max_web_search_results: int = 10
 
 
 DEFAULT_TOOL_RESULT_BUDGET_POLICY = ToolResultBudgetPolicy()
@@ -61,10 +60,11 @@ DEFAULT_TOOL_RESULT_BUDGET_POLICY = ToolResultBudgetPolicy()
 
 @dataclass(frozen=True)
 class ToolRunBudgetPolicy:
-    max_web_search_calls_per_turn: int | None = 8
-    max_web_fetch_calls_per_turn: int | None = 20
-    max_external_text_chars_per_turn: int | None = 300_000
-    max_single_fetch_chars: int | None = 20_000
+    max_web_search_calls_per_turn: int | None = None
+    max_web_fetch_calls_per_turn: int | None = None
+    max_external_text_chars_per_turn: int | None = None
+    max_single_fetch_chars: int | None = 50_000
+    max_web_search_results: int | None = 10
 
 
 DEFAULT_TOOL_RUN_BUDGET_POLICY = ToolRunBudgetPolicy()
@@ -113,6 +113,7 @@ class ToolRunBudgetTracker:
                     used=self._web_search_calls_used,
                     limit=self.policy.max_web_search_calls_per_turn,
                 )
+                self._check_external_text_available(tool_name)
                 self._web_search_calls_used += 1
             return ToolRunBudgetReservation(
                 tool_name=tool_name,
@@ -151,15 +152,6 @@ class ToolRunBudgetTracker:
         async with self._lock:
             self._release_external_reservation(reservation)
             self._external_text_chars_used += len(text)
-            limit = self.policy.max_external_text_chars_per_turn
-            if limit is not None and self._external_text_chars_used > limit:
-                raise ToolRunBudgetExceededError(
-                    reservation.tool_name,
-                    (
-                        "External tool text returned by this turn exceeded the "
-                        f"run budget ({self._external_text_chars_used}>{limit})."
-                    ),
-                )
 
     async def abort_tool_result(self, reservation: ToolRunBudgetReservation) -> None:
         if (
@@ -181,18 +173,10 @@ class ToolRunBudgetTracker:
         arguments: dict[str, Any],
     ) -> int:
         cap = self.policy.max_single_fetch_chars
-        total = self.policy.max_external_text_chars_per_turn
-        if total is not None:
-            remaining = (
-                total
-                - self._external_text_chars_used
-                - self._external_text_chars_reserved
-            )
+        remaining = self._external_text_remaining()
+        if remaining is not None:
             if remaining <= 0:
-                raise ToolRunBudgetExceededError(
-                    tool_name,
-                    f"Tool '{tool_name}' exceeded the external text run budget ({total}).",
-                )
+                self._raise_external_text_exhausted(tool_name)
             cap = remaining if cap is None else min(cap, remaining)
         if cap is None:
             return 0
@@ -215,6 +199,24 @@ class ToolRunBudgetTracker:
                 arguments["max_chars"] = cap
         self._external_text_chars_reserved += cap
         return cap
+
+    def _external_text_remaining(self) -> int | None:
+        total = self.policy.max_external_text_chars_per_turn
+        if total is None:
+            return None
+        return total - self._external_text_chars_used - self._external_text_chars_reserved
+
+    def _check_external_text_available(self, tool_name: str) -> None:
+        remaining = self._external_text_remaining()
+        if remaining is not None and remaining <= 0:
+            self._raise_external_text_exhausted(tool_name)
+
+    def _raise_external_text_exhausted(self, tool_name: str) -> None:
+        total = self.policy.max_external_text_chars_per_turn
+        raise ToolRunBudgetExceededError(
+            tool_name,
+            f"Tool '{tool_name}' exceeded the external text run budget ({total}).",
+        )
 
     def _release_external_reservation(
         self,
@@ -279,36 +281,55 @@ class ToolResultBudgetTracker:
                 returned_chars=len(content),
                 budget_class=budget_class,
             )
-        if budget_class is ToolResultBudgetClass.CONTROL:
-            single_limit = self.policy.max_single_tool_result_chars
-        elif budget_class is ToolResultBudgetClass.EXTERNAL:
+        if budget_class is ToolResultBudgetClass.EXTERNAL:
             single_limit = self.policy.max_single_external_result_chars
         else:
             single_limit = self.policy.max_single_tool_result_chars
 
         original_chars = len(content)
         async with self._lock:
-            remaining_total = max(
-                0,
-                self.policy.max_tool_result_chars_per_turn - self._tool_chars_used,
-            )
-            remaining_external = (
-                max(
-                    0,
-                    self.policy.max_external_tool_result_chars_per_turn
-                    - self._external_chars_used,
+            limits: list[int] = []
+            if single_limit is not None:
+                limits.append(max(0, int(single_limit)))
+            if self.policy.max_tool_result_chars_per_turn is not None:
+                limits.append(
+                    max(
+                        0,
+                        int(self.policy.max_tool_result_chars_per_turn)
+                        - self._tool_chars_used,
+                    )
                 )
-                if budget_class is ToolResultBudgetClass.EXTERNAL
-                else remaining_total
-            )
-            allowed = max(0, min(single_limit, remaining_total, remaining_external))
+            if (
+                budget_class is ToolResultBudgetClass.EXTERNAL
+                and self.policy.max_external_tool_result_chars_per_turn is not None
+            ):
+                limits.append(
+                    max(
+                        0,
+                        int(self.policy.max_external_tool_result_chars_per_turn)
+                        - self._external_chars_used,
+                    )
+                )
+            if not limits:
+                return ToolResultBudgetDecision(
+                    content=content,
+                    changed=False,
+                    original_chars=original_chars,
+                    returned_chars=original_chars,
+                    budget_class=budget_class,
+                )
+
+            allowed = max(0, min(limits))
             if budget_class is ToolResultBudgetClass.ERROR:
-                allowed = max(allowed, min(single_limit, self.policy.min_error_result_chars))
+                floor = self.policy.min_error_result_chars
+                if single_limit is not None:
+                    floor = min(int(single_limit), floor)
+                allowed = max(allowed, floor)
             elif budget_class is ToolResultBudgetClass.CONTROL:
-                allowed = max(
-                    allowed,
-                    min(single_limit, self.policy.min_control_result_chars),
-                )
+                floor = self.policy.min_control_result_chars
+                if single_limit is not None:
+                    floor = min(int(single_limit), floor)
+                allowed = max(allowed, floor)
             if original_chars <= allowed:
                 self._tool_chars_used += original_chars
                 if budget_class is ToolResultBudgetClass.EXTERNAL:
@@ -359,21 +380,25 @@ def resolve_budget_class(tool_name: str, explicit: Any = None) -> ToolResultBudg
 def clamp_tool_arguments(
     tool_name: str,
     arguments: dict[str, Any],
-    policy: ToolResultBudgetPolicy,
+    policy: ToolRunBudgetPolicy,
 ) -> dict[str, Any]:
     next_args = dict(arguments)
     if tool_name == "web_fetch":
         requested = next_args.get("max_chars")
+        cap = policy.max_single_fetch_chars
         if isinstance(requested, int):
-            next_args["max_chars"] = min(max(100, requested), policy.max_web_fetch_chars)
-        elif requested is None:
-            next_args["max_chars"] = policy.max_web_fetch_chars
+            value = max(100, requested)
+            next_args["max_chars"] = min(value, cap) if cap is not None else value
+        elif requested is None and cap is not None:
+            next_args["max_chars"] = cap
     elif tool_name == "web_search":
         requested = next_args.get("max_results")
+        cap = policy.max_web_search_results
         if isinstance(requested, int):
-            next_args["max_results"] = min(max(1, requested), policy.max_web_search_results)
-        elif requested is None:
-            next_args["max_results"] = policy.max_web_search_results
+            value = max(1, requested)
+            next_args["max_results"] = min(value, cap) if cap is not None else value
+        elif requested is None and cap is not None:
+            next_args["max_results"] = cap
     return next_args
 
 
@@ -397,11 +422,8 @@ def compact_tool_result_content(
         )
     preview = content[:max_preview_chars]
     payload: dict[str, Any] = {
-        "tool_result_budget_applied": True,
         "result_truncated": True,
         "result_original_chars": original_chars,
-        "result_returned_chars": len(preview),
-        "budget_class": budget_class.value,
         "tool": tool_name,
         "is_error": bool(is_error),
         "preview": preview,
@@ -423,11 +445,8 @@ def _compact_control_json(
         preview = content[:max_preview_chars]
         return json.dumps(
             {
-                "tool_result_budget_applied": True,
                 "result_truncated": True,
                 "result_original_chars": original_chars,
-                "result_returned_chars": len(preview),
-                "budget_class": budget_class.value,
                 "tool": tool_name,
                 "preview": preview,
             },
@@ -437,11 +456,8 @@ def _compact_control_json(
         preview = content[:max_preview_chars]
         return json.dumps(
             {
-                "tool_result_budget_applied": True,
                 "result_truncated": True,
                 "result_original_chars": original_chars,
-                "result_returned_chars": len(preview),
-                "budget_class": budget_class.value,
                 "tool": tool_name,
                 "preview": preview,
             },
@@ -452,12 +468,8 @@ def _compact_control_json(
     for key, value in list(compacted.items()):
         if isinstance(value, str) and len(value) > max_preview_chars:
             compacted[key] = value[:max_preview_chars]
-    compacted["tool_result_budget_applied"] = True
     compacted["result_truncated"] = True
     compacted["result_original_chars"] = original_chars
-    compacted["result_returned_chars"] = _string_value_chars(compacted)
-    compacted["budget_class"] = budget_class.value
-    compacted["tool"] = tool_name
     return json.dumps(compacted, ensure_ascii=False)
 
 
@@ -467,9 +479,15 @@ def _preview_chars(rendered: str) -> int:
     except (TypeError, ValueError):
         return len(rendered)
     if isinstance(payload, dict):
-        value = payload.get("result_returned_chars")
-        if isinstance(value, int):
-            return value
+        preview = payload.get("preview")
+        if isinstance(preview, str):
+            return len(preview)
+        head = payload.get("head")
+        tail = payload.get("tail")
+        if isinstance(head, str) or isinstance(tail, str):
+            return len(head or "") + len(tail or "")
+        if payload.get("result_truncated") is True:
+            return _string_value_chars(payload)
     return len(rendered)
 
 

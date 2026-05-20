@@ -2,6 +2,8 @@
 
 const ApprovalsView = (() => {
   const ELEVATED_MODE_KEY = 'opensquilla.elevatedMode';
+  const ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version';
+  const ELEVATED_MODE_STORAGE_VERSION = '2';
   let _el = null;
   let _rpc = null;
   let _unsubs = [];
@@ -136,7 +138,7 @@ const ApprovalsView = (() => {
             const approved = decision === 'approve' || decision === 'always' || decision === 'bypass';
             const allowAlways = btn.dataset.decision === 'always';
             const rememberIntent = btn.dataset.decision === 'always';
-            const elevatedMode = decision === 'bypass' ? 'full' : '';
+            const elevatedMode = decision === 'bypass' ? 'bypass' : '';
             const body = { id, namespace, approved, allowAlways, rememberIntent };
             if (elevatedMode) body.elevatedMode = elevatedMode;
             fetch('/api/approvals/resolve', {
@@ -146,7 +148,7 @@ const ApprovalsView = (() => {
             }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
               .then(() => {
                 if (elevatedMode) _setBrowserElevated(elevatedMode);
-                UI.toast((elevatedMode ? 'Bypass enabled' : (approved ? 'Approved' : 'Denied')) + ': ' + id, 'info');
+                UI.toast((elevatedMode ? 'Approval bypass enabled' : (approved ? 'Approved' : 'Denied')) + ': ' + id, 'info');
                 _loadData();
               })
               .catch(err => UI.toast('Failed: ' + err.message, 'err'));
@@ -184,7 +186,7 @@ const ApprovalsView = (() => {
       <div class="ap-card__actions">
         <button class="btn btn--primary" data-appr-id="${_esc(item.id || '')}" data-appr-ns="${_esc(item.namespace || 'exec')}" data-decision="approve">${icons.check()}<span>Approve once</span></button>
         ${canAlways ? `<button class="btn btn--ghost" data-appr-id="${_esc(item.id || '')}" data-appr-ns="${_esc(item.namespace || 'exec')}" data-decision="always">Always allow this type</button>` : ''}
-        <button class="btn btn--warn" data-appr-id="${_esc(item.id || '')}" data-appr-ns="${_esc(item.namespace || 'exec')}" data-decision="bypass" title="Bypass all approval prompts">Bypass all</button>
+        <button class="btn btn--warn" data-appr-id="${_esc(item.id || '')}" data-appr-ns="${_esc(item.namespace || 'exec')}" data-decision="bypass" title="Bypass approval prompts while keeping sensitive-path checks">Bypass approvals</button>
         <button class="btn btn--danger" data-appr-id="${_esc(item.id || '')}" data-appr-ns="${_esc(item.namespace || 'exec')}" data-decision="deny">${icons.x()}<span>Deny</span></button>
       </div>
     </article>`;
@@ -244,8 +246,13 @@ const ApprovalsView = (() => {
   function _setBrowserElevated(mode) {
     const normalized = mode === 'full' || mode === 'bypass' || mode === 'on' ? mode : '';
     try {
-      if (normalized) localStorage.setItem(ELEVATED_MODE_KEY, normalized);
-      else localStorage.removeItem(ELEVATED_MODE_KEY);
+      if (normalized) {
+        localStorage.setItem(ELEVATED_MODE_KEY, normalized);
+        localStorage.setItem(ELEVATED_MODE_VERSION_KEY, ELEVATED_MODE_STORAGE_VERSION);
+      } else {
+        localStorage.removeItem(ELEVATED_MODE_KEY);
+        localStorage.removeItem(ELEVATED_MODE_VERSION_KEY);
+      }
     } catch {}
     window.dispatchEvent(new CustomEvent('opensquilla:elevated-mode', { detail: { mode: normalized } }));
   }

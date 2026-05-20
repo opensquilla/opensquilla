@@ -15,8 +15,8 @@ from cachetools import TTLCache
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.result_budget import (
-    DEFAULT_TOOL_RESULT_BUDGET_POLICY,
-    ToolResultBudgetPolicy,
+    DEFAULT_TOOL_RUN_BUDGET_POLICY,
+    ToolRunBudgetPolicy,
 )
 from opensquilla.sandbox.integration import sandboxed
 from opensquilla.tools.registry import tool
@@ -145,18 +145,21 @@ def _resolve_default_max_chars() -> int:
 
 def _resolve_effective_max_chars(max_chars: int | None) -> int | None:
     """Resolve explicit max_chars or the default cap for omitted values."""
-    max_allowed = _active_budget_policy().max_web_fetch_chars
+    max_allowed = _active_run_budget_policy().max_single_fetch_chars
     if max_chars is not None:
-        return min(max_chars, max_allowed) if max_chars >= 100 else None
-    return min(_resolve_default_max_chars(), max_allowed)
+        if max_chars < 100:
+            return None
+        return min(max_chars, max_allowed) if max_allowed is not None else max_chars
+    default = _resolve_default_max_chars()
+    return min(default, max_allowed) if max_allowed is not None else default
 
 
-def _active_budget_policy() -> ToolResultBudgetPolicy:
+def _active_run_budget_policy() -> ToolRunBudgetPolicy:
     ctx = current_tool_context.get()
-    policy = getattr(ctx, "tool_result_budget_policy", None) if ctx is not None else None
-    if isinstance(policy, ToolResultBudgetPolicy):
+    policy = getattr(ctx, "tool_run_budget_policy", None) if ctx is not None else None
+    if isinstance(policy, ToolRunBudgetPolicy):
         return policy
-    return DEFAULT_TOOL_RESULT_BUDGET_POLICY
+    return DEFAULT_TOOL_RUN_BUDGET_POLICY
 
 
 @tool(

@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from opensquilla.tools.builtin.web_fetch import _apply_max_chars, _wrap_content
+from opensquilla.result_budget import ToolResultBudgetPolicy, ToolRunBudgetPolicy
+from opensquilla.tools.builtin.web_fetch import (
+    _apply_max_chars,
+    _resolve_effective_max_chars,
+    _wrap_content,
+)
+from opensquilla.tools.types import ToolContext, current_tool_context
 
 
 def test_wrap_content_escapes_external_content_boundaries() -> None:
@@ -32,3 +38,24 @@ def test_apply_max_chars_keeps_escaped_wrapper_boundaries() -> None:
     assert text.count("<external-content ") == 1
     assert text.count("</external-content>") == 1
     assert "&lt;/external-content&gt;" in text
+
+
+def test_resolve_effective_max_chars_uses_run_policy_not_result_policy() -> None:
+    ctx = ToolContext(
+        tool_result_budget_policy=ToolResultBudgetPolicy(max_single_tool_result_chars=1),
+        tool_run_budget_policy=ToolRunBudgetPolicy(max_single_fetch_chars=1234),
+    )
+    token = current_tool_context.set(ctx)
+    try:
+        assert _resolve_effective_max_chars(999_999) == 1234
+    finally:
+        current_tool_context.reset(token)
+
+
+def test_resolve_effective_max_chars_allows_uncapped_run_policy() -> None:
+    ctx = ToolContext(tool_run_budget_policy=ToolRunBudgetPolicy(max_single_fetch_chars=None))
+    token = current_tool_context.set(ctx)
+    try:
+        assert _resolve_effective_max_chars(999_999) == 999_999
+    finally:
+        current_tool_context.reset(token)

@@ -7,8 +7,9 @@ import pytest
 
 from opensquilla.engine.types import ToolCall
 from opensquilla.result_budget import (
-    ToolResultBudgetClass,
+    DEFAULT_TOOL_RUN_BUDGET_POLICY,
     ToolResultBudgetPolicy,
+    ToolRunBudgetExceededError,
     ToolRunBudgetPolicy,
 )
 from opensquilla.tools.dispatch import build_tool_handler
@@ -55,6 +56,31 @@ def _build_registry() -> ToolRegistry:
     return registry
 
 
+def _strict_preview_chars(content: str) -> int:
+    payload = json.loads(content)
+    assert payload["result_truncated"] is True
+    assert "tool_result_budget_applied" not in payload
+    assert "result_returned_chars" not in payload
+    assert "budget_class" not in payload
+    preview = payload.get("preview", "")
+    assert isinstance(preview, str)
+    return len(preview)
+
+
+def test_default_tool_run_budget_leaves_room_for_complex_turns() -> None:
+    search_calls = DEFAULT_TOOL_RUN_BUDGET_POLICY.max_web_search_calls_per_turn
+    fetch_calls = DEFAULT_TOOL_RUN_BUDGET_POLICY.max_web_fetch_calls_per_turn
+    external_chars = DEFAULT_TOOL_RUN_BUDGET_POLICY.max_external_text_chars_per_turn
+    single_fetch_chars = DEFAULT_TOOL_RUN_BUDGET_POLICY.max_single_fetch_chars
+    search_results = DEFAULT_TOOL_RUN_BUDGET_POLICY.max_web_search_results
+
+    assert search_calls is None
+    assert fetch_calls is None
+    assert external_chars is None
+    assert single_fetch_chars is not None and single_fetch_chars >= 50_000
+    assert search_results is not None and search_results >= 10
+
+
 @pytest.mark.asyncio
 async def test_dispatch_missing_tool_returns_five_field_error_envelope() -> None:
     # Use a trusted CLI ctx so the descriptive ``ToolNotFound`` branch is
@@ -91,6 +117,34 @@ async def test_dispatch_missing_tool_returns_five_field_error_envelope() -> None
     assert payload["status"] == "error"
     assert payload["tool"] == "nope"
     assert payload["error_class"] == "ToolNotFound"
+    assert "Do not retry unavailable tools" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_unknown_bash_tool_points_to_exec_command() -> None:
+    handler = build_tool_handler(
+        _build_registry(),
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            agent_id="main",
+            session_key="cli:main:envelope",
+        ),
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-bash",
+            tool_name="bash",
+            arguments={"cmd": "echo hi"},
+        )
+    )
+
+    assert result.is_error is True
+    payload = json.loads(result.content)
+    assert payload["error_class"] == "ToolNotFound"
+    assert "Use exec_command with a command string instead" in payload["user_message"]
+    assert "do not retry bash as a tool" in payload["user_message"]
 
 
 @pytest.mark.asyncio
@@ -389,7 +443,23 @@ async def test_dispatch_leaves_under_budget_result_unchanged() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_bounds_unknown_huge_tool_result_without_artifact_side_effect() -> None:
+async def test_dispatch_leaves_default_huge_tool_result_unchanged() -> None:
+    registry = ToolRegistry()
+
+    async def huge() -> str:
+        return "x" * 1000
+
+    registry.register(ToolSpec(name="huge", description="huge", parameters={}), huge)
+    handler = build_tool_handler(registry)
+
+    result = await handler(ToolCall(tool_use_id="tc-huge-default", tool_name="huge", arguments={}))
+
+    assert result.content == "x" * 1000
+    assert result.artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_strict_policy_bounds_unknown_huge_tool_result() -> None:
     registry = ToolRegistry()
 
     async def huge() -> str:
@@ -409,11 +479,12 @@ async def test_dispatch_bounds_unknown_huge_tool_result_without_artifact_side_ef
     result = await handler(ToolCall(tool_use_id="tc-huge", tool_name="huge", arguments={}))
 
     payload = json.loads(result.content)
-    assert payload["tool_result_budget_applied"] is True
-    assert payload["budget_class"] == ToolResultBudgetClass.UNKNOWN.value
     assert payload["result_truncated"] is True
     assert payload["result_original_chars"] == 1000
-    assert payload["result_returned_chars"] <= 120
+    assert len(payload["preview"]) <= 120
+    assert "tool_result_budget_applied" not in payload
+    assert "result_returned_chars" not in payload
+    assert "budget_class" not in payload
     assert result.artifacts == []
     assert len(result.content) < 400
 
@@ -532,7 +603,7 @@ async def test_dispatch_clamps_web_fetch_max_chars_before_handler() -> None:
     handler = build_tool_handler(
         registry,
         ToolContext(
-            tool_result_budget_policy=ToolResultBudgetPolicy(max_web_fetch_chars=12_000)
+            tool_run_budget_policy=ToolRunBudgetPolicy(max_single_fetch_chars=12_000)
         ),
     )
 
@@ -570,7 +641,7 @@ async def test_dispatch_clamps_web_search_results_before_handler() -> None:
     handler = build_tool_handler(
         registry,
         ToolContext(
-            tool_result_budget_policy=ToolResultBudgetPolicy(max_web_search_results=10)
+            tool_run_budget_policy=ToolRunBudgetPolicy(max_web_search_results=10)
         ),
     )
 
@@ -634,11 +705,16 @@ async def test_dispatch_run_budget_blocks_exhausted_external_call_before_handler
 
     assert first.content == "https://example.com:500"
     assert calls == 1
-    assert second.is_error is True
+    assert second.is_error is False
     assert second.execution_status is not None
+    assert second.execution_status["status"] == "unknown"
     assert second.execution_status["reason"] == "tool_run_budget_exhausted"
     payload = json.loads(second.content)
-    assert payload["error_class"] == "ToolRunBudgetExceededError"
+    assert payload["status"] == "control"
+    assert payload["reason"] == "tool_run_budget_exhausted"
+    assert payload["retry_allowed"] is False
+    assert "larger budget" not in payload["user_message"]
+    assert "runtime resource guard" in payload["user_message"]
 
 
 @pytest.mark.asyncio
@@ -697,6 +773,62 @@ async def test_dispatch_run_budget_abort_releases_failed_external_reservation() 
 
 
 @pytest.mark.asyncio
+async def test_dispatch_run_budget_exception_after_reservation_is_control() -> None:
+    registry = ToolRegistry()
+    calls = 0
+
+    async def web_fetch(url: str, max_chars: int | None = None) -> str:
+        nonlocal calls
+        del url, max_chars
+        calls += 1
+        raise ToolRunBudgetExceededError("web_fetch", "internal run budget")
+
+    registry.register(
+        ToolSpec(
+            name="web_fetch",
+            description="fetch",
+            parameters={"url": {"type": "string"}, "max_chars": {"type": "integer"}},
+            result_budget_class="external",
+        ),
+        web_fetch,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(
+            tool_run_budget_key="dispatch-test-fetch-internal-budget",
+            tool_run_budget_policy=ToolRunBudgetPolicy(
+                max_web_fetch_calls_per_turn=1,
+                max_single_fetch_chars=400,
+                max_external_text_chars_per_turn=400,
+            ),
+        ),
+    )
+
+    first = await handler(
+        ToolCall(
+            tool_use_id="tc-fetch-internal-budget-1",
+            tool_name="web_fetch",
+            arguments={"url": "https://example.com"},
+        )
+    )
+    second = await handler(
+        ToolCall(
+            tool_use_id="tc-fetch-internal-budget-2",
+            tool_name="web_fetch",
+            arguments={"url": "https://example.com"},
+        )
+    )
+
+    assert calls == 2
+    for result in (first, second):
+        assert result.is_error is False
+        assert result.execution_status is not None
+        assert result.execution_status["status"] == "unknown"
+        assert result.execution_status["reason"] == "tool_run_budget_exhausted"
+        assert json.loads(result.content)["status"] == "control"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_run_budget_limits_concurrent_external_calls_atomically() -> None:
     registry = ToolRegistry()
     started = 0
@@ -746,7 +878,16 @@ async def test_dispatch_run_budget_limits_concurrent_external_calls_atomically()
     )
 
     assert started == 1
-    assert sum(result.is_error for result in results) == 1
+    assert sum(result.is_error for result in results) == 0
+    control_payloads = []
+    for result in results:
+        try:
+            payload = json.loads(result.content)
+        except ValueError:
+            continue
+        if payload.get("status") == "control":
+            control_payloads.append(payload)
+    assert len(control_payloads) == 1
     assert any(
         result.execution_status
         and result.execution_status["reason"] == "tool_run_budget_exhausted"
@@ -755,7 +896,7 @@ async def test_dispatch_run_budget_limits_concurrent_external_calls_atomically()
 
 
 @pytest.mark.asyncio
-async def test_dispatch_run_budget_commits_oversized_external_result_as_error() -> None:
+async def test_dispatch_run_budget_allows_oversized_result_then_controls_retry() -> None:
     registry = ToolRegistry()
 
     async def web_fetch(url: str, max_chars: int | None = None) -> str:
@@ -797,14 +938,17 @@ async def test_dispatch_run_budget_commits_oversized_external_result_as_error() 
         )
     )
 
-    assert result.is_error is True
-    assert result.execution_status is not None
-    assert result.execution_status["reason"] == "tool_run_budget_exhausted"
-    payload = json.loads(result.content)
-    assert payload["error_class"] == "ToolRunBudgetExceededError"
-    assert retry.is_error is True
+    assert result.is_error is False
+    assert result.execution_status is None
+    assert result.content == "x" * 250
+    assert retry.is_error is False
     assert retry.execution_status is not None
+    assert retry.execution_status["status"] == "unknown"
     assert retry.execution_status["reason"] == "tool_run_budget_exhausted"
+    payload = json.loads(retry.content)
+    assert payload["status"] == "control"
+    assert payload["reason"] == "tool_run_budget_exhausted"
+    assert "larger budget" not in payload["user_message"]
 
 
 @pytest.mark.asyncio
@@ -849,14 +993,17 @@ async def test_dispatch_run_budget_charges_web_search_external_text() -> None:
         )
     )
 
-    assert result.is_error is True
-    assert result.execution_status is not None
-    assert result.execution_status["reason"] == "tool_run_budget_exhausted"
-    payload = json.loads(result.content)
-    assert payload["error_class"] == "ToolRunBudgetExceededError"
-    assert retry.is_error is True
+    assert result.is_error is False
+    assert result.execution_status is None
+    assert json.loads(result.content)["results"] == ["x" * 250]
+    assert retry.is_error is False
     assert retry.execution_status is not None
+    assert retry.execution_status["status"] == "unknown"
     assert retry.execution_status["reason"] == "tool_run_budget_exhausted"
+    payload = json.loads(retry.content)
+    assert payload["status"] == "control"
+    assert payload["reason"] == "tool_run_budget_exhausted"
+    assert "larger budget" not in payload["user_message"]
 
 
 @pytest.mark.asyncio
@@ -908,8 +1055,9 @@ async def test_dispatch_run_budget_is_fresh_for_separate_current_contexts() -> N
             current_tool_context.reset(token)
 
         assert first.is_error is False
-        assert second.is_error is True
+        assert second.is_error is False
         assert second.execution_status is not None
+        assert second.execution_status["status"] == "unknown"
         assert second.execution_status["reason"] == "tool_run_budget_exhausted"
         return first.content
 
@@ -1018,8 +1166,9 @@ async def test_dispatch_run_budget_applies_to_subagent_current_context() -> None
 
     assert first.content == "https://example.com/a:300"
     assert calls == 1
-    assert second.is_error is True
+    assert second.is_error is False
     assert second.execution_status is not None
+    assert second.execution_status["status"] == "unknown"
     assert second.execution_status["reason"] == "tool_run_budget_exhausted"
 
 
@@ -1062,8 +1211,10 @@ async def test_dispatch_preserves_sessions_yield_control_json_when_bounding() ->
     payload = json.loads(result.content)
     assert payload["status"] == "yielded"
     assert payload["waited"] is False
-    assert payload["tool_result_budget_applied"] is True
     assert payload["result_truncated"] is True
+    assert "tool_result_budget_applied" not in payload
+    assert "result_returned_chars" not in payload
+    assert "budget_class" not in payload
     assert len(result.content) < 500
 
 
@@ -1092,10 +1243,8 @@ async def test_dispatch_tracker_budget_is_fresh_for_reused_tool_context() -> Non
         ToolCall(tool_use_id="tc-second", tool_name="huge", arguments={})
     )
 
-    first_payload = json.loads(first.content)
-    second_payload = json.loads(second.content)
-    assert first_payload["result_returned_chars"] == second_payload["result_returned_chars"]
-    assert first_payload["result_returned_chars"] > 0
+    assert _strict_preview_chars(first.content) == _strict_preview_chars(second.content)
+    assert _strict_preview_chars(first.content) > 0
 
 
 @pytest.mark.asyncio
@@ -1121,9 +1270,7 @@ async def test_dispatch_uses_current_tool_context_budget_for_handler_without_sta
     finally:
         current_tool_context.reset(token)
 
-    payload = json.loads(result.content)
-    assert payload["tool_result_budget_applied"] is True
-    assert payload["result_returned_chars"] <= 120
+    assert _strict_preview_chars(result.content) <= 120
 
 
 @pytest.mark.asyncio
@@ -1150,7 +1297,7 @@ async def test_dispatch_reused_handler_gets_fresh_budget_for_separate_current_co
             )
         finally:
             current_tool_context.reset(token)
-        return int(json.loads(result.content)["result_returned_chars"])
+        return _strict_preview_chars(result.content)
 
     first = await call_with_context()
     second = await call_with_context()
@@ -1185,7 +1332,5 @@ async def test_dispatch_tracker_limits_concurrent_tool_results_per_turn() -> Non
         ]
     )
 
-    returned_total = sum(
-        json.loads(result.content)["result_returned_chars"] for result in results
-    )
+    returned_total = sum(_strict_preview_chars(result.content) for result in results)
     assert returned_total <= 180

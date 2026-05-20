@@ -29,6 +29,7 @@ from opensquilla.engine.cache_break_monitor import (
 from opensquilla.engine.fallback import FallbackPolicy, backoff_sleep
 from opensquilla.engine.history import limit_turns, repair_tool_pairing
 from opensquilla.engine.session_sanitize import (
+    SessionSanitizeResult,
     project_historical_tool_payloads,
     sanitize_session_messages,
     session_payload_chars,
@@ -851,10 +852,11 @@ class Agent:
     ) -> list[Message]:
         """Compact old bulky tool results in the provider request view only.
 
-        Per-result compression happens at execution time. This pass handles the
-        aggregate case where many already-compressed or under-threshold results
-        accumulate across iterations. It never mutates persisted history and it
-        preserves recent, error, and artifact-producing results.
+        This pass handles both single oversized tool results and the aggregate
+        case where many under-threshold results accumulate across iterations.
+        It never mutates persisted history and it preserves recent, error, and
+        artifact-producing results unless a successful single result alone
+        exceeds the provider request cap.
         """
 
         if self._tool_result_compression_mode() == "off":
@@ -996,6 +998,9 @@ class Agent:
                         block.content if isinstance(block.content, str) else str(block.content)
                     )
                     after_tokens += _tool_result_budget_tokens(content)
+        saved_tokens = max(0, before_tokens - after_tokens)
+        if saved_tokens == 0 and replacements:
+            saved_tokens = 1
 
         self.config.metadata["tool_aggregate_compression_applied"] = True
         self.config.metadata["tool_aggregate_compression_calls"] = (
@@ -1003,9 +1008,7 @@ class Agent:
         )
         self.config.metadata["tool_aggregate_compression_tokens_before"] = before_tokens
         self.config.metadata["tool_aggregate_compression_tokens_after"] = after_tokens
-        self.config.metadata["tool_aggregate_compression_tokens_saved"] = max(
-            0, before_tokens - after_tokens
-        )
+        self.config.metadata["tool_aggregate_compression_tokens_saved"] = saved_tokens
         self.config.metadata["tool_compression_applied"] = True
         self.config.metadata["tool_compression_calls"] = (
             self.config.metadata.get("tool_compression_calls", 0) + len(replacements)
@@ -1018,7 +1021,7 @@ class Agent:
         )
         self.config.metadata["tool_compression_tokens_saved"] = (
             self.config.metadata.get("tool_compression_tokens_saved", 0)
-            + max(0, before_tokens - after_tokens)
+            + saved_tokens
         )
         self._write_turn_call_log(
             "tool_aggregate_compression",
@@ -1060,13 +1063,16 @@ class Agent:
             return total_chars > cap or external_chars > external_cap
 
         keep_recent = max(0, int(getattr(self.config, "tool_result_external_keep_recent", 2)))
+        recent_refs = tool_result_refs[-keep_recent:] if keep_recent else []
+        recent_ids = {id(block) for _m, _b, block in recent_refs}
         external_refs = [
             (message_index, block_index, block)
             for message_index, block_index, block in tool_result_refs
             if resolve_budget_class(tool_name_by_use_id.get(block.tool_use_id, ""))
             is ToolResultBudgetClass.EXTERNAL
         ]
-        recent_external_ids = {id(block) for _m, _b, block in external_refs[-keep_recent:]}
+        recent_external_refs = external_refs[-keep_recent:] if keep_recent else []
+        recent_external_ids = {id(block) for _m, _b, block in recent_external_refs}
         replacements: dict[tuple[int, int], ContentBlockToolResult] = {}
 
         for message_index, block_index, block in tool_result_refs:
@@ -1075,6 +1081,8 @@ class Agent:
             content = _content(block)
             tool_name = tool_name_by_use_id.get(block.tool_use_id, "")
             budget_class = resolve_budget_class(tool_name)
+            result_cap = self._tool_result_provider_request_max_chars(budget_class)
+            single_over_budget = result_cap > 0 and len(content) > result_cap
             replacement_content: str | None = None
             if budget_class is ToolResultBudgetClass.CONTROL:
                 replacement_content = compact_tool_result_content(
@@ -1086,15 +1094,34 @@ class Agent:
                 )
             elif (
                 budget_class is ToolResultBudgetClass.EXTERNAL
-                and id(block) not in recent_external_ids
+                and not block.is_error
+                and not _tool_result_content_has_artifact(content)
+                and (single_over_budget or id(block) not in recent_external_ids)
             ):
-                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                replacement_content = (
-                    "[external_tool_result_compacted]\n"
-                    f"tool: {tool_name or 'unknown'}\n"
-                    f"id: {block.tool_use_id}\n"
-                    f"chars: {len(content)}\n"
-                    f"sha256: {digest[:16]}"
+                replacement_content = self._tool_result_projection_for_provider(
+                    content,
+                    tool_use_id=block.tool_use_id,
+                    tool_name=tool_name or "tool",
+                    reason="external tool result compacted for provider request context",
+                    max_preview_chars=min(result_cap, 4_000),
+                )
+            elif (
+                not block.is_error
+                and not _tool_result_content_has_artifact(content)
+                and (
+                    single_over_budget
+                    or (
+                        self.config.context_window_tokens >= 64_000
+                        and id(block) not in recent_ids
+                    )
+                )
+            ):
+                replacement_content = self._tool_result_projection_for_provider(
+                    content=content,
+                    tool_use_id=block.tool_use_id,
+                    tool_name=tool_name or "tool",
+                    reason="tool result compacted for provider request context",
+                    max_preview_chars=min(result_cap, 4_000),
                 )
 
             if replacement_content is None or len(replacement_content) >= len(content):
@@ -1141,7 +1168,59 @@ class Agent:
         self.config.metadata["tool_absolute_compression_calls"] = (
             self.config.metadata.get("tool_absolute_compression_calls", 0) + 1
         )
+        self.config.metadata["tool_compression_applied"] = True
+        self.config.metadata["tool_compression_calls"] = (
+            self.config.metadata.get("tool_compression_calls", 0) + len(replacements)
+        )
         return compacted_messages
+
+    def _tool_result_projection_for_provider(
+        self,
+        content: str,
+        *,
+        tool_use_id: str,
+        tool_name: str,
+        reason: str,
+        max_preview_chars: int,
+    ) -> str:
+        max_preview_chars = max(0, int(max_preview_chars))
+        if max_preview_chars > 0:
+            max_preview_chars = max(1, min(max_preview_chars, 4_000))
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        stored = self._store_tool_result_snapshot(
+            content,
+            tool_use_id=tool_use_id,
+            tool_name=tool_name,
+        )
+        handle_line = (
+            f"tool_result_handle: {stored.handle}\n" if stored is not None else ""
+        )
+        if max_preview_chars <= 0:
+            head = ""
+            tail = ""
+        elif len(content) <= max_preview_chars:
+            head = content
+            tail = ""
+        else:
+            head_chars = max(1, int(max_preview_chars * 0.65))
+            tail_chars = max(0, max_preview_chars - head_chars)
+            head = content[:head_chars]
+            tail = content[-tail_chars:] if tail_chars else ""
+        omitted = max(0, len(content) - len(head) - len(tail))
+        projection = (
+            "[tool_result_projection]\n"
+            f"tool: {tool_name}\n"
+            f"tool_use_id: {tool_use_id}\n"
+            f"original_chars: {len(content)}\n"
+            f"sha256: {digest}\n"
+            f"{handle_line}"
+            f"omitted_chars: {omitted}\n"
+            f"reason: {reason}.\n"
+            f"head:\n{head}"
+        )
+        if tail:
+            projection += f"\n...\ntail:\n{tail}"
+        return projection
 
     def _sanitize_projected_tool_use_arguments_for_provider(
         self,
@@ -1171,7 +1250,11 @@ class Agent:
                 legacy_projection_scrubbed = False
                 for key, value in block.input.items():
                     if not isinstance(value, str) or not value.startswith(
-                        _TOOL_ARGUMENT_PROJECTION_PREFIX
+                        (
+                            _TOOL_ARGUMENT_PROJECTION_PREFIX,
+                            _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX,
+                            _INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX,
+                        )
                     ):
                         continue
                     legacy_projected_input[key] = self._provider_projection_placeholder(
@@ -1655,6 +1738,8 @@ class Agent:
         total_cached_tokens = 0
         total_cache_write_tokens = 0
         total_billed_cost = 0.0
+        turn_llm_calls = 0
+        turn_tool_errors = 0
         last_actual_model = ""
         terminal_error: ErrorEvent | None = None
         window_input_tokens = 0
@@ -1662,6 +1747,7 @@ class Agent:
         final_text_parts: list[str] = []
         final_reasoning_parts: list[str] = []
         artifact_delivery_final_response_pending = False
+        artifact_delivery_degraded_final_response = False
         artifact_delivery_final_response_artifacts: list[dict[str, Any]] = []
         _fallback = FallbackPolicy(
             max_retries=self.config.max_provider_retries,
@@ -1679,6 +1765,129 @@ class Agent:
         provider_tool_definitions = self.tool_definitions or None
         if not tools_supported:
             provider_tool_definitions = None
+
+        def _positive_float(value: Any) -> float | None:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if parsed > 0 else None
+
+        def _turn_budget_error() -> ErrorEvent | None:
+            max_llm_calls = self._positive_int(
+                getattr(self.config, "max_turn_llm_calls", 0)
+            )
+            if max_llm_calls is not None and turn_llm_calls > max_llm_calls:
+                return ErrorEvent(
+                    message=(
+                        f"Turn stopped after {turn_llm_calls} LLM calls "
+                        f"(max_turn_llm_calls={max_llm_calls})."
+                    ),
+                    code="turn_llm_call_budget_exceeded",
+                )
+            max_input = self._positive_int(
+                getattr(self.config, "max_turn_input_tokens", 0)
+            )
+            if max_input is not None and total_input_tokens > max_input:
+                return ErrorEvent(
+                    message=(
+                        f"Turn stopped after {total_input_tokens} input tokens "
+                        f"(max_turn_input_tokens={max_input})."
+                    ),
+                    code="turn_input_token_budget_exceeded",
+                )
+            max_output = self._positive_int(
+                getattr(self.config, "max_turn_output_tokens", 0)
+            )
+            if max_output is not None and total_output_tokens > max_output:
+                return ErrorEvent(
+                    message=(
+                        f"Turn stopped after {total_output_tokens} output tokens "
+                        f"(max_turn_output_tokens={max_output})."
+                    ),
+                    code="turn_output_token_budget_exceeded",
+                )
+            max_cost = _positive_float(
+                getattr(self.config, "max_turn_billed_cost_usd", 0.0)
+            )
+            if max_cost is not None and total_billed_cost > max_cost:
+                return ErrorEvent(
+                    message=(
+                        f"Turn stopped after ${total_billed_cost:.6f} billed cost "
+                        f"(max_turn_billed_cost_usd=${max_cost:.6f})."
+                    ),
+                    code="turn_billed_cost_budget_exceeded",
+                )
+            max_tool_errors = self._positive_int(
+                getattr(self.config, "max_turn_tool_errors", 0)
+            )
+            if max_tool_errors is not None and turn_tool_errors >= max_tool_errors:
+                return ErrorEvent(
+                    message=(
+                        f"Turn stopped after {turn_tool_errors} tool errors "
+                        f"(max_turn_tool_errors={max_tool_errors})."
+                    ),
+                    code="turn_tool_error_budget_exceeded",
+                )
+            return None
+
+        def _turn_llm_call_budget_error(next_call_number: int) -> ErrorEvent | None:
+            max_llm_calls = self._positive_int(
+                getattr(self.config, "max_turn_llm_calls", 0)
+            )
+            if max_llm_calls is None or next_call_number <= max_llm_calls:
+                return None
+            return ErrorEvent(
+                message=(
+                    f"Turn stopped before LLM call {next_call_number} "
+                    f"(max_turn_llm_calls={max_llm_calls})."
+                ),
+                code="turn_llm_call_budget_exceeded",
+            )
+
+        def _finish_artifact_delivery_degraded(
+            *,
+            reason: str,
+            code: str,
+        ) -> WarningEvent:
+            nonlocal artifact_delivery_degraded_final_response
+            nonlocal artifact_delivery_final_response_pending
+            if not "".join(final_text_parts).strip():
+                final_text_parts.append(
+                    self._artifact_delivery_final_response_text(
+                        artifact_delivery_final_response_artifacts
+                    )
+                )
+            artifact_delivery_degraded_final_response = True
+            artifact_delivery_final_response_pending = False
+            self._write_turn_call_log(
+                "artifact_final_response_degraded",
+                reason=reason,
+                code=code,
+                artifact_count=len(artifact_delivery_final_response_artifacts),
+            )
+            return WarningEvent(
+                code="artifact_delivery_final_response_degraded",
+                message=(
+                    "Artifact delivery completed, but the model could not generate "
+                    "the final explanatory response. Returning a deterministic "
+                    "completion message instead."
+                ),
+            )
+
+        def _finish_artifact_delivery_without_provider() -> None:
+            final_response_text = self._artifact_delivery_final_response_text(
+                artifact_delivery_final_response_artifacts
+            )
+            current_text = "".join(final_text_parts)
+            if final_response_text not in current_text:
+                prefix = "\n\n" if current_text.strip() else ""
+                final_text_parts.append(prefix + final_response_text)
+            self._write_turn_call_log(
+                "artifact_final_response_synthesized",
+                reason="publish_artifact_completed",
+                artifact_count=len(artifact_delivery_final_response_artifacts),
+            )
 
         try:
             while True:
@@ -1748,28 +1957,15 @@ class Agent:
                         tools_supported and not artifact_delivery_final_response_pending
                     )
                     ignored_post_delivery_tool_use = False
-                    request_source_messages = self._with_request_context_messages(
+                    (
+                        request_messages,
+                        request_sanitize_result,
+                    ) = self._provider_request_messages_with_sanitize(
                         turn_messages,
-                        request_context_message,
-                        request_context_insert_index,
-                        runtime_context_message,
-                        runtime_context_insert_index,
-                    )
-                    request_source_messages = (
-                        self._strip_provider_context_marker_replay_for_provider(
-                            request_source_messages
-                        )
-                    )
-                    request_source_messages = self._compact_aggregate_tool_results_for_provider(
-                        request_source_messages
-                    )
-                    request_source_messages = (
-                        self._sanitize_projected_tool_use_arguments_for_provider(
-                            request_source_messages
-                        )
-                    )
-                    request_messages, request_sanitize_result = sanitize_session_messages(
-                        request_source_messages
+                        request_context_message=request_context_message,
+                        request_context_insert_index=request_context_insert_index,
+                        runtime_context_message=runtime_context_message,
+                        runtime_context_insert_index=runtime_context_insert_index,
                     )
                     self._write_context_stage(
                         "stream:context",
@@ -1780,6 +1976,33 @@ class Agent:
                         sanitize=request_sanitize_result,
                     )
 
+                    terminal_error = _turn_llm_call_budget_error(turn_llm_calls + 1)
+                    if terminal_error is not None:
+                        self._write_turn_call_log(
+                            "turn_policy_decision",
+                            action=(
+                                "artifact_degraded_finish"
+                                if artifact_delivery_final_response_pending
+                                else "stop"
+                            ),
+                            reason=terminal_error.message,
+                            code=terminal_error.code,
+                            sent_llm_calls=turn_llm_calls,
+                            attempted_llm_call=turn_llm_calls + 1,
+                            iteration=iterations,
+                            attempt=_call_attempt,
+                        )
+                        if artifact_delivery_final_response_pending:
+                            yield _finish_artifact_delivery_degraded(
+                                reason=terminal_error.message,
+                                code=terminal_error.code,
+                            )
+                            terminal_error = None
+                        else:
+                            yield self._transition(AgentState.ERROR)
+                            yield terminal_error
+                        break
+
                     self._write_turn_call_log(
                         "llm_request",
                         call_id=call_id,
@@ -1789,6 +2012,7 @@ class Agent:
                         tools=provider_tools_for_call,
                         config=chat_cfg,
                     )
+                    turn_llm_calls += 1
                     cache_prompt_snapshot = None
                     if self._session_key:
                         cache_prompt_snapshot = record_prompt_state(
@@ -1955,6 +2179,16 @@ class Agent:
                                     message=raw_ev.message,
                                 )
                     except _IterationStreamTimeoutError:
+                        if artifact_delivery_final_response_pending:
+                            yield _finish_artifact_delivery_degraded(
+                                reason=(
+                                    f"Iteration {iterations} exceeded "
+                                    f"iteration_timeout ({self.config.iteration_timeout}s) "
+                                    "during final artifact response generation"
+                                ),
+                                code="iteration_timeout",
+                            )
+                            break
                         yield self._transition(AgentState.ERROR)
                         terminal_error = ErrorEvent(
                             message=(
@@ -2005,6 +2239,18 @@ class Agent:
                         self._write_turn_call_log("llm_response", **response_payload)
 
                     # -- after async for (retry loop level) --
+                    terminal_error = _turn_budget_error()
+                    if terminal_error is not None:
+                        if artifact_delivery_final_response_pending:
+                            yield _finish_artifact_delivery_degraded(
+                                reason=terminal_error.message,
+                                code=terminal_error.code,
+                            )
+                            terminal_error = None
+                        else:
+                            yield self._transition(AgentState.ERROR)
+                            yield terminal_error
+                        break
                     response_text = "".join(assistant_text_parts)
                     if (
                         artifact_delivery_final_response_pending
@@ -2282,6 +2528,12 @@ class Agent:
                         kind = _fallback.classify_error(
                             provider_error.message,
                         )
+                        if artifact_delivery_final_response_pending:
+                            yield _finish_artifact_delivery_degraded(
+                                reason=provider_error.message,
+                                code=provider_error.code,
+                            )
+                            break
                         if (
                             failure_kind == ProviderFailureKind.EMPTY_RESPONSE
                             and _retry_policy.can_retry_provider_failure(
@@ -2436,6 +2688,8 @@ class Agent:
                         _call_attempt += 1
 
                 if terminal_error is not None:
+                    break
+                if artifact_delivery_degraded_final_response:
                     break
 
                 response_text = "".join(assistant_text_parts)
@@ -2910,9 +3164,7 @@ class Agent:
 
                 # Emit results in original tool_calls order.
                 for tc in tool_calls:
-                    result = await self._compress_tool_result(
-                        results_by_id[tc.tool_use_id]
-                    )
+                    result = results_by_id[tc.tool_use_id]
                     for artifact in result.artifacts:
                         yield ArtifactEvent(**_artifact_event_kwargs(artifact))
                     yield ToolResultEvent(
@@ -2941,7 +3193,7 @@ class Agent:
                             synthetic_from_text=tc.synthetic_from_text,
                             origin_trace=tc.origin_trace,
                         )
-                        result = await self._compress_tool_result(await _run_one(retry_call))
+                        result = await _run_one(retry_call)
                         for artifact in result.artifacts:
                             yield ArtifactEvent(**_artifact_event_kwargs(artifact))
                         yield ToolResultEvent(
@@ -2970,8 +3222,21 @@ class Agent:
                     executed_results
                 )
                 if terminal_artifacts:
-                    artifact_delivery_final_response_pending = True
                     artifact_delivery_final_response_artifacts = terminal_artifacts
+
+                turn_tool_errors += sum(1 for result in executed_results if result.is_error)
+                terminal_error = _turn_budget_error()
+                if terminal_error is not None:
+                    if artifact_delivery_final_response_pending:
+                        yield _finish_artifact_delivery_degraded(
+                            reason=terminal_error.message,
+                            code=terminal_error.code,
+                        )
+                        terminal_error = None
+                    else:
+                        yield self._transition(AgentState.ERROR)
+                        yield terminal_error
+                    break
 
                 if any(_is_threshold_denial(result) for result in executed_results):
                     yield self._transition(AgentState.ERROR)
@@ -3008,6 +3273,9 @@ class Agent:
                         iteration=iterations,
                         tool_use_ids=sorted(preflight_tool_results),
                     )
+                if terminal_artifacts:
+                    _finish_artifact_delivery_without_provider()
+                    break
                 if turn_yielded:
                     break
 
@@ -3016,13 +3284,19 @@ class Agent:
                 # Loop continues
 
         except TimeoutError:
-            # Total turn deadline exceeded (raised by manual check above)
-            yield self._transition(AgentState.ERROR)
-            terminal_error = ErrorEvent(
-                message=f"Agent turn timed out after {self.config.timeout}s",
-                code="agent_runtime_timeout",
-            )
-            yield terminal_error
+            if artifact_delivery_final_response_pending:
+                yield _finish_artifact_delivery_degraded(
+                    reason=f"Agent turn timed out after {self.config.timeout}s",
+                    code="agent_runtime_timeout",
+                )
+            else:
+                # Total turn deadline exceeded (raised by manual check above)
+                yield self._transition(AgentState.ERROR)
+                terminal_error = ErrorEvent(
+                    message=f"Agent turn timed out after {self.config.timeout}s",
+                    code="agent_runtime_timeout",
+                )
+                yield terminal_error
 
         if terminal_error is None:
             # Persist successful turns into in-memory history. Error turns are
@@ -3148,6 +3422,24 @@ class Agent:
         runtime_context_message: Message,
         runtime_context_insert_index: int,
     ) -> list[Message]:
+        request_messages, _ = self._provider_request_messages_with_sanitize(
+            messages,
+            request_context_message=request_context_message,
+            request_context_insert_index=request_context_insert_index,
+            runtime_context_message=runtime_context_message,
+            runtime_context_insert_index=runtime_context_insert_index,
+        )
+        return request_messages
+
+    def _provider_request_messages_with_sanitize(
+        self,
+        messages: list[Message],
+        *,
+        request_context_message: Message | None,
+        request_context_insert_index: int,
+        runtime_context_message: Message,
+        runtime_context_insert_index: int,
+    ) -> tuple[list[Message], SessionSanitizeResult]:
         source_messages = self._with_request_context_messages(
             messages,
             request_context_message,
@@ -3155,8 +3447,16 @@ class Agent:
             runtime_context_message,
             runtime_context_insert_index,
         )
-        request_messages, _ = sanitize_session_messages(source_messages)
-        return request_messages
+        source_messages = self._strip_provider_context_marker_replay_for_provider(
+            source_messages
+        )
+        source_messages = self._compact_aggregate_tool_results_for_provider(
+            source_messages
+        )
+        source_messages = self._sanitize_projected_tool_use_arguments_for_provider(
+            source_messages
+        )
+        return sanitize_session_messages(source_messages)
 
     @staticmethod
     def _provider_request_is_smaller(before: list[Message], after: list[Message]) -> bool:
@@ -3876,7 +4176,11 @@ class Agent:
         changed = False
         for argument_name, value in tc.arguments.items():
             if not isinstance(value, str) or not value.startswith(
-                _TOOL_ARGUMENT_PROJECTION_PREFIX
+                (
+                    _TOOL_ARGUMENT_PROJECTION_PREFIX,
+                    _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX,
+                    _INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX,
+                )
             ):
                 continue
             sanitized[argument_name] = self._provider_projection_placeholder(
@@ -3975,7 +4279,11 @@ class Agent:
             )
         for argument_name, value in tc.arguments.items():
             if not isinstance(value, str) or not value.startswith(
-                (_TOOL_ARGUMENT_PROJECTION_PREFIX, _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX)
+                (
+                    _TOOL_ARGUMENT_PROJECTION_PREFIX,
+                    _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX,
+                    _INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX,
+                )
             ):
                 continue
             return self._projection_rehydrate_error(
@@ -4052,6 +4360,17 @@ class Agent:
             )
         else:
             self._tool_failure_loop_counts.pop(failure_signature, None)
+            if tc.tool_name in {
+                "apply_patch",
+                "background_process",
+                "edit_file",
+                "execute_code",
+                "exec_command",
+                "git_commit",
+                "install_skill_deps",
+                "write_file",
+            }:
+                self._tool_failure_loop_counts.clear()
         return result
 
     # ------------------------------------------------------------------
@@ -4112,6 +4431,11 @@ class Agent:
             max_iterations=spec.max_iterations,
             timeout=spec.timeout,
             max_tokens=self.config.max_tokens,
+            max_turn_llm_calls=self.config.max_turn_llm_calls,
+            max_turn_input_tokens=self.config.max_turn_input_tokens,
+            max_turn_output_tokens=self.config.max_turn_output_tokens,
+            max_turn_billed_cost_usd=self.config.max_turn_billed_cost_usd,
+            max_turn_tool_errors=self.config.max_turn_tool_errors,
             context_window_tokens=self.config.context_window_tokens,
             workspace_dir=spec.workspace_dir or self.config.workspace_dir,
             flush_enabled=self.config.flush_enabled,

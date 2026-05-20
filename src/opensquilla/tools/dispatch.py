@@ -58,6 +58,7 @@ __all__ = ["build_tool_handler"]
 
 _TOOL_ARGUMENT_PROJECTION_PREFIX = "[tool_use_argument_projection]\n"
 _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted]\n"
+_INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX = "[invalid_provider_context_projection:"
 _COMPACTED_TOOL_ARGUMENT_MARKERS = frozenset(
     {
         "_opensquilla_compacted_tool_arguments",
@@ -139,6 +140,45 @@ def _build_envelope_result(
     )
 
 
+def _build_run_budget_control_result(
+    tool_call: ToolCall,
+    exc: ToolRunBudgetExceededError,
+) -> ToolResult:
+    payload = {
+        "status": "control",
+        "tool": tool_call.tool_name,
+        "reason": "tool_run_budget_exhausted",
+        "user_message": (
+            "The tool was skipped by a runtime resource guard. Continue with "
+            "available evidence or choose a smaller request."
+        ),
+        "retry_allowed": False,
+    }
+    status = {
+        "version": 1,
+        "status": "unknown",
+        "exit_code": None,
+        "timed_out": False,
+        "truncated": False,
+        "reason": "tool_run_budget_exhausted",
+        "source": "tool_runtime",
+        "preservation_class": "ephemeral",
+    }
+    log.info(
+        "dispatch.tool_run_budget_exhausted",
+        tool=tool_call.tool_name,
+        tool_use_id=tool_call.tool_use_id,
+        message=str(exc),
+    )
+    return ToolResult(
+        tool_use_id=tool_call.tool_use_id,
+        tool_name=tool_call.tool_name,
+        content=json.dumps(payload),
+        is_error=False,
+        execution_status=normalize_execution_status(status),
+    )
+
+
 def _check_injection_guard(
     tool_call: ToolCall, effective_ctx: ToolContext | None
 ) -> ToolResult | None:
@@ -201,7 +241,11 @@ def _check_non_executable_arguments(
 
     for argument_name, value in arguments.items():
         if isinstance(value, str) and value.startswith(
-            (_TOOL_ARGUMENT_PROJECTION_PREFIX, _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX)
+            (
+                _TOOL_ARGUMENT_PROJECTION_PREFIX,
+                _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX,
+                _INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX,
+            )
         ):
             log.warning(
                 "dispatch.projected_tool_arguments_refused",
@@ -281,12 +325,22 @@ def _resolve_registry_miss(
             error_class_override="UnsupportedSurface",
             user_message_override=user_message,
         )
+    if tool_call.tool_name == "bash":
+        user_message = (
+            "Tool not found: bash. Use exec_command with a command string instead; "
+            "do not retry bash as a tool."
+        )
+    else:
+        user_message = (
+            f"Tool not found: {tool_call.tool_name}. Do not retry unavailable tools; "
+            "use only tools listed in Available Tools."
+        )
     return _build_envelope_result(
         tool_call,
         exc=KeyError(tool_call.tool_name),
         policy_denial=True,
         error_class_override="ToolNotFound",
-        user_message_override=f"Tool not found: {tool_call.tool_name}",
+        user_message_override=user_message,
     )
 
 
@@ -363,7 +417,6 @@ def build_tool_handler(
 
     async def _handler(tool_call: ToolCall) -> ToolResult:  # type: ignore[return]
         effective_ctx = current_tool_context.get() or ctx
-        budget_policy = _resolve_budget_policy(effective_ctx)
 
         # 1. Ingress injection guard.
         injection_envelope = _check_injection_guard(tool_call, effective_ctx)
@@ -432,20 +485,17 @@ def build_tool_handler(
         # 5. Handler dispatch inside the request-scoped contextvar.
         run_budget_tracker = _run_budget_tracker_for(effective_ctx)
         try:
+            run_budget_policy = _resolve_run_budget_policy(effective_ctx)
             reservation = await run_budget_tracker.reserve_tool_call(
                 tool_name=tool_call.tool_name,
                 arguments=clamp_tool_arguments(
                     tool_call.tool_name,
                     dict(tool_call.arguments),
-                    budget_policy,
+                    run_budget_policy,
                 ),
             )
         except ToolRunBudgetExceededError as exc:
-            envelope = _build_envelope_result(
-                tool_call,
-                exc=exc,
-                reason_override="tool_run_budget_exhausted",
-            )
+            envelope = _build_run_budget_control_result(tool_call, exc)
             if hook_call is not None:
                 for hook in hooks:
                     try:
@@ -474,6 +524,8 @@ def build_tool_handler(
             raise
         except ToolRunBudgetExceededError as exc:
             exception = exc
+            if raw_result is None:
+                await run_budget_tracker.abort_tool_result(reservation)
         except Exception as exc:  # noqa: BLE001
             exception = exc
             await run_budget_tracker.abort_tool_result(reservation)

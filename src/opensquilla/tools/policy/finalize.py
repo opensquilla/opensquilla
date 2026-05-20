@@ -89,12 +89,36 @@ async def finalize(
     """
     # ---------------- Exception branch ----------------
     if exception is not None:
+        if isinstance(exception, ToolRunBudgetExceededError):
+            payload = {
+                "status": "control",
+                "tool": call.tool_name,
+                "reason": "tool_run_budget_exhausted",
+                "user_message": (
+                    "The tool was skipped by a runtime resource guard. Continue with "
+                    "available evidence or choose a smaller request."
+                ),
+                "retry_allowed": False,
+            }
+            status = {
+                "version": 1,
+                "status": "unknown",
+                "exit_code": None,
+                "timed_out": False,
+                "truncated": False,
+                "reason": "tool_run_budget_exhausted",
+                "source": "tool_runtime",
+                "preservation_class": "ephemeral",
+            }
+            return ToolResult(
+                tool_use_id=call.tool_use_id,
+                tool_name=call.tool_name,
+                content=json.dumps(payload),
+                is_error=False,
+                execution_status=normalize_execution_status(status),
+            )
+
         envelope = build_tool_failure_envelope(exception, call.tool_name)
-        reason = (
-            "tool_run_budget_exhausted"
-            if isinstance(exception, ToolRunBudgetExceededError)
-            else "runtime_error"
-        )
         log.warning(
             "dispatch.tool_failed",
             tool=call.tool_name,
@@ -110,7 +134,7 @@ async def finalize(
             "exit_code": None,
             "timed_out": False,
             "truncated": False,
-            "reason": reason,
+            "reason": "runtime_error",
             "source": "tool_runtime",
             "preservation_class": "diagnostic",
         }

@@ -223,7 +223,13 @@ def create_skill_tools(loader: SkillLoader) -> None:
             return "No skill loader available."
         skill = _loader.get_by_name(name)
         if skill is None:
-            return f"Skill not found: {name}"
+            return (
+                f"Skill not found: {name}. This skill is not available in the "
+                "current skill catalog. Do not search host filesystem paths to "
+                "recover missing skills. Use skill_list to inspect available "
+                "skills, continue with available tools, or tell the user the "
+                "skill is not installed."
+            )
 
         if file_path:
             normalized_path = file_path.strip().lstrip("./")

@@ -14,6 +14,8 @@ from pathlib import Path
 
 APP_JS = Path("src/opensquilla/gateway/static/js/app.js")
 CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
+APPROVAL_MONITOR_JS = Path("src/opensquilla/gateway/static/js/approval_monitor.js")
+APPROVALS_JS = Path("src/opensquilla/gateway/static/js/views/approvals.js")
 CHAT_CSS = Path("src/opensquilla/gateway/static/css/views/chat.css")
 BASE_CSS = Path("src/opensquilla/gateway/static/css/base.css")
 
@@ -24,6 +26,14 @@ def _read_app_js() -> str:
 
 def _read_chat_js() -> str:
     return CHAT_JS.read_text(encoding="utf-8")
+
+
+def _read_approval_monitor_js() -> str:
+    return APPROVAL_MONITOR_JS.read_text(encoding="utf-8")
+
+
+def _read_approvals_js() -> str:
+    return APPROVALS_JS.read_text(encoding="utf-8")
 
 
 def _read_chat_css() -> str:
@@ -71,6 +81,22 @@ def test_chat_permission_pill_distinguishes_global_and_session_modes() -> None:
 
     # The legacy image-only `accept="image/*" multiple` literal must be gone:
     assert 'accept="image/*" multiple' not in source
+
+
+def test_webui_bypass_shortcuts_do_not_enable_full_mode() -> None:
+    chat_source = _read_chat_js()
+    monitor_source = _read_approval_monitor_js()
+    approvals_source = _read_approvals_js()
+    combined = "\n".join([chat_source, monitor_source, approvals_source])
+
+    assert "ELEVATED_MODE_VERSION_KEY" in chat_source
+    assert "localStorage.getItem(_ELEVATED_MODE_VERSION_KEY)" in chat_source
+    assert "if (ok) _setElevatedMode('bypass', { toast: true, sync: true });" in chat_source
+    assert "This maps to /elevated bypass" in chat_source
+    assert "action === 'bypass' ? 'bypass' : ''" in monitor_source
+    assert "decision === 'bypass' ? 'bypass' : ''" in approvals_source
+    assert "maps to /elevated full" not in combined
+    assert "Bypass All Permissions" not in combined
 
 
 def test_app_uses_dynamic_viewport_height_after_100vh_fallback_for_mobile_composer() -> None:

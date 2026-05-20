@@ -63,7 +63,8 @@ class ToolContext:
     on_memory_source_write: Callable[[str, str], None] | None = None
     on_bootstrap_source_write: Callable[[str, str], None] | None = None
     # Elevated mode: None/"off" = sandboxed, "on" = host exec with approval,
-    # "full" = host exec and skip approvals (trusted operators only).
+    # "bypass" = skip approval prompts but keep sensitive-path checks,
+    # "full" = bypass approval and sensitive-path checks (trusted operators only).
     elevated: str | None = None
     # Additive per-call tool surface overrides (surfaced tools are made visible even
     # when exposed_by_default=False). Does NOT relax allowed_tools strict denylist.

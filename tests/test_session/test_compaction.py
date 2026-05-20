@@ -7,6 +7,7 @@ from opensquilla.session.compaction import (
     CompactionRequest,
     call_compaction_llm,
     compact_context,
+    estimate_entry_replay_tokens,
 )
 
 
@@ -53,6 +54,28 @@ async def test_compaction_occurs_when_over_budget():
     assert result.tokens_before == 4000
     assert result.tokens_after < result.tokens_before
     assert result.remaining_budget_tokens >= 0
+
+
+def test_replay_token_estimate_uses_tool_payload_summary_not_raw_arguments():
+    large_content = "x" * 80_000
+    entry = {
+        "role": "assistant",
+        "content": "wrote file",
+        "token_count": 1,
+        "tool_calls": [
+            {
+                "type": "tool_use",
+                "tool_use_id": "write-large",
+                "name": "write_file",
+                "input": {"path": "index.html", "content": large_content},
+            }
+        ],
+        "reasoning_content": "private reasoning " + ("r" * 20_000),
+    }
+
+    tokens = estimate_entry_replay_tokens(entry)
+
+    assert tokens < 500
 
 
 @pytest.mark.asyncio

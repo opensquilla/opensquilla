@@ -351,6 +351,7 @@ class _ToolResultHandler:
         from opensquilla.engine.runtime import (
             _artifact_delivery_failure_summary,
             _persisted_tool_result_segment,
+            _persisted_tool_use_input,
         )
 
         failure_summary = _artifact_delivery_failure_summary(event)
@@ -362,7 +363,11 @@ class _ToolResultHandler:
                     segment.get("type") == "tool_use"
                     and segment.get("tool_use_id") == event.tool_use_id
                 ):
-                    segment["input"] = event.arguments
+                    segment["input"] = _persisted_tool_use_input(
+                        event.tool_name,
+                        event.tool_use_id,
+                        event.arguments,
+                    )
                     break
         state.turn_segments.append(_persisted_tool_result_segment(event))
         return event

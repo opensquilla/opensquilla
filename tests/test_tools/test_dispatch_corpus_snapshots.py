@@ -35,12 +35,10 @@ def _stable_envelope(result: ToolResult) -> dict[str, Any]:
     Dynamic fields (tool_use_id) are normalised; content is parsed as JSON
     when possible so diffs are human-readable.
 
-    The ``preview`` field produced by the budget formatter is stripped when
-    ``tool_result_budget_applied`` is True.  The preview is a raw content
-    slice whose exact byte count is sensitive to ToolResultBudgetPolicy
-    defaults — any future policy tuning would demand a snapshot regeneration
-    without indicating a true behavioural regression.  What matters is that
-    ``result_truncated``, ``result_returned_chars``, and
+    The ``preview`` field produced by explicit strict result compaction is
+    stripped.  The preview is a raw content slice whose exact byte count is
+    sensitive to per-test ToolResultBudgetPolicy settings.  What matters is
+    that ``result_truncated``, ``result_original_chars``, and
     ``execution_status.truncated`` are correct; those fields are retained.
     """
     content: Any
@@ -49,8 +47,8 @@ def _stable_envelope(result: ToolResult) -> dict[str, Any]:
     except (TypeError, ValueError):
         content = result.content
 
-    # Strip the raw preview slice from budget-applied results — see docstring.
-    if isinstance(content, dict) and content.get("tool_result_budget_applied"):
+    # Strip the raw preview slice from compacted results — see docstring.
+    if isinstance(content, dict) and content.get("result_truncated") is True:
         content = {k: v for k, v in content.items() if k != "preview"}
 
     status: dict[str, Any] | None = None

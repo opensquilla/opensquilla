@@ -360,13 +360,10 @@
   dict({
     'artifact_count': 0,
     'content': dict({
-      'budget_class': 'unknown',
       'is_error': False,
       'result_original_chars': 2012,
-      'result_returned_chars': 80,
       'result_truncated': True,
       'tool': 'exec_command',
-      'tool_result_budget_applied': True,
     }),
     'execution_status': dict({
       'exit_code': 0,
@@ -384,47 +381,32 @@
 # name: test_dispatch_corpus_snapshot[run_budget_exhausted_after_handler]
   dict({
     'artifact_count': 0,
-    'content': dict({
-      'error_class': 'ToolRunBudgetExceededError',
-      'retry_allowed': False,
-      'status': 'error',
-      'tool': 'web_fetch',
-      'user_message': 'The tool run budget for this turn is exhausted.',
-    }),
-    'execution_status': dict({
-      'exit_code': None,
-      'preservation_class': 'diagnostic',
-      'reason': 'tool_run_budget_exhausted',
-      'source': 'tool_runtime',
-      'status': 'error',
-      'timed_out': False,
-      'truncated': False,
-      'version': 1,
-    }),
-    'is_error': True,
+    'content': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    'execution_status': None,
+    'is_error': False,
   })
 # ---
 # name: test_dispatch_corpus_snapshot[run_budget_exhausted_before_handler]
   dict({
     'artifact_count': 0,
     'content': dict({
-      'error_class': 'ToolRunBudgetExceededError',
+      'reason': 'tool_run_budget_exhausted',
       'retry_allowed': False,
-      'status': 'error',
+      'status': 'control',
       'tool': 'web_fetch',
-      'user_message': 'The tool run budget for this turn is exhausted.',
+      'user_message': 'The tool was skipped by a runtime resource guard. Continue with available evidence or choose a smaller request.',
     }),
     'execution_status': dict({
       'exit_code': None,
-      'preservation_class': 'diagnostic',
+      'preservation_class': 'ephemeral',
       'reason': 'tool_run_budget_exhausted',
       'source': 'tool_runtime',
-      'status': 'error',
+      'status': 'unknown',
       'timed_out': False,
       'truncated': False,
       'version': 1,
     }),
-    'is_error': True,
+    'is_error': False,
   })
 # ---
 # name: test_dispatch_corpus_snapshot[skill_call_mismatch]
@@ -458,7 +440,7 @@
       'retry_allowed': False,
       'status': 'error',
       'tool': 'no_such_tool',
-      'user_message': 'Tool not found: no_such_tool',
+      'user_message': 'Tool not found: no_such_tool. Do not retry unavailable tools; use only tools listed in Available Tools.',
     }),
     'execution_status': dict({
       'exit_code': None,

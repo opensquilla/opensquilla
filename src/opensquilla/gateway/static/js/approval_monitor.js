@@ -4,6 +4,8 @@ const ApprovalMonitor = (() => {
   const POLL_MS = 1500;
   const POLL_MAX_MS = 30000;
   const ELEVATED_MODE_KEY = 'opensquilla.elevatedMode';
+  const ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version';
+  const ELEVATED_MODE_STORAGE_VERSION = '2';
   let _timer = null;
   let _modal = null;
   let _busy = false;
@@ -148,7 +150,7 @@ const ApprovalMonitor = (() => {
         <div class="modal-foot">
           <button class="btn btn--primary" data-approval-action="once" title="Approve only this pending tool call">Approve This Time</button>
           ${canAlways ? '<button class="btn btn--ghost" data-approval-action="always" title="Remember this operation type for future matching intents">Always Allow This Type</button>' : ''}
-          <button class="btn btn--warn" data-approval-action="bypass" title="Enable full elevated mode in this browser session and approve this pending tool call">Bypass All Permissions</button>
+          <button class="btn btn--warn" data-approval-action="bypass" title="Enable approval bypass in this browser session and approve this pending tool call">Bypass Approvals</button>
           <button class="btn btn--danger" data-approval-action="deny">Deny</button>
         </div>
       </div>`;
@@ -159,7 +161,7 @@ const ApprovalMonitor = (() => {
         const approved = action === 'once' || action === 'always' || action === 'bypass';
         const allowAlways = action === 'always';
         const rememberIntent = action === 'always';
-        const elevatedMode = action === 'bypass' ? 'full' : '';
+        const elevatedMode = action === 'bypass' ? 'bypass' : '';
         _resolve(item, approved, allowAlways, rememberIntent, elevatedMode, overlay);
       });
     });
@@ -190,7 +192,7 @@ const ApprovalMonitor = (() => {
       if (elevatedMode) _setBrowserElevated(elevatedMode);
       _closeModal();
       UI.toast(
-        elevatedMode ? 'Bypass all permissions enabled' : (approved ? 'Approval granted' : 'Approval denied'),
+        elevatedMode ? 'Approval bypass enabled' : (approved ? 'Approval granted' : 'Approval denied'),
         approved ? 'info' : 'warn',
         2500
       );
@@ -212,8 +214,13 @@ const ApprovalMonitor = (() => {
   function _setBrowserElevated(mode) {
     const normalized = mode === 'full' || mode === 'bypass' || mode === 'on' ? mode : '';
     try {
-      if (normalized) localStorage.setItem(ELEVATED_MODE_KEY, normalized);
-      else localStorage.removeItem(ELEVATED_MODE_KEY);
+      if (normalized) {
+        localStorage.setItem(ELEVATED_MODE_KEY, normalized);
+        localStorage.setItem(ELEVATED_MODE_VERSION_KEY, ELEVATED_MODE_STORAGE_VERSION);
+      } else {
+        localStorage.removeItem(ELEVATED_MODE_KEY);
+        localStorage.removeItem(ELEVATED_MODE_VERSION_KEY);
+      }
     } catch {}
     window.dispatchEvent(new CustomEvent('opensquilla:elevated-mode', { detail: { mode: normalized } }));
   }

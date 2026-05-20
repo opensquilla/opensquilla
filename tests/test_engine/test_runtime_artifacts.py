@@ -766,8 +766,8 @@ async def test_turn_runner_suppresses_tools_after_successful_publish_artifact(
         artifact_events = [event for event in events if isinstance(event, ArtifactEvent)]
         tool_starts = [event for event in events if isinstance(event, ToolUseStartEvent)]
 
-        assert provider.calls == 2
-        assert provider.tools_seen == [True, False]
+        assert provider.calls == 1
+        assert provider.tools_seen == [True]
         assert forbidden_calls == []
         assert [event.tool_name for event in tool_starts] == ["publish_artifact"]
         assert artifact_events[0].id == "art-published"

@@ -66,3 +66,15 @@ async def test_skill_view_rejects_resource_paths_that_escape_skill_directory(
 
     assert "File not found in skill 'deck': ../secret.txt" == result
     assert "do not expose" not in result
+
+
+@pytest.mark.asyncio
+async def test_skill_view_missing_skill_uses_catalog_guidance(
+    skill_loader: SkillLoader,
+) -> None:
+    result = await _skill_view("missing-skill")
+
+    assert "Skill not found: missing-skill" in result
+    assert "current skill catalog" in result
+    assert "Do not search host filesystem paths" in result
+    assert "skill_list" in result

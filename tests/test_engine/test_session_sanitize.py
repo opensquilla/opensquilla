@@ -441,6 +441,78 @@ def test_agent_aggregate_tool_result_budget_compacts_old_bulky_results(tmp_path)
     assert record.tool_name == "execute_code"
 
 
+def test_agent_large_context_compacts_old_local_tool_results_for_provider(tmp_path) -> None:
+    def _tool_pair(tool_id: str, body: str, *, is_error: bool = False) -> list[Message]:
+        return [
+            Message(
+                role="assistant",
+                content=[ContentBlockToolUse(id=tool_id, name="local_tool", input={})],
+            ),
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id=tool_id,
+                        content=body,
+                        is_error=is_error,
+                    )
+                ],
+            ),
+        ]
+
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=200_000,
+            tool_result_store_dir=str(tmp_path / "tool-results"),
+            tool_result_store_session_id="session-1",
+            tool_result_store_session_key="agent:main:webchat:session-1",
+            tool_result_store_agent_id="main",
+        ),
+    )
+    messages = [
+        block
+        for pair in (
+            _tool_pair("old-1", "old local output\n" + ("x" * 70_000)),
+            _tool_pair(
+                "err-1",
+                "Traceback preserved\n" + ("e" * 20_000),
+                is_error=True,
+            ),
+            _tool_pair("mid-1", "middle local output\n" + ("m" * 50_000)),
+            _tool_pair("new-1", "recent local output\n" + ("r" * 50_000)),
+        )
+        for block in pair
+    ]
+
+    compacted = agent._compact_aggregate_tool_results_for_provider(messages)
+
+    old_result = compacted[1].content[0]
+    error_result = compacted[3].content[0]
+    middle_result = compacted[5].content[0]
+    recent_result = compacted[7].content[0]
+    assert isinstance(old_result, ContentBlockToolResult)
+    assert isinstance(error_result, ContentBlockToolResult)
+    assert isinstance(middle_result, ContentBlockToolResult)
+    assert isinstance(recent_result, ContentBlockToolResult)
+    assert "[tool_result_projection]" in old_result.content
+    assert "tool_result_handle:" in old_result.content
+    assert len(old_result.content) < 5_000
+    assert "Traceback preserved" in error_result.content
+    assert len(error_result.content) > 20_000
+    assert "middle local output" in middle_result.content
+    assert "recent local output" in recent_result.content
+    total_result_chars = sum(
+        len(block.content)
+        for message in compacted
+        if isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult)
+    )
+    assert total_result_chars <= agent._tool_result_provider_request_max_chars()
+    assert agent.config.metadata["tool_absolute_compression_applied"] is True
+
+
 @pytest.mark.asyncio
 async def test_agent_single_tool_result_projection_stores_raw_content(tmp_path) -> None:
     agent = Agent(
@@ -454,15 +526,22 @@ async def test_agent_single_tool_result_projection_stores_raw_content(tmp_path) 
             tool_result_store_agent_id="main",
         ),
     )
-    raw_output = "single bulky output\n" + ("x" * 4000)
+    raw_output = "single bulky output\n" + ("x" * 8000)
 
-    result = await agent._compress_tool_result(
-        ToolResult(
-            tool_use_id="tool-1",
-            tool_name="execute_code",
-            content=raw_output,
-        )
-    )
+    messages = [
+        Message(
+            role="assistant",
+            content=[ContentBlockToolUse(id="tool-1", name="execute_code", input={})],
+        ),
+        Message(
+            role="user",
+            content=[ContentBlockToolResult(tool_use_id="tool-1", content=raw_output)],
+        ),
+    ]
+
+    projected = agent._compact_aggregate_tool_results_for_provider(messages)
+    result = projected[1].content[0]
+    assert isinstance(result, ContentBlockToolResult)
 
     assert "[tool_result_projection]" in result.content
     assert "tool_result_handle:" in result.content
@@ -496,15 +575,27 @@ async def test_agent_tool_result_projection_skips_raw_handle_when_store_over_bud
         ),
     )
 
-    result = await agent._compress_tool_result(
-        ToolResult(
-            tool_use_id="tool-1",
-            tool_name="execute_code",
-            content="single bulky output\n" + ("x" * 4000),
-        )
-    )
+    messages = [
+        Message(
+            role="assistant",
+            content=[ContentBlockToolUse(id="tool-1", name="execute_code", input={})],
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="tool-1",
+                    content="single bulky output\n" + ("x" * 8000),
+                )
+            ],
+        ),
+    ]
 
-    assert "[tool_result_projection]" not in result.content
+    projected = agent._compact_aggregate_tool_results_for_provider(messages)
+    result = projected[1].content[0]
+    assert isinstance(result, ContentBlockToolResult)
+
+    assert "[tool_result_projection]" in result.content
     assert "tool_result_handle:" not in result.content
     assert agent.config.metadata["tool_result_store_skips"] == 1
     assert not list((tmp_path / "tool-results").rglob("content.txt"))
@@ -585,7 +676,7 @@ def test_agent_provider_backstop_classifies_external_results_from_tool_use_names
                     content=[
                         ContentBlockToolResult(
                             tool_use_id=tool_id,
-                            content=f"fetch {index}\n" + ("x" * 500),
+                            content=f"fetch {index}\n" + ("x" * 5000),
                             is_error=False,
                         )
                     ],
@@ -604,8 +695,12 @@ def test_agent_provider_backstop_classifies_external_results_from_tool_use_names
     ]
     assert "fetch 3" in external_contents[-1]
     assert "fetch 2" in external_contents[-2]
-    assert any("external_tool_result_compacted" in content for content in external_contents[:2])
-    assert sum(len(content) for content in external_contents) <= 1300
+    assert any("[tool_result_projection]" in content for content in external_contents[:2])
+    assert any(
+        "external tool result compacted for provider request context" in content
+        for content in external_contents[:2]
+    )
+    assert sum(len(content) for content in external_contents) < 4 * (len("fetch 0\n") + 5000)
 
 
 def test_agent_provider_backstop_preserves_sessions_yield_control_json() -> None:
@@ -1171,7 +1266,8 @@ async def test_agent_provider_view_omits_loaded_history_tool_arguments() -> None
     assert large_argument not in payload
     assert "x" * 1000 not in payload
     assert "old reasoning" not in payload
-    assert "historical_tool_argument_omitted" in payload
+    assert "historical_tool_argument_omitted" not in payload
+    assert "invalid_provider_context_projection:write_file.content" in payload
 
 
 @pytest.mark.asyncio
@@ -1230,7 +1326,8 @@ async def test_agent_preserves_deepseek_reasoning_while_projecting_history_paylo
     )
     assert large_argument not in payload
     assert "x" * 1000 not in payload
-    assert "historical_tool_argument_omitted" in payload
+    assert "historical_tool_argument_omitted" not in payload
+    assert "invalid_provider_context_projection:write_file.content" in payload
 
 
 @pytest.mark.asyncio
@@ -1491,6 +1588,124 @@ async def test_agent_request_context_repeats_across_tool_loop_without_persisting
 
 
 @pytest.mark.asyncio
+async def test_agent_preserves_large_tool_result_and_projects_provider_copy(
+    tmp_path,
+) -> None:
+    provider = ToolLoopCapturingProvider()
+    raw_output = "single bulky output\n" + ("x" * 5000)
+
+    async def tool_handler(call: Any) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content=raw_output,
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            context_window_tokens=200,
+            max_iterations=2,
+            tool_result_store_dir=str(tmp_path / "tool-results"),
+            tool_result_store_session_id="session-1",
+            tool_result_store_session_key="agent:main:webchat:test",
+            tool_result_store_agent_id="main",
+        ),
+        tool_handler=tool_handler,
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    result_event = next(
+        event
+        for event in events
+        if isinstance(event, ToolResultEvent) and event.tool_use_id == "tool-1"
+    )
+    assert result_event.result == raw_output
+    history_result = next(
+        block
+        for message in agent._history
+        if message.role == "user" and isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult) and block.tool_use_id == "tool-1"
+    )
+    assert history_result.content == raw_output
+
+    assert len(provider.calls) == 2
+    replay_result = next(
+        block
+        for message in provider.calls[1]["messages"]
+        if message.role == "user" and isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult) and block.tool_use_id == "tool-1"
+    )
+    assert replay_result.content != raw_output
+    assert "[tool_result_projection]" in replay_result.content
+    assert "tool_result_handle:" in replay_result.content
+    assert "single bulky output" in replay_result.content
+    assert len(replay_result.content) < len(raw_output)
+
+    handle = next(
+        line.split(":", 1)[1].strip()
+        for line in replay_result.content.splitlines()
+        if line.startswith("tool_result_handle:")
+    )
+    from opensquilla.engine.tool_result_store import ToolResultStore
+
+    record = ToolResultStore(tmp_path / "tool-results").read(handle, session_id="session-1")
+    assert record.content == raw_output
+
+
+def test_agent_provider_request_messages_project_overflow_retry_tool_results(
+    tmp_path,
+) -> None:
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=200,
+            tool_result_store_dir=str(tmp_path / "tool-results"),
+            tool_result_store_session_id="session-1",
+            tool_result_store_session_key="agent:main:webchat:test",
+            tool_result_store_agent_id="main",
+        ),
+    )
+    raw_output = "overflow retry bulky output\n" + ("x" * 8000)
+    messages = [
+        Message(
+            role="assistant",
+            content=[ContentBlockToolUse(id="tool-1", name="execute_code", input={})],
+        ),
+        Message(
+            role="user",
+            content=[ContentBlockToolResult(tool_use_id="tool-1", content=raw_output)],
+        ),
+    ]
+
+    request_messages = agent._provider_request_messages(
+        messages,
+        request_context_message=None,
+        request_context_insert_index=0,
+        runtime_context_message=Message(role="user", content="[Runtime context]"),
+        runtime_context_insert_index=len(messages),
+    )
+
+    original_result = messages[1].content[0]
+    assert isinstance(original_result, ContentBlockToolResult)
+    assert original_result.content == raw_output
+    request_result = next(
+        block
+        for message in request_messages
+        if message.role == "user" and isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult) and block.tool_use_id == "tool-1"
+    )
+    assert request_result.content != raw_output
+    assert "[tool_result_projection]" in request_result.content
+    assert "tool_result_handle:" in request_result.content
+    assert len(request_result.content) < len(raw_output)
+
+
+@pytest.mark.asyncio
 async def test_agent_keeps_large_tool_arguments_during_tool_replay(tmp_path) -> None:
     large_code = "print('start')\n" + ("x = 1\n" * 500) + "print('end')\n"
     provider = LargeArgumentToolLoopCapturingProvider(large_code)
@@ -1618,7 +1833,7 @@ async def test_agent_refuses_copied_tool_argument_projection_without_dispatch(
         ensure_ascii=False,
     )
     assert "tool-2" not in replay_payload
-    assert "invalid_provider_context_projection" not in replay_payload
+    assert "tool_use_argument_projection" not in replay_payload
 
 
 @pytest.mark.asyncio

@@ -41,11 +41,13 @@ def _make_envelope(
 def _make_storage() -> Any:
     storage = MagicMock()
     task_db: dict[str, AgentTaskRecord] = {}
+    storage.updates = []
 
     async def create(record: AgentTaskRecord) -> None:
         task_db[record.task_id] = record
 
     async def update(task_id: str, **kwargs: Any) -> None:
+        storage.updates.append((task_id, dict(kwargs)))
         rec = task_db.get(task_id)
         if rec is None:
             return
@@ -70,6 +72,7 @@ def _make_runtime(
     *,
     turn_handler: Callable[..., Awaitable[Any]],
     turn_hard_deadline_s: float | None,
+    running_heartbeat_interval_s: float | None = 30.0,
 ) -> TaskRuntime:
     return TaskRuntime(
         storage=_make_storage(),
@@ -77,6 +80,7 @@ def _make_runtime(
         max_concurrency=1,
         max_pending_per_session=8,
         turn_hard_deadline_s=turn_hard_deadline_s,
+        running_heartbeat_interval_s=running_heartbeat_interval_s,
     )
 
 
@@ -181,6 +185,46 @@ async def test_no_deadline_keeps_legacy_behaviour() -> None:
     handler_release.set()
     record = await rt.wait(handle.task_id, timeout=2.0)
     assert record.status == AgentTaskStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_running_task_heartbeat_refreshes_updated_at_until_terminal() -> None:
+    handler_started = asyncio.Event()
+    handler_release = asyncio.Event()
+    storage = _make_storage()
+
+    async def slow_handler(_run: Any) -> None:
+        handler_started.set()
+        await handler_release.wait()
+
+    rt = TaskRuntime(
+        storage=storage,
+        turn_handler=slow_handler,
+        max_concurrency=1,
+        max_pending_per_session=8,
+        turn_hard_deadline_s=None,
+        running_heartbeat_interval_s=0.02,
+    )
+
+    env = _make_envelope("agent-1::sess-heartbeat")
+    handle = await rt.enqueue(env, "hi")
+    await asyncio.wait_for(handler_started.wait(), timeout=1.0)
+    await asyncio.sleep(0.07)
+
+    heartbeat_updates = [
+        fields
+        for task_id, fields in storage.updates
+        if task_id == handle.task_id and set(fields) == {"updated_at"}
+    ]
+    assert heartbeat_updates
+
+    handler_release.set()
+    record = await rt.wait(handle.task_id, timeout=2.0)
+    assert record.status == AgentTaskStatus.SUCCEEDED
+
+    update_count_after_terminal = len(storage.updates)
+    await asyncio.sleep(0.05)
+    assert len(storage.updates) == update_count_after_terminal
 
 
 @pytest.mark.asyncio

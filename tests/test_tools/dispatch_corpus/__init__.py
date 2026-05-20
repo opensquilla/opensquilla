@@ -706,8 +706,8 @@ def _case_argument_clamping_truncates() -> CorpusCase:
     """
     Argument clamping — legacy lines 348–352.
 
-    web_fetch with max_chars=9_999_999 must be clamped to policy.max_web_fetch_chars
-    (default 12_000) before the handler runs.
+    web_fetch with max_chars=9_999_999 must be clamped to the run policy's
+    default single-fetch cap before the handler runs.
     """
     return CorpusCase(
         name="argument_clamping_truncates",
@@ -727,8 +727,8 @@ def _case_run_budget_exhausted_before_handler() -> CorpusCase:
     Run-budget reservation denial — handler is not called.
 
     The per-turn web_fetch call budget is already exhausted at reservation time.
-    Dispatch must build a ToolRunBudgetExceededError envelope and still run
-    after_tool hooks against that envelope.
+    Dispatch must return a non-error control payload and still run after_tool
+    hooks against that payload.
     """
     def _ctx() -> ToolContext:
         from opensquilla.result_budget import ToolRunBudgetPolicy
@@ -756,20 +756,19 @@ def _case_run_budget_exhausted_before_handler() -> CorpusCase:
         ),
         ctx_factory=_ctx,
         registry_factory=_web_fetch_registry,
-        expected_is_error=True,
-        expected_error_class="ToolRunBudgetExceededError",
-        expected_status_status="error",
+        expected_is_error=False,
+        expected_status_status="unknown",
         expected_status_reason="tool_run_budget_exhausted",
     )
 
 
 def _case_run_budget_exhausted_after_handler() -> CorpusCase:
     """
-    Run-budget result denial — handler returns too much external text.
+    Run-budget result accounting — handler returns too much external text.
 
-    The reservation succeeds, but committing the returned external text exceeds
-    the per-turn run budget. Dispatch must convert that budget exception into
-    the same ToolRunBudgetExceededError envelope shape as reservation denial.
+    The reservation succeeds, and dispatch returns the current result instead
+    of turning a completed call into a tool error. The exhausted text budget
+    controls future reservations.
     """
     def _ctx() -> ToolContext:
         from opensquilla.result_budget import ToolRunBudgetPolicy
@@ -818,10 +817,7 @@ def _case_run_budget_exhausted_after_handler() -> CorpusCase:
         ),
         ctx_factory=_ctx,
         registry_factory=_reg,
-        expected_is_error=True,
-        expected_error_class="ToolRunBudgetExceededError",
-        expected_status_status="error",
-        expected_status_reason="tool_run_budget_exhausted",
+        expected_is_error=False,
     )
 
 

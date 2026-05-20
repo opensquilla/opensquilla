@@ -187,6 +187,40 @@ class _ProviderRequestBudgetExceededProvider:
         return []
 
 
+class _RepeatedToolFailureThenDoneProvider:
+    provider_name = "fake"
+
+    def __init__(self, *, tool_retries: int = 3) -> None:
+        self.tool_retries = tool_retries
+        self.calls: list[list[Message]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        return self._stream(len(self.calls))
+
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number > self.tool_retries:
+            yield ProviderText(text="handled")
+            yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
+            return
+        tool_use_id = f"cmd-{call_number}"
+        yield ProviderToolUseStart(tool_use_id=tool_use_id, tool_name="exec_command")
+        yield ProviderToolUseEnd(
+            tool_use_id=tool_use_id,
+            tool_name="exec_command",
+            arguments={"command": "python build_pptx.py", "timeout": 30},
+        )
+        yield ProviderDone(stop_reason="tool_calls", input_tokens=1, output_tokens=1)
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
 class _ConfigCapturingProvider:
     provider_name = "fake"
 
@@ -357,6 +391,101 @@ async def test_agent_tool_failure_loop_allows_changed_arguments() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_tool_failure_loop_result_returns_to_model_instead_of_terminal_error() -> None:
+    provider = _RepeatedToolFailureThenDoneProvider(tool_retries=3)
+    handler_calls = 0
+
+    async def _failing_tool(call: Any) -> ToolResult:
+        nonlocal handler_calls
+        handler_calls += 1
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="syntax error",
+            is_error=True,
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            tool_failure_loop_block_threshold=3,
+            max_iterations=5,
+            flush_enabled=False,
+        ),
+        tool_handler=_failing_tool,
+    )
+
+    events = [event async for event in agent.run_turn("build the deck")]
+
+    assert handler_calls == 2
+    assert len(provider.calls) == 4
+    assert any(isinstance(event, DoneEvent) for event in events)
+    assert not any(
+        isinstance(event, ErrorEvent)
+        and getattr(event, "code", None) == "tool_failure_loop_exhausted"
+        for event in events
+    )
+    assert any(
+        getattr(event, "kind", None) == "tool_result"
+        and (getattr(event, "execution_status", None) or {}).get("reason")
+        == "tool_failure_loop_exhausted"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_failure_loop_resets_after_successful_state_change() -> None:
+    calls: list[str] = []
+
+    async def _tool(call: Any) -> ToolResult:
+        calls.append(call.tool_name)
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="ok" if call.tool_name == "edit_file" else "syntax error",
+            is_error=call.tool_name != "edit_file",
+        )
+
+    agent = Agent(
+        provider=_ContextOverflowProvider(success_after=1),
+        config=AgentConfig(tool_failure_loop_block_threshold=3),
+        tool_handler=_tool,
+    )
+    command_call = ToolCall(
+        tool_use_id="cmd-1",
+        tool_name="exec_command",
+        arguments={"command": "python build_pptx.py", "timeout": 30},
+    )
+
+    await agent._execute_tool(command_call)
+    await agent._execute_tool(
+        ToolCall(
+            tool_use_id="cmd-2",
+            tool_name="exec_command",
+            arguments=command_call.arguments,
+        )
+    )
+    await agent._execute_tool(
+        ToolCall(
+            tool_use_id="edit-1",
+            tool_name="edit_file",
+            arguments={"path": "build_pptx.py", "old_text": "bad", "new_text": "good"},
+        )
+    )
+    retry_after_edit = await agent._execute_tool(
+        ToolCall(
+            tool_use_id="cmd-3",
+            tool_name="exec_command",
+            arguments=command_call.arguments,
+        )
+    )
+
+    assert calls == ["exec_command", "exec_command", "edit_file", "exec_command"]
+    assert retry_after_edit.content == "syntax error"
+    assert retry_after_edit.execution_status is None
+
+
+@pytest.mark.asyncio
 async def test_agent_blocks_repeated_missing_tool_handler_failures() -> None:
     agent = Agent(
         provider=_ContextOverflowProvider(success_after=1),
@@ -441,6 +570,11 @@ def test_agent_child_config_inherits_context_and_flush_budget_policy() -> None:
             provider_request_proof_max_chars=123_456,
             tool_use_argument_provider_request_max_chars=12_345,
             tool_result_provider_request_max_chars=54_321,
+            max_turn_llm_calls=9,
+            max_turn_input_tokens=700_000,
+            max_turn_output_tokens=70_000,
+            max_turn_billed_cost_usd=0.75,
+            max_turn_tool_errors=4,
             flush_enabled=True,
             flush_timeout_seconds=1.5,
             flush_background_timeout_seconds=15.0,
@@ -457,6 +591,11 @@ def test_agent_child_config_inherits_context_and_flush_budget_policy() -> None:
     assert child.config.provider_request_proof_max_chars == 123_456
     assert child.config.tool_use_argument_provider_request_max_chars == 12_345
     assert child.config.tool_result_provider_request_max_chars == 54_321
+    assert child.config.max_turn_llm_calls == 9
+    assert child.config.max_turn_input_tokens == 700_000
+    assert child.config.max_turn_output_tokens == 70_000
+    assert child.config.max_turn_billed_cost_usd == 0.75
+    assert child.config.max_turn_tool_errors == 4
     assert child.config.flush_enabled is True
     assert child.config.flush_timeout_seconds == 1.5
     assert child.config.flush_background_timeout_seconds == 15.0

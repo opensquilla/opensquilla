@@ -12,8 +12,11 @@ const ChatView = (() => {
   let _sessionKey = '';
   let _pendingSessionIntent = null;
 
-  // Browser-scoped elevated mode. "full" maps to /elevated full.
+  // Browser-scoped elevated mode. "bypass" skips approval prompts while
+  // keeping sensitive-path checks; "full" also bypasses sensitive-path gates.
   const _ELEVATED_MODE_KEY = 'opensquilla.elevatedMode';
+  const _ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version';
+  const _ELEVATED_MODE_STORAGE_VERSION = '2';
   let _elevatedMode = '';
   let _globalElevatedMode = '';
   // The /api/elevated-mode endpoint is owner-only. When the gateway is bound
@@ -1024,9 +1027,9 @@ const ChatView = (() => {
           return;
         }
         const ok = window.confirm(
-          'Enable Bypass All Permissions for this browser session? This maps to /elevated full: host execution, no approval prompts, and sensitive-path checks bypassed.'
+          'Enable approval bypass for this browser session? This maps to /elevated bypass: host execution without approval prompts, while sensitive-path checks remain active.'
         );
-        if (ok) _setElevatedMode('full', { toast: true, sync: true });
+        if (ok) _setElevatedMode('bypass', { toast: true, sync: true });
       });
     }
 
@@ -1705,7 +1708,18 @@ const ChatView = (() => {
 
   function _loadElevatedMode() {
     let mode = '';
-    try { mode = localStorage.getItem(_ELEVATED_MODE_KEY) || ''; } catch {}
+    let version = '';
+    try {
+      mode = localStorage.getItem(_ELEVATED_MODE_KEY) || '';
+      version = localStorage.getItem(_ELEVATED_MODE_VERSION_KEY) || '';
+    } catch {}
+    if (mode === 'full' && version !== _ELEVATED_MODE_STORAGE_VERSION) {
+      mode = 'bypass';
+      try {
+        localStorage.setItem(_ELEVATED_MODE_KEY, mode);
+        localStorage.setItem(_ELEVATED_MODE_VERSION_KEY, _ELEVATED_MODE_STORAGE_VERSION);
+      } catch {}
+    }
     _setElevatedMode(mode, { persist: false, toast: false, sync: true });
   }
 
@@ -1714,8 +1728,13 @@ const ChatView = (() => {
     _elevatedMode = normalized;
     if (options.persist !== false) {
       try {
-        if (normalized) localStorage.setItem(_ELEVATED_MODE_KEY, normalized);
-        else localStorage.removeItem(_ELEVATED_MODE_KEY);
+        if (normalized) {
+          localStorage.setItem(_ELEVATED_MODE_KEY, normalized);
+          localStorage.setItem(_ELEVATED_MODE_VERSION_KEY, _ELEVATED_MODE_STORAGE_VERSION);
+        } else {
+          localStorage.removeItem(_ELEVATED_MODE_KEY);
+          localStorage.removeItem(_ELEVATED_MODE_VERSION_KEY);
+        }
       } catch {}
     }
     _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
@@ -1724,10 +1743,10 @@ const ChatView = (() => {
     if (options.toast) {
       UI.toast(
         normalized
-          ? `Bypass mode: ${normalized}`
+          ? `Session permission mode: ${normalized}`
           : (_globalElevatedMode
               ? `Session override cleared; global mode: ${_globalElevatedMode}`
-              : 'Bypass mode disabled'),
+              : 'Session permission override cleared'),
         normalized ? 'warn' : 'info',
         2500
       );
@@ -1746,10 +1765,13 @@ const ChatView = (() => {
       if (resp.status === 403) {
         // Owner-only endpoint, but the current connection isn't a local-owner
         // session (typically: gateway bound to 0.0.0.0). Latch the disabled
-        // state, clear any cached "full" mode, refresh the pill UI, and let
+        // state, clear any cached elevated mode, refresh the pill UI, and let
         // the user know once instead of toasting on every click.
         _elevatedUnavailable = true;
-        try { localStorage.removeItem(_ELEVATED_MODE_KEY); } catch {}
+        try {
+          localStorage.removeItem(_ELEVATED_MODE_KEY);
+          localStorage.removeItem(_ELEVATED_MODE_VERSION_KEY);
+        } catch {}
         _elevatedMode = '';
         _updateElevatedPill();
         UI.toast(
@@ -1796,7 +1818,7 @@ const ChatView = (() => {
     } else {
       _elevatedPill.textContent = 'Bypass Off';
       _elevatedPill.title =
-        'Approval prompts active. Click to enable full bypass for this browser session.';
+        'Approval prompts active. Click to enable approval bypass for this browser session.';
     }
   }
 

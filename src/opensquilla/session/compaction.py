@@ -170,16 +170,19 @@ def estimate_entry_replay_tokens(entry: Any) -> int:
     content_tokens = persisted_tokens or (_estimate_tokens(str(content)) if content else 0)
 
     extra_parts: list[str] = []
-    content = _entry_get(entry, "content") or ""
     tool_calls = _entry_get(entry, "tool_calls")
     if tool_calls:
-        extra_parts.append(_json_text(tool_calls))
+        tool_summary = _summarize_tool_calls_for_llm(tool_calls)
+        extra_parts.append(tool_summary or _json_text(tool_calls))
     tool_call_id = _entry_get(entry, "tool_call_id")
     if tool_call_id:
         extra_parts.append(str(tool_call_id))
     reasoning_content = _entry_get(entry, "reasoning_content")
     if reasoning_content:
-        extra_parts.append(str(reasoning_content))
+        extra_parts.append(
+            "[assistant reasoning omitted from compaction input: "
+            f"{len(str(reasoning_content))} chars]"
+        )
     extra_tokens = _estimate_tokens("\n".join(extra_parts)) if extra_parts else 0
     return content_tokens + extra_tokens
 

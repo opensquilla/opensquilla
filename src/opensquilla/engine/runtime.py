@@ -11,6 +11,7 @@ import base64
 import binascii
 import contextvars
 import copy
+import hashlib
 import inspect
 import json
 import os
@@ -542,6 +543,13 @@ def _prepend_request_context_prompt(
 
 _MAX_TOOL_RESULT_CHARS = 2000
 _MAX_TOOL_RESULT_METADATA_VALUE_CHARS = 256
+_MAX_PERSISTED_TOOL_ARGUMENT_FIELD_CHARS = 4096
+_PERSISTED_TOOL_ARGUMENT_PREVIEW_CHARS = 512
+_PERSISTED_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted]\n"
+_TOOL_ARGUMENT_PAYLOAD_FIELDS: Final[dict[str, frozenset[str]]] = {
+    "write_file": frozenset({"content"}),
+    "edit_file": frozenset({"old_text", "new_text"}),
+}
 _TOOL_RESULT_METADATA_KEYS: Final[frozenset[str]] = frozenset(
     {
         "provider",
@@ -666,6 +674,75 @@ def _json_tool_result_preview(parsed: Any, original_chars: int, max_chars: int) 
     if len(rendered) <= max_chars:
         return rendered
     return json.dumps({"result_truncated": True}, ensure_ascii=False)
+
+
+def _tool_argument_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _persisted_tool_argument_projection(
+    *,
+    tool_name: str,
+    tool_use_id: str,
+    field: str,
+    value_text: str,
+    path_hint: Any,
+) -> str:
+    lines = [
+        _PERSISTED_TOOL_ARGUMENT_PROJECTION_PREFIX.rstrip("\n"),
+        f"tool: {tool_name}",
+        f"tool_use_id: {tool_use_id}",
+        f"field: {field}",
+        f"original_chars: {len(value_text)}",
+        f"sha256: {hashlib.sha256(value_text.encode('utf-8')).hexdigest()}",
+    ]
+    if isinstance(path_hint, str) and path_hint.strip():
+        lines.append(f"path: {path_hint.strip()}")
+    lines.extend(
+        [
+            "head:",
+            value_text[:_PERSISTED_TOOL_ARGUMENT_PREVIEW_CHARS],
+            "tail:",
+            value_text[-_PERSISTED_TOOL_ARGUMENT_PREVIEW_CHARS:],
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _persisted_tool_use_input(
+    tool_name: str,
+    tool_use_id: str,
+    arguments: dict[str, Any],
+    *,
+    max_field_chars: int = _MAX_PERSISTED_TOOL_ARGUMENT_FIELD_CHARS,
+) -> dict[str, Any]:
+    """Create the transcript-safe input for persisted file-writing tool calls."""
+
+    payload_fields = _TOOL_ARGUMENT_PAYLOAD_FIELDS.get(tool_name)
+    if not payload_fields:
+        return arguments
+
+    projected = dict(arguments)
+    changed = False
+    path_hint = projected.get("path")
+    for argument_name in payload_fields:
+        if argument_name not in projected:
+            continue
+        value_text = _tool_argument_text(projected[argument_name])
+        if len(value_text) <= max_field_chars:
+            continue
+        projected[argument_name] = _persisted_tool_argument_projection(
+            tool_name=tool_name,
+            tool_use_id=tool_use_id,
+            field=argument_name,
+            value_text=value_text,
+            path_hint=path_hint,
+        )
+        changed = True
+
+    return projected if changed else arguments
 
 
 def _persisted_tool_result_segment(

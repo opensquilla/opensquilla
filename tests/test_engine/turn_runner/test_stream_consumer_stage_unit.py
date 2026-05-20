@@ -28,6 +28,7 @@ from opensquilla.engine.turn_runner.stream_consumer_stage import (
     _ErrorHandler,
     _StreamState,
     _TextDeltaHandler,
+    _ToolResultHandler,
     _ToolUseStartHandler,
     _WarningHandler,
 )
@@ -37,6 +38,7 @@ from opensquilla.engine.types import (
     DoneEvent,
     ErrorEvent,
     TextDeltaEvent,
+    ToolResultEvent,
     ToolUseStartEvent,
     WarningEvent,
 )
@@ -381,6 +383,72 @@ def test_tool_use_start_handler_flushes_text_and_appends_segment() -> None:
     ]
     assert state.current_text_parts == []
     assert state.final_text_parts == ["pre"]  # unchanged when not synthetic
+
+
+def test_tool_result_handler_projects_large_write_file_arguments() -> None:
+    state = _make_state()
+    state.turn_segments.append(
+        {
+            "type": "tool_use",
+            "tool_use_id": "write-1",
+            "name": "write_file",
+            "input": "",
+        }
+    )
+    large_content = "HTML_START\n" + ("x" * 6000)
+
+    _ToolResultHandler().handle(
+        ToolResultEvent(
+            tool_use_id="write-1",
+            tool_name="write_file",
+            result="Written 6011 bytes to index.html",
+            arguments={"path": "index.html", "content": large_content},
+        ),
+        state,
+    )
+
+    tool_use = state.turn_segments[0]
+    assert tool_use["input"]["path"] == "index.html"
+    projected_content = tool_use["input"]["content"]
+    assert projected_content.startswith("[historical_tool_argument_omitted]\n")
+    assert "tool: write_file" in projected_content
+    assert "field: content" in projected_content
+    assert "path: index.html" in projected_content
+    assert "sha256:" in projected_content
+    assert large_content not in projected_content
+    assert len(projected_content) < len(large_content)
+    assert state.turn_segments[1] == {
+        "type": "tool_result",
+        "tool_use_id": "write-1",
+        "name": "write_file",
+        "result": "Written 6011 bytes to index.html",
+        "is_error": False,
+    }
+
+
+def test_tool_result_handler_keeps_small_write_file_arguments() -> None:
+    state = _make_state()
+    state.turn_segments.append(
+        {
+            "type": "tool_use",
+            "tool_use_id": "write-1",
+            "name": "write_file",
+            "input": "",
+        }
+    )
+    arguments = {"path": "index.html", "content": "<h1>ok</h1>"}
+
+    _ToolResultHandler().handle(
+        ToolResultEvent(
+            tool_use_id="write-1",
+            tool_name="write_file",
+            result="Written 11 bytes to index.html",
+            arguments=arguments,
+        ),
+        state,
+    )
+
+    assert state.turn_segments[0]["input"] is arguments
 
 
 def test_artifact_handler_appends_payload() -> None:

@@ -18,6 +18,8 @@ gating, no operator audit log entry beyond a structured log line.
 
 from __future__ import annotations
 
+import re
+
 import structlog
 
 from opensquilla.engine.pipeline import TurnContext
@@ -25,6 +27,26 @@ from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
 from opensquilla.skills.meta.types import MetaMatch
 
 log = structlog.get_logger(__name__)
+
+
+def _trigger_matches(trigger: str, message_lower: str) -> bool:
+    """Match a trigger phrase against the user message.
+
+    * Pure-ASCII triggers (English) require word boundaries — so the
+      trigger "research report" does NOT fire on
+      "How does the *research report* meta-skill work?" because the
+      phrase is embedded in a larger sentence about the skill itself.
+    * Triggers containing CJK characters fall back to substring match
+      since Chinese phrases have no word boundaries in the regex sense
+      and are typically distinctive enough (e.g. "合规审计") that
+      substring matching does not produce ambiguous fires.
+    """
+    tl = trigger.lower()
+    if tl not in message_lower:
+        return False
+    if all(ord(c) < 128 for c in tl):
+        return bool(re.search(r"\b" + re.escape(tl) + r"\b", message_lower))
+    return True
 
 
 async def meta_resolution(ctx: TurnContext) -> TurnContext:
@@ -40,7 +62,12 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         log.warning("meta_resolution.load_failed", error=str(exc))
         return ctx
 
-    message_lower = (ctx.semantic_message or "").lower()
+    # Use ``ctx.message`` (not ``semantic_message``) so the string used
+    # for matching is the same one stuffed into ``MetaMatch.inputs``
+    # downstream. Earlier divergence — match on semantic, render on raw
+    # — meant downstream Jinja templates could see a different message
+    # than the one that fired the trigger.
+    message_lower = (ctx.message or "").lower()
     if not message_lower:
         return ctx
 
@@ -49,7 +76,9 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         if getattr(spec, "kind", "skill") != "meta":
             continue
         triggers = getattr(spec, "triggers", None) or []
-        if not any(isinstance(t, str) and t and t.lower() in message_lower for t in triggers):
+        if not any(
+            isinstance(t, str) and t and _trigger_matches(t, message_lower) for t in triggers
+        ):
             continue
         try:
             plan = parse_meta_plan(spec)
@@ -80,5 +109,8 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         "meta_resolution.matched",
         meta_skill=getattr(chosen_plan, "name", ""),
         candidates=len(matched),
+        # Include the head of the actual input so an operator can
+        # diagnose accidental fires from the log alone.
+        message_head=(ctx.message or "")[:200],
     )
     return ctx

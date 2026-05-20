@@ -61,14 +61,19 @@ _MIN_TOTAL_ACCURACY = 0.50
 def _load_home_env_into_environ() -> None:
     """Load ``~/.env`` into os.environ (never overrides existing vars).
 
-    Tries Path.home() first (the invoking user's HOME), then the
-    repo-owner home (``/home/zhouhang``) so the harness still finds
-    keys when pytest is run as root inside a dev container.
+    The default candidate is ``Path.home() / ".env"``. When the test is
+    invoked as a different OS user than the one that owns the API key
+    (e.g. ``sudo``, dev container running as root, CI runners), set
+    ``OPENSQUILLA_DEVELOPER_ENV_FILE`` to the absolute path of the
+    ``.env`` to consult — that path is read in addition to the home
+    default. Existing environment variables are never overwritten.
     """
     candidates: list[Path] = [Path.home() / ".env"]
-    fallback_home = Path("/home/zhouhang/.env")
-    if fallback_home not in candidates:
-        candidates.append(fallback_home)
+    extra = os.environ.get("OPENSQUILLA_DEVELOPER_ENV_FILE", "").strip()
+    if extra:
+        extra_path = Path(extra)
+        if extra_path not in candidates:
+            candidates.append(extra_path)
     for env_path in candidates:
         if not env_path.is_file():
             continue

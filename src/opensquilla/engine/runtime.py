@@ -1846,11 +1846,26 @@ class TurnRunner:
                         yield ev
                     return
 
+                # Local import: ``skills.meta.orchestrator`` transitively
+                # depends on ``engine.agent``, importing it at module top
+                # would cycle at first load. Restricting the import to
+                # the meta branch also skips the cost when the turn does
+                # not use a Meta-Skill.
                 from opensquilla.skills.meta.orchestrator import (
                     MetaOrchestrator,
                     make_agent_runner_from_parent,
                     make_llm_chat_from_provider,
                     make_tool_invoker_from_handler,
+                )
+
+                # The outer pipeline already guarantees provider is set
+                # whenever meta_match is present (meta_resolution runs
+                # AFTER resolve_model + apply_squilla_router); be loud
+                # if that invariant ever breaks instead of letting a
+                # None cast through into the orchestrator.
+                assert provider is not None, (
+                    "meta-skill branch entered with provider=None — "
+                    "pipeline ordering invariant violated"
                 )
 
                 runner = make_agent_runner_from_parent(
@@ -1897,11 +1912,28 @@ class TurnRunner:
                 from opensquilla.skills.meta.types import MetaResult as _MetaResult
 
                 result: _MetaResult | None = None
-                async for orch_ev in orch.iter_events(meta_match):
-                    if isinstance(orch_ev, _MetaResult):
-                        result = orch_ev
-                        continue
-                    yield orch_ev
+                try:
+                    async for orch_ev in orch.iter_events(meta_match):
+                        if isinstance(orch_ev, _MetaResult):
+                            result = orch_ev
+                            continue
+                        yield orch_ev
+                except Exception as exc:  # noqa: BLE001 — must fall back gracefully
+                    # An exception raised out of ``iter_events`` (e.g.
+                    # scheduler crash, template render error, sub-Agent
+                    # blow-up) would otherwise bypass the SKILL.md
+                    # fallback below and surface as a generic outer
+                    # error to the user. Synthesize a failure result
+                    # so the same fallback path runs.
+                    log.warning(
+                        "meta_orchestrator.unhandled_exception",
+                        skill=meta_match.plan.name,
+                        error=str(exc),
+                    )
+                    result = _MetaResult(
+                        ok=False,
+                        error=f"orchestrator raised: {exc}",
+                    )
 
                 if result is None:
                     result = _MetaResult(
@@ -1926,7 +1958,13 @@ class TurnRunner:
                     "Partial outputs from completed steps:",
                 ]
                 for sid, text in result.step_outputs.items():
-                    snippet = text if len(text) <= 400 else text[:400] + "..."
+                    # Match the step-card preview cap from commit 6e1fadd
+                    # (100 chars) so the fallback prompt does not
+                    # balloon when many partial outputs are present.
+                    snippet = (
+                        text if len(text) <= 100
+                        else f"{text[:80]}… ({len(text)} chars)"
+                    )
                     fallback_lines.append(f"  [{sid}] {snippet}")
                 fallback_lines.extend(
                     [

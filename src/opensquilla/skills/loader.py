@@ -31,9 +31,9 @@ MAX_SKILL_FILE_BYTES = 256_000  # 256KB per SKILL.md
 MAX_SKILLS_PER_SOURCE = 200  # per layer cap
 
 # Bump when on-disk snapshot fields change so stale caches are invalidated
-# instead of silently losing new fields.
-# v4 (Meta-Skill MVP): added kind, meta_priority, composition_raw.
-_SNAPSHOT_SCHEMA_VERSION = 5  # v5: adds SkillSpec.entrypoint manifest
+# instead of silently losing new fields. v5 (current) adds the Meta-Skill
+# MVP fields: kind, meta_priority, composition_raw, entrypoint manifest.
+_SNAPSHOT_SCHEMA_VERSION = 5
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -403,10 +403,22 @@ class SkillLoader:
                         if spec:
                             prev = merged.get(spec.name)
                             if prev is not None and prev.kind != spec.kind:
-                                raise RuntimeError(
-                                    f"skill {spec.name!r}: kind conflict across layers "
-                                    f"({prev.layer.value}={prev.kind} -> "
-                                    f"{spec.layer.value}={spec.kind})",
+                                # Higher layers override lower layers (per
+                                # the loader contract). Log loud so the
+                                # operator can spot accidental overrides
+                                # — but do NOT raise: an unhandled
+                                # RuntimeError here would break every
+                                # subsequent turn via skills_filter's
+                                # uncaught ``load_all()`` call.
+                                log.warning(
+                                    "skill.kind_override",
+                                    name=spec.name,
+                                    prev_kind=prev.kind,
+                                    new_kind=spec.kind,
+                                    prev_layer=prev.layer.value,
+                                    new_layer=spec.layer.value,
+                                    prev_path=str(getattr(prev, "base_dir", "")),
+                                    new_path=str(getattr(spec, "base_dir", "")),
                                 )
                             merged[spec.name] = spec
                             layer_count += 1

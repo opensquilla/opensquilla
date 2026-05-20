@@ -85,6 +85,11 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("session", "gateway"),
     ("session", "provider"),
     ("session", "tools"),
+    # skills → engine / provider: deliberate inversion of the microkernel
+    # rule (CLAUDE.md says engine is the kernel). Required by the
+    # meta-orchestrator factories in ``skills.meta.orchestrator`` which
+    # construct sub-Agents and LLM chats. Treat as a controlled exception
+    # to the rest of the directional rules in this file.
     ("skills", "engine"),
     ("skills", "memory"),
     ("skills", "provider"),

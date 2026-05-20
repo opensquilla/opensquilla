@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import math
 import re
 import struct
 import time
@@ -43,6 +44,8 @@ _CJK_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 
 SCHEMA_VERSION = "v2"
 META_KEY = "memory_index_meta_v1"
+VECTOR_NORMALIZATION_META_KEY = "memory_vector_normalization_v1"
+VECTOR_NORMALIZATION_META_VALUE = "l2"
 
 # schema_version carried on every memory table so future shape changes
 # route through a yoyo migration rather than an in-product ALTER TABLE.
@@ -120,6 +123,17 @@ CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);
 
 def _float_list_to_blob(floats: list[float]) -> bytes:
     return struct.pack(f"{len(floats)}f", *floats)
+
+
+def _l2_normalize_vector(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm <= 0.0 or not math.isfinite(norm):
+        return vector
+    return [value / norm for value in vector]
+
+
+def _vector_distance_to_score(distance: float) -> float:
+    return max(0.0, 1.0 - distance / 2.0)
 
 
 def _chunk_id(
@@ -282,6 +296,95 @@ class LongTermMemoryStore:
         await self._db.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
             ("memory_provider_meta", current_meta.to_json()),
+        )
+        await self._db.commit()
+        await self._ensure_vector_normalization()
+
+    async def _ensure_vector_normalization(self) -> None:
+        """Normalize stored vectors once so sqlite-vec distances stay meaningful."""
+        assert self._db is not None
+
+        async with self._db.execute(
+            "SELECT value FROM meta WHERE key = ?", (VECTOR_NORMALIZATION_META_KEY,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row and row[0] == VECTOR_NORMALIZATION_META_VALUE:
+            if not self._vec_available:
+                return
+            async with self._db.execute(
+                "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL"
+            ) as cur:
+                chunk_count_row = await cur.fetchone()
+            chunk_count = chunk_count_row[0] if chunk_count_row else 0
+            if chunk_count == 0:
+                return
+            try:
+                async with self._db.execute("SELECT COUNT(*) FROM chunks_vec") as cur:
+                    vec_count_row = await cur.fetchone()
+                vec_count = vec_count_row[0] if vec_count_row else 0
+            except Exception:
+                vec_count = 0
+            if vec_count >= chunk_count:
+                return
+
+        async with self._db.execute(
+            "SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL"
+        ) as cur:
+            rows = await cur.fetchall()
+
+        normalized_rows: list[tuple[str, list[float]]] = []
+        dims: int | None = None
+        for chunk_id, embedding_json in rows:
+            try:
+                raw = json.loads(embedding_json)
+                if not isinstance(raw, list):
+                    continue
+                vector = [float(value) for value in raw]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                logger.warning("memory_embedding_normalization_skipped", chunk_id=chunk_id)
+                continue
+            normalized = _l2_normalize_vector(vector)
+            if dims is None:
+                dims = len(normalized)
+            if len(normalized) != dims:
+                logger.warning(
+                    "memory_embedding_normalization_dim_mismatch",
+                    chunk_id=chunk_id,
+                    dims=len(normalized),
+                    expected=dims,
+                )
+                continue
+            normalized_rows.append((chunk_id, normalized))
+
+        if normalized_rows:
+            if self._vec_available and dims:
+                try:
+                    await self._db.execute("DROP TABLE IF EXISTS chunks_vec")
+                    await self._ensure_vec_table(dims)
+                except Exception as exc:
+                    logger.warning("memory_vec_rebuild_for_normalization_failed", error=str(exc))
+
+            for chunk_id, normalized in normalized_rows:
+                await self._db.execute(
+                    "UPDATE chunks SET embedding = ? WHERE id = ?",
+                    (json.dumps(normalized), chunk_id),
+                )
+                if self._vec_available and dims and len(normalized) == dims:
+                    try:
+                        await self._db.execute(
+                            "INSERT OR REPLACE INTO chunks_vec(id, embedding) VALUES (?, ?)",
+                            (chunk_id, _float_list_to_blob(normalized)),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "memory_vec_reinsert_after_normalization_failed",
+                            chunk_id=chunk_id,
+                            error=str(exc),
+                        )
+
+        await self._db.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (VECTOR_NORMALIZATION_META_KEY, VECTOR_NORMALIZATION_META_VALUE),
         )
         await self._db.commit()
 
@@ -630,7 +733,8 @@ class LongTermMemoryStore:
             # Insert new chunks
             for i, (cid, p, src, sl, el, h, mdl, txt, ts) in enumerate(chunk_records):
                 emb = embeddings[i]
-                emb_json = json.dumps(emb) if emb else None
+                stored_emb = _l2_normalize_vector(emb) if emb else None
+                emb_json = json.dumps(stored_emb) if stored_emb else None
                 await self._db.execute(
                     """INSERT OR REPLACE INTO chunks
                        (id, path, source, start_line, end_line, hash, model,
@@ -646,9 +750,9 @@ class LongTermMemoryStore:
                     (_segment_for_fts(txt), cid, p, src, mdl, sl, el),
                 )
                 # Vec insert
-                if self._vec_available and emb:
+                if self._vec_available and stored_emb:
                     try:
-                        blob = _float_list_to_blob(emb)
+                        blob = _float_list_to_blob(stored_emb)
                         await self._db.execute(
                             "INSERT OR REPLACE INTO chunks_vec(id, embedding) VALUES (?, ?)",
                             (cid, blob),
@@ -794,7 +898,7 @@ class LongTermMemoryStore:
     ) -> list[tuple[str, float]]:
         """Returns list of (chunk_id, score)."""
         assert self._db is not None
-        blob = _float_list_to_blob(query_vec)
+        blob = _float_list_to_blob(_l2_normalize_vector(query_vec))
         try:
             # sqlite-vec requires 'k = ?' in the virtual table WHERE clause
             # rather than only a LIMIT on the outer query.
@@ -813,8 +917,7 @@ class LongTermMemoryStore:
             sql += " ORDER BY v.distance"
             async with self._db.execute(sql, params) as cur:
                 rows = await cur.fetchall()
-                # Convert distance to score (cosine distance 0=identical, 2=opposite)
-                return [(row[0], max(0.0, 1.0 - row[1] / 2.0)) for row in rows]
+                return [(row[0], _vector_distance_to_score(row[1])) for row in rows]
         except Exception as e:
             logger.warning("vector_search_error", error=str(e))
             return []
@@ -1006,7 +1109,7 @@ class LongTermMemoryStore:
                 vscore = s.get("vector", 0.0)
                 tscore = s.get("text", 0.0)
                 combined = vector_weight * vscore + text_weight * tscore
-                if combined >= relaxed_min_score:
+                if combined >= relaxed_min_score or tscore >= min_score:
                     results.append(
                         MemorySearchResult(
                             chunk_id=cid,

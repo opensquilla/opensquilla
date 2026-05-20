@@ -157,6 +157,71 @@ async def test_hybrid_search_keeps_keyword_hit_when_strict_threshold_drops_all(m
 
 
 @pytest.mark.asyncio
+async def test_hybrid_search_keeps_high_text_hit_when_vector_score_is_zero(monkeypatch):
+    store = LongTermMemoryStore(
+        ":memory:",
+        embedding_provider=NullEmbeddingProvider(),
+    )
+    store._db = await aiosqlite.connect(":memory:")  # type: ignore[assignment]
+    try:
+        await store._ensure_schema()
+        await store._db.execute(  # type: ignore[union-attr]
+            """INSERT INTO chunks
+               (id, path, source, start_line, end_line, hash, model, text, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "high-text-low-vector",
+                "memory/synthetic-keyword.md",
+                MemorySource.memory.value,
+                1,
+                1,
+                "hash",
+                "fts-only",
+                "synthetic keyword evidence only",
+                0.0,
+            ),
+        )
+        await store._db.commit()  # type: ignore[union-attr]
+
+        async def zero_vector_result(_query_vec, _k, _model, **_kwargs):
+            return [("high-text-low-vector", 0.0)]
+
+        async def high_text_result(_query, _k, _min_score, **_kwargs):
+            return [
+                MemorySearchResult(
+                    chunk_id="high-text-low-vector",
+                    path="memory/synthetic-keyword.md",
+                    source=MemorySource.memory,
+                    start_line=1,
+                    end_line=1,
+                    snippet="synthetic keyword evidence only",
+                    score=0.94,
+                    text_score=0.94,
+                    text="synthetic keyword evidence only",
+                )
+            ]
+
+        monkeypatch.setattr(store, "_vector_search", zero_vector_result)
+        monkeypatch.setattr(store, "_fts_search", high_text_result)
+
+        results = await store._hybrid_search(
+            "synthetic keyword",
+            [0.0],
+            k=3,
+            min_score=0.35,
+            vector_weight=0.7,
+            text_weight=0.3,
+        )
+
+        assert [result.chunk_id for result in results] == ["high-text-low-vector"]
+        assert results[0].vector_score == pytest.approx(0.0)
+        assert results[0].text_score == pytest.approx(0.94)
+        _assert_relaxed_keyword_match(results[0])
+    finally:
+        await store._db.close()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
 async def test_hybrid_search_guarantees_strong_keyword_hit_when_vector_hits_exist(monkeypatch):
     store = LongTermMemoryStore(
         ":memory:",

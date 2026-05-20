@@ -64,8 +64,31 @@ SOFTWARE.
 These bundled skill descriptors are authored and maintained by OpenSquilla and
 are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 
+- `latex-compile`
 - `memory`
+- `meta-compliance-audit-bundle`
+- `meta-github-pr-watch-digest`
+- `meta-issue-to-pr-autopilot`
+- `meta-knowledge-base-bootstrap`
+- `meta-long-running-build-watchdog`
+- `meta-migration-assistant`
+- `meta-multi-format-export-pack`
+- `meta-paper-write`
+- `meta-pdf-intelligence`
+- `meta-pdf-reformat-pipeline`
+- `meta-research-to-deck`
+- `meta-scheduled-morning-digest`
 - `meta-security-review-bundle`
+- `meta-self-improving-skill-factory`
+- `meta-spreadsheet-insight`
+- `meta-travel-planner`
+- `meta-web-research-to-report`
+- `meta-web-to-pdf-briefing`
+- `paper-experiment-stub`
+- `paper-outline-author`
+- `paper-plot-stub`
+- `paper-refbib-stub`
+- `paper-section-author`
 
 ## Hermes Agent reference material
 

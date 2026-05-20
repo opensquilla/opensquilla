@@ -15,6 +15,18 @@ metadata:
         "requires": { "anyBins": ["python", "python3"] },
       },
   }
+entrypoint:
+  command: python {baseDir}/scripts/search.py
+  args:
+    - --query
+    - "{{ inputs.user_message }}"
+    - --engines
+    - duckduckgo
+    - --limit
+    - "5"
+    - --json
+  parse: json
+  timeout: 60
 ---
 
 # multi-search-engine

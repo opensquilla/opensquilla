@@ -7,7 +7,6 @@ Skips xelatex-dependent assertions when xelatex isn't installed.
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from collections.abc import AsyncIterator
@@ -104,27 +103,26 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         yield TextDeltaEvent(text="(unexpected sub-Agent invocation)")
         yield DoneEvent(text="")
 
-    # Run the orchestrator with cwd = tmp_path so paper/ is created there.
+    # Each skill_exec step writes relative paths like ``paper/results.csv``;
+    # they must all anchor against the same workspace so a downstream step
+    # can pick up an upstream artefact. Pass ``workspace_dir`` explicitly
+    # (the production runtime does the same from ``_resolve_bootstrap_workspace_dir``).
     workdir = tmp_path / "workspace"
     workdir.mkdir()
-    original_cwd = Path.cwd()
-    os.chdir(workdir)
-    try:
-        orch = MetaOrchestrator(
-            agent_runner=runner,
-            skill_loader=_PatchedLoader(loader, specs),
-        )
-        final: MetaResult | None = None
-        async for ev in orch.iter_events(
-            MetaMatch(
-                plan=plan,
-                inputs={"user_message": "RAG in low-resource settings"},
-            ),
-        ):
-            if isinstance(ev, MetaResult):
-                final = ev
-    finally:
-        os.chdir(original_cwd)
+    orch = MetaOrchestrator(
+        agent_runner=runner,
+        skill_loader=_PatchedLoader(loader, specs),
+        workspace_dir=str(workdir),
+    )
+    final: MetaResult | None = None
+    async for ev in orch.iter_events(
+        MetaMatch(
+            plan=plan,
+            inputs={"user_message": "RAG in low-resource settings"},
+        ),
+    ):
+        if isinstance(ev, MetaResult):
+            final = ev
 
     assert final is not None
     if shutil.which("xelatex") is None:

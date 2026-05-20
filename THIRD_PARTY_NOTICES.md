@@ -80,6 +80,7 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 - `meta-research-to-deck`
 - `meta-scheduled-morning-digest`
 - `meta-security-review-bundle`
+- `meta-skill-creator`
 - `meta-skill-linter`
 - `meta-skill-proposals`
 - `meta-skill-smoke-test`

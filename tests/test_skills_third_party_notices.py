@@ -24,6 +24,7 @@ ORIGINALS = {
     "meta-research-to-deck",
     "meta-scheduled-morning-digest",
     "meta-security-review-bundle",
+    "meta-skill-creator",
     "meta-skill-linter",
     "meta-skill-proposals",
     "meta-skill-smoke-test",

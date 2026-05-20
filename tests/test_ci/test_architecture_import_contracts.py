@@ -94,6 +94,9 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("skills", "memory"),
     ("skills", "provider"),
     ("skills", "safety"),
+    # skills → tools: creator library (skills.creator.proposer) registers
+    # tool descriptors via tools.registry. Same controlled-exception category.
+    ("skills", "tools"),
     ("tools", "agents"),
     ("tools", "channels"),
     ("tools", "engine"),
@@ -257,3 +260,23 @@ def test_new_packages_do_not_join_existing_circular_dependency_baseline() -> Non
     assert not unexpected, "Packages unexpectedly joined import cycles: " + ", ".join(
         sorted(unexpected)
     )
+
+
+def test_proposals_dir_never_under_loader_layer_root() -> None:
+    """Proposals dir (~/.opensquilla/proposals/) must never be `is_relative_to`
+    any loader layer-dir candidate. Phase 1 guarantee."""
+    from opensquilla.paths import default_opensquilla_home
+    from opensquilla.skills.paths import default_managed_skills_dir
+
+    proposals = default_opensquilla_home() / "proposals"
+
+    # Every layer root the loader could be configured with
+    candidates = [
+        default_managed_skills_dir(),
+        default_opensquilla_home() / "skills",
+    ]
+    for cand in candidates:
+        assert not proposals.is_relative_to(cand), (
+            f"proposals dir {proposals} is under layer root {cand}; "
+            "loader could mis-scan proposals as skills"
+        )

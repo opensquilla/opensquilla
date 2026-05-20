@@ -7,6 +7,7 @@ from typing import cast
 import structlog
 
 from opensquilla.artifacts import artifact_payload
+from opensquilla.channels.artifact_delivery import strip_artifact_markers_from_channel_text
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.context_overflow import apply_context_overflow_policy
 from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
@@ -291,6 +292,8 @@ async def _handle_chat_history(params: dict | None, ctx: RpcContext) -> dict:
                             for item in parsed_artifacts
                             if isinstance(item, dict)
                         ]
+                        if artifacts:
+                            content = strip_artifact_markers_from_channel_text(content)
             except (ValueError, KeyError):
                 pass
         # Recover from corrupted Python repr of content blocks (old compaction bug).

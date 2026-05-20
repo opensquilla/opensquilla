@@ -30,8 +30,8 @@ def test_system_messages_are_not_all_rendered_as_subagent_disclosures() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
     assert "_isSubagentCompletionMessage(role, text, options)" in source
-    assert "body.appendChild(_renderSubagentDisclosure(text));" in source
-    assert "body.textContent = text;" in source
+    assert "body.appendChild(_renderSubagentDisclosure(visibleText));" in source
+    assert "body.textContent = visibleText;" in source
 
 
 def test_live_subagent_completion_event_uses_same_renderer() -> None:
@@ -748,7 +748,9 @@ def test_chat_history_fallback_identity_normalizes_assistant_directives() -> Non
 
     assert (
         "if (role === 'assistant') return "
-        "_stripProtocolTextLeak(_stripDirectiveTags(text || '')).trim();"
+        "_stripProtocolTextLeak("
+        "_stripDirectiveTags(_stripGeneratedArtifactMarkers(text || ''))"
+        ").trim();"
         in body
     )
 
@@ -788,8 +790,31 @@ def test_chat_history_replacement_preserves_message_body_rendering() -> None:
     render_body = source[render_start:render_end]
 
     assert "_renderMessageBody(body, role, text, options);" in replace_body
-    assert "Markdown.render(_stripProtocolTextLeak(_stripDirectiveTags(text)))" in render_body
+    visible_text_assignment = (
+        "const visibleText = role === 'assistant' "
+        "? _stripGeneratedArtifactMarkers(text) : text;"
+    )
+    markdown_render = (
+        "Markdown.render(_stripProtocolTextLeak(_stripDirectiveTags(visibleText)))"
+    )
+    assert visible_text_assignment in render_body
+    assert markdown_render in render_body
     assert "Markdown.bindHighlight(body);" in render_body
+
+
+def test_chat_streaming_text_strips_generated_artifact_markers() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    flush_start = source.index("function _flushRender()")
+    flush_end = source.index("  function _endStreaming", flush_start)
+    flush_body = source[flush_start:flush_end]
+    end_start = source.index("function _endStreaming")
+    end_end = source.index("  /* ── Attachments", end_start)
+    end_body = source[end_start:end_end]
+
+    assert "function _stripGeneratedArtifactMarkers(text)" in source
+    assert "_stripGeneratedArtifactMarkers(_activeTextRaw)" in flush_body
+    assert "_stripGeneratedArtifactMarkers(_streamRaw)" in end_body
+    assert "_stripGeneratedArtifactMarkers(seg.raw)" in end_body
 
 
 def test_chat_history_text_segments_use_protocol_leak_guard() -> None:
@@ -803,7 +828,7 @@ def test_chat_history_text_segments_use_protocol_leak_guard() -> None:
 
     assert "function _stripProtocolTextLeak" in source
     assert "_stripProtocolTextLeak(seg.text || '')" in reconstruct_body
-    assert "_stripProtocolTextLeak(_stripDirectiveTags(text))" in render_body
+    assert "_stripProtocolTextLeak(_stripDirectiveTags(visibleText))" in render_body
     assert "View areas around line" in source
     assert "effect_calls" in source
     assert "angle\\s+brackets" in source

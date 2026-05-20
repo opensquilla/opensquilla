@@ -150,6 +150,48 @@ async def test_chat_history_exposes_assistant_artifacts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_history_strips_artifact_omitted_marker_from_visible_text() -> None:
+    artifact = {
+        "id": "art-1",
+        "kind": "artifact_ref",
+        "name": "peppa_and_mummy_correct.png",
+        "mime": "image/jpeg",
+        "size": 339_000,
+        "sha256": "c" * 64,
+        "session_id": "session-1",
+        "session_key": "agent:main:webchat:test",
+        "source": "image_generate",
+        "created_at": "2026-05-06T12:00:00Z",
+        "download_url": "/api/v1/artifacts/art-1",
+    }
+    marker = "[generated artifact omitted: peppa_and_mummy_correct.png (image/jpeg)]"
+    entry = TranscriptEntry(
+        session_id="session-1",
+        session_key="agent:main:webchat:test",
+        role="assistant",
+        content=json.dumps(
+            {
+                "text": f"图片已经生成。\n\n{marker}",
+                "artifacts": [artifact],
+            }
+        ),
+    )
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:test"},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=_FakeSessionManager([entry]),
+        ),
+    )
+
+    msg = result["messages"][0]
+    assert msg["text"] == "图片已经生成。"
+    assert msg["artifacts"][0]["name"] == "peppa_and_mummy_correct.png"
+
+
+@pytest.mark.asyncio
 async def test_chat_history_prefers_attachment_display_text() -> None:
     entry = TranscriptEntry(
         session_id="session-1",

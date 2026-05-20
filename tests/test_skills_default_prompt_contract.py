@@ -37,6 +37,7 @@ DEFAULTS = {
     "meta-research-to-deck",
     "meta-scheduled-morning-digest",
     "meta-security-review-bundle",
+    "meta-skill-linter",
     "meta-self-improving-skill-factory",
     "meta-spreadsheet-insight",
     "meta-travel-planner",

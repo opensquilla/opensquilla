@@ -121,6 +121,25 @@ def _is_deepseek_model_id(model: str) -> bool:
     return normalized.startswith("deepseek") or "/deepseek" in normalized
 
 
+def collect_invoked_skills(tool_calls: list[dict]) -> list[str]:
+    """Extract bundled-skill names that were resolved via skill_view tool calls.
+
+    Returns a deduplicated list preserving first-occurrence order. Used by
+    DecisionEntry.skills_invoked (SCHEMA_VERSION 10).
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for call in tool_calls:
+        if call.get("name") != "skill_view":
+            continue
+        skill_name = (call.get("input") or {}).get("name")
+        if not isinstance(skill_name, str) or skill_name in seen:
+            continue
+        seen.add(skill_name)
+        result.append(skill_name)
+    return result
+
+
 # Tools that are safe to run concurrently within a single LLM turn.
 # Any tool name absent from this set is treated as mutex (serial dispatch).
 # See docs/dev/tool-concurrency-spec.md for the dispatch contract.
@@ -2376,6 +2395,7 @@ class TurnRunner:
                 session_intent=session_intent,
                 done_event=done_event,
                 trace_id=trace_context.trace_id if trace_context is not None else None,
+                skills_invoked=collect_invoked_skills(turn_segments),
             )
             if pending_error_event is not None:
                 yield pending_error_event
@@ -3492,6 +3512,7 @@ class TurnRunner:
         session_intent: str | None = None,
         done_event: DoneEvent | None = None,
         trace_id: str | None = None,
+        skills_invoked: list[str] | None = None,
     ) -> None:
         """Write one DecisionEntry for this turn (best-effort, never raises).
 
@@ -3674,6 +3695,7 @@ class TurnRunner:
                 provider=provider_name,
                 latency_ms=latency_ms,
                 ts=ts,
+                skills_invoked=skills_invoked if skills_invoked is not None else [],
                 pipeline_steps=pipeline_steps,
                 savings=savings_telemetry,
                 system_chars=prompt_report.system_chars if prompt_report else 0,

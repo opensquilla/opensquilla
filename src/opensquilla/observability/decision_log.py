@@ -23,7 +23,7 @@ from typing import Literal
 from opensquilla.bootstrap_types import BootstrapFileReport
 from opensquilla.paths import default_opensquilla_home
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10  # was 9; +skills_invoked
 
 RoutingSource = Literal[
     "v4_phase3",
@@ -144,6 +144,7 @@ class DecisionEntry:
     session_flush_extraction_model: str | None = None
     session_flush_fallback_used: bool = False
     session_flush_fallback_reason: str | None = None
+    skills_invoked: list[str] = field(default_factory=list)
     pipeline_steps: list[PipelineStepRecord] = field(default_factory=list)
     savings: SavingsTelemetry = field(default_factory=SavingsTelemetry)
     schema_version: int = SCHEMA_VERSION

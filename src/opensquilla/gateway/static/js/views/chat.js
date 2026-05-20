@@ -154,6 +154,17 @@ const ChatView = (() => {
   function _stripDirectiveTags(text) {
     return text.replace(_DIRECTIVE_TAG_RE, '').replace(/^\n+/, '');
   }
+  const _GENERATED_ARTIFACT_MARKER_RE = /(?:^|\s*)\[generated artifact omitted:\s*[^\]\n]+?\]\s*/gi;
+  function _stripGeneratedArtifactMarkers(text) {
+    text = String(text || '');
+    if (!text.includes('[generated artifact omitted:')) return text;
+    return text
+      .replace(/\r\n/g, '\n')
+      .replace(_GENERATED_ARTIFACT_MARKER_RE, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
   const _PROTOCOL_TEXT_MARKER_RE = /<\s*(?:minimax:tool_call|tool_calls?|tvoe_calls|invoke\b|parameter\b|effect_calls\b|details\b|angle\s+brackets\b)/i;
   const _PROTOCOL_TEXT_PARAMETER_RE = /<\s*parameter\s+name\s*=\s*["'](?:path|content|command|code|patch)["']/i;
   const _PROTOCOL_TEXT_INVOKE_RE = /<\s*invoke\s+name\s*=\s*["'][A-Za-z_][A-Za-z0-9_.:-]*["']/i;
@@ -2959,7 +2970,7 @@ const ChatView = (() => {
   }
 
   function _historyFallbackText(role, text) {
-    if (role === 'assistant') return _stripProtocolTextLeak(_stripDirectiveTags(text || '')).trim();
+    if (role === 'assistant') return _stripProtocolTextLeak(_stripDirectiveTags(_stripGeneratedArtifactMarkers(text || ''))).trim();
     if (role === 'user') return _stripTimePrefix(text || '').trim();
     return (text || '').trim();
   }
@@ -3513,7 +3524,7 @@ const ChatView = (() => {
     _renderRafId = null;
     if (!_renderDirty || !_streamBubble) { _renderDirty = false; return; }
     if (_activeTextSeg && _activeTextRaw) {
-      _activeTextSeg.innerHTML = Markdown.render(_stripProtocolTextLeak(_stripDirectiveTags(_activeTextRaw)));  // eslint-disable-line no-unsanitized/property
+      _activeTextSeg.innerHTML = Markdown.render(_stripProtocolTextLeak(_stripDirectiveTags(_stripGeneratedArtifactMarkers(_activeTextRaw))));  // eslint-disable-line no-unsanitized/property
       Markdown.bindCopy(_activeTextSeg);
     }
     _renderDirty = false;
@@ -3531,7 +3542,7 @@ const ChatView = (() => {
     _streamIdlePausedForApproval = false;
     if (_streamBubble) {
       _streamBubble.classList.remove('streaming');
-      const cleanedText = _stripProtocolTextLeak(_stripDirectiveTags(_streamRaw)).trim();
+      const cleanedText = _stripProtocolTextLeak(_stripDirectiveTags(_stripGeneratedArtifactMarkers(_streamRaw))).trim();
 
       // Suppress sentinel tokens that the LLM may emit instead of a real reply.
       // Don't suppress when aborted — we want the interrupted bubble to show
@@ -3566,7 +3577,7 @@ const ChatView = (() => {
       // Final render: render each text segment with its own content
       for (const seg of _segments) {
         if (seg.type !== 'text' || !seg.el) continue;
-        const segText = _stripProtocolTextLeak(_stripDirectiveTags(seg.raw)).trim();
+        const segText = _stripProtocolTextLeak(_stripDirectiveTags(_stripGeneratedArtifactMarkers(seg.raw))).trim();
         if (segText) {
           seg.el.innerHTML = Markdown.render(segText);  // eslint-disable-line no-unsanitized/property
           Markdown.bindCopy(seg.el);
@@ -4322,18 +4333,19 @@ const ChatView = (() => {
 
   function _renderMessageBody(body, role, text, options = {}) {
     const isSubagentCompletion = _isSubagentCompletionMessage(role, text, options);
+    const visibleText = role === 'assistant' ? _stripGeneratedArtifactMarkers(text) : text;
     body.className = 'msg-body';
     body.textContent = '';
-    if (role === 'assistant' && text) {
-      body.innerHTML = Markdown.render(_stripProtocolTextLeak(_stripDirectiveTags(text)));
+    if (role === 'assistant' && visibleText) {
+      body.innerHTML = Markdown.render(_stripProtocolTextLeak(_stripDirectiveTags(visibleText)));
       Markdown.bindCopy(body);
       Markdown.bindHighlight(body);
     } else if (isSubagentCompletion) {
-      body.appendChild(_renderSubagentDisclosure(text));
-    } else if (role === 'system' && text) {
-      body.textContent = text;
-    } else if (text) {
-      body.textContent = role === 'user' ? _stripTimePrefix(text) : text;
+      body.appendChild(_renderSubagentDisclosure(visibleText));
+    } else if (role === 'system' && visibleText) {
+      body.textContent = visibleText;
+    } else if (visibleText) {
+      body.textContent = role === 'user' ? _stripTimePrefix(visibleText) : visibleText;
     }
   }
 

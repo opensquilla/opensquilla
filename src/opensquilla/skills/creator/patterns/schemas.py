@@ -13,7 +13,11 @@ class SequentialStep(BaseModel):
 
 
 class SequentialSlots(BaseModel):
-    name: str
+    name: str = Field(
+        min_length=3, max_length=64,
+        pattern=r"^[a-z][a-z0-9_\-]{2,63}$",
+        description="Skill name: lowercase alpha-num-hyphen-underscore, 3-64 chars",
+    )
     description: str = Field(min_length=30, max_length=200)
     meta_priority: int = Field(ge=30, le=80, default=50)
     triggers: list[str] = Field(min_length=1, max_length=8)
@@ -35,7 +39,11 @@ class FanOutTail(BaseModel):
 
 
 class FanOutMergeSlots(BaseModel):
-    name: str
+    name: str = Field(
+        min_length=3, max_length=64,
+        pattern=r"^[a-z][a-z0-9_\-]{2,63}$",
+        description="Skill name: lowercase alpha-num-hyphen-underscore, 3-64 chars",
+    )
     description: str = Field(min_length=30, max_length=200)
     meta_priority: int = Field(ge=30, le=80, default=50)
     triggers: list[str] = Field(min_length=1, max_length=8)

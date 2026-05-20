@@ -58,3 +58,7 @@ composition:
 # {{ name }} (Meta-Skill, P2 fan_out_merge)
 
 {{ description }}
+
+## Fallback
+
+LLM should invoke the branch skills (in parallel where possible), then call the merge skill to aggregate, then optionally call the tail skill.

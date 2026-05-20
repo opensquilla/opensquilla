@@ -16,14 +16,14 @@ from opensquilla.skills.creator.proposer import meta_skill_assemble
 def test_sequential_slots_min_steps() -> None:
     with pytest.raises(ValueError):
         SequentialSlots(
-            name="x", description="d" * 30, triggers=["t"],
+            name="test-x", description="d" * 30, triggers=["t"],
             steps=[{"id": "a", "skill": "x", "task": "t"}],
         )
 
 
 def test_sequential_with_keys_default_empty() -> None:
     slots = SequentialSlots(
-        name="x", description="d" * 30, triggers=["t"],
+        name="test-x", description="d" * 30, triggers=["t"],
         steps=[
             {"id": "a", "skill": "summarize", "task": "do thing"},
             {"id": "b", "skill": "memory", "task": "save"},
@@ -34,7 +34,7 @@ def test_sequential_with_keys_default_empty() -> None:
 
 def test_fanout_tail_optional() -> None:
     slots = FanOutMergeSlots(
-        name="x", description="d" * 30, triggers=["t"],
+        name="test-x", description="d" * 30, triggers=["t"],
         branches=[
             {"id": "a", "skill": "weather", "task": "t"},
             {"id": "b", "skill": "summarize", "task": "t"},
@@ -46,7 +46,7 @@ def test_fanout_tail_optional() -> None:
 
 def test_meta_skill_assemble_p1() -> None:
     slots = {
-        "name": "t1", "description": "d" * 30, "triggers": ["go"],
+        "name": "test-t1", "description": "d" * 30, "triggers": ["go"],
         "steps": [
             {"id": "a", "skill": "summarize", "task": "extract", "with_keys": {}},
             {"id": "b", "skill": "memory", "task": "store", "with_keys": {}},
@@ -54,7 +54,7 @@ def test_meta_skill_assemble_p1() -> None:
         "meta_priority": 50,
     }
     md = meta_skill_assemble("p1_sequential", json.dumps(slots))
-    assert "name: t1" in md
+    assert "name: test-t1" in md
     assert "skill: summarize" in md
     assert "skill: memory" in md
     assert "depends_on: [a]" in md

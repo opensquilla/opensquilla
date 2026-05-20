@@ -39,7 +39,7 @@ def _render_and_parse(template_name: str, slots: dict) -> int:
 
 def test_p1_sequential_renders_and_parses() -> None:
     slots = SequentialSlots(
-        name="t1", description="d" * 30, triggers=["go"],
+        name="tst", description="d" * 30, triggers=["go"],
         steps=[
             {"id": "a", "skill": "summarize", "task": "extract"},
             {"id": "b", "skill": "memory", "task": "store"},
@@ -51,7 +51,7 @@ def test_p1_sequential_renders_and_parses() -> None:
 
 def test_p2_fan_out_merge_renders_and_parses() -> None:
     slots = FanOutMergeSlots(
-        name="t2", description="d" * 30, triggers=["go"],
+        name="tst", description="d" * 30, triggers=["go"],
         branches=[
             {"id": "a", "skill": "weather", "task": "w"},
             {"id": "b", "skill": "summarize", "task": "s"},
@@ -64,7 +64,7 @@ def test_p2_fan_out_merge_renders_and_parses() -> None:
 
 def test_p2_with_tail_renders_4_steps() -> None:
     slots = FanOutMergeSlots(
-        name="t3", description="d" * 30, triggers=["go"],
+        name="tst", description="d" * 30, triggers=["go"],
         branches=[
             {"id": "a", "skill": "weather", "task": "w"},
             {"id": "b", "skill": "summarize", "task": "s"},

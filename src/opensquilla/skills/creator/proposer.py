@@ -54,7 +54,7 @@ def run_smoke_gates(
     *,
     fixture_gen_fn: Callable[..., str],
     classifier_model: str,
-) -> dict:
+) -> dict[str, dict[str, object]]:
     """Run G3 (positive smoke) + G4 (negative smoke).
 
     `fixture_gen_fn(skill_md, kind, ...)` returns a generated prompt string
@@ -89,13 +89,13 @@ def real_fixture_gen(
     llm_chat,
     fixture_gen_model: str,
 ) -> str:
-    """LLM-driven fixture generation. Used inside meta-skill-smoke-test's
-    sub-agent. Caller must supply an llm_chat bound to fixture_gen_model
-    that is DIFFERENT from the classifier_model.
+    """LLM-driven fixture gen for cross-vendor smoke (Step 2 of meta-skill-smoke-test's SKILL.md).
 
-    Phase 1 ships a deterministic fallback (extract first trigger for
-    positive; pull a phrase from another bundle's triggers for negative)
-    when llm_chat is None — keeps default-path tests offline.
+    Phase 1 fallback to deterministic when llm_chat is None. Real LLM wiring
+    deferred to follow-on iteration.
+
+    Caller must supply an llm_chat bound to fixture_gen_model that is DIFFERENT
+    from the classifier_model to break LLM-self-confirmation bias.
     """
     if llm_chat is None:
         return _deterministic_fixture(skill_md, kind)
@@ -105,14 +105,26 @@ def real_fixture_gen(
 
 
 def _deterministic_fixture(skill_md: str, kind: str) -> str:
-    """Trigger-string based fixture generator for offline tests."""
+    """Trigger-string based fixture generator for offline tests.
+
+    Tries double-quoted triggers first (the predominant YAML style in this
+    codebase's bundled meta-skills), then unquoted bare triggers. Returns
+    the hardcoded fallback only when neither matches.
+    """
     import re
     if kind == "positive":
+        # Double-quoted: triggers: \n  - "phrase"
         m = re.search(r"triggers:\s*\n((?:\s*-\s*\"[^\"]+\"\s*\n)+)", skill_md)
         if m:
             first = re.search(r'-\s*"([^"]+)"', m.group(1))
             if first:
                 return f"please use {first.group(1)}"
+        # Unquoted: triggers: \n  - phrase
+        m = re.search(r"triggers:\s*\n((?:\s*-\s*[^\"\n]+\n)+)", skill_md)
+        if m:
+            first = re.search(r"-\s*([^\"\n]+)", m.group(1))
+            if first:
+                return f"please use {first.group(1).strip()}"
         return "please run this meta-skill"
     if kind == "negative":
         return "what's the weather forecast for tomorrow?"

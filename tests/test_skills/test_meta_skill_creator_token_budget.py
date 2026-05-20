@@ -33,6 +33,13 @@ OUTPUT_TOKEN_BUDGET = 4_000
 
 def test_total_pipeline_within_token_budget(monkeypatch) -> None:
     recorder = _RecordingChat()
+    # _RecordingChat receives the real base_prompt assembled by
+    # meta_skill_fill_slots (catalog + history + intent), so input_chars
+    # reflects actual prompt construction — not a canned constant.
+    # NOTE: _build_catalog_summary() reads from a tempdir snapshot; if
+    # the snapshot is stale or empty the catalog section shrinks and
+    # this budget check becomes optimistic. Fresh snapshot is built on
+    # first SkillLoader.load_all() call.
     monkeypatch.setattr(proposer, "_call_llm_for_slots", recorder)
 
     proposer.meta_skill_fill_slots(

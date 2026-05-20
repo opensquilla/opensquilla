@@ -141,6 +141,10 @@ async def test_orchestrator_drives_creator_dag_end_to_end(tmp_path, monkeypatch)
     assert set(final_result.step_outputs.keys()) >= {
         "harvest", "pick_pattern", "fill_slots", "assemble", "lint", "smoke", "persist"
     }
+    # Content propagation: stub agent_runner emits "<stub:agent>" — verify
+    # the agent-kind step (harvest) actually captures the stub's text and
+    # forwards it as the step's output, not just topology completion.
+    assert final_result.step_outputs.get("harvest") == "<stub:agent>"
 
 
 async def test_orchestrator_p2_fan_out_merge_proposal(tmp_path, monkeypatch) -> None:

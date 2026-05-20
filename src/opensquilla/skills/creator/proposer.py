@@ -2,22 +2,141 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from pydantic import ValidationError
 
 from opensquilla.engine.steps.meta_resolution import _trigger_matches
+from opensquilla.skills.creator.patterns import PATTERN_SLOT_SCHEMA
 from opensquilla.skills.loader import SkillLoader
+
+_TEMPLATES_DIR = Path(__file__).resolve().parent / "patterns"
+
+
+def _jinja_env() -> Environment:
+    return Environment(
+        loader=FileSystemLoader(_TEMPLATES_DIR),
+        undefined=StrictUndefined,
+        keep_trailing_newline=True,
+    )
+
+
+def meta_skill_assemble(pattern_id: str, slots_json: str) -> str:
+    """Render SKILL.md from validated slots."""
+    if pattern_id not in PATTERN_SLOT_SCHEMA:
+        raise ValueError(f"unknown pattern_id: {pattern_id}")
+    schema = PATTERN_SLOT_SCHEMA[pattern_id]
+    try:
+        slots_dict = json.loads(slots_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"slots_json not valid JSON: {exc}") from exc
+    try:
+        slots = schema.model_validate(slots_dict)
+    except ValidationError as exc:
+        raise ValueError(f"slots failed schema {pattern_id}: {exc}") from exc
+
+    env = _jinja_env()
+    template_name = f"{pattern_id}.md.j2"
+    rendered = env.get_template(template_name).render(**slots.model_dump())
+    return rendered
+
+
+def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
+    """Production LLM call for slot filling. Builds a provider from environment
+    variables and calls make_llm_chat_from_provider.
+
+    Tests monkeypatch this symbol to inject deterministic stubs.
+    """
+    import asyncio
+    import os
+
+    from opensquilla.engine.types import AgentConfig
+    from opensquilla.provider.selector import ProviderConfig, _build_provider
+    from opensquilla.skills.meta.orchestrator import make_llm_chat_from_provider
+
+    # Resolve provider + API key from environment (mirrors gateway behaviour).
+    # Preference order: openrouter → anthropic → openai
+    if os.environ.get("OPENROUTER_API_KEY"):
+        provider_name = "openrouter"
+        api_key = os.environ["OPENROUTER_API_KEY"]
+        model = kwargs.get("model", "anthropic/claude-3.5-haiku")
+    elif os.environ.get("ANTHROPIC_API_KEY"):
+        provider_name = "anthropic"
+        api_key = os.environ["ANTHROPIC_API_KEY"]
+        model = kwargs.get("model", "claude-3-5-haiku-20241022")
+    elif os.environ.get("OPENAI_API_KEY"):
+        provider_name = "openai"
+        api_key = os.environ["OPENAI_API_KEY"]
+        model = kwargs.get("model", "gpt-4o-mini")
+    else:
+        raise RuntimeError(
+            "meta-skill-creator: no LLM provider configured. "
+            "Set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY."
+        )
+
+    cfg = ProviderConfig(provider=provider_name, model=model, api_key=api_key)
+    provider = _build_provider(cfg)
+    base_config = AgentConfig(model_id=model)
+    llm_chat = make_llm_chat_from_provider(provider=provider, base_config=base_config)
+
+    async def _drive() -> str:
+        return await llm_chat("", prompt)
+
+    return asyncio.run(_drive())
+
+
+def _build_catalog_summary() -> str:
+    """Enumerate available bundled skills (name + 1-line description)."""
+    BUNDLED = Path(__file__).resolve().parents[1] / "bundled"
+    loader = SkillLoader(
+        bundled_dir=BUNDLED,
+        snapshot_path=Path(tempfile.gettempdir()) / "creator-catalog-snap.json",
+    )
+    loader.invalidate_cache()
+    lines: list[str] = []
+    for spec in loader.load_all():
+        first_line = (spec.description or "").split("\n", 1)[0][:120]
+        lines.append(f"- {spec.name}: {first_line}")
+    return "\n".join(lines)
 
 
 def meta_skill_fill_slots(
     pattern_id: str, history_summary: str, user_intent: str,
 ) -> str:
-    raise NotImplementedError("Implemented in Task 5")
+    """Drive LLM to fill pattern slots; Pydantic-validate; retry once on
+    ValidationError. Returns validated JSON string."""
+    if pattern_id not in PATTERN_SLOT_SCHEMA:
+        raise ValueError(f"unknown pattern_id: {pattern_id}")
+    schema = PATTERN_SLOT_SCHEMA[pattern_id]
+    catalog = _build_catalog_summary()
 
+    base_prompt = (
+        f"Fill the {pattern_id} slot schema.\n\n"
+        f"Available skills (catalog):\n{catalog}\n\n"
+        f"History summary:\n{history_summary}\n\n"
+        f"User intent: {user_intent}\n\n"
+        f"Emit ONLY a JSON object matching the {pattern_id} schema. No prose."
+    )
 
-def meta_skill_assemble(pattern_id: str, slots_json: str) -> str:
-    raise NotImplementedError("Implemented in Task 5")
+    response = _call_llm_for_slots(base_prompt)
+    try:
+        validated = schema.model_validate_json(response)
+        return validated.model_dump_json()
+    except ValidationError as exc:
+        retry_prompt = (
+            base_prompt
+            + "\n\nYour previous response failed schema validation with these errors:\n"
+            + json.dumps(exc.errors())
+            + "\n\nEmit a corrected JSON object."
+        )
+        retry_response = _call_llm_for_slots(retry_prompt)
+        validated = schema.model_validate_json(retry_response)
+        return validated.model_dump_json()
 
 
 def simulate_meta_resolution(

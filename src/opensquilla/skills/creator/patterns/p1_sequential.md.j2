@@ -1,0 +1,44 @@
+---
+name: {{ name }}
+description: "{{ description }}"
+kind: meta
+meta_priority: {{ meta_priority | default(50) }}
+always: false
+triggers:
+{%- for t in triggers %}
+  - "{{ t }}"
+{%- endfor %}
+provenance:
+  origin: opensquilla-user
+  license: Apache-2.0
+composition:
+  steps:
+{%- for step in steps %}
+    - id: {{ step.id }}
+      skill: {{ step.skill }}
+{%- if not loop.first %}
+      depends_on: [{{ steps[loop.index0 - 1].id }}]
+{%- endif %}
+      with:
+{%- if step.with_keys %}
+{%- for k, v in step.with_keys.items() %}
+        {{ k }}: "{{ v }}"
+{%- endfor %}
+{%- else %}
+{%- if loop.first %}
+        task: "{{ step.task }}: {{ '{{' }} inputs.user_message | xml_escape | truncate(512) {{ '}}' }}"
+{%- else %}
+        task: "{{ step.task }}"
+        upstream: "{{ '{{' }} outputs.{{ steps[loop.index0 - 1].id }} | truncate(2000) {{ '}}' }}"
+{%- endif %}
+{%- endif %}
+{%- endfor %}
+---
+
+# {{ name }} (Meta-Skill, P1 sequential)
+
+{{ description }}
+
+## Fallback
+
+LLM should invoke the listed skills in order.

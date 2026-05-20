@@ -33,7 +33,7 @@ from opensquilla.engine.cache_break_monitor import notify_compaction
 from opensquilla.gateway.config import ContextOverflowPolicy, GatewayConfig
 from opensquilla.session.compaction import (
     call_compact_with_optional_config,
-    estimate_entry_replay_tokens,
+    estimate_entry_model_replay_tokens,
 )
 from opensquilla.session.compaction_lifecycle import (
     CompactionLifecycleResult,
@@ -86,7 +86,7 @@ def _estimate_payload_tokens(message: str, transcript: list[Any]) -> int:
 
     total = estimate_tokens(message or "")
     for entry in transcript or []:
-        total += estimate_entry_replay_tokens(entry)
+        total += estimate_entry_model_replay_tokens(entry)
     return total
 
 

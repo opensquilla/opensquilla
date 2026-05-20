@@ -26,8 +26,11 @@ from test_tools.dispatch_corpus import ALL_CASES
 
 import opensquilla.tools.dispatch as _dispatch_module
 from opensquilla.engine.hooks import NoopToolHook
+from opensquilla.result_budget import ToolRunBudgetExceededError, ToolRunBudgetPolicy
+from opensquilla.tool_boundary import ToolCall
 from opensquilla.tools.dispatch import build_tool_handler
-from opensquilla.tools.types import current_tool_context
+from opensquilla.tools.registry import ToolRegistry
+from opensquilla.tools.types import ToolContext, ToolSpec, current_tool_context
 
 _DISPATCH_SOURCE: Path = Path(_dispatch_module.__file__).resolve()
 
@@ -133,6 +136,68 @@ def _collect_executed_lines() -> set[int]:
                     current_tool_context.reset(token)
                     if case.teardown is not None:
                         case.teardown()
+
+        async def _run_coverage_only(
+            *,
+            tool_name: str,
+            handler_exc: BaseException,
+            hooks: tuple,
+        ) -> None:
+            registry = ToolRegistry()
+
+            async def _handler() -> str:
+                raise handler_exc
+
+            registry.register(
+                ToolSpec(
+                    name=tool_name,
+                    description="coverage-only branch driver",
+                    parameters={},
+                    result_budget_class="external",
+                ),
+                _handler,
+            )
+            ctx = ToolContext(
+                tool_run_budget_key=f"coverage-{tool_name}",
+                tool_run_budget_policy=ToolRunBudgetPolicy(
+                    max_web_fetch_calls_per_turn=10,
+                    max_single_fetch_chars=1_000,
+                    max_external_text_chars_per_turn=1_000,
+                ),
+            )
+            handler = build_tool_handler(
+                registry,
+                ctx,
+                tool_hooks=hooks or None,
+            )
+            token = current_tool_context.set(None)
+            try:
+                await handler(
+                    ToolCall(
+                        tool_use_id=f"tc-{tool_name}",
+                        tool_name=tool_name,
+                        arguments={},
+                    )
+                )
+            except BaseException:
+                pass
+            finally:
+                current_tool_context.reset(token)
+
+        for hooks in hook_variants:
+            await _run_coverage_only(
+                tool_name="coverage_cancel",
+                handler_exc=asyncio.CancelledError(),
+                hooks=hooks,
+            )
+            await _run_coverage_only(
+                tool_name="coverage_budget_exhausted",
+                handler_exc=ToolRunBudgetExceededError(
+                    "coverage_budget_exhausted",
+                    "coverage",
+                ),
+                hooks=hooks,
+            )
 
     tracer.runfunc(asyncio.run, _run_all())
 

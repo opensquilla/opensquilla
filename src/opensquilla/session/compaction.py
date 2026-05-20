@@ -159,7 +159,7 @@ def _json_text(value: Any) -> str:
 
 
 def estimate_entry_replay_tokens(entry: Any) -> int:
-    """Estimate the model-replay size of a persisted transcript entry."""
+    """Estimate the compaction-input size of a persisted transcript entry."""
 
     content = _entry_get(entry, "content") or ""
     token_count = _entry_get(entry, "token_count")
@@ -183,6 +183,31 @@ def estimate_entry_replay_tokens(entry: Any) -> int:
             "[assistant reasoning omitted from compaction input: "
             f"{len(str(reasoning_content))} chars]"
         )
+    extra_tokens = _estimate_tokens("\n".join(extra_parts)) if extra_parts else 0
+    return content_tokens + extra_tokens
+
+
+def estimate_entry_model_replay_tokens(entry: Any) -> int:
+    """Estimate the full transcript payload size replayed to the model."""
+
+    content = _entry_get(entry, "content") or ""
+    token_count = _entry_get(entry, "token_count")
+    try:
+        persisted_tokens = int(token_count or 0)
+    except (TypeError, ValueError):
+        persisted_tokens = 0
+    content_tokens = persisted_tokens or (_estimate_tokens(str(content)) if content else 0)
+
+    extra_parts: list[str] = []
+    tool_calls = _entry_get(entry, "tool_calls")
+    if tool_calls:
+        extra_parts.append(_json_text(tool_calls))
+    tool_call_id = _entry_get(entry, "tool_call_id")
+    if tool_call_id:
+        extra_parts.append(str(tool_call_id))
+    reasoning_content = _entry_get(entry, "reasoning_content")
+    if reasoning_content:
+        extra_parts.append(str(reasoning_content))
     extra_tokens = _estimate_tokens("\n".join(extra_parts)) if extra_parts else 0
     return content_tokens + extra_tokens
 

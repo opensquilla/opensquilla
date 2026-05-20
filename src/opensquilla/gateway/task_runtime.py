@@ -839,6 +839,12 @@ class TaskRuntime:
                                 raise
                         else:
                             await self._turn_handler(run)
+                        if heartbeat_task is not None:
+                            await self._stop_running_heartbeat(heartbeat_task)
+                            heartbeat_task = None
+                        if acquired:
+                            await self._release_slot(task)
+                            acquired = False
                         await self._mark_terminal(
                             task,
                             AgentTaskStatus.SUCCEEDED,

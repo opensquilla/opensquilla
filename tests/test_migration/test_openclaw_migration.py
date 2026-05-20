@@ -880,7 +880,11 @@ def test_migrated_workspace_and_loadable_skills_are_consumed_by_opensquilla(
 ) -> None:
     source = _make_source(tmp_path)
     home = tmp_path / "opensquilla-home"
+    isolated_home = tmp_path / "isolated-home"
+    isolated_home.mkdir()
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    monkeypatch.setenv("HOME", str(isolated_home))
+    monkeypatch.setenv("USERPROFILE", str(isolated_home))
 
     OpenClawMigrator(
         MigrationOptions(

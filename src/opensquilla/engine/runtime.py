@@ -4180,9 +4180,9 @@ class TurnRunner:
         if not transcript:
             return
 
-        from opensquilla.session.compaction import estimate_entry_replay_tokens
+        from opensquilla.session.compaction import estimate_entry_model_replay_tokens
 
-        total_tokens = sum(estimate_entry_replay_tokens(e) for e in transcript)
+        total_tokens = sum(estimate_entry_model_replay_tokens(e) for e in transcript)
         ratio = self._preflight_compact_ratio()
         threshold = int(context_window_tokens * ratio)
         if total_tokens <= threshold:

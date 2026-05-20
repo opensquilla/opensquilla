@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 import uuid
@@ -85,8 +86,10 @@ def cmd_accept(args) -> dict:
                 "reason": "gates not all passed; use --force to override",
                 "gates": gates}
 
-    import re
     skill_md = (src / "SKILL.md").read_text(encoding="utf-8")
+    # NOTE: matches unquoted YAML names only (e.g. `name: foo-bar`). Quoted
+    # names like `name: "foo-bar"` are not handled; current creator-emitted
+    # templates use the unquoted form (see creator/patterns/p1_sequential.md.j2).
     name_match = re.search(r"^name:\s*([\w\-]+)\s*$", skill_md, re.MULTILINE)
     if not name_match:
         return {"status": "error", "reason": "cannot parse skill name from SKILL.md"}
@@ -97,7 +100,7 @@ def cmd_accept(args) -> dict:
         return {"status": "refused", "reason": f"skill {name} already exists at {dst}"}
 
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst)
+    shutil.move(str(src), str(dst))  # true move: proposal disappears from proposals/
     return {"status": "ok", "skill_path": str(dst), "name": name}
 
 

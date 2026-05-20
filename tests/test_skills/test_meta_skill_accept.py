@@ -71,3 +71,8 @@ def test_accept_flow_moves_to_skills_dir_and_loader_picks_up(tmp_path: Path) -> 
     loader.invalidate_cache()
     names = {s.name for s in loader.load_all()}
     assert "accept-flow-test-skill" in names
+
+    # Move semantics: source proposal should no longer exist after accept
+    assert not (home / "proposals" / proposal_id).exists(), (
+        "accept should MOVE the proposal, not copy it"
+    )

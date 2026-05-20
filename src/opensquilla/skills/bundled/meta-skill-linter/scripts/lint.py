@@ -10,6 +10,10 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from opensquilla.skills.types import SkillSpec
 
 # Path from scripts dir: scripts→linter→bundled→skills→opensquilla→src→repo
 # That's 6 parents. Verify by checking that REPO/src/opensquilla exists.
@@ -32,17 +36,22 @@ structlog.configure(
 )
 
 from opensquilla.skills.loader import SkillLoader  # noqa: E402
-from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan  # noqa: E402
+from opensquilla.skills.meta.parser import MetaPlan, MetaPlanError, parse_meta_plan  # noqa: E402
 
 
 BUNDLED = REPO / "src" / "opensquilla" / "skills" / "bundled"
 
 # G1.6 xml_escape rule: any `{{ inputs.user_message ` literal must be
-# IMMEDIATELY followed by `| xml_escape` as the first filter.
+# IMMEDIATELY followed by `| xml_escape` or `| slugify` as the first filter.
+# xml_escape is for prompt/markup contexts; slugify is an equivalent sanitiser
+# for filename/path contexts (strips everything non-alphanumeric).
 # The positive lookahead (?=[\s|}]) adds a word boundary so that fields
 # with a user_message prefix (e.g. inputs.user_message_body) are not
-# false-positively matched.
-_XML_ESCAPE_RE = re.compile(r"\{\{\s*inputs\.user_message(?=[\s|}])(?!\s*\|\s*xml_escape)")
+# false-positively matched.  The \b after each filter name prevents prefix
+# matches (e.g. xml_escape_v2 would otherwise be silently accepted).
+_XML_ESCAPE_RE = re.compile(
+    r"\{\{\s*inputs\.user_message(?=[\s|}])(?!\s*\|\s*(xml_escape|slugify)\b)"
+)
 
 
 def _load_main_catalog() -> set[str]:
@@ -109,7 +118,7 @@ def run_g1(skill_md: str, catalog: set[str]) -> dict:
     return {"passed": passed, "diagnostics": diagnostics, "spec": spec, "plan": plan}
 
 
-def run_g2(plan, spec) -> dict:  # noqa: ANN001
+def run_g2(plan: MetaPlan, spec: SkillSpec | None) -> dict:
     """Scheduler dry-run with stub executors."""
     from opensquilla.skills.meta.scheduler import run_dag
 

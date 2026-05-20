@@ -25,7 +25,7 @@ Run `paper-refbib-stub`. Save as `refbib`.
 
 ## Phase 3: Outline
 Invoke `paper-outline-author` as agent with:
-- topic: `{{ inputs.user_message | truncate(200) }}`
+- topic: `{{ inputs.user_message | xml_escape | truncate(200) }}`
 - cite_keys_hint: `{{ outputs.refbib | truncate(1500) }}`
 Save as `outline`.
 

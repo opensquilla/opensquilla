@@ -24,6 +24,7 @@ ways for a new bundle to ship with empty/incomplete metadata.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -189,4 +190,35 @@ def test_baseline_lint_findings_are_within_budget(_all_meta_specs: list[object])
         f"Full findings:\n  {report}\n"
         f"To proceed: either fix the offending bundles or raise the "
         f"budget in this test."
+    )
+
+
+# ---------------------------------------------------------------------------
+# G1.6 CI-level enforcement: every bundled meta-skill SKILL.md that
+# references `{{ inputs.user_message }}` must immediately follow it with
+# `| xml_escape` (or another approved sanitiser).
+# ---------------------------------------------------------------------------
+
+_G1_BUNDLED = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "bundled"
+
+_G1_META_BUNDLES = sorted(
+    [p.parent.name for p in _G1_BUNDLED.glob("meta-*/SKILL.md")]
+    + [p.parent.name for p in _G1_BUNDLED.glob("history-explorer/SKILL.md")]
+)
+
+# Match same regex as meta-skill-linter G1.6 (Task 2 + relaxation for slugify)
+_XML_ESCAPE_RE = re.compile(
+    r"\{\{\s*inputs\.user_message(?!\s*\|\s*(xml_escape|slugify)\b)"
+)
+
+
+@pytest.mark.parametrize("bundle", _G1_META_BUNDLES)
+def test_xml_escape_present_on_user_message(bundle: str) -> None:
+    """G1.6 enforcement: every bundle's SKILL.md must xml_escape (or slugify)
+    `inputs.user_message` references."""
+    skill_md = (_G1_BUNDLED / bundle / "SKILL.md").read_text()
+    bad = _XML_ESCAPE_RE.findall(skill_md)
+    assert not bad, (
+        f"{bundle}/SKILL.md: 'inputs.user_message' not immediately followed by "
+        f"'| xml_escape' or '| slugify'. Matches: {bad}"
     )

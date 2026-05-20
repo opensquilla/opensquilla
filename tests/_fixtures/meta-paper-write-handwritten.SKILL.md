@@ -29,7 +29,7 @@ composition:
       skill: paper-outline-author
       depends_on: [refbib]
       with:
-        topic: "{{ inputs.user_message | truncate(200) }}"
+        topic: "{{ inputs.user_message | xml_escape | truncate(200) }}"
         cite_keys_hint: "{{ outputs.refbib | truncate(1500) }}"
     - id: plot
       kind: skill_exec

@@ -53,7 +53,7 @@ CASES = [
         "PDF", "en", "pdf-arxiv",
     ),
     _case(
-        "处理这个 PDF: /home/user/papers/transformers.pdf",
+        "处理这个 PDF: ~/papers/transformers.pdf",
         "PDF", "zh", "pdf-local-path",
     ),
 
@@ -64,7 +64,7 @@ CASES = [
     ),
     _case("看一下 gitlab.com/some/project 的代码", "GIT", "zh", "git-gitlab"),
     _case(
-        "ingest the repo at /home/user/projects/my-repo (it has a .git folder)",
+        "ingest the repo at ~/projects/my-repo (it has a .git folder)",
         "GIT", "en", "git-local-path",
     ),
 

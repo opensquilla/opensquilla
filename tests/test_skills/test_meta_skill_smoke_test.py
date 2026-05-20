@@ -74,3 +74,19 @@ def test_deterministic_fixture_negative_is_unrelated() -> None:
     from opensquilla.skills.creator.proposer import _deterministic_fixture
     neg = _deterministic_fixture(VALID_SKILL_MD, "negative")
     assert "weather" in neg.lower()
+
+
+def test_smoke_emits_degraded_true_on_stub_classifier() -> None:
+    """Stub classifier_model marks G3/G4 records as degraded."""
+    from opensquilla.skills.creator.proposer import (
+        _deterministic_fixture,
+        run_smoke_gates,
+    )
+    result = run_smoke_gates(
+        skill_md=VALID_SKILL_MD,
+        fixture_gen_fn=_deterministic_fixture,
+        classifier_model="stub",
+    )
+    assert result["degraded"] is True
+    assert result["G3"]["degraded"] is True
+    assert result["G4"]["degraded"] is True

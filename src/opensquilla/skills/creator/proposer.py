@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Callable
+from pathlib import Path
+
+from opensquilla.engine.steps.meta_resolution import _trigger_matches
+from opensquilla.skills.loader import SkillLoader
 
 
 def meta_skill_fill_slots(
@@ -24,12 +29,6 @@ def simulate_meta_resolution(
     For Phase 1, classifier_model is informational only; matching uses the
     same word-boundary regex used by `engine.steps.meta_resolution` (which
     is itself a deterministic substring/word-boundary check, no LLM)."""
-    import tempfile
-    from pathlib import Path
-
-    from opensquilla.engine.steps.meta_resolution import _trigger_matches
-    from opensquilla.skills.loader import SkillLoader
-
     with tempfile.TemporaryDirectory() as tmp:
         skill_dir = Path(tmp) / "candidate"
         skill_dir.mkdir()
@@ -54,7 +53,7 @@ def run_smoke_gates(
     *,
     fixture_gen_fn: Callable[..., str],
     classifier_model: str,
-) -> dict[str, dict[str, object]]:
+) -> dict[str, object]:
     """Run G3 (positive smoke) + G4 (negative smoke).
 
     `fixture_gen_fn(skill_md, kind, ...)` returns a generated prompt string
@@ -68,17 +67,25 @@ def run_smoke_gates(
     negative = fixture_gen_fn(skill_md, "negative")
     g4_matched = simulate_meta_resolution(skill_md, negative, classifier_model)
 
+    degraded = (
+        classifier_model == "stub"
+        or fixture_gen_fn is _deterministic_fixture
+    )
+
     return {
         "G3": {
             "passed": g3_matched,
             "positive_fixture": positive,
             "classifier": classifier_model,
+            "degraded": degraded,
         },
         "G4": {
             "passed": not g4_matched,
             "negative_fixture": negative,
             "classifier": classifier_model,
+            "degraded": degraded,
         },
+        "degraded": degraded,
     }
 
 
@@ -126,6 +133,11 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
             if first:
                 return f"please use {first.group(1).strip()}"
         return "please run this meta-skill"
+    # Cross-domain negative fixture: any prompt unrelated to common bundled
+    # skills. Weather is a safe choice because the corpus's weather bundle
+    # uses tight triggers ("weather", "天气") that won't be matched by this
+    # free-form phrasing. If a future user-authored meta-skill is itself
+    # about weather, this fixture will false-fail G4 — flag at that time.
     if kind == "negative":
         return "what's the weather forecast for tomorrow?"
     raise ValueError(f"Unknown fixture kind: {kind}")

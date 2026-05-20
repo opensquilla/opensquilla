@@ -13,12 +13,11 @@ pytestmark = pytest.mark.llm_router_acc
     not os.environ.get("OPENROUTER_API_KEY"),
     reason="OPENROUTER_API_KEY not set",
 )
-def test_real_fixture_gen_emits_positive_using_gpt_4o_mini() -> None:
-    """Scaffold for future cross-vendor LLM wiring.
-
-    Phase 1: real_fixture_gen raises NotImplementedError when llm_chat is
-    provided. When that wiring lands, replace this body with a real LLM
-    call asserting the fixture is non-empty and plausibly matches the
-    SKILL.md's domain.
+def test_smoke_live_scaffold_deterministic_path() -> None:
+    """Phase 1 scaffold: confirms the live-test infrastructure exists.
+    Real cross-vendor LLM wiring lands in a follow-on iteration; this
+    test currently exercises the deterministic fallback only.
     """
-    pytest.skip("scaffold only — real LLM wiring deferred to follow-on iteration")
+    from opensquilla.skills.creator.proposer import _deterministic_fixture
+    pos = _deterministic_fixture("...stub skill...", "positive")
+    assert isinstance(pos, str) and len(pos) > 5

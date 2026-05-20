@@ -64,6 +64,7 @@ SOFTWARE.
 These bundled skill descriptors are authored and maintained by OpenSquilla and
 are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 
+- `history-explorer`
 - `latex-compile`
 - `memory`
 - `meta-compliance-audit-bundle`

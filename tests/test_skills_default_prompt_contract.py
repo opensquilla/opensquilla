@@ -20,6 +20,7 @@ DEFAULTS = {
     "deep-research",
     "docx",
     "github",
+    "history-explorer",
     "html-to-pdf",
     "latex-compile",
     "memory",

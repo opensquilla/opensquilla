@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
 NOTICES = ROOT / "THIRD_PARTY_NOTICES.md"
 ORIGINALS = {
+    "history-explorer",
     "latex-compile",
     "memory",
     "meta-compliance-audit-bundle",

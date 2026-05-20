@@ -60,3 +60,9 @@ tests/functional/reports/
 # Local-only release-hygiene tests that reference legacy artifact names
 # kept off the public tree.
 /tests/_private/
+
+# Maintainer-local design / planning artifacts kept beside the repo but
+# not part of the published source. Move into /docs/proposals/ if/when
+# they are ready for public consumption.
+/meta-skills.pptx
+/kb-index.xlsx

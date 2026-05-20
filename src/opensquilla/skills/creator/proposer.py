@@ -92,9 +92,9 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
 
 def _build_catalog_summary() -> str:
     """Enumerate available bundled skills (name + 1-line description)."""
-    BUNDLED = Path(__file__).resolve().parents[1] / "bundled"
+    bundled = Path(__file__).resolve().parents[1] / "bundled"
     loader = SkillLoader(
-        bundled_dir=BUNDLED,
+        bundled_dir=bundled,
         snapshot_path=Path(tempfile.gettempdir()) / "creator-catalog-snap.json",
     )
     loader.invalidate_cache()
@@ -126,7 +126,7 @@ def meta_skill_fill_slots(
     response = _call_llm_for_slots(base_prompt)
     try:
         validated = schema.model_validate_json(response)
-        return validated.model_dump_json()
+        return str(validated.model_dump_json())
     except ValidationError as exc:
         retry_prompt = (
             base_prompt
@@ -136,7 +136,7 @@ def meta_skill_fill_slots(
         )
         retry_response = _call_llm_for_slots(retry_prompt)
         validated = schema.model_validate_json(retry_response)
-        return validated.model_dump_json()
+        return str(validated.model_dump_json())
 
 
 def simulate_meta_resolution(

@@ -14,7 +14,10 @@ from opensquilla.skills.creator.patterns.schemas import (
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.parser import parse_meta_plan
 
-TEMPLATES = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "creator" / "patterns"
+TEMPLATES = (
+    Path(__file__).resolve().parents[2]
+    / "src" / "opensquilla" / "skills" / "creator" / "patterns"
+)
 
 
 def _render_and_parse(template_name: str, slots: dict) -> int:

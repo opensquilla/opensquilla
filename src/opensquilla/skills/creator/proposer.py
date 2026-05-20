@@ -304,4 +304,10 @@ async def meta_skill_assemble_tool(pattern_id: str, slots_json: str) -> str:
 async def meta_skill_fill_slots_tool(
     pattern_id: str, history_summary: str, user_intent: str,
 ) -> str:
-    return meta_skill_fill_slots(pattern_id, history_summary, user_intent)
+    # Run the sync core in a worker thread to avoid nested event loop conflict
+    # when invoked from inside the orchestrator's running event loop.
+    # The sync core uses asyncio.run() internally to call the LLM provider.
+    import asyncio
+    return await asyncio.to_thread(
+        meta_skill_fill_slots, pattern_id, history_summary, user_intent,
+    )

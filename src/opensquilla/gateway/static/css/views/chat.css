@@ -1114,10 +1114,22 @@
 }
 
 .msg-artifacts {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 0.5rem;
   margin: var(--sp-2) 0;
+}
+
+.msg-artifact-gallery {
+  align-items: start;
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 320px));
+}
+
+.msg-artifact-files {
+  display: grid;
+  gap: 0.5rem;
+  max-width: min(520px, 100%);
 }
 
 .msg-artifact-chip {
@@ -1131,11 +1143,12 @@
   grid-template-areas:
     "icon name"
     "icon meta";
-  grid-template-columns: 18px minmax(0, 1fr);
-  min-height: 42px;
-  max-width: min(320px, 70vw);
+  grid-template-columns: 38px minmax(0, 1fr);
+  min-height: 48px;
+  max-width: min(520px, 100%);
   padding: var(--sp-2) var(--sp-3);
   text-align: left;
+  width: 100%;
 }
 
 .msg-artifact-chip:hover,

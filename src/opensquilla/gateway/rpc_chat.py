@@ -217,6 +217,8 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
         attachments = params.get("attachments")
         if attachments:
             send_params["attachments"] = attachments
+            if "displayText" in params:
+                send_params["displayText"] = params.get("displayText")
         if intent is not None:
             send_params["intent"] = intent
         for source_key, target_key in (
@@ -279,7 +281,8 @@ async def _handle_chat_history(params: dict | None, ctx: RpcContext) -> dict:
             try:
                 parsed = _json.loads(content)
                 if isinstance(parsed, dict) and "text" in parsed:
-                    content = parsed["text"]
+                    display_text = parsed.get("display_text")
+                    content = display_text if isinstance(display_text, str) else parsed["text"]
                     attachments = parsed.get("attachments")
                     parsed_artifacts = parsed.get("artifacts")
                     if isinstance(parsed_artifacts, list):
@@ -318,6 +321,22 @@ async def _handle_chat_history(params: dict | None, ctx: RpcContext) -> dict:
             msg["attachments"] = attachments
         if artifacts:
             msg["artifacts"] = artifacts
+        usage = getattr(entry, "turn_usage", None)
+        if isinstance(usage, dict):
+            msg["usage"] = usage
+            model = usage.get("model") or usage.get("routed_model")
+            if model:
+                msg["model"] = model
+            input_tokens = int(usage.get("input_tokens") or usage.get("inputTokens") or 0)
+            output_tokens = int(
+                usage.get("output_tokens") or usage.get("outputTokens") or 0
+            )
+            msg["input"] = input_tokens
+            msg["output"] = output_tokens
+            msg["input_tokens"] = input_tokens
+            msg["output_tokens"] = output_tokens
+            if usage.get("cost_usd") is not None:
+                msg["cost_usd"] = float(usage.get("cost_usd") or 0.0)
         tc = getattr(entry, "tool_calls", None)
         if tc:
             msg["tool_calls"] = tc

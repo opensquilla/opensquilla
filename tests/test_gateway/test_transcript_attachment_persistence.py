@@ -56,6 +56,24 @@ def test_inline_attachment_stored_in_transcript_envelope(tmp_path: Path) -> None
     assert writes == []
 
 
+def test_transcript_envelope_can_separate_provider_and_display_text(tmp_path: Path) -> None:
+    inline = {"type": "image/png", "data": _b64(b"\x89PNG\r\n\x1a\n"), "name": "p.png"}
+    envelope, _writes = build_transcript_attachment_envelope(
+        text="Describe these attachments",
+        display_text="",
+        attachments=[inline],
+        session_id="s1",
+        media_root=tmp_path,
+        persist_enabled=True,
+    )
+
+    parsed = json.loads(envelope)
+
+    assert parsed["text"] == "Describe these attachments"
+    assert parsed["display_text"] == ""
+    assert parsed["attachments"][0]["name"] == "p.png"
+
+
 # ---------------------------------------------------------------------------
 # Test 2 — staged attachment persisted to disk by sha256, envelope uses sha256_ref.
 # ---------------------------------------------------------------------------

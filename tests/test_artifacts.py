@@ -271,6 +271,73 @@ async def test_publish_artifact_tool_allows_workspace_file_only(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_publish_artifact_tool_preserves_source_extension_for_display_name(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = workspace / "generated-chart.png"
+    output.write_bytes(b"\x89PNG\r\n\x1a\nimage bytes")
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:webchat:session-1",
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        result = await publish_artifact(
+            path="generated-chart.png",
+            name="Friendly Chart",
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(result)
+
+    assert payload["status"] == "published"
+    assert payload["artifact"]["name"] == "Friendly Chart.png"
+    assert payload["artifact"]["mime"] == "image/png"
+    assert ctx.published_artifacts[0]["name"] == "Friendly Chart.png"
+    assert ctx.published_artifacts[0]["mime"] == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_tool_keeps_download_name_mime_when_source_is_generic(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = workspace / "payload.bin"
+    output.write_bytes(b"image bytes")
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:webchat:session-1",
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        result = await publish_artifact(
+            path="payload.bin",
+            name="Friendly Chart.png",
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(result)
+
+    assert payload["artifact"]["name"] == "Friendly Chart.png"
+    assert payload["artifact"]["mime"] == "image/png"
+
+
+@pytest.mark.asyncio
 async def test_publish_artifact_tool_hides_local_path_from_non_owner_channel(
     tmp_path: Path,
 ) -> None:

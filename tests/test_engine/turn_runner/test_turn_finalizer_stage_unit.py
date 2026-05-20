@@ -44,6 +44,7 @@ class _RecordingTranscriptAppend:
         content: str,
         tool_calls: list[Any] | None,
         reasoning_content: str | None,
+        turn_usage: dict[str, Any] | None,
         token_count: int | None,
     ) -> bool:
         self.calls.append(
@@ -53,6 +54,7 @@ class _RecordingTranscriptAppend:
                 "content": content,
                 "tool_calls": tool_calls,
                 "reasoning_content": reasoning_content,
+                "turn_usage": turn_usage,
                 "token_count": token_count,
             }
         )
@@ -272,6 +274,9 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
     assert len(recs["session_totals"].calls) == 1
     assert recs["session_totals"].calls[0]["done_event"] is done
     assert recs["transcript_append"].calls[0]["token_count"] == 3
+    assert recs["transcript_append"].calls[0]["turn_usage"]["input_tokens"] == 5
+    assert recs["transcript_append"].calls[0]["turn_usage"]["output_tokens"] == 3
+    assert recs["transcript_append"].calls[0]["turn_usage"]["model"] == "claude-sonnet-4.5"
 
 
 @pytest.mark.asyncio

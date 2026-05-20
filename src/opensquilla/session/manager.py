@@ -588,6 +588,7 @@ class SessionManager:
                         role=entry.role,
                         content=entry.content,
                         tool_calls=entry.tool_calls,
+                        turn_usage=entry.turn_usage,
                         created_at=entry.created_at,
                         token_count=entry.token_count,
                     )
@@ -618,6 +619,7 @@ class SessionManager:
         tool_calls: list[dict[str, Any]] | None = None,
         tool_call_id: str | None = None,
         reasoning_content: str | None = None,
+        turn_usage: dict[str, Any] | None = None,
         token_count: int | None = None,
         provenance: dict[str, Any] | None = None,
     ) -> TranscriptEntry:
@@ -637,6 +639,7 @@ class SessionManager:
             tool_calls=tool_calls,
             tool_call_id=tool_call_id,
             reasoning_content=reasoning_content if role == "assistant" else None,
+            turn_usage=turn_usage if role == "assistant" else None,
             token_count=token_count,
         )
 
@@ -738,6 +741,7 @@ class SessionManager:
                 "tool_calls": e.tool_calls,
                 "tool_call_id": e.tool_call_id,
                 "reasoning_content": e.reasoning_content,
+                "turn_usage": e.turn_usage,
             }
             for e in entries
         ]
@@ -846,6 +850,7 @@ class SessionManager:
                 content=raw.get("content", ""),
                 tool_calls=raw.get("tool_calls"),
                 tool_call_id=raw.get("tool_call_id"),
+                turn_usage=raw.get("turn_usage"),
             )
             rewritten_entries.append(entry)
 

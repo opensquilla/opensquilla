@@ -928,6 +928,7 @@ class _TurnRunnerTranscriptAppendAdapter(TranscriptAppendPort):
         content: str,
         tool_calls: list[Any] | None,
         reasoning_content: str | None,
+        turn_usage: dict[str, Any] | None,
         token_count: int | None,
     ) -> bool:
         from opensquilla.engine.runtime import _accepts_keyword_arg
@@ -942,6 +943,11 @@ class _TurnRunnerTranscriptAppendAdapter(TranscriptAppendPort):
         }
         if reasoning_content is not None:
             append_kwargs["reasoning_content"] = reasoning_content
+        if (
+            turn_usage is not None
+            and _accepts_keyword_arg(session_manager.append_message, "turn_usage")
+        ):
+            append_kwargs["turn_usage"] = turn_usage
         if _accepts_keyword_arg(session_manager.append_message, "token_count"):
             append_kwargs["token_count"] = token_count
         await session_manager.append_message(session_key, **append_kwargs)

@@ -129,6 +129,29 @@ def _publish_note(ctx: ToolContext, *, already_published: bool = False) -> str:
     )
 
 
+def _publish_artifact_metadata(
+    *,
+    target: Path,
+    name: str | None,
+    mime: str | None,
+) -> tuple[str, str]:
+    artifact_name = (name or target.name).strip() or target.name
+    if name and not Path(artifact_name).suffix and target.suffix:
+        artifact_name = f"{artifact_name}{target.suffix}"
+
+    if mime:
+        artifact_mime = mime.strip()
+    else:
+        target_mime = mimetypes.guess_type(target.name)[0]
+        artifact_name_mime = mimetypes.guess_type(artifact_name)[0]
+        artifact_mime = target_mime or artifact_name_mime or ""
+        if target_mime == "application/octet-stream" and artifact_name_mime:
+            artifact_mime = artifact_name_mime
+    if not artifact_mime:
+        artifact_mime = "application/octet-stream"
+    return artifact_name, artifact_mime
+
+
 @tool(
     name="publish_artifact",
     description=(
@@ -200,16 +223,18 @@ async def publish_artifact(
             ensure_ascii=False,
         )
 
-    artifact_mime = (mime or mimetypes.guess_type(name or target.name)[0] or "").strip()
-    if not artifact_mime:
-        artifact_mime = "application/octet-stream"
+    artifact_name, artifact_mime = _publish_artifact_metadata(
+        target=target,
+        name=name,
+        mime=mime,
+    )
 
     store = ArtifactStore(ctx.artifact_media_root)
     existing = store.find_existing_ref(
         session_id=ctx.artifact_session_id,
         session_key=ctx.session_key,
         sha256=target_sha256,
-        name=name or target.name,
+        name=artifact_name,
         mime=artifact_mime,
     )
     if existing is not None:
@@ -235,7 +260,7 @@ async def publish_artifact(
             target,
             session_id=ctx.artifact_session_id,
             session_key=ctx.session_key,
-            name=name or target.name,
+            name=artifact_name,
             mime=artifact_mime,
             source="publish_artifact",
             max_bytes=ctx.artifact_max_bytes

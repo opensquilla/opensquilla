@@ -90,6 +90,7 @@ def _transcript_dir(media_root: Path, session_id: str) -> Path:
 def build_transcript_attachment_envelope(
     *,
     text: str,
+    display_text: str | None = None,
     attachments: list[dict[str, Any]],
     session_id: str,
     media_root: Path,
@@ -195,7 +196,10 @@ def build_transcript_attachment_envelope(
                 {"type": media_type, "name": name, "data": data}
             )
 
-    envelope = json.dumps({"text": text, "attachments": persisted_attachments})
+    envelope_payload: dict[str, Any] = {"text": text, "attachments": persisted_attachments}
+    if display_text is not None:
+        envelope_payload["display_text"] = display_text
+    envelope = json.dumps(envelope_payload)
     return envelope, disk_writes
 
 

@@ -414,7 +414,7 @@ class WaitingIndicator:
     # action when the conversation around it is plain prose.
     _verbs = (
         "Watching", "Tracking", "Sensing", "Pulsing",
-        "Thinking", "Drafting", "Composing", "Polishing",
+        "Thinking", "Drafting", "Polishing",
     )
     _verb_dwell_seconds = 2.5
     _spinner_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"

@@ -23,7 +23,8 @@ class StaleEpochError(Exception):
 
 # Bumped whenever the schema is widened or narrowed via migration.
 # Version 2 added the epoch column. Version 3 added transcript reasoning replay.
-SCHEMA_VERSION = 3
+# Version 4 added transcript turn usage metadata.
+SCHEMA_VERSION = 4
 
 # SQLite CREATE statements derived from SQLModel metadata
 _CREATE_SESSIONS = """
@@ -96,6 +97,7 @@ CREATE TABLE IF NOT EXISTS transcript_entries (
     tool_calls TEXT,
     tool_call_id TEXT,
     reasoning_content TEXT,
+    turn_usage TEXT,
     created_at INTEGER NOT NULL,
     token_count INTEGER,
     provenance_kind TEXT,
@@ -216,7 +218,7 @@ def _serialize(value: Any) -> Any:
 
 def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
     """Deserialize JSON text fields back to Python objects."""
-    json_fields = {"delivery_context", "tool_calls", "origin", "details"}
+    json_fields = {"delivery_context", "tool_calls", "turn_usage", "origin", "details"}
     bool_fields = {"total_tokens_fresh", "forked_from_parent", "fast_mode"}
     result = {}
     for k, v in row.items():
@@ -273,6 +275,7 @@ class SessionStorage:
         # Migrate older databases — add the epoch column if missing.
         await self._migrate_epoch_column()
         await self._migrate_transcript_reasoning_content_column()
+        await self._migrate_transcript_turn_usage_column()
         await self.mark_abandoned_agent_tasks()
 
     async def _migrate_epoch_column(self) -> None:
@@ -310,6 +313,17 @@ class SessionStorage:
         if "reasoning_content" not in columns:
             await self._conn.execute(
                 "ALTER TABLE transcript_entries ADD COLUMN reasoning_content TEXT"
+            )
+            await self._conn.commit()
+
+    async def _migrate_transcript_turn_usage_column(self) -> None:
+        """Idempotently add per-turn usage metadata storage to transcripts."""
+        assert self._conn is not None
+        async with self._conn.execute("PRAGMA table_info(transcript_entries)") as cur:
+            columns = [row[1] for row in await cur.fetchall()]
+        if "turn_usage" not in columns:
+            await self._conn.execute(
+                "ALTER TABLE transcript_entries ADD COLUMN turn_usage TEXT"
             )
             await self._conn.commit()
 

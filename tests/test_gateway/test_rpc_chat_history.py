@@ -75,6 +75,43 @@ async def test_chat_history_exposes_stable_message_identity() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_history_exposes_persisted_turn_usage() -> None:
+    entry = TranscriptEntry(
+        session_id="parent",
+        session_key="agent:main:webchat:test",
+        role="assistant",
+        content="done",
+        turn_usage={
+            "model": "openai/gpt-test",
+            "input_tokens": 11,
+            "output_tokens": 5,
+            "cost_usd": 0.0123,
+            "cached_tokens": 2,
+            "routed_tier": "economy",
+            "routing_source": "squilla_router",
+            "total_savings_pct": 42.0,
+        },
+    )
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:test"},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=_FakeSessionManager([entry]),
+        ),
+    )
+
+    msg = result["messages"][0]
+    assert msg["usage"]["input_tokens"] == 11
+    assert msg["usage"]["output_tokens"] == 5
+    assert msg["usage"]["cost_usd"] == 0.0123
+    assert msg["model"] == "openai/gpt-test"
+    assert msg["input"] == 11
+    assert msg["output"] == 5
+
+
+@pytest.mark.asyncio
 async def test_chat_history_exposes_assistant_artifacts() -> None:
     artifact = {
         "id": "art-1",
@@ -110,3 +147,38 @@ async def test_chat_history_exposes_assistant_artifacts() -> None:
     assert output_artifact["download_url"] == "/api/v1/artifacts/art-1"
     assert "session_key" not in output_artifact
     assert "sessionKey" not in json.dumps(output_artifact)
+
+
+@pytest.mark.asyncio
+async def test_chat_history_prefers_attachment_display_text() -> None:
+    entry = TranscriptEntry(
+        session_id="session-1",
+        session_key="agent:main:webchat:test",
+        role="user",
+        content=json.dumps(
+            {
+                "text": "Describe these attachments",
+                "display_text": "",
+                "attachments": [
+                    {
+                        "type": "image/png",
+                        "name": "image.png",
+                        "data": "aW1hZ2U=",
+                    }
+                ],
+            }
+        ),
+    )
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:test"},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=_FakeSessionManager([entry]),
+        ),
+    )
+
+    msg = result["messages"][0]
+    assert msg["text"] == ""
+    assert msg["attachments"][0]["name"] == "image.png"

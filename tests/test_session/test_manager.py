@@ -288,11 +288,23 @@ async def test_branch_creates_child(manager):
 async def test_branch_fork_transcript(manager):
     await manager.create("agent:main:main")
     await manager.append_message("agent:main:main", "user", "parent msg", token_count=5)
+    await manager.append_message(
+        "agent:main:main",
+        "assistant",
+        "parent reply",
+        turn_usage={"model": "openai/gpt-test", "input_tokens": 11, "output_tokens": 5},
+        token_count=5,
+    )
     child = await manager.branch("agent:main:main", "agent:main:direct:u1", fork_transcript=True)
     assert child.forked_from_parent is True
     entries = await manager.get_transcript("agent:main:direct:u1")
-    assert len(entries) == 1
+    assert len(entries) == 2
     assert entries[0].content == "parent msg"
+    assert entries[1].turn_usage == {
+        "model": "openai/gpt-test",
+        "input_tokens": 11,
+        "output_tokens": 5,
+    }
 
 
 @pytest.mark.asyncio

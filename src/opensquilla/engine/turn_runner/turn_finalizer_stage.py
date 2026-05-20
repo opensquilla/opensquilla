@@ -114,6 +114,7 @@ class TranscriptAppendPort(Protocol):
         content: str,
         tool_calls: list[Any] | None,
         reasoning_content: str | None,
+        turn_usage: dict[str, Any] | None,
         token_count: int | None,
     ) -> bool: ...
 
@@ -139,6 +140,37 @@ class TurnMemoryCapturePort(Protocol):
         run_kind: str,
         no_memory_capture: bool,
     ) -> None: ...
+
+
+def _turn_usage_payload(
+    done_event: Any | None,
+    *,
+    resolved_model: str | None,
+) -> dict[str, Any] | None:
+    if done_event is None:
+        return None
+    model = done_event.model or resolved_model or ""
+    return {
+        "input_tokens": int(done_event.input_tokens or 0),
+        "output_tokens": int(done_event.output_tokens or 0),
+        "reasoning_tokens": int(done_event.reasoning_tokens or 0),
+        "cached_tokens": int(done_event.cached_tokens or 0),
+        "cache_write_tokens": int(done_event.cache_write_tokens or 0),
+        "cost_usd": float(done_event.cost_usd or 0.0),
+        "billed_cost": float(done_event.billed_cost or 0.0),
+        "cost_source": done_event.cost_source or "none",
+        "model": model,
+        "routed_model": done_event.routed_model or "",
+        "routed_tier": done_event.routed_tier or None,
+        "routing_source": done_event.routing_source or "none",
+        "routing_confidence": float(done_event.routing_confidence or 0.0),
+        "baseline_model": done_event.baseline_model or "",
+        "savings_pct": float(done_event.savings_pct or 0.0),
+        "savings_usd": float(done_event.savings_usd or 0.0),
+        "cache_hit_active": bool(done_event.cache_hit_active),
+        "total_savings_pct": float(done_event.total_savings_pct or 0.0),
+        "total_savings_usd": float(done_event.total_savings_usd or 0.0),
+    }
 
 @runtime_checkable
 class SessionTotalsPort(Protocol):
@@ -398,6 +430,10 @@ class TurnFinalizerStage:
                 content=persisted_content,
                 tool_calls=turn_segments if turn_segments else None,
                 reasoning_content=reasoning_content,
+                turn_usage=_turn_usage_payload(
+                    inp.done_event,
+                    resolved_model=inp.resolved_model,
+                ),
                 token_count=token_count,
             )
             if transcript_appended:

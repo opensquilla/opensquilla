@@ -65,11 +65,17 @@ def test_chat_artifact_images_render_as_preview_cards_and_refresh_on_done() -> N
     done_body = source[done_start:done_end]
 
     assert "function _isImageArtifact(artifact)" in source
+    assert "function _artifactCategory(artifact)" in source
     assert "function _artifactPreviewUrl(artifact)" in source
+    assert "msg-artifact-gallery" in render_body
+    assert "msg-artifact-files" in render_body
     assert "class=\"msg-artifact-card msg-artifact-card--image\"" in render_body
     assert "<img class=\"msg-artifact-preview\"" in render_body
     assert "data-artifact-download" in render_body
+    assert "data-artifact-category" in render_body
     assert "_scheduleHistorySync();" in done_body
+    assert ".msg-artifact-gallery" in css
+    assert ".msg-artifact-files" in css
     assert ".msg-artifact-card--image" in css
     assert ".msg-artifact-preview" in css
 
@@ -599,10 +605,12 @@ def test_chat_history_replays_turn_meta_to_restore_combo_streak() -> None:
     end = source.index("  /* ── Send Message", start)
     body = source[start:end]
 
+    assert "function _historyTurnMeta(msg) {" in source
     assert "function _savedUsageFromMeta(meta) {" in source
     assert "function _turnSavingsIdentity(u) {" in source
     assert "if (window.SavingsFX) window.SavingsFX.resetStreak();" in body
     assert "let historySavingsIdentity = '';" in body
+    assert "const m = _historyTurnMeta(msg) || _recallTurnMeta(_sessionKey, _histAsstIdx);" in body
     assert "const savedUsage = _savedUsageFromMeta(m);" in body
     assert "const identity = _turnSavingsIdentity(savedUsage);" in body
     assert "if (identityChanged) savedUsage.__savings_ui_suppressed = true;" in body

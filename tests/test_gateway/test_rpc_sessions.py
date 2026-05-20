@@ -791,6 +791,71 @@ class TestSessionsSend:
         assert res.error.code == "INVALID_REQUEST"
 
     @pytest.mark.asyncio
+    async def test_send_persists_web_attachment_display_text_without_changing_cli(
+        self,
+        dispatcher,
+    ):
+        attachment = {"type": "image/png", "data": "aW1hZ2U=", "name": "image.png"}
+
+        web_session = FakeSession(
+            session_key="agent:main:webchat:web-display",
+            session_id="web-display",
+        )
+        web_manager = FakeSessionManager([web_session])
+        web_runner = _RecordingTurnRunner()
+        web_ctx = make_ctx(session_manager=web_manager, turn_runner=web_runner)
+        web_res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": web_session.session_key,
+                "message": "Describe these attachments",
+                "displayText": "",
+                "attachments": [attachment],
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            web_ctx,
+        )
+        web_task = get_agent_task_registry().get(web_session.session_key)
+        if web_task is not None:
+            await web_task
+
+        assert web_res.ok is True
+        web_persisted = json.loads(web_manager.created_messages[0][2])
+        assert web_persisted["text"] == "Describe these attachments"
+        assert web_persisted["display_text"] == ""
+        assert web_runner.run_calls[0]["message"] == "Describe these attachments"
+
+        cli_session = FakeSession(
+            session_key="agent:main:cli:cli-display",
+            session_id="cli-display",
+        )
+        cli_manager = FakeSessionManager([cli_session])
+        cli_runner = _RecordingTurnRunner()
+        cli_ctx = make_ctx(session_manager=cli_manager, turn_runner=cli_runner)
+        cli_res = await dispatcher.dispatch(
+            "r2",
+            "sessions.send",
+            {
+                "key": cli_session.session_key,
+                "message": "Describe these attachments",
+                "displayText": "",
+                "attachments": [attachment],
+                "_source": {"caller_kind": "cli", "channel_kind": "cli"},
+            },
+            cli_ctx,
+        )
+        cli_task = get_agent_task_registry().get(cli_session.session_key)
+        if cli_task is not None:
+            await cli_task
+
+        assert cli_res.ok is True
+        cli_persisted = json.loads(cli_manager.created_messages[0][2])
+        assert cli_persisted["text"] == "Describe these attachments"
+        assert "display_text" not in cli_persisted
+        assert cli_runner.run_calls[0]["message"] == "Describe these attachments"
+
+    @pytest.mark.asyncio
     async def test_send_rejects_aggregate_attachment_cap_before_start_and_evict(
         self, dispatcher, ctx_with_sessions, session
     ):

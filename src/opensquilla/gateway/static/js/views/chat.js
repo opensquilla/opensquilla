@@ -142,7 +142,7 @@ const ChatView = (() => {
   const _THINKING_DELAY_MS = 400;  // don't show for fast responses
   const _THINKING_TTL_MS = 60000;  // 60s auto-hide
   // kept in sync with stream.py WaitingIndicator._verbs
-  const SQUILLA_VERBS = ['Watching','Tracking','Sensing','Pulsing','Thinking','Drafting','Composing','Polishing'];
+  const SQUILLA_VERBS = ['Watching','Tracking','Sensing','Pulsing','Thinking','Drafting','Polishing'];
   const SQUILLA_DWELL_MS = 2500;
 
   // Inline directive tags — control signals the LLM emits per system prompt
@@ -672,6 +672,16 @@ const ChatView = (() => {
     const saved = { ...meta.saved };
     if (!saved.model && !saved.routed_model && meta.model) saved.model = meta.model;
     return saved;
+  }
+
+  function _historyTurnMeta(msg) {
+    const u = msg?.usage || msg?.turn_usage || null;
+    const model = msg?.model || u?.model || u?.routed_model || '';
+    const input = Number(msg?.input ?? msg?.input_tokens ?? u?.input_tokens ?? u?.inputTokens ?? 0);
+    const output = Number(msg?.output ?? msg?.output_tokens ?? u?.output_tokens ?? u?.outputTokens ?? 0);
+    if (!model && input <= 0 && output <= 0 && !u) return null;
+    const saved = u ? { ...u, model: u.model || model || null } : null;
+    return { model, input, output, saved };
   }
 
   function _turnSavingsIdentity(u) {
@@ -2861,7 +2871,8 @@ const ChatView = (() => {
         // Re-attach so action buttons survive a history reload.
         _attachHoverActions(div, msg.role);
         if (msg.role === 'assistant') {
-          const m = _recallTurnMeta(_sessionKey, _histAsstIdx++);
+          const m = _historyTurnMeta(msg) || _recallTurnMeta(_sessionKey, _histAsstIdx);
+          _histAsstIdx++;
           if (m) {
             const savedUsage = _savedUsageFromMeta(m);
             if (savedUsage) {
@@ -3089,7 +3100,8 @@ const ChatView = (() => {
 
     // Record message for export
     const now = new Date().toISOString();
-    const userText = text || '(attachment)';
+    const userText = text;
+    const providerText = text || 'Describe these attachments';
     _messages.push({ role: 'user', text: userText, ts: now });
 
     // Show user message
@@ -3110,7 +3122,7 @@ const ChatView = (() => {
     _attachHoverActions(userDiv, 'user');
 
     // Build RPC params
-    const params = { message: text || 'Describe these attachments', sessionKey: _sessionKey };
+    const params = { message: providerText, sessionKey: _sessionKey };
     const elevatedMode = _normalizeElevatedMode(_elevatedMode);
     if (elevatedMode) params._source = { elevated: elevatedMode };
     if (_pendingSessionIntent) {
@@ -3118,6 +3130,7 @@ const ChatView = (() => {
       _pendingSessionIntent = null;
     }
     if (_pendingAttachments.length > 0) {
+      params.displayText = userText;
       params.attachments = _pendingAttachments.map((a) => {
         if (a.kind === 'staged') {
           return { type: a.mime, file_uuid: a.file_uuid, mime: a.mime, name: a.name };
@@ -3911,9 +3924,72 @@ const ChatView = (() => {
     }
   }
 
+  const ARTIFACT_MIME_CATEGORIES = {
+    'application/json': 'data',
+    'application/ndjson': 'data',
+    'application/pdf': 'document',
+    'application/x-ndjson': 'data',
+    'text/csv': 'data',
+    'text/html': 'document',
+    'text/markdown': 'document',
+    'text/plain': 'document',
+    'text/tab-separated-values': 'data',
+  };
+
+  const ARTIFACT_EXTENSION_CATEGORIES = {
+    csv: 'data',
+    htm: 'document',
+    html: 'document',
+    ipynb: 'data',
+    json: 'data',
+    jsonl: 'data',
+    log: 'document',
+    markdown: 'document',
+    md: 'document',
+    ndjson: 'data',
+    pdf: 'document',
+    sql: 'code',
+    tsv: 'data',
+    txt: 'document',
+  };
+
+  function _artifactMime(artifact) {
+    return artifact && artifact.mime ? String(artifact.mime).toLowerCase() : '';
+  }
+
+  function _artifactName(artifact) {
+    return artifact && artifact.name ? String(artifact.name) : 'artifact';
+  }
+
+  function _artifactExtension(name) {
+    const trimmed = String(name || '').trim().toLowerCase();
+    const idx = trimmed.lastIndexOf('.');
+    if (idx < 0 || idx === trimmed.length - 1) return '';
+    return trimmed.slice(idx + 1);
+  }
+
+  function _artifactCategory(artifact) {
+    const mime = _artifactMime(artifact);
+    if (mime.startsWith('image/')) return 'visual';
+    if (ARTIFACT_MIME_CATEGORIES[mime]) return ARTIFACT_MIME_CATEGORIES[mime];
+    if (!mime || mime === 'application/octet-stream' || mime === 'artifact') {
+      const ext = _artifactExtension(_artifactName(artifact));
+      if (ARTIFACT_EXTENSION_CATEGORIES[ext]) return ARTIFACT_EXTENSION_CATEGORIES[ext];
+    }
+    return 'file';
+  }
+
+  function _artifactCategoryLabel(category) {
+    switch (category) {
+      case 'data': return 'data';
+      case 'document': return 'doc';
+      case 'code': return 'code';
+      default: return 'file';
+    }
+  }
+
   function _isImageArtifact(artifact) {
-    const mime = artifact && artifact.mime ? String(artifact.mime).toLowerCase() : '';
-    return mime.startsWith('image/');
+    return _artifactCategory(artifact) === 'visual';
   }
 
   function _artifactPreviewUrl(artifact) {
@@ -3931,15 +4007,30 @@ const ChatView = (() => {
   function _renderArtifacts(artifacts) {
     if (!Array.isArray(artifacts) || artifacts.length === 0) return '';
     let html = '<div class="msg-artifacts">';
+    let openGroup = '';
+    const closeGroup = () => {
+      if (!openGroup) return;
+      html += '</div>';
+      openGroup = '';
+    };
     artifacts.forEach((artifact) => {
-      const name = artifact && artifact.name ? String(artifact.name) : 'artifact';
+      const category = _artifactCategory(artifact);
+      const groupKind = category === 'visual' ? 'visual' : 'file';
+      if (groupKind !== openGroup) {
+        closeGroup();
+        html += groupKind === 'visual'
+          ? '<div class="msg-artifact-gallery">'
+          : '<div class="msg-artifact-files">';
+        openGroup = groupKind;
+      }
+      const name = _artifactName(artifact);
       const mime = artifact && artifact.mime ? String(artifact.mime) : 'artifact';
       const size = artifact && artifact.size ? `${Math.max(1, Math.round(Number(artifact.size) / 1024))} KB` : '';
       const downloadUrl = _artifactDownloadUrl(artifact || {});
       const meta = [mime, size].filter(Boolean).join(' · ');
       if (_isImageArtifact(artifact)) {
         const previewUrl = _artifactPreviewUrl(artifact || {});
-        html += `<button type="button" class="msg-artifact-card msg-artifact-card--image" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="Download ${_esc(name)}">
+        html += `<button type="button" class="msg-artifact-card msg-artifact-card--image" data-artifact-category="${_esc(category)}" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="Download ${_esc(name)}">
           ${previewUrl ? `<img class="msg-artifact-preview" src="${_esc(previewUrl)}" alt="${_esc(name)}" loading="lazy">` : '<span class="msg-artifact-preview msg-artifact-preview--empty" aria-hidden="true"></span>'}
           <span class="msg-artifact-card__body">
             <span class="msg-artifact-card__name">${_esc(name)}</span>
@@ -3948,13 +4039,14 @@ const ChatView = (() => {
           <span class="msg-artifact-card__action" aria-hidden="true">Download</span>
         </button>`;
       } else {
-        html += `<button type="button" class="msg-artifact-chip" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="${_esc(name)}">
-          <span class="msg-file-chip__icon" aria-hidden="true">file</span>
+        html += `<button type="button" class="msg-artifact-chip" data-artifact-category="${_esc(category)}" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="${_esc(name)}">
+          <span class="msg-file-chip__icon" aria-hidden="true">${_esc(_artifactCategoryLabel(category))}</span>
           <span class="msg-file-chip__name">${_esc(name)}</span>
           <span class="msg-file-chip__meta">${_esc(meta)}</span>
         </button>`;
       }
     });
+    closeGroup();
     html += '</div>';
     return html;
   }

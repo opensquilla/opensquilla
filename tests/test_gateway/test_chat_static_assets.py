@@ -121,6 +121,46 @@ def test_chat_js_uses_two_mode_attachment_payload() -> None:
     assert "/api/v1/files/upload" in source
 
 
+def test_chat_empty_attachment_turn_has_separate_display_text() -> None:
+    source = _read_chat_js()
+    send_start = source.index("async function _onSend()")
+    send_end = source.index("  function _onStop", send_start)
+    send_body = source[send_start:send_end]
+
+    assert "const providerText = text || 'Describe these attachments';" in send_body
+    assert "const userText = text;" in send_body
+    assert "params.displayText = userText" in send_body
+    assert "text || '(attachment)'" not in send_body
+
+
+def test_chat_artifact_layout_groups_visuals_and_files_without_stretching() -> None:
+    source = _read_chat_js()
+    css = _read_chat_css()
+    render_start = source.index("function _renderArtifacts(artifacts)")
+    render_end = source.index("  async function _downloadArtifact", render_start)
+    render_body = source[render_start:render_end]
+    artifacts_start = css.index(".msg-artifacts {")
+    artifacts_end = css.index(".msg-artifact-gallery", artifacts_start)
+    artifacts_css = css[artifacts_start:artifacts_end]
+
+    assert "const groupKind = category === 'visual' ? 'visual' : 'file';" in render_body
+    assert "msg-artifact-gallery" in render_body
+    assert "msg-artifact-files" in render_body
+    assert "display: grid;" in artifacts_css
+    assert "display: flex;" not in artifacts_css
+
+
+def test_chat_artifact_category_has_unknown_file_fallback() -> None:
+    source = _read_chat_js()
+    start = source.index("function _artifactCategory(artifact)")
+    end = source.index("  function _isImageArtifact", start)
+    body = source[start:end]
+
+    assert "application/octet-stream" in body
+    assert "ARTIFACT_EXTENSION_CATEGORIES" in body
+    assert "return 'file';" in body
+
+
 # ---------------------------------------------------------------------------
 # Test 4 — staged uploads use the same auth source as the WebSocket session.
 # ---------------------------------------------------------------------------

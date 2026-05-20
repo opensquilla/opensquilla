@@ -769,6 +769,9 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     source_hint = params.get("_source") if isinstance(params, dict) else None
     if not isinstance(source_hint, dict):
         source_hint = {}
+    display_text = params.get("displayText") if source_hint.get("caller_kind") == "web" else None
+    if display_text is not None and not isinstance(display_text, str):
+        display_text = None
 
     from opensquilla.gateway.routing import (
         build_cli_route_envelope,
@@ -831,6 +834,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
 
             persist_content, _writes = build_transcript_attachment_envelope(
                 text=message_text,
+                display_text=display_text,
                 attachments=raw_attachments,
                 session_id=session_id,
                 media_root=media_root,

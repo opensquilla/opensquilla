@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from opensquilla.skills.creator.proposer import simulate_meta_resolution
 
 VALID_SKILL_MD = """---

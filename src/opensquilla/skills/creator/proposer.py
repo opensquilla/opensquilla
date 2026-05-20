@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from opensquilla.engine.steps.meta_resolution import _trigger_matches
 from opensquilla.skills.creator.patterns import PATTERN_SLOT_SCHEMA
 from opensquilla.skills.loader import SkillLoader
+from opensquilla.tools.registry import tool
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "patterns"
 
@@ -261,3 +262,46 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
     if kind == "negative":
         return "what's the weather forecast for tomorrow?"
     raise ValueError(f"Unknown fixture kind: {kind}")
+
+
+# ---------------------------------------------------------------------------
+# @tool-decorated async wrappers — registered into the default ToolRegistry
+# at import time so that the orchestrator's tool_invoker can dispatch them.
+# ---------------------------------------------------------------------------
+
+_PATTERN_ENUM = sorted(PATTERN_SLOT_SCHEMA.keys())
+
+
+@tool(
+    name="meta_skill_assemble",
+    description=(
+        "Render a meta-skill SKILL.md from a pattern_id + Pydantic-validated "
+        "slots JSON. Returns the full SKILL.md text as a string."
+    ),
+    params={
+        "pattern_id": {"type": "string", "enum": _PATTERN_ENUM},
+        "slots_json": {"type": "string"},
+    },
+    required=["pattern_id", "slots_json"],
+)
+async def meta_skill_assemble_tool(pattern_id: str, slots_json: str) -> str:
+    return meta_skill_assemble(pattern_id, slots_json)
+
+
+@tool(
+    name="meta_skill_fill_slots",
+    description=(
+        "Drive an LLM to fill the slot schema for the chosen pattern. "
+        "Returns validated JSON string consumed by meta_skill_assemble."
+    ),
+    params={
+        "pattern_id": {"type": "string", "enum": _PATTERN_ENUM},
+        "history_summary": {"type": "string"},
+        "user_intent": {"type": "string"},
+    },
+    required=["pattern_id", "history_summary", "user_intent"],
+)
+async def meta_skill_fill_slots_tool(
+    pattern_id: str, history_summary: str, user_intent: str,
+) -> str:
+    return meta_skill_fill_slots(pattern_id, history_summary, user_intent)

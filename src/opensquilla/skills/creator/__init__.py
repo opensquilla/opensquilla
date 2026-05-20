@@ -1,9 +1,12 @@
-"""Meta-skill creator library — Pydantic slot schemas + 3 internal tools.
+"""Meta-skill creator library.
 
-Tools (registered at import time): meta_skill_fill_slots,
-meta_skill_assemble, simulate_meta_resolution.
+Importing this package registers `meta_skill_assemble` and
+`meta_skill_fill_slots` as tools in the default ToolRegistry. The
+orchestrator's `tool_invoker` picks them up automatically.
 """
 
+# Side-effect: registers tools via @tool decorators in proposer.py
+from opensquilla.skills.creator import proposer  # noqa: F401
 from opensquilla.skills.creator.proposer import (  # noqa: F401
     meta_skill_assemble,
     meta_skill_fill_slots,

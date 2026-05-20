@@ -1,4 +1,4 @@
-"""End-to-end: creator pipeline tests (components + orchestrator-driven)."""
+"""End-to-end: creator pipeline with stubbed LLMs produces a valid proposal."""
 
 from __future__ import annotations
 
@@ -7,30 +7,31 @@ import subprocess
 import sys
 from pathlib import Path
 
-from creator_fixtures import (
-    INTENT_PDF_DIGEST,
-    INTENT_TRIP_PLANNER,
-    synth_decision_log,
-)
+# creator_fixtures is on sys.path via tests/test_skills/conftest.py
+from creator_fixtures import INTENT_PDF_DIGEST, INTENT_TRIP_PLANNER, synth_decision_log
+
+from opensquilla.engine.types import TextDeltaEvent
+from opensquilla.skills.loader import SkillLoader
+from opensquilla.skills.meta.orchestrator import MetaOrchestrator
+from opensquilla.skills.meta.parser import parse_meta_plan
+from opensquilla.skills.meta.types import MetaMatch, MetaResult
 
 REPO = Path(__file__).resolve().parents[2]
-PROPOSALS = (
-    REPO / "src" / "opensquilla" / "skills" / "bundled"
-    / "meta-skill-proposals" / "scripts" / "proposals.py"
-)
-_LINT_SCRIPT = (
-    REPO / "src" / "opensquilla" / "skills" / "bundled"
-    / "meta-skill-linter" / "scripts" / "lint.py"
-)
+_BUNDLED_BASE = REPO / "src" / "opensquilla" / "skills" / "bundled"
+PROPOSALS = _BUNDLED_BASE / "meta-skill-proposals" / "scripts" / "proposals.py"
+LINT = _BUNDLED_BASE / "meta-skill-linter" / "scripts" / "lint.py"
+BUNDLED = _BUNDLED_BASE
 
 
 def test_e2e_p1_proposal_lint_pass(tmp_path, monkeypatch) -> None:
-    """Components integration: assemble + lint + smoke + persist work together."""
+    """Stub each LLM step + run the full pipeline; verify proposal is
+    auto_enable_eligible."""
     home = tmp_path / ".opensquilla"
     log_dir = home / "logs"
     synth_decision_log(log_dir, INTENT_PDF_DIGEST["co_occurrence_seed"])
 
     from opensquilla.skills.creator import proposer
+
     canned_slots = {
         "name": "synth-pdf-digest-pipeline",
         "description": "Synthetic PDF digest: extract then summarize then memorize.",
@@ -50,7 +51,7 @@ def test_e2e_p1_proposal_lint_pass(tmp_path, monkeypatch) -> None:
     assert "synth-pdf-digest-pipeline" in skill_md
 
     proc = subprocess.run(
-        [sys.executable, str(_LINT_SCRIPT), "--skill-md-stdin", "--gates", "G1,G2"],
+        [sys.executable, str(LINT), "--skill-md-stdin", "--gates", "G1,G2"],
         input=skill_md, capture_output=True, text=True, check=True,
     )
     lint_result = json.loads(proc.stdout)
@@ -69,14 +70,11 @@ def test_e2e_p1_proposal_lint_pass(tmp_path, monkeypatch) -> None:
     assert smoke_result["G4"]["passed"]
 
     out = subprocess.run(
-        [
-            sys.executable, str(PROPOSALS),
-            "--action", "write_proposal",
-            "--home", str(home),
-            "--skill-md-inline", skill_md,
-            "--lint-result", json.dumps(lint_result),
-            "--smoke-result", json.dumps(smoke_result),
-        ],
+        [sys.executable, str(PROPOSALS),
+         "--action", "write_proposal", "--home", str(home),
+         "--skill-md-inline", skill_md,
+         "--lint-result", json.dumps(lint_result),
+         "--smoke-result", json.dumps(smoke_result)],
         capture_output=True, text=True, check=True,
     )
     persist = json.loads(out.stdout)
@@ -88,38 +86,25 @@ def test_e2e_p1_proposal_lint_pass(tmp_path, monkeypatch) -> None:
 
 
 async def test_orchestrator_drives_creator_dag_end_to_end(tmp_path, monkeypatch) -> None:
-    """Full DAG through MetaOrchestrator with stubbed runners. Verifies
-    topology + Jinja var rendering + tool_call/skill_exec/llm_classify dispatch."""
-
-    from opensquilla.engine.types import DoneEvent, TextDeltaEvent
-    from opensquilla.skills.loader import SkillLoader
-    from opensquilla.skills.meta.orchestrator import MetaOrchestrator
-    from opensquilla.skills.meta.parser import parse_meta_plan
-    from opensquilla.skills.meta.types import MetaMatch, MetaResult
-
+    """Full DAG through MetaOrchestrator with stubbed downstream runners."""
     home = tmp_path / ".opensquilla"
     log_dir = home / "logs"
     synth_decision_log(log_dir, INTENT_PDF_DIGEST["co_occurrence_seed"])
     monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(log_dir))
 
-    bundled = REPO / "src" / "opensquilla" / "skills" / "bundled"
-    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snap.json")
     loader.invalidate_cache()
     creator_spec = loader.get_by_name("meta-skill-creator")
-    assert creator_spec is not None
+    assert creator_spec is not None, "meta-skill-creator not loaded; check Task 6"
     plan = parse_meta_plan(creator_spec)
     assert plan is not None
 
-    # agent_runner: yields TextDeltaEvent + DoneEvent (DoneEvent suppressed by executor)
-    async def stub_agent_runner(system_prompt: str, user_message: str):
+    async def stub_agent_runner(system_prompt: str, user_prompt: str):
         yield TextDeltaEvent(text="<stub:agent>")
-        yield DoneEvent()
 
-    # llm_chat: (system_prompt, user_message) -> label
-    async def stub_llm_chat(system_prompt: str, user_message: str) -> str:
+    async def stub_llm_chat(system_prompt: str, user_prompt: str) -> str:
         return "p1_sequential"
 
-    # tool_invoker: (tool_name, args_dict) -> str
     async def stub_tool_invoker(tool_name: str, args: dict) -> str:
         if tool_name == "meta_skill_fill_slots":
             return json.dumps({
@@ -135,7 +120,6 @@ async def test_orchestrator_drives_creator_dag_end_to_end(tmp_path, monkeypatch)
             return meta_skill_assemble(args["pattern_id"], args["slots_json"])
         return f"<stub:{tool_name}>"
 
-    # MetaOrchestrator requires skill_loader as 2nd positional arg
     orchestrator = MetaOrchestrator(
         agent_runner=stub_agent_runner,
         skill_loader=loader,
@@ -152,7 +136,7 @@ async def test_orchestrator_drives_creator_dag_end_to_end(tmp_path, monkeypatch)
         if isinstance(event, MetaResult):
             final_result = event
 
-    assert final_result is not None
+    assert final_result is not None, "orchestrator did not yield a MetaResult"
     assert final_result.ok, f"orchestrator failed: {final_result.error}"
     assert set(final_result.step_outputs.keys()) >= {
         "harvest", "pick_pattern", "fill_slots", "assemble", "lint", "smoke", "persist"
@@ -160,30 +144,21 @@ async def test_orchestrator_drives_creator_dag_end_to_end(tmp_path, monkeypatch)
 
 
 async def test_orchestrator_p2_fan_out_merge_proposal(tmp_path, monkeypatch) -> None:
-    """P2 path: same orchestrator-driven flow but pick_pattern returns p2."""
-
-    from opensquilla.engine.types import DoneEvent, TextDeltaEvent
-    from opensquilla.skills.loader import SkillLoader
-    from opensquilla.skills.meta.orchestrator import MetaOrchestrator
-    from opensquilla.skills.meta.parser import parse_meta_plan
-    from opensquilla.skills.meta.types import MetaMatch, MetaResult
-
+    """P2 fan-out-merge topology: two parallel branches + merge step."""
     home = tmp_path / ".opensquilla"
     log_dir = home / "logs"
     synth_decision_log(log_dir, INTENT_TRIP_PLANNER["co_occurrence_seed"])
     monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(log_dir))
 
-    bundled = REPO / "src" / "opensquilla" / "skills" / "bundled"
-    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snap.json")
     loader.invalidate_cache()
     creator_spec = loader.get_by_name("meta-skill-creator")
     plan = parse_meta_plan(creator_spec)
 
-    async def stub_agent_runner(system_prompt: str, user_message: str):
+    async def stub_agent_runner(system_prompt: str, user_prompt: str):
         yield TextDeltaEvent(text="<stub:agent>")
-        yield DoneEvent()
 
-    async def stub_llm_chat(system_prompt: str, user_message: str) -> str:
+    async def stub_llm_chat(system_prompt: str, user_prompt: str) -> str:
         return "p2_fan_out_merge"
 
     async def stub_tool_invoker(tool_name: str, args: dict) -> str:
@@ -221,6 +196,4 @@ async def test_orchestrator_p2_fan_out_merge_proposal(tmp_path, monkeypatch) -> 
 
     assert final_result is not None and final_result.ok
     assemble_output = final_result.step_outputs["assemble"]
-    # P2 produces branches and a merge step with depends_on
-    assert "depends_on:" in assemble_output
-    assert "weather" in assemble_output and "poi" in assemble_output
+    assert "depends_on: [weather, poi]" in assemble_output

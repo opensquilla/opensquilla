@@ -33,7 +33,7 @@ OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, Qwen/DashScope,
 and 20+ other LLM providers with no change to your code or config
 schema.
 
-OpenSquilla 0.2.0 is the current release.
+OpenSquilla 0.2.1 is the current release.
 
 ---
 
@@ -90,7 +90,7 @@ Install links: [Git](https://git-scm.com/downloads) ·
 The fastest path on Windows — the zip ships a bundled CPython runtime,
 so no separate Python install is required.
 
-1. Download the 0.2.0 portable zip:
+1. Download the current portable zip:
    <https://github.com/opensquilla/opensquilla/releases/latest/download/OpenSquilla-windows-x64-portable.zip>
 2. Extract it to a writable folder such as Downloads or Documents,
    then right-click `Start OpenSquilla.cmd` and choose **Run as
@@ -156,7 +156,7 @@ $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 **2. Install OpenSquilla** — the same command on every platform.
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.2.0/opensquilla-0.2.0-py3-none-any.whl"
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.2.1/opensquilla-0.2.1-py3-none-any.whl"
 ```
 
 This installs the OpenSquilla wheel from the release URL, then lets
@@ -177,7 +177,7 @@ opensquilla gateway run
 > a new terminal, or re-run the PATH line from step 1.
 
 For a fully pinned install, use the versioned wheel URL:
-`https://github.com/opensquilla/opensquilla/releases/download/v0.2.0/opensquilla-0.2.0-py3-none-any.whl`.
+`https://github.com/opensquilla/opensquilla/releases/download/v0.2.1/opensquilla-0.2.1-py3-none-any.whl`.
 
 ### Install from source
 
@@ -458,6 +458,25 @@ Provider tiers, sandbox tuning, image generation, and concurrency
 settings live in `opensquilla.toml.example`.
 
 ---
+
+## What's New in 0.2.1
+
+OpenSquilla 0.2.1 is a maintenance release focused on release-package
+startup and long-running agent reliability:
+
+- **Windows portable startup** — the portable launcher better detects and
+  bootstraps the Visual C++ runtime needed by the bundled ONNX router.
+- **Long-running agent turns** — tool-heavy WebUI sessions recover more
+  cleanly from oversized tool results, malformed tool calls, artifact
+  delivery handoffs, and degraded final responses.
+- **Cleaner WebUI output** — generated artifact markers are kept out of
+  normal chat replay while delivered files remain visible.
+- **Memory recall scoring** — local and OpenAI-compatible embedding vectors
+  are normalized before semantic search, and strong keyword matches remain
+  usable when vector scores are low.
+
+Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
+[release notes](https://opensquilla.ai/news/).
 
 ## What's New in 0.2.0
 

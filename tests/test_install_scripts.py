@@ -7,6 +7,7 @@ RELEASE_PS1 = ROOT / "install.ps1"
 RELEASE_SH = ROOT / "install.sh"
 SOURCE_PS1 = ROOT / "scripts" / "install_source.ps1"
 SOURCE_SH = ROOT / "scripts" / "install_source.sh"
+CURRENT_RELEASE_TAG = "v0.2.1"
 
 
 def test_source_install_scripts_force_refresh_local_uv_tool_package() -> None:
@@ -38,7 +39,7 @@ def test_release_installers_install_version_pinned_wheel_with_uv() -> None:
     sh = RELEASE_SH.read_text(encoding="utf-8")
 
     for script in (ps1, sh):
-        assert "v0.2.0" in script
+        assert CURRENT_RELEASE_TAG in script
         assert "opensquilla-$releaseVersion-py3-none-any.whl" in script or (
             "opensquilla-${release_version}-py3-none-any.whl" in script
         )

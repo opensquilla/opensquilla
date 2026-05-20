@@ -12,6 +12,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+## [0.2.1] - 2026-05-21
+
+### Changed
+
+- WebUI diagnostics, transcript replay, and artifact presentation now retain
+  more turn-usage evidence while keeping generated-file markers out of normal
+  chat output.
+- Long-running agent turns now expose softer recovery paths for exhausted tool
+  budgets, repeated tool failures, large file-write attempts, and artifact
+  delivery handoffs when the final model response degrades.
+- Release metadata, installer defaults, and documented wheel URLs now point to
+  the 0.2.1 release line.
+
+### Fixed
+
+- Windows portable startup now includes a stronger Visual C++ runtime bootstrap
+  path for the bundled ONNX router.
+- Memory semantic recall now normalizes stored and query embeddings before
+  sqlite-vec search, and high-confidence lexical matches are preserved even
+  when vector scoring is weak.
+- Generated artifact placeholder text is removed from WebChat history and
+  channel-facing output after files have already been delivered.
+- Tool dispatch and result budgeting reduce bare internal budget failures by
+  returning model-visible recovery context when a turn can still continue.
+
+### Acknowledgements
+
+- Thanks @nice-code-la for the portable Windows VC++ runtime bootstrap work in
+  #52.
+
 ## [0.2.0] - 2026-05-20
 
 ### Added

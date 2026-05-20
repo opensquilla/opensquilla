@@ -22,6 +22,7 @@ DEFAULTS = {
     "github",
     "html-to-pdf",
     "memory",
+    "meta-security-review-bundle",
     "multi-search-engine",
     "nano-pdf",
     "pdf-toolkit",

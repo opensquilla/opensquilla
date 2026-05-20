@@ -976,7 +976,10 @@ function Install-WindowsVCRedistWithInstaller {
     }
     try {
         if (Test-WindowsAdmin) {
-            $process = Start-Process -FilePath $installerPath -ArgumentList $redistArgs -Wait -PassThru
+            $process = Start-Process -FilePath $installerPath `
+                -ArgumentList $redistArgs `
+                -Wait `
+                -PassThru
         } else {
             Write-Host (
                 'OpenSquilla: administrator approval may be requested to ' +

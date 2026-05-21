@@ -62,6 +62,45 @@ _LOG_LEVELS = {
 }
 
 
+def _resolve_migrations_dir() -> Path:
+    """Locate yoyo migration directory across deployment modes.
+
+    Resolution order:
+    1. ``OPENSQUILLA_MIGRATIONS_DIR`` env override (testing / staging).
+    2. Installed package data: ``opensquilla/_migrations/`` inside the wheel
+       (production wheel + Docker).
+    3. Repo-root ``migrations/`` via parents[3] (dev checkout).
+
+    Raises ``RuntimeError`` if none of the candidates contain V*.py files.
+    """
+    import importlib.resources
+
+    env_dir = os.environ.get("OPENSQUILLA_MIGRATIONS_DIR")
+    if env_dir:
+        return Path(env_dir)
+
+    # Wheel / Docker
+    try:
+        with importlib.resources.as_file(
+            importlib.resources.files("opensquilla") / "_migrations"
+        ) as p:
+            if p.is_dir() and any(p.glob("V*.py")):
+                return p
+    except (ModuleNotFoundError, FileNotFoundError):
+        pass
+
+    # Source checkout
+    repo_dir = Path(__file__).resolve().parents[3] / "migrations"
+    if repo_dir.is_dir() and any(repo_dir.glob("V*.py")):
+        return repo_dir
+
+    raise RuntimeError(
+        "opensquilla migrations directory not found "
+        "(checked OPENSQUILLA_MIGRATIONS_DIR, importlib.resources(opensquilla/_migrations), "
+        "and repo parents[3]/migrations)"
+    )
+
+
 # fmt: off
 def _make_channel_rpc_context_factory(svc: ServiceContainer, config: GatewayConfig, *, subscription_manager: Any, channel_manager_ref: Any, turn_runner: Any, heartbeat_service: Any, diagnostics_state: Any | None = None) -> Any:  # noqa: E501
     from opensquilla.channels.command_registry import build_channel_rpc_context
@@ -1077,11 +1116,7 @@ async def build_services(
 
         if "://" not in session_db_path:
             Path(session_db_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
-        env_migrations_dir = os.environ.get("OPENSQUILLA_MIGRATIONS_DIR")
-        if env_migrations_dir:
-            migrations_dir = Path(env_migrations_dir)
-        else:
-            migrations_dir = Path(__file__).resolve().parents[3] / "migrations"
+        migrations_dir = _resolve_migrations_dir()
         applied = apply_pending(session_db_path, migrations_dir)
         if applied:
             log.info("build_services.migrations_applied", count=len(applied), ids=applied)

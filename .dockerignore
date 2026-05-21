@@ -39,7 +39,6 @@ logs
 tests
 docs
 scripts
-migrations
 CHANGELOG.md
 KNOWN_LIMITATIONS.md
 

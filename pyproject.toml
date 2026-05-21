@@ -104,6 +104,7 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
+"migrations/" = "opensquilla/_migrations/"
 "src/opensquilla/skills/bundled/pptx/references/pptxgenjs.md" = "opensquilla/skills/bundled/pptx/references/pptxgenjs.md"
 "src/opensquilla/skills/bundled/pptx/references/python_pptx.md" = "opensquilla/skills/bundled/pptx/references/python_pptx.md"
 

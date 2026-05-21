@@ -39,8 +39,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy minimal build context — everything else is in .dockerignore.
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md README.release.md ./
 COPY src/ ./src/
+COPY migrations/ ./migrations/
 
 RUN python - <<'PY'
 from pathlib import Path

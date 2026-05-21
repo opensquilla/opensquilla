@@ -78,16 +78,11 @@ def _load_main_catalog() -> dict[str, str]:
 def run_g1(skill_md: str, catalog: dict[str, str]) -> dict:
     diagnostics: list[str] = []
 
-    # G1.6 xml_escape rule: only applicable to kind=meta skills (the meta-skill
-    # DSL is where untrusted user_message flows through Jinja into prompts).
-    # Non-meta skills escape at different layers and may use other filters.
-    _is_meta = bool(re.search(r"^kind:\s*meta\b", skill_md, re.MULTILINE))
-    if _is_meta and _XML_ESCAPE_RE.search(skill_md):
-        diagnostics.append(
-            "G1.6: every `{{ inputs.user_message ` must be immediately followed by `| xml_escape`"
-        )
-
-    # Rule G1.1: parse_meta_plan succeeds
+    # Rule G1.1: parse_meta_plan succeeds.
+    # NOTE: G1.6 (xml_escape) intentionally runs AFTER spec loading so we
+    # can gate on the *parsed* spec.kind rather than a regex on raw text.
+    # A YAML-quoted `kind: "meta"` is semantically identical to `kind: meta`
+    # but would bypass a regex that only matches the unquoted form (N13 fix).
     spec = None
     plan = None
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -113,6 +108,17 @@ def run_g1(skill_md: str, catalog: dict[str, str]) -> dict:
         except MetaPlanError as exc:
             diagnostics.append(f"G1.1 (parse_meta_plan): {exc}")
             return {"passed": False, "diagnostics": diagnostics, "spec": spec, "plan": None}
+
+    # G1.6 xml_escape rule: only applicable to kind=meta skills (the meta-skill
+    # DSL is where untrusted user_message flows through Jinja into prompts).
+    # Non-meta skills escape at different layers and may use other filters.
+    # N13 fix: use the *parsed* spec.kind (from SkillLoader) instead of a
+    # regex on the raw frontmatter text so that a quoted `kind: "meta"` cannot
+    # silently bypass the check.
+    if spec.kind == "meta" and _XML_ESCAPE_RE.search(skill_md):
+        diagnostics.append(
+            "G1.6: every `{{ inputs.user_message ` must be immediately followed by `| xml_escape`"
+        )
 
     if plan is None:
         diagnostics.append("G1.1: parse_meta_plan returned None (kind != meta?)")

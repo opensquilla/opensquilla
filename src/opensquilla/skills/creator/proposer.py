@@ -85,7 +85,10 @@ def _resolve_provider_from_config() -> tuple[str | None, str | None, str | None]
             api_key_env = (llm.get("api_key_env") or "").strip()
             if api_key_env:
                 api_key = os.environ.get(api_key_env, "")
-        if provider_name and model and api_key:
+        # N11: accept empty api_key — keyless local providers (ollama,
+        # lm_studio, ovms, vllm) do not require an API key; build_provider
+        # passes api_key="" for the ollama backend and ignores it entirely.
+        if provider_name and model:
             return (provider_name, model, api_key)
         return (None, None, None)
     except Exception:

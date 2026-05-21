@@ -263,3 +263,56 @@ def test_fill_slots_retry_no_type_error_on_custom_validator_error(monkeypatch) -
     )
     data = _json.loads(result)
     assert data["name"] == "synth-pipeline", f"unexpected result: {data}"
+
+
+def test_creator_tools_registered_via_meta_invoke_module_import() -> None:
+    """N10: importing the meta_invoke soft-path module (agent.py) must also
+    ensure creator tools are registered. The lazy import added at the top of
+    _run_meta_invoke_streaming fires whenever the method is entered; here we
+    verify the underlying registration by importing opensquilla.skills.creator
+    directly (the same effect as the lazy import) and asserting the registry
+    reflects the tools — mirrors the C1 hard-takeover test but for the
+    soft-path entry in agent.py.
+    """
+    import importlib
+
+    # Simulate what the N10 lazy import does when _run_meta_invoke_streaming fires.
+    import opensquilla.skills.creator  # noqa: F401
+    importlib.reload(opensquilla.skills.creator)
+
+    from opensquilla.tools.registry import get_default_registry
+
+    reg = get_default_registry()
+    names = reg.list_names()
+    assert "meta_skill_fill_slots" in names, (
+        "N10: meta_skill_fill_slots not registered via soft-path import; "
+        f"registered names starting with 'meta': "
+        f"{sorted(n for n in names if n.startswith('meta'))}"
+    )
+    assert "meta_skill_assemble" in names, (
+        "N10: meta_skill_assemble not registered via soft-path import"
+    )
+
+
+def test_resolve_provider_config_accepts_empty_api_key(tmp_path, monkeypatch) -> None:
+    """N11: _resolve_provider_from_config must return a valid triple when
+    provider and model are set but api_key is absent (keyless local providers
+    such as ollama / lm_studio). Previously the `and api_key` truthy guard
+    returned (None, None, None), causing the resolution to fall through to
+    env-var scan and ultimately raise RuntimeError on keyless deployments."""
+    config_toml = tmp_path / "opensquilla.toml"
+    config_toml.write_text(
+        '[llm]\nprovider = "ollama"\nmodel = "llama3"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(config_toml))
+
+    from opensquilla.skills.creator.proposer import _resolve_provider_from_config
+
+    provider, model, api_key = _resolve_provider_from_config()
+    assert provider == "ollama", (
+        f"N11: expected 'ollama', got {provider!r}; "
+        "keyless provider must not be rejected by _resolve_provider_from_config"
+    )
+    assert model == "llama3"
+    assert api_key == ""  # empty string is correct for ollama

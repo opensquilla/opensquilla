@@ -2509,6 +2509,7 @@ class Agent:
         the LLM can continue (retry / explain / fall back).
         """
 
+        import opensquilla.skills.creator  # noqa: F401  # N10: register @tool decorators (mirror C1 fix)
         from opensquilla.skills.meta.orchestrator import (
             MetaOrchestrator,
             make_agent_runner_from_parent,

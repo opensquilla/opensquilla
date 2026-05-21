@@ -149,3 +149,41 @@ def test_linter_passes_existing_meta_bundle(bundle: str) -> None:
     out = _run_lint(skill_md)
     assert out["G1"]["passed"] is True, f"{bundle} G1 fail: {out['G1']['diagnostics']}"
     assert out["G2"]["passed"] is True, f"{bundle} G2 fail: {out['G2']['diagnostics']}"
+
+
+def test_g1_6_catches_quoted_kind_with_unsafe_template() -> None:
+    """N13: G1.6 must not be bypassable by quoting the kind value.
+    Previously the gating used a regex on raw YAML text that only matched
+    `kind: meta` (unquoted). Quoting as `kind: \"meta\"` is semantically
+    identical in YAML but bypassed the regex. The fix uses the parsed
+    spec.kind from SkillLoader instead."""
+    bad = '''---
+name: quoted-kind-bypass-test
+description: "Demonstrates that quoting kind cannot bypass G1.6 xml_escape check."
+kind: "meta"
+meta_priority: 50
+triggers:
+  - "quoted kind bypass test"
+provenance:
+  origin: opensquilla-user
+composition:
+  steps:
+    - id: a
+      skill: summarize
+      with:
+        task: "{{ inputs.user_message }}"
+    - id: b
+      skill: memory
+      depends_on: [a]
+      with:
+        text: "{{ outputs.a }}"
+---
+# bypass test
+'''
+    out = _run_lint(bad)
+    assert out["G1"]["passed"] is False, (
+        "N13: quoted kind: \"meta\" must NOT bypass G1.6 xml_escape requirement"
+    )
+    assert any("xml_escape" in d.lower() for d in out["G1"]["diagnostics"]), (
+        f"N13: expected G1.6 xml_escape diagnostic; got: {out['G1']['diagnostics']}"
+    )

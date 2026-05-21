@@ -14,6 +14,15 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+# Derive the opensquilla package root from this file's location.
+# Path layout from explore.py:
+#   .../opensquilla/skills/bundled/history-explorer/scripts/explore.py
+# parents: [0]=scripts  [1]=history-explorer  [2]=bundled
+#          [3]=skills    [4]=opensquilla
+# Works for both source-tree checkouts and wheel installs (site-packages).
+_OPENSQUILLA_ROOT = Path(__file__).resolve().parents[4]
+_BUNDLED = _OPENSQUILLA_ROOT / "skills" / "bundled"
+
 
 def _parse_log_line(line: str) -> dict | None:
     line = line.strip()
@@ -52,8 +61,22 @@ def aggregate_co_occurrences(log_dir: Path, window_days: int, top_k: int) -> lis
     return [{"skills": list(combo), "freq": freq} for combo, freq in counter.most_common(top_k)]
 
 
-def aggregate_meta_usage(log_dir: Path, window_days: int) -> list[dict]:
-    """Count how often each meta-skill was invoked (skill names starting with 'meta-')."""
+def aggregate_meta_usage(
+    log_dir: Path,
+    window_days: int,
+    meta_names: set[str] | None = None,
+) -> list[dict]:
+    """Count how often each kind=meta skill was invoked.
+
+    Args:
+        log_dir: decision-log directory containing decisions-*.jsonl files.
+        window_days: time window for inclusion.
+        meta_names: set of skill names where kind == "meta". When None,
+            falls back to the name-prefix heuristic (skill.startswith("meta-")).
+            The heuristic is less accurate because helper bundles like
+            meta-skill-linter / meta-skill-proposals / meta-skill-smoke-test
+            are kind=skill but share the prefix (N12 fix).
+    """
     cutoff = datetime.now(UTC) - timedelta(days=window_days)
     counter: Counter[str] = Counter()
     if not log_dir.is_dir():
@@ -64,9 +87,42 @@ def aggregate_meta_usage(log_dir: Path, window_days: int) -> list[dict]:
             if not payload or not _within_window(payload.get("ts", ""), cutoff):
                 continue
             for skill in payload.get("skills_invoked") or []:
-                if isinstance(skill, str) and skill.startswith("meta-"):
+                if not isinstance(skill, str):
+                    continue
+                # Prefer the real catalog set; fall back to prefix heuristic.
+                if meta_names is not None:
+                    if skill in meta_names:
+                        counter[skill] += 1
+                elif skill.startswith("meta-"):
                     counter[skill] += 1
     return [{"meta_skill_id": name, "invocation_count": ct} for name, ct in counter.most_common()]
+
+
+def _load_meta_names() -> set[str]:
+    """Load the set of skill names where kind == 'meta' from the bundled catalog.
+
+    Returns an empty set on any failure (wheel install without test fixtures,
+    import errors, etc.) so the caller falls back to the prefix heuristic.
+    """
+    import tempfile
+
+    try:
+        # ensure opensquilla is importable (needed when explore.py is run as a
+        # subprocess; the parent of _OPENSQUILLA_ROOT is src/ in a source
+        # checkout or site-packages/ in a wheel install — both already on path).
+        if str(_OPENSQUILLA_ROOT.parent) not in sys.path:
+            sys.path.insert(0, str(_OPENSQUILLA_ROOT.parent))
+        from opensquilla.skills.loader import SkillLoader
+
+        with tempfile.TemporaryDirectory() as tmp:
+            loader = SkillLoader(
+                bundled_dir=_BUNDLED,
+                snapshot_path=Path(tmp) / "snap.json",
+            )
+            loader.invalidate_cache()
+            return {spec.name for spec in loader.load_all() if spec.kind == "meta"}
+    except Exception:
+        return set()
 
 
 def aggregate_router_fixtures(repo_root: Path | None = None) -> list[dict]:
@@ -114,7 +170,10 @@ def main(argv: list[str] | None = None) -> int:
             args.log_dir, args.window_days, args.top_k
         )
     if "meta_usage" in include:
-        result["meta_usage"] = aggregate_meta_usage(args.log_dir, args.window_days)
+        meta_names = _load_meta_names()
+        result["meta_usage"] = aggregate_meta_usage(
+            args.log_dir, args.window_days, meta_names if meta_names else None
+        )
     if "router_fixtures" in include:
         result["router_fixtures"] = aggregate_router_fixtures()
 

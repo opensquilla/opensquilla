@@ -38,7 +38,7 @@ def _indexes(conn: sqlite3.Connection, table: str) -> set[str]:
     }
 
 
-def test_v010_creates_two_tables_and_four_indexes(tmp_path: Path) -> None:
+def test_v010_creates_two_tables_and_five_indexes(tmp_path: Path) -> None:
     db = str(tmp_path / "test.db")
     applied = apply_pending(db, MIGRATIONS_DIR)
     assert "V010__meta_skill_runs" in applied
@@ -59,6 +59,23 @@ def test_v010_creates_two_tables_and_four_indexes(tmp_path: Path) -> None:
 
         step_idx = _indexes(conn, "meta_skill_run_steps")
         assert "idx_meta_run_steps_status" in step_idx
+    finally:
+        conn.close()
+
+
+def test_v010_apply_is_idempotent(tmp_path: Path) -> None:
+    """Re-applying V010 over an already-migrated DB is a no-op."""
+    db = str(tmp_path / "test.db")
+    apply_pending(db, MIGRATIONS_DIR)
+    # Re-applying must NOT raise OperationalError
+    applied_again = apply_pending(db, MIGRATIONS_DIR)
+    assert "V010__meta_skill_runs" not in applied_again
+    # Tables still present
+    conn = _open_conn(db)
+    try:
+        tables = _tables(conn)
+        assert "meta_skill_runs" in tables
+        assert "meta_skill_run_steps" in tables
     finally:
         conn.close()
 

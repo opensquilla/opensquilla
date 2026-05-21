@@ -85,7 +85,18 @@ INDEXES = [
 ]
 
 
+def _table_exists(conn, table: str) -> bool:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    )
+    return cur.fetchone() is not None
+
+
 def apply_step(conn) -> None:
+    if _table_exists(conn, "meta_skill_runs"):
+        return
     cur = conn.cursor()
     cur.execute(CREATE_RUNS)
     cur.execute(CREATE_STEPS)

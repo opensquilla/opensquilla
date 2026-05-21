@@ -334,6 +334,64 @@ def test_creator_tools_registered_via_meta_invoke_module_import() -> None:
     )
 
 
+def test_strip_code_fences_handles_json_lang_tag() -> None:
+    from opensquilla.skills.creator.proposer import _strip_code_fences
+
+    assert _strip_code_fences('```json\n{"a": 1}\n```') == '{"a": 1}'
+    assert _strip_code_fences('```JSON\n{"a": 1}\n```') == '{"a": 1}'
+    assert _strip_code_fences('```\n{"a": 1}\n```') == '{"a": 1}'
+    assert _strip_code_fences('{"a": 1}') == '{"a": 1}'
+    # Whitespace tolerance
+    assert _strip_code_fences('  ```json\n{"a": 1}\n```  ') == '{"a": 1}'
+
+
+def test_fill_slots_strips_code_fence_before_parsing(monkeypatch) -> None:
+    """Fix #A: code-fence-wrapped JSON should parse successfully."""
+    from opensquilla.skills.creator import proposer
+
+    canned = json.dumps({
+        "name": "fenced-test",
+        "description": "test description that meets min length requirement for schema",
+        "meta_priority": 50,
+        "triggers": ["fenced trigger"],
+        "steps": [
+            {"id": "a", "skill": "summarize", "task": "process", "with_keys": {}},
+            {"id": "b", "skill": "memory", "task": "save", "with_keys": {}},
+        ],
+    })
+    fenced = f"```json\n{canned}\n```"
+    monkeypatch.setattr(proposer, "_call_llm_for_slots", lambda prompt, **_: fenced)
+
+    result = proposer.meta_skill_fill_slots(
+        pattern_id="p1_sequential",
+        history_summary="(test)",
+        user_intent="test intent",
+    )
+    parsed = json.loads(result)
+    assert parsed["name"] == "fenced-test"
+
+
+def test_fill_slots_validation_error_surfaces_detail(monkeypatch) -> None:
+    """Fix #B: ValidationError after retry should include actionable detail
+    (response preview + error message), not just generic 'internal error'."""
+    from opensquilla.skills.creator import proposer
+
+    monkeypatch.setattr(
+        proposer, "_call_llm_for_slots",
+        lambda prompt, **_: '{"name": "missing-fields-test"}',  # always invalid
+    )
+
+    with pytest.raises((ValueError, Exception)) as exc_info:
+        proposer.meta_skill_fill_slots(
+            pattern_id="p1_sequential",
+            history_summary="(test)",
+            user_intent="test",
+        )
+    err_str = str(exc_info.value)
+    # The error message must include the pattern_id and a hint of what failed
+    assert "p1_sequential" in err_str or "missing-fields-test" in err_str
+
+
 def test_resolve_provider_config_accepts_empty_api_key(tmp_path, monkeypatch) -> None:
     """N11: _resolve_provider_from_config must return a valid triple when
     provider and model are set but api_key is absent (keyless local providers

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import re as _re
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import structlog
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import ValidationError
 
@@ -17,6 +19,31 @@ from opensquilla.skills.loader import SkillLoader
 from opensquilla.tools.registry import tool
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "patterns"
+_log = structlog.get_logger(__name__)
+
+
+class _FillSlotsValidationError(ValueError):
+    """Wraps the underlying ValidationError with actionable message text."""
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip markdown code fences common in LLM JSON responses.
+
+    Handles ``\\`\\`\\`json...\\`\\`\\```, ``\\`\\`\\`...\\`\\`\\```, and bare JSON.
+    Returns the inner text.
+    """
+    text = text.strip()
+    # Pattern: optional ```lang at start, content, optional ``` at end
+    m = _re.match(r"^```(?:json|JSON)?\s*\n(.*?)\n```\s*$", text, _re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    # Fallback: strip leading/trailing ``` even without lang tag
+    if text.startswith("```") and text.endswith("```"):
+        inner = text[3:-3]
+        # Strip leading 'json\n' if present
+        inner = _re.sub(r"^json\s*\n?", "", inner, flags=_re.IGNORECASE)
+        return inner.strip()
+    return text
 
 
 def _jinja_env() -> Environment:
@@ -136,6 +163,15 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
     # kwargs.get("model") can override the resolved model (e.g. in tests).
     effective_model: str = kwargs.get("model", model)
 
+    # Fix #C: log resolved provider/model so E2E logs show which model
+    # actually handled the call and whether OPENSQUILLA_LLM_MODEL is honoured.
+    _log.info(
+        "meta_skill_fill_slots.llm_call",
+        provider=provider_name,
+        model=effective_model,
+        prompt_chars=len(prompt),
+    )
+
     provider = build_provider(
         provider=provider_name, model=effective_model, api_key=api_key, base_url=base_url,
     )
@@ -184,10 +220,18 @@ def meta_skill_fill_slots(
     )
 
     response = _call_llm_for_slots(base_prompt)
+    response = _strip_code_fences(response)  # Fix #A
     try:
         validated = schema.model_validate_json(response)
         return str(validated.model_dump_json())
     except ValidationError as exc:
+        # Fix #B: log raw response on initial failure so E2E logs capture LLM output.
+        _log.warning(
+            "meta_skill_fill_slots.validation_failed_initial",
+            pattern_id=pattern_id,
+            response_preview=response[:500],
+            errors=str(exc.errors()[:5]) if exc.errors() else str(exc),
+        )
         # N4 fix: Pydantic v2 custom-validator errors embed raw ValueError
         # objects in ctx.error, which are not JSON-serializable. Use
         # default=str to coerce them so json.dumps() doesn't TypeError before
@@ -199,8 +243,24 @@ def meta_skill_fill_slots(
             + "\n\nEmit a corrected JSON object."
         )
         retry_response = _call_llm_for_slots(retry_prompt)
-        validated = schema.model_validate_json(retry_response)
-        return str(validated.model_dump_json())
+        retry_response = _strip_code_fences(retry_response)  # Fix #A
+        try:
+            validated = schema.model_validate_json(retry_response)
+            return str(validated.model_dump_json())
+        except ValidationError as retry_exc:
+            # Fix #B: log raw response on retry failure.
+            _log.warning(
+                "meta_skill_fill_slots.validation_failed_retry",
+                pattern_id=pattern_id,
+                response_preview=retry_response[:500],
+                errors=str(retry_exc.errors()[:5]) if retry_exc.errors() else str(retry_exc),
+            )
+            raise _FillSlotsValidationError(
+                f"LLM returned invalid slots JSON after 1 retry. "
+                f"Pattern: {pattern_id}. "
+                f"Last error: {str(retry_exc)[:300]}. "
+                f"Last response preview: {retry_response[:200]!r}"
+            ) from retry_exc
 
 
 def simulate_meta_resolution(

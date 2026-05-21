@@ -141,10 +141,12 @@ async def test_orchestrator_drives_creator_dag_end_to_end(tmp_path, monkeypatch)
     assert set(final_result.step_outputs.keys()) >= {
         "harvest", "pick_pattern", "fill_slots", "assemble", "lint", "smoke", "persist"
     }
-    # Content propagation: stub agent_runner emits "<stub:agent>" — verify
-    # the agent-kind step (harvest) actually captures the stub's text and
-    # forwards it as the step's output, not just topology completion.
-    assert final_result.step_outputs.get("harvest") == "<stub:agent>"
+    # harvest now runs as skill_exec (history-explorer has an entrypoint:),
+    # so it returns JSON from explore.py rather than a stub agent reply.
+    harvest_output = final_result.step_outputs.get("harvest", "")
+    assert harvest_output, "harvest step produced no output"
+    harvest_json = json.loads(harvest_output)
+    assert "co_occurrences" in harvest_json
 
 
 async def test_orchestrator_p2_fan_out_merge_proposal(tmp_path, monkeypatch) -> None:

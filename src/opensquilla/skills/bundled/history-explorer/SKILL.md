@@ -7,6 +7,21 @@ provenance:
 metadata:
   requires:
     anyBins: ["python", "python3"]
+entrypoint:
+  command: python {baseDir}/scripts/explore.py
+  args:
+    - --log-dir
+    - ~/.opensquilla/logs
+    - --query
+    - "{{ with.query | truncate(512) }}"
+    - --window-days
+    - "{{ with.window_days | default('30') }}"
+    - --include
+    - "{{ with.include | join(',') if with.include is sequence and with.include is not string else with.include | default('co_occurrences,meta_usage,router_fixtures') }}"
+    - --top-k
+    - "10"
+  parse: json
+  timeout: 30
 ---
 
 # History Explorer

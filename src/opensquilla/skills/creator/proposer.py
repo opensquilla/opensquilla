@@ -331,6 +331,20 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
 # at import time so that the orchestrator's tool_invoker can dispatch them.
 # ---------------------------------------------------------------------------
 
+@tool(
+    name="emit_text",
+    description=(
+        "Emit a fixed text string as the step output. "
+        "Used by harvest_empty fallback in meta-skill-creator."
+    ),
+    params={"text": {"type": "string"}},
+    required=["text"],
+    exposed_by_default=False,
+)
+async def emit_text_tool(text: str) -> str:
+    return text
+
+
 _PATTERN_ENUM = sorted(PATTERN_SLOT_SCHEMA.keys())
 
 

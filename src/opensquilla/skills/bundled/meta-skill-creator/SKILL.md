@@ -15,12 +15,20 @@ provenance:
 composition:
   steps:
     - id: harvest
+      kind: skill_exec
       skill: history-explorer
+      on_failure: harvest_empty
       with:
         query: |
           Co-occurring skill chains and meta-skill usage for: {{ inputs.user_message | xml_escape | truncate(512) }}
         window_days: 30
         include: [co_occurrences, meta_usage, router_fixtures]
+
+    - id: harvest_empty
+      kind: tool_call
+      tool: emit_text
+      tool_args:
+        text: "no history available; downstream should rely on user intent only"
 
     - id: pick_pattern
       kind: llm_classify
@@ -83,7 +91,21 @@ not auto-loaded. Run `opensquilla meta accept <id>` (Phase 2) to enable.
 
 ## Fallback
 
-If creator's pipeline fails, fall back to: invoke `history-explorer` to view
-co-occurrences, draft a SKILL.md by hand using the patterns documented in
-`src/opensquilla/skills/creator/patterns/`, then run `meta-skill-linter` to
-validate it before placing it under `~/.opensquilla/skills/<name>/`.
+If creator's pipeline fails at any step, **report the failure verbatim** to the
+user:
+
+1. State which step failed (e.g. "harvest", "lint")
+2. Quote the error message from the orchestrator's structured log
+3. Stop. Do NOT improvise.
+
+Do NOT:
+- Claim a proposal was written unless you have verified it by reading
+  `~/.opensquilla/proposals/<id>/SKILL.md` with the `read_file` tool
+- Invent file paths, proposal IDs, or skill names that you have not seen
+  in the orchestrator's actual output
+- "Manually run" the individual skills as a recovery — that bypasses
+  the validation gates the user explicitly opted into
+
+If the user wants to retry, suggest they re-issue the request after the
+underlying error is resolved (often a sandbox or provider issue), not a
+manual workaround.

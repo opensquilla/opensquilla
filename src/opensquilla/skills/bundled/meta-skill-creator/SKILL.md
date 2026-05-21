@@ -56,26 +56,27 @@ composition:
         slots_json: "{{ outputs.fill_slots }}"
 
     - id: lint
-      skill: meta-skill-linter
+      kind: tool_call
       depends_on: [assemble]
-      with:
+      tool: meta_skill_lint_run
+      tool_args:
         skill_md: "{{ outputs.assemble }}"
-        gates: [G1, G2]
+        gates: "G1,G2"
 
     - id: smoke
-      skill: meta-skill-smoke-test
+      kind: tool_call
       depends_on: [lint]
-      with:
+      tool: meta_skill_smoke_run
+      tool_args:
         skill_md: "{{ outputs.assemble }}"
-        gates: [G3, G4]
         fixture_gen_model: openai/gpt-4o-mini
         classifier_model: anthropic/claude-3.5-haiku
 
     - id: persist
-      skill: meta-skill-proposals
+      kind: tool_call
       depends_on: [smoke]
-      with:
-        action: write_proposal
+      tool: meta_skill_persist_proposal
+      tool_args:
         skill_md: "{{ outputs.assemble }}"
         lint_result: "{{ outputs.lint }}"
         smoke_result: "{{ outputs.smoke }}"

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re as _re
+import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -503,6 +505,87 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Paths to bundled helper scripts (resolved once at module load time).
+# ---------------------------------------------------------------------------
+
+_LINT_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "bundled" / "meta-skill-linter" / "scripts" / "lint.py"
+)
+
+_PROPOSALS_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "bundled" / "meta-skill-proposals" / "scripts" / "proposals.py"
+)
+
+
+# ---------------------------------------------------------------------------
+# Sync core implementations for lint / smoke / persist
+# ---------------------------------------------------------------------------
+
+def meta_skill_lint_run(skill_md: str, gates: str = "G1,G2") -> str:
+    """Run meta-skill-linter on the given SKILL.md text. Returns JSON.
+
+    Gates parameter is a comma-separated list (e.g. "G1,G2"). Default
+    runs both G1 (structural lint) and G2 (scheduler dry-run).
+    """
+    proc = subprocess.run(
+        [sys.executable, str(_LINT_SCRIPT), "--skill-md-stdin", "--gates", gates],
+        input=skill_md, capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        # Even on failure, lint.py prints JSON to stdout — return it
+        return proc.stdout or json.dumps({
+            "error": "linter subprocess exited non-zero",
+            "stderr": proc.stderr[:500],
+            "returncode": proc.returncode,
+        })
+    return proc.stdout
+
+
+def meta_skill_smoke_run(
+    skill_md: str,
+    fixture_gen_model: str = "stub",
+    classifier_model: str = "stub",
+) -> str:
+    """Run G3+G4 smoke tests on the given SKILL.md. Returns JSON.
+
+    Phase 1: uses deterministic fixture generator regardless of model
+    args (those wire to real LLMs in a future iteration).
+    """
+    result = run_smoke_gates(
+        skill_md=skill_md,
+        fixture_gen_fn=lambda md, kind: _deterministic_fixture(md, kind),
+        classifier_model=classifier_model,
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+def meta_skill_persist_proposal(
+    skill_md: str,
+    lint_result: str,
+    smoke_result: str,
+    home: str = "",
+) -> str:
+    """Write a proposal candidate to ~/.opensquilla/proposals/<id>/. Returns JSON."""
+    args = [sys.executable, str(_PROPOSALS_SCRIPT),
+            "--action", "write_proposal",
+            "--skill-md-inline", skill_md,
+            "--lint-result", lint_result,
+            "--smoke-result", smoke_result]
+    if home:
+        args.extend(["--home", home])
+    proc = subprocess.run(args, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        return proc.stdout or json.dumps({
+            "error": "proposals subprocess exited non-zero",
+            "stderr": proc.stderr[:500],
+            "returncode": proc.returncode,
+        })
+    return proc.stdout
+
+
+# ---------------------------------------------------------------------------
 # @tool-decorated async wrappers — registered into the default ToolRegistry
 # at import time so that the orchestrator's tool_invoker can dispatch them.
 # ---------------------------------------------------------------------------
@@ -519,6 +602,76 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
 )
 async def emit_text_tool(text: str) -> str:
     return text
+
+
+@tool(
+    name="meta_skill_lint_run",
+    description=(
+        "Run meta-skill-linter G1+G2 on a SKILL.md candidate. "
+        "Returns JSON with G1/G2 pass status + diagnostics."
+    ),
+    params={
+        "skill_md": {"type": "string"},
+        "gates": {"type": "string"},
+    },
+    required=["skill_md"],
+    exposed_by_default=False,
+)
+async def meta_skill_lint_run_tool(skill_md: str, gates: str = "G1,G2") -> str:
+    import asyncio
+    return await asyncio.to_thread(meta_skill_lint_run, skill_md, gates)
+
+
+@tool(
+    name="meta_skill_smoke_run",
+    description=(
+        "Run G3 (positive smoke) + G4 (negative smoke) on a SKILL.md candidate "
+        "using deterministic fixtures. Returns JSON."
+    ),
+    params={
+        "skill_md": {"type": "string"},
+        "fixture_gen_model": {"type": "string"},
+        "classifier_model": {"type": "string"},
+    },
+    required=["skill_md"],
+    exposed_by_default=False,
+)
+async def meta_skill_smoke_run_tool(
+    skill_md: str,
+    fixture_gen_model: str = "stub",
+    classifier_model: str = "stub",
+) -> str:
+    import asyncio
+    return await asyncio.to_thread(
+        meta_skill_smoke_run, skill_md, fixture_gen_model, classifier_model,
+    )
+
+
+@tool(
+    name="meta_skill_persist_proposal",
+    description=(
+        "Write a proposal candidate to ~/.opensquilla/proposals/<id>/. "
+        "Returns JSON with proposal_id and auto_enable_eligible."
+    ),
+    params={
+        "skill_md": {"type": "string"},
+        "lint_result": {"type": "string"},
+        "smoke_result": {"type": "string"},
+        "home": {"type": "string"},
+    },
+    required=["skill_md", "lint_result", "smoke_result"],
+    exposed_by_default=False,
+)
+async def meta_skill_persist_proposal_tool(
+    skill_md: str,
+    lint_result: str,
+    smoke_result: str,
+    home: str = "",
+) -> str:
+    import asyncio
+    return await asyncio.to_thread(
+        meta_skill_persist_proposal, skill_md, lint_result, smoke_result, home,
+    )
 
 
 _PATTERN_ENUM = sorted(PATTERN_SLOT_SCHEMA.keys())

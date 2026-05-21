@@ -478,6 +478,12 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
     Tries double-quoted triggers first (the predominant YAML style in this
     codebase's bundled meta-skills), then unquoted bare triggers. Returns
     the hardcoded fallback only when neither matches.
+
+    Triggers in the rendered SKILL.md may be JSON-escaped (e.g. ``\\u6458\\u8981``
+    for Chinese chars) because the assembler uses Jinja2 ``| tojson`` to keep
+    YAML output ASCII-safe. This function decodes those escapes back to real
+    Unicode before constructing the fixture, so simulate_meta_resolution can
+    actually match against the parsed trigger.
     """
     import re
     if kind == "positive":
@@ -486,7 +492,16 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
         if m:
             first = re.search(r'-\s*"([^"]+)"', m.group(1))
             if first:
-                return f"please use {first.group(1)}"
+                raw = first.group(1)
+                # Decode \uXXXX / \n / \t / \" / \\ etc. via JSON-string parse.
+                # This is the canonical inverse of the tojson filter that escaped
+                # the trigger in the first place.
+                try:
+                    decoded = json.loads(f'"{raw}"')
+                except Exception:
+                    # Fall back to raw if JSON parse fails (e.g. malformed escape)
+                    decoded = raw
+                return f"please use {decoded}"
         # Unquoted: triggers: \n  - phrase
         m = re.search(r"triggers:\s*\n((?:\s*-\s*[^\"\n]+\n)+)", skill_md)
         if m:

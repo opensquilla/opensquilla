@@ -11,6 +11,16 @@ import sys
 import uuid
 from pathlib import Path
 
+# Wheel-install / editable-install compatibility: make the opensquilla package
+# importable when this script is invoked directly.  parents layout:
+#   scripts[0] → meta-skill-proposals[1] → bundled[2] → skills[3]
+#   → opensquilla[4] → src (or site-packages)[5]
+_OPENSQUILLA_ROOT = Path(__file__).resolve().parents[4]
+if str(_OPENSQUILLA_ROOT.parent) not in sys.path:
+    sys.path.insert(0, str(_OPENSQUILLA_ROOT.parent))
+
+from opensquilla.paths import default_opensquilla_home  # noqa: E402
+
 
 def _proposals_dir(home: Path) -> Path:
     return home / "proposals"
@@ -117,7 +127,14 @@ def cmd_accept(args) -> dict:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--action", required=True, choices=["write_proposal", "list", "accept"])
-    p.add_argument("--home", required=True)
+    p.add_argument(
+        "--home",
+        default=str(default_opensquilla_home()),
+        help=(
+            "OpenSquilla home dir (default: ~/.opensquilla/ or "
+            "$OPENSQUILLA_STATE_DIR). Proposals are written under <home>/proposals/."
+        ),
+    )
     p.add_argument("--skill-md", default=None)
     p.add_argument("--skill-md-inline", default=None)
     p.add_argument("--lint-result", default="{}")

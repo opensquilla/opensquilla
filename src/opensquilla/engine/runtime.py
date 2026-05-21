@@ -121,10 +121,17 @@ def _is_deepseek_model_id(model: str) -> bool:
     return normalized.startswith("deepseek") or "/deepseek" in normalized
 
 
-def collect_invoked_skills(turn_segments: list[dict]) -> list[str]:
+def collect_invoked_skills(
+    turn_segments: list[dict],
+    *,
+    extra_first: list[str] | None = None,
+) -> list[str]:
     """Extract bundled-skill and meta-skill names invoked during a turn.
 
-    Captures both:
+    Captures (in order):
+    - extra_first entries (typically the hard-takeover meta-skill name, which
+      doesn't appear as a tool segment — meta_resolution dispatches the DAG
+      directly without going through meta_invoke)
     - skill_view tool calls: input.name is the bundled skill name
     - meta_invoke tool calls: input.name is the meta-skill name
 
@@ -132,12 +139,19 @@ def collect_invoked_skills(turn_segments: list[dict]) -> list[str]:
         turn_segments: the heterogeneous per-turn segments list as produced by
             the LLM (may contain text, tool_use, and tool_result entries mixed
             together — not a pre-filtered tool-call list).
+        extra_first: optional list of skill names to prepend before scanning
+            turn_segments (e.g. ``[meta_match.plan.name]`` for hard-takeover
+            turns where no ``meta_invoke`` segment is ever emitted).
 
     Returns a deduplicated list preserving first-occurrence order. Used by
     DecisionEntry.skills_invoked (SCHEMA_VERSION 10).
     """
     seen: set[str] = set()
     result: list[str] = []
+    for name in (extra_first or []):
+        if isinstance(name, str) and name and name not in seen:
+            seen.add(name)
+            result.append(name)
     for segment in turn_segments:
         tool_name = segment.get("name")
         if tool_name not in ("skill_view", "meta_invoke"):
@@ -2391,6 +2405,18 @@ class TurnRunner:
                 metadata=turn.metadata,
                 tool_profile=turn.metadata.get("tool_profile"),
             )
+            # N16: hard-takeover meta-skill turns never emit a meta_invoke
+            # segment; the meta_resolution step stashes the MetaMatch in
+            # turn.metadata and the DAG is dispatched directly.  Pull the
+            # plan name here so collect_invoked_skills can prepend it.
+            _meta_match_for_obs = turn.metadata.get("meta_match")
+            _meta_match_name: str | None = (
+                _meta_match_for_obs.plan.name
+                if _meta_match_for_obs is not None
+                and hasattr(_meta_match_for_obs, "plan")
+                and hasattr(_meta_match_for_obs.plan, "name")
+                else None
+            )
             self._emit_decision_entry(
                 turn_id=turn_id,
                 session_key=session_key,
@@ -2406,7 +2432,10 @@ class TurnRunner:
                 session_intent=session_intent,
                 done_event=done_event,
                 trace_id=trace_context.trace_id if trace_context is not None else None,
-                skills_invoked=collect_invoked_skills(turn_segments),
+                skills_invoked=collect_invoked_skills(
+                    turn_segments,
+                    extra_first=[_meta_match_name] if _meta_match_name else None,
+                ),
             )
             if pending_error_event is not None:
                 yield pending_error_event

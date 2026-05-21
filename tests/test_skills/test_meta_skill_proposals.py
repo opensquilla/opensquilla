@@ -80,3 +80,17 @@ def test_accept_rejects_path_traversal_proposal_id(tmp_path: Path) -> None:
         out = _run("accept", home=home, proposal_id=bad_id)
         assert out["status"] == "error", f"should reject {bad_id!r}, got: {out}"
         assert "invalid proposal_id" in out["reason"]
+
+
+def test_proposals_cli_works_without_explicit_home(monkeypatch, tmp_path: Path) -> None:
+    """N17: --home is optional; defaults to default_opensquilla_home()."""
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
+    # Run with NO --home; only --action and required action-specific args
+    proc = subprocess.run(
+        [sys.executable, str(PROPOSALS), "--action", "list"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"argparse should accept missing --home: {proc.stderr}"
+    out = json.loads(proc.stdout)
+    assert "proposals" in out  # empty list ok; just shouldn't crash

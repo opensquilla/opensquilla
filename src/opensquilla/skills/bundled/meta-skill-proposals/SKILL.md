@@ -7,6 +7,19 @@ provenance:
 metadata:
   requires:
     anyBins: ["python", "python3"]
+entrypoint:
+  command: python {baseDir}/scripts/proposals.py
+  args:
+    - --action
+    - "{{ with.action | default('write_proposal') }}"
+    - --skill-md-inline
+    - "{{ with.skill_md | default('') }}"
+    - --lint-result
+    - "{{ with.lint_result | default('{}') }}"
+    - --smoke-result
+    - "{{ with.smoke_result | default('{}') }}"
+  parse: json
+  timeout: 30
 ---
 
 # Meta-Skill Proposals

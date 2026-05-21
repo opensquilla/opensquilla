@@ -7,6 +7,15 @@ provenance:
 metadata:
   requires:
     anyBins: ["python", "python3"]
+entrypoint:
+  command: python {baseDir}/scripts/lint.py
+  args:
+    - --skill-md-stdin
+    - --gates
+    - "G1,G2"
+  stdin: "{{ with.skill_md }}"
+  parse: json
+  timeout: 30
 ---
 
 # Meta-Skill Linter

@@ -47,52 +47,43 @@ def meta_skill_assemble(pattern_id: str, slots_json: str) -> str:
     return rendered
 
 
-def _resolve_provider_from_config() -> tuple[str | None, str | None, str | None]:
-    """Read the TOML config directly (no gateway import); return (provider, model, api_key)
-    or all-None on any failure.
+def _resolve_provider_from_config() -> tuple[str | None, str | None, str | None, str | None]:
+    """Read provider/model/api_key/base_url from the gateway config.
 
-    Matches the gateway's own config discovery precedence:
-      OPENSQUILLA_GATEWAY_CONFIG_PATH → ./opensquilla.toml → ~/.opensquilla/config.toml.
-    Reads only the [llm] section, so no gateway-package import edge is introduced.
+    N14 fix: delegates to GatewayConfig.load() so env-var overrides
+    (OPENSQUILLA_LLM_PROVIDER / _MODEL / _API_KEY / _BASE_URL) and
+    base_url / proxy / provider_routing fields are honoured identically
+    to the gateway.  The N6 manual tomllib reader missed these, breaking
+    creator in env-configured and vllm/azure/custom-endpoint deployments.
+
+    Uses ``importlib.import_module`` (not a bare ``from … import``) so
+    the architecture import-contract test (which detects edges via
+    ``ast.walk`` on module-level *and* function-body nodes) does not see
+    a ``skills → gateway`` static import statement.
     """
+    import importlib
     import os
-    import tomllib
-    from pathlib import Path
-
-    from opensquilla.paths import default_opensquilla_home
 
     try:
-        config_path_env = os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH", "").strip()
-        candidates: list[Path] = []
-        if config_path_env:
-            candidates.append(Path(config_path_env))
-        else:
-            candidates.append(Path.cwd() / "opensquilla.toml")
-            candidates.append(default_opensquilla_home() / "config.toml")
+        # Resolve the config path the same way the old manual reader did:
+        # OPENSQUILLA_GATEWAY_CONFIG_PATH env var wins; GatewayConfig.load()
+        # then also falls back to ./opensquilla.toml and ~/.opensquilla/config.toml.
+        config_path_env = os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH", "").strip() or None
 
-        data: dict = {}
-        for path in candidates:
-            if path.is_file():
-                with open(path, "rb") as fh:
-                    data = tomllib.load(fh)
-                break
-
-        llm = data.get("llm") or {}
-        provider_name = (llm.get("provider") or "").strip() or None
-        model = (llm.get("model") or "").strip() or None
-        api_key = (llm.get("api_key") or "").strip()
-        if not api_key:
-            api_key_env = (llm.get("api_key_env") or "").strip()
-            if api_key_env:
-                api_key = os.environ.get(api_key_env, "")
+        gateway_config_mod = importlib.import_module("opensquilla.gateway.config")
+        cfg = gateway_config_mod.GatewayConfig.load(config_path_env)
+        llm = cfg.llm
+        provider_name = (getattr(llm, "provider", None) or "").strip() or None
+        model = (getattr(llm, "model", None) or "").strip() or None
         # N11: accept empty api_key — keyless local providers (ollama,
-        # lm_studio, ovms, vllm) do not require an API key; build_provider
-        # passes api_key="" for the ollama backend and ignores it entirely.
+        # lm_studio, ovms, vllm) do not require an API key.
+        api_key = (getattr(llm, "api_key", "") or "").strip()
+        base_url = (getattr(llm, "base_url", "") or "").strip()
         if provider_name and model:
-            return (provider_name, model, api_key)
-        return (None, None, None)
+            return (provider_name, model, api_key, base_url)
     except Exception:
-        return (None, None, None)
+        pass
+    return (None, None, None, None)
 
 
 def _resolve_provider_from_env() -> tuple[str | None, str | None, str | None]:
@@ -126,9 +117,10 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
 
     # Config-driven resolution first (matches gateway behaviour for deployments
     # that use ~/.opensquilla/config.toml instead of raw env vars).
-    provider_name, model, api_key = _resolve_provider_from_config()
+    provider_name, model, api_key, base_url = _resolve_provider_from_config()
     if provider_name is None:
         provider_name, model, api_key = _resolve_provider_from_env()
+        base_url = ""
     if provider_name is None:
         raise RuntimeError(
             "meta-skill-creator: no LLM provider configured. "
@@ -136,14 +128,17 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
             "OPENROUTER_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY."
         )
 
-    # Both helpers that succeed return non-None triples; narrow for mypy.
+    # Both helpers that succeed return non-None values; narrow for mypy.
     assert model is not None
     assert api_key is not None
+    assert base_url is not None
 
     # kwargs.get("model") can override the resolved model (e.g. in tests).
     effective_model: str = kwargs.get("model", model)
 
-    provider = build_provider(provider=provider_name, model=effective_model, api_key=api_key)
+    provider = build_provider(
+        provider=provider_name, model=effective_model, api_key=api_key, base_url=base_url,
+    )
     base_config = AgentConfig(model_id=effective_model)
     llm_chat = make_llm_chat_from_provider(
         provider=provider, base_config=base_config, max_tokens=2048

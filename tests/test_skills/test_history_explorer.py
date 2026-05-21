@@ -95,6 +95,53 @@ def test_router_fixtures_surfaces_fixture_files(tmp_path: Path) -> None:
     assert isinstance(out["router_fixtures"], list)
 
 
+def test_meta_usage_includes_accepted_managed_skills(tmp_path: Path, monkeypatch) -> None:
+    """N15: an accepted (managed-layer) meta-skill must appear in meta_usage.
+
+    Builds a fake ~/.opensquilla/skills/<name>/SKILL.md with kind: meta and
+    verifies aggregate_meta_usage counts an invocation entry for it.
+    """
+    home = tmp_path / ".opensquilla"
+    managed_skills = home / "skills" / "user-composed-pipeline"
+    managed_skills.mkdir(parents=True)
+    (managed_skills / "SKILL.md").write_text(
+        "---\n"
+        "name: user-composed-pipeline\n"
+        'description: "Test user-accepted meta-skill for usage aggregation."\n'
+        "kind: meta\n"
+        "meta_priority: 50\n"
+        "triggers:\n"
+        '  - "use composed"\n'
+        "provenance:\n"
+        "  origin: opensquilla-user\n"
+        "composition:\n"
+        "  steps:\n"
+        "    - id: a\n"
+        "      skill: summarize\n"
+        "      with:\n"
+        '        task: "{{ inputs.user_message | xml_escape | truncate(512) }}"\n'
+        "---\n# user meta\n",
+        encoding="utf-8",
+    )
+
+    log_dir = home / "logs"
+    log_dir.mkdir()
+    log = log_dir / "decisions-20260521.jsonl"
+    log.write_text(_make_log_line(["user-composed-pipeline"], "t1") + "\n", encoding="utf-8")
+
+    # Redirect default_opensquilla_home() so _load_meta_names picks up the
+    # fake managed dir.  The subprocess inherits os.environ, so monkeypatch
+    # on the current process propagates automatically.
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    out = _run_explore(log_dir, "user composed history", window_days=30)
+
+    usage = {row["meta_skill_id"]: row["invocation_count"] for row in out["meta_usage"]}
+    assert "user-composed-pipeline" in usage, (
+        f"accepted user meta-skill should be counted; got: {usage}"
+    )
+
+
 def test_meta_usage_filters_by_kind_not_prefix(tmp_path: Path) -> None:
     """N12: aggregate_meta_usage must NOT count kind=skill bundles whose name
     happens to start with 'meta-' (e.g. meta-skill-linter, meta-skill-proposals,

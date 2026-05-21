@@ -183,6 +183,46 @@ def test_creator_tools_hidden_from_owner_default() -> None:
     assert "meta_skill_fill_slots" in registered_names
 
 
+def test_resolve_provider_config_honors_env_overrides(monkeypatch, tmp_path) -> None:
+    """N14: GatewayConfig.load() honours OPENSQUILLA_LLM_* env vars; creator
+    must respect the same resolution path."""
+    # Point to a non-existent config so the TOML path is empty but env wins.
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "nope.toml"))
+    monkeypatch.setenv("OPENSQUILLA_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENSQUILLA_LLM_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "test-key")
+
+    from opensquilla.skills.creator.proposer import _resolve_provider_from_config
+    provider, model, api_key, base_url = _resolve_provider_from_config()
+    assert provider == "openai"
+    assert model == "gpt-4o-mini"
+    assert api_key == "test-key"
+
+
+def test_resolve_provider_config_includes_base_url(monkeypatch, tmp_path) -> None:
+    """N14: base_url must flow through (vllm/azure require custom endpoint)."""
+    toml = tmp_path / "config.toml"
+    toml.write_text(
+        "[llm]\n"
+        'provider = "openai"\n'
+        'model = "gpt-4o-mini"\n'
+        'api_key = ""\n'
+        'base_url = "https://my-vllm.local/v1"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(toml))
+    # Ensure no env-LLM override interferes.
+    monkeypatch.delenv("OPENSQUILLA_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_BASE_URL", raising=False)
+
+    from opensquilla.skills.creator.proposer import _resolve_provider_from_config
+    provider, model, api_key, base_url = _resolve_provider_from_config()
+    assert provider == "openai"
+    assert base_url == "https://my-vllm.local/v1"
+
+
 def test_slot_filler_rejects_yaml_unsafe_strings() -> None:
     """N2: Pydantic validators reject control chars / quotes that would
     break YAML rendering."""
@@ -309,7 +349,7 @@ def test_resolve_provider_config_accepts_empty_api_key(tmp_path, monkeypatch) ->
 
     from opensquilla.skills.creator.proposer import _resolve_provider_from_config
 
-    provider, model, api_key = _resolve_provider_from_config()
+    provider, model, api_key, base_url = _resolve_provider_from_config()
     assert provider == "ollama", (
         f"N11: expected 'ollama', got {provider!r}; "
         "keyless provider must not be rejected by _resolve_provider_from_config"

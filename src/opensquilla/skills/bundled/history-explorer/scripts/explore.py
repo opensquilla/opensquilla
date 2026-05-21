@@ -99,7 +99,10 @@ def aggregate_meta_usage(
 
 
 def _load_meta_names() -> set[str]:
-    """Load the set of skill names where kind == 'meta' from the bundled catalog.
+    """Load names of all kind=meta bundled skills + accepted user meta-skills.
+
+    N15 fix: include MANAGED layer (~/.opensquilla/skills/<name>/) so accepted
+    creator proposals are counted in usage stats alongside bundled meta-skills.
 
     Returns an empty set on any failure (wheel install without test fixtures,
     import errors, etc.) so the caller falls back to the prefix heuristic.
@@ -113,10 +116,12 @@ def _load_meta_names() -> set[str]:
         if str(_OPENSQUILLA_ROOT.parent) not in sys.path:
             sys.path.insert(0, str(_OPENSQUILLA_ROOT.parent))
         from opensquilla.skills.loader import SkillLoader
+        from opensquilla.skills.paths import default_managed_skills_dir
 
         with tempfile.TemporaryDirectory() as tmp:
             loader = SkillLoader(
                 bundled_dir=_BUNDLED,
+                managed_dir=default_managed_skills_dir(),
                 snapshot_path=Path(tmp) / "snap.json",
             )
             loader.invalidate_cache()

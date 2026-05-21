@@ -20,7 +20,7 @@ composition:
         query: |
           Co-occurring skill chains and meta-skill usage for: {{ inputs.user_message | xml_escape | truncate(512) }}
         window_days: 30
-        include: [co_occurrence, meta_usage, router_misses]
+        include: [co_occurrences, meta_usage, router_fixtures]
 
     - id: pick_pattern
       kind: llm_classify

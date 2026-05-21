@@ -98,6 +98,25 @@ def test_meta_skill_fill_slots_with_stub_llm(monkeypatch) -> None:
     assert "summarize" in call_log[0]
 
 
+def test_creator_package_import_registers_tools() -> None:
+    """C1 regression: importing the creator package must register both tools
+    in the default ToolRegistry. Phase 1 cross-task review found that the
+    @tool decorators only run when the module is imported — production code
+    must import opensquilla.skills.creator somewhere in the meta-skill branch."""
+    import importlib
+
+    import opensquilla.skills.creator
+    importlib.reload(opensquilla.skills.creator)
+
+    from opensquilla.tools.registry import get_default_registry
+    names = get_default_registry().list_names()
+    meta_names = sorted(n for n in names if n.startswith("meta"))
+    assert "meta_skill_assemble" in names, (
+        f"meta_skill_assemble not registered; got: {meta_names}"
+    )
+    assert "meta_skill_fill_slots" in names, "meta_skill_fill_slots not registered"
+
+
 def test_meta_skill_fill_slots_retries_once_on_validation_error(monkeypatch) -> None:
     from opensquilla.skills.creator import proposer
 

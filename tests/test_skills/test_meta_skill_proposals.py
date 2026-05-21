@@ -68,3 +68,15 @@ def test_write_proposal_marks_ineligible_on_g3_fail(tmp_path: Path) -> None:
     )
     gates = json.loads((home / "proposals" / out["proposal_id"] / "gates.json").read_text())
     assert gates["auto_enable_eligible"] is False
+
+
+def test_accept_rejects_path_traversal_proposal_id(tmp_path: Path) -> None:
+    """I1 regression: cmd_accept must reject proposal IDs that aren't 8 hex chars."""
+    home = tmp_path / ".opensquilla"
+    home.mkdir()
+    (home / "proposals").mkdir()
+
+    for bad_id in ["../../etc", "../sibling", "abcd1234567890", "ABCDEF12", ""]:
+        out = _run("accept", home=home, proposal_id=bad_id)
+        assert out["status"] == "error", f"should reject {bad_id!r}, got: {out}"
+        assert "invalid proposal_id" in out["reason"]

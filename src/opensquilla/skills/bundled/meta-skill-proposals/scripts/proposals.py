@@ -75,6 +75,15 @@ def cmd_list(args) -> dict:
 
 
 def cmd_accept(args) -> dict:
+    # I1: args.proposal_id is user-supplied CLI input; validate it matches the
+    # uuid.uuid4().hex[:8] write-side format to prevent path traversal.
+    if not re.fullmatch(r"[0-9a-f]{8}", args.proposal_id or ""):
+        return {
+            "status": "error",
+            "reason": (
+                f"invalid proposal_id format (expected 8 hex chars): {args.proposal_id!r}"
+            ),
+        }
     home = Path(args.home)
     src = _proposals_dir(home) / args.proposal_id
     if not (src / "SKILL.md").is_file():

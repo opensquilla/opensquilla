@@ -1875,6 +1875,7 @@ class TurnRunner:
                 # would cycle at first load. Restricting the import to
                 # the meta branch also skips the cost when the turn does
                 # not use a Meta-Skill.
+                import opensquilla.skills.creator  # noqa: F401  # C1: register @tool decorators
                 from opensquilla.skills.meta.orchestrator import (
                     MetaOrchestrator,
                     make_agent_runner_from_parent,

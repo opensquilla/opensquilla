@@ -47,41 +47,101 @@ def meta_skill_assemble(pattern_id: str, slots_json: str) -> str:
     return rendered
 
 
+def _resolve_provider_from_config() -> tuple[str | None, str | None, str | None]:
+    """Read the TOML config directly (no gateway import); return (provider, model, api_key)
+    or all-None on any failure.
+
+    Matches the gateway's own config discovery precedence:
+      OPENSQUILLA_GATEWAY_CONFIG_PATH → ./opensquilla.toml → ~/.opensquilla/config.toml.
+    Reads only the [llm] section, so no gateway-package import edge is introduced.
+    """
+    import os
+    import tomllib
+    from pathlib import Path
+
+    from opensquilla.paths import default_opensquilla_home
+
+    try:
+        config_path_env = os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH", "").strip()
+        candidates: list[Path] = []
+        if config_path_env:
+            candidates.append(Path(config_path_env))
+        else:
+            candidates.append(Path.cwd() / "opensquilla.toml")
+            candidates.append(default_opensquilla_home() / "config.toml")
+
+        data: dict = {}
+        for path in candidates:
+            if path.is_file():
+                with open(path, "rb") as fh:
+                    data = tomllib.load(fh)
+                break
+
+        llm = data.get("llm") or {}
+        provider_name = (llm.get("provider") or "").strip() or None
+        model = (llm.get("model") or "").strip() or None
+        api_key = (llm.get("api_key") or "").strip()
+        if not api_key:
+            api_key_env = (llm.get("api_key_env") or "").strip()
+            if api_key_env:
+                api_key = os.environ.get(api_key_env, "")
+        if provider_name and model and api_key:
+            return (provider_name, model, api_key)
+        return (None, None, None)
+    except Exception:
+        return (None, None, None)
+
+
+def _resolve_provider_from_env() -> tuple[str | None, str | None, str | None]:
+    """Fallback: scan env vars in priority order.
+
+    Preference order: openrouter → anthropic → openai.
+    """
+    import os
+
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return ("openrouter", "anthropic/claude-3.5-haiku", os.environ["OPENROUTER_API_KEY"])
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return ("anthropic", "claude-3-5-haiku-20241022", os.environ["ANTHROPIC_API_KEY"])
+    if os.environ.get("OPENAI_API_KEY"):
+        return ("openai", "gpt-4o-mini", os.environ["OPENAI_API_KEY"])
+    return (None, None, None)
+
+
 def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
-    """Production LLM call for slot filling. Builds a provider from environment
-    variables and calls make_llm_chat_from_provider.
+    """Production LLM call for slot filling. Resolves provider via GatewayConfig
+    first (matches the gateway's normal config-loading path), then falls back to
+    env vars for bare-script and test scenarios.
 
     Tests monkeypatch this symbol to inject deterministic stubs.
     """
     import asyncio
-    import os
 
     from opensquilla.engine.types import AgentConfig
     from opensquilla.provider.selector import build_provider
     from opensquilla.skills.meta.orchestrator import make_llm_chat_from_provider
 
-    # Resolve provider + API key from environment (mirrors gateway behaviour).
-    # Preference order: openrouter → anthropic → openai
-    if os.environ.get("OPENROUTER_API_KEY"):
-        provider_name = "openrouter"
-        api_key = os.environ["OPENROUTER_API_KEY"]
-        model = kwargs.get("model", "anthropic/claude-3.5-haiku")
-    elif os.environ.get("ANTHROPIC_API_KEY"):
-        provider_name = "anthropic"
-        api_key = os.environ["ANTHROPIC_API_KEY"]
-        model = kwargs.get("model", "claude-3-5-haiku-20241022")
-    elif os.environ.get("OPENAI_API_KEY"):
-        provider_name = "openai"
-        api_key = os.environ["OPENAI_API_KEY"]
-        model = kwargs.get("model", "gpt-4o-mini")
-    else:
+    # Config-driven resolution first (matches gateway behaviour for deployments
+    # that use ~/.opensquilla/config.toml instead of raw env vars).
+    provider_name, model, api_key = _resolve_provider_from_config()
+    if provider_name is None:
+        provider_name, model, api_key = _resolve_provider_from_env()
+    if provider_name is None:
         raise RuntimeError(
             "meta-skill-creator: no LLM provider configured. "
-            "Set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY."
+            "Set provider in ~/.opensquilla/config.toml or set "
+            "OPENROUTER_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY."
         )
 
-    provider = build_provider(provider=provider_name, model=model, api_key=api_key)
-    base_config = AgentConfig(model_id=model)
+    # Both helpers that succeed return non-None triples; narrow for mypy.
+    assert model is not None
+    assert api_key is not None
+
+    # kwargs.get("model") can override the resolved model (e.g. in tests).
+    effective_model: str = kwargs.get("model", model)
+
+    provider = build_provider(provider=provider_name, model=effective_model, api_key=api_key)
+    base_config = AgentConfig(model_id=effective_model)
     llm_chat = make_llm_chat_from_provider(
         provider=provider, base_config=base_config, max_tokens=2048
     )

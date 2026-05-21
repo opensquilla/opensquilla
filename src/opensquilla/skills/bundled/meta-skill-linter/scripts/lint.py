@@ -15,14 +15,22 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from opensquilla.skills.types import SkillSpec
 
-# Path from scripts dir: scripts→linter→bundled→skills→opensquilla→src→repo
-# That's 6 parents. Verify by checking that REPO/src/opensquilla exists.
-REPO = Path(__file__).resolve().parents[6]
+# Derive the opensquilla package root from this file's location.
+# Path layout from lint.py:
+#   .../opensquilla/skills/bundled/meta-skill-linter/scripts/lint.py
+# parents: [0]=scripts  [1]=meta-skill-linter  [2]=bundled
+#          [3]=skills    [4]=opensquilla
+# This works for both source-tree checkouts and wheel installs (site-packages).
+_OPENSQUILLA_ROOT = Path(__file__).resolve().parents[4]
+BUNDLED = _OPENSQUILLA_ROOT / "skills" / "bundled"
+
 # lint.py is invoked as a subprocess (uv run python scripts/lint.py ...)
 # rather than imported as a module. opensquilla is not on sys.path in the
 # subprocess until we add it here; the in-process test harness avoids this
 # by using subprocess.run + --skill-md-stdin.
-sys.path.insert(0, str(REPO / "src"))
+# In a wheel install _OPENSQUILLA_ROOT.parent is site-packages/ which is
+# already on sys.path, so this insert is harmless.
+sys.path.insert(0, str(_OPENSQUILLA_ROOT.parent))
 
 # Redirect all logging to stderr before importing opensquilla modules so that
 # structlog output does not contaminate the JSON written to stdout.
@@ -37,9 +45,6 @@ structlog.configure(
 
 from opensquilla.skills.loader import SkillLoader  # noqa: E402
 from opensquilla.skills.meta.parser import MetaPlan, MetaPlanError, parse_meta_plan  # noqa: E402
-
-
-BUNDLED = REPO / "src" / "opensquilla" / "skills" / "bundled"
 
 # G1.6 xml_escape rule: any `{{ inputs.user_message ` literal must be
 # IMMEDIATELY followed by `| xml_escape` or `| slugify` as the first filter.

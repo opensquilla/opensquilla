@@ -16,7 +16,7 @@ Lightweight read-only view over `~/.opensquilla/logs/decisions-*.jsonl`. Aggrega
 ## Usage
 
 ```
-uv run python scripts/explore.py \
+uv run python {baseDir}/scripts/explore.py \
   --log-dir ~/.opensquilla/logs \
   --query "Co-occurring chains for PDF workflows" \
   --window-days 30 \

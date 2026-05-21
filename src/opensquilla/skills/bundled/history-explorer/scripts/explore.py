@@ -72,11 +72,17 @@ def aggregate_meta_usage(log_dir: Path, window_days: int) -> list[dict]:
 def aggregate_router_fixtures(repo_root: Path | None = None) -> list[dict]:
     """Surface the D.2 router-fixture corpus."""
     if repo_root is None:
-        # explore.py lives at:
-        #   <repo>/src/opensquilla/skills/bundled/history-explorer/scripts/explore.py
-        # parents: [0]=scripts, [1]=history-explorer, [2]=bundled, [3]=skills,
-        #          [4]=opensquilla, [5]=src, [6]=<repo root>
-        repo_root = Path(__file__).resolve().parents[6]
+        # Derive the opensquilla package root from this file's location.
+        # Path layout from explore.py:
+        #   .../opensquilla/skills/bundled/history-explorer/scripts/explore.py
+        # parents: [0]=scripts  [1]=history-explorer  [2]=bundled
+        #          [3]=skills    [4]=opensquilla
+        # Works for both source-tree checkouts and wheel installs.
+        # In a source checkout: opensquilla_root.parent = src/, repo = src/../
+        # In a wheel install: test fixtures are absent; the is_dir() guard
+        # below returns [] gracefully.
+        _opensquilla_root = Path(__file__).resolve().parents[4]
+        repo_root = _opensquilla_root.parent.parent
     fixtures_dir = repo_root / "tests" / "test_skills" / "router_fixtures"
     fixtures: list[dict] = []
     if not fixtures_dir.is_dir():

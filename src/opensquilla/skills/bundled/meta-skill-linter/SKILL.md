@@ -31,8 +31,8 @@ Replace step executors with stubs yielding `_StepDone(text="<stub:id>")`. Run sc
 ## Usage
 
 ```
-uv run python scripts/lint.py --skill-md path/to/SKILL.md --gates G1,G2
-uv run python scripts/lint.py --skill-md-stdin --gates G1,G2 < SKILL.md
+uv run python {baseDir}/scripts/lint.py --skill-md path/to/SKILL.md --gates G1,G2
+uv run python {baseDir}/scripts/lint.py --skill-md-stdin --gates G1,G2 < SKILL.md
 ```
 
 ## Output

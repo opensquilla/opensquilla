@@ -122,7 +122,11 @@ def _is_deepseek_model_id(model: str) -> bool:
 
 
 def collect_invoked_skills(turn_segments: list[dict]) -> list[str]:
-    """Extract bundled-skill names that were resolved via skill_view tool calls.
+    """Extract bundled-skill and meta-skill names invoked during a turn.
+
+    Captures both:
+    - skill_view tool calls: input.name is the bundled skill name
+    - meta_invoke tool calls: input.name is the meta-skill name
 
     Args:
         turn_segments: the heterogeneous per-turn segments list as produced by
@@ -135,7 +139,8 @@ def collect_invoked_skills(turn_segments: list[dict]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for segment in turn_segments:
-        if segment.get("name") != "skill_view":
+        tool_name = segment.get("name")
+        if tool_name not in ("skill_view", "meta_invoke"):
             continue
         skill_name = (segment.get("input") or {}).get("name")
         if not isinstance(skill_name, str) or not skill_name or skill_name in seen:

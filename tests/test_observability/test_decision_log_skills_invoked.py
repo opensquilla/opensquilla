@@ -87,3 +87,27 @@ def test_collect_invoked_skills_dedups_repeated_calls() -> None:
         {"name": "skill_view", "input": {"name": "memory"}},
     ])
     assert invoked == ["pdf-toolkit", "summarize", "memory"]
+
+
+def test_collect_invoked_skills_captures_meta_invoke() -> None:
+    """N7: meta_invoke tool calls record the meta-skill name in skills_invoked
+    so aggregate_meta_usage can count them."""
+    from opensquilla.engine.runtime import collect_invoked_skills
+    invoked = collect_invoked_skills([
+        {"name": "skill_view", "input": {"name": "pdf-toolkit"}},
+        {"name": "meta_invoke", "input": {"name": "meta-pdf-intelligence"}},
+        {"name": "meta_invoke", "input": {"name": "meta-travel-planner"}},
+        {"name": "other_tool", "input": {}},
+    ])
+    assert invoked == ["pdf-toolkit", "meta-pdf-intelligence", "meta-travel-planner"]
+
+
+def test_collect_invoked_skills_deduplicates_meta_invoke() -> None:
+    """N7: a meta-skill invoked multiple times in one turn appears once."""
+    from opensquilla.engine.runtime import collect_invoked_skills
+    invoked = collect_invoked_skills([
+        {"name": "meta_invoke", "input": {"name": "meta-pdf-intelligence"}},
+        {"name": "skill_view", "input": {"name": "pdf-toolkit"}},
+        {"name": "meta_invoke", "input": {"name": "meta-pdf-intelligence"}},  # dup
+    ])
+    assert invoked == ["meta-pdf-intelligence", "pdf-toolkit"]

@@ -10,8 +10,6 @@ metadata:
 entrypoint:
   command: python {baseDir}/scripts/explore.py
   args:
-    - --log-dir
-    - ~/.opensquilla/logs
     - --query
     - "{{ with.query | truncate(512) }}"
     - --window-days

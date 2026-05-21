@@ -142,6 +142,52 @@ def test_meta_usage_includes_accepted_managed_skills(tmp_path: Path, monkeypatch
     )
 
 
+def test_resolve_log_dir_respects_env_overrides(tmp_path: Path, monkeypatch) -> None:
+    """N18 regression: log_dir resolution honors $OPENSQUILLA_LOG_DIR,
+    $OPENSQUILLA_STATE_DIR/logs, ~/.opensquilla/logs in that order;
+    expands ~; never returns a path with a literal '~' from the subprocess."""
+    import importlib.util
+
+    spec_obj = importlib.util.spec_from_file_location("explore", str(EXPLORE))
+    assert spec_obj is not None
+    explore_mod = importlib.util.module_from_spec(spec_obj)
+    assert spec_obj.loader is not None
+    spec_obj.loader.exec_module(explore_mod)  # type: ignore[union-attr]
+    _resolve_log_dir = explore_mod._resolve_log_dir
+
+    monkeypatch.delenv("OPENSQUILLA_LOG_DIR", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
+
+    # CLI arg wins and is returned as absolute path
+    explicit = _resolve_log_dir(str(tmp_path / "explicit"))
+    assert explicit.name == "explicit"
+    assert explicit.is_absolute()
+
+    # CLI arg with ~ is expanded (never stays literal)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    resolved = _resolve_log_dir("~/foo")
+    assert not str(resolved).startswith("~"), f"tilde not expanded: {resolved}"
+    assert str(resolved).startswith(str(tmp_path))
+
+    # OPENSQUILLA_LOG_DIR wins when no CLI arg
+    monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path / "env_log"))
+    assert _resolve_log_dir(None).name == "env_log"
+
+    # OPENSQUILLA_STATE_DIR/logs fallback when LOG_DIR not set
+    monkeypatch.delenv("OPENSQUILLA_LOG_DIR")
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "state"))
+    resolved_state = _resolve_log_dir(None)
+    assert resolved_state.parent.name == "state"
+    assert resolved_state.name == "logs"
+
+    # Default (~/.opensquilla/logs) when no CLI arg and no env
+    monkeypatch.delenv("OPENSQUILLA_STATE_DIR")
+    default = _resolve_log_dir(None)
+    assert not str(default).startswith("~"), f"default tilde not expanded: {default}"
+    assert default.name == "logs"
+    assert default.parent.name == ".opensquilla"
+
+
 def test_meta_usage_filters_by_kind_not_prefix(tmp_path: Path) -> None:
     """N12: aggregate_meta_usage must NOT count kind=skill bundles whose name
     happens to start with 'meta-' (e.g. meta-skill-linter, meta-skill-proposals,

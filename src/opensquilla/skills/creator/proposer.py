@@ -566,11 +566,18 @@ def meta_skill_smoke_run(
     """Run G3+G4 smoke tests on the given SKILL.md. Returns JSON.
 
     Phase 1: uses deterministic fixture generator regardless of model
-    args (those wire to real LLMs in a future iteration).
+    args (those wire to real LLMs in a future iteration). The result is
+    flagged ``degraded: true`` so users know real LLM smoke didn't run.
+
+    N19 fix: pass _deterministic_fixture directly (no lambda) so
+    run_smoke_gates' identity check (``fixture_gen_fn is _deterministic_fixture``)
+    recognises this as the degraded path and sets degraded=True on the
+    gate result. The previous lambda wrapper broke the ``is`` identity
+    check, causing smoke to report degraded=False.
     """
     result = run_smoke_gates(
         skill_md=skill_md,
-        fixture_gen_fn=lambda md, kind: _deterministic_fixture(md, kind),
+        fixture_gen_fn=_deterministic_fixture,
         classifier_model=classifier_model,
     )
     return json.dumps(result, ensure_ascii=False)

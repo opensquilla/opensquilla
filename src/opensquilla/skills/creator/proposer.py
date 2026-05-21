@@ -87,6 +87,25 @@ def _resolve_provider_from_config() -> tuple[str | None, str | None, str | None,
     the architecture import-contract test (which detects edges via
     ``ast.walk`` on module-level *and* function-body nodes) does not see
     a ``skills → gateway`` static import statement.
+
+    Fix #C — env-var override priority note:
+    ``OPENSQUILLA_LLM_MODEL`` and friends ARE honoured when no TOML file
+    exists (pydantic-settings reads them via LlmProviderConfig's own
+    ``env_prefix="OPENSQUILLA_LLM_"``).  However, when a TOML file is
+    present ``GatewayConfig.load()`` passes the TOML dict to the
+    constructor and pydantic-settings' env-var scan is only applied to
+    fields that were NOT supplied in the dict — so a TOML ``[llm]``
+    section can shadow env vars.  To override the LLM in the presence of
+    a TOML file, use the *correct pydantic-settings nested delimiter*:
+    ``OPENSQUILLA_GATEWAY__LLM__MODEL=<value>`` (double underscores,
+    ``OPENSQUILLA_GATEWAY_`` prefix from the parent GatewayConfig).
+    The simpler ``OPENSQUILLA_LLM_MODEL`` only works when the LLM
+    section is absent from the TOML file.
+
+    After GatewayConfig.load(), we apply an explicit env-var post-override
+    so that ``OPENSQUILLA_LLM_MODEL`` / ``OPENSQUILLA_LLM_PROVIDER`` /
+    ``OPENSQUILLA_LLM_API_KEY`` / ``OPENSQUILLA_LLM_BASE_URL`` always win
+    regardless of TOML content — matching user expectations from the docs.
     """
     import importlib
     import os
@@ -106,6 +125,25 @@ def _resolve_provider_from_config() -> tuple[str | None, str | None, str | None,
         # lm_studio, ovms, vllm) do not require an API key.
         api_key = (getattr(llm, "api_key", "") or "").strip()
         base_url = (getattr(llm, "base_url", "") or "").strip()
+
+        # Fix #C: apply explicit env-var post-overrides so that
+        # OPENSQUILLA_LLM_MODEL / _PROVIDER / _API_KEY / _BASE_URL always win
+        # over TOML file values (pydantic-settings nesting means the sub-model's
+        # env bindings are shadowed by the parent TOML dict when a [llm] section
+        # is present in config.toml).
+        env_provider = os.environ.get("OPENSQUILLA_LLM_PROVIDER", "").strip()
+        env_model = os.environ.get("OPENSQUILLA_LLM_MODEL", "").strip()
+        env_api_key = os.environ.get("OPENSQUILLA_LLM_API_KEY", "").strip()
+        env_base_url = os.environ.get("OPENSQUILLA_LLM_BASE_URL", "").strip()
+        if env_provider:
+            provider_name = env_provider
+        if env_model:
+            model = env_model
+        if env_api_key:
+            api_key = env_api_key
+        if env_base_url:
+            base_url = env_base_url
+
         if provider_name and model:
             return (provider_name, model, api_key, base_url)
     except Exception:
@@ -201,6 +239,62 @@ def _build_catalog_summary() -> str:
     return "\n".join(lines)
 
 
+def _build_pattern_example(pattern_id: str) -> dict:
+    """Return a minimal valid example for the pattern's slot schema.
+
+    Anchors the LLM on the exact field names — Pydantic schema descriptions
+    alone are insufficient to prevent field-name hallucination (e.g. LLMs
+    naturally write ``execution_sequence`` when the schema says ``steps``).
+    """
+    if pattern_id == "p1_sequential":
+        return {
+            "name": "example-pipeline",
+            "description": "A 2-step example that extracts PDF text then summarizes it.",
+            "meta_priority": 50,
+            "triggers": ["example trigger phrase"],
+            "steps": [
+                {
+                    "id": "extract",
+                    "skill": "pdf-toolkit",
+                    "task": "Extract text from the PDF",
+                    "with_keys": {},
+                },
+                {
+                    "id": "digest",
+                    "skill": "summarize",
+                    "task": "Summarize the extracted text",
+                    "with_keys": {},
+                },
+            ],
+        }
+    if pattern_id == "p2_fan_out_merge":
+        return {
+            "name": "example-fan-out",
+            "description": (
+                "Gather weather and POI info in parallel, then merge into a travel itinerary."
+            ),
+            "meta_priority": 50,
+            "triggers": ["example fan-out trigger"],
+            "branches": [
+                {"id": "weather", "skill": "weather", "task": "Fetch weather", "with_keys": {}},
+                {
+                    "id": "poi",
+                    "skill": "multi-search-engine",
+                    "task": "Search POIs",
+                    "with_keys": {},
+                },
+            ],
+            "merge": {
+                "id": "itin",
+                "skill": "summarize",
+                "task": "Combine into itinerary",
+                "with_keys": {},
+            },
+            "tail": None,
+        }
+    return {}
+
+
 def meta_skill_fill_slots(
     pattern_id: str, history_summary: str, user_intent: str,
 ) -> str:
@@ -211,12 +305,34 @@ def meta_skill_fill_slots(
     schema = PATTERN_SLOT_SCHEMA[pattern_id]
     catalog = _build_catalog_summary()
 
+    # Fix #A: inject the Pydantic JSON schema and a concrete example so the
+    # LLM cannot hallucinate field names such as ``execution_sequence`` or
+    # ``trigger_condition``.
+    schema_dict = schema.model_json_schema()
+    schema_json = json.dumps(schema_dict, ensure_ascii=False, indent=2)
+    example_obj = _build_pattern_example(pattern_id)
+    example_json = json.dumps(example_obj, ensure_ascii=False, indent=2)
+
     base_prompt = (
-        f"Fill the {pattern_id} slot schema.\n\n"
-        f"Available skills (catalog):\n{catalog}\n\n"
-        f"History summary:\n{history_summary}\n\n"
-        f"User intent: {user_intent}\n\n"
-        f"Emit ONLY a JSON object matching the {pattern_id} schema. No prose."
+        f"Fill the {pattern_id} slot schema for a new bundled meta-skill.\n\n"
+        f"## JSON Schema (REQUIRED field names — do NOT rename)\n"
+        f"```\n{schema_json}\n```\n\n"
+        f"## Example output for {pattern_id}\n"
+        f"```\n{example_json}\n```\n\n"
+        f"## Available skills (catalog)\n"
+        f"You may only reference these skills in `steps[].skill` (or `branches[].skill`):\n"
+        f"{catalog}\n\n"
+        f"## History summary\n{history_summary}\n\n"
+        f"## User intent\n{user_intent}\n\n"
+        f"## Output instructions\n"
+        f"Emit ONLY a JSON object matching the schema above. No prose. No markdown.\n"
+        f"CRITICAL field-name rules:\n"
+        f"- The list of phrases is called `triggers` (NOT `trigger_condition`).\n"
+        f"- The pipeline is called `steps` (NOT `execution_sequence`, `pipeline`, "
+        f"`actions`, or `sequence`).\n"
+        f"- Each step must have: id (str, snake_case), skill (str from catalog), "
+        f"task (str, max 400 chars, no double-quotes/newlines/backslashes), "
+        f"with_keys (dict, often empty {{}})."
     )
 
     response = _call_llm_for_slots(base_prompt)
@@ -446,6 +562,23 @@ async def meta_skill_fill_slots_tool(
     # when invoked from inside the orchestrator's running event loop.
     # The sync core uses asyncio.run() internally to call the LLM provider.
     import asyncio
-    return await asyncio.to_thread(
-        meta_skill_fill_slots, pattern_id, history_summary, user_intent,
-    )
+
+    # Fix #B (Option B1): catch _FillSlotsValidationError and return a
+    # structured error JSON so the orchestrator sees the actual diagnostic
+    # instead of the generic "The tool 'X' failed with an internal error."
+    # that the envelope layer emits for unknown exception classes.
+    # The downstream meta_skill_assemble call will then fail with an
+    # actionable message from this payload rather than a silent black-box.
+    try:
+        return await asyncio.to_thread(
+            meta_skill_fill_slots, pattern_id, history_summary, user_intent,
+        )
+    except _FillSlotsValidationError as exc:
+        return json.dumps(
+            {
+                "_creator_error": "validation_failed_after_retry",
+                "pattern_id": pattern_id,
+                "detail": str(exc),
+            },
+            ensure_ascii=False,
+        )

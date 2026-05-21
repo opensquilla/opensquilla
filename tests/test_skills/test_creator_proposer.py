@@ -392,6 +392,58 @@ def test_fill_slots_validation_error_surfaces_detail(monkeypatch) -> None:
     assert "p1_sequential" in err_str or "missing-fields-test" in err_str
 
 
+def test_fill_slots_prompt_includes_schema_and_example(monkeypatch) -> None:
+    """Fix #A: the prompt must include the JSON schema + a concrete example
+    so the LLM cannot hallucinate field names like `execution_sequence`.
+
+    Specifically asserts:
+    - `triggers` (correct field name) appears in the prompt
+    - `steps` (correct field name) appears in the prompt
+    - `execution_sequence` appears as an anti-pattern warning (DO NOT use)
+    - an example anchors the output (example-pipeline or pdf-toolkit)
+    """
+    from opensquilla.skills.creator import proposer
+
+    captured: list[str] = []
+    canned_resp = json.dumps({
+        "name": "ok-pipeline",
+        "description": "x" * 50,
+        "meta_priority": 50,
+        "triggers": ["t"],
+        "steps": [
+            {"id": "a", "skill": "summarize", "task": "t", "with_keys": {}},
+            {"id": "b", "skill": "memory", "task": "t", "with_keys": {}},
+        ],
+    })
+
+    def stub_with_capture(prompt: str, **_) -> str:
+        captured.append(prompt)
+        return canned_resp
+
+    monkeypatch.setattr(proposer, "_call_llm_for_slots", stub_with_capture)
+    proposer.meta_skill_fill_slots(
+        pattern_id="p1_sequential",
+        history_summary="(test)",
+        user_intent="test",
+    )
+
+    assert captured, "stub was never called"
+    prompt = captured[0]
+    # Schema field names must appear in the prompt
+    assert "triggers" in prompt, "prompt missing 'triggers' field name"
+    assert '"steps"' in prompt or "'steps'" in prompt or "steps" in prompt, (
+        "prompt missing 'steps' field name"
+    )
+    # Anti-pattern warning must name the wrong field so LLM is explicitly told not to use it
+    assert "execution_sequence" in prompt, (
+        "prompt must warn against 'execution_sequence' so LLM does not invent it"
+    )
+    # Example must anchor the output with concrete field values
+    assert "example-pipeline" in prompt or "pdf-toolkit" in prompt, (
+        "prompt missing example anchor (example-pipeline or pdf-toolkit)"
+    )
+
+
 def test_resolve_provider_config_accepts_empty_api_key(tmp_path, monkeypatch) -> None:
     """N11: _resolve_provider_from_config must return a valid triple when
     provider and model are set but api_key is absent (keyless local providers
@@ -414,3 +466,66 @@ def test_resolve_provider_config_accepts_empty_api_key(tmp_path, monkeypatch) ->
     )
     assert model == "llama3"
     assert api_key == ""  # empty string is correct for ollama
+
+
+def test_resolve_provider_config_env_override_beats_toml(tmp_path, monkeypatch) -> None:
+    """Fix #C: OPENSQUILLA_LLM_MODEL env var must win over a TOML [llm] section.
+
+    When a config.toml has [llm] provider/model values, pydantic-settings'
+    nested env binding is bypassed (the parent passes the TOML dict directly).
+    _resolve_provider_from_config must apply a post-override so the env vars
+    always beat TOML content.
+    """
+    config_toml = tmp_path / "opensquilla.toml"
+    config_toml.write_text(
+        '[llm]\nprovider = "openrouter"\nmodel = "deepseek/deepseek-v3.1-terminus"\n'
+        'api_key = "toml-key"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(config_toml))
+    monkeypatch.setenv("OPENSQUILLA_LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENSQUILLA_LLM_MODEL", "claude-3-5-haiku-20241022")
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "env-key")
+
+    from opensquilla.skills.creator.proposer import _resolve_provider_from_config
+
+    provider, model, api_key, base_url = _resolve_provider_from_config()
+    assert provider == "anthropic", (
+        f"Fix #C: env var OPENSQUILLA_LLM_PROVIDER must beat TOML; got {provider!r}"
+    )
+    assert model == "claude-3-5-haiku-20241022", (
+        f"Fix #C: env var OPENSQUILLA_LLM_MODEL must beat TOML; got {model!r}"
+    )
+    assert api_key == "env-key", (
+        f"Fix #C: env var OPENSQUILLA_LLM_API_KEY must beat TOML; got {api_key!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fill_slots_tool_validation_error_returns_structured_json(monkeypatch) -> None:
+    """Fix #B (Option B1): when fill_slots raises _FillSlotsValidationError after
+    exhausting all retries, the @tool wrapper must catch it and return a structured
+    JSON error dict rather than letting it propagate as a generic 'internal error'
+    through the envelope layer."""
+    from opensquilla.skills.creator import proposer
+
+    # Always return invalid JSON to exhaust retries
+    monkeypatch.setattr(
+        proposer, "_call_llm_for_slots",
+        lambda prompt, **_: '{"name": "x"}',  # missing required fields
+    )
+
+    result = await proposer.meta_skill_fill_slots_tool(
+        pattern_id="p1_sequential",
+        history_summary="(test)",
+        user_intent="test",
+    )
+    # The tool must not raise; it returns JSON with _creator_error key
+    payload = json.loads(result)
+    assert payload.get("_creator_error") == "validation_failed_after_retry", (
+        f"Fix #B: expected _creator_error='validation_failed_after_retry', got: {payload}"
+    )
+    assert "p1_sequential" in payload.get("pattern_id", ""), (
+        f"Fix #B: pattern_id missing from error payload: {payload}"
+    )
+    assert "detail" in payload, f"Fix #B: 'detail' key missing from error payload: {payload}"

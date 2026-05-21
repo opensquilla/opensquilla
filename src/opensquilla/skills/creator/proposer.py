@@ -130,10 +130,14 @@ def meta_skill_fill_slots(
         validated = schema.model_validate_json(response)
         return str(validated.model_dump_json())
     except ValidationError as exc:
+        # N4 fix: Pydantic v2 custom-validator errors embed raw ValueError
+        # objects in ctx.error, which are not JSON-serializable. Use
+        # default=str to coerce them so json.dumps() doesn't TypeError before
+        # the retry LLM call fires.
         retry_prompt = (
             base_prompt
             + "\n\nYour previous response failed schema validation with these errors:\n"
-            + json.dumps(exc.errors())
+            + json.dumps(exc.errors(), default=str)
             + "\n\nEmit a corrected JSON object."
         )
         retry_response = _call_llm_for_slots(retry_prompt)

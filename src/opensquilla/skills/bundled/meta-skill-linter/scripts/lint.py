@@ -54,17 +54,23 @@ _XML_ESCAPE_RE = re.compile(
 )
 
 
-def _load_main_catalog() -> set[str]:
+def _load_main_catalog() -> dict[str, str]:
+    """Return {skill_name: skill_kind} for all bundled skills.
+
+    N5 fix: returning a kind-aware dict (instead of a name-only set) lets
+    run_g1 reject steps that reference another kind=meta skill, since the
+    agent executor refuses nested meta-skills at runtime.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         loader = SkillLoader(
             bundled_dir=BUNDLED,
             snapshot_path=Path(tmpdir) / "snapshot.json",
         )
         loader.invalidate_cache()
-        return {spec.name for spec in loader.load_all()}
+        return {spec.name: spec.kind for spec in loader.load_all()}
 
 
-def run_g1(skill_md: str, catalog: set[str]) -> dict:
+def run_g1(skill_md: str, catalog: dict[str, str]) -> dict:
     diagnostics: list[str] = []
 
     # G1.6 xml_escape rule: only applicable to kind=meta skills (the meta-skill
@@ -107,12 +113,24 @@ def run_g1(skill_md: str, catalog: set[str]) -> dict:
         diagnostics.append("G1.1: parse_meta_plan returned None (kind != meta?)")
         return {"passed": False, "diagnostics": diagnostics, "spec": spec, "plan": None}
 
-    # Rule G1.2: every step.skill exists in main catalog
+    # Rule G1.2: every step.skill exists in main catalog and is not kind=meta.
+    # N5 fix: catalog is now {name: kind}. Reject references to kind=meta
+    # bundles because the agent executor refuses nested meta-skills at runtime
+    # with "cannot compose another meta-skill"; passing G1+G2 while crashing
+    # at runtime produces misleading auto_enable_eligible=true proposals.
     for step in plan.steps:
-        if step.kind in ("agent", "skill_exec") and step.skill not in catalog:
-            diagnostics.append(
-                f"G1.2: step {step.id!r} references unknown skill {step.skill!r}"
-            )
+        if step.kind in ("agent", "skill_exec"):
+            if step.skill not in catalog:
+                diagnostics.append(
+                    f"G1.2: step {step.id!r} references unknown skill {step.skill!r}"
+                )
+            elif catalog[step.skill] == "meta":
+                diagnostics.append(
+                    f"G1.2: step {step.id!r} references {step.skill!r} which is "
+                    f"kind: meta — nested meta-skills are not supported by the "
+                    f"runtime (agent executor rejects them with 'cannot compose "
+                    f"another meta-skill')"
+                )
 
     passed = not diagnostics
     return {"passed": passed, "diagnostics": diagnostics, "spec": spec, "plan": plan}

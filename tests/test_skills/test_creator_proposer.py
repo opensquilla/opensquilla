@@ -208,3 +208,58 @@ def test_slot_filler_rejects_yaml_unsafe_strings() -> None:
     # Unacceptable: double quote in skill name
     with _pytest.raises(ValueError):
         SequentialStep(id="ok", skill='sum"marize', task="simple task")
+
+
+def test_fill_slots_retry_no_type_error_on_custom_validator_error(monkeypatch) -> None:
+    """N4 regression: Pydantic v2 custom-validator errors put a raw ValueError
+    object in ctx.error which is not JSON-serializable. The retry path must use
+    default=str so json.dumps(exc.errors()) doesn't TypeError before the retry
+    LLM call fires.
+
+    Triggers the N2 validator (double-quote in task) on the first response,
+    then returns a clean payload on the second call. Asserts no TypeError is
+    raised and the final result is the clean payload.
+    """
+    import json as _json
+
+    from opensquilla.skills.creator import proposer
+
+    clean_payload = _json.dumps({
+        "name": "synth-pipeline",
+        "description": "Synthetic pipeline that does X then Y. Sample for N4 regression.",
+        "meta_priority": 50,
+        "triggers": ["synth test"],
+        "steps": [
+            {"id": "a", "skill": "summarize", "task": "process input", "with_keys": {}},
+            {"id": "b", "skill": "memory", "task": "save result", "with_keys": {}},
+        ],
+    })
+    # First response: task contains a double-quote — triggers the N2
+    # custom validator on SequentialStep and raises ValidationError whose
+    # exc.errors() contains a raw ValueError in ctx.error.
+    bad_payload = _json.dumps({
+        "name": "synth-pipeline",
+        "description": "Synthetic pipeline. Sample for N4 regression.",
+        "meta_priority": 50,
+        "triggers": ["synth test"],
+        "steps": [
+            {"id": "a", "skill": "summarize", "task": 'save "summary"', "with_keys": {}},
+            {"id": "b", "skill": "memory", "task": "save result", "with_keys": {}},
+        ],
+    })
+
+    responses = iter([bad_payload, clean_payload])
+
+    def stub_llm(prompt: str, **_kwargs) -> str:
+        return next(responses)
+
+    monkeypatch.setattr(proposer, "_call_llm_for_slots", stub_llm)
+
+    # Must not raise TypeError; must return clean payload
+    result = proposer.meta_skill_fill_slots(
+        pattern_id="p1_sequential",
+        history_summary="(no history)",
+        user_intent="process docs then save",
+    )
+    data = _json.loads(result)
+    assert data["name"] == "synth-pipeline", f"unexpected result: {data}"

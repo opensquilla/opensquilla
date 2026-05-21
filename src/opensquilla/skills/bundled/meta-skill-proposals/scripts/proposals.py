@@ -96,10 +96,11 @@ def cmd_accept(args) -> dict:
                 "gates": gates}
 
     skill_md = (src / "SKILL.md").read_text(encoding="utf-8")
-    # NOTE: matches unquoted YAML names only (e.g. `name: foo-bar`). Quoted
-    # names like `name: "foo-bar"` are not handled; current creator-emitted
-    # templates use the unquoted form (see creator/patterns/p1_sequential.md.j2).
-    name_match = re.search(r"^name:\s*([\w\-]+)\s*$", skill_md, re.MULTILINE)
+    # N3 fix: accept both unquoted (e.g. `name: foo-bar`) and quoted
+    # (e.g. `name: "foo-bar"`) YAML names. The N2 tojson template fix
+    # causes creator-generated SKILL.md to emit quoted names; the previous
+    # unquoted-only regex silently refused them with "cannot parse skill name".
+    name_match = re.search(r'^name:\s*"?([\w\-]+)"?\s*$', skill_md, re.MULTILINE)
     if not name_match:
         return {"status": "error", "reason": "cannot parse skill name from SKILL.md"}
     name = name_match.group(1)

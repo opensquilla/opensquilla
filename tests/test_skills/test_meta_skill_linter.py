@@ -122,6 +122,24 @@ provenance:
     )
 
 
+def test_g1_rejects_nested_meta_skill_reference() -> None:
+    """N5 regression: G1.2 must reject steps that reference another kind=meta
+    bundle. The agent executor refuses nested meta-skills at runtime with
+    'cannot compose another meta-skill', but the old set-based catalog check
+    only verified existence — kind=meta bundles passed G1 and G2 silently,
+    producing misleading auto_enable_eligible=true proposals that crashed at
+    runtime."""
+    nested_meta = VALID_P1.replace(
+        "skill: pdf-toolkit", "skill: meta-pdf-intelligence"
+    )
+    out = _run_lint(nested_meta)
+    assert out["G1"]["passed"] is False
+    assert any(
+        "meta-pdf-intelligence" in d and ("nested" in d.lower() or "kind: meta" in d)
+        for d in out["G1"]["diagnostics"]
+    ), f"Expected nested meta-skill diagnostic; got: {out['G1']['diagnostics']}"
+
+
 @pytest.mark.parametrize("bundle", EXISTING_META_BUNDLES)
 def test_linter_passes_existing_meta_bundle(bundle: str) -> None:
     """Regression: linter must accept every existing kind=meta bundle.

@@ -54,9 +54,10 @@ def test_meta_skill_assemble_p1() -> None:
         "meta_priority": 50,
     }
     md = meta_skill_assemble("p1_sequential", json.dumps(slots))
-    assert "name: test-t1" in md
-    assert "skill: summarize" in md
-    assert "skill: memory" in md
+    # N2: tojson wraps values in JSON double-quotes (valid YAML scalars)
+    assert 'name: "test-t1"' in md
+    assert 'skill: "summarize"' in md
+    assert 'skill: "memory"' in md
     assert "depends_on: [a]" in md
 
 
@@ -151,3 +152,59 @@ def test_meta_skill_fill_slots_retries_once_on_validation_error(monkeypatch) -> 
     assert len(prompts) == 2
     # Retry prompt must include the ValidationError feedback
     assert "failed schema validation" in prompts[1] or "errors" in prompts[1]
+
+
+def test_creator_tools_hidden_from_owner_default() -> None:
+    """N1: meta_skill_{assemble,fill_slots} must NOT appear in the default
+    owner tool catalog. They are internal orchestrator-only tools."""
+    import importlib
+
+    import opensquilla.skills.creator  # trigger @tool registration
+    importlib.reload(opensquilla.skills.creator)
+
+    from opensquilla.tools.registry import ToolContext, get_default_registry
+
+    reg = get_default_registry()
+    # Use the default owner context (is_owner=True, no allowed_tools override).
+    # _iter_visible_tools with this context filters out exposed_by_default=False.
+    ctx = ToolContext(is_owner=True)
+    visible_names = {rt.spec.name for rt in reg._iter_visible_tools(ctx)}
+
+    for tool_name in ("meta_skill_assemble", "meta_skill_fill_slots"):
+        assert tool_name not in visible_names, (
+            f"{tool_name} is visible in the default owner tool catalog; "
+            "N1 fix requires exposed_by_default=False so C1 lazy import "
+            "does not leak it into normal owner turns."
+        )
+
+    # But the tools must still be registered (reachable by name for tool_invoker).
+    registered_names = set(reg.list_names())
+    assert "meta_skill_assemble" in registered_names
+    assert "meta_skill_fill_slots" in registered_names
+
+
+def test_slot_filler_rejects_yaml_unsafe_strings() -> None:
+    """N2: Pydantic validators reject control chars / quotes that would
+    break YAML rendering."""
+    import pytest as _pytest
+
+    from opensquilla.skills.creator.patterns.schemas import SequentialStep
+
+    # Acceptable
+    SequentialStep(id="ok", skill="summarize", task="simple task")
+
+    # Unacceptable: double quote in task
+    with _pytest.raises(ValueError):
+        SequentialStep(id="ok", skill="summarize", task='save "summary"')
+
+    # Unacceptable: newline in task
+    with _pytest.raises(ValueError):
+        SequentialStep(id="ok", skill="summarize", task="step 1\nstep 2")
+
+    # Unacceptable: backslash in task
+    with _pytest.raises(ValueError):
+        SequentialStep(id="ok", skill="summarize", task="path\\to\\file")
+
+    # Unacceptable: double quote in skill name
+    with _pytest.raises(ValueError):
+        SequentialStep(id="ok", skill='sum"marize', task="simple task")

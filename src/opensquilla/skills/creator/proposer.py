@@ -283,6 +283,7 @@ _PATTERN_ENUM = sorted(PATTERN_SLOT_SCHEMA.keys())
         "slots_json": {"type": "string"},
     },
     required=["pattern_id", "slots_json"],
+    exposed_by_default=False,  # internal orchestrator dispatch only
 )
 async def meta_skill_assemble_tool(pattern_id: str, slots_json: str) -> str:
     return meta_skill_assemble(pattern_id, slots_json)
@@ -300,6 +301,7 @@ async def meta_skill_assemble_tool(pattern_id: str, slots_json: str) -> str:
         "user_intent": {"type": "string"},
     },
     required=["pattern_id", "history_summary", "user_intent"],
+    exposed_by_default=False,  # internal orchestrator dispatch only
 )
 async def meta_skill_fill_slots_tool(
     pattern_id: str, history_summary: str, user_intent: str,

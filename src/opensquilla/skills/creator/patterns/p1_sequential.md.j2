@@ -1,12 +1,12 @@
 ---
-name: {{ name }}
-description: "{{ description }}"
+name: {{ name | tojson }}
+description: {{ description | tojson }}
 kind: meta
 meta_priority: {{ meta_priority | default(50) }}
 always: false
 triggers:
 {%- for t in triggers %}
-  - "{{ t }}"
+  - {{ t | tojson }}
 {%- endfor %}
 provenance:
   origin: opensquilla-user
@@ -15,20 +15,20 @@ composition:
   steps:
 {%- for step in steps %}
     - id: {{ step.id }}
-      skill: {{ step.skill }}
+      skill: {{ step.skill | tojson }}
 {%- if not loop.first %}
       depends_on: [{{ steps[loop.index0 - 1].id }}]
 {%- endif %}
       with:
 {%- if step.with_keys %}
 {%- for k, v in step.with_keys.items() %}
-        {{ k }}: "{{ v }}"
+        {{ k }}: {{ v | tojson }}
 {%- endfor %}
 {%- else %}
 {%- if loop.first %}
         task: "{{ step.task }}: {{ '{{' }} inputs.user_message | xml_escape | truncate(512) {{ '}}' }}"
 {%- else %}
-        task: "{{ step.task }}"
+        task: {{ step.task | tojson }}
         upstream: "{{ '{{' }} outputs.{{ steps[loop.index0 - 1].id }} | truncate(2000) {{ '}}' }}"
 {%- endif %}
 {%- endif %}

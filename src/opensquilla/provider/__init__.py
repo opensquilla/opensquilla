@@ -8,6 +8,7 @@ from .failures import (
     classify_provider_error,
     decide_recovery_action,
 )
+from .litellm import LiteLLMProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .protocol import (
@@ -75,6 +76,7 @@ __all__ = [
     "decide_recovery_action",
     # Providers
     "AnthropicProvider",
+    "LiteLLMProvider",
     "OpenAIProvider",
     "OllamaProvider",
     # Registry

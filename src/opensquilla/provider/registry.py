@@ -257,6 +257,12 @@ for _provider_spec in [
         "BYTEPLUS_API_KEY",
         "https://ark.ap-southeast.bytepluses.com/api/v3",
     ),
+    _spec(
+        "litellm",
+        "openai_compat",
+        "litellm",
+        support_level="compat_configured",
+    ),
     _spec("vllm", "openai_compat", "openai"),
     _spec("lm_studio", "openai_compat", "lm_studio", default_base_url="http://localhost:1234/v1"),
     _spec("ovms", "openai_compat", "ovms", default_base_url="http://localhost:8000/v3"),

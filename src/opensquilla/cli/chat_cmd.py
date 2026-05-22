@@ -1639,8 +1639,9 @@ async def _handle_tool_compress_command(
     arg = parts[1].lower() if len(parts) > 1 else "status"
     aliases = {"on": "truncate", "trim": "truncate", "summary": "summarize"}
     mode_arg = aliases.get(arg, arg)
-    if len(parts) > 2 or mode_arg not in {"off", "truncate", "summarize", "status"}:
-        console.print("[red]Usage: /tool-compress [off|truncate|summarize|status][/red]")
+    modes = {"off", "truncate", "summarize", "tokenjuice", "status"}
+    if len(parts) > 2 or mode_arg not in modes:
+        console.print("[red]Usage: /tool-compress [off|truncate|summarize|tokenjuice|status][/red]")
         return
 
     enabled_path = "agent_token_saving.tool_result_compression_enabled"
@@ -1654,7 +1655,7 @@ async def _handle_tool_compress_command(
             mode = await client.get_config(mode_path)
             enabled = bool(await client.get_config(enabled_path))
             model = await client.get_config(model_path)
-            mode = mode if mode in {"off", "truncate", "summarize"} else None
+            mode = mode if mode in {"off", "truncate", "summarize", "tokenjuice"} else None
             resolved_mode = str(mode or ("truncate" if enabled else "off"))
         else:
             resolved_mode = mode_arg
@@ -1674,7 +1675,7 @@ async def _handle_tool_compress_command(
             mode = getattr(cfg, "tool_result_compression_mode", None)
             enabled = bool(getattr(cfg, "tool_result_compression_enabled", True))
             model = getattr(cfg, "tool_result_compression_summary_model", None)
-            if mode in {"off", "truncate", "summarize"}:
+            if mode in {"off", "truncate", "summarize", "tokenjuice"}:
                 resolved_mode = str(mode)
             else:
                 resolved_mode = "truncate" if enabled else "off"

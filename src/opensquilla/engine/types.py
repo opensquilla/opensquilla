@@ -284,7 +284,9 @@ class AgentConfig:
     model_capabilities: Any | None = None  # ModelCapabilities from provider.types
     # Agent token saving: compress tool results before feeding them back to the LLM.
     tool_result_compression_enabled: bool = True
-    tool_result_compression_mode: Literal["off", "truncate", "summarize"] | None = None
+    tool_result_compression_mode: (
+        Literal["off", "truncate", "summarize", "tokenjuice"] | None
+    ) = None
     tool_result_compression_max_share: float = 0.25
     tool_result_compression_summary_model: str | None = None
     tool_result_compression_summary_max_tokens: int = 1024

@@ -946,7 +946,7 @@ const ChatView = (() => {
                   <div class="chat-toolbar-row">
                     <span class="chat-toolbar-row-label">Tool Compress</span>
                     <button class="chat-pill" id="pill-tool-compress"
-                            title="Cycle tool result handling: off, truncate, or summarize with the configured cheap model">Tool Compress</button>
+                            title="Cycle tool result handling: off, truncate, summarize, or tokenjuice">Tool Compress</button>
                   </div>
                   <div class="chat-toolbar-row">
                     <span class="chat-toolbar-row-label">Approvals</span>
@@ -1120,18 +1120,19 @@ const ChatView = (() => {
 
   function _resolveToolCompressMode(cfg) {
     const mode = cfg?.tool_result_compression_mode;
-    if (mode === 'off' || mode === 'truncate' || mode === 'summarize') return mode;
+    if (mode === 'off' || mode === 'truncate' || mode === 'summarize' || mode === 'tokenjuice') return mode;
     return (cfg?.tool_result_compression_enabled ?? true) ? 'truncate' : 'off';
   }
 
   function _nextToolCompressMode(mode) {
     if (mode === 'off') return 'truncate';
     if (mode === 'truncate') return 'summarize';
+    if (mode === 'summarize') return 'tokenjuice';
     return 'off';
   }
 
   function _setToolCompressButton(btn, mode) {
-    const labels = { off: 'OFF', truncate: 'TRIM', summarize: 'SUMMARY' };
+    const labels = { off: 'OFF', truncate: 'TRIM', summarize: 'SUMMARY', tokenjuice: 'TOKENJUICE' };
     btn.textContent = labels[mode] || 'TRIM';
     btn.classList.toggle('is-active', mode !== 'off');
     btn.classList.toggle('chat-pill--summary', mode === 'summarize');
@@ -1569,7 +1570,7 @@ const ChatView = (() => {
   // != truncate, OR router off.
   let _toolbarState = {
     bypass: false,        // true when elevated mode is on
-    toolCompress: 'truncate', // 'off' | 'truncate' | 'summarize'
+    toolCompress: 'truncate', // 'off' | 'truncate' | 'summarize' | 'tokenjuice'
     router: true,         // false when router toggle is off
   };
 

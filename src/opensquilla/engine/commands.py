@@ -304,11 +304,12 @@ _COMMANDS: tuple[CommandDef, ...] = (
     ),
     CommandDef(
         name="/tool-compress",
-        usage="/tool-compress [off|truncate|summarize|status]",
+        usage="/tool-compress [off|truncate|summarize|tokenjuice|status]",
         description="Show or set tool result compression mode.",
         execution={_T: _local("tool-compress.status"), _S: _local("tool-compress.status")},
         argument_choices=(
             ArgumentChoice("off", "Disable tool result compression."),
+            ArgumentChoice("tokenjuice", "Reduce structured tool results with tokenjuice rules."),
             ArgumentChoice("truncate", "Truncate long tool results."),
             ArgumentChoice("status", "Show current compression mode."),
             ArgumentChoice("summarize", "Summarize long tool results."),

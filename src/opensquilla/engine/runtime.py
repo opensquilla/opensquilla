@@ -2445,7 +2445,7 @@ class TurnRunner:
         if agent_token_cfg is None:
             return "truncate"
         mode = getattr(agent_token_cfg, "tool_result_compression_mode", None)
-        if mode in {"off", "truncate", "summarize"}:
+        if mode in {"off", "truncate", "summarize", "tokenjuice"}:
             return str(mode)
         return (
             "truncate"

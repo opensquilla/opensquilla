@@ -368,6 +368,23 @@ async def test_case07_summarize_without_summary_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tokenjuice_mode_does_not_resolve_summary_provider() -> None:
+    aux_builder = _RecordingAgentConfigBuilder(
+        aux=_default_aux(mode="tokenjuice", summary_model="cheap/model")
+    )
+    summarizer = _RecordingSummarizerProvider(
+        summarizer=SimpleNamespace(name="summary_wrapped")
+    )
+    factory = _RecordingAgentFactory()
+    stage = _make_stage(aux=aux_builder, summarizer=summarizer, factory=factory)
+
+    await stage.run(_make_input())
+
+    assert summarizer.calls == 0
+    assert factory.last_kwargs["tool_result_summarizer_provider"] is None
+
+
+@pytest.mark.asyncio
 async def test_case08_sync_manager_warm() -> None:
     sync_manager = SimpleNamespace(label="memsync")
     snap = _RecordingMemorySnapshot(

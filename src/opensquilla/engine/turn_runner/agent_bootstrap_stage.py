@@ -464,13 +464,15 @@ class AgentBootstrapStage:
             metadata=inp.turn.metadata,
         )
 
-        # 5. Resolve tool-result summarizer provider (may wrap fallback)
-        summarizer = self._summarizer_provider.resolve(
-            mode=aux.tool_result_compression_mode,
-            cloned_selector=inp.cloned_selector,
-            current_provider=inp.provider,
-            summary_model=aux.tool_result_compression_summary_model,
-        )
+        # 5. Resolve tool-result summarizer provider only for summarize mode.
+        summarizer = None
+        if aux.tool_result_compression_mode == "summarize":
+            summarizer = self._summarizer_provider.resolve(
+                mode=aux.tool_result_compression_mode,
+                cloned_selector=inp.cloned_selector,
+                current_provider=inp.provider,
+                summary_model=aux.tool_result_compression_summary_model,
+            )
 
         # 6. Warm session and capture memory snapshot (async, dict-mutating)
         memory = await self._memory_snapshot.warm_and_capture(

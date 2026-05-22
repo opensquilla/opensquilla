@@ -35,6 +35,7 @@ from opensquilla.engine.session_sanitize import (
     session_payload_chars,
 )
 from opensquilla.engine.thinking import drop_reasoning
+from opensquilla.engine.tokenjuice_adapter import reduce_tool_result_with_tokenjuice
 from opensquilla.engine.tool_result_store import (
     ToolResultRecord,
     ToolResultStore,
@@ -576,6 +577,7 @@ class Agent:
         self._session_flush_service = session_flush_service
         self._last_compaction_refusal_reason: str | None = None
         self._tool_failure_loop_counts: dict[tuple[str, str], int] = {}
+        self._provider_tool_result_overrides: dict[str, ContentBlockToolResult] = {}
 
     def _context_overflow_error(self) -> ErrorEvent:
         reason = self._last_compaction_refusal_reason
@@ -826,6 +828,64 @@ class Agent:
             return False
 
     @staticmethod
+    def _tool_call_string_arg(
+        tool_call: ToolCall | None,
+        *names: str,
+    ) -> str | None:
+        if tool_call is None:
+            return None
+        for name in names:
+            value = tool_call.arguments.get(name)
+            if isinstance(value, str) and value.strip():
+                return value
+        return None
+
+    def _tokenjuice_max_inline_chars(self, fallback: int | None = None) -> int:
+        if fallback is not None and fallback > 0:
+            return max(1, int(fallback))
+        budget_chars = int(
+            self.config.context_window_tokens
+            * self.config.tool_result_compression_max_share
+            * 4
+        )
+        return max(
+            1,
+            min(
+                budget_chars,
+                self.config.tool_result_compression_summary_input_max_chars,
+            ),
+        )
+
+    def _tokenjuice_tool_reduction(
+        self,
+        *,
+        tool_name: str,
+        content: str,
+        is_error: bool,
+        tool_use_id: str,
+        arguments: dict[str, Any] | None = None,
+        command: str | None = None,
+        cwd: str | None = None,
+        max_inline_chars: int | None = None,
+    ) -> str | None:
+        reduction = reduce_tool_result_with_tokenjuice(
+            tool_name=tool_name,
+            content=content,
+            is_error=is_error,
+            tool_use_id=tool_use_id,
+            arguments=arguments,
+            command=command,
+            cwd=cwd,
+            max_inline_chars=self._tokenjuice_max_inline_chars(max_inline_chars),
+        )
+        if reduction is None:
+            return None
+        self.config.metadata["tool_compression_backend"] = "tokenjuice"
+        if reduction.reducer:
+            self.config.metadata["tool_compression_tokenjuice_reducer"] = reduction.reducer
+        return reduction.inline_text
+
+    @staticmethod
     def _count_image_blocks(messages: list[Message]) -> int:
         count = 0
         for message in messages:
@@ -836,7 +896,7 @@ class Agent:
 
     def _tool_result_compression_mode(self) -> str:
         mode = self.config.tool_result_compression_mode
-        if mode in {"off", "truncate", "summarize"}:
+        if mode in {"off", "truncate", "summarize", "tokenjuice"}:
             return mode
         return "truncate" if self.config.tool_result_compression_enabled else "off"
 
@@ -1450,7 +1510,12 @@ class Agent:
             max_share=self.config.tool_result_compression_max_share,
         )
 
-    async def _compress_tool_result(self, result: ToolResult) -> ToolResult:
+    async def _compress_tool_result(
+        self,
+        result: ToolResult,
+        *,
+        tool_call: ToolCall | None = None,
+    ) -> ToolResult:
         guarded_content, guarded = _omit_large_json_tool_fields(result.content)
         if guarded:
             result = ToolResult(
@@ -1477,7 +1542,19 @@ class Agent:
         compressed_content: str | None = None
         applied_mode = mode
         budget_class = resolve_budget_class(result.tool_name)
-        if budget_class is ToolResultBudgetClass.CONTROL:
+        if mode == "tokenjuice":
+            compressed_content = self._tokenjuice_tool_reduction(
+                tool_name=result.tool_name,
+                content=result.content,
+                is_error=result.is_error,
+                tool_use_id=result.tool_use_id,
+                arguments=tool_call.arguments if tool_call is not None else None,
+                command=self._tool_call_string_arg(tool_call, "command"),
+                cwd=self._tool_call_string_arg(tool_call, "workdir", "cwd"),
+            )
+            if compressed_content is None:
+                return result
+        elif budget_class is ToolResultBudgetClass.CONTROL:
             compressed_content = compact_tool_result_content(
                 tool_name=result.tool_name,
                 content=result.content,
@@ -1609,6 +1686,8 @@ class Agent:
         semantic_message: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Async generator that drives the state machine."""
+        self._provider_tool_result_overrides = {}
+
         # ------ IDLE → THINKING ------
         yield self._transition(AgentState.THINKING)
 
@@ -3165,6 +3244,7 @@ class Agent:
                 # Emit results in original tool_calls order.
                 for tc in tool_calls:
                     result = results_by_id[tc.tool_use_id]
+                    result_tool_call = tc
                     for artifact in result.artifacts:
                         yield ArtifactEvent(**_artifact_event_kwargs(artifact))
                     yield ToolResultEvent(
@@ -3194,6 +3274,7 @@ class Agent:
                             origin_trace=tc.origin_trace,
                         )
                         result = await _run_one(retry_call)
+                        result_tool_call = retry_call
                         for artifact in result.artifacts:
                             yield ArtifactEvent(**_artifact_event_kwargs(artifact))
                         yield ToolResultEvent(
@@ -3205,6 +3286,19 @@ class Agent:
                             execution_status=result.execution_status,
                         )
                     executed_results.append(result)
+                    compressed_result = await self._compress_tool_result(
+                        result,
+                        tool_call=result_tool_call,
+                    )
+                    if compressed_result.content != result.content:
+                        self._provider_tool_result_overrides[result.tool_use_id] = (
+                            ContentBlockToolResult(
+                                tool_use_id=compressed_result.tool_use_id,
+                                content=compressed_result.content,
+                                is_error=compressed_result.is_error,
+                                execution_status=compressed_result.execution_status,
+                            )
+                        )
                     while self._pending_warnings:
                         yield self._pending_warnings.pop(0)
                     if self._is_turn_yield_result(result):
@@ -3447,6 +3541,7 @@ class Agent:
             runtime_context_message,
             runtime_context_insert_index,
         )
+        source_messages = self._apply_provider_tool_result_overrides(source_messages)
         source_messages = self._strip_provider_context_marker_replay_for_provider(
             source_messages
         )
@@ -3457,6 +3552,39 @@ class Agent:
             source_messages
         )
         return sanitize_session_messages(source_messages)
+
+    def _apply_provider_tool_result_overrides(self, messages: list[Message]) -> list[Message]:
+        if not self._provider_tool_result_overrides:
+            return messages
+
+        projected: list[Message] = []
+        changed = False
+        for message in messages:
+            if not isinstance(message.content, list):
+                projected.append(message)
+                continue
+            blocks: list[Any] = []
+            message_changed = False
+            for block in message.content:
+                if isinstance(block, ContentBlockToolResult):
+                    override = self._provider_tool_result_overrides.get(block.tool_use_id)
+                    if override is not None:
+                        blocks.append(override)
+                        message_changed = True
+                        continue
+                blocks.append(block)
+            if message_changed:
+                projected.append(
+                    Message(
+                        role=message.role,
+                        content=blocks,
+                        reasoning_content=message.reasoning_content,
+                    )
+                )
+                changed = True
+            else:
+                projected.append(message)
+        return projected if changed else messages
 
     @staticmethod
     def _provider_request_is_smaller(before: list[Message], after: list[Message]) -> bool:

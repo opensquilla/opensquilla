@@ -2,7 +2,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 /dist/
-build/
+/build/
 .venv/
 .env
 .env.test
@@ -47,7 +47,7 @@ GEMINI.md
 !/assets/*.png
 !/src/opensquilla/gateway/static/img/*.png
 site/
-plugins/
+/plugins/
 crontab-*
 ~/
 /docs/

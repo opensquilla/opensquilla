@@ -99,6 +99,12 @@ def test_tool_compress_argument_completions_show_modes_not_commands() -> None:
     assert results == ["status", "summarize"]
 
 
+def test_tool_compress_argument_completions_include_tokenjuice() -> None:
+    results = _completions_for("/tool-compress t")
+
+    assert results == ["tokenjuice", "truncate"]
+
+
 def test_commands_without_argument_completions_do_not_fall_back_to_slash_words() -> None:
     results = _completions_for("/help ")
 

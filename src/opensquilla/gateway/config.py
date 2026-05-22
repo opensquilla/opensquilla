@@ -935,7 +935,9 @@ class AgentTokenSavingConfig(BaseSettings):
     # Keep enabled by default to preserve the existing agent behavior: large
     # tool outputs are head+tail truncated before they re-enter LLM context.
     tool_result_compression_enabled: bool = True
-    tool_result_compression_mode: Literal["off", "truncate", "summarize"] | None = None
+    tool_result_compression_mode: (
+        Literal["off", "truncate", "summarize", "tokenjuice"] | None
+    ) = None
     tool_result_compression_max_share: float = Field(default=0.25, gt=0.0, le=1.0)
     tool_result_compression_summary_model: str | None = None
     tool_result_compression_summary_max_tokens: int = Field(default=1024, ge=64)
@@ -946,7 +948,9 @@ class AgentTokenSavingConfig(BaseSettings):
     tool_result_store_retention_seconds: int = Field(default=7 * 24 * 60 * 60, ge=0)
 
     @property
-    def effective_tool_result_compression_mode(self) -> Literal["off", "truncate", "summarize"]:
+    def effective_tool_result_compression_mode(
+        self,
+    ) -> Literal["off", "truncate", "summarize", "tokenjuice"]:
         if self.tool_result_compression_mode is not None:
             return self.tool_result_compression_mode
         return "truncate" if self.tool_result_compression_enabled else "off"

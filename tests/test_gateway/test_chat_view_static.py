@@ -13,6 +13,15 @@ def test_chat_history_passes_subagent_completion_provenance_to_renderer() -> Non
     assert "provenanceSourceSessionKey: msg.provenance_source_session_key || ''" in source
 
 
+def test_chat_toolbar_supports_tokenjuice_tool_compression_mode() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "mode === 'tokenjuice'" in source
+    assert "if (mode === 'summarize') return 'tokenjuice';" in source
+    assert "tokenjuice: 'TOKENJUICE'" in source
+    assert "off, truncate, summarize, or tokenjuice" in source
+
+
 def test_chat_tool_display_map_does_not_reference_removed_wrapper_tools() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("const _TOOL_EMOJI = {")

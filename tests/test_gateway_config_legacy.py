@@ -187,6 +187,7 @@ class TestMetaSkillConfig:
         """Copying opensquilla.toml.example to ~/.opensquilla/config.toml must work."""
         import tomllib
         from pathlib import Path
+
         from opensquilla.gateway.config import GatewayConfig
 
         example_path = Path(__file__).resolve().parents[1] / "opensquilla.toml.example"

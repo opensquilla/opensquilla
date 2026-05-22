@@ -23,6 +23,10 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("cli", "mcp_server"),
     ("cli", "observability"),
     ("cli", "onboarding"),
+    # cli -> persistence: opensquilla skills meta runs (list/show/steps/
+    # failures/replay) reads + replays rows via persistence.meta_run_reader
+    # and persistence.meta_run_writer. Meta-skill persistence (G4) CLI.
+    ("cli", "persistence"),
     ("cli", "sandbox"),
     ("cli", "session"),
     ("cli", "skills"),
@@ -33,6 +37,10 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("engine", "identity"),
     ("engine", "memory"),
     ("engine", "observability"),
+    # engine -> persistence: TurnRunner + Agent pass an optional
+    # MetaRunWriter into MetaOrchestrator so hard-takeover and soft-path
+    # meta-skill runs are recorded. Wired in by feature/meta-skill-mvp G4.
+    ("engine", "persistence"),
     ("engine", "provider"),
     ("engine", "safety"),
     ("engine", "session"),
@@ -69,6 +77,11 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("onboarding", "gateway"),
     ("onboarding", "provider"),
     ("onboarding", "search"),
+    # persistence -> skills: meta_run_writer imports MetaPlan / MetaResult /
+    # MetaStep from skills.meta.types to capture the plan snapshot. This is
+    # an unavoidable type dependency for G4 persistence; it puts the
+    # `persistence` package into the existing skills <-> engine cycle.
+    ("persistence", "skills"),
     ("provider", "engine"),
     ("sandbox", "gateway"),
     ("sandbox", "safety"),
@@ -83,6 +96,10 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("session", "compat"),
     ("session", "engine"),
     ("session", "gateway"),
+    # session -> persistence: session deletion purges meta_skill_runs +
+    # meta_skill_run_steps rows for the session via MetaRunWriter.
+    # Wired in by feature/meta-skill-mvp Task 6b (G4 cleanup).
+    ("session", "persistence"),
     ("session", "provider"),
     ("session", "tools"),
     # skills → engine / provider: deliberate inversion of the microkernel
@@ -94,6 +111,10 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("skills", "memory"),
     ("skills", "provider"),
     ("skills", "safety"),
+    # skills -> persistence: MetaOrchestrator threads MetaRunWriter through
+    # the scheduler so begin_run / start_step / finish_step / finish_run
+    # callbacks land in SQLite. G4 meta-skill persistence.
+    ("skills", "persistence"),
     # skills → tools: creator library (skills.creator.proposer) registers
     # tool descriptors via tools.registry. Same controlled-exception category.
     ("skills", "tools"),
@@ -121,6 +142,11 @@ APPROVED_CYCLIC_PACKAGES: frozenset[str] = frozenset({
     "mcp",
     "memory",
     "onboarding",
+    # persistence joined the cycle through ("persistence", "skills") +
+    # ("skills", "persistence"). G4 meta-skill persistence. Treat as a
+    # controlled exception — narrow it back to leaf as soon as MetaPlan /
+    # MetaResult / MetaStep can be lifted into a shared types module.
+    "persistence",
     "provider",
     "sandbox",
     "scheduler",

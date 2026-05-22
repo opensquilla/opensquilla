@@ -5,10 +5,26 @@ from __future__ import annotations
 from typing import Any, NoReturn
 
 from opensquilla.gateway.config import GatewayConfig
-from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
+from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, RpcUnavailableError, get_dispatcher
 from opensquilla.session.keys import normalize_agent_id
 
 _d = get_dispatcher()
+
+_AGENT_WAIT_SUPPORTED_PARAMS = [
+    "agentId",
+    "agent_id",
+    "sessionKey",
+    "session_key",
+    "timeoutMs",
+    "timeout_ms",
+]
+_AGENT_WAIT_AVAILABLE_METHODS = [
+    "agents.list",
+    "agents.files.list",
+    "sessions.list",
+    "sessions.get",
+    "tools.catalog",
+]
 
 
 def _raise_unavailable(method: str) -> NoReturn:
@@ -42,9 +58,40 @@ async def _handle_agent(params: dict | None, ctx: RpcContext) -> None:
 
 @_d.method("agent.wait", scope="operator.write")
 async def _handle_agent_wait(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
-    if not isinstance(params, dict) or "message" not in params:
-        raise ValueError("params.message is required")
-    _raise_unavailable("agent.wait")
+    if not isinstance(params, dict):
+        raise ValueError("params must be an object")
+
+    agent_id = params.get("agentId", params.get("agent_id"))
+    session_key = params.get("sessionKey", params.get("session_key"))
+    timeout_ms = params.get("timeoutMs", params.get("timeout_ms"))
+    if agent_id is None and session_key is None:
+        raise ValueError("params.agentId or params.sessionKey is required")
+
+    accepted_params: dict[str, Any] = {}
+    if agent_id is not None:
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            raise ValueError("params.agentId must be a non-empty string")
+        accepted_params["agentId"] = normalize_agent_id(agent_id)
+    if session_key is not None:
+        if not isinstance(session_key, str) or not session_key.strip():
+            raise ValueError("params.sessionKey must be a non-empty string")
+        accepted_params["sessionKey"] = session_key.strip()
+    if timeout_ms is not None:
+        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 0:
+            raise ValueError("params.timeoutMs must be a non-negative integer")
+        accepted_params["timeoutMs"] = timeout_ms
+
+    raise RpcHandlerError(
+        "agent.unavailable",
+        "agent.wait parameters are accepted, but no agent runtime bridge is available.",
+        details={
+            "reason": "runtime_bridge_unavailable",
+            "acceptedParams": accepted_params,
+            "supportedParams": _AGENT_WAIT_SUPPORTED_PARAMS,
+            "availableRpcMethods": _AGENT_WAIT_AVAILABLE_METHODS,
+        },
+        retryable=False,
+    )
 
 
 @_d.method("system-presence", scope="operator.read")

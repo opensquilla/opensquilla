@@ -4,7 +4,6 @@ import asyncio
 import json
 
 import pytest
-import structlog.testing
 
 from opensquilla.engine.types import ToolCall
 from opensquilla.result_budget import (
@@ -14,6 +13,7 @@ from opensquilla.result_budget import (
     ToolRunBudgetPolicy,
     build_webresearch_tool_run_budget_policy,
 )
+from opensquilla.tools import dispatch as dispatch_module
 from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import (
@@ -964,7 +964,9 @@ async def test_dispatch_run_budget_allows_oversized_result_then_controls_retry()
 
 
 @pytest.mark.asyncio
-async def test_dispatch_logs_webresearch_run_diagnostics_without_default_call_caps() -> None:
+async def test_dispatch_logs_webresearch_run_diagnostics_without_default_call_caps(
+    monkeypatch,
+) -> None:
     registry = ToolRegistry()
 
     async def web_search(query: str, max_results: int | None = None) -> str:
@@ -984,19 +986,27 @@ async def test_dispatch_logs_webresearch_run_diagnostics_without_default_call_ca
         ToolContext(tool_run_budget_key="dispatch-test-search-diagnostics"),
     )
 
-    with structlog.testing.capture_logs() as logs:
-        result = await handler(
-            ToolCall(
-                tool_use_id="tc-search-diagnostics",
-                tool_name="web_search",
-                arguments={"query": "test", "max_results": 3},
-            )
+    log_events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        dispatch_module.log,
+        "debug",
+        lambda event, **payload: log_events.append((event, payload)),
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-search-diagnostics",
+            tool_name="web_search",
+            arguments={"query": "test", "max_results": 3},
         )
+    )
 
     assert result.is_error is False
     assert json.loads(result.content)["results"] == ["one", "two"]
     event = next(
-        row for row in logs if row.get("event") == "dispatch.webresearch_tool_run_diagnostics"
+        payload
+        for name, payload in log_events
+        if name == "dispatch.webresearch_tool_run_diagnostics"
     )
     assert event["tool"] == "web_search"
     assert event["tool_use_id"] == "tc-search-diagnostics"

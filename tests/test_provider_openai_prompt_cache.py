@@ -5,8 +5,8 @@ import json
 from typing import Any
 
 import httpx
-import structlog.testing
 
+from opensquilla.provider import openai as openai_module
 from opensquilla.provider.openai import OpenAIProvider
 from opensquilla.provider.types import ChatConfig, DoneEvent, Message
 
@@ -165,10 +165,20 @@ def test_openrouter_payload_cache_shape_logs_fixed_prefix_item_hashes(monkeypatc
         cache_mode="auto",
     )
 
-    with structlog.testing.capture_logs() as logs:
-        _collect_done(provider, cfg)
+    log_events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        openai_module.log,
+        "debug",
+        lambda event, **payload: log_events.append((event, payload)),
+    )
 
-    event = next(row for row in logs if row.get("event") == "openrouter.payload_cache_shape")
+    _collect_done(provider, cfg)
+
+    event = next(
+        payload
+        for name, payload in log_events
+        if name == "openrouter.payload_cache_shape"
+    )
     assert event["first_non_system_hash"]
     assert event["non_system_prefix_item_hashes"] == [event["first_non_system_hash"]]
 

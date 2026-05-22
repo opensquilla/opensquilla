@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, SupportsInt, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, Final, SupportsInt, TypeGuard, cast
 
 import structlog
 
@@ -78,6 +78,9 @@ from opensquilla.session.keys import (
     normalize_agent_id,
 )
 from opensquilla.tools.types import CallerKind, ToolContext
+
+if TYPE_CHECKING:
+    from opensquilla.persistence.meta_run_writer import MetaRunWriter
 
 # Stable user-facing envelope for LLM timeouts.
 _LLM_TIMEOUT_ENVELOPE: dict[str, Any] = {
@@ -1054,6 +1057,7 @@ class TurnRunner:
         session_flush_service: SessionFlushService | None = None,
         session_lock_provider: Callable[[str], asyncio.Lock] | None = None,
         diagnostics_state: Any | None = None,
+        meta_run_writer: MetaRunWriter | None = None,
     ) -> None:
         self._provider_selector = provider_selector
         self._tool_registry = tool_registry
@@ -1067,6 +1071,7 @@ class TurnRunner:
         self._turn_capture_services = turn_capture_services
         self._session_flush_service = session_flush_service
         self._diagnostics_state = diagnostics_state
+        self._meta_run_writer = meta_run_writer
         # Per-session lock provider.
         # Gateway path: task_runtime._get_session_lock_for_turn (wired in boot.py).
         # CLI/standalone path: _standalone_lock_provider from build_turn_runner_from_services.
@@ -1946,6 +1951,10 @@ class TurnRunner:
                     llm_chat=llm_chat,
                     tool_invoker=tool_invoker,
                     workspace_dir=_meta_workspace_dir,
+                    run_writer=self._meta_run_writer,
+                    triggered_by="hard_takeover",
+                    session_key=session_key,
+                    turn_id=turn_id,
                 )
 
                 # Stream each step as a tool-call card so the UI can show

@@ -1486,6 +1486,32 @@ def build_turn_runner_from_services(
     def _standalone_lock_provider(session_key: str) -> _asyncio.Lock:
         return _standalone_locks.setdefault(session_key, _asyncio.Lock())
 
+    # Meta-skill persistence (G4). Disabled config short-circuits to None so
+    # the orchestrator skips audit ledger writes entirely. Failures are
+    # swallowed at warning level — persistence is observability, never a
+    # boot blocker.
+    meta_run_writer: Any = None
+    try:
+        meta_cfg = getattr(resolved_config, "meta_skill", None)
+        persistence_cfg = getattr(meta_cfg, "persistence", None) if meta_cfg else None
+        if persistence_cfg is not None and getattr(persistence_cfg, "enabled", False):
+            storage = get_session_storage(svc.session_manager)
+            db_path = getattr(storage, "_db_path", None) if storage is not None else None
+            if db_path and db_path != ":memory:":
+                from opensquilla.persistence.meta_run_writer import open_meta_run_writer
+
+                meta_run_writer = open_meta_run_writer(db_path)
+                # W6: orphan cleanup with owner_pid discriminator.
+                meta_run_writer.mark_orphans_failed(
+                    age_ms=int(
+                        getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)
+                    )
+                    * 1000,
+                )
+    except Exception as exc:  # noqa: BLE001 - persistence is best-effort
+        log.warning("build_services.meta_run_writer_init_failed", error=str(exc))
+        meta_run_writer = None
+
     return TurnRunner(
         provider_selector=svc.provider_selector,
         tool_registry=svc.tool_registry,
@@ -1500,6 +1526,7 @@ def build_turn_runner_from_services(
         session_flush_service=getattr(svc, "flush_service", None),
         session_lock_provider=_standalone_lock_provider,
         diagnostics_state=diagnostics_state,
+        meta_run_writer=meta_run_writer,
     )
 
 

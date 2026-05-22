@@ -416,6 +416,7 @@ class Agent:
         # follow-up; default is None (permissive MVP fallback).
         self._tool_context: ToolContext | None = tool_context
         self._pending_warnings: list[WarningEvent] = []
+        self._meta_run_writer = (self.config.metadata or {}).get("meta_run_writer")
 
         self._state: AgentState = AgentState.IDLE
         self._history: list[Message] = []
@@ -2690,6 +2691,10 @@ class Agent:
                 llm_chat=llm_chat,
                 tool_invoker=tool_invoker,
                 workspace_dir=str(workspace_dir) if workspace_dir else None,
+                run_writer=self._meta_run_writer,
+                triggered_by="soft_meta_invoke",
+                session_key=getattr(self, "_session_key", None),
+                turn_id=getattr(self, "_turn_id", None),
             )
 
             # Prefer the live turn message captured at run_turn entry (canonical

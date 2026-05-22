@@ -6,6 +6,8 @@ meta_invoke-soft-activation plan. Task 1 covers registration only.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 
@@ -621,3 +623,122 @@ async def test_dispatch_intercepts_meta_invoke_and_terminates_turn(
     assert step_results, (
         "Expected at least one ToolResultEvent with tool_name='meta-step:<id>'."
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 5C: Soft path wires meta_run_writer + triggered_by="soft_meta_invoke"
+# into the MetaOrchestrator ctor when AgentConfig.metadata carries the writer.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_meta_invoke_passes_writer_with_soft_trigger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Soft path constructs MetaOrchestrator with triggered_by='soft_meta_invoke'
+    and forwards the writer from AgentConfig.metadata['meta_run_writer']."""
+    from opensquilla.engine.agent import Agent
+    from opensquilla.engine.types import AgentConfig
+    from opensquilla.persistence.meta_run_writer import open_meta_run_writer
+    from opensquilla.persistence.migrator import apply_pending
+    from opensquilla.skills.loader import SkillLoader
+    from opensquilla.skills.meta.types import MetaResult
+    from opensquilla.tool_boundary import ToolCall, ToolResult
+    from opensquilla.tools.builtin import meta_tools  # noqa: F401 — registers meta_invoke
+    from opensquilla.tools.registry import get_default_registry
+    from opensquilla.tools.types import ToolContext
+
+    # Apply migrations + open writer against tmp_path DB.
+    db = str(tmp_path / "t.db")
+    migrations_dir = Path(__file__).resolve().parents[1].parent / "migrations"
+    apply_pending(db, migrations_dir)
+    writer = open_meta_run_writer(db)
+
+    # Synthesize a tiny meta-skill so plan parsing succeeds.
+    bundled = tmp_path / "skills" / "bundled"
+    bundled.mkdir(parents=True)
+    skill_dir = bundled / "meta-tiny"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-tiny\n"
+        "kind: meta\n"
+        "description: t\n"
+        "triggers: [t]\n"
+        "composition:\n"
+        "  steps:\n"
+        "    - id: c\n"
+        "      kind: llm_classify\n"
+        "      output_choices: [A, B]\n"
+        "      with: {text: x}\n"
+        "---\n# meta-tiny\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    loader.load_all()
+
+    class _NullProvider:
+        provider_name = "null"
+
+        async def chat(self, *_a, **_kw):
+            raise AssertionError("provider.chat must not fire")
+
+        async def list_models(self):
+            return []
+
+    registry = get_default_registry()
+
+    config = AgentConfig(
+        model_id="stub",
+        max_iterations=1,
+        system_prompt="",
+        metadata={
+            "skill_loader": loader,
+            "bootstrap_workspace_dir": str(tmp_path),
+            "meta_run_writer": writer,
+        },
+    )
+    agent = Agent(
+        provider=_NullProvider(),  # type: ignore[arg-type]
+        config=config,
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=registry,
+        session_key="sess-soft-1",
+    )
+
+    captured: dict[str, object] = {}
+
+    class _StubOrch:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        async def iter_events(self, _match):
+            yield MetaResult(ok=True, final_text="captured")
+
+    monkeypatch.setattr(
+        "opensquilla.skills.meta.orchestrator.MetaOrchestrator",
+        _StubOrch,
+    )
+
+    tc = ToolCall(
+        tool_use_id="u1",
+        tool_name="meta_invoke",
+        arguments={"name": "meta-tiny"},
+    )
+    tool_ctx = ToolContext(workspace_dir=str(tmp_path), is_owner=True)
+
+    final: ToolResult | None = None
+    async for ev in agent._run_one_streaming(tc, tool_ctx):
+        if isinstance(ev, ToolResult):
+            final = ev
+
+    try:
+        assert final is not None
+        assert final.is_error is False
+        assert captured.get("triggered_by") == "soft_meta_invoke"
+        assert captured.get("run_writer") is writer
+        assert captured.get("session_key") == "sess-soft-1"
+    finally:
+        writer.close()

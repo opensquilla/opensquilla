@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import structlog
@@ -46,6 +46,13 @@ async def run_dag(
         [str, str], AsyncIterator[AgentEvent],
     ],
     max_parallelism: int | None = None,
+    on_step_begin: Callable[[str, str, dict[str, Any]], Awaitable[None]]
+    | None = None,
+    on_step_finish: Callable[
+        [str, str, str | None, str | None], Awaitable[None],
+    ]
+    | None = None,
+    on_step_failover: Callable[[str, str, str], Awaitable[None]] | None = None,
 ) -> AsyncIterator[AgentEvent | MetaResult]:
     """Run the plan and stream a flat sequence of events for the UI.
 
@@ -65,6 +72,23 @@ async def run_dag(
     ``_StepDone``). Guardrails fan-out for meta-skills with many
     independent steps so we don't fan token usage past provider rate
     limits.
+
+    The three optional lifecycle callbacks let external observers
+    (e.g. ``MetaRunWriter``) record per-step state without patching
+    scheduler internals:
+
+    * ``on_step_begin(step_id, effective_skill, rendered_inputs)`` fires
+      just before the step's ``dispatch_step_stream`` is invoked.
+    * ``on_step_finish(step_id, status, output_text, error)`` fires when
+      ``_StepDone`` is consumed; ``status`` is currently always ``"ok"``
+      (the failover path uses ``on_step_failover`` instead, and hard
+      failures with no substitute surface via the terminal
+      ``MetaResult(ok=False)``).
+    * ``on_step_failover(failed_step_id, substitute_step_id, error)``
+      fires alongside the existing ``_FailoverTriggered`` consumption.
+
+    Callback exceptions are swallowed and logged at warning level —
+    observer bugs must never break the scheduler.
     """
     outputs: dict[str, str] = {}
     try:
@@ -142,6 +166,18 @@ async def run_dag(
                     step.id, effective_skill,
                 ):
                     await event_queue.put((step.id, sv_ev))
+
+            if on_step_begin is not None:
+                try:
+                    await on_step_begin(
+                        step.id, effective_skill, dict(match.inputs),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "scheduler.on_step_begin_failed",
+                        step=step.id,
+                        error=str(exc),
+                    )
 
             final_text = ""
             async for ev in dispatch_step_stream(
@@ -285,6 +321,15 @@ async def run_dag(
                 task = running.pop(step_id, None)
                 if task is not None and not task.done():
                     await task
+                if on_step_finish is not None:
+                    try:
+                        await on_step_finish(step_id, "ok", item.text, None)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "scheduler.on_step_finish_failed",
+                            step=step_id,
+                            error=str(exc),
+                        )
                 # Failover alias propagation: if this completing step is
                 # a substitute spawned for a previously-failed step, mirror
                 # its output into the failed step's slot AND treat the
@@ -313,6 +358,20 @@ async def run_dag(
                 if failed_task is not None and not failed_task.done():
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await failed_task
+                if on_step_failover is not None:
+                    try:
+                        await on_step_failover(
+                            item.failed_step_id,
+                            item.substitute_step_id,
+                            item.error,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "scheduler.on_step_failover_failed",
+                            failed_step=item.failed_step_id,
+                            substitute=item.substitute_step_id,
+                            error=str(exc),
+                        )
                 failover_aliases[item.substitute_step_id] = item.failed_step_id
                 if item.substitute_step_id in pending_deps:
                     pending_deps[item.substitute_step_id] = set()

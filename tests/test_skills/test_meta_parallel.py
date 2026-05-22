@@ -376,3 +376,66 @@ async def test_max_parallelism_none_unbounded() -> None:
             final = ev
 
     assert final is not None and final.ok
+
+
+@pytest.mark.asyncio
+async def test_run_dag_emits_three_callback_types() -> None:
+    """C3: scheduler must externalise step begin / done / failover events."""
+    from opensquilla.skills.meta.scheduler import run_dag
+    from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaStep
+
+    plan = MetaPlan(
+        name="cb-test",
+        triggers=("x",),
+        priority=10,
+        steps=(
+            MetaStep(id="a", skill="alpha", kind="agent", on_failure="b"),
+            MetaStep(id="b", skill="beta", kind="agent"),
+        ),
+    )
+    match = MetaMatch(plan=plan, inputs={})
+    begin_calls: list[tuple[str, str]] = []
+    finish_calls: list[tuple[str, str]] = []
+    failover_calls: list[tuple[str, str, str]] = []
+
+    async def begin_cb(step_id: str, effective_skill: str, rendered_inputs: dict) -> None:
+        begin_calls.append((step_id, effective_skill))
+
+    async def finish_cb(
+        step_id: str,
+        status: str,
+        output_text: str | None,
+        error: str | None,
+    ) -> None:
+        finish_calls.append((step_id, status))
+
+    async def failover_cb(failed_step_id: str, substitute_step_id: str, error: str) -> None:
+        failover_calls.append((failed_step_id, substitute_step_id, error))
+
+    async def dispatch_stub(step, effective_skill, inputs, outputs):
+        if step.id == "a":
+            raise RuntimeError("alpha exploded")
+        from opensquilla.skills.meta.events import _StepDone
+        yield _StepDone(text="beta-output")
+
+    async def preface_stub(step_id: str, effective_skill: str):
+        if False:
+            yield None
+        return
+
+    async for _ in run_dag(
+        match,
+        dispatch_step_stream=dispatch_stub,
+        yield_skill_view_preface=preface_stub,
+        max_parallelism=4,
+        on_step_begin=begin_cb,
+        on_step_finish=finish_cb,
+        on_step_failover=failover_cb,
+    ):
+        pass
+
+    assert ("a", "alpha") in begin_calls
+    assert ("b", "beta") in begin_calls
+    assert ("b", "ok") in finish_calls
+    assert len(failover_calls) == 1
+    assert failover_calls[0][:2] == ("a", "b")

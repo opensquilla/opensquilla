@@ -397,8 +397,36 @@ def make_agent_runner_from_parent(
             tool_definitions=filtered_tool_definitions,
             tool_handler=tool_handler,
         )
+        from opensquilla.engine.agent import _flatten_content_blocks
+        from opensquilla.engine.types import TextDeltaEvent
+
+        saw_text_delta = False
         async for event in agent.run_turn(user_message):
+            if isinstance(event, TextDeltaEvent) and event.text:
+                saw_text_delta = True
             yield event
+
+        # Bug fix: when the LLM returns final answer as a non-streaming
+        # content block (e.g., deepseek-v3.1-terminus via OpenRouter
+        # for some final outputs), no TextDeltaEvent is yielded. The
+        # text persists in agent._history but the meta executor only
+        # listens for TextDeltaEvent → reports "no plain-text output"
+        # falsely. Synthesize a single TextDeltaEvent from the last
+        # assistant message's flattened content so the executor sees
+        # the same text the transcript stores.
+        if not saw_text_delta:
+            history = getattr(agent, "_history", None) or []
+            for msg in reversed(history):
+                if getattr(msg, "role", None) == "assistant":
+                    content = msg.content
+                    flat = (
+                        content
+                        if isinstance(content, str)
+                        else _flatten_content_blocks(content)
+                    ).strip()
+                    if flat:
+                        yield TextDeltaEvent(text=flat)
+                    break
 
     return _runner
 

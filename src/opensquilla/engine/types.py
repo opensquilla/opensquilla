@@ -223,9 +223,13 @@ _CHARS_PER_TOKEN = 4
 class AgentConfig:
     max_iterations: int = 100
     # Total turn wall-clock budget (seconds; 0 = disabled)
-    timeout: float = 300.0
+    # 30 min — see iteration_timeout note below; outer turn budget for
+    # meta-skill DAGs (paper-write / arxiv-deck run 5-7 min commonly).
+    timeout: float = 1800.0
     # Per-iteration timeout: one LLM call + its tool executions
-    iteration_timeout: float = 300.0
+    # 30 min — single iteration may be the whole meta DAG when the soft
+    # path treats meta_invoke as a single tool call.
+    iteration_timeout: float = 1800.0
     # HTTP-level timeout for a single LLM API request
     request_timeout: float = 120.0
     # Per-tool execution timeout

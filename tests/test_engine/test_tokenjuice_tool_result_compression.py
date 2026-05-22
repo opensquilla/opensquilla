@@ -11,7 +11,7 @@ from opensquilla.engine import Agent, AgentConfig, ToolCall, ToolResult
 from opensquilla.engine.runtime import TurnRunner
 from opensquilla.engine.types import ToolResultEvent
 from opensquilla.gateway.config import AgentTokenSavingConfig
-from opensquilla.plugins.tokenjuice import reduce_tool_result as plugin_reduce_tool_result
+from opensquilla.plugins.tokenjuice import reduce_tool_result as backend_reduce_tool_result
 from opensquilla.provider import DoneEvent, TextDeltaEvent, ToolDefinition, ToolInputSchema
 from opensquilla.provider import DoneEvent as ProviderDoneEvent
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEndEvent
@@ -354,7 +354,7 @@ async def test_summarize_mode_falls_back_to_summary_provider_when_tokenjuice_ret
     assert provider.chat_calls == 1
 
 
-def test_tokenjuice_adapter_calls_python_plugin(
+def test_tokenjuice_adapter_calls_python_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -371,7 +371,7 @@ def test_tokenjuice_adapter_calls_python_plugin(
 
     monkeypatch.setattr(
         tokenjuice_adapter_mod,
-        "_reduce_tool_result_plugin",
+        "_reduce_tool_result_backend",
         fake_reduce,
     )
 
@@ -397,12 +397,12 @@ def test_tokenjuice_adapter_calls_python_plugin(
     assert captured["max_inline_chars"] == 600
 
 
-def test_tokenjuice_adapter_returns_none_when_plugin_returns_none(
+def test_tokenjuice_adapter_returns_none_when_backend_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         tokenjuice_adapter_mod,
-        "_reduce_tool_result_plugin",
+        "_reduce_tool_result_backend",
         lambda **kwargs: None,
     )
 
@@ -431,7 +431,7 @@ def test_tokenjuice_adapter_ignores_non_shrinking_response(
 
     monkeypatch.setattr(
         tokenjuice_adapter_mod,
-        "_reduce_tool_result_plugin",
+        "_reduce_tool_result_backend",
         fake_reduce,
     )
 
@@ -446,7 +446,7 @@ def test_tokenjuice_adapter_ignores_non_shrinking_response(
     )
 
 
-def test_python_plugin_reduces_pytest_output() -> None:
+def test_python_backend_reduces_pytest_output() -> None:
     output = "\n".join(
         [
             "platform darwin -- Python 3.13",
@@ -460,7 +460,7 @@ def test_python_plugin_reduces_pytest_output() -> None:
         ]
     )
 
-    result = plugin_reduce_tool_result(
+    result = backend_reduce_tool_result(
         tool_name="exec_command",
         tool_use_id="tool-1",
         command="pytest -q",
@@ -525,7 +525,7 @@ async def test_run_turn_feeds_tokenjuice_reduced_tool_result_to_next_provider_ca
     assert raw_event.result == output
 
 
-def test_python_plugin_reduces_docker_build_output() -> None:
+def test_python_backend_reduces_docker_build_output() -> None:
     output = "\n".join(
         [
             "#1 [internal] load build definition from Dockerfile",
@@ -538,7 +538,7 @@ def test_python_plugin_reduces_docker_build_output() -> None:
         ]
     )
 
-    result = plugin_reduce_tool_result(
+    result = backend_reduce_tool_result(
         tool_name="exec_command",
         tool_use_id="tool-1",
         command="docker build .",
@@ -553,10 +553,10 @@ def test_python_plugin_reduces_docker_build_output() -> None:
     assert "sha256:1234" not in result.inline_text
 
 
-def test_python_plugin_generic_fallback_head_tail() -> None:
+def test_python_backend_generic_fallback_head_tail() -> None:
     output = "\n".join(f"line {index}" for index in range(60))
 
-    result = plugin_reduce_tool_result(
+    result = backend_reduce_tool_result(
         tool_name="exec_command",
         tool_use_id="tool-1",
         command="custom-tool --verbose",

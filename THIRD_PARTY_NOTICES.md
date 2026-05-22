@@ -10,6 +10,8 @@ It covers:
   agent runtime to invoke them and is documented here for transparency.
 - The local SquillaRouter V4 Phase 3 model bundle under
   `src/opensquilla/squilla_router/models/v4.2_phase3_inference/`.
+- The built-in tokenjuice tool-result compression backend and bundled
+  reduction rules under `src/opensquilla/plugins/tokenjuice/`.
 - The cron prompt-injection scanner was reviewed against Hermes Agent
   reference material; the MIT notice is reproduced below for conservative
   attribution.
@@ -65,6 +67,45 @@ These bundled skill descriptors are authored and maintained by OpenSquilla and
 are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 
 - `memory`
+
+## tokenjuice adapted reduction rules
+
+- Component: built-in tokenjuice tool-result compression backend and bundled
+  reduction rules under `src/opensquilla/plugins/tokenjuice/`.
+- Upstream project: https://github.com/vincentkoc/tokenjuice
+- License: MIT
+- Copyright notice: Copyright (c) 2026 Vincent Koc
+
+OpenSquilla includes a Python adaptation of tokenjuice's rule-driven reducer
+and bundles reduction rules derived from the upstream project. OpenSquilla does
+not depend on the upstream tokenjuice npm package at runtime. Additional
+provenance is recorded in
+`src/opensquilla/plugins/tokenjuice/PROVENANCE.md`; the MIT license text is
+also shipped with that package as `LICENSE.tokenjuice`.
+
+```
+MIT License
+
+Copyright (c) 2026 Vincent Koc
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## Hermes Agent reference material
 

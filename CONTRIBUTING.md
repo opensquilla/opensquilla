@@ -43,6 +43,35 @@ Private test suites, release red-team prompts, real provider transcripts, real c
 
 Local maintainer-only files may live under `tests/_private/` or `.omx/private-golden/`; both are excluded from the public tree and default pytest collection.
 
+## Third-Party Origins
+
+Declare any third-party origin in the pull request. If no third-party material is
+involved, say `none`. If there is any uncertainty, use the more conservative
+category and let maintainers narrow it during review.
+
+- `inspired-by`: only the idea influenced the change; no code, rules, fixtures,
+  structure, or copied text is reused.
+- `adapted/ported`: OpenSquilla re-expresses upstream behavior, rules, or
+  structure in OpenSquilla code.
+- `vendored`: upstream source is copied into the repository with minimal or no
+  changes.
+- `direct dependency`: OpenSquilla depends on an external package through
+  `pyproject.toml` or another package manager.
+- `modified upstream`: vendored upstream source is patched or otherwise changed
+  in the OpenSquilla tree.
+
+For `adapted/ported`, `vendored`, and `modified upstream` material, include the
+upstream URL, license, copyright notice, and any required changes to
+`THIRD_PARTY_NOTICES.md` or a local provenance file in the same pull request.
+For direct dependencies, note the package name and license so maintainers can
+audit redistribution and release-bundle obligations.
+
+Permissive licenses such as Apache-2.0, MIT, MIT-0, BSD, ISC, and compatible
+public-domain-equivalent grants are usually acceptable. GPL, AGPL, LGPL, SSPL,
+source-available, custom commercial, or unclear licenses require explicit
+maintainer approval before code, rules, fixtures, or adapted implementations are
+merged.
+
 ## Security Reports
 
 Do not include vulnerability details, exploit steps, credentials, or provider tokens in public issues. Use the process in `SECURITY.md` for suspected vulnerabilities.

@@ -47,7 +47,7 @@ const ConfigView = (() => {
     'log_file_backup_count':
       'Number of rotated debug.log backups to retain.',
     'agent_token_saving.tool_result_compression_mode':
-      'How tool outputs are compressed before being fed back to the model: "off", "auto" (heuristic), or "always". "auto" is a sane default.',
+      'How tool outputs are compressed before being fed back to the model: "off", "truncate" (default TRIM), "summarize", or "tokenjuice" (experimental rule-based backend).',
     'agent_token_saving.tool_result_compression_enabled':
       'Master switch for tool-result compression. Disable to send raw tool output verbatim — useful for debugging, costly otherwise.',
     'squilla_router.enabled':

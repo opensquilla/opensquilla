@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from opensquilla.plugins.tokenjuice import reduce_tool_result as _reduce_tool_result_plugin
+from opensquilla.plugins.tokenjuice import reduce_tool_result as _reduce_tool_result_backend
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ def reduce_tool_result_with_tokenjuice(
     max_inline_chars: int | None = None,
     timeout_seconds: float = 5.0,
 ) -> TokenjuiceReduction | None:
-    """Run the built-in tokenjuice plugin for a tool result.
+    """Run the built-in tokenjuice compression backend for a tool result.
 
     Returns ``None`` when tokenjuice fails or does not reduce the result.
     Compression is best-effort because tool output must never fail an agent turn.
@@ -49,7 +49,7 @@ def reduce_tool_result_with_tokenjuice(
     command = command or _string_arg(arguments, "command")
     cwd = cwd or _string_arg(arguments, "workdir", "cwd")
     try:
-        reduction = _reduce_tool_result_plugin(
+        reduction = _reduce_tool_result_backend(
             tool_name=tool_name,
             content=content,
             is_error=is_error,

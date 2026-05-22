@@ -5,10 +5,11 @@ kind: meta
 meta_priority: 50
 always: false
 triggers:
-  - "行程"
   - "travel plan"
   - "旅游计划"
   - "出差行程"
+  - "行程安排"
+  - "规划行程"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

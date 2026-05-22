@@ -5,10 +5,11 @@ kind: meta_sop
 meta_priority: 50
 always: false
 triggers:
-  - "写论文"
   - "draft a paper"
-  - "写篇论文"
   - "write paper"
+  - "写篇论文"
+  - "写一篇论文"
+  - "撰写论文"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

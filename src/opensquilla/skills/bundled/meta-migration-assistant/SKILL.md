@@ -9,7 +9,8 @@ triggers:
   - "migrate from"
   - "upgrade from"
   - "升级指南"
-  - "迁移到"
+  - "迁移方案"
+  - "迁移步骤"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

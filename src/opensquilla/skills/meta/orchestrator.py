@@ -368,14 +368,17 @@ def make_agent_runner_from_parent(
     async def _runner(system_prompt: str, user_message: str) -> AsyncIterator[AgentEvent]:
         # Build a fresh AgentConfig keyed off the parent's settings but with
         # the skill body installed as the sub-turn's system prompt. The
-        # iteration cap is generous because some bundled skills
-        # (multi-search-engine, deep-research, xlsx) need several rounds:
-        # read SKILL.md → run the wrapped script → summarise. Capping at 4
-        # produced silent failures where the sub-Agent did not get a chance
-        # to write its closing plain-text deliverable.
+        # iteration cap allows for multi-fetch flows (arxiv-deck pulls 6
+        # paper abstracts + handles rate-limit retries = easily 10+ rounds)
+        # while preventing runaway loops. Past history:
+        #   cap=4  → silent failures (no closing plain-text deliverable)
+        #   cap=12 → fetch_arxiv truncated mid-flow on real arxiv with
+        #             rate-limit + 6 paper title fetches
+        #   cap=30 → fits multi-search-engine / arxiv / deep-research
+        #             without losing the runaway protection
         sub_config = AgentConfig(
             model_id=getattr(base_config, "model_id", None),
-            max_iterations=min(getattr(base_config, "max_iterations", 12), 12),
+            max_iterations=min(getattr(base_config, "max_iterations", 30), 30),
             system_prompt=system_prompt,
             extra_system_prompt=None,
             metadata=dict(getattr(base_config, "metadata", {}) or {}),

@@ -34,7 +34,7 @@ const ChatView = (() => {
   let _streamIdleTimer = null;
   let _streamIdlePausedForApproval = false;
   let _historySyncTimer = null;
-  const _DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000; // server should emit terminal first
+  const _DEFAULT_STREAM_IDLE_TIMEOUT_MS = 660000; // server should emit terminal first
   let _streamIdleTimeoutMs = _DEFAULT_STREAM_IDLE_TIMEOUT_MS;
   let _lastStreamSeq = 0;
   let _activeTaskGroups = new Set();

@@ -18,7 +18,7 @@ composition:
       skill: multi-search-engine
       with:
         query: "{{ inputs.user_message | xml_escape | truncate(512) }}"
-        engines: [duckduckgo, brave, tavily]
+        engines: [brave, duckduckgo, tavily]
         max_results: 10
     - id: research
       skill: deep-research

@@ -22,7 +22,7 @@ composition:
       skill: multi-search-engine
       with:
         query: "{{ inputs.user_message | xml_escape | truncate(256) }} sights restaurants transport"
-        engines: [duckduckgo, brave]
+        engines: [brave, duckduckgo]
         max_results: 10
     - id: itinerary
       skill: summarize

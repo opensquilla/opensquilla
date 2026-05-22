@@ -21,7 +21,7 @@ composition:
       skill: multi-search-engine
       with:
         query: "{{ inputs.user_message | xml_escape | truncate(256) }} latest news"
-        engines: [duckduckgo, brave]
+        engines: [brave, duckduckgo]
         max_results: 5
     - id: digest
       skill: summarize

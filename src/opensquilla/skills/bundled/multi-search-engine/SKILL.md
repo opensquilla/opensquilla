@@ -21,7 +21,7 @@ entrypoint:
     - --query
     - "{{ inputs.user_message }}"
     - --engines
-    - duckduckgo
+    - brave,duckduckgo
     - --limit
     - "5"
     - --json

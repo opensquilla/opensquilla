@@ -291,3 +291,18 @@ security_grading = true
 # type = "slack"
 # token = "xoxb-..."
 # slack_channel_id = "C12345"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Meta-Skill subsystem
+# ─────────────────────────────────────────────────────────────────────────────
+
+[meta_skill.persistence]
+# Whether to write meta-skill execution traces to SQLite (G4: 可追溯+可审计).
+# Disabling drops the writer to no-op; the CLI `skills meta runs ...` will
+# report no rows. Default: true.
+# enabled = true
+
+# How long (seconds) a 'running' row may live before boot cleanup marks it
+# 'failed' as an orphan from a crashed prior process. Only applies to rows
+# whose owner_pid differs from the current process pid. Default: 3600 (1h).
+# orphan_cleanup_age_seconds = 3600

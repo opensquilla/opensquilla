@@ -1391,6 +1391,30 @@ class SubagentsGatewayConfig(BaseModel):
     """When enabled, subagent bootstrap prompts keep only AGENTS.md and TOOLS.md."""
 
 
+class MetaSkillPersistenceConfig(BaseSettings):
+    """Persistence/audit ledger for meta-skill executions (G4)."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_META_SKILL_PERSISTENCE_",
+        extra="forbid",
+    )
+    enabled: bool = True
+    orphan_cleanup_age_seconds: int = 3600
+
+
+class MetaSkillConfig(BaseSettings):
+    """Top-level meta-skill subsystem configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_META_SKILL_",
+        env_nested_delimiter="__",
+        extra="forbid",
+    )
+    persistence: MetaSkillPersistenceConfig = Field(
+        default_factory=MetaSkillPersistenceConfig,
+    )
+
+
 class GatewayConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENSQUILLA_GATEWAY_",
@@ -1441,6 +1465,7 @@ class GatewayConfig(BaseSettings):
     agents: list[AgentEntryConfig] = Field(default_factory=list)
     agents_defaults: AgentDefaults = Field(default_factory=AgentDefaults)
     subagents: SubagentsGatewayConfig = Field(default_factory=SubagentsGatewayConfig)
+    meta_skill: MetaSkillConfig = Field(default_factory=MetaSkillConfig)
 
     # Component enable flags
     control_ui: ControlUiConfig = Field(default_factory=ControlUiConfig)

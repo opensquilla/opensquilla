@@ -156,3 +156,42 @@ def test_no_legacy_fallback_env_var() -> None:
     import inspect
     source = inspect.getsource(config_module)
     assert "OPENSQUILLA_LEGACY_FALLBACK" not in source
+
+
+class TestMetaSkillConfig:
+    """C4: GatewayConfig must accept [meta_skill.persistence] section."""
+
+    def test_default_meta_skill_config(self) -> None:
+        from opensquilla.gateway.config import GatewayConfig
+
+        cfg = GatewayConfig()
+        assert cfg.meta_skill.persistence.enabled is True
+        assert cfg.meta_skill.persistence.orphan_cleanup_age_seconds == 3600
+
+    def test_meta_skill_persistence_disabled(self) -> None:
+        from opensquilla.gateway.config import GatewayConfig
+
+        cfg = GatewayConfig(
+            meta_skill={"persistence": {"enabled": False}},
+        )
+        assert cfg.meta_skill.persistence.enabled is False
+
+    def test_meta_skill_env_override(self, monkeypatch) -> None:
+        from opensquilla.gateway.config import MetaSkillPersistenceConfig
+
+        monkeypatch.setenv("OPENSQUILLA_META_SKILL_PERSISTENCE_ENABLED", "false")
+        cfg = MetaSkillPersistenceConfig()
+        assert cfg.enabled is False
+
+    def test_example_toml_parses_clean(self) -> None:
+        """Copying opensquilla.toml.example to ~/.opensquilla/config.toml must work."""
+        import tomllib
+        from pathlib import Path
+        from opensquilla.gateway.config import GatewayConfig
+
+        example_path = Path(__file__).resolve().parents[1] / "opensquilla.toml.example"
+        with example_path.open("rb") as f:
+            data = tomllib.load(f)
+
+        # No exceptions during validation
+        GatewayConfig(**data)

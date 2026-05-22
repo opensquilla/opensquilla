@@ -382,6 +382,13 @@ def make_agent_runner_from_parent(
             system_prompt=system_prompt,
             extra_system_prompt=None,
             metadata=dict(getattr(base_config, "metadata", {}) or {}),
+            # Forward parent's workspace_dir so sub-Agent's write_file /
+            # memory_save / shell tools resolve paths inside the configured
+            # workspace instead of falling back to process cwd. Without this,
+            # sub-Agents pick paths like /root/.opensquilla/workspace/... that
+            # mismatch the operator's workspace_dir and trigger
+            # workspace_strict ToolError loops on the persist step.
+            workspace_dir=getattr(base_config, "workspace_dir", None),
         )
 
         # Strip meta_invoke from the sub-Agent's tool surface so a step

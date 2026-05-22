@@ -1438,8 +1438,13 @@ async def test_iter_events_emits_step_boundaries() -> None:
 
 
 @pytest.mark.asyncio
-async def test_iter_events_forwards_subagent_inner_events() -> None:
-    """For ``agent`` kind steps, sub-Agent's own tool events stream through."""
+async def test_iter_events_forwards_subagent_tool_events_but_folds_text() -> None:
+    """For ``agent`` kind steps, sub-Agent's tool events stream through to the
+    outer UI (so users see inner tool-call cards), but its TextDeltaEvent is
+    folded into the parent meta-step:<id> card and surfaces only through the
+    closing ToolResultEvent.result preview. Reduces UI noise for text-heavy
+    skills (paper-section-author etc.). Design: docs/proposals/meta-skills/
+    MECHANISM.md §17 single user-visible channel."""
 
     from opensquilla.engine.types import ToolResultEvent, ToolUseStartEvent
     from opensquilla.skills.meta.types import MetaResult
@@ -1472,6 +1477,7 @@ async def test_iter_events_forwards_subagent_inner_events() -> None:
 
     forwarded_tool_names: list[str] = []
     text_chunks: list[str] = []
+    step_close_previews: list[str] = []
     final: MetaResult | None = None
     async for ev in orch.iter_events(MetaMatch(plan=plan, inputs={})):
         if isinstance(ev, MetaResult):
@@ -1480,13 +1486,20 @@ async def test_iter_events_forwards_subagent_inner_events() -> None:
             forwarded_tool_names.append(ev.tool_name)
         elif isinstance(ev, TextDeltaEvent):
             text_chunks.append(ev.text)
+        elif isinstance(ev, ToolResultEvent) and ev.tool_name.startswith("meta-step:"):
+            step_close_previews.append(ev.result or "")
 
     assert final is not None and final.ok
-    # Outer step boundary + inner skill_view both appear.
+    # Outer step boundary + inner skill_view both appear (nested cards visible).
     assert "meta-step:x" in forwarded_tool_names
     assert "skill_view" in forwarded_tool_names
-    # Sub-Agent's text deltas reach the outer stream too.
-    assert "final answer is 42" in "".join(text_chunks)
+    # Sub-Agent's TextDelta is NOT forwarded to outer stream — folded.
+    assert "".join(text_chunks) == "", \
+        f"sub-Agent TextDelta should not reach outer stream, got: {text_chunks!r}"
+    # Final text shows up only in the meta-step closing card preview + MetaResult.
+    assert any("final answer is 42" in p for p in step_close_previews), \
+        f"final text should appear in step close preview, got: {step_close_previews!r}"
+    assert "final answer is 42" in final.final_text
 
 
 @pytest.mark.asyncio

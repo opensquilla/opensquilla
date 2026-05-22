@@ -70,6 +70,13 @@ async def run_step_with_skill_stream(
             continue
         if isinstance(event, TextDeltaEvent):
             final_text_parts.append(event.text)
+            # Suppress sub-Agent TextDelta forwarding so its content
+            # stays folded inside the parent meta-step:<id> card.
+            # The full text is yielded once via _StepDone at end of step,
+            # and the scheduler emits a tight ``preview`` (≤100 chars) in
+            # the closing ToolResultEvent. UI noise → near zero for
+            # text-heavy skills (paper-section-author etc.).
+            continue
         elif isinstance(event, ToolResultEvent):
             result_text = event.result if isinstance(event.result, str) else ""
             if result_text.strip() and getattr(event, "is_error", False):

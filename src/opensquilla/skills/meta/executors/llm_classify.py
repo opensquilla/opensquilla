@@ -46,6 +46,7 @@ async def _drain_agent_runner(
     async for event in agent_runner(system_prompt, user_message):
         if isinstance(event, TextDeltaEvent):
             final_text_parts.append(event.text)
+            continue
         elif isinstance(event, ToolResultEvent):
             result_text = event.result if isinstance(event.result, str) else ""
             if result_text.strip() and getattr(event, "is_error", False):

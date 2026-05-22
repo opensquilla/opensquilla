@@ -45,6 +45,11 @@ structlog.configure(
 
 from opensquilla.skills.loader import SkillLoader  # noqa: E402
 from opensquilla.skills.meta.parser import MetaPlan, MetaPlanError, parse_meta_plan  # noqa: E402
+from opensquilla.skills.meta.sop_compiler import (  # noqa: E402
+    SOPCompileError,
+    compile as _sop_compile,
+)
+from opensquilla.skills.types import SkillLayer  # noqa: E402
 
 # G1.6 xml_escape rule: any `{{ inputs.user_message ` literal must be
 # IMMEDIATELY followed by `| xml_escape` or `| slugify` as the first filter.
@@ -59,23 +64,29 @@ _XML_ESCAPE_RE = re.compile(
 )
 
 
-def _load_main_catalog() -> dict[str, str]:
-    """Return {skill_name: skill_kind} for all bundled skills.
+def _load_main_loader() -> tuple[SkillLoader, dict[str, str]]:
+    """Build a SkillLoader rooted in the bundled dir and return (loader, catalog).
 
-    N5 fix: returning a kind-aware dict (instead of a name-only set) lets
-    run_g1 reject steps that reference another kind=meta skill, since the
-    agent executor refuses nested meta-skills at runtime.
+    The loader is kept alive so that ``run_g1`` can pass it to the SOP
+    compiler when linting a ``kind: meta_sop`` skill — the candidate's
+    tmp loader cannot resolve sub-skill references on its own.
+
+    N5: catalog values are skill kinds so we can reject nested meta-skill
+    references (agent executor refuses them at runtime).
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        loader = SkillLoader(
-            bundled_dir=BUNDLED,
-            snapshot_path=Path(tmpdir) / "snapshot.json",
-        )
-        loader.invalidate_cache()
-        return {spec.name: spec.kind for spec in loader.load_all()}
+    # NOTE: snapshot lives under a session tmp that outlives this function
+    # so the loader's internal paths remain valid for subsequent calls.
+    tmpdir = Path(tempfile.mkdtemp(prefix="meta-skill-linter-"))
+    loader = SkillLoader(
+        bundled_dir=BUNDLED,
+        snapshot_path=tmpdir / "snapshot.json",
+    )
+    loader.invalidate_cache()
+    catalog = {spec.name: spec.kind for spec in loader.load_all()}
+    return loader, catalog
 
 
-def run_g1(skill_md: str, catalog: dict[str, str]) -> dict:
+def run_g1(skill_md: str, catalog: dict[str, str], main_loader: SkillLoader) -> dict:
     diagnostics: list[str] = []
 
     # Rule G1.1: parse_meta_plan succeeds.
@@ -89,20 +100,33 @@ def run_g1(skill_md: str, catalog: dict[str, str]) -> dict:
         skill_dir = Path(tmpdir) / "synth"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
-        loader = SkillLoader(
+        # Bypass loader.load_all() (whose Pass 2 SOP-compiles against a tmp
+        # dir with no sub-skills, silently dropping meta_sop candidates).
+        # Pass 1 only via _load_skill, then SOP-compile manually against the
+        # real bundled catalog through ``main_loader`` below.
+        tmp_loader = SkillLoader(
             bundled_dir=Path(tmpdir),
             snapshot_path=Path(tmpdir) / "snap.json",
         )
-        loader.invalidate_cache()
         try:
-            specs = loader.load_all()
+            spec = tmp_loader._load_skill(skill_dir, SkillLayer.BUNDLED, root=Path(tmpdir))
         except Exception as exc:
             diagnostics.append(f"G1.1 (loader): {type(exc).__name__}: {exc}")
             return {"passed": False, "diagnostics": diagnostics, "spec": None, "plan": None}
-        if not specs:
+        if spec is None:
             diagnostics.append("G1.1 (loader): no spec parsed; check YAML frontmatter")
             return {"passed": False, "diagnostics": diagnostics, "spec": None, "plan": None}
-        spec = specs[0]
+
+        # Compile meta_sop → meta against the real bundled catalog before
+        # any structural plan checks. Compile failures stop G1 with a
+        # specific error pointing at SOP syntax.
+        if spec.kind == "meta_sop":
+            try:
+                spec = _sop_compile(spec, skill_loader=main_loader)
+            except SOPCompileError as exc:
+                diagnostics.append(f"G1.1 (sop_compile): {exc}")
+                return {"passed": False, "diagnostics": diagnostics, "spec": spec, "plan": None}
+
         try:
             plan = parse_meta_plan(spec)
         except MetaPlanError as exc:
@@ -199,12 +223,12 @@ def main(argv: list[str] | None = None) -> int:
         print("Need --skill-md or --skill-md-stdin", file=sys.stderr)
         return 2
 
-    catalog = _load_main_catalog()
+    main_loader, catalog = _load_main_loader()
     gates = set(args.gates.split(","))
     out: dict = {}
 
     if "G1" in gates:
-        g1 = run_g1(skill_md, catalog)
+        g1 = run_g1(skill_md, catalog, main_loader)
         out["G1"] = {"passed": g1["passed"], "diagnostics": g1["diagnostics"]}
         if not g1["passed"]:
             json.dump(out, sys.stdout)

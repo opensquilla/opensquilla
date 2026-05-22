@@ -1501,6 +1501,9 @@ def build_turn_runner_from_services(
                 from opensquilla.persistence.meta_run_writer import open_meta_run_writer
 
                 meta_run_writer = open_meta_run_writer(db_path)
+                # G4 cleanup: SessionStorage purges meta_skill_runs on delete.
+                if storage is not None and hasattr(storage, "_meta_run_writer"):
+                    storage._meta_run_writer = meta_run_writer
                 # W6: orphan cleanup with owner_pid discriminator.
                 meta_run_writer.mark_orphans_failed(
                     age_ms=int(

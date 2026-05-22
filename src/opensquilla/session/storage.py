@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from opensquilla.compat import aiosqlite
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
@@ -15,6 +16,11 @@ from opensquilla.session.models import (
     SessionSummary,
     TranscriptEntry,
 )
+
+if TYPE_CHECKING:
+    from opensquilla.persistence.meta_run_writer import MetaRunWriter
+
+log = logging.getLogger(__name__)
 
 
 class StaleEpochError(Exception):
@@ -235,9 +241,15 @@ def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
 class SessionStorage:
     """Low-level async SQLite operations for session persistence."""
 
-    def __init__(self, db_path: str = ":memory:") -> None:
+    def __init__(
+        self,
+        db_path: str = ":memory:",
+        *,
+        meta_run_writer: MetaRunWriter | None = None,
+    ) -> None:
         self._db_path = db_path
         self._conn: Any | None = None
+        self._meta_run_writer = meta_run_writer
 
     async def connect(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
@@ -396,6 +408,15 @@ class SessionStorage:
         )
         await self.conn.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
         await self.conn.commit()
+
+        # G4 cleanup: cascade meta-skill audit rows for this session. The
+        # sessions table is created lazily at runtime (not via yoyo), so
+        # there is no SQL FK to rely on — explicit purge is required.
+        if self._meta_run_writer is not None:
+            try:
+                self._meta_run_writer.purge_for_session(session_key)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("session_delete.purge_meta_runs_failed: %s", exc)
 
     async def prune_stale_sessions(self, before_ms: int) -> int:
         """Delete sessions not updated since before_ms epoch ms. Returns count deleted."""

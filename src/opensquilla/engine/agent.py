@@ -1669,6 +1669,30 @@ class Agent:
                         tool_calls=len(tool_calls),
                     )
 
+                # ── observability: meta_invoke eligibility on first turn ──
+                # When `meta_invoke` is surfaced to this Agent (a `kind=meta`
+                # skill is registered, see `TurnRunner._build_tools_for_turn`)
+                # log whether the LLM picked it on its first chance. Operators
+                # correlate this with `meta_resolution.matched` (hard-takeover
+                # wins outright; agent loop does not even enter) and
+                # `skills_filter.applied` (whether `kind=meta` reached the
+                # prompt) to diagnose "soft path silent" turns. iter 1 only —
+                # later iterations are sub-steps of an already-decided plan.
+                if iterations == 1 and self.tool_definitions:
+                    meta_invoke_eligible = any(
+                        getattr(t, "name", None) == "meta_invoke"
+                        for t in self.tool_definitions
+                    )
+                    if meta_invoke_eligible:
+                        called_names = [tc.tool_name for tc in tool_calls]
+                        _log.info(
+                            "agent.meta_invoke_eligible",
+                            session_key=self._session_key,
+                            meta_invoke_called="meta_invoke" in called_names,
+                            tool_calls=called_names,
+                            visible_text_len=len(visible_text or ""),
+                        )
+
                 # No tool calls → we're done
                 if not tool_calls:
                     break

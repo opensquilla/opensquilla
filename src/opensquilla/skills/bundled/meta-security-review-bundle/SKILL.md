@@ -116,21 +116,6 @@ This bundle is the OpenSquilla equivalent of pptx slide 7's
 arbitration rule explicit in the SKILL.md rather than implicit in the
 LLM's good judgement.
 
-## Why combinator (not orchestrator)
-
-A pure orchestrator (sequence) would chain:
-
-```
-governance → scanner → audit
-```
-
-That works for happy-path cases but loses the parallelism — the
-scanner has nothing to wait for, and stalling it behind governance
-adds latency. More importantly, sequential framing tempts the LLM
-to "skip ahead": once governance says ALLOW, a busy model may
-truncate the scanner step. Splitting them into parallel branches
-forces the model to actually consume each verdict.
-
 ## Arbitration rule
 
 The arbitrate step encodes the priority `policy > scanner > allow`

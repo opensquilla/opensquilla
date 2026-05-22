@@ -90,24 +90,6 @@ checklist. The pipeline does three things:
 3. **write_plan** uses `coding-agent` regardless of branch — the plan
    format is identical across migrations.
 
-## Why routing here is genuinely useful
-
-`OPENAI_V0_TO_V1` is the canonical case: OpenAI publishes its breaking
-changes most reliably in the [openai-python](https://github.com/openai/openai-python)
-repo's release notes, NOT in a single web-search-able guide. The
-`github` skill can fetch that history directly. Framework-level
-migrations (Vue/React/Py) have a single canonical web page (`v3-migration-guide.vuejs.org`,
-the Python docs porting guide, the React legacy hooks docs) — `multi-search-engine`
-hits those efficiently. Truly novel migrations (`OTHER`) need cross-source
-synthesis — `deep-research` is the right tool.
-
-## What does NOT route
-
-The classifier itself (`coding-agent`) and the plan writer
-(`coding-agent`) are the same regardless of branch — the plan format
-is migration-agnostic. We resist the temptation to route them: the
-work they do is genuinely identical across migrations.
-
 ## Fallback
 
 If the orchestration fails: ask the user to specify the migration tag

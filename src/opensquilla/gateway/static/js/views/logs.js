@@ -16,6 +16,8 @@ const LogsView = (() => {
   let _searchText = '';
   let _autoFollow = true;
   let _status = null;
+  let _pollInFlight = false;
+  let _pollErrorShown = false;
 
   function _ensureCss() {
     if (document.querySelector('link[data-view-css="logs"]')) return;
@@ -40,6 +42,8 @@ const LogsView = (() => {
     _searchText = '';
     _autoFollow = true;
     _status = null;
+    _pollInFlight = false;
+    _pollErrorShown = false;
     _activeLevels = new Set(_DEFAULT_LEVELS);
 
     const levelChips = _LEVELS.map(l => {
@@ -137,13 +141,18 @@ const LogsView = (() => {
     _intervals = [];
     _allLines = [];
     _cursor = 0;
+    _pollInFlight = false;
+    _pollErrorShown = false;
     _el = null;
     _rpc = null;
   }
 
   async function _loadData() {
     if (!_el) return;
-    await _rpc.waitForConnection();
+    const rpc = _rpc;
+    if (!rpc) return;
+    await rpc.waitForConnection();
+    if (!_el || _rpc !== rpc) return;
     _cursor = 0;
     _allLines = [];
     await _loadStatus();
@@ -161,9 +170,13 @@ const LogsView = (() => {
   }
 
   async function _poll() {
-    if (!_el) return;
+    if (!_el || _pollInFlight) return;
+    const rpc = _rpc;
+    if (!rpc) return;
+    _pollInFlight = true;
     try {
-      const data = await _rpc.call('logs.tail', { limit: 500, cursor: _cursor, level: null });
+      const data = await rpc.call('logs.tail', { limit: 500, cursor: _cursor, level: null });
+      if (!_el || _rpc !== rpc) return;
       const lines = data.lines || data.entries || [];
       if (lines.length > 0) {
         if (data.cursor != null) {
@@ -190,8 +203,14 @@ const LogsView = (() => {
         // Render an empty placeholder
         _renderLines();
       }
-    } catch {
-      // Silently ignore poll errors — display stays intact
+      _pollErrorShown = false;
+    } catch (err) {
+      if (!_pollErrorShown) {
+        UI.toast('Log refresh failed: ' + (err?.message || 'unknown error'), 'warn');
+        _pollErrorShown = true;
+      }
+    } finally {
+      _pollInFlight = false;
     }
   }
 

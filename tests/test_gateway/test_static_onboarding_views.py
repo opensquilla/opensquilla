@@ -44,6 +44,17 @@ def test_channels_view_filters_to_configured_channels():
     assert "configured !== false" in txt
 
 
+def test_channels_load_stops_if_view_is_destroyed_while_waiting_for_rpc():
+    txt = (VIEWS / "channels.js").read_text(encoding="utf-8")
+    start = txt.index("async function _loadData()")
+    end = txt.index("  function _renderStats", start)
+    body = txt[start:end]
+
+    assert "const rpc = _rpc;" in body
+    assert "await rpc.waitForConnection();" in body
+    assert "if (!_el || _rpc !== rpc) return;" in body
+
+
 def test_setup_view_loads_catalog_and_status():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
     assert "onboarding.catalog" in txt

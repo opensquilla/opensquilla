@@ -73,9 +73,12 @@ const ChannelsView = (() => {
 
   async function _loadData() {
     if (!_el) return;
-    await _rpc.waitForConnection();
+    const rpc = _rpc;
+    if (!rpc) return;
+    await rpc.waitForConnection();
+    if (!_el || _rpc !== rpc) return;
 
-    _rpc.call('channels.status').then(data => {
+    rpc.call('channels.status').then(data => {
       if (!_el) return;
       const raw = (data.channels || []).filter(c => c && c.configured !== false);
 

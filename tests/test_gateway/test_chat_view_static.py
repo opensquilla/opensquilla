@@ -4,6 +4,7 @@ CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
 CHAT_CSS = Path("src/opensquilla/gateway/static/css/views/chat.css")
 RPC_JS = Path("src/opensquilla/gateway/static/js/rpc.js")
 SAVINGS_FX_JS = Path("src/opensquilla/gateway/static/js/components/savings-fx.js")
+TASK_RUNTIME_PY = Path("src/opensquilla/gateway/task_runtime.py")
 
 
 def test_chat_history_passes_subagent_completion_provenance_to_renderer() -> None:
@@ -320,6 +321,23 @@ def test_chat_switching_existing_session_does_not_mark_new_chat_intent() -> None
     assert "_pendingSessionIntent = 'new_chat'" not in switch_body
     assert source.count("_pendingSessionIntent = 'new_chat'") == 2
     assert "params.intent = _pendingSessionIntent;" in source
+
+
+def test_chat_regenerate_targets_clicked_assistant_bubble() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    hover_start = source.index("function _bindHoverActions()")
+    hover_end = source.index("  function _truncate", hover_start)
+    hover_body = source[hover_start:hover_end]
+    regen_start = source.index("function _regenerateAssistantBubble(bubble)")
+    regen_end = source.index("  // Pop the user message back into the textarea", regen_start)
+    regen_body = source[regen_start:regen_end]
+
+    assert "_regenerateAssistantBubble(bubble);" in hover_body
+    assert "_regenerateLastTurn" not in source
+    assert "querySelectorAll(':scope > .msg.assistant')" in regen_body
+    assert "const assistantOrdinal = assistantBubbles.indexOf(bubble);" in regen_body
+    assert "assistantSeen === assistantOrdinal" in regen_body
+    assert "_messages.splice(userIdx + 1);" in regen_body
 
 
 def test_chat_maps_task_terminal_events_during_migration() -> None:
@@ -958,3 +976,54 @@ def test_chat_input_bar_tightens_desktop_bottom_padding_but_keeps_mobile_safe_ar
     assert desktop_padding in css
     assert mobile_safe_area in css
     assert css.rfind(mobile_safe_area) > css.index(desktop_padding)
+
+
+def test_chat_task_lifecycle_events_are_session_scoped() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    runtime = TASK_RUNTIME_PY.read_text(encoding="utf-8")
+
+    queued_start = source.index("_rpc.on('task.queued'")
+    queued_end = source.index("_rpc.on('task.running'", queued_start)
+    queued_body = source[queued_start:queued_end]
+    running_start = queued_end
+    running_end = source.index("_rpc.on('session.event.task_group.waiting'", running_start)
+    running_body = source[running_start:running_end]
+    terminal_start = source.index("const terminalStatus = _taskTerminalStatus(rawEvent);")
+    terminal_end = source.index("      const normalized =", terminal_start)
+    terminal_body = source[terminal_start:terminal_end]
+
+    assert "if (!_isCurrentSessionPayload(payload)) return;" in queued_body
+    assert "if (!_isCurrentSessionPayload(payload)) return;" in running_body
+    assert "if (!_isCurrentSessionPayload(rawPayload)) return;" in terminal_body
+    queued_emit_start = runtime.index('await self._emit(\n            envelope.session_key,')
+    queued_emit_end = runtime.index("        return TaskHandle", queued_emit_start)
+    queued_emit = runtime[queued_emit_start:queued_emit_end]
+    running_emit_start = runtime.index('await self._emit(\n            task.envelope.session_key,')
+    running_emit_end = runtime.index(
+        "        await self._notify_task_lifecycle",
+        running_emit_start,
+    )
+    running_emit = runtime[running_emit_start:running_emit_end]
+
+    assert '"task.queued"' in queued_emit
+    assert '"session_key": envelope.session_key' in queued_emit
+    assert '"task.running"' in running_emit
+    assert '"session_key": task.envelope.session_key' in running_emit
+    assert '"session_key": task.envelope.session_key' in runtime
+
+
+def test_chat_queue_drain_preserves_draft_typed_during_stream() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _drainQueueHead()")
+    end = source.index("  function _popPendingTail", start)
+    body = source[start:end]
+
+    assert "const draftText = _textarea.value;" in body
+    assert "const draftAttachments = _pendingAttachments.map" in body
+    assert "const draftIntent = _pendingSessionIntent;" in body
+    assert "_onSend();" in body
+    assert "if (draftText.trim() || draftAttachments.length || draftIntent) {" in body
+    assert "_textarea.value = draftText;" in body
+    assert "_pendingAttachments = draftAttachments;" in body
+    assert "_pendingSessionIntent = draftIntent;" in body
+    assert body.index("_onSend();") < body.index("_textarea.value = draftText;")

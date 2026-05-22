@@ -78,3 +78,40 @@ def test_example_config_lists_debug_file_logging_controls() -> None:
     assert "log_file_backup_count" in source
     assert "diagnostics_enabled enables standard diagnostics" in source
     assert "OPENSQUILLA_TURN_CALL_LOG=1" in source
+
+
+def test_logs_poll_does_not_overlap_or_fail_silently() -> None:
+    source = LOGS_JS.read_text(encoding="utf-8")
+
+    assert "let _pollInFlight = false;" in source
+    assert "let _pollErrorShown = false;" in source
+    start = source.index("async function _poll()")
+    end = source.index("  function _guessLevel", start)
+    body = source[start:end]
+
+    assert "if (!_el || _pollInFlight) return;" in body
+    assert "_pollInFlight = true;" in body
+    assert "Log refresh failed" in body
+    assert "_pollErrorShown = true;" in body
+    assert "_pollInFlight = false;" in body
+    assert "finally" in body
+
+
+def test_config_view_resets_mode_and_preserves_unsaved_yaml_draft() -> None:
+    source = CONFIG_JS.read_text(encoding="utf-8")
+
+    render_start = source.index("function render(el)")
+    render_end = source.index("  function destroy()", render_start)
+    render_body = source[render_start:render_end]
+    destroy_start = render_end
+    destroy_end = source.index("  async function _loadData()", destroy_start)
+    destroy_body = source[destroy_start:destroy_end]
+
+    assert "_setMode(_mode);" in render_body
+    assert "_mode = 'form';" in destroy_body
+    assert "let _yamlDraft = '';" in source
+    assert "let _yamlDirty = false;" in source
+    assert "_bindYamlDraftTracking();" in source
+    assert "_yamlDraft = e.target.value;" in source
+    assert "_yamlDirty = _yamlDraft !== _yamlText;" in source
+    assert "_yamlDirty ? _yamlDraft : _yamlText" in source

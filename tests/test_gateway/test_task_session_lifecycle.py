@@ -156,6 +156,26 @@ async def test_task_timeout_terminalizes_running_session_and_broadcasts_change()
         "task.timeout",
         "sessions.changed",
     ]
+    assert events[0] == (
+        session.session_key,
+        "task.queued",
+        {"task_id": handle.task_id, "session_key": session.session_key},
+    )
+    assert events[1] == (
+        session.session_key,
+        "task.running",
+        {"task_id": handle.task_id, "session_key": session.session_key},
+    )
+    assert events[2] == (
+        session.session_key,
+        "task.timeout",
+        {
+            "task_id": handle.task_id,
+            "session_key": session.session_key,
+            "terminal_reason": "timeout",
+            "terminal_message": "The task timed out before it could finish.",
+        },
+    )
     assert events[-1] == (
         session.session_key,
         "sessions.changed",
@@ -264,6 +284,16 @@ async def test_task_running_reactivates_terminal_session_before_next_turn() -> N
         "task.succeeded",
         "sessions.changed",
     ]
+    assert events[0] == (
+        session.session_key,
+        "task.queued",
+        {"task_id": handle.task_id, "session_key": session.session_key},
+    )
+    assert events[1] == (
+        session.session_key,
+        "task.running",
+        {"task_id": handle.task_id, "session_key": session.session_key},
+    )
     assert events[2] == (
         session.session_key,
         "sessions.changed",
@@ -289,6 +319,15 @@ async def test_task_running_reactivates_terminal_session_before_next_turn() -> N
                 "status": "succeeded",
                 "terminal_reason": "completed",
             },
+        },
+    )
+    assert events[3] == (
+        session.session_key,
+        "task.succeeded",
+        {
+            "task_id": handle.task_id,
+            "session_key": session.session_key,
+            "terminal_reason": "completed",
         },
     )
     assert manager.finish_calls == []

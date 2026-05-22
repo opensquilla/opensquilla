@@ -124,14 +124,17 @@ const SessionsView = (() => {
   }
 
   async function _loadData() {
-    await _rpc.waitForConnection();
+    const rpc = _rpc;
+    if (!_el || !rpc) return;
+    await rpc.waitForConnection();
+    if (!_el || _rpc !== rpc) return;
     // Fetch sessions and agents in parallel so the orphan-agent badge is
     // always rendered against fresh registry state.
     // Explicit limit=200 keeps backend default (50) intact for CLI/channel
     // consumers — only this WebUI surface opts into the larger page size.
     const [sessRes, agentsRes] = await Promise.allSettled([
-      _rpc.call('sessions.list', { limit: 200 }),
-      _rpc.call('agents.list'),
+      rpc.call('sessions.list', { limit: 200 }),
+      rpc.call('agents.list'),
     ]);
     if (!_el) return;
     if (agentsRes.status === 'fulfilled') {
@@ -529,10 +532,24 @@ const SessionsView = (() => {
        <p class="sess-modal__warn"><small>The transcript will not be flushed to disk; use <code>/reset</code> first if you want a backup.</small></p>`,
       [
         {
-          label: 'Delete', cls: 'btn-danger', onClick: () => {
-            _rpc.call('sessions.delete', { key })
-              .then(() => { UI.toast('Session deleted', 'info'); _loadData(); })
-              .catch(err => UI.toast('Delete failed: ' + err.message, 'err'));
+          label: 'Delete', cls: 'btn-danger', onClick: async () => {
+            try {
+              const res = await _rpc.call('sessions.delete', { key });
+              const errors = Array.isArray(res?.errors) ? res.errors : [];
+              const deleted = Array.isArray(res?.deleted) ? res.deleted : [];
+              if (errors.length > 0 || !deleted.includes(key)) {
+                const first = errors[0];
+                const reason = typeof first === 'string'
+                  ? first
+                  : (first?.message || first?.error || first?.reason || 'session was not deleted');
+                UI.toast('Delete failed: ' + reason, 'err');
+              } else {
+                UI.toast('Session deleted', 'info');
+              }
+            } catch (err) {
+              UI.toast('Delete failed: ' + (err?.message || 'unknown error'), 'err');
+            }
+            _loadData();
           }
         },
         { label: 'Cancel', cls: '' },

@@ -447,7 +447,11 @@ class TaskRuntime:
             value=_queue_depth,
             session_key=envelope.session_key,
         )
-        await self._emit(envelope.session_key, "task.queued", {"task_id": record.task_id})
+        await self._emit(
+            envelope.session_key,
+            "task.queued",
+            {"task_id": record.task_id, "session_key": envelope.session_key},
+        )
         return TaskHandle(
             task_id=record.task_id,
             session_key=envelope.session_key,
@@ -1091,7 +1095,11 @@ class TaskRuntime:
             status=AgentTaskStatus.RUNNING,
             started_at=_epoch_time_ms(),
         )
-        await self._emit(task.envelope.session_key, "task.running", {"task_id": task.task_id})
+        await self._emit(
+            task.envelope.session_key,
+            "task.running",
+            {"task_id": task.task_id, "session_key": task.envelope.session_key},
+        )
         await self._notify_task_lifecycle(
             TaskLifecycleEvent(
                 phase="running",
@@ -1183,6 +1191,7 @@ class TaskRuntime:
         )
         payload: dict[str, Any] = {
             "task_id": task.task_id,
+            "session_key": task.envelope.session_key,
             "terminal_reason": terminal_reason,
         }
         if status != AgentTaskStatus.SUCCEEDED:

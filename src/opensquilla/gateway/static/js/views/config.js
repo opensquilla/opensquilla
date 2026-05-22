@@ -8,6 +8,8 @@ const ConfigView = (() => {
 
   let _configData = {};   // raw object from config.get
   let _yamlText = '';     // current YAML text in textarea
+  let _yamlDraft = '';
+  let _yamlDirty = false;
   let _dirty = {};        // form mode: { key: { old, new } }
   let _invalidJson = {};  // form mode: { key: true }
   let _jsonDrafts = {};   // form mode JSON textarea text preserved across rerenders
@@ -188,19 +190,32 @@ const ConfigView = (() => {
       });
     });
 
-    _el.querySelector('#cfg-reload').addEventListener('click', () => { _dirty = {}; _invalidJson = {}; _jsonDrafts = {}; _loadData(); });
+    _el.querySelector('#cfg-reload').addEventListener('click', () => {
+      _dirty = {};
+      _invalidJson = {};
+      _jsonDrafts = {};
+      _yamlDraft = '';
+      _yamlDirty = false;
+      _loadData();
+    });
     _el.querySelector('#cfg-guided-setup')?.addEventListener('click', () => Router.navigate('/setup'));
     _el.querySelector('#cfg-save').addEventListener('click', _save);
     _el.querySelector('#cfg-search').addEventListener('input', (e) => {
       _searchText = e.target.value.toLowerCase();
       _renderFormTabs();
     });
+    _bindYamlDraftTracking();
 
     // sticky save bar wiring
     _el.querySelector('#cfg-stickybar-save').addEventListener('click', _save);
     _el.querySelector('#cfg-stickybar-discard').addEventListener('click', () => {
-      if (Object.keys(_dirty).length === 0) return;
-      _dirty = {}; _invalidJson = {}; _jsonDrafts = {}; _diffOpen = false;
+      if (Object.keys(_dirty).length === 0 && !_yamlDirty) return;
+      _dirty = {};
+      _invalidJson = {};
+      _jsonDrafts = {};
+      _yamlDraft = '';
+      _yamlDirty = false;
+      _diffOpen = false;
       _loadData();
     });
     _el.querySelector('#cfg-stickybar-toggle').addEventListener('click', () => {
@@ -214,6 +229,7 @@ const ConfigView = (() => {
     _unsubs.push(() => document.removeEventListener('click', _onDocClickForTooltip, true));
     _unsubs.push(() => document.removeEventListener('keydown', _onDocKeyForTooltip, true));
 
+    _setMode(_mode);
     _loadData();
   }
 
@@ -225,9 +241,15 @@ const ConfigView = (() => {
     _intervals = [];
     _configData = {};
     _yamlText = '';
+    _yamlDraft = '';
+    _yamlDirty = false;
     _dirty = {};
     _invalidJson = {};
     _jsonDrafts = {};
+    _mode = 'form';
+    _activeTab = 'core';
+    _searchText = '';
+    _diffOpen = false;
     _el = null;
     _rpc = null;
   }
@@ -235,10 +257,15 @@ const ConfigView = (() => {
   // ---- data loading ----------------------------------------------------
 
   async function _loadData() {
-    await _rpc.waitForConnection();
-    _rpc.call('config.get').then(data => {
+    const rpc = _rpc;
+    if (!_el || !rpc) return;
+    await rpc.waitForConnection();
+    if (!_el || _rpc !== rpc) return;
+    rpc.call('config.get').then(data => {
+      if (!_el || _rpc !== rpc) return;
       _configData = data || {};
       _yamlText = _objToYaml(_configData);
+      if (!_yamlDirty) _yamlDraft = _yamlText;
       _invalidJson = {};
       _jsonDrafts = {};
       _renderFormTabs();
@@ -254,12 +281,23 @@ const ConfigView = (() => {
     if (!_el) return;
     // sync yaml textarea when switching to yaml
     if (m === 'yaml') {
-      _el.querySelector('#cfg-yaml-area').value = _yamlText;
+      _el.querySelector('#cfg-yaml-area').value = _yamlDirty ? _yamlDraft : _yamlText;
     }
     _el.querySelector('#cfg-form-view').style.display = m === 'form' ? '' : 'none';
     _el.querySelector('#cfg-yaml-view').style.display = m === 'yaml' ? '' : 'none';
     _el.querySelectorAll('[data-cfg-mode]').forEach(btn => {
       btn.classList.toggle('is-active', btn.dataset.cfgMode === m);
+    });
+    _renderStickybar();
+  }
+
+  function _bindYamlDraftTracking() {
+    const area = _el && _el.querySelector('#cfg-yaml-area');
+    if (!area) return;
+    area.addEventListener('input', (e) => {
+      _yamlDraft = e.target.value;
+      _yamlDirty = _yamlDraft !== _yamlText;
+      _renderStickybar();
     });
   }
 
@@ -503,20 +541,27 @@ const ConfigView = (() => {
     const bar = _el.querySelector('#cfg-stickybar');
     if (!bar) return;
     const keys = Object.keys(_dirty);
-    if (keys.length === 0) {
+    const yamlDirtyVisible = _mode === 'yaml' && _yamlDirty;
+    if (keys.length === 0 && !yamlDirtyVisible) {
       bar.hidden = true;
       _diffOpen = false;
       return;
     }
     bar.hidden = false;
-    _el.querySelector('#cfg-stickybar-count').textContent = String(keys.length);
+    _el.querySelector('#cfg-stickybar-count').textContent = String(yamlDirtyVisible ? 1 : keys.length);
     const toggle = _el.querySelector('#cfg-stickybar-toggle');
     toggle.setAttribute('aria-expanded', _diffOpen ? 'true' : 'false');
     toggle.classList.toggle('is-open', _diffOpen);
     const diff = _el.querySelector('#cfg-stickybar-diff');
     if (_diffOpen) {
       diff.hidden = false;
-      diff.innerHTML = keys.map(k => {
+      diff.innerHTML = yamlDirtyVisible ? `
+        <div class="cfg-diff-row">
+          <span class="cfg-diff-key">YAML</span>
+          <span class="cfg-diff-old">loaded config</span>
+          <span class="cfg-diff-arrow">-&gt;</span>
+          <span class="cfg-diff-new">unsaved draft</span>
+        </div>` : keys.map(k => {
         const { old: oldV, new: newV } = _dirty[k];
         return `<div class="cfg-diff-row">
           <span class="cfg-diff-key">${_esc(k)}</span>
@@ -541,7 +586,7 @@ const ConfigView = (() => {
 
   function _renderYaml() {
     const area = _el && _el.querySelector('#cfg-yaml-area');
-    if (area && _mode === 'yaml') area.value = _yamlText;
+    if (area && _mode === 'yaml') area.value = _yamlDirty ? _yamlDraft : _yamlText;
   }
 
   // ---- save -----------------------------------------------------------
@@ -550,7 +595,7 @@ const ConfigView = (() => {
     if (_mode === 'yaml') {
       const text = _el.querySelector('#cfg-yaml-area').value;
       _rpc.call('config.apply', { config_yaml: text })
-        .then(res => { UI.toast(res && res.restartRequired ? 'Config applied. Gateway restart required for the change to take effect.' : 'Config applied', res && res.restartRequired ? 'info' : 'ok'); _dirty = {}; _invalidJson = {}; _jsonDrafts = {}; _loadData(); })
+        .then(res => { UI.toast(res && res.restartRequired ? 'Config applied. Gateway restart required for the change to take effect.' : 'Config applied', res && res.restartRequired ? 'info' : 'ok'); _dirty = {}; _invalidJson = {}; _jsonDrafts = {}; _yamlDirty = false; _yamlDraft = ''; _loadData(); })
         .catch(err => UI.toast('Apply failed: ' + err.message, 'err'));
     } else {
       if (Object.keys(_invalidJson).length > 0) {

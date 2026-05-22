@@ -526,38 +526,65 @@ const ChatView = (() => {
     return ok ? Promise.resolve() : Promise.reject(new Error('Copy failed'));
   }
 
-  // Re-send the most recent user turn. Pops the trailing assistant bubble
-  // from DOM + _messages and re-issues chat.send with the same text.
-  function _regenerateLastTurn() {
+  // Re-send the user turn that produced the clicked assistant bubble.
+  // Pops that assistant bubble and any later turns from DOM + _messages.
+  function _regenerateAssistantBubble(bubble) {
     if (_isStreaming) {
       UI.toast('Wait for the current response to finish', 'warn', 2000);
       return;
     }
-    // Find last user message in _messages.
-    let lastUserIdx = -1;
-    for (let i = _messages.length - 1; i >= 0; i--) {
-      if (_messages[i].role === 'user') { lastUserIdx = i; break; }
+    if (!bubble || !_thread) {
+      UI.toast('No response to regenerate', 'info', 2000);
+      return;
     }
-    if (lastUserIdx < 0) {
+
+    const assistantBubbles = Array.from(_thread.querySelectorAll(':scope > .msg.assistant'));
+    const assistantOrdinal = assistantBubbles.indexOf(bubble);
+    if (assistantOrdinal < 0) {
+      UI.toast('No response to regenerate', 'info', 2000);
+      return;
+    }
+
+    let assistantSeen = -1;
+    let assistantIdx = -1;
+    for (let i = 0; i < _messages.length; i++) {
+      if (_messages[i].role !== 'assistant') continue;
+      assistantSeen++;
+      if (assistantSeen === assistantOrdinal) {
+        assistantIdx = i;
+        break;
+      }
+    }
+    if (assistantIdx < 0) {
+      UI.toast('No response to regenerate', 'info', 2000);
+      return;
+    }
+
+    let userIdx = -1;
+    for (let i = assistantIdx - 1; i >= 0; i--) {
+      if (_messages[i].role === 'user') { userIdx = i; break; }
+    }
+    if (userIdx < 0) {
       UI.toast('No previous message to regenerate', 'info', 2000);
       return;
     }
-    const userText = _messages[lastUserIdx].text || '';
-    // Remove trailing assistant DOM bubbles and message records after that user turn.
-    _messages.splice(lastUserIdx + 1);
-    // Walk DOM: strip everything after the corresponding user .msg in the thread.
-    if (_thread) {
-      const userBubbles = _thread.querySelectorAll(':scope > .msg.user');
-      const target = userBubbles[userBubbles.length - 1];
-      if (target) {
-        let nxt = target.nextElementSibling;
-        while (nxt) {
-          const toRemove = nxt;
-          nxt = nxt.nextElementSibling;
-          toRemove.remove();
-        }
+
+    const userText = _messages[userIdx].text || '';
+    _messages.splice(userIdx + 1);
+
+    let target = bubble.previousElementSibling;
+    while (target && !target.matches('.msg.user')) {
+      target = target.previousElementSibling;
+    }
+    if (target) {
+      let nxt = target.nextElementSibling;
+      while (nxt) {
+        const toRemove = nxt;
+        nxt = nxt.nextElementSibling;
+        toRemove.remove();
       }
     }
+
     _textarea.value = userText;
     _autoResizeTextarea();
     // Trigger send synchronously — _onSend will read _textarea.
@@ -636,7 +663,7 @@ const ChatView = (() => {
           .then(() => UI.toast('Copied', 'info', 1200))
           .catch((err) => UI.toast('Copy failed: ' + err.message, 'err', 2500));
       } else if (action === 'regenerate') {
-        _regenerateLastTurn();
+        _regenerateAssistantBubble(bubble);
       } else if (action === 'edit') {
         _editUserBubble(bubble);
       }
@@ -2493,6 +2520,7 @@ const ChatView = (() => {
     }));
 
     _unsubs.push(_rpc.on('task.queued', (payload) => {
+      if (!_isCurrentSessionPayload(payload)) return;
       _applySessionRunState({
         run_status: 'queued',
         active_task: { ...(payload || {}), status: 'queued' },
@@ -2500,6 +2528,7 @@ const ChatView = (() => {
     }));
 
     _unsubs.push(_rpc.on('task.running', (payload) => {
+      if (!_isCurrentSessionPayload(payload)) return;
       _applySessionRunState({
         run_status: 'running',
         active_task: { ...(payload || {}), status: 'running' },
@@ -2534,6 +2563,7 @@ const ChatView = (() => {
     _unsubs.push(_rpc.on('*', (rawEvent, rawPayload) => {
       const terminalStatus = _taskTerminalStatus(rawEvent);
       if (terminalStatus) {
+        if (!_isCurrentSessionPayload(rawPayload)) return;
         const terminalRunStatus = terminalStatus === 'succeeded' ? 'idle'
           : terminalStatus === 'abandoned' ? 'interrupted'
           : terminalStatus;
@@ -4661,11 +4691,21 @@ const ChatView = (() => {
     const head = _pendingQueue.shift();
     _renderPendingQueue();
     setTimeout(() => {
+      const draftText = _textarea.value;
+      const draftAttachments = _pendingAttachments.map(att => ({ ...att }));
+      const draftIntent = _pendingSessionIntent;
       _textarea.value = head.text || '';
       _pendingAttachments = head.attachments || [];
       _pendingSessionIntent = head.intent || null;
       _renderAttachmentPreview();
       _onSend();
+      if (draftText.trim() || draftAttachments.length || draftIntent) {
+        _textarea.value = draftText;
+        _pendingAttachments = draftAttachments;
+        _pendingSessionIntent = draftIntent;
+        _renderAttachmentPreview();
+        _autoResizeTextarea();
+      }
     }, 0);
   }
 

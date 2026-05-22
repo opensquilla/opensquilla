@@ -441,6 +441,13 @@ def skills_uninstall(
     asyncio.run(_uninstall())
 
 
+# ── Meta-skill sub-commands ───────────────────────────────────────────────
+
+from opensquilla.cli.skills_meta_cmd import meta_app  # noqa: E402
+
+skills_app.add_typer(meta_app, name="meta")
+
+
 # ── Tap sub-commands ──────────────────────────────────────────────────────
 
 tap_app = typer.Typer(help="Manage custom skill source repositories (taps).")

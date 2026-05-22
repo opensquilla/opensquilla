@@ -132,9 +132,8 @@ def collect_invoked_skills(
     """Extract bundled-skill and meta-skill names invoked during a turn.
 
     Captures (in order):
-    - extra_first entries (typically the hard-takeover meta-skill name, which
-      doesn't appear as a tool segment — meta_resolution dispatches the DAG
-      directly without going through meta_invoke)
+    - extra_first entries (kept as a backwards-compatible escape hatch for
+      callers that need to inject names not present in turn_segments)
     - skill_view tool calls: input.name is the bundled skill name
     - meta_invoke tool calls: input.name is the meta-skill name
 
@@ -143,8 +142,10 @@ def collect_invoked_skills(
             the LLM (may contain text, tool_use, and tool_result entries mixed
             together — not a pre-filtered tool-call list).
         extra_first: optional list of skill names to prepend before scanning
-            turn_segments (e.g. ``[meta_match.plan.name]`` for hard-takeover
-            turns where no ``meta_invoke`` segment is ever emitted).
+            turn_segments. The runtime no longer needs this (soft-path only
+            means meta_invoke segments always appear when a meta-skill ran),
+            but the parameter is retained for callers that synthesize the
+            invoked list outside the normal turn flow.
 
     Returns a deduplicated list preserving first-occurrence order. Used by
     DecisionEntry.skills_invoked (SCHEMA_VERSION 10).
@@ -1878,161 +1879,19 @@ class TurnRunner:
             if _accepts_keyword_arg(agent.run_turn, "semantic_message"):
                 agent_run_kwargs["semantic_message"] = semantic_input
 
-            # ── Meta-Skill branch ─────────────────────────────────────────
-            # If meta_resolution matched a Meta-Skill during pipeline,
-            # route the turn through MetaOrchestrator instead of letting
-            # the LLM agent drive the work. Failures fall back to the
-            # normal agent with the SKILL.md body + partial outputs
-            # injected as context so the LLM can finish the task.
-            meta_match = turn.metadata.get("meta_match")
+            # ── Meta-Skill: soft path only ────────────────────────────────
+            # The hard-takeover branch (orchestrator-driven turn when
+            # ``meta_resolution`` matched a trigger) has been retired. A
+            # trigger match now produces a *soft hint* injected into
+            # ``system_prompt`` by ``engine.steps.meta_resolution``; the
+            # LLM decides whether to call ``meta_invoke(name=...)``, and
+            # the orchestrator runs as a tool inside ``Agent._run_one_streaming``
+            # (see ``tools.builtin.meta_tools.meta_invoke``). One execution
+            # path, observable end-to-end via ``agent.meta_invoke_eligible``.
 
             async def _build_event_source() -> AsyncIterator[AgentEvent]:
-                if meta_match is None:
-                    async for ev in agent.run_turn(
-                        turn_input,
-                        extra_messages=extra_msgs,
-                        **agent_run_kwargs,
-                    ):
-                        yield ev
-                    return
-
-                # Local import: ``skills.meta.orchestrator`` transitively
-                # depends on ``engine.agent``, importing it at module top
-                # would cycle at first load. Restricting the import to
-                # the meta branch also skips the cost when the turn does
-                # not use a Meta-Skill.
-                import opensquilla.skills.creator  # noqa: F401  # C1: register @tool decorators
-                from opensquilla.skills.meta.orchestrator import (
-                    MetaOrchestrator,
-                    make_agent_runner_from_parent,
-                    make_llm_chat_from_provider,
-                    make_tool_invoker_from_handler,
-                )
-
-                # The outer pipeline already guarantees provider is set
-                # whenever meta_match is present (meta_resolution runs
-                # AFTER resolve_model + apply_squilla_router); be loud
-                # if that invariant ever breaks instead of letting a
-                # None cast through into the orchestrator.
-                assert provider is not None, (
-                    "meta-skill branch entered with provider=None — "
-                    "pipeline ordering invariant violated"
-                )
-
-                runner = make_agent_runner_from_parent(
-                    provider=cast(LLMProvider, provider),
-                    base_config=agent.config,
-                    tool_definitions=agent.tool_definitions,
-                    tool_handler=agent.tool_handler,
-                    agent_factory=Agent,
-                )
-                llm_chat = make_llm_chat_from_provider(
-                    provider=cast(LLMProvider, provider),
-                    base_config=agent.config,
-                )
-                tool_invoker = (
-                    make_tool_invoker_from_handler(tool_handler=agent.tool_handler)
-                    if agent.tool_handler is not None
-                    else None
-                )
-                # The meta-orchestrator runs cross-skill pipelines whose
-                # ``skill_exec`` steps need to share a workspace (e.g.
-                # results.csv produced by one step is consumed by plot).
-                # Pass the agent's bootstrap workspace dir so each step's
-                # subprocess defaults to the same cwd.
-                try:
-                    _meta_workspace_dir: str | None = str(
-                        self._resolve_bootstrap_workspace_dir(agent_id),
-                    )
-                except Exception:  # noqa: BLE001 — workspace is optional
-                    _meta_workspace_dir = None
-
-                orch = MetaOrchestrator(
-                    agent_runner=runner,
-                    skill_loader=self._skill_loader,
-                    llm_chat=llm_chat,
-                    tool_invoker=tool_invoker,
-                    workspace_dir=_meta_workspace_dir,
-                    run_writer=self._meta_run_writer,
-                    triggered_by="hard_takeover",
-                    session_key=session_key,
-                    turn_id=turn_id,
-                )
-
-                # Stream each step as a tool-call card so the UI can show
-                # classify → ingest → memorize → index in real time, and
-                # forward nested sub-Agent events (skill_view, real tool
-                # calls, text deltas) verbatim. The orchestrator terminates
-                # its event stream with a single MetaResult sentinel.
-                from opensquilla.skills.meta.types import MetaResult as _MetaResult
-
-                result: _MetaResult | None = None
-                try:
-                    async for orch_ev in orch.iter_events(meta_match):
-                        if isinstance(orch_ev, _MetaResult):
-                            result = orch_ev
-                            continue
-                        yield orch_ev
-                except Exception as exc:  # noqa: BLE001 — must fall back gracefully
-                    # An exception raised out of ``iter_events`` (e.g.
-                    # scheduler crash, template render error, sub-Agent
-                    # blow-up) would otherwise bypass the SKILL.md
-                    # fallback below and surface as a generic outer
-                    # error to the user. Synthesize a failure result
-                    # so the same fallback path runs.
-                    log.warning(
-                        "meta_orchestrator.unhandled_exception",
-                        skill=meta_match.plan.name,
-                        error=str(exc),
-                    )
-                    result = _MetaResult(
-                        ok=False,
-                        error=f"orchestrator raised: {exc}",
-                    )
-
-                if result is None:
-                    result = _MetaResult(
-                        ok=False,
-                        error="orchestrator stream ended without a result",
-                    )
-
-                if result.ok:
-                    yield TextDeltaEvent(text=result.final_text)
-                    yield DoneEvent(
-                        text="",
-                        model=getattr(agent.config, "model_id", None) or "",
-                    )
-                    return
-
-                fallback_lines = [
-                    (
-                        f"[Meta-Skill {meta_match.plan.name!r} failed at step "
-                        f"{result.failed_step_id!r}: {result.error}]"
-                    ),
-                    "",
-                    "Partial outputs from completed steps:",
-                ]
-                for sid, text in result.step_outputs.items():
-                    # Match the step-card preview cap from commit 6e1fadd
-                    # (100 chars) so the fallback prompt does not
-                    # balloon when many partial outputs are present.
-                    snippet = (
-                        text if len(text) <= 100
-                        else f"{text[:80]}… ({len(text)} chars)"
-                    )
-                    fallback_lines.append(f"  [{sid}] {snippet}")
-                fallback_lines.extend(
-                    [
-                        "",
-                        "Fallback instructions (from the Meta-Skill body):",
-                        meta_match.plan.fallback_body[:2000],
-                        "",
-                        f"Original user request: {turn_input}",
-                    ],
-                )
-                fallback_msg = "\n".join(fallback_lines)
                 async for ev in agent.run_turn(
-                    fallback_msg,
+                    turn_input,
                     extra_messages=extra_msgs,
                     **agent_run_kwargs,
                 ):
@@ -2416,18 +2275,13 @@ class TurnRunner:
                 metadata=turn.metadata,
                 tool_profile=turn.metadata.get("tool_profile"),
             )
-            # N16: hard-takeover meta-skill turns never emit a meta_invoke
-            # segment; the meta_resolution step stashes the MetaMatch in
-            # turn.metadata and the DAG is dispatched directly.  Pull the
-            # plan name here so collect_invoked_skills can prepend it.
-            _meta_match_for_obs = turn.metadata.get("meta_match")
-            _meta_match_name: str | None = (
-                _meta_match_for_obs.plan.name
-                if _meta_match_for_obs is not None
-                and hasattr(_meta_match_for_obs, "plan")
-                and hasattr(_meta_match_for_obs.plan, "name")
-                else None
-            )
+            # Soft-path-only: when meta_resolution matched a trigger, the
+            # hint is injected into system_prompt and the LLM decides
+            # whether to call meta_invoke. If it did, the meta_invoke
+            # segment is already in turn_segments and collect_invoked_skills
+            # picks it up; if it didn't, the decision log correctly shows
+            # no meta-skill invocation (the trigger was *suggested* not
+            # *applied*). No extra_first injection needed anymore.
             self._emit_decision_entry(
                 turn_id=turn_id,
                 session_key=session_key,
@@ -2443,10 +2297,7 @@ class TurnRunner:
                 session_intent=session_intent,
                 done_event=done_event,
                 trace_id=trace_context.trace_id if trace_context is not None else None,
-                skills_invoked=collect_invoked_skills(
-                    turn_segments,
-                    extra_first=[_meta_match_name] if _meta_match_name else None,
-                ),
+                skills_invoked=collect_invoked_skills(turn_segments),
             )
             if pending_error_event is not None:
                 yield pending_error_event

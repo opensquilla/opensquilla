@@ -74,16 +74,16 @@ def _deterministic_gate(
 
 
 async def filter_skills(ctx: TurnContext) -> TurnContext:
-    """Gate, optionally filter, and inject skills into the system prompt."""
-    # MVP: a Meta-Skill match has taken over this turn; skip normal skill
-    # injection entirely so the orchestrator sees a clean prompt.
-    if ctx.metadata.get("meta_match") is not None:
-        ctx.metadata["filtered_skill_ids"] = []
-        ctx.metadata["skill_count"] = 0
-        ctx.metadata["skills_prompt_chars"] = 0
-        log.debug("skills_filter.skipped", reason="meta_match_active")
-        return ctx
+    """Gate, optionally filter, and inject skills into the system prompt.
 
+    Note: a ``meta_match`` in metadata used to short-circuit this step
+    when hard-takeover was active. The takeover branch was removed and
+    the trigger is now a *soft hint* injected by ``meta_resolution``, so
+    we never bypass skill injection here — the meta-skill in question
+    must still appear in ``<available_skills>`` so that the LLM can call
+    ``meta_invoke(name=...)`` for it. The hinted skill is pinned below
+    to defend against retrieval filters dropping it on noisy turns.
+    """
     skill_loader = ctx.metadata.get("skill_loader")
     if skill_loader is None:
         return ctx
@@ -107,6 +107,24 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
     # ── always skills bypass filter, guaranteed visibility ──
     pinned = [s for s in gated if s.always]
     filterable = [s for s in gated if not s.always]
+
+    # ── pin the meta-skill that meta_resolution matched ──
+    # The soft-hint in system_prompt references this skill by name; if the
+    # retriever (when filter_enabled=True) drops it from `<available_skills>`,
+    # the LLM can still call `meta_invoke(name=...)` from memory, but won't
+    # see the description block. Promote it to pinned to guarantee both.
+    meta_match = ctx.metadata.get("meta_match")
+    if meta_match is not None:
+        hinted_name = getattr(getattr(meta_match, "plan", None), "name", None)
+        if hinted_name:
+            already_pinned = any(getattr(s, "name", None) == hinted_name for s in pinned)
+            if not already_pinned:
+                promoted = [s for s in filterable if getattr(s, "name", None) == hinted_name]
+                if promoted:
+                    pinned = pinned + promoted
+                    filterable = [
+                        s for s in filterable if getattr(s, "name", None) != hinted_name
+                    ]
 
     skills_cfg = getattr(ctx.config, "skills", None) if ctx.config else None
     filter_enabled = getattr(skills_cfg, "filter_enabled", False) if skills_cfg else False

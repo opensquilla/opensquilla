@@ -169,8 +169,15 @@ async def run_dag(
 
             if on_step_begin is not None:
                 try:
+                    # codex-a P2 fix #4: record the step's declared
+                    # ``with_args`` template (per-step, distinguishable)
+                    # rather than the raw ``match.inputs`` (same for every
+                    # step, near-zero audit value). The rendered_inputs
+                    # column now stores the template; rendered values
+                    # remain visible in the per-step output and via the
+                    # gateway logs.
                     await on_step_begin(
-                        step.id, effective_skill, dict(match.inputs),
+                        step.id, effective_skill, dict(step.with_args),
                     )
                 except Exception as exc:  # noqa: BLE001
                     log.warning(
@@ -387,6 +394,22 @@ async def run_dag(
             if isinstance(item, Exception):
                 failure = item
                 failed_step_id = step_id
+                # codex-a P2 fix #3: mark the step row as ``failed`` so
+                # ``skills meta runs steps <id>`` does not show a stale
+                # ``running`` row after the run finalises. The failover
+                # path (``_FailoverTriggered``) is unchanged and still
+                # records ``substituted`` via ``on_step_failover``; only
+                # the hard-failure branch (no ``on_failure`` substitute)
+                # reaches this code path.
+                if on_step_finish is not None:
+                    try:
+                        await on_step_finish(step_id, "failed", None, str(item))
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "scheduler.on_step_finish_failed_exception_path",
+                            step=step_id,
+                            error=str(exc),
+                        )
                 seen_starts.discard(step_id)  # failed step's result already yielded
                 running.pop(step_id, None)
                 for tid, t in list(running.items()):

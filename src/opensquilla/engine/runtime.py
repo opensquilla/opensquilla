@@ -1601,6 +1601,8 @@ class TurnRunner:
             )
             turn.metadata.update(prompt_metadata)
             turn.metadata.update(tool_metadata)
+            if self._meta_run_writer is not None:
+                turn.metadata["meta_run_writer"] = self._meta_run_writer
             if self._config is not None and hasattr(self._config, "memory_mode_fingerprint"):
                 try:
                     turn.metadata["memory_mode_fingerprint"] = (

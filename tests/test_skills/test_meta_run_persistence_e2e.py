@@ -114,6 +114,23 @@ async def test_on_failure_records_substituted(writer_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_hard_failure_marks_step_failed(writer_db) -> None:
+    """codex-a P2 fix: hard step failure (no on_failure) marks the step row as 'failed'."""
+    plan = MetaPlan(
+        name="hard-fail", triggers=("t",), priority=10,
+        steps=(MetaStep(id="boom", skill="alpha", kind="agent"),),
+    )
+    await _drive_orchestrator(writer_db, plan, outputs={"boom": "__FAIL__"})
+    runs = writer_db.list_runs(name="hard-fail")
+    run = writer_db.get_run(runs[0].run_id)
+    assert run is not None
+    assert run.status == "failed"
+    # Critical: step row must be 'failed' not 'running'
+    assert run.steps[0].status == "failed"
+    assert run.steps[0].error  # non-empty
+
+
+@pytest.mark.asyncio
 async def test_cancellation_marks_cancelled(writer_db) -> None:
     """W5: orchestrator cancelled mid-run → status='cancelled'."""
     plan = MetaPlan(

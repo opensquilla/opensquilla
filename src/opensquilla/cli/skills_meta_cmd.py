@@ -11,11 +11,11 @@ import json
 import os
 import time
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 import typer
 
+from opensquilla.paths import state_dir
 from opensquilla.persistence.meta_run_writer import (
     MetaRunWriter,
     RunRecord,
@@ -34,7 +34,9 @@ def _resolve_db_path() -> str:
     env = os.environ.get("OPENSQUILLA_META_RUNS_DB")
     if env:
         return env
-    return str(Path.home() / ".opensquilla" / "state" / "gateway" / "session.db")
+    # Match gateway boot which writes to <state>/sessions.db (see
+    # ``opensquilla.gateway.boot._state_path(config, "sessions.db")``).
+    return str(state_dir("sessions.db"))
 
 
 def _open_writer() -> MetaRunWriter:

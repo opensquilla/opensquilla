@@ -24,8 +24,10 @@ large_outputs/artifact_ref, retries, when conditions, persistence to
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from opensquilla.engine.types import AgentConfig, AgentEvent
 from opensquilla.provider.protocol import LLMProvider
@@ -44,6 +46,11 @@ from opensquilla.skills.meta.templating import (
     resolve_route,  # noqa: F401 — re-exported in __all__
 )
 from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
+
+if TYPE_CHECKING:
+    from opensquilla.persistence.meta_run_writer import MetaRunWriter
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Injected-dependency protocols
@@ -86,6 +93,11 @@ class MetaOrchestrator:
         tool_invoker: ToolInvoker | None = None,
         workspace_dir: str | None = None,
         max_parallelism: int | None = 8,
+        # NEW (all optional — preserve legacy callers)
+        run_writer: MetaRunWriter | None = None,
+        triggered_by: str = "soft_meta_invoke",
+        session_key: str | None = None,
+        turn_id: str | None = None,
     ) -> None:
         self._agent_runner = agent_runner
         self._skill_loader = skill_loader
@@ -102,6 +114,16 @@ class MetaOrchestrator:
         # headroom while still containing pathological 20-way fans.
         # ``None`` = unbounded (preserved for advanced callers).
         self._max_parallelism = max_parallelism
+        # Optional persistence ledger (G4 — audit traces). When set,
+        # ``iter_events`` opens a run on entry, bridges scheduler
+        # begin/finish/failover callbacks to per-step writes, and
+        # finalises the row in the ``finally`` block (status keyed off
+        # cancellation vs. terminal MetaResult). ``None`` keeps the
+        # legacy path unchanged — zero rows written.
+        self._run_writer = run_writer
+        self._triggered_by = triggered_by
+        self._session_key = session_key
+        self._turn_id = turn_id
 
     async def run(self, match: MetaMatch) -> MetaResult:
         """Execute the plan, draining the streaming generator for the final result.
@@ -128,15 +150,137 @@ class MetaOrchestrator:
         ``step.kind``, optional pre-step ``skill_view`` preface) wired
         to this orchestrator's instance state and delegates the DAG
         traversal there.
+
+        When ``run_writer`` was injected at construction the wrapper also
+        opens an audit run on entry, bridges the scheduler's three
+        lifecycle hooks (begin / finish / failover) to the writer via
+        ``run_in_executor`` (the writer is sync sqlite, callbacks fire
+        from the event loop), and finalises the run in the ``finally``
+        block — ``cancelled`` if the consumer cancelled mid-stream,
+        ``ok`` / ``failed`` otherwise based on the terminal
+        :class:`MetaResult`. Writer exceptions are swallowed at
+        warning level: persistence is observability, never a turn killer.
         """
 
-        async for item in run_dag(
-            match,
-            dispatch_step_stream=self._dispatch_step_stream,
-            yield_skill_view_preface=self._yield_skill_view_preface,
-            max_parallelism=self._max_parallelism,
-        ):
-            yield item
+        run_id: str | None = None
+        loop = asyncio.get_running_loop()
+
+        async def _to_thread(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+            return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
+        if self._run_writer is not None:
+            try:
+                run_id = await _to_thread(
+                    self._run_writer.begin_run_sync,
+                    meta_skill_name=match.plan.name,
+                    meta_plan=match.plan,
+                    triggered_by=self._triggered_by,
+                    inputs=match.inputs,
+                    session_key=self._session_key,
+                    turn_id=self._turn_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("orchestrator.begin_run_failed: %s", exc)
+
+        # Build the three writer hooks (no-op if writer absent or
+        # begin_run failed to assign a run_id).
+        async def on_step_begin(
+            step_id: str,
+            effective_skill: str,
+            rendered_inputs: dict[str, Any],
+        ) -> None:
+            if run_id is None or self._run_writer is None:
+                return
+            step = next((s for s in match.plan.steps if s.id == step_id), None)
+            if step is None:
+                return
+            await _to_thread(
+                self._run_writer.begin_step_sync,
+                run_id=run_id,
+                step=step,
+                effective_skill=effective_skill,
+                rendered_inputs=rendered_inputs,
+            )
+
+        async def on_step_finish(
+            step_id: str,
+            status: str,
+            output_text: str | None,
+            error: str | None,
+        ) -> None:
+            if run_id is None or self._run_writer is None:
+                return
+            await _to_thread(
+                self._run_writer.finish_step_sync,
+                run_id=run_id,
+                step_id=step_id,
+                status=status,
+                output_text=output_text,
+                error=error,
+            )
+
+        async def on_step_failover(
+            failed_step_id: str,
+            substitute_step_id: str,
+            error: str,
+        ) -> None:
+            if run_id is None or self._run_writer is None:
+                return
+            await _to_thread(
+                self._run_writer.on_step_failover_sync,
+                run_id=run_id,
+                failed_step_id=failed_step_id,
+                substitute_step_id=substitute_step_id,
+                error=error,
+            )
+
+        final_result: MetaResult | None = None
+        cancelled = False
+        try:
+            async for item in run_dag(
+                match,
+                dispatch_step_stream=self._dispatch_step_stream,
+                yield_skill_view_preface=self._yield_skill_view_preface,
+                max_parallelism=self._max_parallelism,
+                on_step_begin=on_step_begin if self._run_writer else None,
+                on_step_finish=on_step_finish if self._run_writer else None,
+                on_step_failover=on_step_failover if self._run_writer else None,
+            ):
+                if isinstance(item, MetaResult):
+                    final_result = item
+                yield item
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            if run_id is not None and self._run_writer is not None:
+                try:
+                    if cancelled:
+                        await _to_thread(
+                            self._run_writer.finish_run_sync,
+                            run_id=run_id,
+                            status="cancelled",
+                            result=None,
+                        )
+                    elif final_result is not None:
+                        await _to_thread(
+                            self._run_writer.finish_run_sync,
+                            run_id=run_id,
+                            status="ok" if final_result.ok else "failed",
+                            result=final_result,
+                        )
+                    else:
+                        # Stream ended without a MetaResult and no
+                        # cancellation surfaced — treat as cancelled
+                        # (consumer broke out early).
+                        await _to_thread(
+                            self._run_writer.finish_run_sync,
+                            run_id=run_id,
+                            status="cancelled",
+                            result=None,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("orchestrator.finish_run_failed: %s", exc)
 
     async def _yield_skill_view_preface(
         self,

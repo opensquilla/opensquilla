@@ -81,6 +81,9 @@ EXISTING_META_BUNDLES = [
     "meta-web-to-pdf-briefing", "meta-github-pr-watch-digest",
     "meta-issue-to-pr-autopilot", "meta-long-running-build-watchdog",
     "meta-pdf-reformat-pipeline", "meta-scheduled-morning-digest",
+    "meta-stack-trace-investigator", "meta-arxiv-daily-digest-deck",
+    "meta-diagram-triangulation", "meta-codereview-current-diff",
+    "meta-pre-commit-quality-gate",
 ]
 
 

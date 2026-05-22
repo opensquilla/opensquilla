@@ -67,7 +67,10 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 - `history-explorer`
 - `latex-compile`
 - `memory`
+- `meta-arxiv-daily-digest-deck`
+- `meta-codereview-current-diff`
 - `meta-compliance-audit-bundle`
+- `meta-diagram-triangulation`
 - `meta-github-pr-watch-digest`
 - `meta-issue-to-pr-autopilot`
 - `meta-knowledge-base-bootstrap`
@@ -77,6 +80,7 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 - `meta-paper-write`
 - `meta-pdf-intelligence`
 - `meta-pdf-reformat-pipeline`
+- `meta-pre-commit-quality-gate`
 - `meta-research-to-deck`
 - `meta-scheduled-morning-digest`
 - `meta-security-review-bundle`
@@ -86,6 +90,7 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 - `meta-skill-smoke-test`
 - `meta-self-improving-skill-factory`
 - `meta-spreadsheet-insight`
+- `meta-stack-trace-investigator`
 - `meta-travel-planner`
 - `meta-web-research-to-report`
 - `meta-web-to-pdf-briefing`

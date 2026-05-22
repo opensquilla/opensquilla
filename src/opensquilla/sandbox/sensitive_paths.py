@@ -17,6 +17,15 @@ import re
 import shlex
 from pathlib import Path
 
+# Operator escape hatch — set OPENSQUILLA_SENSITIVE_PATHS_DISABLED=1 to no-op
+# the entire sensitive-path block layer. ONLY for trusted single-operator
+# environments / E2E testing where sandbox=false + sensitive_path checks
+# block valid agent commands like ``ls /etc/...``. Default off.
+_DISABLED = os.environ.get(
+    "OPENSQUILLA_SENSITIVE_PATHS_DISABLED", ""
+).lower() in ("1", "true", "yes", "on")
+
+
 # Directory prefixes whose contents must not be read/written/deleted by the agent
 # in default mode. Strings starting with ``~`` expand to the current user's
 # home at check time.
@@ -90,7 +99,11 @@ def is_sensitive_path(path: str) -> str | None:
 
     Accepts any absolute or tilde-prefixed path. Relative paths are returned
     as-is without match — callers should resolve beforehand if needed.
+
+    Honors :data:`_DISABLED` (env var ``OPENSQUILLA_SENSITIVE_PATHS_DISABLED``).
     """
+    if _DISABLED:
+        return None
     if not path:
         return None
     expanded = _comparison_path(path)
@@ -116,7 +129,11 @@ def sensitive_path_in_text(text: str) -> str | None:
     This is intentionally conservative glue for shell/Python-code scanners.
     Structured callers should still resolve concrete paths and call
     :func:`is_sensitive_path` directly.
+
+    Honors :data:`_DISABLED` (env var ``OPENSQUILLA_SENSITIVE_PATHS_DISABLED``).
     """
+    if _DISABLED:
+        return None
     if not text:
         return None
 
@@ -163,7 +180,11 @@ def sensitive_target_in_command(command: str) -> str | None:
 
     Multi-target commands (``rm /tmp/ok /etc/bad``) are each checked — the
     presence of a single sensitive path is enough to block the whole command.
+
+    Honors :data:`_DISABLED` (env var ``OPENSQUILLA_SENSITIVE_PATHS_DISABLED``).
     """
+    if _DISABLED:
+        return None
     from opensquilla.sandbox.intent_cache import _extract_intents
 
     for _kind, target in _extract_intents(command):

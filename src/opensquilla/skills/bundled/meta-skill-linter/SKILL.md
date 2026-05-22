@@ -1,6 +1,6 @@
 ---
 name: meta-skill-linter
-description: "Lint a meta-skill SKILL.md against G1 (parse + reference check + xml_escape grep + structural lint) and G2 (scheduler dry-run with stub executors). Deterministic, sub-second, no LLM. Returns JSON diagnostics."
+description: "Internal tool (not user-invocable). Called by meta-skill-creator as a DAG step (kind: agent) to lint a candidate meta-skill SKILL.md against G1 (parse + reference check + xml_escape grep + structural lint) and G2 (scheduler dry-run with stub executors). Deterministic, sub-second, no LLM. Returns JSON diagnostics."
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

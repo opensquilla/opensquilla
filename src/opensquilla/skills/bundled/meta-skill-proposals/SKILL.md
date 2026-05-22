@@ -1,6 +1,6 @@
 ---
 name: meta-skill-proposals
-description: "Manage ~/.opensquilla/proposals/ directory: write_proposal / list / accept. Used by meta-skill-creator's persist step and (Phase 2) by `opensquilla meta accept` CLI."
+description: "Internal tool (not user-invocable). Called by meta-skill-creator's persist step and by `opensquilla meta accept` CLI (Phase 2) to manage `~/.opensquilla/proposals/`: write_proposal / list / accept. Returns JSON."
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

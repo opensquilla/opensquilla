@@ -1,6 +1,6 @@
 ---
 name: meta-issue-to-pr-autopilot
-description: "Triage a GitHub issue, delegate a fix to coding-agent, draft the PR description, and open the PR."
+description: "Triage a GitHub issue, delegate a fix to coding-agent, draft the PR description, and open the PR. Use when the user names a specific issue (e.g. `#123` or full URL) and asks to fix it / open a PR for it / autopilot the issue end-to-end. NOT for: exploratory bug investigation (issue context too thin), issues blocked on cross-team discussion (auto-fix premature), or repos without `gh` auth configured."
 kind: meta
 meta_priority: 35
 always: false

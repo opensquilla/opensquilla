@@ -88,8 +88,6 @@ def _build_cli_dream(agent: str, *, force: bool = False, need_provider: bool = T
 
     dream = build_dream_factory(
         config=gw,
-        provider_selector=None,
-        tool_registry=None,
         turn_runner=None,
         need_provider=need_provider,
     )
@@ -373,7 +371,7 @@ def memory_dream_cmd(
         return
     if status:
         cursor = dream.cursor.load()
-        pending = len(dream._candidate_files())
+        pending = dream.pending_candidate_count()
         typer.echo(
             f"agent={agent} cursor={cursor} pending={pending} "
             f"memory_md_exists={dream.memory_md.exists()}"
@@ -383,9 +381,8 @@ def memory_dream_cmd(
     typer.echo(
         f"dream agent={agent} "
         f"processed={result.files_processed} "
-        f"deleted={result.files_deleted} "
-        f"phase1={result.phase1_status} "
-        f"phase2={result.phase2_status}"
+        f"evidence={result.evidence_status} "
+        f"apply={result.apply_status}"
     )
     if result.error:
         typer.echo(f"error: {result.error}", err=True)

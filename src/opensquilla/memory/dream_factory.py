@@ -11,8 +11,32 @@ from opensquilla.agents.scope import resolve_agent_workspace_dir
 from opensquilla.memory.dream import Dream
 
 
+def _router_model_routing_enabled(router_cfg: Any | None) -> bool:
+    if router_cfg is None or not getattr(router_cfg, "enabled", False):
+        return False
+    return str(getattr(router_cfg, "rollout_phase", "full") or "full") != "observe"
+
+
+def _dream_provider_target(config: Any) -> tuple[str, str]:
+    llm_cfg = getattr(config, "llm", None)
+    if llm_cfg is None:
+        return "", ""
+
+    router_cfg = getattr(config, "squilla_router", None)
+    if _router_model_routing_enabled(router_cfg):
+        tiers = getattr(router_cfg, "tiers", {}) or {}
+        t1 = tiers.get("t1") if isinstance(tiers, dict) else None
+        if not isinstance(t1, dict) or not str(t1.get("model") or "").strip():
+            raise RuntimeError("squilla_router.tiers.t1 model is required for Dream")
+        provider = str(t1.get("provider") or getattr(llm_cfg, "provider", "openrouter"))
+        model = str(t1["model"])
+        return provider, model
+
+    return str(getattr(llm_cfg, "provider", "openrouter")), str(getattr(llm_cfg, "model", ""))
+
+
 def build_dream_provider_selector(config: Any) -> Any | None:
-    """Build a ModelSelector using the gateway's LLM config precedence."""
+    """Build Dream's own selector from config-derived model policy."""
     llm_cfg = getattr(config, "llm", None)
     if llm_cfg is None:
         return None
@@ -23,6 +47,7 @@ def build_dream_provider_selector(config: Any) -> Any | None:
 
     from opensquilla.provider.selector import ModelSelector, ProviderConfig, SelectorConfig
 
+    provider, model = _dream_provider_target(config)
     base_url = os.environ.get("OPENROUTER_BASE_URL", "") or getattr(llm_cfg, "base_url", "")
     if base_url.endswith("/v1"):
         base_url = base_url[:-3]
@@ -31,8 +56,8 @@ def build_dream_provider_selector(config: Any) -> Any | None:
     return ModelSelector(
         SelectorConfig(
             primary=ProviderConfig(
-                provider=getattr(llm_cfg, "provider", "openrouter"),
-                model=getattr(llm_cfg, "model", ""),
+                provider=provider,
+                model=model,
                 api_key=api_key,
                 base_url=base_url,
                 proxy=proxy,
@@ -42,32 +67,17 @@ def build_dream_provider_selector(config: Any) -> Any | None:
     )
 
 
-def _clone_selector(provider_selector: Any) -> Any:
-    clone = getattr(provider_selector, "clone", None)
-    if callable(clone):
-        return clone()
-    return provider_selector
-
-
 def _resolve_provider(
     *,
-    provider_selector: Any | None,
     config: Any,
-    model_override: str | None,
     need_provider: bool,
 ) -> Any | None:
     if not need_provider:
         return None
 
-    selector = provider_selector or build_dream_provider_selector(config)
+    selector = build_dream_provider_selector(config)
     if selector is None:
         raise RuntimeError("no provider configured for Dream")
-
-    selector = _clone_selector(selector)
-    if model_override:
-        override_model = getattr(selector, "override_model", None)
-        if callable(override_model):
-            override_model(model_override)
 
     resolve = getattr(selector, "resolve", None)
     if not callable(resolve):
@@ -89,8 +99,6 @@ def _session_lock_for(turn_runner: Any | None, agent_id: str) -> Any | None:
 def build_dream_factory(
     *,
     config: Any,
-    provider_selector: Any | None = None,
-    tool_registry: Any | None = None,
     turn_runner: Any | None = None,
     workspace_for_agent: Callable[[str], Path] | None = None,
     need_provider: bool = True,
@@ -100,9 +108,6 @@ def build_dream_factory(
     if dream_cfg is None:
         raise RuntimeError("memory.dream config is missing")
 
-    model_override = getattr(dream_cfg, "model_override", None)
-    default_model = getattr(getattr(config, "llm", None), "model", "")
-
     def build_dream(agent_id: str) -> Dream:
         workspace = (
             workspace_for_agent(agent_id)
@@ -111,18 +116,13 @@ def build_dream_factory(
         )
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / "memory").mkdir(parents=True, exist_ok=True)
-        model = model_override or default_model
         provider = _resolve_provider(
-            provider_selector=provider_selector,
             config=config,
-            model_override=model_override,
             need_provider=need_provider,
         )
         return Dream(
             workspace=workspace,
             provider=provider,
-            model=model,
-            tool_registry=tool_registry,
             session_lock=_session_lock_for(turn_runner, agent_id),
             config=dream_cfg,
             agent_id=agent_id,

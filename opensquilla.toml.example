@@ -136,7 +136,7 @@ source = "workspace"
 
 [memory.dream]
 # Dream consolidation is safety-first by default. Background scheduling and
-# destructive MEMORY.md edits require explicit opt-in.
+# curated MEMORY.md writes require explicit opt-in.
 enabled = false
 preview_mode = true
 auto_schedule = false

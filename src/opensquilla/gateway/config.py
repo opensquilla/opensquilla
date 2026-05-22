@@ -353,10 +353,11 @@ class PromptCacheConfig(BaseSettings):
 class DreamConfig(BaseModel):
     """Per-agent Dream consolidation cron configuration."""
 
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = False
     interval_h: int = Field(default=24, ge=1)
     cron: str | None = None  # e.g. "0 3 * * *"; overrides interval_h when set
-    model_override: str | None = None
     max_batch_size: int = Field(default=20, ge=1)
     max_iterations: int = Field(default=15, ge=1)
     min_batch_size: int = Field(default=1, ge=1)
@@ -367,6 +368,11 @@ class DreamConfig(BaseModel):
     candidate_file_max_chars: int = Field(default=4_000, ge=0)
     candidate_total_max_chars: int = Field(default=24_000, ge=0)
     fallback_total_max_chars: int = Field(default=80_000, ge=0)
+    evidence_min_score: float = Field(default=0.55, ge=0.0, le=1.0)
+    evidence_min_seen_count: int = Field(default=1, ge=1)
+    evidence_negative_recurrence_threshold: int = Field(default=2, ge=1)
+    evidence_curated_writes_enabled: bool = True
+    evidence_quarantine_enabled: bool = True
 
 
 class SafetyConfig(BaseModel):

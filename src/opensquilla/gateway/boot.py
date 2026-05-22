@@ -2056,8 +2056,6 @@ async def start_gateway_server(
         dream_handler = make_memory_dream_handler(
             build_dream=build_dream_factory(
                 config=config,
-                provider_selector=svc.provider_selector,
-                tool_registry=svc.tool_registry,
                 turn_runner=turn_runner,
             ),
             should_skip=lambda: (

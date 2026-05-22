@@ -46,9 +46,8 @@ def make_memory_dream_handler(
             summary = (
                 f"dream agent={agent_id} "
                 f"processed={result.files_processed} "
-                f"deleted={result.files_deleted} "
-                f"phase1={result.phase1_status} "
-                f"phase2={result.phase2_status}"
+                f"evidence={result.evidence_status} "
+                f"apply={result.apply_status}"
             )
             logger.info(
                 "dream.run.complete",

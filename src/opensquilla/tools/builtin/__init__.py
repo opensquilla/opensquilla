@@ -18,6 +18,7 @@ _NAMES = [
     "git",
     "media",
     "messaging",
+    "nodes",
     "patch",
     "sessions",
     "session_search",

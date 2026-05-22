@@ -107,6 +107,34 @@ def test_owner_schema_keeps_canonical_tools_and_subagents_stays_explicit_only() 
     assert "create_pptx" in surfaced_names
 
 
+def test_node_runtime_stubs_stay_hidden_until_explicitly_surfaced() -> None:
+    import opensquilla.tools.builtin  # noqa: F401
+    from opensquilla.tools.registry import get_default_registry
+
+    registry = get_default_registry()
+    owner_ctx = ToolContext(is_owner=True, caller_kind=CallerKind.AGENT)
+
+    default_tools = registry.to_tool_definitions(owner_ctx)
+    assert {tool.name for tool in default_tools}.isdisjoint({"nodes", "canvas"})
+
+    surfaced_ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.AGENT,
+        surfaced_tools={"nodes", "canvas"},
+    )
+    surfaced_tools = {
+        tool.name: tool.description.lower()
+        for tool in registry.to_tool_definitions(surfaced_ctx)
+        if tool.name in {"nodes", "canvas"}
+    }
+
+    assert set(surfaced_tools) == {"nodes", "canvas"}
+    assert "node runtime" in surfaced_tools["nodes"]
+    assert "unavailable" in surfaced_tools["nodes"]
+    assert "node runtime" in surfaced_tools["canvas"]
+    assert "unavailable" in surfaced_tools["canvas"]
+
+
 def test_web_owner_schema_hides_basic_pptx_fallback_by_default() -> None:
     import opensquilla.tools.builtin  # noqa: F401
     from opensquilla.tools.registry import get_default_registry

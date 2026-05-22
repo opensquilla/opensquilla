@@ -59,21 +59,21 @@ If none of those file-authoring tools are available:
 In all cases, do not paste full file source as the deliverable. Source code is
 appropriate only when the user explicitly asks for code.
 
-## When to use
+## Use cases
 
 - HTML/Jinja template + content → styled PDF report
 - Markdown rendered to HTML → printable PDF
 - Email content → archival PDF
 - Generated dashboards (HTML + screenshots) → shareable PDF
 
-## When NOT to use
+## Limitations
 
-- Source data is structured (JSON, dataframe) and there is no HTML —
-  use `pdf-toolkit` (reportlab) directly.
+- Source data is structured (JSON, dataframe) with no HTML — use
+  `pdf-toolkit` (reportlab) directly instead.
 - Source PDF needs editing — use `pdf-toolkit` (pypdf path).
 - Need pixel-perfect Word-style document layout — use the `docx` skill.
-- Need to render dynamic JavaScript-driven content — WeasyPrint does not
-  execute JS. Pre-render the page with a headless browser first.
+- Need dynamic JavaScript-driven content — WeasyPrint does not execute
+  JS; pre-render with a headless browser first.
 
 ## Quick start
 

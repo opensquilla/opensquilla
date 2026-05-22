@@ -36,19 +36,17 @@ returning a normalized result list. Built on `httpx` and `beautifulsoup4`
 (both already in OpenSquilla default dependencies, so no extra install
 beyond `pip install opensquilla`).
 
-## When to use
+## Use cases
 
-- Building a `deep-research` round and you want diverse engine coverage
+- Building a `deep-research` round with diverse engine coverage
 - Fact-check a claim against >1 engine
 - Compare what Bing returns vs DuckDuckGo for the same query
-- Search Chinese-language sources via Baidu/Sogou/360 alongside global
-  engines
+- Search Chinese-language sources via Baidu/Sogou/360 alongside global engines
 
-## When NOT to use
+## Limitations
 
-- A single engine is sufficient — call its API directly
-- The user wants headless-browser-driven scraping with full DOM rendering
-  — this skill is HTTP-only
+- A single engine sufficient → call its API directly instead
+- Need headless-browser DOM rendering → this skill is HTTP-only
 
 ## Quick start
 

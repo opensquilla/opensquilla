@@ -1,6 +1,6 @@
 ---
 name: tmux
-description: Remote-control tmux sessions for interactive CLIs by sending keystrokes and scraping pane output.
+description: "Remote-control tmux sessions for interactive CLIs by sending keystrokes and scraping pane output. Use when: (1) monitoring Claude/Codex sessions running in tmux, (2) sending input to interactive terminal applications, (3) scraping output from long-running processes inside tmux, (4) navigating tmux panes/windows programmatically, or (5) checking on background work in existing sessions. NOT for: one-off shell commands (use exec_command), starting new background processes (use background_process), or non-tmux interactive processes."
 provenance:
   origin: openclaw-derived
   license: MIT
@@ -35,26 +35,6 @@ metadata:
 # tmux Session Control
 
 Control tmux sessions by sending keystrokes and reading output. Essential for managing Claude Code sessions.
-
-## When to Use
-
-✅ **USE this skill when:**
-
-- Monitoring Claude/Codex sessions in tmux
-- Sending input to interactive terminal applications
-- Scraping output from long-running processes in tmux
-- Navigating tmux panes/windows programmatically
-- Checking on background work in existing sessions
-
-## When NOT to Use
-
-❌ **DON'T use this skill when:**
-
-- Running one-off shell commands → use `exec_command` directly
-- Starting new background processes → use `background_process`
-- Non-interactive scripts → use `exec_command`
-- The process isn't in tmux
-- You need to create a new tmux session → use `exec_command` with `tmux new-session`
 
 ## Example Sessions
 

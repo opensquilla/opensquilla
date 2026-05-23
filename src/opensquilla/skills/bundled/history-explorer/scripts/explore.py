@@ -11,8 +11,6 @@ import argparse
 import json
 import os
 import sys
-from collections import Counter
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # Derive the opensquilla package root from this file's location.
@@ -23,6 +21,16 @@ from pathlib import Path
 # Works for both source-tree checkouts and wheel installs (site-packages).
 _OPENSQUILLA_ROOT = Path(__file__).resolve().parents[4]
 _BUNDLED = _OPENSQUILLA_ROOT / "skills" / "bundled"
+
+# Ensure opensquilla package is importable so we can share the aggregation
+# logic with in-tree callers (skills.creator.auto_propose, tests, etc).
+if str(_OPENSQUILLA_ROOT.parent) not in sys.path:
+    sys.path.insert(0, str(_OPENSQUILLA_ROOT.parent))
+
+from opensquilla.observability.decision_log_aggregate import (  # noqa: E402
+    aggregate_co_occurrences,
+    aggregate_meta_usage,
+)
 
 
 def _resolve_log_dir(cli_arg: str | None) -> Path:
@@ -47,80 +55,6 @@ def _resolve_log_dir(cli_arg: str | None) -> Path:
     if env_state:
         return (Path(env_state).expanduser() / "logs").resolve()
     return (Path.home() / ".opensquilla" / "logs").resolve()
-
-
-def _parse_log_line(line: str) -> dict | None:
-    line = line.strip()
-    if not line:
-        return None
-    try:
-        return json.loads(line)
-    except json.JSONDecodeError:
-        return None
-
-
-def _within_window(ts_str: str, cutoff: datetime) -> bool:
-    try:
-        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    return ts >= cutoff
-
-
-def aggregate_co_occurrences(log_dir: Path, window_days: int, top_k: int) -> list[dict]:
-    cutoff = datetime.now(UTC) - timedelta(days=window_days)
-    counter: Counter[tuple[str, ...]] = Counter()
-    if not log_dir.is_dir():
-        return []
-    for log_path in sorted(log_dir.glob("decisions-*.jsonl")):
-        for raw in log_path.read_text(encoding="utf-8").splitlines():
-            payload = _parse_log_line(raw)
-            if not payload:
-                continue
-            if not _within_window(payload.get("ts", ""), cutoff):
-                continue
-            skills = payload.get("skills_invoked") or []
-            if not isinstance(skills, list) or len(skills) < 2:
-                continue
-            counter[tuple(skills)] += 1
-    return [{"skills": list(combo), "freq": freq} for combo, freq in counter.most_common(top_k)]
-
-
-def aggregate_meta_usage(
-    log_dir: Path,
-    window_days: int,
-    meta_names: set[str] | None = None,
-) -> list[dict]:
-    """Count how often each kind=meta skill was invoked.
-
-    Args:
-        log_dir: decision-log directory containing decisions-*.jsonl files.
-        window_days: time window for inclusion.
-        meta_names: set of skill names where kind == "meta". When None,
-            falls back to the name-prefix heuristic (skill.startswith("meta-")).
-            The heuristic is less accurate because helper bundles like
-            meta-skill-linter / meta-skill-proposals / meta-skill-smoke-test
-            are kind=skill but share the prefix (N12 fix).
-    """
-    cutoff = datetime.now(UTC) - timedelta(days=window_days)
-    counter: Counter[str] = Counter()
-    if not log_dir.is_dir():
-        return []
-    for log_path in sorted(log_dir.glob("decisions-*.jsonl")):
-        for raw in log_path.read_text(encoding="utf-8").splitlines():
-            payload = _parse_log_line(raw)
-            if not payload or not _within_window(payload.get("ts", ""), cutoff):
-                continue
-            for skill in payload.get("skills_invoked") or []:
-                if not isinstance(skill, str):
-                    continue
-                # Prefer the real catalog set; fall back to prefix heuristic.
-                if meta_names is not None:
-                    if skill in meta_names:
-                        counter[skill] += 1
-                elif skill.startswith("meta-"):
-                    counter[skill] += 1
-    return [{"meta_skill_id": name, "invocation_count": ct} for name, ct in counter.most_common()]
 
 
 def _load_meta_names() -> set[str]:

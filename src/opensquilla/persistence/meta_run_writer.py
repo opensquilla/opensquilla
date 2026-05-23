@@ -266,7 +266,9 @@ class MetaRunWriter:
         *,
         meta_skill_name: str,
         meta_plan: MetaPlan,
-        triggered_by: Literal["hard_takeover", "soft_meta_invoke"],
+        triggered_by: Literal[
+            "hard_takeover", "soft_meta_invoke", "auto_cron", "auto_dream",
+        ],
         inputs: Mapping[str, Any],
         session_key: str | None,
         turn_id: str | None,

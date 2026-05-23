@@ -118,6 +118,12 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     # skills → tools: creator library (skills.creator.proposer) registers
     # tool descriptors via tools.registry. Same controlled-exception category.
     ("skills", "tools"),
+    # skills → observability: skills.creator.auto_propose imports the
+    # decision-log co-occurrence aggregator from
+    # observability.decision_log_aggregate (lifted out of the bundled
+    # history-explorer script so cron handler + dream-hook + the bundled
+    # script all share one source of truth).
+    ("skills", "observability"),
     ("tools", "agents"),
     ("tools", "channels"),
     ("tools", "engine"),

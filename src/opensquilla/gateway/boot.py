@@ -1947,6 +1947,50 @@ async def start_gateway_server(
             heartbeat_loop_ref=lambda: heartbeat_loop,
             workspace_resolver=_cron_workspace_resolver,
         )
+        # Path 2 wiring: when on_dream_complete is on, build a post-dream
+        # hook that drives the same auto_propose library function the
+        # cron handler uses (Path 1). The hook is built lazily inside
+        # this closure so it can pick up the builder ServiceContainer
+        # populated below; here we install the trampoline.
+        async def _post_dream_propose(agent_id: str) -> None:
+            from opensquilla.skills.creator.auto_propose import auto_propose
+
+            cfg = getattr(svc, "auto_propose_config", None)
+            builder = getattr(svc, "auto_propose_orchestrator_builder", None)
+            log_dir_ = getattr(svc, "auto_propose_log_dir", None)
+            proposals_dir_ = getattr(svc, "auto_propose_proposals_dir", None)
+            if cfg is None or builder is None or log_dir_ is None or proposals_dir_ is None:
+                # Path 1 wiring didn't run (auto_propose flags both off);
+                # nothing to do.
+                return
+            if not getattr(cfg, "on_dream_complete", False):
+                return
+            if svc.skill_loader is None:
+                return
+            try:
+                result = await auto_propose(
+                    orchestrator=builder(agent_id),
+                    skill_loader=svc.skill_loader,
+                    log_dir=log_dir_,
+                    proposals_dir=proposals_dir_,
+                    window_days=cfg.window_days,
+                    min_freq=cfg.min_freq,
+                    top_k=cfg.top_k,
+                    triggered_by="dream",
+                )
+                log.info(
+                    "auto_propose.dream_hook.complete",
+                    agent_id=agent_id,
+                    summary=result.summary(),
+                    proposal_ids=result.proposals_created,
+                )
+            except Exception as exc:  # noqa: BLE001 — non-fatal to dream
+                log.warning(
+                    "auto_propose.dream_hook.failed",
+                    agent_id=agent_id,
+                    error=str(exc),
+                )
+
         dream_handler = make_memory_dream_handler(
             build_dream=build_dream_factory(
                 config=config,
@@ -1957,6 +2001,7 @@ async def start_gateway_server(
             should_skip=lambda: (
                 "disabled" if not getattr(config.memory.dream, "enabled", False) else None
             ),
+            post_dream_hook=_post_dream_propose,
         )
         svc.cron_scheduler.register_handler("agent_run", agent_handler)
         svc.cron_scheduler.register_handler("system_event", system_handler)

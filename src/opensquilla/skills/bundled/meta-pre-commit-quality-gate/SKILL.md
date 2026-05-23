@@ -14,17 +14,11 @@ provenance:
 composition:
   steps:
     - id: collect_staged
-      kind: agent
-      skill: coding-agent
+      kind: skill_exec
+      skill: git-diff
       with:
-        task: |
-          Run `git diff --cached --name-only` in the current working directory.
-
-          Reply with ONLY the staged file paths, one per line. If no files are
-          staged, reply with the literal single line: NO_STAGED_FILES
-
-          Context from the user invocation (diagnostic only):
-          {{ inputs.user_message | xml_escape | truncate(200) }}
+        mode: staged_files
+        cwd: "{{ inputs.workspace_dir | default('.') }}"
     - id: run_ruff
       kind: agent
       skill: coding-agent

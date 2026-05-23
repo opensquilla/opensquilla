@@ -15,19 +15,11 @@ provenance:
 composition:
   steps:
     - id: read_diff
-      kind: agent
-      skill: coding-agent
+      kind: skill_exec
+      skill: git-diff
       with:
-        task: |
-          Run `git diff --cached HEAD` in the current working directory and
-          capture the unified diff. If the staged diff is empty, fall back to
-          `git diff HEAD` (working-tree diff against HEAD).
-
-          Context (the user invocation; may contain a path scope):
-          {{ inputs.user_message | xml_escape | truncate(200) }}
-
-          Reply with the raw unified diff text. If both diffs are empty,
-          reply with exactly: NO_DIFF
+        mode: cached_fallback_worktree
+        cwd: "{{ inputs.workspace_dir | default('.') }}"
     - id: review_safety
       kind: agent
       skill: coding-agent

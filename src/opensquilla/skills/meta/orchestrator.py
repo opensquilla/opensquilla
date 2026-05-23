@@ -45,7 +45,7 @@ from opensquilla.skills.meta.templating import (
     render_with_args,  # noqa: F401 — re-exported in __all__
     resolve_route,  # noqa: F401 — re-exported in __all__
 )
-from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
+from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaResult, MetaStep
 
 if TYPE_CHECKING:
     from opensquilla.persistence.meta_run_writer import MetaRunWriter
@@ -247,6 +247,20 @@ class MetaOrchestrator:
                 on_step_failover=on_step_failover if self._run_writer else None,
             ):
                 if isinstance(item, MetaResult):
+                    # Resolve user-facing ``final_text`` per
+                    # ``plan.final_text_mode`` before yielding. The
+                    # scheduler always seeds ``final_text`` with the last
+                    # non-substitute step's output; "auto" mode replaces
+                    # that with an LLM-summarised Markdown blurb so the
+                    # WebUI doesn't show a raw JSON or path. "raw" and
+                    # "step:<id>" modes preserve the legacy behaviour for
+                    # skills whose last step is already user-friendly.
+                    if item.ok:
+                        item.final_text = await self._resolve_final_text(
+                            plan=match.plan,
+                            current_final_text=item.final_text,
+                            step_outputs=item.step_outputs,
+                        )
                     final_result = item
                 yield item
         except asyncio.CancelledError:
@@ -349,6 +363,95 @@ class MetaOrchestrator:
             skill_loader=self._skill_loader,
         ):
             yield item
+
+    async def _resolve_final_text(
+        self,
+        *,
+        plan: MetaPlan,
+        current_final_text: str,
+        step_outputs: dict[str, str],
+    ) -> str:
+        """Derive ``MetaResult.final_text`` per ``plan.final_text_mode``.
+
+        - ``"raw"``         → preserve scheduler-seeded last-step output.
+        - ``"step:<id>"``   → outputs[id] verbatim (falls through to current
+                              on miss so callers never get an empty reply).
+        - ``"auto"``/other  → LLM post-processes step_outputs into a short
+                              Markdown summary; falls back to the seeded
+                              value on any failure (missing llm_chat,
+                              provider error, empty LLM reply).
+        """
+        mode = (plan.final_text_mode or "auto").strip()
+
+        if mode == "raw":
+            return current_final_text
+        if mode.startswith("step:"):
+            sid = mode[len("step:"):].strip()
+            return step_outputs.get(sid, current_final_text)
+        if mode != "auto":
+            log.warning(
+                "orchestrator.unknown_final_text_mode",
+                mode=mode,
+                skill=plan.name,
+            )
+            return current_final_text
+
+        # auto: synthesize a friendly Markdown summary from step_outputs.
+        if self._llm_chat is None or not step_outputs:
+            return current_final_text
+        try:
+            summary = await self._summarize_step_outputs(plan, step_outputs)
+        except Exception as exc:  # noqa: BLE001 — best-effort UX layer
+            log.warning(
+                "orchestrator.final_text_summarize_failed",
+                skill=plan.name,
+                error=str(exc),
+            )
+            return current_final_text
+        return summary if summary.strip() else current_final_text
+
+    async def _summarize_step_outputs(
+        self,
+        plan: MetaPlan,
+        step_outputs: dict[str, str],
+    ) -> str:
+        """One-shot LLM call to render step_outputs as a short Markdown summary.
+
+        Truncates each step's output to 1200 chars to keep the prompt
+        bounded (24 steps × 1200 ≈ 29k chars, comfortably inside 32k
+        context for budget reasoners). Returns the raw LLM text or an
+        empty string if the call produced no content; caller decides
+        whether to fall back to the legacy raw value.
+        """
+        if self._llm_chat is None:
+            return ""
+        system_prompt = (
+            "You write a brief Markdown summary (3-6 lines max) of a "
+            "meta-skill DAG run, addressed to the operator who triggered "
+            "it. The run already succeeded; open with a ✅ emoji on the "
+            "first line.\n"
+            "Include:\n"
+            "  • the meta-skill name in backticks\n"
+            "  • the most important deliverable from step_outputs — "
+            "a file path, artifact ID, proposal ID, URL, or short "
+            "headline; quote it verbatim, do not paraphrase\n"
+            "  • a one-line next-step hint where one is natural "
+            "(\"Run X to apply\", \"Open the file at Y\", \"Verify "
+            "with Z\") — omit if no obvious next step\n"
+            "Be terse, no preamble, no markdown headings other than the "
+            "leading ✅ line. Reply in the same language as the "
+            "deliverables (Chinese if outputs are Chinese, English "
+            "otherwise)."
+        )
+        snippets: list[str] = []
+        for sid, raw in step_outputs.items():
+            truncated = (raw or "")[:1200]
+            snippets.append(f"### step `{sid}`\n{truncated}")
+        user_msg = (
+            f"Meta-skill: `{plan.name}`\n\n"
+            + ("\n\n".join(snippets) if snippets else "(no step outputs)")
+        )
+        return (await self._llm_chat(system_prompt, user_msg)).strip()
 
 
 def make_agent_runner_from_parent(

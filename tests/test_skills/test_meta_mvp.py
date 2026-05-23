@@ -39,7 +39,12 @@ def _make_meta_spec(
     kind: str = "meta",
     priority: int = 0,
     content: str = "fallback body text",
+    final_text_mode: str = "raw",
 ) -> SkillSpec:
+    # Default to "raw" in the test fixture so legacy unit tests that
+    # count llm_chat calls don't get an extra invocation from the auto
+    # final-text summariser. Tests that exercise the auto path opt in
+    # explicitly with ``final_text_mode="auto"``.
     return SkillSpec(
         name=name,
         description="test meta skill",
@@ -50,6 +55,7 @@ def _make_meta_spec(
         kind=kind,
         meta_priority=priority,
         composition_raw=composition,
+        final_text_mode=final_text_mode,
     )
 
 
@@ -928,6 +934,149 @@ async def test_orchestrator_llm_classify_uses_llm_chat_when_wired() -> None:
     sys_prompt, user_msg = chat_calls[0]
     assert "URL | PDF | TEXT" in sys_prompt
     assert "https://x" in user_msg
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_final_text_auto_runs_llm_summary() -> None:
+    """``final_text_mode='auto'`` (default for new skills) replaces the
+    scheduler-seeded last-step output with an LLM-generated Markdown
+    summary so the WebUI doesn't display raw JSON/paths."""
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "render", "skill": "summarize", "with": {"text": "x"}},
+            ],
+        },
+        final_text_mode="auto",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    skill_spec = _make_skill_spec("summarize", "Summarise input briefly.")
+    loader = _FakeLoader([skill_spec])
+
+    chat_calls: list[tuple[str, str]] = []
+
+    async def fake_chat(system_prompt: str, user_message: str) -> str:
+        chat_calls.append((system_prompt, user_message))
+        return "✅ Meta-skill `meta-x` finished. See `out.txt`."
+
+    async def stub_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        yield TextDeltaEvent(text="raw-last-step-output-NOT-friendly")
+
+    orch = MetaOrchestrator(
+        agent_runner=stub_runner,
+        skill_loader=loader,
+        llm_chat=fake_chat,
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+    assert result.ok, result.error
+    assert result.final_text.startswith("✅")
+    assert "raw-last-step-output" not in result.final_text
+    # exactly one llm_chat call (no llm_classify in this spec → only summary)
+    assert len(chat_calls) == 1
+    summary_system, summary_user = chat_calls[0]
+    assert "Markdown summary" in summary_system
+    assert "meta-x" in summary_user
+    assert "raw-last-step-output-NOT-friendly" in summary_user
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_final_text_raw_preserves_last_output() -> None:
+    """``final_text_mode='raw'`` skips the summariser."""
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "render", "skill": "summarize", "with": {"text": "x"}},
+            ],
+        },
+        final_text_mode="raw",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader([_make_skill_spec("summarize", "")])
+
+    chat_calls: list[tuple[str, str]] = []
+
+    async def fake_chat(s: str, u: str) -> str:
+        chat_calls.append((s, u))
+        return "should-not-be-used"
+
+    async def stub_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        yield TextDeltaEvent(text="raw-deliverable")
+
+    orch = MetaOrchestrator(
+        agent_runner=stub_runner,
+        skill_loader=loader,
+        llm_chat=fake_chat,
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+    assert result.ok
+    assert result.final_text == "raw-deliverable"
+    assert chat_calls == []  # no summariser invocation
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_final_text_step_picks_named_output() -> None:
+    """``final_text_mode='step:<id>'`` picks a specific step output."""
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "first", "skill": "summarize", "with": {"text": "x"}},
+                {"id": "second", "skill": "summarize", "depends_on": ["first"],
+                 "with": {"text": "y"}},
+            ],
+        },
+        final_text_mode="step:first",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader([_make_skill_spec("summarize", "")])
+
+    call_count = {"n": 0}
+
+    async def numbered_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        call_count["n"] += 1
+        yield TextDeltaEvent(text=f"output-from-call-{call_count['n']}")
+
+    orch = MetaOrchestrator(
+        agent_runner=numbered_runner,
+        skill_loader=loader,
+        llm_chat=None,  # not needed; "step:" mode never calls llm_chat
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+    assert result.ok
+    # first runs first → output-from-call-1; second runs second → call-2;
+    # final_text should pick `first`, not the last step.
+    assert result.final_text == "output-from-call-1"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_final_text_auto_falls_back_when_llm_missing() -> None:
+    """``auto`` mode without an ``llm_chat`` instance preserves the
+    scheduler-seeded text (degraded mode used by older tests / CLI)."""
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "render", "skill": "summarize", "with": {"text": "x"}},
+            ],
+        },
+        final_text_mode="auto",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader([_make_skill_spec("summarize", "")])
+
+    async def stub_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        yield TextDeltaEvent(text="fallback-deliverable")
+
+    orch = MetaOrchestrator(
+        agent_runner=stub_runner,
+        skill_loader=loader,
+        llm_chat=None,  # not wired
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+    assert result.ok
+    assert result.final_text == "fallback-deliverable"
 
 
 @pytest.mark.asyncio

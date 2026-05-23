@@ -80,6 +80,17 @@ class MetaPlan:
     priority: int
     steps: tuple[MetaStep, ...]
     fallback_body: str = ""
+    # How MetaOrchestrator should derive the user-facing
+    # ``MetaResult.final_text``:
+    #   "auto" (default): post-process step_outputs via a single LLM call
+    #     into a short Markdown summary (status + key deliverables + next
+    #     step). Adds ~1-2s and ~¥0.001 per DAG run on v4-flash.
+    #   "raw": legacy behaviour — return the last non-substitute step's
+    #     output verbatim. Use when the last step already produces a
+    #     Markdown report (e.g. summarize / deep-research).
+    #   "step:<step_id>": return outputs[step_id] verbatim. Use to point
+    #     at a specific deliverable step that is not the last.
+    final_text_mode: str = "auto"
 
 
 @dataclass(frozen=True)

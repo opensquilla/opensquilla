@@ -139,12 +139,17 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
     priority = int(getattr(spec, "meta_priority", 0) or 0)
     fallback_body = getattr(spec, "content", "") or ""
 
+    final_text_mode = str(
+        getattr(spec, "final_text_mode", "auto") or "auto",
+    ).strip() or "auto"
+
     return MetaPlan(
         name=spec.name,
         triggers=tuple(str(t) for t in triggers_raw),
         priority=priority,
         steps=tuple(steps),
         fallback_body=fallback_body,
+        final_text_mode=final_text_mode,
     )
 
 

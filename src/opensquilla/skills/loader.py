@@ -543,6 +543,13 @@ class SkillLoader:
             entrypoint_raw = frontmatter.get("entrypoint")
             entrypoint = entrypoint_raw if isinstance(entrypoint_raw, dict) else None
 
+            # final_text_mode is a meta-skill-only optional field; non-meta
+            # skills keep the default "auto" but never consume it.
+            final_text_mode_raw = frontmatter.get("final_text_mode", "auto")
+            final_text_mode = (
+                str(final_text_mode_raw).strip() if final_text_mode_raw else "auto"
+            ) or "auto"
+
             return SkillSpec(
                 name=name,
                 description=description,
@@ -565,6 +572,7 @@ class SkillLoader:
                 kind=kind,
                 meta_priority=meta_priority,
                 composition_raw=composition_raw,
+                final_text_mode=final_text_mode,
                 entrypoint=entrypoint,
             )
         except Exception as exc:

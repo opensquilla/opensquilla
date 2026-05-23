@@ -95,6 +95,11 @@ class SkillSpec:
     kind: str = "skill"
     meta_priority: int = 0
     composition_raw: dict[str, object] | None = None
+    # Optional. How MetaOrchestrator should derive ``final_text``:
+    #   "auto" (default) — LLM post-processes step_outputs into a summary
+    #   "raw"            — last non-substitute step output verbatim
+    #   "step:<step_id>" — outputs[step_id] verbatim
+    final_text_mode: str = "auto"
     # Wrapped-CLI manifest: when present, the skill can be invoked
     # deterministically by meta-skill ``skill_exec`` steps without spinning up
     # a sub-Agent. Schema (all keys optional except ``command``):

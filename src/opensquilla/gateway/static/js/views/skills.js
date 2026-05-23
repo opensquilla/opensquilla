@@ -6,6 +6,7 @@ const SkillsView = (() => {
   let _unsubs = [];
   let _intervals = [];
   let _allSkills = [];
+  let _proposals = [];
   let _filterText = '';
   let _statusFilter = 'all';
   let _activeTab = 'installed';
@@ -167,7 +168,14 @@ const SkillsView = (() => {
       }
       const statusPill = e.target.closest('[data-status-filter]');
       if (statusPill) {
-        _statusFilter = statusPill.dataset.statusFilter;
+        const v = statusPill.dataset.statusFilter;
+        if (v === 'proposals') {
+          // Proposals tile: not a real filter — scroll to the section.
+          const target = _el.querySelector('.sk-group--proposals');
+          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
+        _statusFilter = v;
         _renderStats();
         _renderCards();
         return;
@@ -177,6 +185,12 @@ const SkillsView = (() => {
         _installDeps(depsBtn.dataset.installDepsName, depsBtn.dataset.installDepsId, depsBtn);
         return;
       }
+      const propShow = e.target.closest('[data-proposal-show]');
+      if (propShow) { _showProposal(propShow.dataset.proposalShow); return; }
+      const propAccept = e.target.closest('[data-proposal-accept]');
+      if (propAccept) { _acceptProposal(propAccept.dataset.proposalAccept); return; }
+      const propReject = e.target.closest('[data-proposal-reject]');
+      if (propReject) { _rejectProposal(propReject.dataset.proposalReject); return; }
       const card = e.target.closest('[data-skill-card]');
       if (card) {
         const skill = _allSkills.find(s => s.name === card.dataset.skillCard);
@@ -203,6 +217,7 @@ const SkillsView = (() => {
     try {
       const data = await _rpc.call('skills.list');
       _allSkills = data.skills || [];
+      await _loadProposals();
       _renderStats();
       _renderCards();
     } catch (err) {
@@ -210,6 +225,18 @@ const SkillsView = (() => {
       if (wrap) {
         wrap.innerHTML = `<div class="sk-error">Failed to load skills: ${_esc(err.message)}</div>`;
       }
+    }
+  }
+
+  async function _loadProposals() {
+    // Path 3: meta-skill-creator's pending proposal queue. Best-effort —
+    // if the gateway is too old to expose the RPC method, fall through
+    // with an empty list and the skills view continues to function.
+    try {
+      const data = await _rpc.call('exec.proposals.list');
+      _proposals = (data && data.proposals) || [];
+    } catch {
+      _proposals = [];
     }
   }
 
@@ -234,11 +261,21 @@ const SkillsView = (() => {
       </button>`;
     };
 
+    const proposalsCount = _proposals.length;
+    const proposalsTile = proposalsCount > 0
+      ? `<button class="sk-stat sk-stat--proposals${_statusFilter === 'proposals' ? ' is-active' : ''}" data-status-filter="proposals" type="button" title="Pending meta-skill proposals — synthesised by meta-skill-creator from your usage patterns">
+          <div class="sk-stat__label">Pending Proposals</div>
+          <div class="sk-stat__value"><span class="sk-stat__warn">${proposalsCount}</span></div>
+          <div class="sk-stat__hint">awaiting review</div>
+        </button>`
+      : '';
+
     wrap.innerHTML = `
       ${tile('all', 'All skills', total, `${layers.size} layer${layers.size === 1 ? '' : 's'}`, 'sk-stat--accent')}
       ${tile('ready', 'Ready', `<span class="sk-stat__ok">${ready}</span>`, ready ? 'install-ready' : 'none ready')}
       ${tile('needs-setup', 'Needs setup', `<span class="sk-stat__warn">${needs}</span>`, needs ? 'awaiting deps' : 'all set')}
       ${tile('not-declared', 'Not declared', notDeclared, 'no manifest')}
+      ${proposalsTile}
     `;
   }
 
@@ -313,6 +350,24 @@ const SkillsView = (() => {
 
     let html = '';
 
+    // Pending proposals come first (above Meta-Skills) so the user
+    // sees decision-required items immediately. Path 3 of the
+    // auto-propose feature — `meta-skill-creator` writes proposals
+    // here when the cron job or dream-hook fires.
+    if (_proposals.length) {
+      html += `<details class="sk-group sk-group--proposals" open>
+        <summary class="sk-group__head">
+          <span class="sk-group__caret">▾</span>
+          <span class="sk-group__label">Pending Proposals</span>
+          <span class="sk-group__count">${_proposals.length}</span>
+          <span class="sk-group__meta">meta-skill-creator candidates awaiting your accept/reject decision.</span>
+        </summary>
+        <div class="sk-proposals-list">
+          ${_proposals.map(_renderProposalRow).join('')}
+        </div>
+      </details>`;
+    }
+
     // Meta-skills group first (if any). Different summary styling so the
     // user instantly sees "this is the high-level orchestrators bucket".
     if (metaList.length) {
@@ -346,6 +401,100 @@ const SkillsView = (() => {
     });
 
     wrap.innerHTML = html;
+  }
+
+  function _renderProposalRow(p) {
+    const pid = _esc(p.proposal_id || '');
+    const eligibleBadge = p.auto_enable_eligible
+      ? '<span class="sk-prop-chip sk-prop-chip--ok">gates ✓</span>'
+      : '<span class="sk-prop-chip sk-prop-chip--warn">gates ✗</span>';
+    const autoChip = (typeof p.triggered_by === 'string' && p.triggered_by.startsWith('auto_'))
+      ? `<span class="sk-prop-chip sk-prop-chip--auto" title="Auto-generated by ${_esc(p.triggered_by)}">[auto]</span>`
+      : '';
+    const chainHint = p.chain_hash
+      ? `<span class="sk-prop-hash" title="chain hash">${_esc(String(p.chain_hash).slice(0, 8))}</span>`
+      : '';
+    return `<div class="sk-proposal-row" data-proposal-id="${pid}">
+      <div class="sk-proposal-row__head">
+        <code class="sk-proposal-row__id">${pid}</code>
+        ${eligibleBadge}
+        ${autoChip}
+        ${chainHint}
+      </div>
+      <div class="sk-proposal-row__actions">
+        <button class="btn btn--ghost btn--sm" data-proposal-show="${pid}" type="button">Show</button>
+        <button class="btn btn--primary btn--sm" data-proposal-accept="${pid}" type="button">Accept</button>
+        <button class="btn btn--ghost btn--sm" data-proposal-reject="${pid}" type="button">Reject</button>
+      </div>
+    </div>`;
+  }
+
+  async function _showProposal(proposalId) {
+    try {
+      const data = await _rpc.call('exec.proposals.show', { proposal_id: proposalId });
+      if (data.status !== 'ok') {
+        alert('Show failed: ' + (data.reason || 'unknown'));
+        return;
+      }
+      const dlg = _el.querySelector('#skill-detail-dialog');
+      const body = _el.querySelector('#skill-detail-body');
+      if (!dlg || !body) return;
+      const gatesJson = JSON.stringify(data.gates || {}, null, 2);
+      body.innerHTML = `<div class="sk-detail">
+        <header class="sk-detail__header">
+          <h3>Proposal ${_esc(proposalId)}</h3>
+          <button class="btn btn--ghost btn--sm" data-dialog-close type="button">Close</button>
+        </header>
+        <section class="sk-detail__section">
+          <h4>SKILL.md</h4>
+          <pre class="sk-detail__pre">${_esc(data.skill_md || '')}</pre>
+        </section>
+        <section class="sk-detail__section">
+          <h4>Gates</h4>
+          <pre class="sk-detail__pre">${_esc(gatesJson)}</pre>
+        </section>
+      </div>`;
+      const closeBtn = body.querySelector('[data-dialog-close]');
+      if (closeBtn) closeBtn.addEventListener('click', () => dlg.close());
+      dlg.showModal();
+    } catch (err) {
+      alert('Show failed: ' + err.message);
+    }
+  }
+
+  async function _acceptProposal(proposalId) {
+    try {
+      let data = await _rpc.call('exec.proposals.accept', { proposal_id: proposalId });
+      if (data.status === 'refused' && data.reason && data.reason.indexOf('gates') !== -1) {
+        if (!confirm(
+          `Proposal ${proposalId} did not pass all gates.\n\n${data.reason}\n\nAccept anyway (force)?`
+        )) return;
+        data = await _rpc.call('exec.proposals.accept', { proposal_id: proposalId, force: true });
+      }
+      if (data.status !== 'ok') {
+        alert('Accept failed: ' + (data.reason || data.status));
+        return;
+      }
+      // Reload list + cards so the proposal disappears and the new
+      // skill appears under MANAGED layer.
+      await _loadData();
+    } catch (err) {
+      alert('Accept failed: ' + err.message);
+    }
+  }
+
+  async function _rejectProposal(proposalId) {
+    if (!confirm(`Reject and delete proposal ${proposalId}? This cannot be undone.`)) return;
+    try {
+      const data = await _rpc.call('exec.proposals.reject', { proposal_id: proposalId });
+      if (data.status !== 'ok') {
+        alert('Reject failed: ' + (data.reason || data.status));
+        return;
+      }
+      await _loadData();
+    } catch (err) {
+      alert('Reject failed: ' + err.message);
+    }
   }
 
   function _renderCard(skill) {

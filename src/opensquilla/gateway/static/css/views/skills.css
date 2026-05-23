@@ -618,3 +618,119 @@
   border-radius: 3px;
   font-size: 11px;
 }
+
+/* ─── Pending Proposals section (Path 3) ──────────────────────────── */
+
+.sk-stat--proposals {
+  /* Visual differentiation from the four filter tiles — proposals is a
+     review queue, not a filter. */
+  border-left: 3px solid var(--warn, #d97706);
+}
+
+.sk-group--proposals .sk-group__head {
+  background: color-mix(in oklab, var(--warn, #d97706) 6%, transparent);
+}
+
+.sk-proposals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 14px;
+}
+
+.sk-proposal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface, transparent);
+}
+
+.sk-proposal-row__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sk-proposal-row__id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  background: color-mix(in oklab, var(--text) 6%, transparent);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.sk-proposal-row__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.sk-prop-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.sk-prop-chip--ok {
+  background: color-mix(in oklab, #16a34a 12%, transparent);
+  color: #16a34a;
+  border-color: color-mix(in oklab, #16a34a 30%, transparent);
+}
+
+.sk-prop-chip--warn {
+  background: color-mix(in oklab, var(--warn, #d97706) 12%, transparent);
+  color: var(--warn, #d97706);
+  border-color: color-mix(in oklab, var(--warn, #d97706) 30%, transparent);
+}
+
+.sk-prop-chip--auto {
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+  font-family: var(--font-mono);
+}
+
+.sk-prop-hash {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* Proposal SKILL.md dialog */
+.sk-detail {
+  max-width: 800px;
+}
+.sk-detail__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.sk-detail__section {
+  margin: 14px 0;
+}
+.sk-detail__section h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  letter-spacing: 0.4px;
+}
+.sk-detail__pre {
+  background: color-mix(in oklab, var(--text) 4%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+}

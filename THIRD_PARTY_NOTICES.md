@@ -17,7 +17,7 @@ It covers:
 ## OpenClaw-derived bundled skill descriptors
 
 - Component: SKILL.md frontmatter and instruction text for these bundled skills:
-  - `sub-agent` (formerly `coding-agent`; renamed 2026-05-23, same upstream lineage)
+  - `sub-agent`
   - `cron`
   - `github`
   - `nano-pdf`
@@ -28,6 +28,9 @@ It covers:
 - Upstream project: https://github.com/openclaw/openclaw
 - License: MIT
 - Copyright notice: Copyright (c) 2025 Peter Steinberger
+
+Note: `sub-agent` was renamed from `coding-agent` on 2026-05-23; the
+descriptor retains the same OpenClaw upstream lineage and MIT attribution.
 
 The descriptor text instructs the agent runtime how to use built-in skill
 surfaces and external tools; OpenSquilla does not redistribute third-party CLIs
@@ -64,7 +67,9 @@ SOFTWARE.
 These bundled skill descriptors are authored and maintained by OpenSquilla and
 are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 
+- `git-diff`
 - `history-explorer`
+- `http-fetch`
 - `latex-compile`
 - `memory`
 - `meta-arxiv-daily-digest-deck`

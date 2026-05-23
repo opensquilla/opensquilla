@@ -558,7 +558,7 @@ def make_agent_runner_from_parent(
         #
         # Workspace grounding: the LLM otherwise has NO visibility into
         # where its files should live and guesses paths like
-        # `/workspace/foo`, `/Users/.../foo`, or `/tmp/foo` — most of which
+        # `/workspace/foo`, `~/Documents/foo`, or `/tmp/foo` — most of which
         # land outside the configured workspace_dir and trigger
         # sandbox-off-approval prompts that block 60s waiting for human
         # action. Appending the literal workspace path here gives the

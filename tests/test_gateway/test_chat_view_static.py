@@ -99,7 +99,7 @@ def test_chat_resets_stream_timeout_on_run_heartbeat() -> None:
 
     assert "session.event.run_heartbeat" in source
     assert "_resetStreamIdleTimer();" in source
-    assert "_DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000" in source
+    assert "_DEFAULT_STREAM_IDLE_TIMEOUT_MS = 660000" in source
     assert "webui_stream_idle_grace_ms" in source
 
 

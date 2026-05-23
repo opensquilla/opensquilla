@@ -2055,7 +2055,6 @@ async def start_gateway_server(
                 ``kind: agent``.
                 """
                 from opensquilla.engine.types import (
-                    AgentEvent,
                     DoneEvent,
                     TextDeltaEvent,
                 )
@@ -2076,9 +2075,10 @@ async def start_gateway_server(
                 # than calling make_llm_chat_from_parent which expects an
                 # AgentConfig we don't have in cron context.
                 async def _llm_chat(system_prompt: str, user_message: str) -> str:
-                    from opensquilla.provider.types import ChatConfig, Message
                     from opensquilla.provider.types import (
-                        TextDeltaEvent as PTD,
+                        ChatConfig,
+                        Message,
+                        TextDeltaEvent,
                     )
 
                     cfg = ChatConfig(
@@ -2089,7 +2089,7 @@ async def start_gateway_server(
                     msgs = [Message(role="user", content=user_message)]
                     parts: list[str] = []
                     async for ev in provider_for_chat.chat(msgs, tools=None, config=cfg):
-                        if isinstance(ev, PTD):
+                        if isinstance(ev, TextDeltaEvent):
                             parts.append(ev.text)
                     return "".join(parts).strip()
 

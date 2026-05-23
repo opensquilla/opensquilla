@@ -7,7 +7,6 @@ from pathlib import Path
 
 from opensquilla.skills import proposals_lib
 
-
 SAMPLE_SKILL_MD = """---
 name: synth-test-pipeline
 description: "Sample synthetic pipeline for proposals_lib tests"

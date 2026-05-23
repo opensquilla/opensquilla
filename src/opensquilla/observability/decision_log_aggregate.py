@@ -27,9 +27,10 @@ def parse_log_line(line: str) -> dict | None:
     if not line:
         return None
     try:
-        return json.loads(line)
+        parsed = json.loads(line)
     except json.JSONDecodeError:
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def within_window(ts_str: str, cutoff: datetime) -> bool:

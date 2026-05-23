@@ -10,13 +10,11 @@ LLM is not involved — proposals_lib is deterministic.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from opensquilla.skills import proposals_lib
-
 
 _SAMPLE_SKILL_MD = """---
 name: synth-rpc-pipeline

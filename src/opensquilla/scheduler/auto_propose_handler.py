@@ -41,10 +41,10 @@ EnabledPredicateFn = Callable[[], bool]
 def make_auto_propose_handler(
     *,
     build_orchestrator: BuildOrchestratorFn,
-    skill_loader: "SkillLoader",
+    skill_loader: SkillLoader,
     log_dir: Path,
     proposals_dir: Path,
-    config: "MetaSkillAutoProposeConfig",
+    config: MetaSkillAutoProposeConfig,
     enabled_predicate: EnabledPredicateFn | None = None,
 ) -> Callable[[CronJob], Awaitable[HandlerResult]]:
     """Build a cron handler that runs the auto-propose pipeline."""

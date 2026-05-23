@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,14 +19,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from opensquilla.skills.creator.auto_propose import (
+    _META_SKILL_CREATOR_TRIGGERS,
     AutoProposeResult,
+    _synthesise_user_message,
     auto_propose,
 )
-from opensquilla.skills.creator.auto_propose import (
-    _META_SKILL_CREATOR_TRIGGERS,
-    _synthesise_user_message,
-)
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

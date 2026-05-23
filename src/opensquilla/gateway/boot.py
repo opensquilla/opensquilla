@@ -2330,12 +2330,32 @@ async def start_gateway_server(
     server_handle._background_completion_manager = background_completion_manager
 
     if run:
-        uv_config = uvicorn.Config(
-            app=app,
-            host=config.host,
-            port=config.port,
-            log_level="info" if not config.debug else "debug",
+        # Resolve TLS pair: both ``keyfile`` AND ``certfile`` required.
+        # Either field's path is ``expanduser()``-ed at use-time so
+        # operators can write ``~/.opensquilla/tls/cert.pem`` in toml.
+        tls_keyfile = (
+            str(Path(config.tls.keyfile).expanduser())
+            if config.tls.keyfile else ""
         )
+        tls_certfile = (
+            str(Path(config.tls.certfile).expanduser())
+            if config.tls.certfile else ""
+        )
+        uv_kwargs: dict[str, Any] = {
+            "app": app,
+            "host": config.host,
+            "port": config.port,
+            "log_level": "info" if not config.debug else "debug",
+        }
+        if tls_keyfile and tls_certfile:
+            uv_kwargs["ssl_keyfile"] = tls_keyfile
+            uv_kwargs["ssl_certfile"] = tls_certfile
+            log.info(
+                "gateway.tls_enabled",
+                keyfile=tls_keyfile,
+                certfile=tls_certfile,
+            )
+        uv_config = uvicorn.Config(**uv_kwargs)
         server = uvicorn.Server(uv_config)
         server_handle._server = server
 

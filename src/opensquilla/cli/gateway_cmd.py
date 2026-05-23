@@ -15,10 +15,10 @@ from opensquilla.gateway.config import GatewayConfig, is_public_bind, resolve_li
 from opensquilla.paths import default_opensquilla_home
 
 
-def gateway_startup_guidance(host: str, port: int) -> tuple[str, ...]:
+def gateway_startup_guidance(host: str, port: int, scheme: str = "http") -> tuple[str, ...]:
     """Return operator-facing guidance shown after the gateway starts."""
 
-    base_url = f"http://{host}:{port}"
+    base_url = f"{scheme}://{host}:{port}"
     return (
         f"[bold]Web UI:[/bold] {base_url}/control/",
         f"[bold]API base:[/bold] {base_url}",
@@ -56,7 +56,8 @@ def run_gateway(
 
     banner_host = f"[red]{host}[/red]" if is_public_bind(host) else f"[cyan]{host}[/cyan]"
     console.print(f"[bold green]Starting OpenSquilla gateway[/bold green] on {banner_host}:{port}")
-    for line in gateway_startup_guidance(host, port):
+    scheme = "https" if (config.tls.keyfile and config.tls.certfile) else "http"
+    for line in gateway_startup_guidance(host, port, scheme=scheme):
         console.print(line)
     if is_public_bind(host):
         # Use ASCII-only glyphs here so the warning still prints on Windows

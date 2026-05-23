@@ -1466,11 +1466,34 @@ class MetaSkillConfig(BaseSettings):
     )
 
 
+class TlsConfig(BaseSettings):
+    """Optional TLS termination at the gateway itself.
+
+    When ``keyfile`` and ``certfile`` are set, ``run_gateway`` passes
+    ``ssl_keyfile`` / ``ssl_certfile`` to uvicorn so the gateway speaks
+    HTTPS / WSS on its bound port. Disabled by default — gateways
+    behind a reverse proxy (nginx + LetsEncrypt) keep using plain HTTP.
+
+    Self-signed certs are fine for IP-based access (browser prints a
+    one-time "not trusted" warning); for a real CA-signed cert wire
+    via the same fields.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_TLS_",
+        extra="forbid",
+    )
+    keyfile: str = ""
+    certfile: str = ""
+
+
 class GatewayConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENSQUILLA_GATEWAY_",
         env_nested_delimiter="__",
     )
+
+    tls: TlsConfig = Field(default_factory=TlsConfig)
 
     # bind defaults to 127.0.0.1 (loopback only).
     # OPENSQUILLA_LISTEN is recognised as a short-name env alias for ``host``

@@ -480,15 +480,27 @@ def make_llm_chat_from_provider(
     *,
     provider: LLMProvider,
     base_config: AgentConfig,
-    max_tokens: int = 256,
+    max_tokens: int = 2048,
 ) -> LLMChat:
     """Build a single-turn LLM caller — no tools, no agent loop.
 
-    Concatenates the streamed ``TextDeltaEvent`` payloads and returns the
-    final text. Used by ``llm_classify`` steps to avoid sub-Agent overhead.
-    ``max_tokens`` defaults to 256 (sufficient for classification); callers
-    that need full JSON payloads (e.g. slot-filling) should pass a larger
-    value.
+    Concatenates the streamed visible ``TextDeltaEvent`` payloads and returns
+    the final text. Used by ``llm_classify`` steps to avoid sub-Agent
+    overhead.
+
+    ``max_tokens`` defaults to 2048. The earlier 256 default was sized for
+    "classifier returns one short label", which is correct in steady state
+    — but reasoning-capable models (e.g. deepseek-v4-flash with
+    ``reasoning_format='deepseek'``) emit a chain-of-thought into
+    ``reasoning_content`` BEFORE producing the visible label, and that
+    chain is counted against the same ``max_tokens`` budget. With 256
+    tokens the budget is exhausted inside the reasoning stream and the
+    visible content stays empty, producing zero output_chars and tripping
+    downstream ``meta_skill_fill_slots`` with an invalid empty argument
+    (observed live on meta-skill-creator pick_pattern step 2026-05-23).
+    2048 gives reasoning room while still being cheap (~$0.0006 per call
+    on v4-flash). Callers that need full JSON payloads (e.g. slot-filling)
+    should still pass a larger value.
     """
 
     from opensquilla.provider.types import ChatConfig, Message

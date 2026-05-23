@@ -216,8 +216,16 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
         provider=provider_name, model=effective_model, api_key=api_key, base_url=base_url,
     )
     base_config = AgentConfig(model_id=effective_model)
+    # 4096 tokens: this call has a ~13k-char prompt and must produce a JSON
+    # blob (slots schema for the chosen pattern, often 500-1500 tokens). On
+    # reasoning models (deepseek-v4-flash) the chain-of-thought is counted
+    # in the same budget; 2048 left the budget exhausted inside reasoning
+    # and yielded an empty visible response (observed live 2026-05-23,
+    # meta_skill_fill_slots.validation_failed_initial with empty preview).
+    # 4096 gives reasoning + JSON room without becoming costly (~¥0.0011
+    # per call on v4-flash).
     llm_chat = make_llm_chat_from_provider(
-        provider=provider, base_config=base_config, max_tokens=2048
+        provider=provider, base_config=base_config, max_tokens=4096
     )
 
     async def _drive() -> str:

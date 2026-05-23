@@ -81,8 +81,8 @@ composition:
           {{ outputs.scan_repo | truncate(2000) }}
           ---
 
-          Write the source to: `~/.opensquilla/diagrams/arch.puml` (create
-          parent dir if missing; overwrite OK).
+          Write the source to: `{{ inputs.workspace_dir }}/diagrams/arch.puml`
+          (create parent dir if missing; overwrite OK).
 
           Reply with the absolute output path on a single line, no preamble.
     - id: render_drawio
@@ -111,8 +111,8 @@ composition:
           {{ outputs.scan_repo | truncate(2000) }}
           ---
 
-          Write the XML to: `~/.opensquilla/diagrams/arch.drawio` (create parent
-          dir if missing; overwrite OK).
+          Write the XML to: `{{ inputs.workspace_dir }}/diagrams/arch.drawio`
+          (create parent dir if missing; overwrite OK).
 
           Reply with the absolute output path on a single line, no preamble.
     - id: compose_doc
@@ -132,8 +132,8 @@ composition:
              - PlantUML source: {{ outputs.render_plantuml }}
              - draw.io file: {{ outputs.render_drawio }}
 
-          Save to: `~/.opensquilla/diagrams/arch.docx`. Reply with the absolute
-          output path on a single line, no preamble.
+          Save to: `{{ inputs.workspace_dir }}/diagrams/arch.docx`. Reply
+          with the absolute output path on a single line, no preamble.
     - id: persist
       kind: agent
       skill: memory

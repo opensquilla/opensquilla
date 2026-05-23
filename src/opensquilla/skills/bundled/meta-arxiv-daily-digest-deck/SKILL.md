@@ -78,9 +78,10 @@ composition:
           {{ outputs.digest_papers | truncate(12000) }}
           ---
 
-          Save to: `~/.opensquilla/arxiv-daily/digest.pptx` (overwrite OK; cron
-          mode keeps only the latest, manual fire uses the same name and the
-          user can rename after if needed).
+          Save to: `{{ inputs.workspace_dir }}/arxiv-daily/digest.pptx`
+          (overwrite OK; cron mode keeps only the latest, manual fire uses
+          the same name and the user can rename after if needed). Create
+          the `arxiv-daily/` subdirectory if missing.
 
           Reply with the absolute output path on a single line, no preamble.
 

@@ -168,6 +168,19 @@ class MetaOrchestrator:
         warning level: persistence is observability, never a turn killer.
         """
 
+        # Inject workspace_dir into inputs so SKILL.md task templates can
+        # reference ``{{ inputs.workspace_dir }}`` for deliverable paths
+        # (avoids hardcoded ``~/.opensquilla/...`` strings that miss the
+        # operator's actual workspace and trip publish_artifact /
+        # sandbox-off approval gates). ``inputs`` is a plain dict on a
+        # frozen MetaMatch — safe to setdefault. Always set, even when
+        # the orchestrator wasn't given a workspace_dir (degraded
+        # caller, unit tests), so SKILL.md templates that reference
+        # this key don't trip jinja2's UndefinedError. Honours any
+        # value the caller already put there.
+        if "workspace_dir" not in match.inputs:
+            match.inputs["workspace_dir"] = self._workspace_dir or ""
+
         run_id: str | None = None
         loop = asyncio.get_running_loop()
 

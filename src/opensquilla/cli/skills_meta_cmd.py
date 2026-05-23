@@ -31,11 +31,40 @@ meta_app.add_typer(runs_app, name="runs")
 
 
 def _resolve_db_path() -> str:
+    """Resolve the meta-skill runs SQLite path used by the gateway writer.
+
+    Resolution order (matches the gateway's ``_state_path(config, ...)``
+    helper so the CLI sees the same rows the running gateway writes):
+
+      1. ``OPENSQUILLA_META_RUNS_DB`` env var (explicit override)
+      2. ``GatewayConfig.state_dir`` (loaded from
+         ``OPENSQUILLA_GATEWAY_CONFIG_PATH`` env var,
+         ``./opensquilla.toml``, or ``~/.opensquilla/config.toml`` —
+         identical precedence to the gateway's own loader)
+      3. ``~/.opensquilla/state/sessions.db`` (built-in default)
+
+    The earlier (1)+(3) shortcut missed any deployment that customised
+    ``state_dir`` in toml — operators ran ``opensquilla skills meta runs
+    list`` and saw "(no runs)" while the gateway was happily writing
+    to a different directory.
+    """
     env = os.environ.get("OPENSQUILLA_META_RUNS_DB")
     if env:
         return env
-    # Match gateway boot which writes to <state>/sessions.db (see
-    # ``opensquilla.gateway.boot._state_path(config, "sessions.db")``).
+
+    # Load GatewayConfig to honour state_dir from the same source the
+    # gateway uses. Local import to keep the CLI startup path lean.
+    try:
+        from opensquilla.gateway.config import GatewayConfig
+
+        config_path_env = os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH", "").strip()
+        cfg = GatewayConfig.load(config_path_env or None)
+        configured = (cfg.state_dir or "").strip()
+        if configured:
+            return os.path.join(configured, "sessions.db")
+    except Exception:  # noqa: BLE001 — fall back to default on any load failure
+        pass
+
     return str(state_dir("sessions.db"))
 
 

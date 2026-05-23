@@ -146,6 +146,28 @@ def _resolve_provider_from_config() -> tuple[str | None, str | None, str | None,
         if env_base_url:
             base_url = env_base_url
 
+        # N15: toml may set provider+model but leave api_key empty (the
+        # common deployment pattern is to keep the key in a
+        # provider-specific env var like OPENROUTER_API_KEY rather than
+        # checking it into a tracked toml). When that happens, fall back
+        # to the conventional env var for the resolved provider so
+        # creator's LLM calls do not fail with an empty Bearer header.
+        # Keyless local providers (ollama, lm_studio, ovms, vllm) have no
+        # env-var entry and rightly stay empty.
+        if provider_name and not api_key:
+            provider_env_map = {
+                "openrouter": "OPENROUTER_API_KEY",
+                "anthropic": "ANTHROPIC_API_KEY",
+                "openai": "OPENAI_API_KEY",
+                "deepseek": "DEEPSEEK_API_KEY",
+                "gemini": "GEMINI_API_KEY",
+                "dashscope": "DASHSCOPE_API_KEY",
+                "minimax": "MINIMAX_API_KEY",
+            }
+            provider_env = provider_env_map.get(provider_name.lower(), "")
+            if provider_env:
+                api_key = os.environ.get(provider_env, "").strip()
+
         if provider_name and model:
             return (provider_name, model, api_key, base_url)
     except Exception:

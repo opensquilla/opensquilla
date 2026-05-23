@@ -514,10 +514,29 @@ def make_llm_chat_from_provider(
         )
         messages = [Message(role="user", content=user_message)]
         parts: list[str] = []
+        first_error: str = ""
         async for event in provider.chat(messages, tools=None, config=config):
             if isinstance(event, ProviderTextDelta):
                 parts.append(event.text)
-        return "".join(parts).strip()
+            elif type(event).__name__ == "ErrorEvent" and not first_error:
+                # Capture provider-level errors (auth, network, illegal
+                # header, rate-limit) so the caller does not see a
+                # silently-empty response that gets misdiagnosed as
+                # "model returned no content". The empty-string fall
+                # through that happened before this surfaced as JSON
+                # validation failures at the wrong layer.
+                first_error = getattr(event, "message", repr(event))
+        result = "".join(parts).strip()
+        if not result and first_error:
+            import structlog
+            structlog.get_logger(__name__).warning(
+                "meta.llm_chat.provider_error",
+                error=first_error,
+                max_tokens=max_tokens,
+                prompt_chars=len(user_message),
+                system_chars=len(system_prompt),
+            )
+        return result
 
     # base_config is reserved for future use (model selection, capabilities).
     del base_config

@@ -2687,12 +2687,17 @@ class Agent:
                 return
 
             # Build orchestrator using the existing factories.
+            # Forward the per-turn resolved workspace_dir so the sub-Agent
+            # both knows the path (system_prompt grounding) and resolves
+            # file tools against it. Reads the already-resolved local
+            # ``workspace_dir`` (3-tier: ToolContext > metadata > config).
             runner = make_agent_runner_from_parent(
                 provider=self.provider,
                 base_config=self.config,
                 tool_definitions=self.tool_definitions,
                 tool_handler=self.tool_handler,
                 agent_factory=type(self),
+                workspace_dir=str(workspace_dir) if workspace_dir else None,
             )
             llm_chat = (
                 getattr(self, "_test_llm_chat_override", None)

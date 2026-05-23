@@ -358,11 +358,20 @@ def make_agent_runner_from_parent(
     tool_definitions: list,
     tool_handler: Any,
     agent_factory: Callable[..., Any],
+    workspace_dir: str | None = None,
 ) -> AgentRunner:
     """Build an :class:`AgentRunner` that mirrors the parent turn's surface.
 
     ``agent_factory`` is the ``Agent`` class itself (passed in so the
     orchestrator module doesn't import the heavy engine.agent module).
+
+    ``workspace_dir`` is the per-turn resolved workspace path (caller-side
+    3-tier: ``ToolContext > metadata > AgentConfig``). Pass it explicitly
+    because the parent ``AgentConfig.workspace_dir`` field is typically
+    unset by ``TurnRunner._build_agent_for_turn`` — the real value lives in
+    the runtime's ``ToolContext`` and must be forwarded here so the
+    sub-Agent both knows the path (system_prompt grounding) and resolves
+    file tools against it (sub_config.workspace_dir).
     """
 
     async def _runner(system_prompt: str, user_message: str) -> AsyncIterator[AgentEvent]:
@@ -384,14 +393,19 @@ def make_agent_runner_from_parent(
         # sandbox-off-approval prompts that block 60s waiting for human
         # action. Appending the literal workspace path here gives the
         # model a concrete absolute prefix to use with write_file /
-        # publish_artifact / etc. Pairs with the sub_config.workspace_dir
-        # field below (which controls tool-level path resolution).
-        sub_workspace_dir = getattr(base_config, "workspace_dir", None)
+        # publish_artifact / etc.
+        #
+        # The path comes from the factory ``workspace_dir`` parameter
+        # (caller-resolved per-turn via ToolContext > metadata > config).
+        # We deliberately do NOT read ``base_config.workspace_dir`` — that
+        # field is unset on the main Agent's AgentConfig built by
+        # TurnRunner._build_agent_for_turn; the live value lives only in
+        # the per-call ToolContext and must be threaded through here.
         sub_system_prompt = system_prompt
-        if sub_workspace_dir:
+        if workspace_dir:
             sub_system_prompt = (
                 f"{system_prompt}\n\n## Workspace\n"
-                f"Your workspace directory is `{sub_workspace_dir}`.\n"
+                f"Your workspace directory is `{workspace_dir}`.\n"
                 f"When calling write_file / read_file / list_dir / "
                 f"publish_artifact, use absolute paths INSIDE this "
                 f"directory. Paths outside it may be blocked or require "
@@ -404,13 +418,12 @@ def make_agent_runner_from_parent(
             system_prompt=sub_system_prompt,
             extra_system_prompt=None,
             metadata=dict(getattr(base_config, "metadata", {}) or {}),
-            # Forward parent's workspace_dir so sub-Agent's write_file /
-            # memory_save / shell tools resolve paths inside the configured
-            # workspace instead of falling back to process cwd. Without this,
-            # sub-Agents pick paths like /root/.opensquilla/workspace/... that
-            # mismatch the operator's workspace_dir and trigger
-            # workspace_strict ToolError loops on the persist step.
-            workspace_dir=sub_workspace_dir,
+            # Forward the resolved workspace_dir so sub-Agent's write_file /
+            # memory_save / shell tools resolve paths inside the operator's
+            # workspace rather than falling back to process cwd. Without
+            # this, sub-Agents trip workspace_strict ToolError loops in the
+            # persist / publish_artifact steps of multi-step DAGs.
+            workspace_dir=workspace_dir,
         )
 
         # Strip meta_invoke from the sub-Agent's tool surface so a step

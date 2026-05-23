@@ -3324,6 +3324,13 @@ const ChatView = (() => {
       if (details) {
         details.classList.remove('chat-tools-collapse--running');
         details.classList.add(isError ? 'chat-tools-collapse--error' : 'chat-tools-collapse--success');
+        // Auto-expand error tool cards so failure details (partial step
+        // outputs, traceback excerpts, denied-tool reasons) are visible
+        // immediately. Users were missing failure context because the
+        // collapsed-by-default chrome hid the structured payload.
+        if (isError) {
+          details.open = true;
+        }
         const summary = details.querySelector('.chat-tools-summary');
         if (summary) summary.removeAttribute('aria-disabled');
         const toolsBody = details.querySelector('.chat-tools-body');

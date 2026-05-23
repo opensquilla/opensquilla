@@ -2827,18 +2827,37 @@ class Agent:
         the user. Bounded to keep token cost predictable.
         """
 
-        per_step_cap = 400
+        # Cap per-step output so the LLM prompt stays bounded, but make it
+        # generous enough that the operator (whose UI now expands error
+        # tool cards by default) can see the actual deliverable that DID
+        # finish before the DAG broke. 1200 chars ≈ 8-15 readable lines
+        # per step — large enough for paths, verdicts, JSON blobs.
+        per_step_cap = 1200
         fallback_cap = 600
         lines: list[str] = [
-            f"Meta-skill {getattr(plan, 'name', '?')!r} failed at step "
-            f"{result.failed_step_id!r}.",
-            f"Error: {result.error}",
+            f"❌ Meta-skill `{getattr(plan, 'name', '?')}` failed at step "
+            f"`{result.failed_step_id}`",
             "",
-            "Partial outputs (from completed steps):",
+            f"**Error**: {result.error}",
+            "",
+            "## Partial outputs (completed steps)",
+            "",
         ]
-        for sid, text in (result.step_outputs or {}).items():
-            snippet = text if len(text) <= per_step_cap else text[:per_step_cap] + "…"
-            lines.append(f"  {sid}: {snippet}")
+        step_outputs = result.step_outputs or {}
+        if not step_outputs:
+            lines.append("_(no steps completed before failure)_")
+        else:
+            for sid, text in step_outputs.items():
+                if sid == result.failed_step_id:
+                    continue  # error already surfaced above
+                snippet = text if len(text) <= per_step_cap else text[:per_step_cap] + "…"
+                # Fenced block per step so multi-line outputs (JSON / paths
+                # / verdicts) keep their formatting in the UI.
+                lines.append(f"### `{sid}`")
+                lines.append("```")
+                lines.append(snippet)
+                lines.append("```")
+                lines.append("")
         fb = getattr(plan, "fallback_body", "") or ""
         if fb.strip():
             fb_short = fb if len(fb) <= fallback_cap else fb[:fallback_cap] + "…"

@@ -937,10 +937,12 @@ async def test_orchestrator_llm_classify_uses_llm_chat_when_wired() -> None:
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_final_text_auto_runs_llm_summary() -> None:
-    """``final_text_mode='auto'`` (default for new skills) replaces the
-    scheduler-seeded last-step output with an LLM-generated Markdown
-    summary so the WebUI doesn't display raw JSON/paths."""
+async def test_orchestrator_final_text_auto_prepends_llm_summary_to_raw() -> None:
+    """``final_text_mode='auto'`` (default) renders ``final_text`` as
+    ``<LLM Markdown summary>\n\n---\n\n**Output details:**\n\n<raw last
+    step output>``. The summary gives a scannable human cover sheet; the
+    raw block underneath preserves IDs/paths/verdicts verbatim so the
+    WebUI never loses the deliverable's concrete details."""
     spec = _make_meta_spec(
         composition={
             "steps": [
@@ -961,7 +963,7 @@ async def test_orchestrator_final_text_auto_runs_llm_summary() -> None:
         return "✅ Meta-skill `meta-x` finished. See `out.txt`."
 
     async def stub_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
-        yield TextDeltaEvent(text="raw-last-step-output-NOT-friendly")
+        yield TextDeltaEvent(text="raw-last-step-output-with-id-42abc")
 
     orch = MetaOrchestrator(
         agent_runner=stub_runner,
@@ -970,14 +972,19 @@ async def test_orchestrator_final_text_auto_runs_llm_summary() -> None:
     )
     result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
     assert result.ok, result.error
+    # final_text contains BOTH the summary (cover sheet) and the raw
+    # deliverable (verbatim ID).
     assert result.final_text.startswith("✅")
-    assert "raw-last-step-output" not in result.final_text
+    assert "**Output details:**" in result.final_text
+    assert "raw-last-step-output-with-id-42abc" in result.final_text, (
+        "raw last-step output must be preserved verbatim in final_text"
+    )
     # exactly one llm_chat call (no llm_classify in this spec → only summary)
     assert len(chat_calls) == 1
     summary_system, summary_user = chat_calls[0]
     assert "Markdown summary" in summary_system
     assert "meta-x" in summary_user
-    assert "raw-last-step-output-NOT-friendly" in summary_user
+    assert "raw-last-step-output-with-id-42abc" in summary_user
 
 
 @pytest.mark.asyncio

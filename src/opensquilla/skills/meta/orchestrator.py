@@ -446,7 +446,16 @@ class MetaOrchestrator:
                 exc,
             )
             return current_final_text
-        return summary if summary.strip() else current_final_text
+        if not summary.strip():
+            return current_final_text
+        # Append the scheduler-seeded raw output below the LLM summary
+        # (separated by a horizontal rule) so the deliverable's concrete
+        # details — proposal IDs, file paths, verdicts, raw verdicts —
+        # are preserved verbatim rather than left to whatever the LLM
+        # paraphrased. Empty raw output (rare) just yields the summary.
+        if not current_final_text.strip():
+            return summary
+        return f"{summary}\n\n---\n\n**Output details:**\n\n{current_final_text}"
 
     async def _summarize_step_outputs(
         self,
@@ -463,16 +472,23 @@ class MetaOrchestrator:
         """
         if self._llm_chat is None:
             return ""
+        # The orchestrator appends the raw last-step output verbatim
+        # below this summary (separated by a horizontal rule), so the
+        # summary itself is the *human cover sheet* and does NOT need
+        # to reproduce raw fields. Keep it short and scannable.
         system_prompt = (
             "You write a brief Markdown summary (3-6 lines max) of a "
             "meta-skill DAG run, addressed to the operator who triggered "
             "it. The run already succeeded; open with a ✅ emoji on the "
-            "first line.\n"
+            "first line. The raw step output will be appended below your "
+            "summary by the framework, so do NOT copy long blocks "
+            "verbatim — quote only short identifiers (paths, IDs, "
+            "verdict tokens).\n"
             "Include:\n"
             "  • the meta-skill name in backticks\n"
-            "  • the most important deliverable from step_outputs — "
-            "a file path, artifact ID, proposal ID, URL, or short "
-            "headline; quote it verbatim, do not paraphrase\n"
+            "  • the single most important deliverable as a short "
+            "identifier (file path, artifact ID, proposal ID, URL, "
+            "verdict word) — exact text, not paraphrased\n"
             "  • a one-line next-step hint where one is natural "
             "(\"Run X to apply\", \"Open the file at Y\", \"Verify "
             "with Z\") — omit if no obvious next step\n"

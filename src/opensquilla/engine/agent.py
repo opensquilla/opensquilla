@@ -2714,6 +2714,25 @@ class Agent:
                 if self.tool_handler is not None
                 else None
             )
+            # Resolve memory_persist opt-out. The
+            # ``meta_skill.persistence.memory_persist_enabled`` knob (and
+            # its env var twin OPENSQUILLA_META_SKILL_PERSISTENCE_
+            # MEMORY_PERSIST_ENABLED) gates the conventional last-step
+            # ``skill: memory`` archive pattern. Default True preserves
+            # legacy behaviour; operators running lots of exploratory
+            # meta-skill turns can flip it off to avoid polluting the
+            # long-term memory store. The memory tools themselves stay
+            # registered and callable — this only affects automatic
+            # per-DAG persistence.
+            import os as _os
+            _mem_persist_env = _os.environ.get(
+                "OPENSQUILLA_META_SKILL_PERSISTENCE_MEMORY_PERSIST_ENABLED",
+                "",
+            ).strip().lower()
+            memory_persist_enabled = _mem_persist_env not in (
+                "0", "false", "no", "off",
+            )
+
             orch = MetaOrchestrator(
                 agent_runner=runner,
                 skill_loader=skill_loader,
@@ -2724,6 +2743,7 @@ class Agent:
                 triggered_by="soft_meta_invoke",
                 session_key=getattr(self, "_session_key", None),
                 turn_id=getattr(self, "_turn_id", None),
+                memory_persist_enabled=memory_persist_enabled,
             )
 
             # Prefer the live turn message captured at run_turn entry (canonical

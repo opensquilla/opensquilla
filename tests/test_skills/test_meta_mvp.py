@@ -1051,6 +1051,132 @@ async def test_orchestrator_final_text_step_picks_named_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_skips_memory_step_when_persist_disabled() -> None:
+    """``memory_persist_enabled=False`` short-circuits any ``skill: memory``
+    step so exploratory turns don't pollute the long-term store. Downstream
+    steps still see a placeholder so depends_on links survive."""
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "work", "skill": "summarize", "with": {"text": "x"}},
+                {"id": "persist", "skill": "memory", "depends_on": ["work"],
+                 "with": {"action": "save", "topic": "t", "content": "..."}},
+            ],
+        },
+        final_text_mode="raw",  # avoid LLM summary noise
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader([
+        _make_skill_spec("summarize"),
+        _make_skill_spec("memory"),
+    ])
+
+    invoked_steps: list[str] = []
+
+    async def stub_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        invoked_steps.append("sub-agent")
+        yield TextDeltaEvent(text="work-output")
+
+    orch = MetaOrchestrator(
+        agent_runner=stub_runner,
+        skill_loader=loader,
+        memory_persist_enabled=False,
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+    assert result.ok
+    # Only the non-memory step should have spawned a sub-Agent.
+    assert len(invoked_steps) == 1, invoked_steps
+    # Memory step produces a placeholder so depends_on links remain valid.
+    assert "skipped by config" in result.step_outputs["persist"]
+    # Non-memory step output is preserved.
+    assert result.step_outputs["work"] == "work-output"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_skips_tool_call_memory_save_when_persist_disabled() -> None:
+    """The opt-out also covers the new ``kind: tool_call`` + ``tool: memory_save``
+    form so the config switch is uniform across both wiring styles."""
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "work", "skill": "summarize", "with": {"text": "x"}},
+                {"id": "persist",
+                 "kind": "tool_call",
+                 "tool": "memory_save",
+                 "depends_on": ["work"],
+                 "tool_args": {"path": "memory/t.md", "content": "..."}},
+            ],
+        },
+        final_text_mode="raw",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader([_make_skill_spec("summarize")])
+
+    tool_calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_tool_invoker(tool_name: str, args: dict[str, Any]) -> str:
+        tool_calls.append((tool_name, args))
+        return "saved"
+
+    async def stub_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        yield TextDeltaEvent(text="work-output")
+
+    orch = MetaOrchestrator(
+        agent_runner=stub_runner,
+        skill_loader=loader,
+        tool_invoker=fake_tool_invoker,
+        memory_persist_enabled=False,
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+    assert result.ok
+    # memory_save tool should NOT have been invoked despite being a tool_call step.
+    # (the sub-Agent step before it may call skill_view, but that's unrelated.)
+    invoked_names = [name for name, _ in tool_calls]
+    assert "memory_save" not in invoked_names, invoked_names
+    assert "skipped by config" in result.step_outputs["persist"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_runs_memory_step_when_persist_enabled() -> None:
+    """Default ``memory_persist_enabled=True`` preserves legacy behaviour —
+    memory steps execute normally."""
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "work", "skill": "summarize", "with": {"text": "x"}},
+                {"id": "persist", "skill": "memory", "depends_on": ["work"],
+                 "with": {"action": "save", "topic": "t", "content": "..."}},
+            ],
+        },
+        final_text_mode="raw",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader([
+        _make_skill_spec("summarize"),
+        _make_skill_spec("memory"),
+    ])
+
+    invoked: list[str] = []
+
+    async def stub_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        invoked.append("sub-agent")
+        yield TextDeltaEvent(text=f"out-{len(invoked)}")
+
+    orch = MetaOrchestrator(
+        agent_runner=stub_runner,
+        skill_loader=loader,
+        # memory_persist_enabled defaults to True
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+    assert result.ok
+    # Both steps spawn the sub-Agent (no skipping).
+    assert len(invoked) == 2, invoked
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_final_text_auto_falls_back_when_llm_missing() -> None:
     """``auto`` mode without an ``llm_chat`` instance preserves the
     scheduler-seeded text (degraded mode used by older tests / CLI)."""

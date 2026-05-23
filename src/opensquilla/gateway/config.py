@@ -1400,6 +1400,12 @@ class MetaSkillPersistenceConfig(BaseSettings):
     )
     enabled: bool = True
     orphan_cleanup_age_seconds: int = 3600
+    # Per-DAG memory persist: when False the orchestrator skips any step
+    # whose ``skill`` is "memory" (the conventional last-step pattern that
+    # archives DAG output to memory/*.md). Defaults to True to preserve
+    # existing behaviour. Toggle off for exploratory runs where polluting
+    # the long-term memory store is undesirable.
+    memory_persist_enabled: bool = True
 
 
 class MetaSkillConfig(BaseSettings):

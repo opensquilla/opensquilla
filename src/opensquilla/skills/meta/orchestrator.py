@@ -98,6 +98,7 @@ class MetaOrchestrator:
         triggered_by: str = "soft_meta_invoke",
         session_key: str | None = None,
         turn_id: str | None = None,
+        memory_persist_enabled: bool = True,
     ) -> None:
         self._agent_runner = agent_runner
         self._skill_loader = skill_loader
@@ -124,6 +125,11 @@ class MetaOrchestrator:
         self._triggered_by = triggered_by
         self._session_key = session_key
         self._turn_id = turn_id
+        # When False the orchestrator skips any ``skill: memory`` step
+        # (the conventional last-step archive pattern). Honoured by
+        # ``_dispatch_step_stream`` — see GatewayConfig.meta_skill
+        # .persistence.memory_persist_enabled for the wiring.
+        self._memory_persist_enabled = memory_persist_enabled
 
     async def run(self, match: MetaMatch) -> MetaResult:
         """Execute the plan, draining the streaming generator for the final result.
@@ -306,6 +312,25 @@ class MetaOrchestrator:
         ):
             yield ev
 
+    @staticmethod
+    def _is_memory_step(step: MetaStep, effective_skill: str) -> bool:
+        """True when this step's deliverable is writing to the memory store.
+
+        Covers two patterns used across bundled meta-skills:
+          - ``skill: memory`` (sub-Agent form; ``effective_skill == 'memory'``)
+          - ``kind: tool_call`` + ``tool: memory_save`` (direct tool form)
+
+        memory_search reads are intentionally NOT skipped — read-side
+        recall is the recall step's only purpose, and silencing it would
+        replace the step's signal with a placeholder that downstream
+        depends_on links would then propagate.
+        """
+        if effective_skill == "memory":
+            return True
+        if step.kind == "tool_call" and step.tool == "memory_save":
+            return True
+        return False
+
     async def _dispatch_step_stream(
         self,
         step: MetaStep,
@@ -321,6 +346,19 @@ class MetaOrchestrator:
         full event stream through to the outer iterator so the user can see
         every inner tool call.
         """
+
+        # Operator-controlled opt-out: when memory persistence is disabled
+        # at the config level, short-circuit any step that targets the
+        # ``memory`` skill (the conventional last-step archive). The skip
+        # is *transparent* to downstream steps — they see a non-empty
+        # placeholder output so ``depends_on`` links remain satisfied.
+        # Tool-call form (``tool: memory_save``/``memory_search``) is also
+        # skipped here so the config knob covers both styles.
+        if not self._memory_persist_enabled and self._is_memory_step(
+            step, effective_skill
+        ):
+            yield _StepDone(text="[memory persist skipped by config]")
+            return
 
         if step.kind == "llm_classify":
             text = await run_llm_classify_step(
@@ -390,9 +428,9 @@ class MetaOrchestrator:
             return step_outputs.get(sid, current_final_text)
         if mode != "auto":
             log.warning(
-                "orchestrator.unknown_final_text_mode",
-                mode=mode,
-                skill=plan.name,
+                "orchestrator.unknown_final_text_mode mode=%s skill=%s",
+                mode,
+                plan.name,
             )
             return current_final_text
 
@@ -403,9 +441,9 @@ class MetaOrchestrator:
             summary = await self._summarize_step_outputs(plan, step_outputs)
         except Exception as exc:  # noqa: BLE001 — best-effort UX layer
             log.warning(
-                "orchestrator.final_text_summarize_failed",
-                skill=plan.name,
-                error=str(exc),
+                "orchestrator.final_text_summarize_failed skill=%s error=%s",
+                plan.name,
+                exc,
             )
             return current_final_text
         return summary if summary.strip() else current_final_text

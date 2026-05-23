@@ -100,6 +100,33 @@ def _skill_to_dict(spec: Any, report: EligibilityReport, os_name: str = "") -> d
                 }
             )
 
+    # Meta-skill metadata: expose kind + the list of sub-skills referenced
+    # by the composition DAG so the WebUI can group meta-skills separately
+    # and surface "uses: X, Y, Z" badges without a second round-trip.
+    kind = getattr(spec, "kind", "skill") or "skill"
+    sub_skills: list[str] = []
+    composition_raw = getattr(spec, "composition_raw", None)
+    if isinstance(composition_raw, dict):
+        steps_raw = composition_raw.get("steps")
+        if isinstance(steps_raw, list):
+            seen: set[str] = set()
+            for step in steps_raw:
+                if not isinstance(step, dict):
+                    continue
+                sub = step.get("skill")
+                if isinstance(sub, str) and sub and sub not in seen:
+                    seen.add(sub)
+                    sub_skills.append(sub)
+                # routes (kind=llm_classify) may also reference sub-skills
+                routes = step.get("routes")
+                if isinstance(routes, list):
+                    for route in routes:
+                        if isinstance(route, dict):
+                            rsub = route.get("skill")
+                            if isinstance(rsub, str) and rsub and rsub not in seen:
+                                seen.add(rsub)
+                                sub_skills.append(rsub)
+
     d: dict[str, Any] = {
         "name": spec.name,
         "description": spec.description,
@@ -114,6 +141,8 @@ def _skill_to_dict(spec: Any, report: EligibilityReport, os_name: str = "") -> d
         "os": list(meta.os) if meta else [],
         "disabled": report.disabled,
         "install": install_entries,
+        "kind": kind,
+        "sub_skills": sub_skills,
     }
     provenance = getattr(spec, "provenance", None)
     d["provenance"] = {

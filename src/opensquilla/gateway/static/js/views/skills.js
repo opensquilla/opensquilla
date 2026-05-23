@@ -286,22 +286,49 @@ const SkillsView = (() => {
       return 2;
     };
 
+    // Bucket: meta-skills (kind in {"meta", "meta_sop"}) get a dedicated
+    // top-level group; everything else falls back to the layer-based
+    // grouping. Meta-skills are conceptually different (they orchestrate
+    // sub-skills) and deserve a separate visual lane.
+    const metaList = [];
     const groups = {};
     skills.forEach(s => {
+      const kind = s.kind || 'skill';
+      if (kind === 'meta' || kind === 'meta_sop') {
+        metaList.push(s);
+        return;
+      }
       const l = s.layer || 'extra';
       (groups[l] = groups[l] || []).push(s);
     });
 
-    Object.values(groups).forEach(list => {
-      list.sort((a, b) => {
-        const ra = _rank(a);
-        const rb = _rank(b);
-        if (ra !== rb) return ra - rb;
-        return (a.name || '').localeCompare(b.name || '');
-      });
+    const _sortByReady = (list) => list.sort((a, b) => {
+      const ra = _rank(a);
+      const rb = _rank(b);
+      if (ra !== rb) return ra - rb;
+      return (a.name || '').localeCompare(b.name || '');
     });
+    _sortByReady(metaList);
+    Object.values(groups).forEach(_sortByReady);
 
     let html = '';
+
+    // Meta-skills group first (if any). Different summary styling so the
+    // user instantly sees "this is the high-level orchestrators bucket".
+    if (metaList.length) {
+      html += `<details class="sk-group sk-group--meta" open>
+        <summary class="sk-group__head">
+          <span class="sk-group__caret">▾</span>
+          <span class="sk-group__label">Meta-Skills</span>
+          <span class="sk-group__count">${metaList.length}</span>
+          <span class="sk-group__meta">Composed workflows that drive a DAG of sub-skills.</span>
+        </summary>
+        <div class="sk-grid">
+          ${metaList.map(_renderCard).join('')}
+        </div>
+      </details>`;
+    }
+
     _LAYER_ORDER.forEach(layer => {
       const list = groups[layer];
       if (!list || list.length === 0) return;
@@ -333,13 +360,38 @@ const SkillsView = (() => {
     const desc = skill.description
       ? (skill.description.length > 100 ? skill.description.slice(0, 100) + '…' : skill.description)
       : '';
-    return `<button type="button" class="sk-card" data-skill-card="${_esc(skill.name)}">
+    // Meta-skill card adds a "uses:" chip strip showing the sub-skills its
+    // composition references. Limit to 6 visible chips + "+N" overflow so
+    // the card height stays bounded for large DAGs.
+    const isMeta = skill.kind === 'meta' || skill.kind === 'meta_sop';
+    let subSkillsHtml = '';
+    if (isMeta && Array.isArray(skill.sub_skills) && skill.sub_skills.length) {
+      const subs = skill.sub_skills;
+      const visible = subs.slice(0, 6);
+      const overflow = subs.length - visible.length;
+      const chips = visible
+        .map(n => `<span class="sk-card__sub-chip">${_esc(n)}</span>`)
+        .join('');
+      const more = overflow > 0
+        ? `<span class="sk-card__sub-chip sk-card__sub-chip--more">+${overflow}</span>`
+        : '';
+      subSkillsHtml = `<div class="sk-card__sub-row" title="Sub-skills used by this meta-skill">
+        <span class="sk-card__sub-label">uses</span>
+        ${chips}${more}
+      </div>`;
+    }
+    const kindBadge = isMeta
+      ? `<span class="sk-card__kind-badge" title="${_esc(skill.kind)}">${skill.kind === 'meta_sop' ? 'SOP' : 'META'}</span>`
+      : '';
+    return `<button type="button" class="sk-card${isMeta ? ' sk-card--meta' : ''}" data-skill-card="${_esc(skill.name)}">
       <div class="sk-card__head">
         <span class="sk-card__dot ${dotCls}" title="${_esc(dotTitle)}"></span>
         ${emoji}
         <span class="sk-card__name">${_esc(skill.name)}</span>
+        ${kindBadge}
       </div>
       <p class="sk-card__desc">${_esc(desc)}</p>
+      ${subSkillsHtml}
     </button>`;
   }
 
@@ -403,6 +455,33 @@ const SkillsView = (() => {
       ? `<button class="btn btn--sm" data-uninstall="${_esc(skill.name)}">Remove</button>`
       : '';
 
+    // Meta-skill composition: render the sub-skill list as a vertical
+    // chip stack. Order is preserved (parser yields composition.steps in
+    // declaration order, dedup'd). Each chip is the literal skill name
+    // referenced by `composition.steps[].skill` (or `routes[].skill`).
+    const isMeta = skill.kind === 'meta' || skill.kind === 'meta_sop';
+    let compositionHtml = '';
+    if (isMeta && Array.isArray(skill.sub_skills) && skill.sub_skills.length) {
+      const chips = skill.sub_skills
+        .map(n => `<span class="sk-chip sk-chip--sub">${_esc(n)}</span>`)
+        .join(' ');
+      const kindLabel = skill.kind === 'meta_sop' ? 'meta_sop' : 'meta';
+      compositionHtml = `<div class="sk-dialog__section">
+        <div class="sk-dialog__section-title">Composition (${_esc(kindLabel)}, ${skill.sub_skills.length} sub-skills)</div>
+        <div class="sk-dialog__sub-list">${chips}</div>
+      </div>`;
+    }
+    let triggersHtml = '';
+    if (isMeta && Array.isArray(skill.triggers) && skill.triggers.length) {
+      const triggers = skill.triggers
+        .map(t => `<code class="sk-chip sk-chip--trigger">${_esc(t)}</code>`)
+        .join(' ');
+      triggersHtml = `<div class="sk-dialog__section">
+        <div class="sk-dialog__section-title">Triggers</div>
+        <div class="sk-dialog__sub-list">${triggers}</div>
+      </div>`;
+    }
+
     body.innerHTML = `
       <header class="sk-dialog__head">
         <div class="sk-dialog__head-left">
@@ -414,6 +493,8 @@ const SkillsView = (() => {
       </header>
       <section class="sk-dialog__body">
         <p class="sk-dialog__desc">${_esc(_truncDesc(skill.description))}</p>
+        ${triggersHtml}
+        ${compositionHtml}
         ${missingHtml}
         ${installHtml}
         ${homepage ? `<div class="sk-dialog__section">${homepage}</div>` : ''}

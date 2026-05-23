@@ -532,3 +532,89 @@
   .sk-github-install { flex-direction: column; align-items: stretch; }
   .sk-grid { grid-template-columns: 1fr; }
 }
+
+/* ─── Meta-Skill group + cards ───────────────────────────────────────── */
+
+.sk-group--meta {
+  border-color: color-mix(in oklab, var(--accent) 30%, var(--border));
+  background: color-mix(in oklab, var(--accent) 4%, transparent);
+}
+.sk-group--meta .sk-group__label {
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+.sk-group--meta .sk-group__count {
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+.sk-card--meta {
+  border-color: color-mix(in oklab, var(--accent) 25%, var(--border));
+  position: relative;
+}
+.sk-card__kind-badge {
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1.2;
+}
+
+.sk-card__sub-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.sk-card__sub-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 2px;
+}
+.sk-card__sub-chip {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--text) 8%, transparent);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+}
+.sk-card__sub-chip--more {
+  background: transparent;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* Dialog: composition + triggers chip lists */
+.sk-dialog__sub-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.sk-chip--sub {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 25%, transparent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.sk-chip--trigger {
+  background: color-mix(in oklab, var(--text) 6%, transparent);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}

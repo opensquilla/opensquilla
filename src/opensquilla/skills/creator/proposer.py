@@ -257,7 +257,15 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
 
 
 def _build_catalog_summary() -> str:
-    """Enumerate available bundled skills (name + 1-line description)."""
+    """Enumerate available bundled skills (name + 1-line description).
+
+    Meta-skills are intentionally excluded — the runtime's agent executor
+    rejects ``kind: meta`` composed inside another meta-skill (lint G1.2),
+    so showing them in the catalog only invites the LLM to propose
+    structurally-invalid SKILL.md files that the gates then reject. The
+    upshot is wasted LLM calls + noisy proposals in the WebUI panel.
+    Filter here so the LLM never sees nested-meta as an option.
+    """
     bundled = Path(__file__).resolve().parents[1] / "bundled"
     loader = SkillLoader(
         bundled_dir=bundled,
@@ -266,6 +274,8 @@ def _build_catalog_summary() -> str:
     loader.invalidate_cache()
     lines: list[str] = []
     for spec in loader.load_all():
+        if getattr(spec, "kind", "skill") == "meta":
+            continue
         first_line = (spec.description or "").split("\n", 1)[0][:120]
         lines.append(f"- {spec.name}: {first_line}")
     return "\n".join(lines)

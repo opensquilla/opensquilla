@@ -148,6 +148,17 @@ def _meta_skill_coverage(skill_loader: SkillLoader) -> list[set[str]]:
     return coverage
 
 
+def _meta_skill_names(skill_loader: SkillLoader) -> set[str]:
+    """Names of all ``kind: meta`` skills currently loaded.
+
+    Used to strip meta-skill members from candidate co-occurrence chains
+    before they're shown to the synthesis LLM. The runtime forbids
+    nested meta-skills (lint G1.2), so leaving them in the chain only
+    invites the LLM to propose structurally-invalid SKILL.md files.
+    """
+    return {spec.name for spec in skill_loader.list_meta_specs()}
+
+
 def _pattern_already_covered(skills: list[str], coverage: list[set[str]]) -> bool:
     pattern_set = set(skills)
     return any(pattern_set <= covered for covered in coverage)
@@ -299,16 +310,27 @@ async def auto_propose(
         )
 
     coverage = _meta_skill_coverage(skill_loader)
+    meta_names = _meta_skill_names(skill_loader)
     existing_hashes = _existing_chain_hashes(proposals_dir)
 
     for pattern in patterns:
-        skills = list(pattern.get("skills") or [])
+        raw_skills = list(pattern.get("skills") or [])
         freq = int(pattern.get("freq") or 0)
-        if not skills:
+        if not raw_skills:
             continue
         if freq < min_freq:
             skipped.append(asdict(_SkippedPattern(
-                skills=skills, freq=freq, reason="below_min_freq",
+                skills=raw_skills, freq=freq, reason="below_min_freq",
+            )))
+            continue
+        # Strip meta-skill members from the chain — they cannot be
+        # composed into another meta-skill (runtime forbids nesting),
+        # so leaving them in the seed shown to the LLM only invites
+        # invalid proposals that G1.2 lint will reject.
+        skills = [s for s in raw_skills if s not in meta_names]
+        if len(skills) < 2:
+            skipped.append(asdict(_SkippedPattern(
+                skills=raw_skills, freq=freq, reason="only_meta_after_filter",
             )))
             continue
         if _pattern_already_covered(skills, coverage):

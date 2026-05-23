@@ -307,6 +307,61 @@ async def test_dag_produced_no_proposal_is_skipped_not_errored(
     assert result.errors == []
 
 
+@pytest.mark.asyncio
+async def test_chain_with_only_meta_members_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When every member of a candidate chain is itself a meta-skill,
+    skip — the runtime cannot nest meta-skills and the LLM would just
+    waste a call producing a G1.2-rejected proposal."""
+    log_dir = tmp_path / "logs"
+    proposals_dir = tmp_path / "proposals"
+    # Both members are real bundled meta-skills.
+    _seed_decision_log(log_dir, ["meta-skill-creator", "meta-paper-write"], count=5)
+    loader = _stub_loader_with_creator(monkeypatch)
+    orch = _make_proposer_orchestrator(proposals_dir, proposal_ids=["aaaaaaaa"])
+
+    result = await auto_propose(
+        orchestrator=orch,
+        skill_loader=loader,
+        log_dir=log_dir,
+        min_freq=3,
+        proposals_dir=proposals_dir,
+    )
+    assert result.proposals_created == []
+    assert any(s["reason"] == "only_meta_after_filter" for s in result.skipped)
+    orch.run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_chain_with_mixed_members_keeps_only_non_meta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chain like [meta-X, A, B, C] should have meta-X stripped before
+    being shown to the LLM. The proposal still gets attempted with A+B+C
+    as the seed pattern."""
+    log_dir = tmp_path / "logs"
+    proposals_dir = tmp_path / "proposals"
+    # meta-skill-creator is meta; weather + tmux are normal skills.
+    _seed_decision_log(log_dir, ["meta-skill-creator", "weather", "tmux"], count=5)
+    loader = _stub_loader_with_creator(monkeypatch)
+    orch = _make_proposer_orchestrator(proposals_dir, proposal_ids=["abcd1234"])
+
+    result = await auto_propose(
+        orchestrator=orch,
+        skill_loader=loader,
+        log_dir=log_dir,
+        min_freq=3,
+        proposals_dir=proposals_dir,
+    )
+    # The DAG runs because two non-meta members survived the filter.
+    assert result.proposals_created == ["abcd1234"]
+    orch.run.assert_called_once()
+    # And the provenance records the FILTERED chain (not the raw one).
+    gates = json.loads((proposals_dir / "abcd1234" / "gates.json").read_text())
+    assert gates["provenance"]["auto_propose_meta"]["skills"] == ["weather", "tmux"]
+
+
 def test_synthesised_user_message_avoids_meta_skill_creator_triggers() -> None:
     """The synth message must NOT contain any meta-skill-creator trigger
     phrase — otherwise auto_propose could recursively trigger itself

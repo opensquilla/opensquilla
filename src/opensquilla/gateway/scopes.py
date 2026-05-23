@@ -32,6 +32,7 @@ ADMIN_SCOPE = "operator.admin"
 READ_SCOPE = "operator.read"
 WRITE_SCOPE = "operator.write"
 APPROVALS_SCOPE = "operator.approvals"
+PROPOSALS_SCOPE = "operator.proposals"
 PAIRING_SCOPE = "operator.pairing"
 NODE_SCOPE = "node"
 
@@ -40,14 +41,22 @@ OPERATOR_SCOPE_NAMESPACE = "operator."
 # Default scope set for a locally-proven operator: same machine, loopback
 # transport. Mirrors what the desktop CLI declares on connect.
 CLI_DEFAULT_OPERATOR_SCOPES: frozenset[str] = frozenset(
-    {ADMIN_SCOPE, READ_SCOPE, WRITE_SCOPE, APPROVALS_SCOPE, PAIRING_SCOPE}
+    {
+        ADMIN_SCOPE, READ_SCOPE, WRITE_SCOPE,
+        APPROVALS_SCOPE, PROPOSALS_SCOPE, PAIRING_SCOPE,
+    }
 )
 
 # Default scope set for a remote / unproven operator under no-auth mode.
 # Notably excludes ``operator.admin``: unauthenticated remote callers must
 # not get destructive privileges. Pairing is also excluded — that scope is
-# only granted via a deliberate token grant or the loopback path.
-REMOTE_OPERATOR_SCOPES: frozenset[str] = frozenset({READ_SCOPE, WRITE_SCOPE, APPROVALS_SCOPE})
+# only granted via a deliberate token grant or the loopback path. Proposals
+# accept/reject ARE included because they are no more dangerous than the
+# already-granted approvals scope; both gate operator-driven irreversible
+# decisions.
+REMOTE_OPERATOR_SCOPES: frozenset[str] = frozenset(
+    {READ_SCOPE, WRITE_SCOPE, APPROVALS_SCOPE, PROPOSALS_SCOPE}
+)
 
 # Default scopes for the node role (separate scope namespace).
 NODE_DEFAULT_SCOPES: frozenset[str] = frozenset({NODE_SCOPE})
@@ -156,6 +165,16 @@ METHOD_SCOPES: dict[str, str] = {
     "plugin.approval.request": APPROVALS_SCOPE,
     "plugin.approval.waitDecision": APPROVALS_SCOPE,
     "plugin.approval.resolve": APPROVALS_SCOPE,
+    # ----- proposals (auto-propose UI: list/show/accept/reject) -----
+    # ``exec.proposals.*`` prefix sits OUTSIDE the ``exec.approvals.``
+    # admin prefix because operators (not admins) should be allowed to
+    # accept / reject the unattended-synthesis output without holding
+    # full admin scope.
+    "exec.proposals.pending_count": PROPOSALS_SCOPE,
+    "exec.proposals.list": PROPOSALS_SCOPE,
+    "exec.proposals.show": PROPOSALS_SCOPE,
+    "exec.proposals.accept": PROPOSALS_SCOPE,
+    "exec.proposals.reject": PROPOSALS_SCOPE,
     # ----- admin -----
     "chat.inject": ADMIN_SCOPE,
     "system-event": ADMIN_SCOPE,

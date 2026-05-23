@@ -92,6 +92,11 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("scheduler", "engine"),
     ("scheduler", "gateway"),
     ("scheduler", "session"),
+    # scheduler → skills: auto_propose_handler imports
+    # skills.creator.auto_propose so cron + dream-hook share one
+    # library path. Same controlled-exception category as
+    # gateway → skills above (scheduler is the cron-handler home).
+    ("scheduler", "skills"),
     ("scheduler", "tools"),
     ("session", "compat"),
     ("session", "engine"),

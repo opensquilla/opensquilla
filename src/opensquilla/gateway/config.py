@@ -1408,6 +1408,48 @@ class MetaSkillPersistenceConfig(BaseSettings):
     memory_persist_enabled: bool = True
 
 
+class MetaSkillAutoProposeConfig(BaseSettings):
+    """Unattended synthesis: drive meta-skill-creator from co-occurrence
+    patterns observed in ``~/.opensquilla/logs/decisions-*.jsonl``.
+
+    Two independent triggers feed the same library function
+    (``skills.creator.auto_propose``):
+      * ``enabled`` schedules a recurring cron job
+      * ``on_dream_complete`` piggybacks on memory-consolidation dreams
+
+    Both default off. Operators flip them on after reviewing
+    meta-skill-creator's gated output once.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_META_SKILL_AUTO_PROPOSE_",
+        extra="forbid",
+    )
+
+    enabled: bool = False
+    """Path 1: schedule the auto-propose cron job. When false no
+    handler is registered at all (zero-impact code path)."""
+
+    cron: str = "0 5 * * *"
+    """Cron expression (5-field, local time) for the scheduled job."""
+
+    window_days: int = Field(default=30, ge=1, le=365)
+    """How many days of decision-log history to aggregate."""
+
+    min_freq: int = Field(default=3, ge=1)
+    """Drop co-occurrence chains observed fewer than this many times."""
+
+    top_k: int = Field(default=5, ge=1, le=50)
+    """At most this many distinct patterns considered per fire."""
+
+    on_dream_complete: bool = False
+    """Path 2: also run after a successful memory-consolidation dream.
+    Independent of ``enabled`` — either, both, or neither may be on."""
+
+    agent_ids: list[str] = Field(default_factory=list)
+    """Restrict to these agent IDs; empty = all configured agents."""
+
+
 class MetaSkillConfig(BaseSettings):
     """Top-level meta-skill subsystem configuration."""
 
@@ -1418,6 +1460,9 @@ class MetaSkillConfig(BaseSettings):
     )
     persistence: MetaSkillPersistenceConfig = Field(
         default_factory=MetaSkillPersistenceConfig,
+    )
+    auto_propose: MetaSkillAutoProposeConfig = Field(
+        default_factory=MetaSkillAutoProposeConfig,
     )
 
 

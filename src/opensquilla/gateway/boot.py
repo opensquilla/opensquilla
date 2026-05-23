@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import os
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -258,6 +260,69 @@ async def _pause_dream_crons(*, scheduler: Any, jobs: list[Any], reason: str) ->
             )
 
 
+async def _register_auto_propose_crons(
+    *,
+    scheduler: Any,
+    auto_cfg: Any,
+    agent_ids: list[str],
+) -> None:
+    """Register an ``auto_propose:<agent_id>`` cron per agent.
+
+    Mirrors :func:`_register_dream_crons`. Only called when
+    ``auto_cfg.enabled`` is true; otherwise the cron handler key is
+    registered (to support the Path 2 dream-hook reusing the same
+    machinery) but no scheduled rows are created.
+    """
+    from opensquilla.scheduler.types import SessionTarget
+
+    schedule_raw = auto_cfg.cron
+    existing_jobs = await _list_scheduler_jobs(scheduler)
+    existing_by_name = {
+        getattr(job, "name", ""): job
+        for job in existing_jobs
+        if getattr(job, "name", "").startswith("auto_propose:")
+    }
+
+    # Filter to configured-or-allowed agents
+    if auto_cfg.agent_ids:
+        agent_ids = [a for a in agent_ids if a in set(auto_cfg.agent_ids)]
+
+    for agent_id in agent_ids:
+        name = f"auto_propose:{agent_id}"
+        existing = existing_by_name.get(name)
+        if existing is not None:
+            patch: dict[str, Any] = {}
+            if getattr(existing, "schedule_raw", "") != schedule_raw:
+                patch["schedule_raw"] = schedule_raw
+            if getattr(existing, "payload", {}).get("agent_id") != agent_id:
+                patch["payload"] = {"agent_id": agent_id}
+            if getattr(existing, "session_target", None) != SessionTarget.ISOLATED:
+                patch["session_target"] = SessionTarget.ISOLATED
+            update_job = getattr(scheduler, "update_job", None)
+            if patch and callable(update_job):
+                result = update_job(getattr(existing, "id"), **patch)
+                if inspect.isawaitable(result):
+                    await result
+            log.info(
+                "boot.auto_propose.already_registered",
+                agent_id=agent_id,
+                schedule=schedule_raw,
+            )
+            continue
+        await scheduler.add_job(
+            name=name,
+            schedule_raw=schedule_raw,
+            handler_key="auto_propose",
+            payload={"agent_id": agent_id},
+            session_target=SessionTarget.ISOLATED,
+        )
+        log.info(
+            "boot.auto_propose.registered",
+            agent_id=agent_id,
+            schedule=schedule_raw,
+        )
+
+
 @dataclass
 class ServiceContainer:
     """Typed container for initialized services. Returned by build_services().
@@ -295,6 +360,16 @@ class ServiceContainer:
     task_runtime: Any = None
     heartbeat_loop: Any = None
     heartbeat_watcher: Any = None
+
+    # Auto-propose (Path 1+2). Set when meta_skill.auto_propose is on.
+    # The cron handler reads them via closure; Path 2 (dream hook) picks
+    # them off the container so the dream-handler factory can wire a
+    # post-completion callback without re-resolving services.
+    meta_run_writer: Any = None
+    auto_propose_orchestrator_builder: Callable[[str], Any] | None = None
+    auto_propose_log_dir: Path | None = None
+    auto_propose_proposals_dir: Path | None = None
+    auto_propose_config: Any = None
 
     # Backward-compat alias — returns the "main" store (or None).
     @property
@@ -1894,6 +1969,151 @@ async def start_gateway_server(
             memory_config=config.memory,
             agent_ids=_configured_agent_ids(config),
         )
+
+        # ─── auto-propose (cron + dream-hook share this builder) ────────
+        auto_cfg = getattr(config.meta_skill, "auto_propose", None)
+        if (
+            auto_cfg is not None
+            and (auto_cfg.enabled or auto_cfg.on_dream_complete)
+            and svc.provider_selector is not None
+            and svc.skill_loader is not None
+        ):
+            from opensquilla.scheduler.auto_propose_handler import (
+                make_auto_propose_handler,
+            )
+
+            log_dir = Path(
+                os.environ.get(
+                    "OPENSQUILLA_LOG_DIR",
+                    str(default_opensquilla_home() / "logs"),
+                )
+            )
+            proposals_dir = default_opensquilla_home() / "proposals"
+
+            def _make_meta_orchestrator_builder(
+                triggered_by: str,
+            ) -> Callable[[str], Any]:
+                """Build a per-fire MetaOrchestrator factory.
+
+                Each call yields a FRESH orchestrator — orchestrator carries
+                per-run state (DAG scheduler bookkeeping, run_writer's
+                begin_run handle), so reusing one across fires would be a
+                correctness bug.
+
+                The orchestrator runs meta-skill-creator, which has no
+                ``kind: agent`` steps — only ``skill_exec``, ``llm_classify``,
+                ``tool_call``. We wire a real ``llm_chat`` (for
+                ``llm_classify`` / ``pick_pattern``) and a real
+                ``tool_invoker`` (for ``meta_skill_*`` tool calls). The
+                ``agent_runner`` slot is filled with a stub that raises if
+                ever invoked — defensive against future DAG changes adding
+                ``kind: agent``.
+                """
+                from opensquilla.engine.types import (
+                    AgentEvent,
+                    DoneEvent,
+                    TextDeltaEvent,
+                )
+                from opensquilla.skills.creator import proposer  # noqa: F401 — registers tools
+                from opensquilla.skills.meta.orchestrator import MetaOrchestrator
+                from opensquilla.tools.registry import get_default_registry
+
+                # provider_selector.resolve() yields the primary LLMProvider;
+                # fallback chain isn't worth the auto-propose latency budget
+                # (any auto run failure lands in errors[] and the cron just
+                # tries again next fire). `_selector` capture is just for
+                # mypy — the outer guard already proved non-None.
+                _selector = svc.provider_selector
+                assert _selector is not None  # narrowed by outer guard
+                provider_for_chat = _selector.resolve()
+
+                # Single-turn llm_chat for llm_classify steps. Inline rather
+                # than calling make_llm_chat_from_parent which expects an
+                # AgentConfig we don't have in cron context.
+                async def _llm_chat(system_prompt: str, user_message: str) -> str:
+                    from opensquilla.provider.types import ChatConfig, Message
+                    from opensquilla.provider.types import (
+                        TextDeltaEvent as PTD,
+                    )
+
+                    cfg = ChatConfig(
+                        system=system_prompt,
+                        max_tokens=2048,
+                        temperature=0.0,
+                    )
+                    msgs = [Message(role="user", content=user_message)]
+                    parts: list[str] = []
+                    async for ev in provider_for_chat.chat(msgs, tools=None, config=cfg):
+                        if isinstance(ev, PTD):
+                            parts.append(ev.text)
+                    return "".join(parts).strip()
+
+                registry = get_default_registry()
+
+                async def _tool_invoker(name: str, args: dict) -> str:
+                    impl = registry.get(name)
+                    if impl is None:
+                        return json.dumps({"error": f"unknown tool: {name}"})
+                    result = await impl.handler(**args)
+                    return result if isinstance(result, str) else str(result)
+
+                async def _stub_agent_runner(_s: str, _u: str):
+                    # If ever invoked, drop a single failure event + done so
+                    # the orchestrator records a clean step_failed.
+                    yield TextDeltaEvent(
+                        text="auto-propose stub agent_runner: kind=agent not supported here",
+                    )
+                    yield DoneEvent(text="")
+
+                def _build(agent_id: str) -> Any:
+                    return MetaOrchestrator(
+                        agent_runner=_stub_agent_runner,
+                        skill_loader=svc.skill_loader,
+                        llm_chat=_llm_chat,
+                        tool_invoker=_tool_invoker,
+                        workspace_dir=str(default_opensquilla_home()),
+                        run_writer=svc.meta_run_writer,
+                        triggered_by=triggered_by,
+                        memory_persist_enabled=getattr(
+                            config.meta_skill.persistence,
+                            "memory_persist_enabled", True,
+                        ),
+                    )
+
+                return _build
+
+            # Path 1: cron-scheduled handler. Only registered when at least
+            # one of the two flags is on — otherwise the handler key would
+            # exist with no jobs, which is harmless but noisy in logs.
+            auto_propose_handler = make_auto_propose_handler(
+                build_orchestrator=_make_meta_orchestrator_builder("auto_cron"),
+                skill_loader=svc.skill_loader,
+                log_dir=log_dir,
+                proposals_dir=proposals_dir,
+                config=auto_cfg,
+                enabled_predicate=lambda: bool(
+                    getattr(config.meta_skill.auto_propose, "enabled", False)
+                ),
+            )
+            svc.cron_scheduler.register_handler("auto_propose", auto_propose_handler)
+            log.info("gateway.cron_handler_registered", handler_key="auto_propose")
+
+            if auto_cfg.enabled:
+                await _register_auto_propose_crons(
+                    scheduler=svc.cron_scheduler,
+                    auto_cfg=auto_cfg,
+                    agent_ids=_configured_agent_ids(config),
+                )
+
+            # Path 2 (dream hook) wiring lives in the next commit's
+            # changes to make_memory_dream_handler — the builder is
+            # stashed on svc so the dream-handler closure can pick it up.
+            svc.auto_propose_orchestrator_builder = (
+                _make_meta_orchestrator_builder("auto_dream")
+            )
+            svc.auto_propose_log_dir = log_dir
+            svc.auto_propose_proposals_dir = proposals_dir
+            svc.auto_propose_config = auto_cfg
 
     # Build channel adapters (don't start yet -- app doesn't exist)
     webhook_routes: list = []

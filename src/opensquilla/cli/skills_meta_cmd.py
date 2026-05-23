@@ -11,6 +11,7 @@ import json
 import os
 import time
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -25,7 +26,9 @@ from opensquilla.persistence.meta_run_writer import (
 from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.types import MetaPlan, MetaStep, RouteCase
 
-meta_app = typer.Typer(help="Meta-skill operations: runs, replay.")
+meta_app = typer.Typer(
+    help="Meta-skill operations: runs, replay, proposals.",
+)
 runs_app = typer.Typer(help="Meta-skill execution history.")
 meta_app.add_typer(runs_app, name="runs")
 
@@ -373,3 +376,184 @@ def runs_replay(
     )
     typer.echo("Use --dry-run to inspect the DAG.", err=True)
     raise typer.Exit(2)
+
+
+# ─── Proposals: list / accept ─────────────────────────────────────────────
+# meta-skill-creator's `persist` step writes candidate SKILL.md files to
+# ~/.opensquilla/proposals/<id>/ alongside a gates.json (lint/smoke
+# results). Acceptance promotes a proposal into ~/.opensquilla/skills/
+# so the next gateway boot picks it up as a MANAGED-layer skill. The
+# core logic mirrors the in-tree
+# ``skills/bundled/meta-skill-proposals/scripts/proposals.py`` cmd_accept
+# so the CLI and the in-meta-skill code path stay byte-identical.
+
+
+def _proposals_home() -> Path:
+    from opensquilla.paths import default_opensquilla_home
+
+    return Path(default_opensquilla_home())
+
+
+def _proposals_dir() -> Path:
+    return _proposals_home() / "proposals"
+
+
+def _skills_managed_dir() -> Path:
+    return _proposals_home() / "skills"
+
+
+@meta_app.command("proposals")
+def proposals_cmd(
+    action: str = typer.Argument(
+        ..., help="list | accept | show — proposal CRUD action",
+    ),
+    proposal_id: str | None = typer.Argument(
+        None,
+        help="8-hex proposal id (required for accept/show)",
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Accept even when gates did not all pass",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """List, inspect, or accept meta-skill proposals.
+
+    ``proposals list``                  — enumerate all candidates
+    ``proposals show <id>``             — print one candidate's SKILL.md + gates
+    ``proposals accept <id> [--force]`` — promote to MANAGED-layer skill
+    """
+    import json as _json
+    import re
+    import shutil
+
+    proposals_dir = _proposals_dir()
+
+    if action == "list":
+        rows: list[dict[str, Any]] = []
+        if proposals_dir.is_dir():
+            for sub in sorted(proposals_dir.iterdir()):
+                if not sub.is_dir():
+                    continue
+                gates_path = sub / "gates.json"
+                gates: dict[str, Any] = {}
+                if gates_path.is_file():
+                    try:
+                        gates = _json.loads(gates_path.read_text())
+                    except _json.JSONDecodeError:
+                        gates = {}
+                rows.append({
+                    "proposal_id": sub.name,
+                    "auto_enable_eligible": bool(
+                        gates.get("auto_enable_eligible", False),
+                    ),
+                    "skill_md_present": (sub / "SKILL.md").is_file(),
+                })
+        if json_out:
+            typer.echo(_json.dumps({"proposals": rows}, indent=2))
+            return
+        if not rows:
+            typer.echo("(no proposals)")
+            return
+        typer.echo(f"{'PROPOSAL_ID':12} ELIGIBLE  SKILL_MD")
+        typer.echo("-" * 40)
+        for r in rows:
+            typer.echo(
+                f"{r['proposal_id']:12} "
+                f"{('yes' if r['auto_enable_eligible'] else 'no'):8}  "
+                f"{'present' if r['skill_md_present'] else 'MISSING'}"
+            )
+        return
+
+    if action in ("show", "accept") and not proposal_id:
+        typer.echo(f"Error: '{action}' requires a proposal_id argument", err=True)
+        raise typer.Exit(2)
+
+    # ID format check defends against path-traversal — mirrors the script's
+    # I1 hardening (uuid.uuid4().hex[:8] write side, 8 hex on read side).
+    if proposal_id and not re.fullmatch(r"[0-9a-f]{8}", proposal_id):
+        typer.echo(
+            f"Error: invalid proposal_id {proposal_id!r} "
+            "(expected 8 lowercase hex chars)",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    src = proposals_dir / (proposal_id or "")
+
+    if action == "show":
+        if not (src / "SKILL.md").is_file():
+            typer.echo(f"Error: proposal {proposal_id} not found", err=True)
+            raise typer.Exit(1)
+        gates_text = ""
+        if (src / "gates.json").is_file():
+            gates_text = (src / "gates.json").read_text()
+        skill_md = (src / "SKILL.md").read_text(encoding="utf-8")
+        if json_out:
+            typer.echo(_json.dumps({
+                "proposal_id": proposal_id,
+                "skill_md": skill_md,
+                "gates": _json.loads(gates_text) if gates_text else {},
+            }, indent=2))
+            return
+        typer.echo(f"=== Proposal {proposal_id} ===")
+        if gates_text:
+            typer.echo("\n-- gates.json --")
+            typer.echo(gates_text)
+        typer.echo("\n-- SKILL.md --")
+        typer.echo(skill_md)
+        return
+
+    # action == "accept"
+    if not (src / "SKILL.md").is_file():
+        typer.echo(f"Error: proposal {proposal_id} not found", err=True)
+        raise typer.Exit(1)
+
+    gates = {}
+    if (src / "gates.json").is_file():
+        try:
+            gates = _json.loads((src / "gates.json").read_text())
+        except _json.JSONDecodeError:
+            gates = {}
+    if not gates.get("auto_enable_eligible") and not force:
+        typer.echo(
+            f"Refused: gates did not all pass for {proposal_id}. "
+            "Use --force to override.",
+            err=True,
+        )
+        if gates:
+            typer.echo(_json.dumps(gates, indent=2), err=True)
+        raise typer.Exit(1)
+
+    skill_md = (src / "SKILL.md").read_text(encoding="utf-8")
+    # Accept both quoted and unquoted YAML names (N3 fix).
+    name_match = re.search(r'^name:\s*"?([\w\-]+)"?\s*$', skill_md, re.MULTILINE)
+    if not name_match:
+        typer.echo(
+            "Error: cannot parse skill name from SKILL.md frontmatter",
+            err=True,
+        )
+        raise typer.Exit(1)
+    name = name_match.group(1)
+
+    dst = _skills_managed_dir() / name
+    if dst.exists():
+        typer.echo(
+            f"Refused: skill {name!r} already exists at {dst}. "
+            "Remove the existing copy first or rename the proposal.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dst))
+    typer.echo(
+        f"✅ Accepted proposal {proposal_id} as skill `{name}` at {dst}\n"
+        "Restart the gateway to load the new skill from the MANAGED layer."
+    )
+    if json_out:
+        typer.echo(_json.dumps({
+            "status": "ok",
+            "proposal_id": proposal_id,
+            "name": name,
+            "skill_path": str(dst),
+        }))

@@ -376,10 +376,32 @@ def make_agent_runner_from_parent(
         #             rate-limit + 6 paper title fetches
         #   cap=30 → fits multi-search-engine / arxiv / deep-research
         #             without losing the runaway protection
+        #
+        # Workspace grounding: the LLM otherwise has NO visibility into
+        # where its files should live and guesses paths like
+        # `/workspace/foo`, `/Users/.../foo`, or `/tmp/foo` — most of which
+        # land outside the configured workspace_dir and trigger
+        # sandbox-off-approval prompts that block 60s waiting for human
+        # action. Appending the literal workspace path here gives the
+        # model a concrete absolute prefix to use with write_file /
+        # publish_artifact / etc. Pairs with the sub_config.workspace_dir
+        # field below (which controls tool-level path resolution).
+        sub_workspace_dir = getattr(base_config, "workspace_dir", None)
+        sub_system_prompt = system_prompt
+        if sub_workspace_dir:
+            sub_system_prompt = (
+                f"{system_prompt}\n\n## Workspace\n"
+                f"Your workspace directory is `{sub_workspace_dir}`.\n"
+                f"When calling write_file / read_file / list_dir / "
+                f"publish_artifact, use absolute paths INSIDE this "
+                f"directory. Paths outside it may be blocked or require "
+                f"approval."
+            )
+
         sub_config = AgentConfig(
             model_id=getattr(base_config, "model_id", None),
             max_iterations=min(getattr(base_config, "max_iterations", 30), 30),
-            system_prompt=system_prompt,
+            system_prompt=sub_system_prompt,
             extra_system_prompt=None,
             metadata=dict(getattr(base_config, "metadata", {}) or {}),
             # Forward parent's workspace_dir so sub-Agent's write_file /
@@ -388,7 +410,7 @@ def make_agent_runner_from_parent(
             # sub-Agents pick paths like /root/.opensquilla/workspace/... that
             # mismatch the operator's workspace_dir and trigger
             # workspace_strict ToolError loops on the persist step.
-            workspace_dir=getattr(base_config, "workspace_dir", None),
+            workspace_dir=sub_workspace_dir,
         )
 
         # Strip meta_invoke from the sub-Agent's tool surface so a step

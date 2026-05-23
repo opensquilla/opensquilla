@@ -72,7 +72,12 @@ class GatewayClient:
         self._http_base: str | None = None
         self._auth_token: str | None = None
 
-    async def connect(self, url: str = "ws://localhost:18790/ws") -> None:
+    async def connect(
+        self,
+        url: str = "ws://localhost:18790/ws",
+        *,
+        token: str | None = None,
+    ) -> None:
         """Connect to gateway. Raises SystemExit with friendly message on failure."""
         has_existing_connection = (
             self._ws is not None
@@ -116,20 +121,31 @@ class GatewayClient:
         if challenge.get("type") != "event" or challenge.get("event") != "connect.challenge":
             raise SystemExit(f"Unexpected handshake frame: {challenge}")
 
-        # Send connect request
+        # Send connect request. Include ``auth.token`` so gateways
+        # running with ``[auth] mode = "token"`` accept the handshake
+        # — the WebSocket handshake reads ``params.auth`` via
+        # ``resolve_auth`` (gateway/websocket.py:587-594). Without
+        # this every CLI subcommand against a token-mode gateway
+        # failed UNAUTHORIZED.
         req_id = str(uuid.uuid4())
+        params: dict[str, Any] = {
+            "minProtocol": 1,
+            "maxProtocol": 3,
+            "role": "operator",
+            "scopes": ["operator.admin"],
+        }
+        if token:
+            params["auth"] = {"token": token}
+            # Mirror into the HTTP-side cache so artefact uploads /
+            # downloads also work when needed.
+            self._auth_token = token
         await self._ws.send(
             json.dumps(
                 {
                     "type": "req",
                     "id": req_id,
                     "method": "connect",
-                    "params": {
-                        "minProtocol": 1,
-                        "maxProtocol": 3,
-                        "role": "operator",
-                        "scopes": ["operator.admin"],
-                    },
+                    "params": params,
                 }
             )
         )

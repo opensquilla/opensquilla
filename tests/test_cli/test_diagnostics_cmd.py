@@ -14,8 +14,8 @@ class _FakeGatewayClient:
     calls: list[tuple[str, dict[str, Any]]] = []
     payloads: dict[str, Any] = {}
 
-    async def connect(self, url: str) -> None:
-        type(self).calls.append(("connect", {"url": url}))
+    async def connect(self, url: str, *, token: str | None = None) -> None:
+        type(self).calls.append(("connect", {"url": url, "token": token}))
 
     async def close(self) -> None:
         type(self).calls.append(("close", {}))

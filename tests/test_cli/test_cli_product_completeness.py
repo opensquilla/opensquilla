@@ -18,7 +18,7 @@ class FakeGatewayClient:
     sessions_payload: dict[str, Any] = {"sessions": [], "count": 0}
     cost_payload: dict[str, Any] = {"breakdown": [], "totalCostUsd": 0.0}
 
-    async def connect(self, url: str) -> None:
+    async def connect(self, url: str, *, token=None) -> None:
         type(self).calls.append(("connect", url))
 
     async def close(self) -> None:
@@ -64,7 +64,7 @@ class FakeGatewayClient:
 
 
 class FailingConnectGatewayClient(FakeGatewayClient):
-    async def connect(self, url: str) -> None:
+    async def connect(self, url: str, *, token=None) -> None:
         raise SystemExit("gateway offline")
 
 

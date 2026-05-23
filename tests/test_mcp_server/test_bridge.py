@@ -18,7 +18,7 @@ class FakeGatewayClient:
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
         self.events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
-    async def connect(self, url: str) -> None:
+    async def connect(self, url: str, *, token=None) -> None:
         self.connected_url = url
 
     async def close(self) -> None:

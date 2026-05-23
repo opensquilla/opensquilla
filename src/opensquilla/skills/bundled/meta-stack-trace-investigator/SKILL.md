@@ -112,7 +112,10 @@ composition:
           Recent commits on affected files:
           {{ outputs.git_history | truncate(800) }}
 
-          Prior similar incidents:
+          Prior similar incidents (may be empty on a fresh install — if
+          this section is empty or returns no matches, IGNORE it and
+          synthesize the root cause from the other three investigations
+          alone; do not invent prior incidents that are not listed):
           {{ outputs.memory_recall | truncate(800) }}
 
           Reply with this exact structure (no preamble):

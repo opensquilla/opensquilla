@@ -61,7 +61,11 @@ def _first_matching_trigger(triggers: list[str], message_lower: str) -> str:
     return ""  # unreachable when caller already verified ``any(...)``
 
 
-def _build_hint(skill_name: str, trigger_phrase: str) -> str:
+def _build_hint(
+    skill_name: str,
+    trigger_phrase: str,
+    candidates: list[tuple[int, str, str]] | None = None,
+) -> str:
     """Render the soft-hint suffix appended to ``system_prompt``.
 
     The phrasing is deliberately balanced: it nudges the model toward
@@ -69,18 +73,44 @@ def _build_hint(skill_name: str, trigger_phrase: str) -> str:
     declining when the trigger word appears in an off-topic context
     (e.g. "my **travel plan** got cancelled" should NOT auto-run the
     travel-planner DAG just because "travel plan" was uttered).
+
+    When more than one meta-skill matched the user's message (D1 + D2),
+    the hint also surfaces the runner-up candidates so the LLM can pick
+    a better match than the priority-winner. The phrasing tells the LLM
+    it is free to pick any skill from ``<available_skills>`` if none
+    of the candidates fits (D4) — the substring matcher is not the
+    final arbiter of intent.
     """
-    return (
-        "\n\n## Meta-skill trigger hint\n"
+    lines = [
+        "\n\n## Meta-skill trigger hint",
         f'The user message contains the phrase "{trigger_phrase}", which is a '
         f'registered trigger for the meta-skill `{skill_name}`. If running '
         f'that workflow end-to-end matches the user\'s intent, call '
         f'`meta_invoke(name="{skill_name}")`; the framework will drive the '
-        f'multi-step DAG and the deliverable becomes the assistant reply. '
-        f'If the user is asking *about* the meta-skill, querying status, or '
-        f'their request is only tangentially related to the trigger phrase, '
-        f'ignore this hint and answer normally.'
+        f'multi-step DAG and the deliverable becomes the assistant reply.',
+    ]
+    if candidates and len(candidates) > 1:
+        lines.append("")
+        lines.append(
+            "Other candidates also matched (in priority order, winner first):"
+        )
+        for prio, name, phrase in candidates:
+            marker = " ← chosen" if name == skill_name else ""
+            lines.append(f"  • `{name}` (priority {prio}, trigger {phrase!r}){marker}")
+        lines.append(
+            "If one of the runner-ups fits the user's intent better, call "
+            "`meta_invoke(name=\"<runner-up name>\")` instead of the chosen one."
+        )
+    lines.append("")
+    lines.append(
+        "If the user is asking *about* a meta-skill, querying status, or their "
+        "request is only tangentially related to the trigger phrase, ignore "
+        "this hint and answer normally. You can also call `meta_invoke` for "
+        "any other meta-skill listed in `<available_skills>` whose description "
+        "fits the request — the substring trigger above is a hint, not a "
+        "constraint."
     )
+    return "\n".join(lines)
 
 
 async def meta_resolution(ctx: TurnContext) -> TurnContext:
@@ -136,12 +166,23 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
     chosen_plan = matched[0][2]
     chosen_trigger = matched[0][3]
 
+    # Candidate digest for the hint (priority, name, trigger). The hint
+    # surfaces this so the LLM sees runner-ups, not just the
+    # priority-winner — important when two meta-skills' triggers
+    # overlap and the substring matcher's pick may not be the user's
+    # intent (D1 + D2).
+    candidate_digest: list[tuple[int, str, str]] = [
+        (int(prio), str(name), str(phrase))
+        for prio, name, _plan, phrase in matched
+    ]
+
     match = MetaMatch(
         plan=chosen_plan,  # type: ignore[arg-type]
         inputs={"user_message": ctx.message},
     )
     ctx.metadata["meta_match"] = match
     ctx.metadata["meta_match_trigger"] = chosen_trigger
+    ctx.metadata["meta_match_candidates"] = candidate_digest
 
     # ── Soft-hint injection ────────────────────────────────────────────
     # Append to the uncached suffix slot of system_prompt so cache
@@ -152,7 +193,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
     skill_name = getattr(chosen_plan, "name", "")
     sp = getattr(ctx, "system_prompt", None)
     if skill_name and chosen_trigger and sp is not None:
-        hint = _build_hint(skill_name, chosen_trigger)
+        hint = _build_hint(skill_name, chosen_trigger, candidate_digest)
         if isinstance(sp, str):
             base, suffix = sp, ""
         else:
@@ -165,6 +206,9 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         meta_skill=skill_name,
         trigger=chosen_trigger,
         candidates=len(matched),
+        # D1: log all candidate names + priorities so operators can
+        # spot trigger overlaps from logs without re-running the turn.
+        candidate_list=[(n, p) for p, n, _t in candidate_digest],
         # Include the head of the actual input so an operator can
         # diagnose accidental fires from the log alone.
         message_head=(ctx.message or "")[:200],

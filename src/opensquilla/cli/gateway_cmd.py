@@ -36,13 +36,22 @@ def run_gateway(
     """Start the ASGI gateway server.
 
     Precedence: ``--listen`` > ``--bind`` > ``OPENSQUILLA_LISTEN`` >
-    ``OPENSQUILLA_GATEWAY_HOST`` > default ``127.0.0.1``.
+    ``OPENSQUILLA_GATEWAY_HOST`` > toml ``host`` field > default ``127.0.0.1``.
+
+    The toml ``host`` field was previously silently ignored — operators
+    setting ``host = "0.0.0.0"`` in opensquilla.toml then ran the gateway
+    expecting public binding and got loopback instead. The toml is now
+    honoured as the fallback when no CLI flag or env var is supplied,
+    matching what the field name promises.
     """
-    # Treat the CLI ``--bind`` default as "not explicitly supplied" so the
-    # env vars get a chance to participate when the operator only sets env.
-    explicit_flag: str | None = listen or (bind if bind != "127.0.0.1" else None)
-    host = resolve_listen_address(explicit_flag)
+    # Load config FIRST so its ``host`` field can act as the final
+    # fallback below ``OPENSQUILLA_GATEWAY_HOST``.
     config = GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
+    # Treat the CLI ``--bind`` default as "not explicitly supplied" so the
+    # env vars + toml get a chance to participate when the operator only
+    # sets one of them.
+    explicit_flag: str | None = listen or (bind if bind != "127.0.0.1" else None)
+    host = resolve_listen_address(explicit_flag, default=config.host or "127.0.0.1")
     config = config.model_copy(update={"host": host, "port": port, "debug": debug})
 
     banner_host = f"[red]{host}[/red]" if is_public_bind(host) else f"[cyan]{host}[/cyan]"

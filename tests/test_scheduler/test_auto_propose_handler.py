@@ -178,3 +178,73 @@ def test_config_validation_rejects_negative_window() -> None:
 
     with pytest.raises(ValidationError):
         MetaSkillAutoProposeConfig(window_days=0)
+
+
+@pytest.mark.asyncio
+async def test_register_auto_propose_crons_resumes_a_paused_job(
+    tmp_path: Path,
+) -> None:
+    """Reg-on the WebUI toggle false→true edge must un-pause a previously
+    paused job. ``pause()`` sets ``status=PAUSED`` and ``resume()``
+    flips it back; ``update_job(enabled=True)`` alone is insufficient
+    because ``enabled`` and ``status`` are independent fields.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from opensquilla.gateway.boot import _register_auto_propose_crons
+    from opensquilla.scheduler.types import JobStatus, SessionTarget
+
+    paused_job = MagicMock()
+    paused_job.id = "job-id-1"
+    paused_job.name = "auto_propose:main"
+    paused_job.schedule_raw = "*/5 * * * *"
+    paused_job.payload = {"agent_id": "main"}
+    paused_job.session_target = SessionTarget.ISOLATED
+    paused_job.status = JobStatus.PAUSED
+
+    scheduler = MagicMock()
+    scheduler.list_jobs = MagicMock(return_value=[paused_job])
+    scheduler.update_job = AsyncMock()
+    scheduler.resume_job = AsyncMock()
+    scheduler.add_job = AsyncMock()
+
+    auto_cfg = _make_config(cron="*/5 * * * *")
+    await _register_auto_propose_crons(
+        scheduler=scheduler, auto_cfg=auto_cfg, agent_ids=["main"],
+    )
+    scheduler.resume_job.assert_called_once_with("job-id-1")
+    # No new job added since one already exists.
+    scheduler.add_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_register_auto_propose_crons_does_not_resume_active_jobs(
+    tmp_path: Path,
+) -> None:
+    """An already-running job stays running — no spurious resume_job
+    call (idempotent re-register at boot)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from opensquilla.gateway.boot import _register_auto_propose_crons
+    from opensquilla.scheduler.types import JobStatus, SessionTarget
+
+    active_job = MagicMock()
+    active_job.id = "job-id-2"
+    active_job.name = "auto_propose:main"
+    active_job.schedule_raw = "*/5 * * * *"
+    active_job.payload = {"agent_id": "main"}
+    active_job.session_target = SessionTarget.ISOLATED
+    active_job.status = JobStatus.PENDING
+
+    scheduler = MagicMock()
+    scheduler.list_jobs = MagicMock(return_value=[active_job])
+    scheduler.update_job = AsyncMock()
+    scheduler.resume_job = AsyncMock()
+    scheduler.add_job = AsyncMock()
+
+    auto_cfg = _make_config(cron="*/5 * * * *")
+    await _register_auto_propose_crons(
+        scheduler=scheduler, auto_cfg=auto_cfg, agent_ids=["main"],
+    )
+    scheduler.resume_job.assert_not_called()
+    scheduler.add_job.assert_not_called()

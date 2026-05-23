@@ -324,6 +324,7 @@ async def _register_auto_propose_crons(
     if auto_cfg.agent_ids:
         agent_ids = [a for a in agent_ids if a in set(auto_cfg.agent_ids)]
 
+    resume_job = getattr(scheduler, "resume_job", None)
     for agent_id in agent_ids:
         name = f"auto_propose:{agent_id}"
         existing = existing_by_name.get(name)
@@ -340,10 +341,26 @@ async def _register_auto_propose_crons(
                 result = update_job(getattr(existing, "id"), **patch)
                 if inspect.isawaitable(result):
                     await result
+            # If a previous toggle-off had paused the row, ``register_crons``
+            # is the right place to un-pause it on the false→true edge.
+            # ``status == PAUSED`` is a separate concept from the
+            # ``enabled`` boolean field (see scheduler.ops.pause/resume),
+            # so we go through the explicit ``resume_job`` API.
+            status_str = getattr(
+                getattr(existing, "status", None), "value",
+                getattr(existing, "status", ""),
+            )
+            reenabled = False
+            if status_str == "paused" and callable(resume_job):
+                resume_result = resume_job(getattr(existing, "id"))
+                if inspect.isawaitable(resume_result):
+                    await resume_result
+                reenabled = True
             log.info(
                 "boot.auto_propose.already_registered",
                 agent_id=agent_id,
                 schedule=schedule_raw,
+                reenabled=reenabled,
             )
             continue
         await scheduler.add_job(

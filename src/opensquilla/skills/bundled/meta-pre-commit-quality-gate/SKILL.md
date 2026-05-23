@@ -21,7 +21,7 @@ composition:
         cwd: "{{ inputs.workspace_dir | default('.') }}"
     - id: run_ruff
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [collect_staged]
       with:
         task: |
@@ -41,7 +41,7 @@ composition:
             FAIL: <count> findings — <head of first 5 violation lines>
     - id: run_mypy
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [collect_staged]
       with:
         task: |
@@ -61,7 +61,7 @@ composition:
             FAIL: <count> errors — <head of first 3 errors>
     - id: run_pytest
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [collect_staged]
       with:
         task: |
@@ -80,7 +80,7 @@ composition:
             FAIL: <first failing test name> — <one-line error>
     - id: arbitrate
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [run_ruff, run_mypy, run_pytest]
       with:
         task: |

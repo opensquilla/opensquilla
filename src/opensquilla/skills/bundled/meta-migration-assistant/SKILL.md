@@ -52,7 +52,7 @@ composition:
           Classifier verdict: {{ outputs.classify }}.
           Return the most relevant excerpt with source URL(s).
     - id: write_plan
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [fetch_guide]
       with:
         task: |
@@ -87,7 +87,7 @@ checklist. The pipeline does three things:
    | `CJS_TO_ESM`                | (fuzzy, synthesize)    | `multi-search-engine` |
    | `OTHER` (default)           | (synthesize)           | `deep-research`       |
 
-3. **write_plan** uses `coding-agent` regardless of branch — the plan
+3. **write_plan** uses `sub-agent` regardless of branch — the plan
    format is identical across migrations.
 
 ## Fallback

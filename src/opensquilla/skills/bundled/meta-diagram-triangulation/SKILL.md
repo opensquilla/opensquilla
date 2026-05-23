@@ -68,7 +68,7 @@ composition:
           {{ outputs.scan_repo | truncate(1500) }}
     - id: render_plantuml
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [scan_repo, classify_kind]
       with:
         task: |
@@ -87,7 +87,7 @@ composition:
           Reply with the absolute output path on a single line, no preamble.
     - id: render_drawio
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [scan_repo, classify_kind]
       with:
         task: |
@@ -170,4 +170,4 @@ in the same turn (e.g. `给 src/opensquilla/skills/meta/ 出双视图架构图`)
 
 If either render step fails, `compose_doc` should still produce the
 docx referencing whichever render succeeded; manually re-run the
-failed render via `coding-agent` with the same scan output as input.
+failed render via `sub-agent` with the same scan output as input.

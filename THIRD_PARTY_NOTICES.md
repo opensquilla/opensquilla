@@ -17,7 +17,7 @@ It covers:
 ## OpenClaw-derived bundled skill descriptors
 
 - Component: SKILL.md frontmatter and instruction text for these bundled skills:
-  - `coding-agent`
+  - `sub-agent` (formerly `coding-agent`; renamed 2026-05-23, same upstream lineage)
   - `cron`
   - `github`
   - `nano-pdf`

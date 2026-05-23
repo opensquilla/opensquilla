@@ -34,7 +34,7 @@ composition:
         max_words: 1200
     - id: export
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [itinerary]
       with:
         task: |

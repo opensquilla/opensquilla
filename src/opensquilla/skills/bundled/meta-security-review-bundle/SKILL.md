@@ -16,7 +16,7 @@ composition:
   steps:
     - id: policy_review
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       with:
         task: |
           You are the *policy reviewer* for a security-review bundle.
@@ -42,7 +42,7 @@ composition:
             ALLOW: ok
     - id: secret_scan
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       with:
         task: |
           You are the *secret scanner* for a security-review bundle. You
@@ -65,7 +65,7 @@ composition:
             CLEAR: no secrets found
     - id: arbitrate
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [policy_review, secret_scan]
       with:
         task: |

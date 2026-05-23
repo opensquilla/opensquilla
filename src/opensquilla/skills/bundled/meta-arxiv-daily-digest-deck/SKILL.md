@@ -16,7 +16,7 @@ composition:
   steps:
     - id: fetch_arxiv
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       with:
         task: |
           Fetch the latest papers from arXiv's public API.

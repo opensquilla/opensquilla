@@ -382,7 +382,7 @@ def test_parser_accepts_route() -> None:
     spec = _make_meta_spec(
         composition={
             "steps": [
-                {"id": "classify", "skill": "coding-agent"},
+                {"id": "classify", "skill": "sub-agent"},
                 {
                     "id": "ingest",
                     "skill": "deep-research",

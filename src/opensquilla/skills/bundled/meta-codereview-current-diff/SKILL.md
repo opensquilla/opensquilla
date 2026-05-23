@@ -22,7 +22,7 @@ composition:
         cwd: "{{ inputs.workspace_dir | default('.') }}"
     - id: review_safety
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [read_diff]
       with:
         task: |
@@ -53,7 +53,7 @@ composition:
             CLEAR: no safety concerns found
     - id: review_tests
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [read_diff]
       with:
         task: |
@@ -80,7 +80,7 @@ composition:
             PASS: tests adequate (or n/a)
     - id: review_style
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [read_diff]
       with:
         task: |
@@ -105,7 +105,7 @@ composition:
             CLEAN: no style issues found
     - id: arbitrate
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [review_safety, review_tests, review_style]
       with:
         task: |

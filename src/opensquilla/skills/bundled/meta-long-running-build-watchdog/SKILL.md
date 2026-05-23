@@ -1,6 +1,6 @@
 ---
 name: meta-long-running-build-watchdog
-description: "Launch a long-running build/training task in tmux, inspect its pane output, and let coding-agent diagnose and propose a heal."
+description: "Launch a long-running build/training task in tmux, inspect its pane output, and let sub-agent diagnose and propose a heal."
 kind: meta
 meta_priority: 30
 always: false
@@ -24,7 +24,7 @@ composition:
       with:
         task: "After a short interval, scrape the pane output of the session started above and report any error or warning lines."
     - id: heal
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [inspect]
       with:
         task: "Diagnose the captured logs and propose / apply a fix. Logs: {{ outputs.inspect }}"
@@ -39,7 +39,7 @@ composition:
 
 # Long-Running Build Watchdog (Meta-Skill)
 
-Watches a long-running command via tmux, lets `coding-agent` diagnose
+Watches a long-running command via tmux, lets `sub-agent` diagnose
 failures and propose a fix, and records the diagnosis to memory.
 Designed for overnight model fine-tunes, CI image builds, or repeated
 regression suites that may fail intermittently.

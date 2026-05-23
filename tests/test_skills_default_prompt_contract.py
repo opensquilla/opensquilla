@@ -15,7 +15,7 @@ from opensquilla.skills.loader import SkillLoader
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
 DEFAULTS = {
-    "coding-agent",
+    "sub-agent",
     "cron",
     "deep-research",
     "docx",

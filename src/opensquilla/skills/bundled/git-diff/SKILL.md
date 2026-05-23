@@ -21,7 +21,7 @@ entrypoint:
 # git-diff (sub-skill)
 
 Direct shell invocation that returns the current git diff as text.
-Replaces ``coding-agent`` sub-Agent steps that just shell out to
+Replaces ``sub-agent`` sub-Agent steps that just shell out to
 ``git diff`` — order-of-magnitude faster (no LLM round-trip).
 
 ## Modes
@@ -42,5 +42,5 @@ Replaces ``coding-agent`` sub-Agent steps that just shell out to
 
 ## Fallback
 
-If this skill is unavailable, callers should spawn ``coding-agent``
+If this skill is unavailable, callers should spawn ``sub-agent``
 with a ``git diff`` task — same output, ~10× the latency.

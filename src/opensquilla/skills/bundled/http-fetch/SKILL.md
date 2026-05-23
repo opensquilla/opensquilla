@@ -1,6 +1,6 @@
 ---
 name: http-fetch
-description: "Fetch a URL via HTTP/HTTPS and return the response body as text. Lightweight entrypoint replacement for `coding-agent` steps whose only job is a single GET/POST. Supports GET (default), POST with JSON or form bodies, custom headers, and timeout — no LLM agent loop. Use for simple data-fetch steps in meta-skill DAGs; for crawling, JS-rendered pages, or complex auth chains use coding-agent + scrapling instead."
+description: "Fetch a URL via HTTP/HTTPS and return the response body as text. Lightweight entrypoint replacement for `sub-agent` steps whose only job is a single GET/POST. Supports GET (default), POST with JSON or form bodies, custom headers, and timeout — no LLM agent loop. Use for simple data-fetch steps in meta-skill DAGs; for crawling, JS-rendered pages, or complex auth chains use sub-agent + scrapling instead."
 provenance:
   origin: opensquilla-original
   license: Apache-2.0
@@ -26,7 +26,7 @@ entrypoint:
 # http-fetch (sub-skill)
 
 Direct shell wrapper for a single HTTP request. Replaces
-``coding-agent`` sub-Agent steps that just GET/POST a URL — order-of-
+``sub-agent`` sub-Agent steps that just GET/POST a URL — order-of-
 magnitude faster (no LLM round-trip, no tool surface, no iteration
 loop).
 
@@ -50,13 +50,13 @@ loop).
 
 ## When NOT to use
 
-- Crawling multiple pages → use ``scrapling`` (via ``coding-agent``).
-- JS-rendered pages → use ``coding-agent`` + browser tools.
-- OAuth dance / multi-step auth → use ``coding-agent``.
+- Crawling multiple pages → use ``scrapling`` (via ``sub-agent``).
+- JS-rendered pages → use ``sub-agent`` + browser tools.
+- OAuth dance / multi-step auth → use ``sub-agent``.
 - Streaming responses → not supported (we buffer + return).
 
 ## Fallback
 
-If this skill is unavailable, callers should spawn ``coding-agent``
+If this skill is unavailable, callers should spawn ``sub-agent``
 with a curl/requests task — same result, ~10× the latency and a
 non-deterministic tool loop.

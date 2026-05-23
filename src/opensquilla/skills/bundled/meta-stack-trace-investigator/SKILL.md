@@ -17,7 +17,7 @@ composition:
   steps:
     - id: parse_trace
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       with:
         task: |
           You are the *trace parser* for a stack-trace investigation bundle.
@@ -36,7 +36,7 @@ composition:
           the top 3 frames; include at most 6 distinct entries.
     - id: grep_repo
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [parse_trace]
       with:
         task: |
@@ -93,7 +93,7 @@ composition:
         limit: 5
     - id: root_cause
       kind: agent
-      skill: coding-agent
+      skill: sub-agent
       depends_on: [grep_repo, search_issues, git_history, memory_recall]
       with:
         task: |

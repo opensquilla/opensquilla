@@ -1,6 +1,6 @@
 ---
-name: coding-agent
-description: 'Delegate coding tasks to Codex, Claude Code, or Pi agents via background process. Use when: (1) building/creating new features or apps, (2) reviewing PRs (spawn in temp dir), (3) refactoring large codebases, (4) iterative coding that needs file exploration. NOT for: simple one-liner fixes (just edit), reading code (use read tool), thread-bound ACP harness requests in chat (for example spawn/run Codex or Claude Code in a Discord thread; use sessions_spawn with runtime:"acp"), or any work in ~/clawd workspace (never spawn agents here). Prefer non-interactive CLI modes such as codex exec, claude --print, opencode run, or pi -p.'
+name: sub-agent
+description: 'Delegate a self-contained task to a sub-Agent (Codex, Claude Code, or Pi via background process). The original use case was coding tasks — building features, reviewing PRs, refactoring — but the skill is the generic "spawn a sub-Agent with full tool surface" slot used by meta-skill DAG steps for any LLM-driven sub-task (policy review, trace parsing, report synthesis, document generation). Renamed from ``coding-agent`` to reflect actual usage; the wrapped CLIs (codex / claude / pi) still bias toward coding workloads. Use when: (1) building/creating new features or apps, (2) reviewing PRs (spawn in temp dir), (3) refactoring large codebases, (4) iterative tasks that need file exploration, (5) meta-skill steps requiring full tool/LLM agency. NOT for: simple one-liner fixes (just edit), reading code (use read tool), thread-bound ACP harness requests in chat (for example spawn/run Codex or Claude Code in a Discord thread; use sessions_spawn with runtime:"acp"), or any work in ~/clawd workspace (never spawn agents here). Prefer non-interactive CLI modes such as codex exec, claude --print, opencode run, or pi -p.'
 provenance:
   origin: openclaw-derived
   license: MIT
@@ -37,7 +37,13 @@ metadata:
   }
 ---
 
-# Coding Agent (opensquilla process tools)
+# Sub-Agent (opensquilla process tools)
+
+Generic "spawn a sub-Agent" entry point for delegating self-contained
+tasks to Codex / Claude Code / OpenCode / Pi via background process.
+Wrapping CLIs are coding-oriented, but the skill itself is used as
+the generic sub-Agent slot by meta-skill DAGs for any LLM-driven
+sub-task (file edits, document generation, policy review, etc.).
 
 Use opensquilla's `exec_command`, `background_process`, and `process` tools for coding agent work. OpenSquilla does not expose a `bash` tool; do not use the legacy bash tool-call DSL.
 

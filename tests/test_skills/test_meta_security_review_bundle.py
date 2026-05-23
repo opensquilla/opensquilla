@@ -8,7 +8,7 @@ under three canned verdict combinations:
 * policy ALLOW, scanner WARN → final WARN (mid priority)
 * both clean → ALLOW (default)
 
-The bundle's sub-Agents would normally be coding-agent instances; the
+The bundle's sub-Agents would normally be sub-agent instances; the
 tests use a deterministic mock ``agent_runner`` that detects which
 gate's task body it received and returns the canned verdict.
 """

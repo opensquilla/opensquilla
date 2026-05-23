@@ -260,6 +260,43 @@ async def _pause_dream_crons(*, scheduler: Any, jobs: list[Any], reason: str) ->
             )
 
 
+async def _pause_auto_propose_crons(
+    *, scheduler: Any, agent_ids: list[str],
+) -> None:
+    """Disable all per-agent auto-propose jobs without deleting them.
+
+    Mirrors ``_pause_dream_crons``: the scheduler row stays so the next
+    ``enabled=true`` toggle can re-enable in place without an
+    ``add_job`` round-trip. Idempotent — safe to call against jobs that
+    are already disabled.
+    """
+    existing_jobs = await _list_scheduler_jobs(scheduler)
+    target_names = {f"auto_propose:{aid}" for aid in agent_ids}
+    pause_job = getattr(scheduler, "pause_job", None)
+    update_job = getattr(scheduler, "update_job", None)
+    for job in existing_jobs:
+        if getattr(job, "name", "") not in target_names:
+            continue
+        status = getattr(getattr(job, "status", None), "value", getattr(job, "status", ""))
+        if status in {"paused", "disabled", "deleted"}:
+            continue
+        job_id = getattr(job, "id", None)
+        if not job_id:
+            continue
+        try:
+            if callable(pause_job):
+                result = pause_job(job_id)
+            elif callable(update_job):
+                result = update_job(job_id, enabled=False)
+            else:
+                continue
+            if inspect.isawaitable(result):
+                await result
+            log.info("boot.auto_propose.paused", job_id=job_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("boot.auto_propose.pause_failed", job_id=job_id, error=str(exc))
+
+
 async def _register_auto_propose_crons(
     *,
     scheduler: Any,
@@ -2016,10 +2053,23 @@ async def start_gateway_server(
         )
 
         # ─── auto-propose (cron + dream-hook share this builder) ────────
+        # State-file overlay: persisted WebUI toggles override the toml
+        # defaults so the user doesn't have to re-edit toml every time
+        # they flip the feature on/off.
+        from opensquilla.skills.proposals_lib import read_auto_propose_settings
+
         auto_cfg = getattr(config.meta_skill, "auto_propose", None)
+        if auto_cfg is not None:
+            overrides = read_auto_propose_settings(default_opensquilla_home())
+            for key, value in overrides.items():
+                setattr(auto_cfg, key, value)
+
+        # Handler + orchestrator builder are registered unconditionally
+        # whenever provider+loader are present. Per-agent cron jobs are
+        # added only when `enabled=True` at boot — the settings.set RPC
+        # adds them on first user toggle without requiring a restart.
         if (
             auto_cfg is not None
-            and (auto_cfg.enabled or auto_cfg.on_dream_complete)
             and svc.provider_selector is not None
             and svc.skill_loader is not None
         ):
@@ -2127,9 +2177,10 @@ async def start_gateway_server(
 
                 return _build
 
-            # Path 1: cron-scheduled handler. Only registered when at least
-            # one of the two flags is on — otherwise the handler key would
-            # exist with no jobs, which is harmless but noisy in logs.
+            # Path 1: cron-scheduled handler. Registered unconditionally so
+            # the WebUI settings toggle can enable the feature at runtime
+            # without a gateway restart; the predicate gates the actual
+            # work at fire time.
             auto_propose_handler = make_auto_propose_handler(
                 build_orchestrator=_make_meta_orchestrator_builder("auto_cron"),
                 skill_loader=svc.skill_loader,
@@ -2159,6 +2210,35 @@ async def start_gateway_server(
             svc.auto_propose_log_dir = log_dir
             svc.auto_propose_proposals_dir = proposals_dir
             svc.auto_propose_config = auto_cfg
+
+            # Bridge so ``exec.proposals.settings.*`` RPC can flip the
+            # cron jobs at runtime without restart.
+            from opensquilla.gateway.auto_propose_bridge import (
+                AutoProposeRuntime,
+                register_runtime,
+            )
+            _scheduler_ref = svc.cron_scheduler
+            _agent_ids = _configured_agent_ids(config)
+
+            async def _toggle_register() -> None:
+                await _register_auto_propose_crons(
+                    scheduler=_scheduler_ref,
+                    auto_cfg=auto_cfg,
+                    agent_ids=_agent_ids,
+                )
+
+            async def _toggle_pause() -> None:
+                await _pause_auto_propose_crons(
+                    scheduler=_scheduler_ref,
+                    agent_ids=_agent_ids,
+                )
+
+            register_runtime(AutoProposeRuntime(
+                config=auto_cfg,
+                home=default_opensquilla_home(),
+                register_crons=_toggle_register,
+                pause_crons=_toggle_pause,
+            ))
 
     # Build channel adapters (don't start yet -- app doesn't exist)
     webhook_routes: list = []

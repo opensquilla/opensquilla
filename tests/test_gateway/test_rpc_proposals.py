@@ -176,6 +176,134 @@ async def test_rejecting_unknown_proposal_returns_error(
     assert "not found" in out["reason"]
 
 
+@pytest.mark.asyncio
+async def test_settings_get_returns_unavailable_when_runtime_not_registered(
+    _isolated_home: Path,
+) -> None:
+    from opensquilla.gateway.auto_propose_bridge import reset_runtime_for_test
+    from opensquilla.gateway.rpc_proposals import _handle_settings_get
+
+    reset_runtime_for_test()
+    out = await _handle_settings_get(None, _make_ctx())
+    assert out["available"] is False
+    assert out["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_settings_get_and_set_full_round_trip(
+    _isolated_home: Path,
+) -> None:
+    from opensquilla.gateway.auto_propose_bridge import (
+        AutoProposeRuntime,
+        register_runtime,
+        reset_runtime_for_test,
+    )
+    from opensquilla.gateway.config import MetaSkillAutoProposeConfig
+    from opensquilla.gateway.rpc_proposals import (
+        _handle_settings_get,
+        _handle_settings_set,
+    )
+    from opensquilla.skills.proposals_lib import (
+        read_auto_propose_settings,
+    )
+
+    reset_runtime_for_test()
+    cfg = MetaSkillAutoProposeConfig()
+    register_events: list[str] = []
+
+    async def register_crons() -> None:
+        register_events.append("register")
+
+    async def pause_crons() -> None:
+        register_events.append("pause")
+
+    register_runtime(AutoProposeRuntime(
+        config=cfg,
+        home=_isolated_home,
+        register_crons=register_crons,
+        pause_crons=pause_crons,
+    ))
+
+    out = await _handle_settings_get(None, _make_ctx())
+    assert out["available"] is True
+    assert out["enabled"] is False
+
+    # Flip on
+    out = await _handle_settings_set({"enabled": True}, _make_ctx())
+    assert out["status"] == "ok"
+    assert out["settings"]["enabled"] is True
+    assert register_events == ["register"]
+    # Persisted
+    assert read_auto_propose_settings(_isolated_home) == {
+        "enabled": True, "on_dream_complete": False,
+    }
+
+    # Flip off
+    register_events.clear()
+    out = await _handle_settings_set({"enabled": False}, _make_ctx())
+    assert out["settings"]["enabled"] is False
+    assert register_events == ["pause"]
+    assert read_auto_propose_settings(_isolated_home) == {
+        "enabled": False, "on_dream_complete": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_settings_set_partial_update_only_changes_supplied_keys(
+    _isolated_home: Path,
+) -> None:
+    from opensquilla.gateway.auto_propose_bridge import (
+        AutoProposeRuntime,
+        register_runtime,
+        reset_runtime_for_test,
+    )
+    from opensquilla.gateway.config import MetaSkillAutoProposeConfig
+    from opensquilla.gateway.rpc_proposals import _handle_settings_set
+
+    reset_runtime_for_test()
+    cfg = MetaSkillAutoProposeConfig(enabled=True, on_dream_complete=True)
+    register_runtime(AutoProposeRuntime(
+        config=cfg,
+        home=_isolated_home,
+        register_crons=lambda: _noop(),
+        pause_crons=lambda: _noop(),
+    ))
+    # Only toggle dream; enabled must stay True (no register/pause event)
+    out = await _handle_settings_set(
+        {"on_dream_complete": False}, _make_ctx(),
+    )
+    assert out["status"] == "ok"
+    assert out["settings"]["enabled"] is True
+    assert out["settings"]["on_dream_complete"] is False
+
+
+async def _noop() -> None:  # helper for partial-update test
+    return None
+
+
+@pytest.mark.asyncio
+async def test_settings_set_rejects_non_boolean_values(
+    _isolated_home: Path,
+) -> None:
+    from opensquilla.gateway.auto_propose_bridge import (
+        AutoProposeRuntime,
+        register_runtime,
+        reset_runtime_for_test,
+    )
+    from opensquilla.gateway.config import MetaSkillAutoProposeConfig
+    from opensquilla.gateway.rpc_proposals import _handle_settings_set
+
+    reset_runtime_for_test()
+    register_runtime(AutoProposeRuntime(
+        config=MetaSkillAutoProposeConfig(),
+        home=_isolated_home,
+        register_crons=lambda: _noop(),
+        pause_crons=lambda: _noop(),
+    ))
+    with pytest.raises(ValueError):
+        await _handle_settings_set({"enabled": "yes"}, _make_ctx())
+
+
 def test_proposals_methods_classified_under_operator_proposals_scope() -> None:
     """Architecture invariant: scope drift would crash boot, but assert
     explicitly so the relationship between rpc_proposals.py and
@@ -192,5 +320,7 @@ def test_proposals_methods_classified_under_operator_proposals_scope() -> None:
         "exec.proposals.show",
         "exec.proposals.accept",
         "exec.proposals.reject",
+        "exec.proposals.settings.get",
+        "exec.proposals.settings.set",
     ):
         assert METHOD_SCOPES.get(name) == PROPOSALS_SCOPE, name

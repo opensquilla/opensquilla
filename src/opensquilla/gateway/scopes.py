@@ -175,6 +175,11 @@ METHOD_SCOPES: dict[str, str] = {
     "exec.proposals.show": PROPOSALS_SCOPE,
     "exec.proposals.accept": PROPOSALS_SCOPE,
     "exec.proposals.reject": PROPOSALS_SCOPE,
+    # WebUI feature toggle for unattended-synthesis (Path 1 cron +
+    # Path 2 dream-hook). Same scope as the manual lifecycle methods —
+    # both are operator-driven decisions on user state.
+    "exec.proposals.settings.get": PROPOSALS_SCOPE,
+    "exec.proposals.settings.set": PROPOSALS_SCOPE,
     # ----- admin -----
     "chat.inject": ADMIN_SCOPE,
     "system-event": ADMIN_SCOPE,

@@ -158,6 +158,28 @@ def test_reject_missing_proposal(tmp_path: Path) -> None:
     assert out["status"] == "error"
 
 
+def test_auto_propose_settings_round_trip(tmp_path: Path) -> None:
+    home = tmp_path / ".opensquilla"
+    assert proposals_lib.read_auto_propose_settings(home) == {}
+    proposals_lib.write_auto_propose_settings(
+        home, {"enabled": True, "on_dream_complete": False},
+    )
+    out = proposals_lib.read_auto_propose_settings(home)
+    assert out == {"enabled": True, "on_dream_complete": False}
+
+
+def test_auto_propose_settings_drops_unknown_and_bad_types(tmp_path: Path) -> None:
+    home = tmp_path / ".opensquilla"
+    # Unknown keys dropped at write time
+    proposals_lib.write_auto_propose_settings(
+        home, {"enabled": True, "bogus_key": True},  # type: ignore[arg-type]
+    )
+    assert proposals_lib.read_auto_propose_settings(home) == {"enabled": True}
+    # Bad-shape file → empty dict (no exception)
+    proposals_lib.auto_propose_settings_path(home).write_text("[1,2,3]")
+    assert proposals_lib.read_auto_propose_settings(home) == {}
+
+
 def test_write_atomic_under_concurrent_writers(tmp_path: Path) -> None:
     """Writing N proposals should produce N distinct directories — the
     atomic-rename guarantees uniqueness even if proposal_ids collide."""

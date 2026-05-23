@@ -70,3 +70,37 @@ def test_skills_view_auto_chip_recognises_auto_triggered_by() -> None:
     view = Path("src/opensquilla/gateway/static/js/views/skills.js").read_text(encoding="utf-8")
     assert "p.triggered_by.startsWith('auto_')" in view
     assert "sk-prop-chip--auto" in view
+
+
+def test_skills_view_renders_auto_propose_settings_panel() -> None:
+    """The settings toggle for unattended-synthesis must be in the Skills
+    view: RPC calls, two checkbox bindings, and the CSS class names."""
+    view = Path("src/opensquilla/gateway/static/js/views/skills.js").read_text(encoding="utf-8")
+    css = Path("src/opensquilla/gateway/static/css/views/skills.css").read_text(encoding="utf-8")
+
+    # RPC calls present
+    assert "_rpc.call('exec.proposals.settings.get')" in view
+    assert "_rpc.call('exec.proposals.settings.set'" in view
+
+    # Two distinct toggles
+    assert 'data-ap-toggle="enabled"' in view
+    assert 'data-ap-toggle="on_dream_complete"' in view
+
+    # Section renderer
+    assert "_renderAutoProposeSettings" in view
+    assert "sk-group--ap-settings" in view
+    assert ".sk-group--ap-settings" in css
+    assert ".sk-ap-toggle" in css
+
+    # Bookkeeping state
+    assert "_proposalsSettings" in view
+    assert "_toggleAutoPropose" in view
+
+
+def test_skills_view_renders_settings_panel_even_with_no_pending_proposals() -> None:
+    """The toggle has to appear before any proposal exists, otherwise
+    the operator can't turn the feature on from a clean state."""
+    view = Path("src/opensquilla/gateway/static/js/views/skills.js").read_text(encoding="utf-8")
+    # The settings renderer is gated on _proposalsSettings.available
+    # rather than on _proposals.length.
+    assert "if (_proposalsSettings && _proposalsSettings.available)" in view

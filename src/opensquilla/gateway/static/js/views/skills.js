@@ -7,6 +7,7 @@ const SkillsView = (() => {
   let _intervals = [];
   let _allSkills = [];
   let _proposals = [];
+  let _proposalsSettings = { available: false, enabled: false, on_dream_complete: false };
   let _filterText = '';
   let _statusFilter = 'all';
   let _activeTab = 'installed';
@@ -187,6 +188,13 @@ const SkillsView = (() => {
       }
       const propShow = e.target.closest('[data-proposal-show]');
       if (propShow) { _showProposal(propShow.dataset.proposalShow); return; }
+      const apToggle = e.target.closest('[data-ap-toggle]');
+      if (apToggle) {
+        // Fires on the checkbox click; the new checked state is already
+        // reflected in apToggle.checked.
+        _toggleAutoPropose(apToggle.dataset.apToggle, apToggle.checked, apToggle);
+        return;
+      }
       const propAccept = e.target.closest('[data-proposal-accept]');
       if (propAccept) { _acceptProposal(propAccept.dataset.proposalAccept); return; }
       const propReject = e.target.closest('[data-proposal-reject]');
@@ -237,6 +245,30 @@ const SkillsView = (() => {
       _proposals = (data && data.proposals) || [];
     } catch {
       _proposals = [];
+    }
+    try {
+      const settings = await _rpc.call('exec.proposals.settings.get');
+      _proposalsSettings = settings || _proposalsSettings;
+    } catch {
+      _proposalsSettings = { available: false, enabled: false, on_dream_complete: false };
+    }
+  }
+
+  async function _toggleAutoPropose(key, value, button) {
+    if (button) button.disabled = true;
+    try {
+      const out = await _rpc.call('exec.proposals.settings.set', { [key]: value });
+      if (out && out.status === 'error') {
+        alert('Settings update failed: ' + (out.reason || 'unknown'));
+        return;
+      }
+      _proposalsSettings = (out && out.settings) || _proposalsSettings;
+      _renderStats();
+      _renderCards();
+    } catch (err) {
+      alert('Settings update failed: ' + err.message);
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 
@@ -350,8 +382,14 @@ const SkillsView = (() => {
 
     let html = '';
 
-    // Pending proposals come first (above Meta-Skills) so the user
-    // sees decision-required items immediately. Path 3 of the
+    // Auto-propose settings (always rendered when runtime is available
+    // — even if there are no pending proposals — so the operator can
+    // turn the feature on in the first place from a clean state).
+    if (_proposalsSettings && _proposalsSettings.available) {
+      html += _renderAutoProposeSettings();
+    }
+
+    // Pending proposals come below the settings. Path 3 of the
     // auto-propose feature — `meta-skill-creator` writes proposals
     // here when the cron job or dream-hook fires.
     if (_proposals.length) {
@@ -401,6 +439,33 @@ const SkillsView = (() => {
     });
 
     wrap.innerHTML = html;
+  }
+
+  function _renderAutoProposeSettings() {
+    const s = _proposalsSettings || {};
+    const cronChecked = s.enabled ? 'checked' : '';
+    const dreamChecked = s.on_dream_complete ? 'checked' : '';
+    const cronExpr = _esc(s.cron || '0 5 * * *');
+    return `<details class="sk-group sk-group--ap-settings" ${s.enabled || s.on_dream_complete ? 'open' : ''}>
+      <summary class="sk-group__head">
+        <span class="sk-group__caret">▾</span>
+        <span class="sk-group__label">Auto-Propose Settings</span>
+        <span class="sk-group__count">${s.enabled || s.on_dream_complete ? 'on' : 'off'}</span>
+        <span class="sk-group__meta">Unattended synthesis of new meta-skills from your usage patterns.</span>
+      </summary>
+      <div class="sk-ap-settings">
+        <label class="sk-ap-toggle">
+          <input type="checkbox" data-ap-toggle="enabled" ${cronChecked} />
+          <span class="sk-ap-toggle__label">Scheduled (cron)</span>
+          <span class="sk-ap-toggle__hint">Run on <code>${cronExpr}</code>. Drives the meta-skill-creator DAG against your top co-occurrence patterns.</span>
+        </label>
+        <label class="sk-ap-toggle">
+          <input type="checkbox" data-ap-toggle="on_dream_complete" ${dreamChecked} />
+          <span class="sk-ap-toggle__label">After memory consolidation (dream)</span>
+          <span class="sk-ap-toggle__hint">Piggyback on the memory-dream completion. Independent of the cron toggle.</span>
+        </label>
+      </div>
+    </details>`;
   }
 
   function _renderProposalRow(p) {

@@ -210,16 +210,65 @@ def reject_proposal(home: Path, proposal_id: str) -> dict:
     return {"status": "ok", "proposal_id": proposal_id}
 
 
+# ─── Auto-propose settings (Path 1/2 runtime toggle) ──────────────────
+
+_AUTO_PROPOSE_SETTINGS_KEYS = ("enabled", "on_dream_complete")
+
+
+def auto_propose_settings_path(home: Path) -> Path:
+    """Path to the per-installation runtime overrides JSON."""
+    return home / "state" / "auto_propose_settings.json"
+
+
+def read_auto_propose_settings(home: Path) -> dict[str, bool]:
+    """Return the persisted runtime overrides, or {} when not present.
+
+    The dict is keyed by ``enabled`` and/or ``on_dream_complete``. Missing
+    keys mean "no override" — the caller should fall back to the toml /
+    pydantic-settings default.
+    """
+    path = auto_propose_settings_path(home)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        k: bool(v) for k, v in payload.items()
+        if k in _AUTO_PROPOSE_SETTINGS_KEYS and isinstance(v, bool)
+    }
+
+
+def write_auto_propose_settings(home: Path, settings: dict[str, bool]) -> None:
+    """Persist the runtime overrides atomically. Unknown keys are dropped."""
+    path = auto_propose_settings_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sanitised = {
+        k: bool(settings.get(k))
+        for k in _AUTO_PROPOSE_SETTINGS_KEYS
+        if k in settings
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(sanitised, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
 __all__ = [
     "PROPOSAL_ID_PATTERN",
     "atomic_write_proposal",
     "accept_proposal",
+    "auto_propose_settings_path",
     "is_valid_proposal_id",
     "list_proposals",
     "pending_count",
     "proposals_dir",
+    "read_auto_propose_settings",
     "reject_proposal",
     "show_proposal",
     "skills_dir",
+    "write_auto_propose_settings",
     "write_proposal",
 ]

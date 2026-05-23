@@ -1,6 +1,6 @@
 ---
 name: http-fetch
-description: "Fetch a URL via HTTP/HTTPS and return the response body as text. Lightweight entrypoint replacement for `sub-agent` steps whose only job is a single GET/POST. Supports GET (default), POST with JSON or form bodies, custom headers, and timeout — no LLM agent loop. Use for simple data-fetch steps in meta-skill DAGs; for crawling, JS-rendered pages, or complex auth chains use sub-agent + scrapling instead."
+description: "Fetch a URL via HTTP/HTTPS and return the response body as text. Lightweight entrypoint replacement for `sub-agent` steps whose only job is a single GET/POST. Supports GET (default), POST/PUT/DELETE with a stdin-piped body, configurable timeout, and a max-bytes cap — no LLM agent loop, no custom-header injection (request goes out with urllib defaults). Use for simple data-fetch steps in meta-skill DAGs; for crawling, JS-rendered pages, or complex auth chains use sub-agent + scrapling instead."
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

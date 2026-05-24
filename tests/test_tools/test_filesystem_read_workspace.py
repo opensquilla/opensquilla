@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from opensquilla.tools.builtin import filesystem as fs
+from opensquilla.tools.envelope import build_tool_failure_envelope
 from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
 
 
@@ -68,6 +69,20 @@ async def test_read_file_binary_detection_samples_first_8192_bytes(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_read_file_pdf_failure_envelope_is_actionable(tmp_path: Path) -> None:
+    target = tmp_path / "figure.pdf"
+    target.write_bytes(b"%PDF-1.4\n\x00binary\n")
+
+    with pytest.raises(ToolError) as exc_info:
+        await fs.read_file(str(target))
+
+    envelope = build_tool_failure_envelope(exc_info.value, "read_file")
+    assert "UTF-8 text" in envelope["user_message"]
+    assert "pdf" in envelope["user_message"].lower()
+    assert "internal error" not in envelope["user_message"]
+
+
+@pytest.mark.asyncio
 async def test_read_file_invalid_utf8_before_selected_window_errors(tmp_path: Path) -> None:
     target = tmp_path / "invalid.txt"
     target.write_bytes(b"ok\n\xff\nlater\n")
@@ -88,6 +103,20 @@ async def test_workspace_strict_allows_inside_workspace(tmp_path: Path) -> None:
         assert "inside.txt" in await fs.list_dir(str(tmp_path))
         assert "inside.txt" in await fs.glob_search("*.txt", path=str(tmp_path))
         assert "needle" in await fs.grep_search("needle", path=str(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_workspace_alias_resolves_inside_strict_workspace(tmp_path: Path) -> None:
+    paper = tmp_path / "paper"
+    paper.mkdir()
+    target = paper / "results.tex"
+    target.write_text("\\section{Results}\nneedle\n", encoding="utf-8")
+
+    with tool_context(tmp_path):
+        assert "1\t\\section{Results}" in await fs.read_file("/workspace/paper/results.tex")
+        assert "results.tex" in await fs.list_dir("/workspace/paper")
+        assert str(target) in await fs.glob_search("*.tex", path="/workspace/paper")
+        assert "needle" in await fs.grep_search("needle", path="/workspace/paper")
 
 
 @pytest.mark.asyncio

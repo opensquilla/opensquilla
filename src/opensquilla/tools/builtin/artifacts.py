@@ -15,8 +15,9 @@ from opensquilla.artifacts import (
     ArtifactStore,
     artifact_payload,
 )
+from opensquilla.tools.path_aliases import resolve_workspace_alias
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import ToolError, current_tool_context
+from opensquilla.tools.types import ToolError, WorkspaceAccessError, current_tool_context
 
 _MAX_MISSING_FILE_CANDIDATES = 5
 _MAX_MISSING_FILE_SCAN = 2000
@@ -120,11 +121,19 @@ async def publish_artifact(
 
     workspace = Path(ctx.workspace_dir).resolve()
     raw_path = Path(path)
-    target = (raw_path if raw_path.is_absolute() else workspace / raw_path).resolve()
+    target = resolve_workspace_alias(raw_path, workspace)
+    if target is None:
+        target = (raw_path if raw_path.is_absolute() else workspace / raw_path).resolve()
     try:
         target.relative_to(workspace)
     except ValueError as exc:
-        raise ToolError(f"artifact path is outside workspace: {path}") from exc
+        raise WorkspaceAccessError(
+            (
+                "publish_artifact can only publish files inside the active workspace. "
+                "Use a relative path or a /workspace/... path for workspace files."
+            ),
+            f"artifact path is outside workspace: {path}",
+        ) from exc
     if not target.exists():
         raise _missing_artifact_error(path, workspace, target)
     if not target.is_file():

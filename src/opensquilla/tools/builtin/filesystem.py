@@ -14,8 +14,14 @@ from xml.etree import ElementTree as ET
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
 from opensquilla.sandbox.integration import get_runtime, sandboxed
+from opensquilla.tools.path_aliases import resolve_workspace_alias
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import ToolError, current_tool_context
+from opensquilla.tools.types import (
+    SafeToolError,
+    ToolError,
+    WorkspaceAccessError,
+    current_tool_context,
+)
 
 _SPREADSHEET_EXTENSIONS = {".csv", ".tsv", ".xlsx"}
 _OFFICE_BINARY_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
@@ -75,6 +81,9 @@ def _resolve_path(path: str) -> Path:
     """
     raw = Path(path).expanduser()
     root = _workspace_root()
+    alias = resolve_workspace_alias(raw, root)
+    if alias is not None:
+        return alias
     if root is not None and not raw.is_absolute():
         return (root / raw).resolve(strict=False)
     return raw.resolve(strict=False) if raw.is_absolute() else raw
@@ -168,7 +177,12 @@ def _binary_file_error(path: str, p: Path, *, reason: str | None = None) -> Tool
     if p.suffix.lower() in _SPREADSHEET_EXTENSIONS:
         hint = " Use read_spreadsheet(path=...) for CSV/TSV/Excel workbook data."
     detail = f" ({reason})" if reason else ""
-    return ToolError(f"Cannot read binary file as text: {path}{detail}.{hint}")
+    safe_message = (
+        "read_file can only read UTF-8 text files. The requested file appears to be "
+        f"a {p.suffix.lower() or 'binary'} file; use a binary-aware tool instead."
+    )
+    raw_detail = f"Cannot read binary file as text: {path}{detail}.{hint}"
+    return SafeToolError(safe_message, raw_detail)
 
 
 def _looks_binary(raw: bytes, p: Path) -> str | None:
@@ -289,7 +303,13 @@ def _gate_workspace_strict_read(tool_name: str, resolved: Path, original_path: s
 
     blocked = _workspace_strict_read_block(tool_name, resolved, original_path)
     if blocked is not None:
-        raise ToolError(str(blocked["message"]))
+        raise WorkspaceAccessError(
+            (
+                f"{tool_name} can only read inside the active workspace. "
+                "Use a relative path or a /workspace/... path for workspace files."
+            ),
+            str(blocked["message"]),
+        )
 
 
 def _workspace_strict_candidate_marker(

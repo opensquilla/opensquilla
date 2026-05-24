@@ -28,6 +28,7 @@ from opensquilla.provider.image_generation import (
     parse_image_generation_model_ref,
     reset_image_generation_providers,
 )
+from opensquilla.tools.path_aliases import resolve_workspace_alias
 from opensquilla.tools.registry import tool
 from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import (
@@ -145,11 +146,19 @@ async def _read_image_file(path: str) -> tuple[bytes, str]:
 
 def _resolve_media_path(path: str) -> Path:
     candidate = Path(path).expanduser()
+    ctx = current_tool_context.get()
+    workspace_root = (
+        Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+        if ctx and ctx.workspace_dir
+        else None
+    )
+    alias = resolve_workspace_alias(candidate, workspace_root)
+    if alias is not None:
+        return alias
     if candidate.is_absolute():
         return candidate.resolve(strict=False)
-    ctx = current_tool_context.get()
-    if ctx and ctx.workspace_dir:
-        return (Path(ctx.workspace_dir).expanduser() / candidate).resolve(strict=False)
+    if workspace_root is not None:
+        return (workspace_root / candidate).resolve(strict=False)
     return candidate.resolve(strict=False)
 
 

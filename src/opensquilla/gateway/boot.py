@@ -2069,12 +2069,17 @@ async def start_gateway_server(
                     min_freq=cfg.min_freq,
                     top_k=cfg.top_k,
                     triggered_by="dream",
+                    auto_enable=bool(getattr(cfg, "auto_enable", False)),
+                    auto_enable_max_risk=str(
+                        getattr(cfg, "auto_enable_max_risk", "low"),
+                    ),
                 )
                 log.info(
                     "auto_propose.dream_hook.complete",
                     agent_id=agent_id,
                     summary=result.summary(),
                     proposal_ids=result.proposals_created,
+                    enabled_proposal_ids=result.proposals_enabled,
                 )
             except Exception as exc:  # noqa: BLE001 — non-fatal to dream
                 log.warning(

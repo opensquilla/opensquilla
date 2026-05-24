@@ -68,6 +68,7 @@ def _make_proposer_orchestrator(
     proposals_dir: Path,
     *,
     proposal_ids: list[str] | None = None,
+    skill_md: str = "---\nname: synth-skill\nkind: meta\n---\n",
     raises: Exception | None = None,
 ) -> MagicMock:
     """Mock orchestrator whose .run() writes synthetic proposal dirs.
@@ -85,7 +86,7 @@ def _make_proposer_orchestrator(
             d = proposals_dir / pid
             d.mkdir(parents=True, exist_ok=True)
             (d / "SKILL.md").write_text(
-                "---\nname: synth-skill\nkind: meta\n---\n", encoding="utf-8",
+                skill_md, encoding="utf-8",
             )
             (d / "gates.json").write_text(json.dumps({
                 "lint": {"G1": {"passed": True}, "G2": {"passed": True}},
@@ -97,6 +98,21 @@ def _make_proposer_orchestrator(
 
     orch.run = AsyncMock(side_effect=fake_run)
     return orch
+
+
+def _loader_with_managed_dir(home: Path) -> Any:
+    """Real SkillLoader with bundled skills plus temp MANAGED layer."""
+    from opensquilla.skills.loader import SkillLoader
+
+    root = Path(__file__).resolve().parents[2]
+    loader = SkillLoader(
+        bundled_dir=root / "src" / "opensquilla" / "skills" / "bundled",
+        managed_dir=home / "skills",
+        snapshot_path=home / "cache" / "skills_snapshot.json",
+    )
+    loader.invalidate_cache()
+    loader.load_all()
+    return loader
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +194,224 @@ async def test_pattern_at_threshold_creates_proposal_with_provenance(
     # Lint / smoke payload preserved (provenance is additive, not destructive)
     assert gates["lint"]["G1"]["passed"] is True
     assert gates["auto_enable_eligible"] is True
+
+
+@pytest.mark.asyncio
+async def test_auto_enable_accepts_low_risk_eligible_proposal(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    log_dir = home / "logs"
+    proposals_dir = home / "proposals"
+    _seed_decision_log(log_dir, ["history-explorer", "summarize"], count=5)
+    loader = _loader_with_managed_dir(home)
+    skill_md = """---
+name: synth-history-summary
+kind: meta
+triggers:
+  - synth history summary
+composition:
+  steps:
+    - id: explore
+      skill: history-explorer
+      with:
+        query: "{{ inputs.user_message | xml_escape | truncate(512) }}"
+    - id: summarize
+      skill: summarize
+      depends_on: [explore]
+      with:
+        text: "{{ outputs.explore | truncate(2000) }}"
+---
+"""
+    orch = _make_proposer_orchestrator(
+        proposals_dir,
+        proposal_ids=["cafe1234"],
+        skill_md=skill_md,
+    )
+
+    result = await auto_propose(
+        orchestrator=orch,
+        skill_loader=loader,
+        log_dir=log_dir,
+        min_freq=3,
+        triggered_by="cron",
+        proposals_dir=proposals_dir,
+        auto_enable=True,
+        auto_enable_max_risk="low",
+    )
+
+    assert result.proposals_created == ["cafe1234"]
+    assert result.proposals_enabled == ["cafe1234"]
+    assert result.auto_enable[0]["status"] == "enabled"
+    assert not (proposals_dir / "cafe1234").exists()
+
+    accepted_dir = home / "skills" / "synth-history-summary"
+    assert (accepted_dir / "SKILL.md").read_text(encoding="utf-8") == skill_md
+    gates = json.loads((accepted_dir / "gates.json").read_text(encoding="utf-8"))
+    assert gates["auto_enable"]["status"] == "enabled"
+    assert gates["auto_enable"]["risk_level"] == "low"
+    assert gates["provenance"]["triggered_by"] == "auto_cron"
+    assert loader.get_by_name("synth-history-summary") is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_enable_keeps_unescaped_user_input_proposal_pending(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    log_dir = home / "logs"
+    proposals_dir = home / "proposals"
+    _seed_decision_log(log_dir, ["history-explorer", "summarize"], count=5)
+    loader = _loader_with_managed_dir(home)
+    skill_md = """---
+name: synth-unsafe-input
+kind: meta
+triggers:
+  - synth unsafe input
+composition:
+  steps:
+    - id: explore
+      skill: history-explorer
+      with:
+        query: "{{ inputs.user_message }}"
+    - id: summarize
+      skill: summarize
+      depends_on: [explore]
+      with:
+        text: "{{ outputs.explore | truncate(2000) }}"
+---
+"""
+    orch = _make_proposer_orchestrator(
+        proposals_dir,
+        proposal_ids=["beef1234"],
+        skill_md=skill_md,
+    )
+
+    result = await auto_propose(
+        orchestrator=orch,
+        skill_loader=loader,
+        log_dir=log_dir,
+        min_freq=3,
+        proposals_dir=proposals_dir,
+        auto_enable=True,
+        auto_enable_max_risk="low",
+    )
+
+    assert result.proposals_enabled == []
+    assert result.auto_enable[0]["status"] == "skipped"
+    assert "unsafe_user_input_template:explore.with.query" in (
+        result.auto_enable[0]["details"]["reasons"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_enable_keeps_unbounded_output_proposal_pending(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    log_dir = home / "logs"
+    proposals_dir = home / "proposals"
+    _seed_decision_log(log_dir, ["history-explorer", "summarize"], count=5)
+    loader = _loader_with_managed_dir(home)
+    skill_md = """---
+name: synth-raw-output
+kind: meta
+triggers:
+  - synth raw output
+composition:
+  steps:
+    - id: explore
+      skill: history-explorer
+      with:
+        query: "{{ inputs.user_message | xml_escape | truncate(512) }}"
+    - id: summarize
+      skill: summarize
+      depends_on: [explore]
+      with:
+        text: "{{ outputs.explore }}"
+---
+"""
+    orch = _make_proposer_orchestrator(
+        proposals_dir,
+        proposal_ids=["face1234"],
+        skill_md=skill_md,
+    )
+
+    result = await auto_propose(
+        orchestrator=orch,
+        skill_loader=loader,
+        log_dir=log_dir,
+        min_freq=3,
+        proposals_dir=proposals_dir,
+        auto_enable=True,
+        auto_enable_max_risk="low",
+    )
+
+    assert result.proposals_created == ["face1234"]
+    assert result.proposals_enabled == []
+    assert result.auto_enable[0]["status"] == "skipped"
+    assert result.auto_enable[0]["reason"] == "risk_too_high"
+    assert result.auto_enable[0]["risk_level"] == "high"
+    details = result.auto_enable[0]["details"]
+    assert "unbounded_output_template:summarize.with.text" in details["reasons"]
+    assert (proposals_dir / "face1234" / "SKILL.md").is_file()
+    gates = json.loads((proposals_dir / "face1234" / "gates.json").read_text())
+    assert gates["auto_enable"]["details"]["validation_profile"] == "static-safety-v2"
+
+
+@pytest.mark.asyncio
+async def test_auto_enable_keeps_high_risk_proposal_pending(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    log_dir = home / "logs"
+    proposals_dir = home / "proposals"
+    _seed_decision_log(log_dir, ["weather", "tmux"], count=5)
+    loader = _loader_with_managed_dir(home)
+    skill_md = """---
+name: synth-weather-tmux
+kind: meta
+triggers:
+  - synth weather tmux
+composition:
+  steps:
+    - id: weather
+      skill: weather
+      with:
+        location: "{{ inputs.user_message }}"
+    - id: tmux
+      skill: tmux
+      depends_on: [weather]
+      with:
+        command: "{{ outputs.weather }}"
+---
+"""
+    orch = _make_proposer_orchestrator(
+        proposals_dir,
+        proposal_ids=["feed1234"],
+        skill_md=skill_md,
+    )
+
+    result = await auto_propose(
+        orchestrator=orch,
+        skill_loader=loader,
+        log_dir=log_dir,
+        min_freq=3,
+        proposals_dir=proposals_dir,
+        auto_enable=True,
+        auto_enable_max_risk="low",
+    )
+
+    assert result.proposals_created == ["feed1234"]
+    assert result.proposals_enabled == []
+    assert result.auto_enable[0]["status"] == "skipped"
+    assert result.auto_enable[0]["reason"] == "risk_too_high"
+    assert result.auto_enable[0]["risk_level"] == "high"
+    assert (proposals_dir / "feed1234" / "SKILL.md").is_file()
+    assert not (home / "skills" / "synth-weather-tmux").exists()
+    gates = json.loads((proposals_dir / "feed1234" / "gates.json").read_text())
+    assert gates["auto_enable"]["status"] == "skipped"
+    assert gates["auto_enable"]["reason"] == "risk_too_high"
 
 
 @pytest.mark.asyncio

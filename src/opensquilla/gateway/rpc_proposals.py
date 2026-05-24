@@ -36,6 +36,15 @@ def _require_proposal_id(params: dict | None) -> str:
     return pid
 
 
+def _require_skill_name(params: dict | None) -> str:
+    if not isinstance(params, dict):
+        raise ValueError("params object required")
+    name = params.get("name")
+    if not isinstance(name, str) or not proposals_lib.SKILL_NAME_PATTERN.fullmatch(name):
+        raise ValueError("name must be a valid skill name")
+    return name
+
+
 @_d.method("exec.proposals.pending_count", scope="operator.proposals")
 async def _handle_pending_count(
     params: dict | None, ctx: RpcContext,
@@ -77,6 +86,21 @@ async def _handle_reject(
     return proposals_lib.reject_proposal(default_opensquilla_home(), pid)
 
 
+@_d.method("exec.proposals.auto_enabled.list", scope="operator.proposals")
+async def _handle_auto_enabled_list(
+    params: dict | None, ctx: RpcContext,
+) -> dict[str, Any]:
+    return proposals_lib.list_auto_enabled_skills(default_opensquilla_home())
+
+
+@_d.method("exec.proposals.auto_enabled.disable", scope="operator.admin")
+async def _handle_auto_enabled_disable(
+    params: dict | None, ctx: RpcContext,
+) -> dict[str, Any]:
+    name = _require_skill_name(params)
+    return proposals_lib.disable_auto_enabled_skill(default_opensquilla_home(), name)
+
+
 # ─── Settings: WebUI toggle for the auto-propose feature ──────────────
 
 
@@ -88,6 +112,16 @@ def _settings_payload(cfg: Any, available: bool) -> dict[str, Any]:
             bool(getattr(cfg, "on_dream_complete", False))
             if cfg is not None
             else False
+        ),
+        "auto_enable": (
+            bool(getattr(cfg, "auto_enable", False))
+            if cfg is not None
+            else False
+        ),
+        "auto_enable_max_risk": (
+            str(getattr(cfg, "auto_enable_max_risk", "low"))
+            if cfg is not None
+            else "low"
         ),
         "cron": getattr(cfg, "cron", "0 5 * * *") if cfg is not None else "0 5 * * *",
         "window_days": (
@@ -144,18 +178,25 @@ async def _handle_settings_set(
     old_values = {
         "enabled": was_enabled,
         "on_dream_complete": bool(getattr(cfg, "on_dream_complete", False)),
+        "auto_enable": bool(getattr(cfg, "auto_enable", False)),
+        "auto_enable_max_risk": str(getattr(cfg, "auto_enable_max_risk", "low")),
     }
-    requested: dict[str, bool] = {}
-    for key in ("enabled", "on_dream_complete"):
+    requested: dict[str, Any] = {}
+    for key in ("enabled", "on_dream_complete", "auto_enable"):
         if key in params:
             v = params[key]
             if not isinstance(v, bool):
                 raise ValueError(f"{key} must be a boolean")
             requested[key] = v
+    if "auto_enable_max_risk" in params:
+        risk = params["auto_enable_max_risk"]
+        if risk not in proposals_lib.RISK_LEVELS:
+            raise ValueError("auto_enable_max_risk must be one of low, medium, high")
+        requested["auto_enable_max_risk"] = risk
 
     new_values = dict(old_values)
     new_values.update(requested)
-    now_enabled = new_values["enabled"]
+    now_enabled = bool(new_values["enabled"])
 
     # Apply scheduler side effects before mutating/persisting state. If the
     # scheduler update fails, the live config and JSON state remain untouched.
@@ -179,6 +220,8 @@ async def _handle_settings_set(
     persisted = {
         "enabled": bool(getattr(cfg, "enabled", False)),
         "on_dream_complete": bool(getattr(cfg, "on_dream_complete", False)),
+        "auto_enable": bool(getattr(cfg, "auto_enable", False)),
+        "auto_enable_max_risk": str(getattr(cfg, "auto_enable_max_risk", "low")),
     }
     try:
         write_auto_propose_settings(rt.home, persisted)

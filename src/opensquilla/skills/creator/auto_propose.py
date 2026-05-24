@@ -24,8 +24,11 @@ import hashlib
 import json
 import logging
 import os
+import re
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from opensquilla.observability.decision_log_aggregate import (
     aggregate_co_occurrences,
@@ -34,6 +37,7 @@ from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.orchestrator import MetaOrchestrator
 from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.types import MetaMatch
+from opensquilla.skills.proposals_lib import accept_proposal
 
 _log = logging.getLogger(__name__)
 
@@ -56,6 +60,38 @@ _META_SKILL_CREATOR_TRIGGERS: tuple[str, ...] = (
     "synthesize meta-skill",
     "compose meta-skill",
 )
+
+_RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+# Directly side-effectful or external-control skills should never be promoted
+# by unattended history mining under the default low-risk policy.
+_HIGH_RISK_SKILLS = frozenset({
+    "github",
+    "tmux",
+})
+
+# These are valid composition targets, but they usually create files, compile
+# artifacts, or perform multi-step export work. Keep them review-gated unless
+# the operator explicitly raises the auto-enable risk ceiling.
+_MEDIUM_RISK_SKILLS = frozenset({
+    "docx",
+    "html-to-pdf",
+    "latex-compile",
+    "nano-pdf",
+    "pdf-toolkit",
+    "pptx",
+    "xlsx",
+})
+
+_SAFE_OUTPUT_TEMPLATE_FILTERS = frozenset({
+    "truncate",
+    "xml_escape",
+    "slugify",
+    "tojson",
+})
+_JINJA_EXPR_RE = re.compile(r"\{\{\s*(.*?)\s*\}\}", re.DOTALL)
+_OUTPUT_REF_RE = re.compile(r"\boutputs\.[A-Za-z_][A-Za-z0-9_]*\b")
+_USER_INPUT_REF_RE = re.compile(r"\binputs\.user_message\b")
 
 
 @dataclass(frozen=True)
@@ -83,6 +119,8 @@ class AutoProposeResult:
     """
 
     proposals_created: list[str] = field(default_factory=list)
+    proposals_enabled: list[str] = field(default_factory=list)
+    auto_enable: list[dict[str, object]] = field(default_factory=list)
     skipped: list[dict[str, object]] = field(default_factory=list)
     errors: list[dict[str, object]] = field(default_factory=list)
     triggered_by: str = "cron"
@@ -90,6 +128,7 @@ class AutoProposeResult:
     def summary(self) -> str:
         return (
             f"auto_propose proposals={len(self.proposals_created)} "
+            f"enabled={len(self.proposals_enabled)} "
             f"skipped={len(self.skipped)} errors={len(self.errors)} "
             f"via={self.triggered_by}"
         )
@@ -221,6 +260,293 @@ def _patch_gates_provenance(
         _log.warning("auto_propose.gates_write_failed: %s", exc)
 
 
+def _patch_gates_auto_enable(proposal_dir: Path, payload: dict[str, object]) -> None:
+    """Record the auto-enable decision on the proposal/accepted gates file."""
+    gates_path = proposal_dir / "gates.json"
+    if not gates_path.is_file():
+        return
+    try:
+        gates = json.loads(gates_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        _log.warning("auto_propose.auto_enable_gates_read_failed: %s", exc)
+        return
+    gates["auto_enable"] = dict(payload)
+    try:
+        gates_path.write_text(
+            json.dumps(gates, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        _log.warning("auto_propose.auto_enable_gates_write_failed: %s", exc)
+
+
+def _load_proposal_spec(proposal_dir: Path):
+    """Parse one proposal SKILL.md through the same loader path as runtime."""
+    home = proposal_dir.parent.parent
+    loader = SkillLoader(
+        extra_dirs=[proposal_dir.parent],
+        snapshot_path=home / "cache" / "auto_enable_snapshot.json",
+    )
+    loader.invalidate_cache()
+    for spec in loader.load_all():
+        if spec.path == proposal_dir:
+            return spec
+    raise ValueError(f"proposal {proposal_dir.name} did not parse as a skill")
+
+
+def _normalise_max_risk(value: str) -> str:
+    value = str(value or "low").strip().lower()
+    return value if value in _RISK_ORDER else "low"
+
+
+def _iter_template_strings(value: Any, prefix: str) -> list[tuple[str, str]]:
+    if isinstance(value, str):
+        return [(prefix, value)]
+    if isinstance(value, dict):
+        found: list[tuple[str, str]] = []
+        for key, item in value.items():
+            found.extend(_iter_template_strings(item, f"{prefix}.{key}"))
+        return found
+    if isinstance(value, list):
+        found = []
+        for index, item in enumerate(value):
+            found.extend(_iter_template_strings(item, f"{prefix}[{index}]"))
+        return found
+    return []
+
+
+def _unsafe_output_template_reasons(plan) -> list[str]:
+    """Return reasons for output templates that pass unbounded step output.
+
+    This is a conservative auto-enable-only safety gate. Normal manually
+    accepted meta-skills remain compatible, but unattended promotion requires
+    each ``outputs.*`` interpolation to apply at least one bounding/escaping
+    filter in the same Jinja expression.
+    """
+    reasons: list[str] = []
+    for step in plan.steps:
+        fields: list[tuple[str, str]] = []
+        fields.extend(_iter_template_strings(step.with_args, f"{step.id}.with"))
+        fields.extend(_iter_template_strings(step.tool_args, f"{step.id}.tool_args"))
+        for path, text in fields:
+            for match in _JINJA_EXPR_RE.finditer(text):
+                expr = match.group(1)
+                if not _OUTPUT_REF_RE.search(expr):
+                    continue
+                filters = {
+                    part.split("(", 1)[0].strip()
+                    for part in expr.split("|")[1:]
+                    if part.strip()
+                }
+                if filters.isdisjoint(_SAFE_OUTPUT_TEMPLATE_FILTERS):
+                    reasons.append(f"unbounded_output_template:{path}")
+    return reasons
+
+
+def _unsafe_user_input_template_reasons(plan) -> list[str]:
+    """Return reasons for user_message templates without first-hop escaping."""
+    reasons: list[str] = []
+    for step in plan.steps:
+        fields: list[tuple[str, str]] = []
+        fields.extend(_iter_template_strings(step.with_args, f"{step.id}.with"))
+        fields.extend(_iter_template_strings(step.tool_args, f"{step.id}.tool_args"))
+        for path, text in fields:
+            for match in _JINJA_EXPR_RE.finditer(text):
+                expr = match.group(1)
+                if not _USER_INPUT_REF_RE.search(expr):
+                    continue
+                filters = [
+                    part.split("(", 1)[0].strip()
+                    for part in expr.split("|")[1:]
+                    if part.strip()
+                ]
+                if not filters or filters[0] not in {"xml_escape", "slugify"}:
+                    reasons.append(f"unsafe_user_input_template:{path}")
+    return reasons
+
+
+def _evaluate_auto_enable_risk(
+    proposal_dir: Path,
+    *,
+    skill_loader: SkillLoader,
+    max_risk: str,
+) -> dict[str, object]:
+    """Return a deterministic risk decision for an eligible proposal.
+
+    This is deliberately conservative: malformed meta plans, direct tool calls,
+    unknown composed skills, and high-risk skills all prevent unattended accept.
+    """
+    try:
+        spec = _load_proposal_spec(proposal_dir)
+        plan = parse_meta_plan(spec)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "allowed": False,
+            "reason": "invalid_meta_plan",
+            "risk_level": "high",
+            "details": str(exc),
+        }
+    if plan is None:
+        return {
+            "allowed": False,
+            "reason": "not_meta_skill",
+            "risk_level": "high",
+        }
+
+    max_risk = _normalise_max_risk(max_risk)
+    referenced_skills: set[str] = set()
+    referenced_tools: set[str] = set()
+    risk_level = "low"
+    reasons: list[str] = []
+    validation_profile = "static-safety-v2"
+
+    def raise_risk(level: str, reason: str) -> None:
+        nonlocal risk_level
+        if _RISK_ORDER[level] > _RISK_ORDER[risk_level]:
+            risk_level = level
+        if reason not in reasons:
+            reasons.append(reason)
+
+    for step in plan.steps:
+        if step.kind in ("agent", "skill_exec"):
+            referenced_skills.add(step.skill)
+        for route in step.route:
+            referenced_skills.add(route.to)
+        if step.kind == "skill_exec":
+            raise_risk("medium", "direct_skill_exec")
+            spec = skill_loader.get_by_name(step.skill)
+            if spec is not None and not getattr(spec, "entrypoint", None):
+                raise_risk("high", f"skill_exec_without_entrypoint:{step.skill}")
+        if step.kind == "tool_call":
+            referenced_tools.add(step.tool)
+            raise_risk("high", "direct_tool_call")
+            if not step.tool_allowlist:
+                raise_risk("high", f"tool_call_without_allowlist:{step.tool}")
+
+    for reason in _unsafe_output_template_reasons(plan):
+        raise_risk("high", reason)
+    for reason in _unsafe_user_input_template_reasons(plan):
+        raise_risk("high", reason)
+
+    for skill in sorted(referenced_skills):
+        spec = skill_loader.get_by_name(skill)
+        if spec is None:
+            raise_risk("high", f"unknown_skill:{skill}")
+        elif getattr(spec, "kind", "skill") == "meta":
+            raise_risk("high", f"nested_meta_skill:{skill}")
+        elif skill in _HIGH_RISK_SKILLS:
+            raise_risk("high", f"high_risk_skill:{skill}")
+        elif skill in _MEDIUM_RISK_SKILLS:
+            raise_risk("medium", f"medium_risk_skill:{skill}")
+
+    allowed = _RISK_ORDER[risk_level] <= _RISK_ORDER[max_risk]
+    return {
+        "allowed": allowed,
+        "reason": "ok" if allowed else "risk_too_high",
+        "risk_level": risk_level,
+        "max_risk": max_risk,
+        "skills": sorted(referenced_skills),
+        "tools": sorted(referenced_tools),
+        "reasons": reasons,
+        "validation_profile": validation_profile,
+    }
+
+
+def _try_auto_enable_proposal(
+    *,
+    proposals_dir: Path,
+    proposal_id: str,
+    skill_loader: SkillLoader,
+    triggered_by: str,
+    max_risk: str,
+) -> dict[str, object]:
+    """Attempt to promote one generated proposal into the managed layer."""
+    home = proposals_dir.parent
+    proposal_dir = proposals_dir / proposal_id
+    gates_path = proposal_dir / "gates.json"
+    gates: dict[str, object] = {}
+    if gates_path.is_file():
+        try:
+            parsed = json.loads(gates_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                gates = dict(parsed)
+        except (json.JSONDecodeError, OSError):
+            gates = {}
+    decision: dict[str, object]
+    if not bool(gates.get("auto_enable_eligible", False)):
+        decision = {
+            "status": "skipped",
+            "proposal_id": proposal_id,
+            "reason": "gates_not_eligible",
+            "triggered_by": triggered_by,
+        }
+        _patch_gates_auto_enable(proposal_dir, decision)
+        return decision
+
+    risk = _evaluate_auto_enable_risk(
+        proposal_dir,
+        skill_loader=skill_loader,
+        max_risk=max_risk,
+    )
+    if not bool(risk.get("allowed", False)):
+        decision = {
+            "status": "skipped",
+            "proposal_id": proposal_id,
+            "reason": risk.get("reason", "risk_too_high"),
+            "risk_level": risk.get("risk_level", "high"),
+            "max_risk": risk.get("max_risk", _normalise_max_risk(max_risk)),
+            "triggered_by": triggered_by,
+            "details": risk,
+        }
+        _patch_gates_auto_enable(proposal_dir, decision)
+        return decision
+
+    decision = {
+        "status": "enabled",
+        "proposal_id": proposal_id,
+        "risk_level": risk.get("risk_level", "low"),
+        "max_risk": risk.get("max_risk", _normalise_max_risk(max_risk)),
+        "triggered_by": triggered_by,
+        "enabled_at_ms": int(time.time() * 1000),
+        "details": risk,
+    }
+    _patch_gates_auto_enable(proposal_dir, decision)
+    accepted = accept_proposal(home, proposal_id, force=False)
+    if accepted.get("status") != "ok":
+        failed: dict[str, object] = {
+            "status": "error",
+            "proposal_id": proposal_id,
+            "reason": str(accepted.get("reason") or "accept_failed"),
+            "triggered_by": triggered_by,
+            "accept_result": accepted,
+        }
+        _patch_gates_auto_enable(proposal_dir, failed)
+        return failed
+    skill_loader.invalidate_cache()
+    skill_loader.load_all()
+    decision["skill_name"] = accepted.get("name")
+    decision["skill_path"] = accepted.get("skill_path")
+    return decision
+
+
+def try_auto_enable_proposal(
+    *,
+    proposals_dir: Path,
+    proposal_id: str,
+    skill_loader: SkillLoader,
+    triggered_by: str,
+    max_risk: str,
+) -> dict[str, object]:
+    """Public wrapper used by cron/dream and manual creator persist paths."""
+    return _try_auto_enable_proposal(
+        proposals_dir=proposals_dir,
+        proposal_id=proposal_id,
+        skill_loader=skill_loader,
+        triggered_by=triggered_by,
+        max_risk=max_risk,
+    )
+
+
 def _resolve_proposals_dir(proposals_dir: Path | None) -> Path:
     if proposals_dir is not None:
         return proposals_dir
@@ -239,6 +565,8 @@ async def auto_propose(
     top_k: int = 5,
     triggered_by: str = "cron",
     proposals_dir: Path | None = None,
+    auto_enable: bool = False,
+    auto_enable_max_risk: str = "low",
 ) -> AutoProposeResult:
     """Drive meta-skill-creator once per qualifying co-occurrence pattern.
 
@@ -263,6 +591,8 @@ async def auto_propose(
     """
     proposals_dir = _resolve_proposals_dir(proposals_dir)
     proposals_created: list[str] = []
+    proposals_enabled: list[str] = []
+    auto_enable_decisions: list[dict[str, object]] = []
     skipped: list[dict[str, object]] = []
     errors: list[dict[str, object]] = []
 
@@ -273,6 +603,8 @@ async def auto_propose(
         })
         return AutoProposeResult(
             proposals_created=proposals_created,
+            proposals_enabled=proposals_enabled,
+            auto_enable=auto_enable_decisions,
             skipped=skipped,
             errors=errors,
             triggered_by=triggered_by,
@@ -285,6 +617,8 @@ async def auto_propose(
         })
         return AutoProposeResult(
             proposals_created=proposals_created,
+            proposals_enabled=proposals_enabled,
+            auto_enable=auto_enable_decisions,
             skipped=skipped,
             errors=errors,
             triggered_by=triggered_by,
@@ -293,6 +627,8 @@ async def auto_propose(
         errors.append({"reason": "meta-skill-creator spec is not kind=meta"})
         return AutoProposeResult(
             proposals_created=proposals_created,
+            proposals_enabled=proposals_enabled,
+            auto_enable=auto_enable_decisions,
             skipped=skipped,
             errors=errors,
             triggered_by=triggered_by,
@@ -304,6 +640,8 @@ async def auto_propose(
         errors.append({"reason": f"aggregate_co_occurrences failed: {exc}"})
         return AutoProposeResult(
             proposals_created=proposals_created,
+            proposals_enabled=proposals_enabled,
+            auto_enable=auto_enable_decisions,
             skipped=skipped,
             errors=errors,
             triggered_by=triggered_by,
@@ -382,13 +720,34 @@ async def auto_propose(
                 window_days=window_days,
                 chain_hash=chain_hash,
             )
+            if auto_enable:
+                try:
+                    decision = _try_auto_enable_proposal(
+                        proposals_dir=proposals_dir,
+                        proposal_id=proposal_id,
+                        skill_loader=skill_loader,
+                        triggered_by=triggered_by,
+                        max_risk=auto_enable_max_risk,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    decision = {
+                        "status": "error",
+                        "proposal_id": proposal_id,
+                        "reason": str(exc),
+                        "triggered_by": triggered_by,
+                    }
+                auto_enable_decisions.append(decision)
+                if decision.get("status") == "enabled":
+                    proposals_enabled.append(proposal_id)
 
     return AutoProposeResult(
         proposals_created=proposals_created,
+        proposals_enabled=proposals_enabled,
+        auto_enable=auto_enable_decisions,
         skipped=skipped,
         errors=errors,
         triggered_by=triggered_by,
     )
 
 
-__all__ = ["auto_propose", "AutoProposeResult"]
+__all__ = ["auto_propose", "AutoProposeResult", "try_auto_enable_proposal"]

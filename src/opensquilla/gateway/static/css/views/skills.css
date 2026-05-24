@@ -773,6 +773,17 @@
   cursor: pointer;
 }
 
+.sk-ap-select {
+  grid-row: 1 / span 2;
+  width: 96px;
+  min-height: 30px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
 .sk-ap-toggle__label {
   font-weight: 500;
   color: var(--text);

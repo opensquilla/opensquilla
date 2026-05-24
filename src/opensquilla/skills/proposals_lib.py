@@ -22,6 +22,8 @@ import uuid
 from pathlib import Path
 
 PROPOSAL_ID_PATTERN = re.compile(r"[0-9a-f]{8}")
+SKILL_NAME_PATTERN = re.compile(r"[\w\-]+")
+RISK_LEVELS = frozenset({"low", "medium", "high"})
 
 
 def proposals_dir(home: Path) -> Path:
@@ -109,11 +111,18 @@ def list_proposals(home: Path) -> dict:
             except (json.JSONDecodeError, OSError):
                 gates = {}
         provenance = gates.get("provenance") or {}
+        auto_enable = gates.get("auto_enable") or {}
+        auto_enable_digest = {}
+        if isinstance(auto_enable, dict):
+            for key in ("status", "reason", "risk_level", "max_risk"):
+                if key in auto_enable:
+                    auto_enable_digest[key] = auto_enable[key]
         rows.append({
             "proposal_id": sub.name,
             "auto_enable_eligible": bool(gates.get("auto_enable_eligible", False)),
             "triggered_by": provenance.get("triggered_by", "manual"),
             "chain_hash": provenance.get("chain_hash"),
+            "auto_enable": auto_enable_digest,
         })
     return {"proposals": rows}
 
@@ -194,6 +203,74 @@ def accept_proposal(home: Path, proposal_id: str, force: bool = False) -> dict:
     return {"status": "ok", "skill_path": str(dst), "name": name}
 
 
+def list_auto_enabled_skills(home: Path) -> dict:
+    """Return managed skills that were promoted by auto-enable."""
+    managed = skills_dir(home)
+    if not managed.is_dir():
+        return {"skills": []}
+    rows: list[dict] = []
+    for sub in sorted(managed.iterdir()):
+        if not (sub / "SKILL.md").is_file():
+            continue
+        gates_path = sub / "gates.json"
+        if not gates_path.is_file():
+            continue
+        try:
+            gates = json.loads(gates_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        auto_enable = gates.get("auto_enable")
+        if not isinstance(auto_enable, dict):
+            continue
+        if auto_enable.get("status") != "enabled":
+            continue
+        rows.append({
+            "name": sub.name,
+            "proposal_id": auto_enable.get("proposal_id"),
+            "risk_level": auto_enable.get("risk_level", "unknown"),
+            "max_risk": auto_enable.get("max_risk", "unknown"),
+            "triggered_by": auto_enable.get("triggered_by", "unknown"),
+            "enabled_at_ms": auto_enable.get("enabled_at_ms"),
+        })
+    return {"skills": rows}
+
+
+def disable_auto_enabled_skill(home: Path, name: str) -> dict:
+    """Move an auto-enabled managed skill back to proposals for review."""
+    if not isinstance(name, str) or not SKILL_NAME_PATTERN.fullmatch(name):
+        return {"status": "error", "reason": "invalid skill name"}
+    src = skills_dir(home) / name
+    if not (src / "SKILL.md").is_file():
+        return {"status": "error", "reason": f"skill {name} not found"}
+    gates_path = src / "gates.json"
+    gates: dict = {}
+    if gates_path.is_file():
+        try:
+            parsed = json.loads(gates_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                gates = parsed
+        except (json.JSONDecodeError, OSError):
+            gates = {}
+    auto_enable = gates.get("auto_enable")
+    if not isinstance(auto_enable, dict) or auto_enable.get("status") != "enabled":
+        return {"status": "refused", "reason": f"skill {name} is not auto-enabled"}
+
+    proposal_id = str(auto_enable.get("proposal_id") or uuid.uuid4().hex[:8])
+    if not is_valid_proposal_id(proposal_id) or (proposals_dir(home) / proposal_id).exists():
+        proposal_id = uuid.uuid4().hex[:8]
+    proposals_dir(home).mkdir(parents=True, exist_ok=True)
+    dst = proposals_dir(home) / proposal_id
+
+    disabled = dict(auto_enable)
+    disabled["previous_status"] = auto_enable.get("status")
+    disabled["status"] = "disabled"
+    disabled["proposal_id"] = proposal_id
+    gates["auto_enable"] = disabled
+    gates_path.write_text(json.dumps(gates, indent=2, ensure_ascii=False), encoding="utf-8")
+    shutil.move(str(src), str(dst))
+    return {"status": "ok", "proposal_id": proposal_id, "name": name}
+
+
 def reject_proposal(home: Path, proposal_id: str) -> dict:
     """Delete the proposal directory. Idempotent — re-deleting is fine."""
     if not is_valid_proposal_id(proposal_id):
@@ -212,7 +289,8 @@ def reject_proposal(home: Path, proposal_id: str) -> dict:
 
 # ─── Auto-propose settings (Path 1/2 runtime toggle) ──────────────────
 
-_AUTO_PROPOSE_SETTINGS_KEYS = ("enabled", "on_dream_complete")
+_AUTO_PROPOSE_BOOL_SETTINGS_KEYS = ("enabled", "on_dream_complete", "auto_enable")
+_AUTO_PROPOSE_SETTINGS_KEYS = (*_AUTO_PROPOSE_BOOL_SETTINGS_KEYS, "auto_enable_max_risk")
 
 
 def auto_propose_settings_path(home: Path) -> Path:
@@ -220,12 +298,12 @@ def auto_propose_settings_path(home: Path) -> Path:
     return home / "state" / "auto_propose_settings.json"
 
 
-def read_auto_propose_settings(home: Path) -> dict[str, bool]:
+def read_auto_propose_settings(home: Path) -> dict[str, object]:
     """Return the persisted runtime overrides, or {} when not present.
 
-    The dict is keyed by ``enabled`` and/or ``on_dream_complete``. Missing
-    keys mean "no override" — the caller should fall back to the toml /
-    pydantic-settings default.
+    The dict is keyed by ``enabled``, ``on_dream_complete``, and/or
+    ``auto_enable``. Missing keys mean "no override" — the caller should fall
+    back to the toml / pydantic-settings default.
     """
     path = auto_propose_settings_path(home)
     if not path.is_file():
@@ -236,21 +314,28 @@ def read_auto_propose_settings(home: Path) -> dict[str, bool]:
         return {}
     if not isinstance(payload, dict):
         return {}
-    return {
+    out: dict[str, object] = {
         k: bool(v) for k, v in payload.items()
-        if k in _AUTO_PROPOSE_SETTINGS_KEYS and isinstance(v, bool)
+        if k in _AUTO_PROPOSE_BOOL_SETTINGS_KEYS and isinstance(v, bool)
     }
+    risk = payload.get("auto_enable_max_risk")
+    if isinstance(risk, str) and risk in RISK_LEVELS:
+        out["auto_enable_max_risk"] = risk
+    return out
 
 
-def write_auto_propose_settings(home: Path, settings: dict[str, bool]) -> None:
+def write_auto_propose_settings(home: Path, settings: dict[str, object]) -> None:
     """Persist the runtime overrides atomically. Unknown keys are dropped."""
     path = auto_propose_settings_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    sanitised = {
+    sanitised: dict[str, object] = {
         k: bool(settings.get(k))
-        for k in _AUTO_PROPOSE_SETTINGS_KEYS
+        for k in _AUTO_PROPOSE_BOOL_SETTINGS_KEYS
         if k in settings
     }
+    risk = settings.get("auto_enable_max_risk")
+    if isinstance(risk, str) and risk in RISK_LEVELS:
+        sanitised["auto_enable_max_risk"] = risk
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(sanitised, indent=2), encoding="utf-8")
     tmp.replace(path)
@@ -261,7 +346,9 @@ __all__ = [
     "atomic_write_proposal",
     "accept_proposal",
     "auto_propose_settings_path",
+    "disable_auto_enabled_skill",
     "is_valid_proposal_id",
+    "list_auto_enabled_skills",
     "list_proposals",
     "pending_count",
     "proposals_dir",

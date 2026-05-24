@@ -85,6 +85,56 @@ def test_e2e_p1_proposal_lint_pass(tmp_path, monkeypatch) -> None:
     assert (proposal_dir / "gates.json").is_file()
 
 
+def test_manual_creator_persist_auto_enables_when_setting_is_on(tmp_path) -> None:
+    """The manual meta-skill-creator persist tool should use the same
+    conservative auto-enable path as cron/dream auto-propose when the
+    operator has enabled it in runtime settings."""
+    home = tmp_path / ".opensquilla"
+
+    from opensquilla.skills import proposals_lib
+    from opensquilla.skills.creator import proposer
+
+    proposals_lib.write_auto_propose_settings(
+        home,
+        {"auto_enable": True, "auto_enable_max_risk": "low"},
+    )
+    skill_md = """---
+name: synth-manual-auto-enable
+description: "Manual creator output that is safe to auto-enable."
+kind: meta
+meta_priority: 50
+triggers:
+  - "manual auto enable"
+composition:
+  steps:
+    - id: explore
+      skill: history-explorer
+      with:
+        query: "{{ inputs.user_message | xml_escape | truncate(512) }}"
+    - id: digest
+      skill: summarize
+      depends_on: [explore]
+      with:
+        text: "{{ outputs.explore | truncate(2000) }}"
+---
+"""
+    lint_result = {"G1": {"passed": True}, "G2": {"passed": True}}
+    smoke_result = {"G3": {"passed": True}, "G4": {"passed": True}}
+
+    out = json.loads(proposer.meta_skill_persist_proposal(
+        skill_md,
+        json.dumps(lint_result),
+        json.dumps(smoke_result),
+        home=str(home),
+    ))
+
+    assert out["status"] == "ok"
+    assert out["auto_enable"]["status"] == "enabled"
+    assert out["auto_enable"]["triggered_by"] == "manual"
+    assert not (home / "proposals" / out["proposal_id"]).exists()
+    assert (home / "skills" / "synth-manual-auto-enable" / "SKILL.md").is_file()
+
+
 async def test_orchestrator_drives_creator_dag_end_to_end(tmp_path, monkeypatch) -> None:
     """Full DAG through MetaOrchestrator with stubbed downstream runners."""
     home = tmp_path / ".opensquilla"

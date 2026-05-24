@@ -170,6 +170,7 @@ METHOD_SCOPES: dict[str, str] = {
     "exec.proposals.list": PROPOSALS_SCOPE,
     "exec.proposals.show": PROPOSALS_SCOPE,
     "exec.proposals.settings.get": PROPOSALS_SCOPE,
+    "exec.proposals.auto_enabled.list": PROPOSALS_SCOPE,
     # ----- admin -----
     "chat.inject": ADMIN_SCOPE,
     "system-event": ADMIN_SCOPE,
@@ -190,6 +191,7 @@ METHOD_SCOPES: dict[str, str] = {
     "exec.proposals.accept": ADMIN_SCOPE,
     "exec.proposals.reject": ADMIN_SCOPE,
     "exec.proposals.settings.set": ADMIN_SCOPE,
+    "exec.proposals.auto_enabled.disable": ADMIN_SCOPE,
     "channels.logout": ADMIN_SCOPE,
     "channels.restart": ADMIN_SCOPE,  # OpenSquilla-only.
     "diagnostics.set": ADMIN_SCOPE,

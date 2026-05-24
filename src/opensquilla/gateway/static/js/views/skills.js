@@ -7,7 +7,14 @@ const SkillsView = (() => {
   let _intervals = [];
   let _allSkills = [];
   let _proposals = [];
-  let _proposalsSettings = { available: false, enabled: false, on_dream_complete: false };
+  let _autoEnabledSkills = [];
+  let _proposalsSettings = {
+    available: false,
+    enabled: false,
+    on_dream_complete: false,
+    auto_enable: false,
+    auto_enable_max_risk: 'low',
+  };
   let _filterText = '';
   let _statusFilter = 'all';
   let _activeTab = 'installed';
@@ -199,10 +206,19 @@ const SkillsView = (() => {
       if (propAccept) { _acceptProposal(propAccept.dataset.proposalAccept); return; }
       const propReject = e.target.closest('[data-proposal-reject]');
       if (propReject) { _rejectProposal(propReject.dataset.proposalReject); return; }
+      const autoDisable = e.target.closest('[data-auto-enabled-disable]');
+      if (autoDisable) { _disableAutoEnabled(autoDisable.dataset.autoEnabledDisable); return; }
       const card = e.target.closest('[data-skill-card]');
       if (card) {
         const skill = _allSkills.find(s => s.name === card.dataset.skillCard);
         if (skill) _openSkillDialog(skill);
+      }
+    });
+
+    _el.addEventListener('change', (e) => {
+      const apRisk = e.target.closest('[data-ap-risk-select]');
+      if (apRisk) {
+        _setAutoEnableRisk(apRisk.value, apRisk);
       }
     });
 
@@ -247,10 +263,22 @@ const SkillsView = (() => {
       _proposals = [];
     }
     try {
+      const data = await _rpc.call('exec.proposals.auto_enabled.list');
+      _autoEnabledSkills = (data && data.skills) || [];
+    } catch {
+      _autoEnabledSkills = [];
+    }
+    try {
       const settings = await _rpc.call('exec.proposals.settings.get');
       _proposalsSettings = settings || _proposalsSettings;
     } catch {
-      _proposalsSettings = { available: false, enabled: false, on_dream_complete: false };
+      _proposalsSettings = {
+        available: false,
+        enabled: false,
+        on_dream_complete: false,
+        auto_enable: false,
+        auto_enable_max_risk: 'low',
+      };
     }
   }
 
@@ -269,6 +297,23 @@ const SkillsView = (() => {
       alert('Settings update failed: ' + err.message);
     } finally {
       if (button) button.disabled = false;
+    }
+  }
+
+  async function _setAutoEnableRisk(value, select) {
+    if (select) select.disabled = true;
+    try {
+      const out = await _rpc.call('exec.proposals.settings.set', { auto_enable_max_risk: value });
+      if (out && out.status === 'error') {
+        alert('Settings update failed: ' + (out.reason || 'unknown'));
+        return;
+      }
+      _proposalsSettings = (out && out.settings) || _proposalsSettings;
+      _renderCards();
+    } catch (err) {
+      alert('Settings update failed: ' + err.message);
+    } finally {
+      if (select) select.disabled = false;
     }
   }
 
@@ -406,6 +451,20 @@ const SkillsView = (() => {
       </details>`;
     }
 
+    if (_autoEnabledSkills.length) {
+      html += `<details class="sk-group sk-group--proposals" open>
+        <summary class="sk-group__head">
+          <span class="sk-group__caret">▾</span>
+          <span class="sk-group__label">Auto-Enabled Meta-Skills</span>
+          <span class="sk-group__count">${_autoEnabledSkills.length}</span>
+          <span class="sk-group__meta">Promoted by auto-enable. Disable moves the skill back to pending proposals.</span>
+        </summary>
+        <div class="sk-proposals-list">
+          ${_autoEnabledSkills.map(_renderAutoEnabledRow).join('')}
+        </div>
+      </details>`;
+    }
+
     // Meta-skills group first (if any). Different summary styling so the
     // user instantly sees "this is the high-level orchestrators bucket".
     if (metaList.length) {
@@ -445,12 +504,16 @@ const SkillsView = (() => {
     const s = _proposalsSettings || {};
     const cronChecked = s.enabled ? 'checked' : '';
     const dreamChecked = s.on_dream_complete ? 'checked' : '';
+    const autoEnableChecked = s.auto_enable ? 'checked' : '';
     const cronExpr = _esc(s.cron || '0 5 * * *');
-    return `<details class="sk-group sk-group--ap-settings" ${s.enabled || s.on_dream_complete ? 'open' : ''}>
+    const statusOn = s.enabled || s.on_dream_complete || s.auto_enable;
+    const maxRisk = _esc(s.auto_enable_max_risk || 'low');
+    const riskOption = (value, label) => `<option value="${value}" ${maxRisk === value ? 'selected' : ''}>${label}</option>`;
+    return `<details class="sk-group sk-group--ap-settings" ${statusOn ? 'open' : ''}>
       <summary class="sk-group__head">
         <span class="sk-group__caret">▾</span>
         <span class="sk-group__label">Auto-Propose Settings</span>
-        <span class="sk-group__count">${s.enabled || s.on_dream_complete ? 'on' : 'off'}</span>
+        <span class="sk-group__count">${statusOn ? 'on' : 'off'}</span>
         <span class="sk-group__meta">Unattended synthesis of new meta-skills from your usage patterns.</span>
       </summary>
       <div class="sk-ap-settings">
@@ -464,6 +527,20 @@ const SkillsView = (() => {
           <span class="sk-ap-toggle__label">After memory consolidation (dream)</span>
           <span class="sk-ap-toggle__hint">Piggyback on the memory-dream completion. Independent of the cron toggle.</span>
         </label>
+        <label class="sk-ap-toggle">
+          <input type="checkbox" data-ap-toggle="auto_enable" ${autoEnableChecked} />
+          <span class="sk-ap-toggle__label">Auto-enable gated proposals</span>
+          <span class="sk-ap-toggle__hint">Promote only proposals that pass all gates and stay within the configured <code>${maxRisk}</code> risk ceiling.</span>
+        </label>
+        <label class="sk-ap-toggle">
+          <span class="sk-ap-toggle__label">Auto-enable risk ceiling</span>
+          <select class="sk-ap-select" data-ap-risk-select>
+            ${riskOption('low', 'Low')}
+            ${riskOption('medium', 'Medium')}
+            ${riskOption('high', 'High')}
+          </select>
+          <span class="sk-ap-toggle__hint">Low is the default. Higher ceilings still run the static safety preflight and keep audit metadata.</span>
+        </label>
       </div>
     </details>`;
   }
@@ -476,6 +553,9 @@ const SkillsView = (() => {
     const autoChip = (typeof p.triggered_by === 'string' && p.triggered_by.startsWith('auto_'))
       ? `<span class="sk-prop-chip sk-prop-chip--auto" title="Auto-generated by ${_esc(p.triggered_by)}">[auto]</span>`
       : '';
+    const autoDecision = p.auto_enable && p.auto_enable.status
+      ? `<span class="sk-prop-chip sk-prop-chip--warn" title="${_esc(p.auto_enable.reason || '')}">auto-enable: ${_esc(p.auto_enable.status)}</span>`
+      : '';
     const chainHint = p.chain_hash
       ? `<span class="sk-prop-hash" title="chain hash">${_esc(String(p.chain_hash).slice(0, 8))}</span>`
       : '';
@@ -484,12 +564,32 @@ const SkillsView = (() => {
         <code class="sk-proposal-row__id">${pid}</code>
         ${eligibleBadge}
         ${autoChip}
+        ${autoDecision}
         ${chainHint}
       </div>
       <div class="sk-proposal-row__actions">
         <button class="btn btn--ghost btn--sm" data-proposal-show="${pid}" type="button">Show</button>
         <button class="btn btn--primary btn--sm" data-proposal-accept="${pid}" type="button">Accept</button>
         <button class="btn btn--ghost btn--sm" data-proposal-reject="${pid}" type="button">Reject</button>
+      </div>
+    </div>`;
+  }
+
+  function _renderAutoEnabledRow(s) {
+    const name = _esc(s.name || '');
+    const risk = _esc(s.risk_level || 'unknown');
+    const source = _esc(s.triggered_by || 'unknown');
+    const pid = s.proposal_id ? `<span class="sk-prop-hash" title="proposal id">${_esc(String(s.proposal_id))}</span>` : '';
+    return `<div class="sk-proposal-row" data-auto-enabled="${name}">
+      <div class="sk-proposal-row__head">
+        <code class="sk-proposal-row__id">${name}</code>
+        <span class="sk-prop-chip sk-prop-chip--ok">enabled</span>
+        <span class="sk-prop-chip sk-prop-chip--auto">${source}</span>
+        <span class="sk-prop-chip">risk: ${risk}</span>
+        ${pid}
+      </div>
+      <div class="sk-proposal-row__actions">
+        <button class="btn btn--ghost btn--sm" data-auto-enabled-disable="${name}" type="button">Disable</button>
       </div>
     </div>`;
   }
@@ -559,6 +659,20 @@ const SkillsView = (() => {
       await _loadData();
     } catch (err) {
       alert('Reject failed: ' + err.message);
+    }
+  }
+
+  async function _disableAutoEnabled(name) {
+    if (!confirm(`Disable auto-enabled skill ${name} and move it back to pending proposals?`)) return;
+    try {
+      const data = await _rpc.call('exec.proposals.auto_enabled.disable', { name });
+      if (data.status !== 'ok') {
+        alert('Disable failed: ' + (data.reason || data.status));
+        return;
+      }
+      await _loadData();
+    } catch (err) {
+      alert('Disable failed: ' + err.message);
     }
   }
 

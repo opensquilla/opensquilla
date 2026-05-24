@@ -567,6 +567,7 @@ _LINT_SCRIPT = (
     Path(__file__).resolve().parents[1]
     / "bundled" / "meta-skill-linter" / "scripts" / "lint.py"
 )
+_BUNDLED_DIR = _LINT_SCRIPT.parents[2]
 
 _PROPOSALS_SCRIPT = (
     Path(__file__).resolve().parents[1]
@@ -630,6 +631,7 @@ def meta_skill_persist_proposal(
     home: str = "",
 ) -> str:
     """Write a proposal candidate to ~/.opensquilla/proposals/<id>/. Returns JSON."""
+    home_path = Path(home).expanduser() if home else None
     args = [sys.executable, str(_PROPOSALS_SCRIPT),
             "--action", "write_proposal",
             "--skill-md-inline", skill_md,
@@ -644,7 +646,62 @@ def meta_skill_persist_proposal(
             "stderr": proc.stderr[:500],
             "returncode": proc.returncode,
         })
-    return proc.stdout
+    try:
+        out = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return proc.stdout
+    if out.get("status") == "ok" and out.get("proposal_id") and home_path is not None:
+        _maybe_auto_enable_manual_proposal(home_path, str(out["proposal_id"]), out)
+    return json.dumps(out, ensure_ascii=False)
+
+
+def _maybe_auto_enable_manual_proposal(
+    home: Path,
+    proposal_id: str,
+    out: dict,
+) -> None:
+    """Apply the runtime auto-enable setting to manual creator output.
+
+    Cron/dream auto-propose calls the same preflight directly. The manual
+    creator path reaches proposal persistence through this tool, so it needs
+    an explicit bridge to keep the three trigger routes behaviorally aligned.
+    """
+    from opensquilla.skills.proposals_lib import read_auto_propose_settings
+
+    settings = read_auto_propose_settings(home)
+    auto_enable = bool(settings.get("auto_enable", False))
+    max_risk = str(settings.get("auto_enable_max_risk", "low"))
+    try:
+        from opensquilla.gateway.auto_propose_bridge import get_runtime
+        rt = get_runtime()
+    except Exception:  # noqa: BLE001
+        rt = None
+    if rt is not None and Path(getattr(rt, "home", "")) == home:
+        cfg = getattr(rt, "config", None)
+        auto_enable = bool(getattr(cfg, "auto_enable", auto_enable))
+        max_risk = str(getattr(cfg, "auto_enable_max_risk", max_risk))
+    if not auto_enable:
+        return
+
+    from opensquilla.skills.creator.auto_propose import try_auto_enable_proposal
+    from opensquilla.skills.loader import SkillLoader
+
+    loader = SkillLoader(
+        bundled_dir=_BUNDLED_DIR,
+        managed_dir=home / "skills",
+        snapshot_path=home / "cache" / "manual_auto_enable_snapshot.json",
+    )
+    loader.invalidate_cache()
+    loader.load_all()
+    decision = try_auto_enable_proposal(
+        proposals_dir=home / "proposals",
+        proposal_id=proposal_id,
+        skill_loader=loader,
+        triggered_by="manual",
+        max_risk=max_risk,
+    )
+    out["auto_enable"] = decision
+    out["auto_enabled"] = decision.get("status") == "enabled"
 
 
 # ---------------------------------------------------------------------------

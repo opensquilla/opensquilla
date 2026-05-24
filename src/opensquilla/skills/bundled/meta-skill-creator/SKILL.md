@@ -87,8 +87,11 @@ composition:
 7-step DAG that synthesizes a new bundled meta-skill from observed skill
 co-occurrence patterns + user description of the desired workflow.
 
-Output is a SKILL.md candidate written to `~/.opensquilla/proposals/<id>/`,
-not auto-loaded. Run `opensquilla meta accept <id>` (Phase 2) to enable.
+Output is a SKILL.md candidate written to `~/.opensquilla/proposals/<id>/`.
+By default it is not auto-loaded; run `opensquilla meta accept <id>` (Phase 2)
+to enable. If the operator has enabled the auto-propose `auto_enable` setting,
+this manual path also runs the same conservative static safety preflight used by
+cron/dream auto-propose and may promote a low-risk gated proposal immediately.
 
 ## Fallback
 

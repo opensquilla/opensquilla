@@ -80,6 +80,10 @@ def make_auto_propose_handler(
                 top_k=config.top_k,
                 triggered_by="cron",
                 proposals_dir=proposals_dir,
+                auto_enable=bool(getattr(config, "auto_enable", False)),
+                auto_enable_max_risk=str(
+                    getattr(config, "auto_enable_max_risk", "low"),
+                ),
             )
             summary = result.summary()
             logger.info(
@@ -88,6 +92,8 @@ def make_auto_propose_handler(
                     "agent_id": agent_id,
                     "summary": summary,
                     "proposal_ids": result.proposals_created,
+                    "enabled_proposal_ids": result.proposals_enabled,
+                    "auto_enable": result.auto_enable,
                     "skipped": result.skipped,
                     "errors": result.errors,
                 },

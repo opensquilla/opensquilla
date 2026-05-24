@@ -84,6 +84,27 @@ def test_list_proposals_surfaces_provenance(tmp_path: Path) -> None:
     assert rows[0]["chain_hash"] == "deadbeefcafebabe"
 
 
+def test_list_proposals_surfaces_auto_enable_decision(tmp_path: Path) -> None:
+    home = tmp_path / ".opensquilla"
+    pid = _seed_proposal(home)
+    gates_path = home / "proposals" / pid / "gates.json"
+    gates = json.loads(gates_path.read_text())
+    gates["auto_enable"] = {
+        "status": "skipped",
+        "reason": "risk_too_high",
+        "risk_level": "high",
+        "max_risk": "low",
+    }
+    gates_path.write_text(json.dumps(gates))
+    rows = proposals_lib.list_proposals(home)["proposals"]
+    assert rows[0]["auto_enable"] == {
+        "status": "skipped",
+        "reason": "risk_too_high",
+        "risk_level": "high",
+        "max_risk": "low",
+    }
+
+
 def test_show_returns_payload(tmp_path: Path) -> None:
     home = tmp_path / ".opensquilla"
     pid = _seed_proposal(home)
@@ -117,6 +138,53 @@ def test_accept_promotes_to_managed_skills(tmp_path: Path) -> None:
     assert moved.is_file()
     # Source dir disappears
     assert not (home / "proposals" / pid).exists()
+
+
+def test_list_and_disable_auto_enabled_skill(tmp_path: Path) -> None:
+    home = tmp_path / ".opensquilla"
+    pid = _seed_proposal(home)
+    gates_path = home / "proposals" / pid / "gates.json"
+    gates = json.loads(gates_path.read_text())
+    gates["auto_enable"] = {
+        "status": "enabled",
+        "proposal_id": pid,
+        "risk_level": "low",
+        "max_risk": "low",
+        "triggered_by": "manual",
+        "enabled_at_ms": 123,
+    }
+    gates_path.write_text(json.dumps(gates))
+    accepted = proposals_lib.accept_proposal(home, pid)
+    assert accepted["status"] == "ok"
+
+    rows = proposals_lib.list_auto_enabled_skills(home)["skills"]
+    assert rows == [{
+        "name": "synth-test-pipeline",
+        "proposal_id": pid,
+        "risk_level": "low",
+        "max_risk": "low",
+        "triggered_by": "manual",
+        "enabled_at_ms": 123,
+    }]
+
+    out = proposals_lib.disable_auto_enabled_skill(home, "synth-test-pipeline")
+    assert out["status"] == "ok"
+    assert out["proposal_id"] == pid
+    assert not (home / "skills" / "synth-test-pipeline").exists()
+    assert (home / "proposals" / pid / "SKILL.md").is_file()
+    disabled_gates = json.loads((home / "proposals" / pid / "gates.json").read_text())
+    assert disabled_gates["auto_enable"]["status"] == "disabled"
+    assert disabled_gates["auto_enable"]["previous_status"] == "enabled"
+
+
+def test_disable_auto_enabled_skill_refuses_manual_skill(tmp_path: Path) -> None:
+    home = tmp_path / ".opensquilla"
+    pid = _seed_proposal(home)
+    accepted = proposals_lib.accept_proposal(home, pid)
+    assert accepted["status"] == "ok"
+    out = proposals_lib.disable_auto_enabled_skill(home, "synth-test-pipeline")
+    assert out["status"] == "refused"
+    assert "not auto-enabled" in out["reason"]
 
 
 def test_accept_refuses_when_gates_fail_without_force(tmp_path: Path) -> None:
@@ -162,17 +230,31 @@ def test_auto_propose_settings_round_trip(tmp_path: Path) -> None:
     home = tmp_path / ".opensquilla"
     assert proposals_lib.read_auto_propose_settings(home) == {}
     proposals_lib.write_auto_propose_settings(
-        home, {"enabled": True, "on_dream_complete": False},
+        home, {
+            "enabled": True,
+            "on_dream_complete": False,
+            "auto_enable": True,
+            "auto_enable_max_risk": "medium",
+        },
     )
     out = proposals_lib.read_auto_propose_settings(home)
-    assert out == {"enabled": True, "on_dream_complete": False}
+    assert out == {
+        "enabled": True,
+        "on_dream_complete": False,
+        "auto_enable": True,
+        "auto_enable_max_risk": "medium",
+    }
 
 
 def test_auto_propose_settings_drops_unknown_and_bad_types(tmp_path: Path) -> None:
     home = tmp_path / ".opensquilla"
     # Unknown keys dropped at write time
     proposals_lib.write_auto_propose_settings(
-        home, {"enabled": True, "bogus_key": True},  # type: ignore[arg-type]
+        home, {
+            "enabled": True,
+            "auto_enable_max_risk": "dangerous",
+            "bogus_key": True,
+        },  # type: ignore[arg-type]
     )
     assert proposals_lib.read_auto_propose_settings(home) == {"enabled": True}
     # Bad-shape file → empty dict (no exception)

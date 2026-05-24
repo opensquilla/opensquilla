@@ -44,6 +44,21 @@ def _seed(home: Path) -> str:
     )["proposal_id"]
 
 
+def _mark_auto_enabled(home: Path, pid: str) -> None:
+    gates_path = home / "proposals" / pid / "gates.json"
+    import json
+    gates = json.loads(gates_path.read_text())
+    gates["auto_enable"] = {
+        "status": "enabled",
+        "proposal_id": pid,
+        "risk_level": "low",
+        "max_risk": "low",
+        "triggered_by": "manual",
+        "enabled_at_ms": 123,
+    }
+    gates_path.write_text(json.dumps(gates))
+
+
 @pytest.fixture
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect ``default_opensquilla_home`` to a tmp dir so the RPC
@@ -177,6 +192,30 @@ async def test_rejecting_unknown_proposal_returns_error(
 
 
 @pytest.mark.asyncio
+async def test_auto_enabled_list_and_disable_round_trip(_isolated_home: Path) -> None:
+    from opensquilla.gateway.rpc_proposals import (
+        _handle_accept,
+        _handle_auto_enabled_disable,
+        _handle_auto_enabled_list,
+    )
+
+    pid = _seed(_isolated_home)
+    _mark_auto_enabled(_isolated_home, pid)
+    accepted = await _handle_accept({"proposal_id": pid}, _make_ctx())
+    assert accepted["status"] == "ok"
+
+    listed = await _handle_auto_enabled_list(None, _make_ctx())
+    assert listed["skills"][0]["name"] == "synth-rpc-pipeline"
+    assert listed["skills"][0]["proposal_id"] == pid
+
+    disabled = await _handle_auto_enabled_disable(
+        {"name": "synth-rpc-pipeline"}, _make_ctx(),
+    )
+    assert disabled["status"] == "ok"
+    assert (_isolated_home / "proposals" / pid / "SKILL.md").is_file()
+
+
+@pytest.mark.asyncio
 async def test_settings_get_returns_unavailable_when_runtime_not_registered(
     _isolated_home: Path,
 ) -> None:
@@ -227,15 +266,28 @@ async def test_settings_get_and_set_full_round_trip(
     out = await _handle_settings_get(None, _make_ctx())
     assert out["available"] is True
     assert out["enabled"] is False
+    assert out["auto_enable"] is False
+    assert out["auto_enable_max_risk"] == "low"
 
     # Flip on
-    out = await _handle_settings_set({"enabled": True}, _make_ctx())
+    out = await _handle_settings_set(
+        {
+            "enabled": True,
+            "auto_enable": True,
+            "auto_enable_max_risk": "medium",
+        }, _make_ctx(),
+    )
     assert out["status"] == "ok"
     assert out["settings"]["enabled"] is True
+    assert out["settings"]["auto_enable"] is True
+    assert out["settings"]["auto_enable_max_risk"] == "medium"
     assert register_events == ["register"]
     # Persisted
     assert read_auto_propose_settings(_isolated_home) == {
-        "enabled": True, "on_dream_complete": False,
+        "enabled": True,
+        "on_dream_complete": False,
+        "auto_enable": True,
+        "auto_enable_max_risk": "medium",
     }
 
     # Flip off
@@ -244,7 +296,10 @@ async def test_settings_get_and_set_full_round_trip(
     assert out["settings"]["enabled"] is False
     assert register_events == ["pause"]
     assert read_auto_propose_settings(_isolated_home) == {
-        "enabled": False, "on_dream_complete": False,
+        "enabled": False,
+        "on_dream_complete": False,
+        "auto_enable": True,
+        "auto_enable_max_risk": "medium",
     }
 
 
@@ -275,6 +330,7 @@ async def test_settings_set_partial_update_only_changes_supplied_keys(
     assert out["status"] == "ok"
     assert out["settings"]["enabled"] is True
     assert out["settings"]["on_dream_complete"] is False
+    assert out["settings"]["auto_enable"] is False
 
 
 @pytest.mark.asyncio
@@ -336,6 +392,10 @@ async def test_settings_set_rejects_non_boolean_values(
     ))
     with pytest.raises(ValueError):
         await _handle_settings_set({"enabled": "yes"}, _make_ctx())
+    with pytest.raises(ValueError):
+        await _handle_settings_set({"auto_enable": "yes"}, _make_ctx())
+    with pytest.raises(ValueError):
+        await _handle_settings_set({"auto_enable_max_risk": "dangerous"}, _make_ctx())
 
 
 def test_proposal_read_methods_classified_under_operator_proposals_scope() -> None:
@@ -353,6 +413,7 @@ def test_proposal_read_methods_classified_under_operator_proposals_scope() -> No
         "exec.proposals.list",
         "exec.proposals.show",
         "exec.proposals.settings.get",
+        "exec.proposals.auto_enabled.list",
     ):
         assert METHOD_SCOPES.get(name) == PROPOSALS_SCOPE, name
 
@@ -369,5 +430,6 @@ def test_proposal_mutation_methods_require_admin_scope() -> None:
         "exec.proposals.accept",
         "exec.proposals.reject",
         "exec.proposals.settings.set",
+        "exec.proposals.auto_enabled.disable",
     ):
         assert METHOD_SCOPES.get(name) == ADMIN_SCOPE, name

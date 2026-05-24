@@ -109,7 +109,13 @@ async def test_happy_path_runs_pipeline_and_summarises(
         skill_loader=fake_loader,
         log_dir=log_dir,
         proposals_dir=proposals_dir,
-        config=_make_config(window_days=14, min_freq=4, top_k=7),
+        config=_make_config(
+            window_days=14,
+            min_freq=4,
+            top_k=7,
+            auto_enable=True,
+            auto_enable_max_risk="medium",
+        ),
         enabled_predicate=lambda: True,
     )
     result = await handler(_make_job(agent_id="agent-x"))
@@ -130,6 +136,8 @@ async def test_happy_path_runs_pipeline_and_summarises(
     assert captured["min_freq"] == 4
     assert captured["top_k"] == 7
     assert captured["triggered_by"] == "cron"
+    assert captured["auto_enable"] is True
+    assert captured["auto_enable_max_risk"] == "medium"
 
 
 @pytest.mark.asyncio
@@ -159,6 +167,8 @@ def test_config_defaults_off() -> None:
     cfg = MetaSkillAutoProposeConfig()
     assert cfg.enabled is False
     assert cfg.on_dream_complete is False
+    assert cfg.auto_enable is False
+    assert cfg.auto_enable_max_risk == "low"
     assert cfg.cron == "0 5 * * *"
     assert cfg.min_freq == 3
     assert cfg.window_days == 30

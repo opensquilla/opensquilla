@@ -39,16 +39,20 @@ def test_skills_view_renders_pending_proposals_section() -> None:
     assert "_rpc.call('exec.proposals.show'" in view
     assert "_rpc.call('exec.proposals.accept'" in view
     assert "_rpc.call('exec.proposals.reject'" in view
+    assert "_rpc.call('exec.proposals.auto_enabled.list')" in view
+    assert "_rpc.call('exec.proposals.auto_enabled.disable'" in view
 
     # HTML structure
     assert "sk-group--proposals" in view
     assert "Pending Proposals" in view
     assert "_renderProposalRow" in view
+    assert "_renderAutoEnabledRow" in view
 
     # Action handlers wired into the click delegate
     assert "[data-proposal-show]" in view
     assert "[data-proposal-accept]" in view
     assert "[data-proposal-reject]" in view
+    assert "[data-auto-enabled-disable]" in view
 
     # CSS for the new chips + dialog
     assert ".sk-group--proposals" in css
@@ -82,9 +86,11 @@ def test_skills_view_renders_auto_propose_settings_panel() -> None:
     assert "_rpc.call('exec.proposals.settings.get')" in view
     assert "_rpc.call('exec.proposals.settings.set'" in view
 
-    # Two distinct toggles
+    # Distinct toggles
     assert 'data-ap-toggle="enabled"' in view
     assert 'data-ap-toggle="on_dream_complete"' in view
+    assert 'data-ap-toggle="auto_enable"' in view
+    assert 'data-ap-risk-select' in view
 
     # Section renderer
     assert "_renderAutoProposeSettings" in view
@@ -95,6 +101,7 @@ def test_skills_view_renders_auto_propose_settings_panel() -> None:
     # Bookkeeping state
     assert "_proposalsSettings" in view
     assert "_toggleAutoPropose" in view
+    assert "_setAutoEnableRisk" in view
 
 
 def test_skills_view_renders_settings_panel_even_with_no_pending_proposals() -> None:

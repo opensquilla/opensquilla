@@ -1446,6 +1446,13 @@ class MetaSkillAutoProposeConfig(BaseSettings):
     """Path 2: also run after a successful memory-consolidation dream.
     Independent of ``enabled`` — either, both, or neither may be on."""
 
+    auto_enable: bool = False
+    """When true, eligible low-risk proposals are promoted to MANAGED
+    automatically after the creator gates pass. Defaults off."""
+
+    auto_enable_max_risk: Literal["low", "medium", "high"] = "low"
+    """Highest deterministic risk class that unattended promotion may accept."""
+
     agent_ids: list[str] = Field(default_factory=list)
     """Restrict to these agent IDs; empty = all configured agents."""
 

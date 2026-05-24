@@ -251,6 +251,76 @@ async def test_recursion_within_limit_proceeds(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_meta_invoke_depth_reset_valueerror_restores_previous_depth() -> None:
+    """Python 3.13 can close async generators in a different Context than
+    the one that created the ContextVar token. meta_invoke should still
+    restore the previous depth instead of surfacing that ValueError.
+    """
+    from opensquilla.engine import agent as agent_module
+    from opensquilla.engine.agent import Agent
+    from opensquilla.engine.types import AgentConfig
+    from opensquilla.tool_boundary import ToolCall, ToolResult
+    from opensquilla.tools.types import ToolContext
+
+    class _FakeDepthVar:
+        def __init__(self, value: int) -> None:
+            self.value = value
+            self.set_values: list[int] = []
+            self.reset_called = False
+
+        def get(self) -> int:
+            return self.value
+
+        def set(self, value: int) -> object:
+            self.value = value
+            self.set_values.append(value)
+            return object()
+
+        def reset(self, _token: object) -> None:
+            self.reset_called = True
+            raise ValueError("Token was created in a different Context")
+
+    class _NullProvider:
+        provider_name = "null"
+
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("provider.chat must not be called")
+
+        async def list_models(self):
+            return []
+
+    previous_depth = 2
+    fake_depth = _FakeDepthVar(previous_depth)
+    original_depth_var = agent_module._meta_invoke_depth
+    agent_module._meta_invoke_depth = fake_depth  # type: ignore[assignment]
+    try:
+        agent = Agent(
+            provider=_NullProvider(),  # type: ignore[arg-type]
+            config=AgentConfig(model_id="stub"),
+            tool_registry=None,
+        )
+        events: list[object] = []
+        async for ev in agent._run_one_streaming(
+            ToolCall(
+                tool_use_id="u1",
+                tool_name="meta_invoke",
+                arguments={"name": "meta-tiny"},
+            ),
+            ToolContext(is_owner=True),
+        ):
+            events.append(ev)
+    finally:
+        agent_module._meta_invoke_depth = original_depth_var  # type: ignore[assignment]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ToolResult)
+    assert "requires Agent to be constructed with tool_registry" in events[0].content
+    assert fake_depth.reset_called is True
+    assert fake_depth.set_values == [previous_depth + 1, previous_depth]
+    assert fake_depth.value == previous_depth
+
+
+@pytest.mark.asyncio
 async def test_per_turn_invocation_cap_exceeded_returns_structured_failure(
     tmp_path,
 ) -> None:

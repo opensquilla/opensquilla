@@ -2813,7 +2813,22 @@ class Agent:
             # Depth is reset on every exit path (success, failure, exception);
             # the per-turn count is intentionally NOT reset — it caps the turn
             # as a whole and is cleared at the next run_turn invocation.
-            _meta_invoke_depth.reset(depth_token)
+            #
+            # `_run_one_streaming` is an async generator, and Python 3.13 will
+            # raise ``ValueError("Token ... was created in a different Context")``
+            # if the generator is closed or garbage-collected such that the
+            # finally block executes in a different asyncio Context than the
+            # one that ran ``.set(...)``. Falling back to a plain ``.set()``
+            # of the prior depth value avoids token validation entirely and
+            # is correct: ContextVars are async-task-scoped, so writing back
+            # the parent's recorded ``current_depth`` restores the same value
+            # the token would have. (Soft-path verified on WebUI 2026-05-22:
+            # symptom was `turn_error ValueError(142 chars)` for every
+            # meta_invoke call.)
+            try:
+                _meta_invoke_depth.reset(depth_token)
+            except ValueError:
+                _meta_invoke_depth.set(current_depth)
 
     def _format_meta_invoke_failure(
         self,

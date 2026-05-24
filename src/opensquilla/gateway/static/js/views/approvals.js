@@ -57,8 +57,15 @@ const ApprovalsView = (() => {
     _rpc = null;
   }
 
+  function _authHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    const token = (App.getAuthToken && App.getAuthToken()) || '';
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return headers;
+  }
+
   function _loadData() {
-    fetch('/api/approvals')
+    fetch('/api/approvals', { headers: _authHeaders() })
       .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(data => {
         const container = _el && _el.querySelector('#appr-content');
@@ -141,7 +148,7 @@ const ApprovalsView = (() => {
             if (elevatedMode) body.elevatedMode = elevatedMode;
             fetch('/api/approvals/resolve', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: _authHeaders({ 'Content-Type': 'application/json' }),
               body: JSON.stringify(body)
             }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
               .then(() => {
@@ -200,7 +207,7 @@ const ApprovalsView = (() => {
         input.closest('.ap-radio')?.classList.add('is-active');
         fetch('/api/approvals/settings', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: _authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ mode }),
         }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
           .then(() => {

@@ -51,11 +51,21 @@ const ApprovalMonitor = (() => {
     _pollDelayMs = Math.min(POLL_MAX_MS, Math.max(POLL_MS, _pollDelayMs * 2));
   }
 
+  function _authHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    const token = (window.App && App.getAuthToken && App.getAuthToken()) || '';
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return headers;
+  }
+
   async function _poll() {
     if (_pollBusy) return;
     _pollBusy = true;
     try {
-      const resp = await fetch('/api/approvals', { cache: 'no-store' });
+      const resp = await fetch('/api/approvals', {
+        cache: 'no-store',
+        headers: _authHeaders(),
+      });
       if (!resp.ok) {
         _setBadge(0);
         _increasePollBackoff();
@@ -183,7 +193,7 @@ const ApprovalMonitor = (() => {
     try {
       const resp = await fetch('/api/approvals/resolve', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: _authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);

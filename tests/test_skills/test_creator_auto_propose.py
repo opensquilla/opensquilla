@@ -115,6 +115,12 @@ def _loader_with_managed_dir(home: Path) -> Any:
     return loader
 
 
+def _write_managed_skill(home: Path, name: str, skill_md: str) -> None:
+    skill_dir = home / "skills" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -412,6 +418,182 @@ composition:
     gates = json.loads((proposals_dir / "feed1234" / "gates.json").read_text())
     assert gates["auto_enable"]["status"] == "skipped"
     assert gates["auto_enable"]["reason"] == "risk_too_high"
+
+
+@pytest.mark.asyncio
+async def test_auto_enable_uses_manifest_capability_risk(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    log_dir = home / "logs"
+    proposals_dir = home / "proposals"
+    _seed_decision_log(log_dir, ["artifact-writer", "summarize"], count=5)
+    _write_managed_skill(
+        home,
+        "artifact-writer",
+        """---
+name: artifact-writer
+description: Writes a local artifact.
+metadata:
+  opensquilla:
+    capabilities: [filesystem-write]
+---
+# artifact-writer
+""",
+    )
+    loader = _loader_with_managed_dir(home)
+    skill_md = """---
+name: synth-artifact-writer
+kind: meta
+triggers:
+  - synth artifact writer
+composition:
+  steps:
+    - id: write
+      skill: artifact-writer
+      with:
+        text: "{{ inputs.user_message | xml_escape | truncate(512) }}"
+---
+"""
+    orch = _make_proposer_orchestrator(
+        proposals_dir,
+        proposal_ids=["a11fab1e"],
+        skill_md=skill_md,
+    )
+
+    result = await auto_propose(
+        orchestrator=orch,
+        skill_loader=loader,
+        log_dir=log_dir,
+        min_freq=3,
+        proposals_dir=proposals_dir,
+        auto_enable=True,
+        auto_enable_max_risk="low",
+    )
+
+    assert result.proposals_enabled == []
+    assert result.auto_enable[0]["status"] == "skipped"
+    assert result.auto_enable[0]["risk_level"] == "medium"
+    assert "capability:artifact-writer:filesystem-write" in (
+        result.auto_enable[0]["details"]["reasons"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_enable_uses_manifest_explicit_high_risk(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    log_dir = home / "logs"
+    proposals_dir = home / "proposals"
+    _seed_decision_log(log_dir, ["external-admin", "summarize"], count=5)
+    _write_managed_skill(
+        home,
+        "external-admin",
+        """---
+name: external-admin
+description: Controls an external service.
+metadata:
+  opensquilla:
+    risk: high
+---
+# external-admin
+""",
+    )
+    loader = _loader_with_managed_dir(home)
+    skill_md = """---
+name: synth-external-admin
+kind: meta
+triggers:
+  - synth external admin
+composition:
+  steps:
+    - id: admin
+      skill: external-admin
+      with:
+        request: "{{ inputs.user_message | xml_escape | truncate(512) }}"
+---
+"""
+    orch = _make_proposer_orchestrator(
+        proposals_dir,
+        proposal_ids=["b00fab1e"],
+        skill_md=skill_md,
+    )
+
+    result = await auto_propose(
+        orchestrator=orch,
+        skill_loader=loader,
+        log_dir=log_dir,
+        min_freq=3,
+        proposals_dir=proposals_dir,
+        auto_enable=True,
+        auto_enable_max_risk="medium",
+    )
+
+    assert result.proposals_enabled == []
+    assert result.auto_enable[0]["status"] == "skipped"
+    assert result.auto_enable[0]["risk_level"] == "high"
+    assert "manifest_risk:external-admin:high" in (
+        result.auto_enable[0]["details"]["reasons"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_enable_requires_risk_metadata_for_unclassified_skill(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    log_dir = home / "logs"
+    proposals_dir = home / "proposals"
+    _seed_decision_log(log_dir, ["unclassified-helper", "summarize"], count=5)
+    _write_managed_skill(
+        home,
+        "unclassified-helper",
+        """---
+name: unclassified-helper
+description: Synthetic skill intentionally missing risk metadata.
+---
+# unclassified-helper
+""",
+    )
+    loader = _loader_with_managed_dir(home)
+    skill_md = """---
+name: synth-unclassified-helper
+kind: meta
+triggers:
+  - synth unclassified helper
+composition:
+  steps:
+    - id: helper
+      skill: unclassified-helper
+      with:
+        text: "{{ inputs.user_message | xml_escape | truncate(512) }}"
+---
+"""
+    orch = _make_proposer_orchestrator(
+        proposals_dir,
+        proposal_ids=["badc0de1"],
+        skill_md=skill_md,
+    )
+
+    result = await auto_propose(
+        orchestrator=orch,
+        skill_loader=loader,
+        log_dir=log_dir,
+        min_freq=3,
+        proposals_dir=proposals_dir,
+        auto_enable=True,
+        auto_enable_max_risk="low",
+    )
+
+    assert result.proposals_created == ["badc0de1"]
+    assert result.proposals_enabled == []
+    assert result.auto_enable[0]["status"] == "skipped"
+    assert result.auto_enable[0]["reason"] == "risk_too_high"
+    assert result.auto_enable[0]["risk_level"] == "high"
+    assert "missing_risk_metadata:unclassified-helper" in (
+        result.auto_enable[0]["details"]["reasons"]
+    )
 
 
 @pytest.mark.asyncio

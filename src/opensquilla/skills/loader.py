@@ -31,9 +31,17 @@ MAX_SKILL_FILE_BYTES = 256_000  # 256KB per SKILL.md
 MAX_SKILLS_PER_SOURCE = 200  # per layer cap
 
 # Bump when on-disk snapshot fields change so stale caches are invalidated
-# instead of silently losing new fields. v5 (current) adds the Meta-Skill
-# MVP fields: kind, meta_priority, composition_raw, entrypoint manifest.
-_SNAPSHOT_SCHEMA_VERSION = 5
+# instead of silently losing new fields. v6 adds skill risk/capability metadata
+# for unattended meta-skill auto-enable decisions.
+_SNAPSHOT_SCHEMA_VERSION = 6
+
+
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -62,15 +70,36 @@ def _resolve_metadata(frontmatter: dict) -> SkillPlatformMeta | None:
     """Extract platform metadata from frontmatter."""
     raw_meta = frontmatter.get("metadata", {})
     if isinstance(raw_meta, dict):
-        # Namespace fallback: platform > opensquilla > openclaw > clawdbot > top-level.
-        # `clawdbot` accepts ClawHub-published skills without manual rewrite.
-        raw_meta = raw_meta.get(
+        # Namespace fallback: platform > openclaw > clawdbot > top-level.
+        # `opensquilla` overlays advisory fields such as risk/capabilities
+        # without erasing platform dependency metadata kept at the top level
+        # or in an upstream namespace.
+        base_meta = raw_meta.get(
             "platform",
-            raw_meta.get(
-                "opensquilla",
-                raw_meta.get("openclaw", raw_meta.get("clawdbot", raw_meta)),
-            ),
+            raw_meta.get("openclaw", raw_meta.get("clawdbot", raw_meta)),
         )
+        if not isinstance(base_meta, dict):
+            base_meta = {}
+        merged_meta = dict(base_meta)
+        opensquilla_meta = raw_meta.get("opensquilla", {})
+        if isinstance(opensquilla_meta, dict):
+            for key in (
+                "emoji",
+                "skillKey",
+                "primaryEnv",
+                "homepage",
+                "always",
+                "os",
+                "requires",
+                "install",
+                "risk",
+                "risk_level",
+                "riskLevel",
+                "capabilities",
+            ):
+                if key in opensquilla_meta:
+                    merged_meta[key] = opensquilla_meta[key]
+        raw_meta = merged_meta
     if not isinstance(raw_meta, dict):
         return None
 
@@ -112,9 +141,16 @@ def _resolve_metadata(frontmatter: dict) -> SkillPlatformMeta | None:
         primary_env=raw_meta.get("primaryEnv", ""),
         homepage=raw_meta.get("homepage", ""),
         always=bool(always_val) if always_val is not None else None,
-        os=raw_meta.get("os", []),
+        os=_string_list(raw_meta.get("os", [])),
         requires=requires,
         install=install_specs,
+        risk_level=str(
+            raw_meta.get("risk")
+            or raw_meta.get("risk_level")
+            or raw_meta.get("riskLevel")
+            or ""
+        ).strip().lower(),
+        capabilities=_string_list(raw_meta.get("capabilities", [])),
     )
 
 
@@ -248,6 +284,13 @@ class SkillLoader:
                     },
                     "metadata": {
                         "os": s.metadata.os if s.metadata else [],
+                        "emoji": s.metadata.emoji if s.metadata else "",
+                        "skill_key": s.metadata.skill_key if s.metadata else "",
+                        "primary_env": s.metadata.primary_env if s.metadata else "",
+                        "homepage": s.metadata.homepage if s.metadata else "",
+                        "always": s.metadata.always if s.metadata else None,
+                        "risk_level": s.metadata.risk_level if s.metadata else "",
+                        "capabilities": s.metadata.capabilities if s.metadata else [],
                         "requires_bins": s.metadata.requires.bins
                         if s.metadata and s.metadata.requires
                         else [],
@@ -332,6 +375,11 @@ class SkillLoader:
                     for i in raw_meta.get("install", [])
                 ]
                 meta = SkillPlatformMeta(
+                    emoji=raw_meta.get("emoji", ""),
+                    skill_key=raw_meta.get("skill_key", ""),
+                    primary_env=raw_meta.get("primary_env", ""),
+                    homepage=raw_meta.get("homepage", ""),
+                    always=raw_meta.get("always"),
                     os=raw_meta.get("os", []),
                     requires=SkillRequires(
                         bins=raw_meta.get("requires_bins", []),
@@ -339,6 +387,8 @@ class SkillLoader:
                         env=raw_meta.get("requires_env", []),
                     ),
                     install=install_specs,
+                    risk_level=str(raw_meta.get("risk_level", "")).strip().lower(),
+                    capabilities=raw_meta.get("capabilities", []),
                 )
 
             skills.append(

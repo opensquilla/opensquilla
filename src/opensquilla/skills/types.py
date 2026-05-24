@@ -56,6 +56,10 @@ class SkillPlatformMeta:
     os: list[str] = field(default_factory=list)
     requires: SkillRequires | None = None
     install: list[SkillInstallSpec] = field(default_factory=list)
+    # Risk metadata consumed by unattended meta-skill auto-enable. These are
+    # advisory manifest fields, not runtime permissions.
+    risk_level: str = ""
+    capabilities: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

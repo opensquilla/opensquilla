@@ -65,3 +65,39 @@ def test_entrypoint_manifest_survives_snapshot_roundtrip(tmp_path: Path) -> None
     # Skills without an entrypoint manifest should still round-trip as None.
     for name, ep in fresh.items():
         assert from_snapshot[name] == ep, f"entrypoint mismatch for {name}"
+
+
+def test_capability_risk_metadata_survives_snapshot_roundtrip(tmp_path: Path) -> None:
+    """Auto-enable decisions must see the same risk manifest after cold-start."""
+
+    skill_root = tmp_path / "skills"
+    skill_dir = skill_root / "writes-files"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: writes-files
+description: Synthetic skill with manifest risk metadata.
+metadata:
+  opensquilla:
+    risk: medium
+    capabilities: [filesystem-write]
+---
+
+# body
+""",
+        encoding="utf-8",
+    )
+
+    snapshot = tmp_path / "snapshot.json"
+    loader = SkillLoader(bundled_dir=skill_root, snapshot_path=snapshot)
+    fresh = loader.get_by_name("writes-files")
+    assert fresh is not None
+    loader.save_snapshot()
+
+    reloaded = SkillLoader(bundled_dir=skill_root, snapshot_path=snapshot)
+    from_snapshot = reloaded.get_by_name("writes-files")
+
+    assert from_snapshot is not None
+    assert from_snapshot.metadata is not None
+    assert from_snapshot.metadata.risk_level == "medium"
+    assert from_snapshot.metadata.capabilities == ["filesystem-write"]

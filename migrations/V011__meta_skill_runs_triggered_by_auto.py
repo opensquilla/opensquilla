@@ -50,7 +50,10 @@ _OLD_TRIGGERED_BY_VALUES = (
 )
 
 
-def _create_table_sql(triggered_by_values: tuple[str, ...], table_name: str = "meta_skill_runs") -> str:
+def _create_table_sql(
+    triggered_by_values: tuple[str, ...],
+    table_name: str = "meta_skill_runs",
+) -> str:
     return f"""
     CREATE TABLE {table_name} (
         run_id              TEXT PRIMARY KEY,

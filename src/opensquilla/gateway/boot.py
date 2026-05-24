@@ -655,6 +655,18 @@ def _state_path(config: GatewayConfig, filename: str) -> Path:
     return state_root / filename
 
 
+def _gateway_home(config: GatewayConfig) -> Path:
+    state_root = _resolved_path(getattr(config, "state_dir", None))
+    if state_root is not None:
+        return state_root.parent
+
+    config_path = _resolved_path(getattr(config, "config_path", None))
+    if config_path is not None:
+        return config_path.parent
+
+    return default_opensquilla_home()
+
+
 def _task_runtime_max_concurrency(config: GatewayConfig) -> int:
     return int(config.task_runtime.max_concurrency)
 
@@ -2119,8 +2131,9 @@ async def start_gateway_server(
         from opensquilla.skills.proposals_lib import read_auto_propose_settings
 
         auto_cfg = getattr(config.meta_skill, "auto_propose", None)
+        gateway_home = _gateway_home(config)
         if auto_cfg is not None:
-            overrides = read_auto_propose_settings(default_opensquilla_home())
+            overrides = read_auto_propose_settings(gateway_home)
             for key, value in overrides.items():
                 setattr(auto_cfg, key, value)
 
@@ -2140,10 +2153,10 @@ async def start_gateway_server(
             log_dir = Path(
                 os.environ.get(
                     "OPENSQUILLA_LOG_DIR",
-                    str(default_opensquilla_home() / "logs"),
+                    str(gateway_home / "logs"),
                 )
             )
-            proposals_dir = default_opensquilla_home() / "proposals"
+            proposals_dir = gateway_home / "proposals"
 
             def _make_meta_orchestrator_builder(
                 triggered_by: str,
@@ -2220,7 +2233,7 @@ async def start_gateway_server(
                         skill_loader=svc.skill_loader,
                         llm_chat=_llm_chat,
                         tool_invoker=_tool_invoker,
-                        workspace_dir=str(default_opensquilla_home()),
+                        workspace_dir=str(gateway_home),
                         run_writer=svc.meta_run_writer,
                         triggered_by=triggered_by,
                         memory_persist_enabled=getattr(
@@ -2289,7 +2302,7 @@ async def start_gateway_server(
 
             register_runtime(AutoProposeRuntime(
                 config=auto_cfg,
-                home=default_opensquilla_home(),
+                home=gateway_home,
                 register_crons=_toggle_register,
                 pause_crons=_toggle_pause,
             ))

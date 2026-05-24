@@ -2663,6 +2663,18 @@ class Agent:
                     terminates_turn=False,
                 )
                 return
+            if getattr(skill_spec, "disable_model_invocation", False):
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content=(
+                        f"meta_invoke: {name!r} is not available for "
+                        "model invocation"
+                    ),
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
 
             # Parse plan.
             try:

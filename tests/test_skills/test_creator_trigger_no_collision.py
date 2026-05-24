@@ -55,3 +55,10 @@ def test_factory_wins_on_construct_ambiguous_phrase(loader) -> None:
     """Intentional tie-break: factory (35) > creator (30)."""
     expected = "meta-self-improving-skill-factory"
     assert _find_first_match(loader, "create skill that composes a new meta-skill") == expected
+
+
+def test_ascii_trigger_does_not_match_meta_skill_explanation_question() -> None:
+    assert not _trigger_matches(
+        "research report",
+        "how does the research report meta-skill work?",
+    )

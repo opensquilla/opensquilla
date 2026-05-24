@@ -16,6 +16,7 @@ irreversible.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
@@ -23,6 +24,23 @@ from opensquilla.paths import default_opensquilla_home
 from opensquilla.skills import proposals_lib
 
 _d = get_dispatcher()
+
+
+def _home() -> Path:
+    from opensquilla.gateway.auto_propose_bridge import get_runtime
+
+    rt = get_runtime()
+    if rt is not None:
+        return rt.home
+    return default_opensquilla_home()
+
+
+def _invalidate_loader(ctx: RpcContext) -> None:
+    loader = getattr(ctx, "skill_loader", None)
+    if loader is not None:
+        invalidate = getattr(loader, "invalidate_cache", None)
+        if invalidate is not None:
+            invalidate()
 
 
 def _require_proposal_id(params: dict | None) -> str:
@@ -49,14 +67,14 @@ def _require_skill_name(params: dict | None) -> str:
 async def _handle_pending_count(
     params: dict | None, ctx: RpcContext,
 ) -> dict[str, Any]:
-    return proposals_lib.pending_count(default_opensquilla_home())
+    return proposals_lib.pending_count(_home())
 
 
 @_d.method("exec.proposals.list", scope="operator.proposals")
 async def _handle_list(
     params: dict | None, ctx: RpcContext,
 ) -> dict[str, Any]:
-    return proposals_lib.list_proposals(default_opensquilla_home())
+    return proposals_lib.list_proposals(_home())
 
 
 @_d.method("exec.proposals.show", scope="operator.proposals")
@@ -64,7 +82,7 @@ async def _handle_show(
     params: dict | None, ctx: RpcContext,
 ) -> dict[str, Any]:
     pid = _require_proposal_id(params)
-    return proposals_lib.show_proposal(default_opensquilla_home(), pid)
+    return proposals_lib.show_proposal(_home(), pid)
 
 
 @_d.method("exec.proposals.accept", scope="operator.admin")
@@ -73,9 +91,10 @@ async def _handle_accept(
 ) -> dict[str, Any]:
     pid = _require_proposal_id(params)
     force = bool((params or {}).get("force", False))
-    return proposals_lib.accept_proposal(
-        default_opensquilla_home(), pid, force=force,
-    )
+    result = proposals_lib.accept_proposal(_home(), pid, force=force)
+    if result.get("status") == "ok":
+        _invalidate_loader(ctx)
+    return result
 
 
 @_d.method("exec.proposals.reject", scope="operator.admin")
@@ -83,14 +102,14 @@ async def _handle_reject(
     params: dict | None, ctx: RpcContext,
 ) -> dict[str, Any]:
     pid = _require_proposal_id(params)
-    return proposals_lib.reject_proposal(default_opensquilla_home(), pid)
+    return proposals_lib.reject_proposal(_home(), pid)
 
 
 @_d.method("exec.proposals.auto_enabled.list", scope="operator.proposals")
 async def _handle_auto_enabled_list(
     params: dict | None, ctx: RpcContext,
 ) -> dict[str, Any]:
-    return proposals_lib.list_auto_enabled_skills(default_opensquilla_home())
+    return proposals_lib.list_auto_enabled_skills(_home())
 
 
 @_d.method("exec.proposals.auto_enabled.disable", scope="operator.admin")
@@ -98,7 +117,10 @@ async def _handle_auto_enabled_disable(
     params: dict | None, ctx: RpcContext,
 ) -> dict[str, Any]:
     name = _require_skill_name(params)
-    return proposals_lib.disable_auto_enabled_skill(default_opensquilla_home(), name)
+    result = proposals_lib.disable_auto_enabled_skill(_home(), name)
+    if result.get("status") == "ok":
+        _invalidate_loader(ctx)
+    return result
 
 
 # ─── Settings: WebUI toggle for the auto-propose feature ──────────────

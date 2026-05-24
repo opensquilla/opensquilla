@@ -81,11 +81,23 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-def _make_ctx() -> object:
-    """Minimal RpcContext stand-in — the handlers don't read any fields."""
+def _make_ctx(skill_loader: object | None = None) -> object:
+    """Minimal RpcContext stand-in for proposal handlers."""
     class _Ctx:
         scopes: list[str] = []
-    return _Ctx()
+        skill_loader = None
+
+    ctx = _Ctx()
+    ctx.skill_loader = skill_loader
+    return ctx
+
+
+class _CountingLoader:
+    def __init__(self) -> None:
+        self.invalidations = 0
+
+    def invalidate_cache(self) -> None:
+        self.invalidations += 1
 
 
 @pytest.mark.asyncio
@@ -160,12 +172,14 @@ async def test_invalid_proposal_id_raises_value_error(_isolated_home: Path) -> N
 async def test_accept_promotes_proposal(_isolated_home: Path) -> None:
     from opensquilla.gateway.rpc_proposals import _handle_accept
 
+    loader = _CountingLoader()
     pid = _seed(_isolated_home)
-    out = await _handle_accept({"proposal_id": pid}, _make_ctx())
+    out = await _handle_accept({"proposal_id": pid}, _make_ctx(loader))
     assert out["status"] == "ok"
     assert out["name"] == "synth-rpc-pipeline"
     assert (_isolated_home / "skills" / "synth-rpc-pipeline" / "SKILL.md").is_file()
     assert not (_isolated_home / "proposals" / pid).exists()
+    assert loader.invalidations == 1
 
 
 @pytest.mark.asyncio
@@ -219,8 +233,10 @@ async def test_auto_enabled_list_and_disable_round_trip(_isolated_home: Path) ->
 
     pid = _seed(_isolated_home)
     _mark_auto_enabled(_isolated_home, pid)
-    accepted = await _handle_accept({"proposal_id": pid}, _make_ctx())
+    loader = _CountingLoader()
+    accepted = await _handle_accept({"proposal_id": pid}, _make_ctx(loader))
     assert accepted["status"] == "ok"
+    assert loader.invalidations == 1
 
     listed = await _handle_auto_enabled_list(None, _make_ctx())
     assert listed["skills"][0]["name"] == "synth-rpc-pipeline"
@@ -229,10 +245,11 @@ async def test_auto_enabled_list_and_disable_round_trip(_isolated_home: Path) ->
     assert listed["skills"][0]["skills"] == ["summarize"]
 
     disabled = await _handle_auto_enabled_disable(
-        {"name": "synth-rpc-pipeline"}, _make_ctx(),
+        {"name": "synth-rpc-pipeline"}, _make_ctx(loader),
     )
     assert disabled["status"] == "ok"
     assert (_isolated_home / "proposals" / pid / "SKILL.md").is_file()
+    assert loader.invalidations == 2
 
 
 @pytest.mark.asyncio

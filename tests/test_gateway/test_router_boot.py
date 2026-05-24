@@ -10,6 +10,7 @@ import pytest
 from opensquilla.engine.types import DoneEvent
 from opensquilla.gateway.boot import (
     _configured_agent_ids,
+    _gateway_home,
     _register_dream_crons,
     _warn_workspace_state_mismatch,
     build_flush_service,
@@ -24,6 +25,25 @@ from opensquilla.gateway.routing import build_cli_route_envelope, build_cron_rou
 from opensquilla.onboarding.mutations import upsert_channel
 from opensquilla.scheduler.types import CronJob, JobStatus
 from opensquilla.tools.registry import ToolRegistry
+
+
+def test_gateway_home_uses_configured_state_parent(tmp_path: Path) -> None:
+    config = GatewayConfig(
+        state_dir=str(tmp_path / "instance" / "state"),
+        workspace_dir=str(tmp_path / "instance" / "workspace"),
+    )
+
+    assert _gateway_home(config) == tmp_path / "instance"
+
+
+def test_gateway_home_falls_back_to_config_path_parent(tmp_path: Path) -> None:
+    config = GatewayConfig(
+        state_dir=None,
+        config_path=str(tmp_path / "service" / "config.toml"),
+        workspace_dir=str(tmp_path / "service" / "workspace"),
+    )
+
+    assert _gateway_home(config) == tmp_path / "service"
 
 
 class _FakeDreamScheduler:

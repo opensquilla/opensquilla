@@ -32,6 +32,10 @@ from opensquilla.skills.meta.types import MetaMatch
 
 log = structlog.get_logger(__name__)
 
+_META_SKILL_EXPLANATION_RE = re.compile(
+    r"\b(how|what|why|explain|describe|about)\b.*\bmeta-skill\b"
+)
+
 
 def _trigger_matches(trigger: str, message_lower: str) -> bool:
     """Match a trigger phrase against the user message.
@@ -49,6 +53,8 @@ def _trigger_matches(trigger: str, message_lower: str) -> bool:
     if tl not in message_lower:
         return False
     if all(ord(c) < 128 for c in tl):
+        if _META_SKILL_EXPLANATION_RE.search(message_lower):
+            return False
         return bool(re.search(r"\b" + re.escape(tl) + r"\b", message_lower))
     return True
 

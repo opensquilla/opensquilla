@@ -63,16 +63,13 @@ _META_SKILL_CREATOR_TRIGGERS: tuple[str, ...] = (
 
 _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
-# Directly side-effectful or external-control skills should never be promoted
-# by unattended history mining under the default low-risk policy.
+# Compatibility fallback for skills that have not yet declared
+# ``metadata.opensquilla.capabilities`` / ``risk`` in their manifests.
 _HIGH_RISK_SKILLS = frozenset({
     "github",
     "tmux",
 })
 
-# These are valid composition targets, but they usually create files, compile
-# artifacts, or perform multi-step export work. Keep them review-gated unless
-# the operator explicitly raises the auto-enable risk ceiling.
 _MEDIUM_RISK_SKILLS = frozenset({
     "docx",
     "html-to-pdf",
@@ -82,6 +79,24 @@ _MEDIUM_RISK_SKILLS = frozenset({
     "pptx",
     "xlsx",
 })
+
+_LOW_RISK_SKILLS = frozenset({
+    "history-explorer",
+    "summarize",
+})
+
+_CAPABILITY_RISK = {
+    "artifact-write": "medium",
+    "document-export": "medium",
+    "filesystem-write": "medium",
+    "network": "medium",
+    "network-read": "medium",
+    "credential-use": "high",
+    "external-side-effect": "high",
+    "network-write": "high",
+    "process-control": "high",
+    "shell": "high",
+}
 
 _SAFE_OUTPUT_TEMPLATE_FILTERS = frozenset({
     "truncate",
@@ -299,6 +314,11 @@ def _normalise_max_risk(value: str) -> str:
     return value if value in _RISK_ORDER else "low"
 
 
+def _normalise_manifest_risk(value: str) -> str:
+    value = str(value or "").strip().lower()
+    return value if value in _RISK_ORDER else ""
+
+
 def _iter_template_strings(value: Any, prefix: str) -> list[tuple[str, str]]:
     if isinstance(value, str):
         return [(prefix, value)]
@@ -434,10 +454,31 @@ def _evaluate_auto_enable_risk(
             raise_risk("high", f"unknown_skill:{skill}")
         elif getattr(spec, "kind", "skill") == "meta":
             raise_risk("high", f"nested_meta_skill:{skill}")
-        elif skill in _HIGH_RISK_SKILLS:
-            raise_risk("high", f"high_risk_skill:{skill}")
-        elif skill in _MEDIUM_RISK_SKILLS:
-            raise_risk("medium", f"medium_risk_skill:{skill}")
+        else:
+            metadata = getattr(spec, "metadata", None)
+            manifest_risk = _normalise_manifest_risk(
+                getattr(metadata, "risk_level", "") if metadata else ""
+            )
+            capabilities = {
+                str(cap).strip().lower()
+                for cap in (getattr(metadata, "capabilities", []) if metadata else [])
+                if str(cap).strip()
+            }
+            has_manifest_risk = bool(manifest_risk or capabilities)
+            if manifest_risk:
+                raise_risk(manifest_risk, f"manifest_risk:{skill}:{manifest_risk}")
+            for capability in sorted(capabilities):
+                capability_risk = _CAPABILITY_RISK.get(capability, "medium")
+                raise_risk(capability_risk, f"capability:{skill}:{capability}")
+            if not has_manifest_risk:
+                if skill in _HIGH_RISK_SKILLS:
+                    raise_risk("high", f"legacy_high_risk_skill:{skill}")
+                elif skill in _MEDIUM_RISK_SKILLS:
+                    raise_risk("medium", f"legacy_medium_risk_skill:{skill}")
+                elif skill in _LOW_RISK_SKILLS:
+                    raise_risk("low", f"legacy_low_risk_skill:{skill}")
+                else:
+                    raise_risk("high", f"missing_risk_metadata:{skill}")
 
     allowed = _RISK_ORDER[risk_level] <= _RISK_ORDER[max_risk]
     return {

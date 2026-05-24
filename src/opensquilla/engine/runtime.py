@@ -2766,7 +2766,9 @@ class TurnRunner:
             except Exception:
                 loaded_skills = []
         if ctx is not None and loaded_skills and any(
-            getattr(s, "kind", "skill") == "meta" for s in loaded_skills
+            getattr(s, "kind", "skill") == "meta"
+            and not getattr(s, "disable_model_invocation", False)
+            for s in loaded_skills
         ):
             if ctx.surfaced_tools is None:
                 ctx.surfaced_tools = set()

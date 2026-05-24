@@ -17,7 +17,11 @@ from opensquilla.tools.registry import get_default_registry
 from opensquilla.tools.types import ToolContext
 
 
-def _make_loader_with_meta(tmp_path: Path) -> SkillLoader:
+def _make_loader_with_meta(
+    tmp_path: Path,
+    *,
+    disable_model_invocation: bool = False,
+) -> SkillLoader:
     bundled = tmp_path / "skills" / "bundled"
     bundled.mkdir(parents=True)
     skill_dir = bundled / "meta-tiny"
@@ -27,6 +31,7 @@ def _make_loader_with_meta(tmp_path: Path) -> SkillLoader:
         'name: meta-tiny\n'
         'kind: meta\n'
         'description: tiny meta-skill\n'
+        f'disable-model-invocation: {str(disable_model_invocation).lower()}\n'
         'triggers: [tiny-meta-trigger]\n'
         'composition:\n'
         '  steps:\n'
@@ -94,6 +99,23 @@ def test_build_tools_does_not_surface_meta_invoke_without_meta_skills(
     )
     # surfaced_tools may stay None (no mutation) — either way meta_invoke
     # must not be inside it
+    assert ctx.surfaced_tools is None or "meta_invoke" not in ctx.surfaced_tools
+
+
+def test_build_tools_does_not_surface_meta_invoke_for_disabled_meta_skill(
+    tmp_path: Path,
+) -> None:
+    registry = get_default_registry()
+    loader = _make_loader_with_meta(tmp_path, disable_model_invocation=True)
+    runner = TurnRunner(provider_selector=None, config=None)
+    runner._tool_registry = registry
+    runner._skill_loader = loader
+
+    ctx = ToolContext(is_owner=True, workspace_dir=str(tmp_path))
+    tool_defs, _handler = runner._build_tools(ctx)
+    names = {getattr(td, "name", "") for td in tool_defs}
+
+    assert "meta_invoke" not in names
     assert ctx.surfaced_tools is None or "meta_invoke" not in ctx.surfaced_tools
 
 

@@ -53,7 +53,7 @@ const ApprovalMonitor = (() => {
 
   function _authHeaders(extra) {
     const headers = Object.assign({}, extra || {});
-    const token = (window.App && App.getAuthToken && App.getAuthToken()) || '';
+    const token = (typeof App !== 'undefined' && App.getAuthToken && App.getAuthToken()) || '';
     if (token) headers['Authorization'] = `Bearer ${token}`;
     return headers;
   }

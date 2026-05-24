@@ -466,6 +466,8 @@ def test_approval_monitor_sends_auth_headers() -> None:
 
     assert "function _authHeaders(extra)" in source
     assert "App.getAuthToken" in source
+    assert "window.App && App.getAuthToken" not in source
+    assert "typeof App !== 'undefined'" in source
     assert "headers['Authorization'] = `Bearer ${token}`;" in source
     assert "headers: _authHeaders()," in source
     assert "headers: _authHeaders({ 'Content-Type': 'application/json' })" in source

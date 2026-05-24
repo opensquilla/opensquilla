@@ -1725,6 +1725,11 @@ async def start_gateway_server(
     if config.config_path:
         log.info("gateway.config_loaded", path=config.config_path)
 
+    if subscription_manager is None:
+        from opensquilla.gateway.websocket import SubscriptionManager
+
+        subscription_manager = SubscriptionManager()
+
     # Gateway-specific: set env var for other components to discover
     os.environ["OPENSQUILLA_GATEWAY_PORT"] = str(config.port)
 

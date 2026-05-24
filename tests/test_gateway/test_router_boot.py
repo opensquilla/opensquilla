@@ -185,6 +185,86 @@ async def test_start_gateway_server_shares_diagnostics_state_between_app_and_tur
 
 
 @pytest.mark.asyncio
+async def test_start_gateway_server_creates_default_subscription_manager(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_bridge: dict[str, Any] = {}
+
+    class FakeTurnRunner:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def set_session_lock_provider(self, _provider: Any) -> None:
+            pass
+
+    class FakeEventBridge:
+        def __init__(self, *, subscription_manager: Any, connection_registry: Any) -> None:
+            captured_bridge["subscription_manager"] = subscription_manager
+            captured_bridge["connection_registry"] = connection_registry
+
+        async def emit(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    async def fake_build_services(**kwargs: Any) -> Any:
+        config = kwargs["config"]
+
+        async def close() -> None:
+            return None
+
+        return SimpleNamespace(
+            provider_selector=object(),
+            tool_registry=object(),
+            session_manager=object(),
+            skill_loader=object(),
+            usage_tracker=object(),
+            config=config,
+            memory_sync_managers={},
+            model_catalog=None,
+            memory_retrievers={},
+            turn_capture_services={},
+            flush_service=None,
+            cron_scheduler=None,
+            task_runtime=None,
+            agent_registry=None,
+            memory_managers={},
+            memory_stores={},
+            _turn_runner_ref=[],
+            close=close,
+        )
+
+    from opensquilla.gateway import boot
+    from opensquilla.gateway.websocket import SubscriptionManager
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.event_bridge.EventBridge", FakeEventBridge)
+    monkeypatch.setattr(boot, "build_services", fake_build_services)
+    monkeypatch.setattr(boot, "_setup_file_logging", lambda config: None)
+    monkeypatch.setattr(boot, "emit_skill_filter_banner", lambda config: None)
+    monkeypatch.setattr(
+        "opensquilla.gateway.pidlock.GatewayPidLock.acquire",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        "opensquilla.gateway.pidlock.GatewayPidLock.release",
+        lambda self: None,
+    )
+    config = GatewayConfig(
+        state_dir=str(tmp_path / "state"),
+        workspace_dir=str(tmp_path / "workspace"),
+        control_ui={"enabled": False},
+        channels={"channels": []},
+    )
+
+    server = await boot.start_gateway_server(config=config, run=False)
+
+    try:
+        assert isinstance(captured_bridge["subscription_manager"], SubscriptionManager)
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
 async def test_start_gateway_server_schedules_router_preload_after_channels(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

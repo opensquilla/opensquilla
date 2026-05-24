@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import os
 import re
@@ -43,6 +44,7 @@ from opensquilla.tools.types import (
 _SUPPORTED_IMAGE_FORMATS = {"png", "jpg", "jpeg", "gif", "webp"}
 _IMAGE_SIZE_LIMIT = 20 * 1024 * 1024  # 20 MB
 _PDF_TEXT_LIMIT = 50_000
+_PDF_RENDER_SCALE = 2
 _TTS_VALID_VOICES = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
 _MAX_REDIRECTS = 5
 _image_generation_config: Any | None = None
@@ -98,8 +100,6 @@ async def image(path: str, prompt: str = "Describe this image") -> str:
 
     # Validate not corrupt using Pillow
     try:
-        import io
-
         from PIL import Image
 
         img = Image.open(io.BytesIO(image_bytes))
@@ -131,6 +131,12 @@ async def _read_image_file(path: str) -> tuple[bytes, str]:
     if not p.exists():
         raise ToolError(f"Image file not found: {path}")
     ext = p.suffix.lstrip(".").lower()
+    if ext == "pdf":
+        loop = asyncio.get_event_loop()
+        rendered_bytes = await loop.run_in_executor(None, _render_pdf_first_page_png, p)
+        if len(rendered_bytes) > _IMAGE_SIZE_LIMIT:
+            raise ToolError("Rendered PDF page exceeds 20MB image size limit")
+        return rendered_bytes, "image/png"
     if ext not in _SUPPORTED_IMAGE_FORMATS:
         raise ToolError(
             f"Unsupported image format: {ext}. "
@@ -142,6 +148,36 @@ async def _read_image_file(path: str) -> tuple[bytes, str]:
         raise ToolError("Image exceeds 20MB size limit")
     media_type = _ext_to_mime(ext)
     return image_bytes, media_type
+
+
+def _render_pdf_first_page_png(path: Path) -> bytes:
+    try:
+        import pypdfium2 as pdfium  # type: ignore[import-untyped]
+    except Exception as exc:  # pragma: no cover - dependency is provided by pdfplumber
+        raise ToolError("PDF image analysis requires pypdfium2 to render pages") from exc
+
+    pdf = None
+    page = None
+    bitmap = None
+    try:
+        pdf = pdfium.PdfDocument(str(path))
+        if len(pdf) < 1:
+            raise ToolError(f"PDF has no pages: {path}")
+        page = pdf[0]
+        bitmap = page.render(scale=_PDF_RENDER_SCALE)
+        image = bitmap.to_pil()
+        out = io.BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+    except ToolError:
+        raise
+    except Exception as exc:
+        raise ToolError(f"Failed to render PDF first page: {path}") from exc
+    finally:
+        for obj in (bitmap, page, pdf):
+            close = getattr(obj, "close", None)
+            if close is not None:
+                close()
 
 
 def _resolve_media_path(path: str) -> Path:

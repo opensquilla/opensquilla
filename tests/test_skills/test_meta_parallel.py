@@ -379,6 +379,45 @@ async def test_max_parallelism_none_unbounded() -> None:
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_default_parallelism_caps_at_four() -> None:
+    spec = _meta_spec(
+        [
+            {"id": f"s{i}", "skill": f"skill_{i}", "with": {}}
+            for i in range(5)
+        ],
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+
+    in_flight = 0
+    high_water_mark = 0
+    lock = asyncio.Lock()
+
+    async def runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        nonlocal in_flight, high_water_mark
+        async with lock:
+            in_flight += 1
+            high_water_mark = max(high_water_mark, in_flight)
+        try:
+            await asyncio.sleep(0.05)
+            yield TextDeltaEvent(text="done")
+            yield DoneEvent(text="")
+        finally:
+            async with lock:
+                in_flight -= 1
+
+    orch = MetaOrchestrator(
+        agent_runner=runner,
+        skill_loader=_FakeLoader([_skill(f"skill_{i}") for i in range(5)]),
+    )
+
+    async for _ in orch.iter_events(MetaMatch(plan=plan, inputs={})):
+        pass
+
+    assert high_water_mark <= 4, f"high_water_mark={high_water_mark}"
+
+
+@pytest.mark.asyncio
 async def test_run_dag_emits_three_callback_types() -> None:
     """C3: scheduler must externalise step begin / done / failover events."""
     from opensquilla.skills.meta.scheduler import run_dag
@@ -439,3 +478,51 @@ async def test_run_dag_emits_three_callback_types() -> None:
     assert ("b", "ok") in finish_calls
     assert len(failover_calls) == 1
     assert failover_calls[0][:2] == ("a", "b")
+
+
+@pytest.mark.asyncio
+async def test_run_dag_on_step_begin_gets_rendered_inputs() -> None:
+    from opensquilla.skills.meta.scheduler import run_dag
+    from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaStep
+
+    plan = MetaPlan(
+        name="rendered-inputs-test",
+        triggers=("x",),
+        priority=10,
+        steps=(
+            MetaStep(
+                id="a",
+                skill="alpha",
+                kind="agent",
+                with_args={"q": "hello {{ inputs.user_message }}"},
+            ),
+        ),
+    )
+    match = MetaMatch(plan=plan, inputs={"user_message": "world"})
+    begin_inputs: list[dict[str, Any]] = []
+
+    async def begin_cb(
+        step_id: str,
+        effective_skill: str,
+        rendered_inputs: dict[str, Any],
+    ) -> None:
+        begin_inputs.append(rendered_inputs)
+
+    async def dispatch_stub(step, effective_skill, inputs, outputs):
+        from opensquilla.skills.meta.events import _StepDone
+        yield _StepDone(text="ok")
+
+    async def preface_stub(step_id: str, effective_skill: str):
+        if False:
+            yield None
+        return
+
+    async for _ in run_dag(
+        match,
+        dispatch_step_stream=dispatch_stub,
+        yield_skill_view_preface=preface_stub,
+        on_step_begin=begin_cb,
+    ):
+        pass
+
+    assert begin_inputs == [{"q": "hello world"}]

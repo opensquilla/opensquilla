@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 import logging
 import os
 import secrets
@@ -62,6 +61,40 @@ _LOG_LEVELS = {
     "TRACE": logging.DEBUG,
     "NOTSET": logging.NOTSET,
 }
+
+_AUTO_PROPOSE_TOOL_ALLOWLIST = frozenset(
+    {
+        "emit_text",
+        "meta_skill_fill_slots",
+        "meta_skill_assemble",
+        "meta_skill_lint_run",
+        "meta_skill_smoke_run",
+        "meta_skill_persist_proposal",
+    }
+)
+
+
+def _make_auto_propose_tool_invoker(
+    registry: ToolRegistry,
+    *,
+    allowed_tools: frozenset[str] = _AUTO_PROPOSE_TOOL_ALLOWLIST,
+) -> Callable[[str, dict[str, Any]], Any]:
+    """Build the unattended auto-propose tool invoker through dispatch policy."""
+
+    from opensquilla.skills.meta.orchestrator import make_tool_invoker_from_handler
+    from opensquilla.tools.dispatch import build_tool_handler
+    from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext
+
+    ctx = ToolContext(
+        is_owner=False,
+        caller_kind=CallerKind.CRON,
+        interaction_mode=InteractionMode.UNATTENDED,
+        agent_id="auto_propose",
+        allowed_tools=set(allowed_tools),
+    )
+    return make_tool_invoker_from_handler(
+        tool_handler=build_tool_handler(registry, ctx),
+    )
 
 
 def _resolve_migrations_dir() -> Path:
@@ -2161,13 +2194,7 @@ async def start_gateway_server(
                     return "".join(parts).strip()
 
                 registry = get_default_registry()
-
-                async def _tool_invoker(name: str, args: dict) -> str:
-                    impl = registry.get(name)
-                    if impl is None:
-                        return json.dumps({"error": f"unknown tool: {name}"})
-                    result = await impl.handler(**args)
-                    return result if isinstance(result, str) else str(result)
+                _tool_invoker = _make_auto_propose_tool_invoker(registry)
 
                 async def _stub_agent_runner(_s: str, _u: str):
                     # If ever invoked, drop a single failure event + done so

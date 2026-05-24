@@ -58,7 +58,7 @@ async def _handle_show(
     return proposals_lib.show_proposal(default_opensquilla_home(), pid)
 
 
-@_d.method("exec.proposals.accept", scope="operator.proposals")
+@_d.method("exec.proposals.accept", scope="operator.admin")
 async def _handle_accept(
     params: dict | None, ctx: RpcContext,
 ) -> dict[str, Any]:
@@ -69,7 +69,7 @@ async def _handle_accept(
     )
 
 
-@_d.method("exec.proposals.reject", scope="operator.proposals")
+@_d.method("exec.proposals.reject", scope="operator.admin")
 async def _handle_reject(
     params: dict | None, ctx: RpcContext,
 ) -> dict[str, Any]:
@@ -116,7 +116,7 @@ async def _handle_settings_get(
     return _settings_payload(cfg=rt.config, available=True)
 
 
-@_d.method("exec.proposals.settings.set", scope="operator.proposals")
+@_d.method("exec.proposals.settings.set", scope="operator.admin")
 async def _handle_settings_set(
     params: dict | None, ctx: RpcContext,
 ) -> dict[str, Any]:
@@ -141,6 +141,10 @@ async def _handle_settings_set(
 
     cfg = rt.config
     was_enabled = bool(getattr(cfg, "enabled", False))
+    old_values = {
+        "enabled": was_enabled,
+        "on_dream_complete": bool(getattr(cfg, "on_dream_complete", False)),
+    }
     requested: dict[str, bool] = {}
     for key in ("enabled", "on_dream_complete"):
         if key in params:
@@ -149,8 +153,26 @@ async def _handle_settings_set(
                 raise ValueError(f"{key} must be a boolean")
             requested[key] = v
 
-    # Apply to the live object the predicate reads
-    for key, value in requested.items():
+    new_values = dict(old_values)
+    new_values.update(requested)
+    now_enabled = new_values["enabled"]
+
+    # Apply scheduler side effects before mutating/persisting state. If the
+    # scheduler update fails, the live config and JSON state remain untouched.
+    try:
+        if now_enabled and not was_enabled:
+            await rt.register_crons()
+        elif was_enabled and not now_enabled:
+            await rt.pause_crons()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "error",
+            "reason": f"failed to update scheduler: {exc}",
+            "settings": _settings_payload(cfg, available=True),
+        }
+
+    # Apply to the live object the predicate reads after scheduler success.
+    for key, value in new_values.items():
         setattr(cfg, key, value)
 
     # Persist so the toggle survives restart
@@ -161,17 +183,19 @@ async def _handle_settings_set(
     try:
         write_auto_propose_settings(rt.home, persisted)
     except OSError as exc:
+        for key, value in old_values.items():
+            setattr(cfg, key, value)
+        try:
+            if now_enabled and not was_enabled:
+                await rt.pause_crons()
+            elif was_enabled and not now_enabled:
+                await rt.register_crons()
+        except Exception:  # noqa: BLE001
+            pass
         return {
             "status": "error",
             "reason": f"failed to persist settings: {exc}",
             "settings": _settings_payload(cfg, available=True),
         }
-
-    # Side effect on cron jobs only when ``enabled`` actually flipped
-    now_enabled = bool(getattr(cfg, "enabled", False))
-    if now_enabled and not was_enabled:
-        await rt.register_crons()
-    elif was_enabled and not now_enabled:
-        await rt.pause_crons()
 
     return {"status": "ok", "settings": _settings_payload(cfg, available=True)}

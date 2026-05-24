@@ -29,7 +29,7 @@ from opensquilla.engine.types import (
 )
 from opensquilla.skills.meta.events import _FailoverTriggered, _StepDone
 from opensquilla.skills.meta.parser import topological_order
-from opensquilla.skills.meta.templating import resolve_route
+from opensquilla.skills.meta.templating import render_with_args, resolve_route
 from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
 
 log = structlog.get_logger(__name__)
@@ -169,15 +169,13 @@ async def run_dag(
 
             if on_step_begin is not None:
                 try:
-                    # codex-a P2 fix #4: record the step's declared
-                    # ``with_args`` template (per-step, distinguishable)
-                    # rather than the raw ``match.inputs`` (same for every
-                    # step, near-zero audit value). The rendered_inputs
-                    # column now stores the template; rendered values
-                    # remain visible in the per-step output and via the
-                    # gateway logs.
+                    rendered_inputs = render_with_args(
+                        step.with_args,
+                        inputs=dict(match.inputs),
+                        outputs=outputs,
+                    )
                     await on_step_begin(
-                        step.id, effective_skill, dict(step.with_args),
+                        step.id, effective_skill, rendered_inputs,
                     )
                 except Exception as exc:  # noqa: BLE001
                     log.warning(

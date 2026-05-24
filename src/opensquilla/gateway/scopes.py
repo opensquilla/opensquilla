@@ -49,13 +49,11 @@ CLI_DEFAULT_OPERATOR_SCOPES: frozenset[str] = frozenset(
 
 # Default scope set for a remote / unproven operator under no-auth mode.
 # Notably excludes ``operator.admin``: unauthenticated remote callers must
-# not get destructive privileges. Pairing is also excluded — that scope is
-# only granted via a deliberate token grant or the loopback path. Proposals
-# accept/reject ARE included because they are no more dangerous than the
-# already-granted approvals scope; both gate operator-driven irreversible
-# decisions.
+# not get destructive privileges. Pairing and proposals are also excluded:
+# proposal mutation promotes generated SKILL.md files into the managed skill
+# layer, so remote callers need an authenticated/admin path for that surface.
 REMOTE_OPERATOR_SCOPES: frozenset[str] = frozenset(
-    {READ_SCOPE, WRITE_SCOPE, APPROVALS_SCOPE, PROPOSALS_SCOPE}
+    {READ_SCOPE, WRITE_SCOPE, APPROVALS_SCOPE}
 )
 
 # Default scopes for the node role (separate scope namespace).
@@ -165,21 +163,13 @@ METHOD_SCOPES: dict[str, str] = {
     "plugin.approval.request": APPROVALS_SCOPE,
     "plugin.approval.waitDecision": APPROVALS_SCOPE,
     "plugin.approval.resolve": APPROVALS_SCOPE,
-    # ----- proposals (auto-propose UI: list/show/accept/reject) -----
+    # ----- proposals (auto-propose UI: list/show) -----
     # ``exec.proposals.*`` prefix sits OUTSIDE the ``exec.approvals.``
-    # admin prefix because operators (not admins) should be allowed to
-    # accept / reject the unattended-synthesis output without holding
-    # full admin scope.
+    # admin prefix so that proposal browsing can remain operator-visible.
     "exec.proposals.pending_count": PROPOSALS_SCOPE,
     "exec.proposals.list": PROPOSALS_SCOPE,
     "exec.proposals.show": PROPOSALS_SCOPE,
-    "exec.proposals.accept": PROPOSALS_SCOPE,
-    "exec.proposals.reject": PROPOSALS_SCOPE,
-    # WebUI feature toggle for unattended-synthesis (Path 1 cron +
-    # Path 2 dream-hook). Same scope as the manual lifecycle methods —
-    # both are operator-driven decisions on user state.
     "exec.proposals.settings.get": PROPOSALS_SCOPE,
-    "exec.proposals.settings.set": PROPOSALS_SCOPE,
     # ----- admin -----
     "chat.inject": ADMIN_SCOPE,
     "system-event": ADMIN_SCOPE,
@@ -194,6 +184,12 @@ METHOD_SCOPES: dict[str, str] = {
     "skills.update": ADMIN_SCOPE,
     "skills.uninstall": ADMIN_SCOPE,
     "skills.deps.install": ADMIN_SCOPE,
+    # Proposal mutation changes the managed skill layer or unattended
+    # synthesis state, so require authenticated admin rather than remote
+    # no-auth operator.proposals.
+    "exec.proposals.accept": ADMIN_SCOPE,
+    "exec.proposals.reject": ADMIN_SCOPE,
+    "exec.proposals.settings.set": ADMIN_SCOPE,
     "channels.logout": ADMIN_SCOPE,
     "channels.restart": ADMIN_SCOPE,  # OpenSquilla-only.
     "diagnostics.set": ADMIN_SCOPE,

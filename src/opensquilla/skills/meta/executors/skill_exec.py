@@ -132,6 +132,23 @@ async def run_skill_exec_step(
         workdir = workspace_dir
     else:
         workdir = base_dir or None
+    allowed_workdir_root = workspace_dir or base_dir
+    if workdir and allowed_workdir_root:
+        allowed_root = _Path(allowed_workdir_root).expanduser().resolve()
+        workdir_path = _Path(workdir).expanduser()
+        if not workdir_path.is_absolute():
+            workdir_path = allowed_root / workdir_path
+        resolved_workdir = workdir_path.resolve()
+        if (
+            resolved_workdir != allowed_root
+            and not resolved_workdir.is_relative_to(allowed_root)
+        ):
+            raise RuntimeError(
+                f"step {step.id!r}: entrypoint.cwd path "
+                f"{resolved_workdir!s} escapes allowed root "
+                f"{allowed_root!s}",
+            )
+        workdir = str(resolved_workdir)
 
     # Optional assemble: render templated files to disk before exec.
     assemble_raw = entrypoint.get("assemble") or []

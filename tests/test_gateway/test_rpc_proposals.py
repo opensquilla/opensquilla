@@ -277,6 +277,40 @@ async def test_settings_set_partial_update_only_changes_supplied_keys(
     assert out["settings"]["on_dream_complete"] is False
 
 
+@pytest.mark.asyncio
+async def test_settings_set_rolls_back_when_scheduler_update_fails(
+    _isolated_home: Path,
+) -> None:
+    from opensquilla.gateway.auto_propose_bridge import (
+        AutoProposeRuntime,
+        register_runtime,
+        reset_runtime_for_test,
+    )
+    from opensquilla.gateway.config import MetaSkillAutoProposeConfig
+    from opensquilla.gateway.rpc_proposals import _handle_settings_set
+    from opensquilla.skills.proposals_lib import read_auto_propose_settings
+
+    reset_runtime_for_test()
+    cfg = MetaSkillAutoProposeConfig(enabled=False, on_dream_complete=False)
+
+    async def register_crons() -> None:
+        raise RuntimeError("scheduler unavailable")
+
+    register_runtime(AutoProposeRuntime(
+        config=cfg,
+        home=_isolated_home,
+        register_crons=register_crons,
+        pause_crons=lambda: _noop(),
+    ))
+
+    out = await _handle_settings_set({"enabled": True}, _make_ctx())
+
+    assert out["status"] == "error"
+    assert "scheduler unavailable" in out["reason"]
+    assert cfg.enabled is False
+    assert read_auto_propose_settings(_isolated_home) == {}
+
+
 async def _noop() -> None:  # helper for partial-update test
     return None
 
@@ -304,7 +338,7 @@ async def test_settings_set_rejects_non_boolean_values(
         await _handle_settings_set({"enabled": "yes"}, _make_ctx())
 
 
-def test_proposals_methods_classified_under_operator_proposals_scope() -> None:
+def test_proposal_read_methods_classified_under_operator_proposals_scope() -> None:
     """Architecture invariant: scope drift would crash boot, but assert
     explicitly so the relationship between rpc_proposals.py and
     scopes.PROPOSALS_SCOPE is captured by a failing test if either side
@@ -318,9 +352,22 @@ def test_proposals_methods_classified_under_operator_proposals_scope() -> None:
         "exec.proposals.pending_count",
         "exec.proposals.list",
         "exec.proposals.show",
-        "exec.proposals.accept",
-        "exec.proposals.reject",
         "exec.proposals.settings.get",
-        "exec.proposals.settings.set",
     ):
         assert METHOD_SCOPES.get(name) == PROPOSALS_SCOPE, name
+
+
+def test_proposal_mutation_methods_require_admin_scope() -> None:
+    """Proposal promotion changes the managed skill layer, so remote
+    no-auth operators must not be able to perform these mutations."""
+    from opensquilla.gateway.scopes import (
+        ADMIN_SCOPE,
+        METHOD_SCOPES,
+    )
+
+    for name in (
+        "exec.proposals.accept",
+        "exec.proposals.reject",
+        "exec.proposals.settings.set",
+    ):
+        assert METHOD_SCOPES.get(name) == ADMIN_SCOPE, name

@@ -92,7 +92,7 @@ class MetaOrchestrator:
         llm_chat: LLMChat | None = None,
         tool_invoker: ToolInvoker | None = None,
         workspace_dir: str | None = None,
-        max_parallelism: int | None = 8,
+        max_parallelism: int | None = 4,
         # NEW (all optional — preserve legacy callers)
         run_writer: MetaRunWriter | None = None,
         triggered_by: str = "soft_meta_invoke",
@@ -110,9 +110,9 @@ class MetaOrchestrator:
         # ``base_dir`` default so all steps share one workspace tree.
         # ``entrypoint.cwd`` on the individual skill still wins if set.
         self._workspace_dir = workspace_dir
-        # Concurrency cap fed into ``scheduler.run_dag``. Default 8
-        # accommodates a 5-way fan-out (meta-paper-write needs 5) with
-        # headroom while still containing pathological 20-way fans.
+        # Concurrency cap fed into ``scheduler.run_dag``. Default 4 matches
+        # the public DSL schema / mechanism doc safety budget. Callers that
+        # intentionally need a wider fan-out must pass it explicitly.
         # ``None`` = unbounded (preserved for advanced callers).
         self._max_parallelism = max_parallelism
         # Optional persistence ledger (G4 — audit traces). When set,

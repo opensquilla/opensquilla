@@ -60,6 +60,18 @@ def test_skills_view_renders_pending_proposals_section() -> None:
     assert ".sk-proposal-row" in css
 
 
+def test_skills_view_renders_auto_enable_audit_summary() -> None:
+    view = Path("src/opensquilla/gateway/static/js/views/skills.js").read_text(encoding="utf-8")
+    css = Path("src/opensquilla/gateway/static/css/views/skills.css").read_text(encoding="utf-8")
+
+    assert "_renderAutoEnableAudit" in view
+    assert "auto_enable_audit" in view
+    assert "validation_profile" in view
+    assert "static-safety" in view
+    assert "sk-audit-grid" in view
+    assert ".sk-audit-grid" in css
+
+
 def test_skills_view_force_accepts_after_gate_failure_confirm() -> None:
     """When proposals.accept returns refused because of failed gates,
     the UI prompts and retries with force=true. Static check that the

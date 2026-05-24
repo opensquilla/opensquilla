@@ -94,6 +94,30 @@ def write_proposal(
     }
 
 
+def auto_enable_audit_from_gates(gates: dict) -> dict[str, object]:
+    """Return a compact, UI-ready auto-enable audit summary."""
+    auto_enable = gates.get("auto_enable")
+    if not isinstance(auto_enable, dict):
+        return {}
+    details = auto_enable.get("details")
+    if not isinstance(details, dict):
+        details = {}
+    reason = auto_enable.get("reason") or details.get("reason") or ""
+    skills = details.get("skills")
+    tools = details.get("tools")
+    reasons = details.get("reasons")
+    return {
+        "status": auto_enable.get("status", "unknown"),
+        "reason": reason,
+        "risk_level": auto_enable.get("risk_level", details.get("risk_level", "unknown")),
+        "max_risk": auto_enable.get("max_risk", details.get("max_risk", "unknown")),
+        "validation_profile": details.get("validation_profile", "unknown"),
+        "skills": skills if isinstance(skills, list) else [],
+        "tools": tools if isinstance(tools, list) else [],
+        "reasons": reasons if isinstance(reasons, list) else [],
+    }
+
+
 def list_proposals(home: Path) -> dict:
     """Snapshot of pending proposals (id + eligibility + provenance digest)."""
     proposals = proposals_dir(home)
@@ -111,12 +135,7 @@ def list_proposals(home: Path) -> dict:
             except (json.JSONDecodeError, OSError):
                 gates = {}
         provenance = gates.get("provenance") or {}
-        auto_enable = gates.get("auto_enable") or {}
-        auto_enable_digest = {}
-        if isinstance(auto_enable, dict):
-            for key in ("status", "reason", "risk_level", "max_risk"):
-                if key in auto_enable:
-                    auto_enable_digest[key] = auto_enable[key]
+        auto_enable_digest = auto_enable_audit_from_gates(gates)
         rows.append({
             "proposal_id": sub.name,
             "auto_enable_eligible": bool(gates.get("auto_enable_eligible", False)),
@@ -160,6 +179,7 @@ def show_proposal(home: Path, proposal_id: str) -> dict:
         "proposal_id": proposal_id,
         "skill_md": skill_md,
         "gates": gates,
+        "auto_enable_audit": auto_enable_audit_from_gates(gates),
     }
 
 
@@ -224,6 +244,7 @@ def list_auto_enabled_skills(home: Path) -> dict:
             continue
         if auto_enable.get("status") != "enabled":
             continue
+        audit = auto_enable_audit_from_gates(gates)
         rows.append({
             "name": sub.name,
             "proposal_id": auto_enable.get("proposal_id"),
@@ -231,6 +252,10 @@ def list_auto_enabled_skills(home: Path) -> dict:
             "max_risk": auto_enable.get("max_risk", "unknown"),
             "triggered_by": auto_enable.get("triggered_by", "unknown"),
             "enabled_at_ms": auto_enable.get("enabled_at_ms"),
+            "validation_profile": audit.get("validation_profile", "unknown"),
+            "skills": audit.get("skills", []),
+            "tools": audit.get("tools", []),
+            "reasons": audit.get("reasons", []),
         })
     return {"skills": rows}
 
@@ -345,6 +370,7 @@ __all__ = [
     "PROPOSAL_ID_PATTERN",
     "atomic_write_proposal",
     "accept_proposal",
+    "auto_enable_audit_from_gates",
     "auto_propose_settings_path",
     "disable_auto_enabled_skill",
     "is_valid_proposal_id",

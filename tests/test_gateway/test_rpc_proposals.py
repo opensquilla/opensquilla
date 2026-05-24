@@ -55,6 +55,13 @@ def _mark_auto_enabled(home: Path, pid: str) -> None:
         "max_risk": "low",
         "triggered_by": "manual",
         "enabled_at_ms": 123,
+        "details": {
+            "validation_profile": "static-safety-v2",
+            "reason": "ok",
+            "skills": ["summarize"],
+            "tools": [],
+            "reasons": [],
+        },
     }
     gates_path.write_text(json.dumps(gates))
 
@@ -109,10 +116,21 @@ async def test_show_happy_path(_isolated_home: Path) -> None:
     from opensquilla.gateway.rpc_proposals import _handle_show
 
     pid = _seed(_isolated_home)
+    _mark_auto_enabled(_isolated_home, pid)
     out = await _handle_show({"proposal_id": pid}, _make_ctx())
     assert out["status"] == "ok"
     assert out["proposal_id"] == pid
     assert "synth-rpc-pipeline" in out["skill_md"]
+    assert out["auto_enable_audit"] == {
+        "status": "enabled",
+        "reason": "ok",
+        "risk_level": "low",
+        "max_risk": "low",
+        "validation_profile": "static-safety-v2",
+        "skills": ["summarize"],
+        "tools": [],
+        "reasons": [],
+    }
 
 
 @pytest.mark.asyncio
@@ -207,6 +225,8 @@ async def test_auto_enabled_list_and_disable_round_trip(_isolated_home: Path) ->
     listed = await _handle_auto_enabled_list(None, _make_ctx())
     assert listed["skills"][0]["name"] == "synth-rpc-pipeline"
     assert listed["skills"][0]["proposal_id"] == pid
+    assert listed["skills"][0]["validation_profile"] == "static-safety-v2"
+    assert listed["skills"][0]["skills"] == ["summarize"]
 
     disabled = await _handle_auto_enabled_disable(
         {"name": "synth-rpc-pipeline"}, _make_ctx(),

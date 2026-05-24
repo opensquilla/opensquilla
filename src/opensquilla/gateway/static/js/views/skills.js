@@ -556,6 +556,9 @@ const SkillsView = (() => {
     const autoDecision = p.auto_enable && p.auto_enable.status
       ? `<span class="sk-prop-chip sk-prop-chip--warn" title="${_esc(p.auto_enable.reason || '')}">auto-enable: ${_esc(p.auto_enable.status)}</span>`
       : '';
+    const profile = p.auto_enable && p.auto_enable.validation_profile
+      ? `<span class="sk-prop-chip" title="validation profile">${_esc(p.auto_enable.validation_profile)}</span>`
+      : '';
     const chainHint = p.chain_hash
       ? `<span class="sk-prop-hash" title="chain hash">${_esc(String(p.chain_hash).slice(0, 8))}</span>`
       : '';
@@ -565,6 +568,7 @@ const SkillsView = (() => {
         ${eligibleBadge}
         ${autoChip}
         ${autoDecision}
+        ${profile}
         ${chainHint}
       </div>
       <div class="sk-proposal-row__actions">
@@ -579,6 +583,10 @@ const SkillsView = (() => {
     const name = _esc(s.name || '');
     const risk = _esc(s.risk_level || 'unknown');
     const source = _esc(s.triggered_by || 'unknown');
+    const profile = _esc(s.validation_profile || 'unknown');
+    const skills = Array.isArray(s.skills) && s.skills.length
+      ? `<span class="sk-prop-chip" title="Referenced skills">${s.skills.slice(0, 4).map(_esc).join(', ')}</span>`
+      : '';
     const pid = s.proposal_id ? `<span class="sk-prop-hash" title="proposal id">${_esc(String(s.proposal_id))}</span>` : '';
     return `<div class="sk-proposal-row" data-auto-enabled="${name}">
       <div class="sk-proposal-row__head">
@@ -586,11 +594,31 @@ const SkillsView = (() => {
         <span class="sk-prop-chip sk-prop-chip--ok">enabled</span>
         <span class="sk-prop-chip sk-prop-chip--auto">${source}</span>
         <span class="sk-prop-chip">risk: ${risk}</span>
+        <span class="sk-prop-chip">${profile}</span>
+        ${skills}
         ${pid}
       </div>
       <div class="sk-proposal-row__actions">
         <button class="btn btn--ghost btn--sm" data-auto-enabled-disable="${name}" type="button">Disable</button>
       </div>
+    </div>`;
+  }
+
+  function _renderAutoEnableAudit(audit) {
+    if (!audit || !audit.status) {
+      return '<div class="sk-audit-empty">No auto-enable decision recorded.</div>';
+    }
+    const list = (items) => Array.isArray(items) && items.length
+      ? items.map(v => `<code>${_esc(String(v))}</code>`).join(' ')
+      : '<span class="sk-dim">none</span>';
+    return `<div class="sk-audit-grid">
+      <div><span>Status</span><strong>${_esc(audit.status)}</strong></div>
+      <div><span>Risk</span><strong>${_esc(audit.risk_level || 'unknown')} / ${_esc(audit.max_risk || 'unknown')}</strong></div>
+      <div><span>static-safety profile</span><strong>${_esc(audit.validation_profile || 'unknown')}</strong></div>
+      <div><span>Reason</span><strong>${_esc(audit.reason || 'none')}</strong></div>
+      <div class="sk-audit-grid__wide"><span>Skills</span><p>${list(audit.skills)}</p></div>
+      <div class="sk-audit-grid__wide"><span>Tools</span><p>${list(audit.tools)}</p></div>
+      <div class="sk-audit-grid__wide"><span>Static-safety reasons</span><p>${list(audit.reasons)}</p></div>
     </div>`;
   }
 
@@ -605,11 +633,16 @@ const SkillsView = (() => {
       const body = _el.querySelector('#skill-detail-body');
       if (!dlg || !body) return;
       const gatesJson = JSON.stringify(data.gates || {}, null, 2);
+      const auditHtml = _renderAutoEnableAudit(data.auto_enable_audit || {});
       body.innerHTML = `<div class="sk-detail">
         <header class="sk-detail__header">
           <h3>Proposal ${_esc(proposalId)}</h3>
           <button class="btn btn--ghost btn--sm" data-dialog-close type="button">Close</button>
         </header>
+        <section class="sk-detail__section">
+          <h4>Auto-enable Audit</h4>
+          ${auditHtml}
+        </section>
         <section class="sk-detail__section">
           <h4>SKILL.md</h4>
           <pre class="sk-detail__pre">${_esc(data.skill_md || '')}</pre>

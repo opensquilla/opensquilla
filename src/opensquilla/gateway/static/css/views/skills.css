@@ -668,6 +668,7 @@
 .sk-proposal-row__actions {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .sk-prop-chip {
@@ -733,6 +734,42 @@
   max-height: 360px;
   overflow: auto;
   white-space: pre-wrap;
+}
+
+.sk-audit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.sk-audit-grid > div,
+.sk-audit-empty {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  background: color-mix(in oklab, var(--text) 3%, transparent);
+}
+
+.sk-audit-grid__wide {
+  grid-column: 1 / -1;
+}
+
+.sk-audit-grid span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.sk-audit-grid strong {
+  font-size: 13px;
+}
+
+.sk-audit-grid p {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 /* ─── Auto-propose settings panel ─────────────────────────────────── */

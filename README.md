@@ -629,6 +629,10 @@ PinchBench 1.2.1 average results across 25 tasks:
   pptx/docx/xlsx/pdf toolkits, summarization, tmux, weather, and more);
   only the skills needed for the current task are loaded into context,
   avoiding steady-state token waste.
+- **Meta-skills** — reusable workflow skills that compose ordinary skills into
+  guarded DAGs with trigger phrases, risk metadata, template safety checks, and
+  model-selected `meta_invoke` activation. See the complete English authoring
+  guide and copy-paste templates in [`META_SKILL_GUIDE.md`](META_SKILL_GUIDE.md).
 - **Four-tier cognitive memory** — working (current task) → episodic
   (experience and causality) → semantic (facts and rules) → raw (audit
   and retraining base), mirroring human cognition.

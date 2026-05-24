@@ -1216,7 +1216,7 @@ class DiscordChannelEntry(ConfiguredChannelEntry):
 
 
 class DingTalkChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a DingTalk (钉钉) channel."""
+    """Gateway config entry for a DingTalk channel."""
 
     type: Literal["dingtalk"] = "dingtalk"
     client_id: str
@@ -1224,7 +1224,7 @@ class DingTalkChannelEntry(ConfiguredChannelEntry):
 
 
 class WeComChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a WeCom (企业微信) corp-app channel."""
+    """Gateway config entry for a WeCom corp-app channel."""
 
     type: Literal["wecom"] = "wecom"
     corp_id: str

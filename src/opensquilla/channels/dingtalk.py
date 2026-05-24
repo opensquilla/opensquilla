@@ -1,4 +1,4 @@
-"""DingTalk (钉钉) channel adapter.
+"""DingTalk channel adapter.
 
 Uses the ``dingtalk-stream`` SDK Stream Mode (WebSocket) for inbound, and
 the SDK's own card-instance + chat-reply primitives (which delegate to the
@@ -414,8 +414,8 @@ def _build_callback_handler_class() -> type:
             """SDK contract: ``AsyncChatbotHandler.raw_process`` submits this
             method to a ``ThreadPoolExecutor`` (see
             ``dingtalk_stream/chatbot.py:829-836``) and never awaits it.
-            The method MUST therefore be sync — the SDK source explicitly
-            says ``不要用 async 修饰`` ("do not decorate with async").
+            The method MUST therefore be sync; the SDK source explicitly
+            says not to decorate this method with ``async``.
             We hop back to the channel's event loop via
             ``call_soon_threadsafe`` to deliver the parsed message into
             the asyncio queue safely from the worker thread.

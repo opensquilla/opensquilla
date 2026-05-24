@@ -110,9 +110,9 @@ the `arxiv-daily` topic.
 
 ## Trigger surface
 
-Fire manually with `arxiv daily digest` (English) or `arxiv 日报` /
-`arxiv 晨刊` (Chinese). Category override: include a `cs.XX` token
-anywhere in the invocation (e.g. `arxiv 日报 cs.LG`).
+Fire manually with the English trigger `arxiv daily digest` or one of the
+localized triggers listed in the frontmatter. Category override: include a
+`cs.XX` token anywhere in the invocation.
 
 ## Fallback
 

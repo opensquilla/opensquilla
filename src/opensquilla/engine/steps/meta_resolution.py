@@ -46,7 +46,8 @@ def _trigger_matches(trigger: str, message_lower: str) -> bool:
       phrase is embedded in a larger sentence about the skill itself.
     * Triggers containing CJK characters fall back to substring match
       since Chinese phrases have no word boundaries in the regex sense
-      and are typically distinctive enough (e.g. "合规审计") that
+      and are typically distinctive enough (for example, compliance-audit
+      phrases in CJK languages) that
       substring matching does not produce ambiguous fires.
     """
     tl = trigger.lower()

@@ -111,18 +111,17 @@ parallel over the candidate operation, then a fourth step arbitrates
 the verdicts with a strict priority rule. The fifth step emits an
 audit record so the run is recallable later.
 
-This bundle is the OpenSquilla equivalent of pptx slide 7's
-"组合型" pattern — multiple rule sets active simultaneously, with the
-arbitration rule explicit in the SKILL.md rather than implicit in the
-LLM's good judgement.
+This bundle is the OpenSquilla equivalent of pptx slide 7's combinator
+pattern: multiple rule sets active simultaneously, with the arbitration rule
+explicit in the SKILL.md rather than implicit in the LLM's good judgement.
 
 ## Arbitration rule
 
 The arbitrate step encodes the priority `policy > scanner > allow`
 verbatim in its task prompt. The rule is **not** soft-suggested
 ("consider whether…"); it's an enforceable check (`startswith("DENY")`).
-This is the pptx slide 7 recommendation: "上线前需要 大量场景测试 +
-加显式 「以下规则不可妥协」 兜底语句".
+This follows the pptx slide 7 recommendation to combine extensive scenario
+testing with an explicit non-negotiable-rule fallback sentence.
 
 ## Fallback
 

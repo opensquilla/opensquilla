@@ -123,10 +123,10 @@ single ship-readiness verdict.
 
 ## Trigger surface
 
-Fire by saying `pre-commit quality gate` (English) or
-`提交前质量检查` / `pre-commit 质量门` (Chinese). The skill is also
-designed to be invoked from a git pre-commit hook via the soft path
-(`meta_invoke`), but hook installation is a separate manual step.
+Fire by saying `pre-commit quality gate` or one of the localized triggers
+listed in the frontmatter. The skill is also designed to be invoked from a git
+pre-commit hook via the soft path (`meta_invoke`), but hook installation is a
+separate manual step.
 
 ## Fallback
 

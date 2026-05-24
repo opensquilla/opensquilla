@@ -162,9 +162,8 @@ review vs. editable canvas).
 
 ## Trigger surface
 
-Fire by saying `diagram triangulation` (English) or `架构三视图` /
-`出双视图架构图` (Chinese), with the target path or module reference
-in the same turn (e.g. `给 src/opensquilla/skills/meta/ 出双视图架构图`).
+Fire by saying `diagram triangulation` or one of the localized triggers listed
+in the frontmatter, with the target path or module reference in the same turn.
 
 ## Fallback
 

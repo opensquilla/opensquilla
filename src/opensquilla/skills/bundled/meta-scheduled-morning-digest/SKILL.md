@@ -1,6 +1,6 @@
 ---
 name: meta-scheduled-morning-digest
-description: "Compose a morning digest combining local weather, news for the user's interest topic, a structured summary, and a memory note. Use when asked for a 'morning digest', '晨报', or '每日简报'."
+description: "Compose a morning digest combining local weather, news for the user's interest topic, a structured summary, and a memory note."
 kind: meta
 meta_priority: 40
 always: false

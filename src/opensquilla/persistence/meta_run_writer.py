@@ -1,6 +1,6 @@
 """MetaRunWriter — persistence facade for meta-skill execution traces.
 
-G4 (可追溯 + 可审计) audit ledger. Thread-safe sync writer over a long-lived
+G4 traceable and auditable ledger. Thread-safe sync writer over a long-lived
 SQLite connection; the orchestrator wraps calls in ``loop.run_in_executor()``.
 
 Connection contract:

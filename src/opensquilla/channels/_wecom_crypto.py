@@ -1,4 +1,4 @@
-"""WeCom (企业微信) callback crypto — vendored AES-256-CBC + PKCS7 + msg-signature.
+"""WeCom callback crypto — vendored AES-256-CBC + PKCS7 + msg-signature.
 
 Implements the corp-app callback envelope per Tencent's public spec at
 ``https://developer.work.weixin.qq.com/document/path/90968`` (encryption

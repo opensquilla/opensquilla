@@ -297,7 +297,7 @@ security_grading = true
 # ─────────────────────────────────────────────────────────────────────────────
 
 [meta_skill.persistence]
-# Whether to write meta-skill execution traces to SQLite (G4: 可追溯+可审计).
+# Whether to write meta-skill execution traces to SQLite (G4 traceable audit).
 # Disabling drops the writer to no-op; the CLI `skills meta runs ...` will
 # report no rows. Default: true.
 # enabled = true

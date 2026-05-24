@@ -551,7 +551,7 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
         return "please run this meta-skill"
     # Cross-domain negative fixture: any prompt unrelated to common bundled
     # skills. Weather is a safe choice because the corpus's weather bundle
-    # uses tight triggers ("weather", "天气") that won't be matched by this
+    # uses tight weather-specific triggers that won't be matched by this
     # free-form phrasing. If a future user-authored meta-skill is itself
     # about weather, this fixture will false-fail G4 — flag at that time.
     if kind == "negative":

@@ -1,6 +1,6 @@
 """V010 - meta-skill execution audit ledger.
 
-Creates two tables to support G4 (可追溯+可审计) of the meta-skill subsystem:
+Creates two tables to support G4 traceable and auditable meta-skill runs:
 
 * ``meta_skill_runs`` — one row per orchestrator invocation. Captures the
   plan snapshot (so historical replays reproduce the original plan even

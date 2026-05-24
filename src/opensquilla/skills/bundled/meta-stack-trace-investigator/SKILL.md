@@ -160,9 +160,8 @@ occurrence of the same exception class can short-circuit via
 
 ## Trigger surface
 
-Fire by saying `investigate stack trace` (English) or `诊断
-traceback` / `调查 stack trace` / `查 traceback` (Chinese), with the
-traceback pasted into the same turn.
+Fire by saying `investigate stack trace` or one of the localized triggers
+listed in the frontmatter, with the traceback pasted into the same turn.
 
 ## Fallback
 

@@ -162,10 +162,10 @@ free-form opinions.
 
 ## Trigger surface
 
-Fire by saying `multi-reviewer diff` / `codereview my diff` (English)
-or `三路 review` / `审查当前 diff` (Chinese). The diff is read from
-the working tree (`git diff --cached HEAD`, falling back to `git diff
-HEAD` if nothing is staged).
+Fire by saying `multi-reviewer diff`, `codereview my diff`, or one of the
+localized triggers listed in the frontmatter. The diff is read from the working
+tree (`git diff --cached HEAD`, falling back to `git diff HEAD` if nothing is
+staged).
 
 ## Fallback
 

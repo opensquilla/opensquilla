@@ -463,8 +463,8 @@ def _append_mapping_list_section(
     for pairs in items:
         first_key, first_value = pairs[0]
         lines.append(f"- {first_key}: {first_value}")
-        for key, value in pairs[1:]:
-            lines.append(f"  {key}: {value}")
+        for key, rendered_value in pairs[1:]:
+            lines.append(f"  {key}: {rendered_value}")
     lines.append("")
 
 

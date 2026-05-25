@@ -91,7 +91,7 @@ def _format_channel_compact_reply(
     name: str,
     method: str,
     res: Any,
-    reply_to: str,
+    reply_to: str | None,
 ) -> OutgoingMessage | None:
     if name != "compact" or method != "sessions.contextCompact":
         return None

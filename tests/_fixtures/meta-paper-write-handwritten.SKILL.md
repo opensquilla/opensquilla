@@ -1,6 +1,6 @@
 ---
 name: meta-paper-write
-description: "Draft a demo research paper end-to-end from a topic phrase: web search → source curation → BibTeX → citation plan → topic-aware outline → figure → section drafts → global revision → abstract-last → xelatex compile → PDF."
+description: "Draft a demo research paper end-to-end from a topic phrase: preference planning → web search → source curation → BibTeX → citation plan → topic-aware outline → figure → section drafts → global revision → abstract-last → xelatex compile → PDF."
 kind: meta
 meta_priority: 50
 always: false
@@ -14,12 +14,19 @@ provenance:
   license: Apache-2.0
 composition:
   steps:
+    - id: paper_preferences
+      kind: agent
+      skill: paper-preference-planner
+      with:
+        user_message: "{{ inputs.user_message | xml_escape | truncate(1200) }}"
     - id: search_papers
       kind: skill_exec
       skill: multi-search-engine
+      depends_on: [paper_preferences]
     - id: experiment
       kind: skill_exec
       skill: paper-experiment-stub
+      depends_on: [paper_preferences]
     - id: refbib
       kind: skill_exec
       skill: paper-refbib-stub
@@ -30,6 +37,7 @@ composition:
       depends_on: [search_papers, refbib]
       with:
         topic: "{{ inputs.user_message | xml_escape | truncate(200) }}"
+        paper_preferences: "{{ outputs.paper_preferences | truncate(4000) }}"
         search_results: "{{ outputs.search_papers | truncate(8000) }}"
         bibliography: "{{ outputs.refbib | truncate(8000) }}"
     - id: outline
@@ -38,6 +46,7 @@ composition:
       depends_on: [source_pack]
       with:
         topic: "{{ inputs.user_message | xml_escape | truncate(200) }}"
+        paper_preferences: "{{ outputs.paper_preferences | truncate(4000) }}"
         source_pack: "{{ outputs.source_pack | truncate(8000) }}"
         cite_keys_hint: "{{ outputs.refbib | truncate(8000) }}"
     - id: citation_plan
@@ -46,6 +55,7 @@ composition:
       depends_on: [outline, source_pack, refbib]
       with:
         topic: "{{ inputs.user_message | xml_escape | truncate(200) }}"
+        paper_preferences: "{{ outputs.paper_preferences | truncate(4000) }}"
         outline: "{{ outputs.outline }}"
         source_pack: "{{ outputs.source_pack | truncate(8000) }}"
         bibliography: "{{ outputs.refbib | truncate(8000) }}"
@@ -59,6 +69,7 @@ composition:
       depends_on: [outline, citation_plan, refbib, plot]
       with:
         section: "introduction"
+        paper_preferences: "{{ outputs.paper_preferences | truncate(4000) }}"
         outline: "{{ outputs.outline }}"
         citation_plan: "{{ outputs.citation_plan | truncate(8000) }}"
         cite_keys_hint: "{{ outputs.refbib | truncate(8000) }}"
@@ -68,6 +79,7 @@ composition:
       depends_on: [outline, citation_plan, refbib, plot]
       with:
         section: "method"
+        paper_preferences: "{{ outputs.paper_preferences | truncate(4000) }}"
         outline: "{{ outputs.outline }}"
         citation_plan: "{{ outputs.citation_plan | truncate(8000) }}"
         cite_keys_hint: "{{ outputs.refbib | truncate(8000) }}"
@@ -77,6 +89,7 @@ composition:
       depends_on: [outline, citation_plan, refbib, plot]
       with:
         section: "results"
+        paper_preferences: "{{ outputs.paper_preferences | truncate(4000) }}"
         outline: "{{ outputs.outline }}"
         citation_plan: "{{ outputs.citation_plan | truncate(8000) }}"
         cite_keys_hint: "{{ outputs.refbib | truncate(8000) }}"
@@ -87,6 +100,7 @@ composition:
       depends_on: [outline, citation_plan, refbib, plot]
       with:
         section: "discussion"
+        paper_preferences: "{{ outputs.paper_preferences | truncate(4000) }}"
         outline: "{{ outputs.outline }}"
         citation_plan: "{{ outputs.citation_plan | truncate(8000) }}"
         cite_keys_hint: "{{ outputs.refbib | truncate(8000) }}"
@@ -96,6 +110,7 @@ composition:
       depends_on: [draft_intro, draft_method, draft_results, draft_discussion]
       with:
         topic: "{{ inputs.user_message | xml_escape | truncate(200) }}"
+        paper_preferences: "{{ outputs.paper_preferences | truncate(4000) }}"
         outline: "{{ outputs.outline }}"
         citation_plan: "{{ outputs.citation_plan | truncate(8000) }}"
         introduction: "{{ outputs.draft_intro }}"
@@ -108,6 +123,7 @@ composition:
       depends_on: [revised_body, citation_plan]
       with:
         topic: "{{ inputs.user_message | xml_escape | truncate(200) }}"
+        paper_preferences: "{{ outputs.paper_preferences | truncate(4000) }}"
         citation_plan: "{{ outputs.citation_plan | truncate(8000) }}"
         revised_body: "{{ outputs.revised_body | truncate(8000) }}"
     - id: compile_latex
@@ -120,25 +136,26 @@ composition:
 
 Take a research topic and produce a compiled PDF paper.
 
-Pipeline (14 steps; search/experiment start concurrently, body sections run in
+Pipeline (15 steps; preference planning runs first, search/experiment start concurrently, body sections run in
 parallel after source curation, citation planning, and plotting):
 
 | # | step | kind | skill |
 |---|------|------|-------|
-| ① | search_papers | skill_exec | multi-search-engine |
-| ② | experiment | skill_exec | paper-experiment-stub |
-| ③ | refbib | skill_exec | paper-refbib-stub (reads ① on stdin) |
-| ④ | source_pack | agent | paper-source-curator |
-| ⑤ | outline | agent | paper-outline-author |
-| ⑥ | citation_plan | agent | paper-citation-planner |
-| ⑦ | plot | skill_exec | paper-plot-stub (reads ②'s results.csv) |
-| ⑧ | draft_intro | agent | paper-section-author |
-| ⑨ | draft_method | agent | paper-section-author |
-| ⑩ | draft_results | agent | paper-section-author |
-| ⑪ | draft_discussion | agent | paper-section-author |
-| ⑫ | revised_body | agent | paper-revision-author |
-| ⑬ | draft_abstract | agent | paper-abstract-author |
-| ⑭ | compile_latex | skill_exec | latex-compile (assembles paper.tex, xelatex×3 + bibtex) |
+| ① | paper_preferences | agent | paper-preference-planner |
+| ② | search_papers | skill_exec | multi-search-engine |
+| ③ | experiment | skill_exec | paper-experiment-stub |
+| ④ | refbib | skill_exec | paper-refbib-stub (reads ② on stdin) |
+| ⑤ | source_pack | agent | paper-source-curator |
+| ⑥ | outline | agent | paper-outline-author |
+| ⑦ | citation_plan | agent | paper-citation-planner |
+| ⑧ | plot | skill_exec | paper-plot-stub (reads ③'s results.csv) |
+| ⑨ | draft_intro | agent | paper-section-author |
+| ⑩ | draft_method | agent | paper-section-author |
+| ⑪ | draft_results | agent | paper-section-author |
+| ⑫ | draft_discussion | agent | paper-section-author |
+| ⑬ | revised_body | agent | paper-revision-author |
+| ⑭ | draft_abstract | agent | paper-abstract-author |
+| ⑮ | compile_latex | skill_exec | latex-compile (assembles paper.tex, xelatex×3 + bibtex) |
 
 ## Fallback
 

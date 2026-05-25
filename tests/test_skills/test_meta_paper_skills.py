@@ -116,6 +116,9 @@ def test_meta_paper_write_declares_quality_pipeline_stages() -> None:
     meta = (BUNDLED / "meta-paper-write" / "SKILL.md").read_text(encoding="utf-8")
     latex = (BUNDLED / "latex-compile" / "SKILL.md").read_text(encoding="utf-8")
 
+    assert "paper-preference-planner" in meta
+    assert "Save as `paper_preferences`" in meta
+    assert "{{ outputs.paper_preferences | truncate(4000) }}" in meta
     assert "paper-source-curator" in meta
     assert "Save as `source_pack`" in meta
     assert "paper-citation-planner" in meta
@@ -126,6 +129,17 @@ def test_meta_paper_write_declares_quality_pipeline_stages() -> None:
     assert "Save as `draft_abstract`" in meta
     assert "depends_on: [revised_body, citation_plan]" in meta
     assert "{{ outputs.revised_body }}" in latex
+
+
+def test_paper_preference_planner_declares_two_generation_modes() -> None:
+    planner = (
+        BUNDLED / "paper-preference-planner" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "MODE: DIRECT | PREFERENCE_DRIVEN" in planner
+    assert "direct generation" in planner
+    assert "ask the user" in planner
+    assert "do not invent preferences" in planner
 
 
 def test_latex_compile_produces_pdf(tmp_path: Path) -> None:

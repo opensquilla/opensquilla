@@ -1,6 +1,6 @@
 ---
 name: meta-paper-write
-description: "Draft a demo research paper end-to-end from a topic phrase: web search → source curation → BibTeX → citation plan → topic-aware outline → figure → section drafts → global revision → abstract-last → xelatex compile → PDF."
+description: "Draft a demo research paper end-to-end from a topic phrase: preference planning → web search → source curation → BibTeX → citation plan → topic-aware outline → figure → section drafts → global revision → abstract-last → xelatex compile → PDF."
 kind: meta_sop
 meta_priority: 50
 always: false
@@ -17,39 +17,47 @@ provenance:
 
 # meta-paper-write (SOP form)
 
-## Phase 1: Foundation [parallel]
+## Phase 1: Preferences
+Invoke `paper-preference-planner` as agent with:
+- user_message: `{{ inputs.user_message | xml_escape | truncate(1200) }}`
+Save as `paper_preferences`.
+
+## Phase 2: Foundation [parallel]
 Run `multi-search-engine`. Save as `search_papers`.
 Run `paper-experiment-stub`. Save as `experiment`.
 
-## Phase 2: Bibliography [depends_on: search_papers]
+## Phase 3: Bibliography [depends_on: search_papers]
 Run `paper-refbib-stub`. Save as `refbib`.
 
-## Phase 3: Source Curation [depends_on: [search_papers, refbib]]
+## Phase 4: Source Curation [depends_on: [search_papers, refbib]]
 Invoke `paper-source-curator` as agent with:
 - topic: `{{ inputs.user_message | xml_escape | truncate(200) }}`
+- paper_preferences: `{{ outputs.paper_preferences | truncate(4000) }}`
 - search_results: `{{ outputs.search_papers | truncate(8000) }}`
 - bibliography: `{{ outputs.refbib | truncate(8000) }}`
 Save as `source_pack`.
 
-## Phase 4: Outline [depends_on: source_pack]
+## Phase 5: Outline [depends_on: source_pack]
 Invoke `paper-outline-author` as agent with:
 - topic: `{{ inputs.user_message | xml_escape | truncate(200) }}`
+- paper_preferences: `{{ outputs.paper_preferences | truncate(4000) }}`
 - source_pack: `{{ outputs.source_pack | truncate(8000) }}`
 - cite_keys_hint: `{{ outputs.refbib | truncate(8000) }}`
 Save as `outline`.
 
-## Phase 5: Citation Plan [depends_on: [outline, source_pack, refbib]]
+## Phase 6: Citation Plan [depends_on: [outline, source_pack, refbib]]
 Invoke `paper-citation-planner` as agent with:
 - topic: `{{ inputs.user_message | xml_escape | truncate(200) }}`
+- paper_preferences: `{{ outputs.paper_preferences | truncate(4000) }}`
 - outline: `{{ outputs.outline }}`
 - source_pack: `{{ outputs.source_pack | truncate(8000) }}`
 - bibliography: `{{ outputs.refbib | truncate(8000) }}`
 Save as `citation_plan`.
 
-## Phase 6: Plot [depends_on: experiment]
+## Phase 7: Plot [depends_on: experiment]
 Run `paper-plot-stub`. Save as `plot`.
 
-## Phase 7: Body Drafting [parallel for_each: section; depends_on: [outline, citation_plan, refbib, plot]]
+## Phase 8: Body Drafting [parallel for_each: section; depends_on: [outline, citation_plan, refbib, plot]]
 ```yaml for_each
 section:
   - {id: draft_intro,      name: introduction}
@@ -60,15 +68,17 @@ section:
 
 Invoke `paper-section-author` as agent with:
 - section: `{{ section.name }}`
+- paper_preferences: `{{ outputs.paper_preferences | truncate(4000) }}`
 - outline: `{{ outputs.outline }}`
 - citation_plan: `{{ outputs.citation_plan | truncate(8000) }}`
 - cite_keys_hint: `{{ outputs.refbib | truncate(8000) }}`
 - figure_path: `{{ section.figure_path }}`
 Save as `{{ section.id }}`.
 
-## Phase 8: Global Revision [depends_on: [draft_intro, draft_method, draft_results, draft_discussion]]
+## Phase 9: Global Revision [depends_on: [draft_intro, draft_method, draft_results, draft_discussion]]
 Invoke `paper-revision-author` as agent with:
 - topic: `{{ inputs.user_message | xml_escape | truncate(200) }}`
+- paper_preferences: `{{ outputs.paper_preferences | truncate(4000) }}`
 - outline: `{{ outputs.outline }}`
 - citation_plan: `{{ outputs.citation_plan | truncate(8000) }}`
 - introduction: `{{ outputs.draft_intro }}`
@@ -77,12 +87,13 @@ Invoke `paper-revision-author` as agent with:
 - discussion: `{{ outputs.draft_discussion }}`
 Save as `revised_body`.
 
-## Phase 9: Abstract [depends_on: [revised_body, citation_plan]]
+## Phase 10: Abstract [depends_on: [revised_body, citation_plan]]
 Invoke `paper-abstract-author` as agent with:
 - topic: `{{ inputs.user_message | xml_escape | truncate(200) }}`
+- paper_preferences: `{{ outputs.paper_preferences | truncate(4000) }}`
 - citation_plan: `{{ outputs.citation_plan | truncate(8000) }}`
 - revised_body: `{{ outputs.revised_body | truncate(8000) }}`
 Save as `draft_abstract`.
 
-## Phase 10: Compile [depends_on: draft_abstract]
+## Phase 11: Compile [depends_on: draft_abstract]
 Run `latex-compile`. Save as `compile_latex`.

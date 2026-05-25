@@ -1,6 +1,6 @@
 """End-to-end test for meta-paper-write.
 
-Runs the full 11-step DAG against a tmp workspace with the search step
+Runs the full 15-step DAG against a tmp workspace with the search step
 shimmed to a tiny canned JSON, and asserts the pipeline produces a PDF.
 Skips xelatex-dependent assertions when xelatex isn't installed.
 """
@@ -37,11 +37,18 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     plan_spec = specs.get("meta-paper-write")
     assert plan_spec is not None, "meta-paper-write skill not bundled"
     plan = parse_meta_plan(plan_spec)
-    assert plan is not None and len(plan.steps) == 14
+    assert plan is not None and len(plan.steps) == 15
     steps = {step.id: step for step in plan.steps}
+    assert steps["paper_preferences"].skill == "paper-preference-planner"
+    assert steps["search_papers"].depends_on == ("paper_preferences",)
+    assert steps["experiment"].depends_on == ("paper_preferences",)
     assert "source_pack" in steps
     assert "citation_plan" in steps
     assert "revised_body" in steps
+    assert (
+        steps["source_pack"].with_args["paper_preferences"]
+        == "{{ outputs.paper_preferences | truncate(4000) }}"
+    )
     assert steps["draft_abstract"].skill == "paper-abstract-author"
     assert steps["draft_abstract"].depends_on == ("revised_body", "citation_plan")
     assert steps["compile_latex"].depends_on == ("draft_abstract",)
@@ -85,6 +92,20 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         return "\n\n".join([paragraph * 8 for _ in range(pages)])
 
     canned_fragments: dict[str, str] = {
+        "paper-preference-planner": (
+            "PAPER_PREFERENCES:\n"
+            "MODE: DIRECT\n"
+            "TOPIC: RAG in low-resource settings\n"
+            "AUDIENCE: academic\n"
+            "VENUE_STYLE: generic research paper\n"
+            "LANGUAGE: English\n"
+            "DEPTH: deep\n"
+            "CITATION_STYLE: numeric\n"
+            "EMPHASIS:\n- reliability\n"
+            "MUST_INCLUDE:\n- 10+ pages\n"
+            "AVOID:\n- unsupported claims\n"
+            "DEFAULTS_USED:\n- academic audience\n"
+        ),
         "paper-source-curator": (
             "SOURCE_PACK:\n"
             "PRIMARY_SOURCES:\n"
@@ -141,6 +162,10 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     )
 
     async def runner(system_prompt: str, user_message: str) -> AsyncIterator[AgentEvent]:
+        if "paper-preference-planner" in system_prompt:
+            yield TextDeltaEvent(text=canned_fragments["paper-preference-planner"])
+            yield DoneEvent(text="")
+            return
         if "paper-source-curator" in system_prompt:
             yield TextDeltaEvent(text=canned_fragments["paper-source-curator"])
             yield DoneEvent(text="")

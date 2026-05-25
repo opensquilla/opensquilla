@@ -14,6 +14,8 @@ You are drafting a single section of a research paper as a LaTeX fragment.
 
 - `section`: one of `abstract`, `introduction`, `method`, `results`,
   `discussion`. Each section has a fixed convention — follow it.
+- `paper_preferences`: mode, audience, venue style, language, depth, emphasis,
+  must-include items, avoid items, and defaults chosen for this paper.
 - `outline`: the full 5-section outline from `paper-outline-author`.
   Use the line that matches your section as your prompt.
 - `citation_plan`: claim-to-citation assignments from `paper-citation-planner`.
@@ -47,6 +49,8 @@ section starts with the appropriate environment:
 ### Hard rules
 
 - The complete paper must compile to 10+ compiled pages and use at least 20 distinct citation keys.
+- Match `paper_preferences` for depth, audience, language, emphasis, and
+  avoid-list constraints while preserving the fixed section contract.
 - Use `\cite{refN}` whenever you make a factual or comparative claim that
   could plausibly trace to a reference. Across all non-abstract sections,
   use at least 20 distinct citation keys when available. Do NOT invent ref

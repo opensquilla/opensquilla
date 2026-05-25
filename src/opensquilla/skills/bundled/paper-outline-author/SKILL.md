@@ -13,12 +13,19 @@ research paper.
 
 ## Task
 
-Given a research topic, a curated source pack, and a list of available BibTeX
-citation keys, write a 5-section outline that the downstream section-author
-can expand into a 10+ page paper. Each section needs enough concrete
+Given a research topic, a preference brief, a curated source pack, and a list
+of available BibTeX citation keys, write a 5-section outline that the
+downstream section-author can expand into a 10+ page paper. Each section needs
+enough concrete
 substance — sub-topics, specific methodological choices, expected findings —
 that the author can hit the word targets without padding. Plan for 6,500-8,000
 total words.
+
+Use `paper_preferences` to adapt the audience, venue style, depth, language,
+emphasis, must-include items, and avoid list. If the preference brief says
+`MODE: DIRECT`, rely on the recorded defaults. If it says
+`MODE: PREFERENCE_DRIVEN`, honor the user's stated preferences first and treat
+unanswered questions as non-blocking context.
 
 Use the citation keys (e.g. `ref1`, `ref2`) inline when a section will
 refer to a specific reference. Allocate at least 20+ distinct citation keys
@@ -39,6 +46,8 @@ DISCUSSION: <8-10 sentences: interpretation, limitations, threats to validity, d
 Hard rules:
 
 - Each section's "sentences" must each carry real content, not throat-clearing.
+- Reflect the preference brief without adding sections beyond the fixed
+  abstract / introduction / method / results / discussion shape.
 - Mention at least one specific number / parameter / dataset in METHOD and RESULTS.
 - Use the source pack to avoid low-quality or off-topic references.
 - Use at least 20 distinct citation keys across the outline when at least 20

@@ -13,6 +13,8 @@ You plan citation use before the paper sections are drafted.
 ## Inputs you'll receive
 
 - `topic`: the paper topic.
+- `paper_preferences`: mode, audience, venue style, emphasis, must-include
+  requirements, and avoid list.
 - `outline`: the paper outline.
 - `source_pack`: curated references with `refN` keys.
 - `bibliography`: BibTeX entries.
@@ -38,6 +40,9 @@ USAGE_RULES:
 ## Hard rules
 
 - Use at least 20 distinct citation keys when at least 20 are available.
+- Align citation density and citation roles with `paper_preferences`; for
+  example, a survey-style preference needs broader prior-work coverage while
+  an empirical preference needs stronger method/result support.
 - Use only keys present in `source_pack` or `bibliography`.
 - Assign citations to claims, not to filler sentences.
 - Spread citations across introduction, method, results, and discussion.

@@ -40,11 +40,16 @@ ORIGINALS = {
     "meta-travel-planner",
     "meta-web-research-to-report",
     "meta-web-to-pdf-briefing",
+    "paper-abstract-author",
+    "paper-citation-planner",
     "paper-experiment-stub",
     "paper-outline-author",
     "paper-plot-stub",
+    "paper-preference-planner",
     "paper-refbib-stub",
+    "paper-revision-author",
     "paper-section-author",
+    "paper-source-curator",
 }
 
 

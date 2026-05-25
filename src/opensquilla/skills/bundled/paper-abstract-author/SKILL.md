@@ -13,6 +13,8 @@ You write the abstract after the body is complete.
 ## Inputs you'll receive
 
 - `topic`: the paper topic.
+- `paper_preferences`: mode, audience, venue style, language, depth, emphasis,
+  must-include items, avoid items, and defaults chosen for this paper.
 - `citation_plan`: the final citation plan.
 - `revised_body`: the revised LaTeX body.
 
@@ -29,6 +31,7 @@ Pure LaTeX fragment only:
 ## Hard rules
 
 - Summarize the actual revised body; do not introduce new claims.
+- Match the preference brief's language, audience, and emphasis.
 - Cover problem, approach, evidence, main result, and significance.
 - Do not include citations unless the revised body requires a key claim in the
   abstract to be traceable.

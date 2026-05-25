@@ -702,6 +702,108 @@ async def test_dispatch_intercepts_meta_invoke_and_terminates_turn(
     )
 
 
+@pytest.mark.asyncio
+async def test_dispatch_coerces_meta_skill_view_to_meta_invoke(
+    tmp_path,
+) -> None:
+    """If the model calls skill_view for a meta-skill, treat it as
+    meta_invoke so reading the meta SKILL.md cannot silently bypass the
+    orchestrator."""
+    from collections.abc import AsyncIterator
+
+    from opensquilla.engine.agent import Agent
+    from opensquilla.engine.types import AgentConfig, DoneEvent, ToolResultEvent
+    from opensquilla.provider.types import DoneEvent as ProviderDoneEvent
+    from opensquilla.provider.types import ToolUseDeltaEvent as ProviderToolUseDelta
+    from opensquilla.provider.types import ToolUseEndEvent as ProviderToolUseEnd
+    from opensquilla.provider.types import ToolUseStartEvent as ProviderToolUseStart
+    from opensquilla.skills.loader import SkillLoader
+    from opensquilla.tools.builtin import meta_tools  # noqa: F401
+    from opensquilla.tools.registry import get_default_registry
+    from opensquilla.tools.types import ToolContext
+
+    bundled = tmp_path / "skills" / "bundled"
+    skill_dir = bundled / "meta-tiny"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-tiny\n"
+        "kind: meta\n"
+        "description: tiny meta-skill for skill_view coercion\n"
+        "triggers: [tiny-meta-trigger]\n"
+        "composition:\n"
+        "  steps:\n"
+        "    - id: c\n"
+        "      kind: llm_classify\n"
+        "      output_choices: [A, B]\n"
+        "      with: {text: \"x\"}\n"
+        "---\n"
+        "# meta-tiny\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    loader.load_all()
+
+    class _StubProvider:
+        provider_name = "stub"
+
+        async def chat(
+            self, messages, tools=None, config=None,
+        ) -> AsyncIterator:
+            yield ProviderToolUseStart(tool_use_id="tu_1", tool_name="skill_view")
+            yield ProviderToolUseDelta(
+                tool_use_id="tu_1",
+                json_fragment='{"name": "meta-tiny"}',
+            )
+            yield ProviderToolUseEnd(
+                tool_use_id="tu_1",
+                tool_name="skill_view",
+                arguments={"name": "meta-tiny"},
+            )
+            yield ProviderDoneEvent(stop_reason="tool_use")
+
+        async def list_models(self):
+            return []
+
+    agent = Agent(
+        provider=_StubProvider(),  # type: ignore[arg-type]
+        config=AgentConfig(
+            model_id="stub",
+            max_iterations=4,
+            system_prompt="",
+            metadata={
+                "skill_loader": loader,
+                "bootstrap_workspace_dir": str(tmp_path),
+            },
+        ),
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=get_default_registry(),
+        tool_context=ToolContext(workspace_dir=str(tmp_path), is_owner=True),
+    )
+
+    async def fake_llm_chat(_s: str, _u: str) -> str:
+        return "A"
+
+    agent._test_llm_chat_override = fake_llm_chat  # type: ignore[attr-defined]
+
+    events = []
+    async for ev in agent.run_turn("trigger meta-tiny via skill_view"):
+        events.append(ev)
+
+    assert any(isinstance(e, DoneEvent) for e in events)
+    meta_invoke_results = [
+        e for e in events
+        if isinstance(e, ToolResultEvent) and e.tool_name == "meta_invoke"
+    ]
+    assert meta_invoke_results, (
+        "skill_view(name=<meta-skill>) must be coerced into meta_invoke"
+    )
+    assert all(not r.is_error for r in meta_invoke_results)
+    assert any("A" in (r.result or "") for r in meta_invoke_results)
+
+
 # ---------------------------------------------------------------------------
 # Task 5C: Soft path wires meta_run_writer + triggered_by="soft_meta_invoke"
 # into the MetaOrchestrator ctor when AgentConfig.metadata carries the writer.

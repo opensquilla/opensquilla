@@ -23,7 +23,7 @@ entrypoint:
     - --engines
     - brave,duckduckgo
     - --limit
-    - "5"
+    - "25"
     - --json
   parse: json
   timeout: 60

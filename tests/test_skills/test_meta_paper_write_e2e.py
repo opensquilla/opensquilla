@@ -16,9 +16,11 @@ import pytest
 
 from opensquilla.engine.types import AgentEvent, DoneEvent, TextDeltaEvent
 from opensquilla.skills.loader import SkillLoader
+from opensquilla.skills.meta.events import _StepDone
+from opensquilla.skills.meta.executors.agent import run_step_with_skill_stream
 from opensquilla.skills.meta.orchestrator import MetaOrchestrator
 from opensquilla.skills.meta.parser import parse_meta_plan
-from opensquilla.skills.meta.types import MetaMatch, MetaResult
+from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
 from opensquilla.skills.types import SkillSpec
 
 REPO = Path(__file__).resolve().parents[2]
@@ -44,12 +46,13 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     stub_script = stub_dir / "stub.py"
     stub_script.write_text(
         "import json\n"
+        "results = [\n"
+        "  {'title': f'Reference {i}', 'url': f'https://example.com/{i}', 'snippet': f'snippet {i}'}\n"
+        "  for i in range(1, 26)\n"
+        "]\n"
         "print(json.dumps({\n"
         "  'query': 'x',\n"
-        "  'results': [\n"
-        "    {'title': 'Foo', 'url': 'https://example.com/a', 'snippet': 'foo s'},\n"
-        "    {'title': 'Bar', 'url': 'https://example.com/b', 'snippet': 'bar s'},\n"
-        "  ],\n"
+        "  'results': results,\n"
         "}))\n",
     )
     mse = specs["multi-search-engine"]
@@ -63,31 +66,40 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
 
     # Sub-Agent runner that returns short canned fragments for the
     # outline + section steps. Deterministic; no LLM.
+    def long_body(label: str, start_ref: int, count: int, pages: int) -> str:
+        cites = " ".join(f"\\cite{{ref{i}}}" for i in range(start_ref, start_ref + count))
+        paragraph = (
+            f"{label} develops the evaluation argument with concrete operational "
+            f"details, explicit assumptions, comparative baselines, and deployment "
+            f"constraints {cites}. The repeated offline fixture text is intentionally "
+            f"long enough to exercise the long-paper compilation contract without "
+            f"calling a live LLM. "
+        )
+        return "\n\n".join([paragraph * 8 for _ in range(pages)])
+
     canned_fragments: dict[str, str] = {
         "paper-outline-author": (
             "ABSTRACT: This paper studies X.\n"
-            "INTRODUCTION: X is important [ref1].\n"
-            "METHOD: We use Y.\n"
-            "RESULTS: Y improves on baseline.\n"
-            "DISCUSSION: Future work."
+            "INTRODUCTION: X is important [ref1-ref6].\n"
+            "METHOD: We use Y [ref7-ref12].\n"
+            "RESULTS: Y improves on baseline [ref13-ref16].\n"
+            "DISCUSSION: Future work [ref17-ref20]."
         ),
         "abstract": r"\begin{abstract} This paper studies X \cite{ref1}. \end{abstract}",
-        "introduction": r"\section{Introduction} X is important \cite{ref1}.",
-        "method": r"\section{Method} We use Y.",
+        "introduction": "\\section{Introduction}\n" + long_body("Introduction", 1, 6, 3),
+        "method": "\\section{Method}\n" + long_body("Method", 7, 6, 3),
         "results": (
             r"\section{Results} See Fig.~\ref{fig:1}. "
             r"\begin{figure}[t]\centering"
             r"\includegraphics[width=0.7\linewidth]{figure_1.pdf}"
             r"\caption{ours vs baseline}\label{fig:1}\end{figure}"
+            + "\n"
+            + long_body("Results", 13, 4, 2)
         ),
-        "discussion": r"\section{Discussion} Future work.",
+        "discussion": "\\section{Discussion}\n" + long_body("Discussion", 17, 4, 2),
     }
 
     async def runner(system_prompt: str, user_message: str) -> AsyncIterator[AgentEvent]:
-        if "paper-outline-author" in system_prompt:
-            yield TextDeltaEvent(text=canned_fragments["paper-outline-author"])
-            yield DoneEvent(text="")
-            return
         if "paper-section-author" in system_prompt:
             # The user message includes "section: <name>".
             for section in (
@@ -98,6 +110,10 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
                     break
             else:
                 yield TextDeltaEvent(text=r"\section{??}")
+            yield DoneEvent(text="")
+            return
+        if "paper-outline-author" in system_prompt:
+            yield TextDeltaEvent(text=canned_fragments["paper-outline-author"])
             yield DoneEvent(text="")
             return
         yield TextDeltaEvent(text="(unexpected sub-Agent invocation)")
@@ -146,6 +162,52 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     assert csv.is_file()
     fig = workdir / "paper" / "figure_1.pdf"
     assert fig.is_file()
+
+
+@pytest.mark.asyncio
+async def test_paper_section_author_step_output_uses_latex_fragment_only(
+    tmp_path: Path,
+) -> None:
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    loader.load_all()
+    step = MetaStep(
+        id="draft_results",
+        skill="paper-section-author",
+        kind="agent",
+        with_args={"section": "results"},
+    )
+
+    async def runner(_system_prompt: str, _user_message: str) -> AsyncIterator[AgentEvent]:
+        yield TextDeltaEvent(
+            text=(
+                "The word count is low. Let me expand it.\n"
+                "```latex\n"
+                "\\section{Results}\n"
+                "Clean result prose with Fig.~\\ref{fig:1}.\n"
+                "```\n"
+                "File written to: /tmp/results.tex"
+            ),
+        )
+        yield DoneEvent(text="")
+
+    events = [
+        ev
+        async for ev in run_step_with_skill_stream(
+            step,
+            "paper-section-author",
+            {"user_message": "topic"},
+            {},
+            agent_runner=runner,
+            skill_loader=loader,
+        )
+    ]
+    done = [ev for ev in events if isinstance(ev, _StepDone)]
+    assert len(done) == 1
+    assert done[0].text == (
+        "\\section{Results}\n"
+        "Clean result prose with Fig.~\\ref{fig:1}."
+    )
 
 
 class _PatchedLoader:

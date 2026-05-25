@@ -27,7 +27,7 @@ Run `paper-refbib-stub`. Save as `refbib`.
 ## Phase 3: Outline
 Invoke `paper-outline-author` as agent with:
 - topic: `{{ inputs.user_message | xml_escape | truncate(200) }}`
-- cite_keys_hint: `{{ outputs.refbib | truncate(1500) }}`
+- cite_keys_hint: `{{ outputs.refbib | truncate(8000) }}`
 Save as `outline`.
 
 ## Phase 4: Plot [depends_on: experiment]
@@ -45,8 +45,8 @@ section:
 
 Invoke `paper-section-author` as agent with:
 - section: `{{ section.name }}`
-- outline: `{{ outputs.outline }}`
-- cite_keys_hint: `{{ outputs.refbib | truncate(1500) }}`
+    - outline: `{{ outputs.outline }}`
+    - cite_keys_hint: `{{ outputs.refbib | truncate(8000) }}`
 - figure_path: `{{ section.figure_path }}`
 Save as `{{ section.id }}`.
 

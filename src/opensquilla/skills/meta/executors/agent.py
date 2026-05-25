@@ -10,6 +10,7 @@ output.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -21,6 +22,40 @@ from opensquilla.skills.meta.templating import (
     render_with_args,
 )
 from opensquilla.skills.meta.types import MetaStep
+
+
+_LATEX_START_MARKERS = (
+    r"\begin{abstract}",
+    r"\section{",
+    r"\subsection{",
+)
+
+
+def _extract_latex_fragment(text: str) -> str:
+    """Recover a LaTeX fragment from common model status wrappers."""
+    fenced = re.search(r"```(?:latex|tex)?\s*(.*?)```", text, flags=re.DOTALL)
+    if fenced:
+        text = fenced.group(1)
+
+    starts = [text.find(marker) for marker in _LATEX_START_MARKERS]
+    starts = [index for index in starts if index >= 0]
+    if starts:
+        text = text[min(starts):]
+
+    lines: list[str] = []
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("File written to:", "**File:", "文件路径：")):
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _normalize_agent_step_output(effective_skill: str, text: str) -> str:
+    if effective_skill != "paper-section-author":
+        return text
+    fragment = _extract_latex_fragment(text)
+    return fragment or text
 
 
 async def run_step_with_skill_stream(
@@ -83,7 +118,10 @@ async def run_step_with_skill_stream(
                 last_error_tool_result = result_text
         yield event
 
-    text = "".join(final_text_parts).strip()
+    text = _normalize_agent_step_output(
+        effective_skill,
+        "".join(final_text_parts).strip(),
+    )
     if text:
         yield _StepDone(text=text)
         return

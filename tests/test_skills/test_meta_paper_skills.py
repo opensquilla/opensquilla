@@ -98,6 +98,20 @@ def test_paper_refbib_stub_emits_bibtex_from_stdin_json(tmp_path: Path) -> None:
     assert "@misc{ref1," in result.stdout
 
 
+def test_meta_paper_write_declares_long_paper_generation_contract() -> None:
+    meta = (BUNDLED / "meta-paper-write" / "SKILL.md").read_text(encoding="utf-8")
+    search = (BUNDLED / "multi-search-engine" / "SKILL.md").read_text(encoding="utf-8")
+    outline = (BUNDLED / "paper-outline-author" / "SKILL.md").read_text(encoding="utf-8")
+    section = (BUNDLED / "paper-section-author" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "- \"25\"" in search
+    assert "10+ page" in outline
+    assert "20+ distinct citation keys" in outline
+    assert "10+ compiled pages" in section
+    assert "at least 20 distinct citation keys" in section
+    assert "{{ outputs.refbib | truncate(8000) }}" in meta
+
+
 def test_latex_compile_produces_pdf(tmp_path: Path) -> None:
     pytest = __import__("pytest")
     if shutil.which("xelatex") is None:
@@ -127,3 +141,131 @@ Hello, world.
     # debugging without polluting the meta-skill's final_text payload.
     assert "paper.pdf" in proc.stdout.lower()
     assert "successfully" in proc.stdout.lower()
+
+
+def test_latex_compile_reassembles_clean_cjk_paper_from_section_files(
+    tmp_path: Path,
+) -> None:
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    script = BUNDLED / "latex-compile" / "scripts" / "compile.py"
+    spec = spec_from_file_location("latex_compile_script", script)
+    assert spec is not None and spec.loader is not None
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    workspace = tmp_path / "workspace"
+    paper_dir = workspace / "paper"
+    paper_dir.mkdir(parents=True)
+    tex = paper_dir / "paper.tex"
+    tex.write_text(
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "Let me write the paper first. ```latex\\n"
+        "\\section{Method} 污染内容\\n```"
+        "\\end{document}\n",
+        encoding="utf-8",
+    )
+    (workspace / "abstract.tex").write_text(
+        "\\begin{abstract} 中文摘要。\\end{abstract}\n",
+        encoding="utf-8",
+    )
+    (workspace / "introduction.tex").write_text(
+        "\\section{Introduction} Clean intro.\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "method.tex").write_text(
+        "\\section{实验方法} 中文方法。\n",
+        encoding="utf-8",
+    )
+    (workspace / "results.tex").write_text(
+        "\\section{Results} Clean results.\n",
+        encoding="utf-8",
+    )
+    (workspace / "discussion.tex").write_text(
+        "\\section{Discussion} Clean discussion.\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "references.bib").write_text("", encoding="utf-8")
+
+    assert mod._prepare_tex_for_compile(tex) is True
+    rewritten = tex.read_text(encoding="utf-8")
+    assert "\\usepackage{xeCJK}" in rewritten
+    assert "\\setCJKmainfont" in rewritten
+    assert "\\section{实验方法} 中文方法。" in rewritten
+    assert "Let me write the paper first" not in rewritten
+    assert "```latex" not in rewritten
+
+
+def test_latex_compile_validates_long_paper_citation_contract(
+    tmp_path: Path,
+) -> None:
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    script = BUNDLED / "latex-compile" / "scripts" / "compile.py"
+    spec = spec_from_file_location("latex_compile_script", script)
+    assert spec is not None and spec.loader is not None
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    tex = tmp_path / "paper.tex"
+    tex.write_text(
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "\\section{Introduction} Too few refs \\cite{ref1,ref2}.\n"
+        "\\bibliography{references}\n"
+        "\\end{document}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "references.bib").write_text(
+        "\n".join(
+            f"@misc{{ref{i}, title={{Reference {i}}}, year={{2026}}}}"
+            for i in range(1, 25)
+        ),
+        encoding="utf-8",
+    )
+
+    errors = mod._validate_citation_contract(tex, min_cited_refs=20)
+    assert any("at least 20 cited references" in error for error in errors)
+
+    tex.write_text(
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "\\section{Introduction} "
+        + " ".join(f"\\cite{{ref{i}}}" for i in range(1, 21))
+        + " \\cite{missing_ref}.\n"
+        "\\bibliography{references}\n"
+        "\\end{document}\n",
+        encoding="utf-8",
+    )
+    errors = mod._validate_citation_contract(tex, min_cited_refs=20)
+    assert any("undefined citation keys: missing_ref" in error for error in errors)
+
+    tex.write_text(
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "\\section{Introduction} "
+        + " ".join(f"\\cite{{ref{i}}}" for i in range(1, 21))
+        + ".\n"
+        "\\bibliography{references}\n"
+        "\\end{document}\n",
+        encoding="utf-8",
+    )
+    assert mod._validate_citation_contract(tex, min_cited_refs=20) == []
+
+
+def test_latex_compile_parses_minimum_page_contract() -> None:
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    script = BUNDLED / "latex-compile" / "scripts" / "compile.py"
+    spec = spec_from_file_location("latex_compile_script", script)
+    assert spec is not None and spec.loader is not None
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    short_log = "Output written on paper.pdf (9 pages, 12345 bytes)."
+    long_log = "Output written on paper.pdf (11 pages, 67890 bytes)."
+    assert mod._validate_page_contract(short_log, min_pages=10) == [
+        "paper must be at least 10 pages; compiled PDF has 9 pages"
+    ]
+    assert mod._validate_page_contract(long_log, min_pages=10) == []

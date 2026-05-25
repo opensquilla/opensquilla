@@ -1618,6 +1618,9 @@ class Agent:
                     assembled_text,
                     [tc.tool_name for tc in tool_calls if tc.synthetic_from_text],
                 )
+                tool_calls = [
+                    self._coerce_meta_skill_view_tool_call(tc) for tc in tool_calls
+                ]
                 if visible_text:
                     final_text_parts.append(visible_text)
 
@@ -2509,6 +2512,57 @@ class Agent:
                 content=f"Tool '{tc.tool_name}' raised: {exc}",
                 is_error=True,
             )
+
+    def _coerce_meta_skill_view_tool_call(self, tc: ToolCall) -> ToolCall:
+        """Treat skill_view(name=<meta-skill>) as meta_invoke.
+
+        The skills prompt tells models to use meta_invoke for kind="meta",
+        but some models still read the meta SKILL.md first. Letting that
+        proceed as a plain skill_view silently bypasses the orchestrator.
+        """
+        if tc.tool_name != "skill_view":
+            return tc
+        name = tc.arguments.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return tc
+        file_path = tc.arguments.get("file_path")
+        if file_path not in (None, "", "SKILL.md", "./SKILL.md"):
+            return tc
+
+        metadata = self.config.metadata or {}
+        skill_loader = metadata.get("skill_loader")
+        if skill_loader is None:
+            return tc
+
+        try:
+            skill_spec = skill_loader.get_by_name(name)
+        except Exception as exc:  # noqa: BLE001 - fail open to normal skill_view
+            structlog.get_logger("opensquilla.engine.agent").warning(
+                "agent.meta_skill_view_coerce_failed",
+                skill=name,
+                error=str(exc),
+            )
+            return tc
+
+        if (
+            skill_spec is None
+            or getattr(skill_spec, "kind", "skill") != "meta"
+            or getattr(skill_spec, "disable_model_invocation", False)
+        ):
+            return tc
+
+        structlog.get_logger("opensquilla.engine.agent").info(
+            "agent.meta_skill_view_coerced",
+            skill=name,
+            tool_use_id=tc.tool_use_id,
+        )
+        return ToolCall(
+            tool_use_id=tc.tool_use_id,
+            tool_name="meta_invoke",
+            arguments={"name": name},
+            synthetic_from_text=tc.synthetic_from_text,
+            origin_trace=tc.origin_trace,
+        )
 
     # ------------------------------------------------------------------
     # meta_invoke streaming dispatch (Task 5)

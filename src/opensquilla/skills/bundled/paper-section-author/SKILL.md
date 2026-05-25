@@ -16,8 +16,10 @@ You are drafting a single section of a research paper as a LaTeX fragment.
   `discussion`. Each section has a fixed convention — follow it.
 - `outline`: the full 5-section outline from `paper-outline-author`.
   Use the line that matches your section as your prompt.
-- `extras` (may be absent): figure path, results CSV preview, BibTeX keys,
-  topic phrase. Cite figures with `\ref{fig:1}`, cite refs with `\cite{ref1}`.
+- `cite_keys_hint`: available BibTeX entries and citation keys. Cite only
+  keys that appear here, using `\cite{ref1}` style.
+- `extras` (may be absent): figure path, results CSV preview, and topic
+  phrase. Cite figures with `\ref{fig:1}`.
 
 ## Output contract
 
@@ -26,25 +28,27 @@ section starts with the appropriate environment:
 
 | section       | opener                                   | target length    |
 |---------------|------------------------------------------|------------------|
-| abstract      | `\begin{abstract}` ... `\end{abstract}`  | 180-280 words    |
-| introduction  | `\section{Introduction}`                 | 450-650 words    |
-| method        | `\section{Method}`                       | 500-750 words    |
-| results       | `\section{Results}`                      | 450-650 words    |
-| discussion    | `\section{Discussion}`                   | 400-600 words    |
+| abstract      | `\begin{abstract}` ... `\end{abstract}`  | 250-350 words    |
+| introduction  | `\section{Introduction}`                 | 1600-1900 words  |
+| method        | `\section{Method}`                       | 1800-2200 words  |
+| results       | `\section{Results}`                      | 1400-1800 words  |
+| discussion    | `\section{Discussion}`                   | 1400-1800 words  |
 
 ### Structure expectations
 
-- **Introduction**: 3-4 paragraphs covering (1) the problem and why it matters, (2) what prior work has done (cite at least 2 refs), (3) the gap you're addressing, (4) a one-paragraph summary of contributions.
-- **Method**: at least 3 paragraphs. Use a `\subsection{Setup}` and a `\subsection{Algorithm}` (or similar) to organise sub-topics. Describe assumptions, the procedure, and how parameters are chosen. Reference the experimental setup precisely.
-- **Results**: at least 2 paragraphs. Include the required `\begin{figure}` block (see below). Discuss quantitative findings, what trends are visible, and at least one statement of comparison against the baseline.
-- **Discussion**: 2-3 paragraphs covering limitations, threats to validity, and future directions. End with a one-sentence takeaway.
+- **Introduction**: 7-9 paragraphs covering (1) the problem and why it matters, (2) at least three prior-work clusters, (3) the gap you're addressing, (4) contributions, (5) paper roadmap. Use at least 6 distinct citation keys.
+- **Method**: 8-10 paragraphs. Use `\subsection{Setup}`, `\subsection{Algorithm}`, `\subsection{Instrumentation}`, and `\subsection{Baselines}` (or equivalent). Describe assumptions, procedure, parameter choices, data collection, and evaluation protocol. Use at least 6 distinct citation keys.
+- **Results**: 6-8 paragraphs. Include the required `\begin{figure}` block (see below). Discuss quantitative findings, visible trends, baseline comparison, sensitivity, and failure cases. Use at least 4 distinct citation keys.
+- **Discussion**: 6-8 paragraphs covering interpretation, limitations, threats to validity, deployment implications, and future directions. End with a one-sentence takeaway. Use at least 4 distinct citation keys.
 - **Abstract**: a single dense paragraph (no `\subsection`s), 4-6 sentences covering problem → approach → key result → significance.
 
 ### Hard rules
 
+- The complete paper must compile to 10+ compiled pages and use at least 20 distinct citation keys.
 - Use `\cite{refN}` whenever you make a factual or comparative claim that
-  could plausibly trace to a reference. Use 2-4 cites total per non-abstract
-  section. Do NOT invent ref keys; only use the keys provided in `extras`.
+  could plausibly trace to a reference. Across all non-abstract sections,
+  use at least 20 distinct citation keys when available. Do NOT invent ref
+  keys; only use keys provided in `cite_keys_hint`.
 - In `results`, include `\begin{figure}[t] \centering \includegraphics[width=0.7\linewidth]{figure_1.pdf} \caption{<one descriptive sentence>} \label{fig:1} \end{figure}` and reference it via `\ref{fig:1}` in the prose.
 - LaTeX-escape any literal `%`, `&`, `_`, `#`, `$` that appear in your prose.
 - Prefer concrete sentences over hedged generalities. Avoid filler like

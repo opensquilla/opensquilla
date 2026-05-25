@@ -929,7 +929,7 @@ const CronView = (() => {
     const eyebrow = _el.querySelector('#cron-panel-eyebrow');
     const title = _el.querySelector('#cron-panel-title');
     eyebrow.textContent = job ? 'Edit schedule' : 'New schedule';
-    title.textContent = job ? (job.name || job.id) : 'Create a job';
+    title.textContent = job ? 'Edit Schedule' : 'Create a job';
 
     const tpl = template || {};
     const name = job ? (job.name || '') : (tpl.name || '');

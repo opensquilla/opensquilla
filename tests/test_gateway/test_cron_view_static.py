@@ -30,6 +30,14 @@ def test_editing_cron_jobs_prefers_origin_before_target_session_key() -> None:
     assert origin_idx < target_idx < session_idx
 
 
+def test_editing_cron_jobs_uses_stable_panel_title_for_long_names() -> None:
+    source = CRON_JS.read_text(encoding="utf-8")
+
+    assert "title.textContent = job ? 'Edit Schedule' : 'Create a job';" in source
+    assert "title.textContent = job ? (job.name || job.id) : 'Create a job';" not in source
+    assert "_el.querySelector('#cp-name').value = name;" in source
+
+
 def test_agent_turn_session_target_does_not_remain_main_after_mode_switch() -> None:
     source = CRON_JS.read_text(encoding="utf-8")
 

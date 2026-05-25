@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -1106,5 +1107,7 @@ def test_top_level_agent_command_rejects_invalid_length_capped_continuations() -
     )
 
     assert result.exit_code != 0
-    assert "Invalid value for '--length-capped-continuations'" in result.output
-    assert "x>=1" in result.output
+    output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", result.output)
+    assert "Invalid value" in output
+    assert "--length-capped-continuations" in output
+    assert "x>=1" in output

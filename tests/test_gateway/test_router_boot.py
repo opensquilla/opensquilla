@@ -37,12 +37,12 @@ def test_gateway_boot_bridges_compaction_notifications_to_session_stream() -> No
     assert "_compaction_listener_remove" in source
 
 
-def test_task_runtime_default_hard_deadline_exceeds_agent_runtime_timeout() -> None:
+def test_task_runtime_default_hard_deadline_is_unbounded() -> None:
     config = GatewayConfig()
 
     deadline = _task_runtime_turn_hard_deadline_s(config)
 
-    assert deadline == 930.0
+    assert deadline is None
 
 
 def test_task_runtime_hard_deadline_honors_explicit_config() -> None:

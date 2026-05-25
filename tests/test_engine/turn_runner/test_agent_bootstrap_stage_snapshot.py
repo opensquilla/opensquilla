@@ -260,7 +260,7 @@ def _patch_session_id(runner, session_id):
 def _patch_budget_resolvers(runner, case):
     if case.get("max_iterations_raises"):
         def _raise_max_iter(self, session_key, max_iterations):  # noqa: ARG001, ARG002
-            raise ValueError("max_iterations must be an integer >= 1")
+            raise ValueError("max_iterations must be an integer >= 0")
 
         runner._resolve_agent_max_iterations = _raise_max_iter.__get__(
             runner, TurnRunner
@@ -450,9 +450,9 @@ _CORPUS: list[tuple[str, dict[str, Any]]] = [
     _case("private_memory_disabled", private_memory_allowed_value=False),
     _case("snapshot_already_exists", snapshot_pre_existing=True),
     _case(
-        "max_iterations_zero_raises",
+        "max_iterations_zero_unbounded",
         per_call_max_iterations=0,
-        max_iterations_raises=True,
+        max_iterations=0,
     ),
 ]
 

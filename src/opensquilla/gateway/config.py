@@ -1431,8 +1431,8 @@ class GatewayConfig(BaseSettings):
     # Maximum provider-level retries for transient errors. ``None`` means
     # use the AgentConfig default.
     agent_max_provider_retries: int | None = None
-    # Agent model/tool loop budget for a single turn.
-    agent_max_iterations: int = Field(default=100, ge=1)
+    # Agent model/tool loop budget for a single turn. 0 disables this cap.
+    agent_max_iterations: int = Field(default=0, ge=0)
     # Provider request timeout (single LLM HTTP/streaming request).
     llm_request_timeout_seconds: float = 120.0
     # Agent stream liveness events. The heartbeat interval only affects

@@ -202,15 +202,32 @@ async def _artifact_tool(call: Any) -> ToolResult:
     )
 
 
-def test_agent_iteration_defaults_are_raised_to_100() -> None:
-    assert AgentConfig().max_iterations == 100
-    assert SubagentSpec(task="check").max_iterations == 100
+def test_agent_iteration_defaults_are_unbounded() -> None:
+    assert AgentConfig().max_iterations == 0
+    assert SubagentSpec(task="check").max_iterations == 0
     assert AgentConfig().max_turn_llm_calls == 0
     assert AgentConfig().max_turn_input_tokens == 0
     assert AgentConfig().max_turn_output_tokens == 0
     assert AgentConfig().max_turn_billed_cost_usd == 0.0
     assert AgentConfig().max_turn_tool_errors == 0
     assert AgentConfig().length_capped_continuations == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_default_max_iterations_allows_long_tool_loop_to_finish() -> None:
+    provider = _LoopingToolProvider(final_on_call=101)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(),
+        tool_definitions=[_echo_definition()],
+        tool_handler=_echo_tool,
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 101
+    assert not any(event.kind == "error" and event.code == "max_iterations" for event in events)
+    assert any(event.kind == "done" and event.text == "done" for event in events)
 
 
 @pytest.mark.asyncio
@@ -226,7 +243,14 @@ async def test_agent_reports_max_iterations_when_tool_loop_needs_another_iterati
     events = [event async for event in agent.run_turn("hello")]
 
     assert len(provider.calls) == 1
-    assert any(event.kind == "error" and event.code == "max_iterations" for event in events)
+    errors = [
+        event
+        for event in events
+        if event.kind == "error" and event.code == "max_iterations"
+    ]
+    assert errors
+    assert "from agent_config" in errors[0].message
+    assert "AgentConfig.max_iterations=0" in errors[0].message
     assert agent._history == []
 
 

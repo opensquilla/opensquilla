@@ -515,18 +515,9 @@ def _task_runtime_max_pending_per_session(config: GatewayConfig) -> int:
 
 def _task_runtime_turn_hard_deadline_s(config: GatewayConfig) -> float | None:
     configured = getattr(config.task_runtime, "turn_hard_deadline_s", None)
-    if configured is not None:
-        return float(configured)
-    runtime_timeout = getattr(config, "agent_runtime_timeout_seconds", None)
-    if runtime_timeout is None:
-        runtime_timeout = 900.0
-    try:
-        runtime_timeout_value = float(runtime_timeout)
-    except (TypeError, ValueError):
-        runtime_timeout_value = 900.0
-    if runtime_timeout_value <= 0:
+    if configured is None:
         return None
-    return runtime_timeout_value + 30.0
+    return float(configured)
 
 
 def _task_runtime_envelope_owner(envelope: Any) -> bool:

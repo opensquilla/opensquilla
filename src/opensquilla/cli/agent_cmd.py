@@ -128,8 +128,8 @@ async def run_agent_once(
     from opensquilla.tools.types import InteractionMode
 
     agent_id = normalize_agent_id(agent_id)
-    if max_iterations is not None and max_iterations < 1:
-        raise ValueError("max_iterations must be an integer >= 1")
+    if max_iterations is not None and max_iterations < 0:
+        raise ValueError("max_iterations must be an integer >= 0")
     cfg = config or GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
     permissions_profile = _resolve_permissions_profile(permissions, cfg)
     elevated = permissions_profile if permissions_profile in {"on", "bypass", "full"} else None
@@ -666,8 +666,8 @@ def run_agent_command(
     max_iterations: int | None = typer.Option(
         None,
         "--max-iterations",
-        min=1,
-        help="Maximum agent model/tool loop iterations",
+        min=0,
+        help="Maximum agent model/tool loop iterations (0=unlimited)",
     ),
     iteration_timeout_seconds: float | None = typer.Option(
         None,

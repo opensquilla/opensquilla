@@ -667,8 +667,8 @@ def agent(
     max_iterations: int | None = typer.Option(
         None,
         "--max-iterations",
-        min=1,
-        help="Maximum agent model/tool loop iterations",
+        min=0,
+        help="Maximum agent model/tool loop iterations (0=unlimited)",
     ),
     iteration_timeout_seconds: float | None = typer.Option(
         None,

@@ -338,11 +338,19 @@ class _TurnRunnerTimeoutBudgetAdapter(TimeoutBudgetPort):
             if timeout is not None
             else self._runner._resolve_agent_runtime_timeout(session_key)
         )
+        self._runner._last_agent_max_iterations_source = "unknown"
+        resolved_max_iterations = self._runner._resolve_agent_max_iterations(
+            session_key, max_iterations
+        )
+        max_iterations_source = getattr(
+            self._runner,
+            "_last_agent_max_iterations_source",
+            "unknown",
+        )
         return _ResolvedBudgets(
             runtime_timeout=runtime_timeout,
-            max_iterations=self._runner._resolve_agent_max_iterations(
-                session_key, max_iterations
-            ),
+            max_iterations=resolved_max_iterations,
+            max_iterations_source=max_iterations_source,
             iteration_timeout=self._runner._resolve_agent_iteration_timeout(
                 session_key, iteration_timeout
             ),

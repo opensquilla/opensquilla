@@ -1685,8 +1685,8 @@ class Agent:
     ) -> AsyncIterator[AgentEvent]:
         """Run one agent turn, yielding AgentEvents.
 
-        Explicit state machine — no recursion. Tool loop iterates up to
-        config.max_iterations times.
+        Explicit state machine — no recursion. Tool loop iterates until
+        the model finishes, unless config.max_iterations is a positive cap.
         """
         async for event in self._turn_generator(message, extra_messages, semantic_message):
             yield event
@@ -1969,13 +1969,52 @@ class Agent:
 
         try:
             while True:
-                if iterations >= self.config.max_iterations:
+                if (
+                    self.config.max_iterations > 0
+                    and iterations >= self.config.max_iterations
+                ):
+                    max_iterations_source = str(
+                        self.config.metadata.get(
+                            "agent_max_iterations_source", "agent_config"
+                        )
+                    )
+                    if max_iterations_source == "session config":
+                        max_iterations_guidance = (
+                            "Set session agent_max_iterations=0 for unlimited tasks."
+                        )
+                    elif max_iterations_source == "gateway config":
+                        max_iterations_guidance = (
+                            "Set gateway agent_max_iterations=0 for unlimited tasks."
+                        )
+                    elif max_iterations_source.startswith("env "):
+                        max_iterations_guidance = (
+                            "Set OPENSQUILLA_AGENT_MAX_ITERATIONS=0 "
+                            "for unlimited tasks."
+                        )
+                    elif max_iterations_source == "explicit argument":
+                        max_iterations_guidance = (
+                            "Pass --max-iterations 0 or max_iterations=0 "
+                            "for unlimited tasks."
+                        )
+                    else:
+                        max_iterations_guidance = (
+                            "Set AgentConfig.max_iterations=0 for unlimited tasks."
+                        )
+                    self._write_turn_call_log(
+                        "turn_policy_decision",
+                        action="stop",
+                        reason="max_iterations",
+                        code="max_iterations",
+                        iteration=iterations,
+                        max_iterations=self.config.max_iterations,
+                        max_iterations_source=max_iterations_source,
+                    )
                     yield self._transition(AgentState.ERROR)
                     terminal_error = ErrorEvent(
                         message=(
-                            f"Reached max_iterations={self.config.max_iterations}. "
-                            "Increase --max-iterations or "
-                            "OPENSQUILLA_AGENT_MAX_ITERATIONS for longer tasks."
+                            f"Reached max_iterations={self.config.max_iterations} "
+                            f"from {max_iterations_source}. "
+                            f"{max_iterations_guidance}"
                         ),
                         code="max_iterations",
                     )

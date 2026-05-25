@@ -26,7 +26,7 @@ class SubagentSpec:
     label: str = ""
     model_id: str | None = None
     timeout: float = 300.0
-    max_iterations: int = 100
+    max_iterations: int = 0
     workspace_dir: str | None = None
     extra_context: dict[str, Any] = field(default_factory=dict)
 
@@ -218,7 +218,7 @@ class SubagentManager:
 
         async def _run_with_timeout() -> str:
             if spec.timeout <= 0:
-                return await _run()  # no external timeout; rely on max_iterations
+                return await _run()  # no external timeout; rely on configured agent budget
             try:
                 return await asyncio.wait_for(_run(), timeout=spec.timeout)
             except TimeoutError:

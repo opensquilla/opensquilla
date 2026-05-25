@@ -40,6 +40,7 @@ def _default_budgets() -> _ResolvedBudgets:
     return _ResolvedBudgets(
         runtime_timeout=60.0,
         max_iterations=10,
+        max_iterations_source="test budget",
         iteration_timeout=30.0,
         tool_timeout=20.0,
         request_timeout=120.0,
@@ -259,6 +260,7 @@ async def test_case01_success_all_defaults() -> None:
     o = out.output
     assert o.effective_runtime_timeout == 60.0
     assert o.effective_max_iterations == 10
+    assert o.effective_max_iterations_source == "test budget"
     assert o.effective_iteration_timeout == 30.0
     assert o.effective_tool_timeout == 20.0
     assert o.effective_request_timeout == 120.0
@@ -272,6 +274,8 @@ async def test_case01_success_all_defaults() -> None:
     assert o.agent_config.context_window_tokens == 200_000
     assert o.agent_config.max_history_turns == 0
     assert o.agent_config.length_capped_continuations == 1
+    assert o.agent_config.metadata["agent_max_iterations"] == 10
+    assert o.agent_config.metadata["agent_max_iterations_source"] == "test budget"
 
 
 @pytest.mark.asyncio
@@ -318,6 +322,7 @@ async def test_case04_session_max_iterations_threaded() -> None:
     inp = _make_input(max_iterations=5)
     out = await stage.run(inp)
     assert out.output.effective_max_iterations == 5
+    assert out.output.agent_config.metadata["agent_max_iterations"] == 5
 
 
 @pytest.mark.asyncio
@@ -444,13 +449,25 @@ async def test_case10_snapshot_already_exists() -> None:
 
 
 @pytest.mark.asyncio
-async def test_case11_max_iterations_zero_raises() -> None:
-    """When the budget resolver raises, the exception propagates verbatim."""
-    budgets = _RecordingTimeoutBudget(raises=ValueError)
+async def test_case11_max_iterations_zero_threads_as_unlimited() -> None:
+    budgets = _RecordingTimeoutBudget(
+        budgets=replace(
+            _default_budgets(),
+            max_iterations=0,
+            max_iterations_source="explicit argument",
+        )
+    )
     stage = _make_stage(budgets=budgets)
     inp = _make_input(max_iterations=0)
-    with pytest.raises(ValueError, match="recording timeout budget boom"):
-        await stage.run(inp)
+    out = await stage.run(inp)
+    assert out.output.effective_max_iterations == 0
+    assert out.output.effective_max_iterations_source == "explicit argument"
+    assert out.output.agent_config.max_iterations == 0
+    assert out.output.agent_config.metadata["agent_max_iterations"] == 0
+    assert (
+        out.output.agent_config.metadata["agent_max_iterations_source"]
+        == "explicit argument"
+    )
 
 
 @pytest.mark.asyncio
@@ -502,7 +519,10 @@ async def test_turn_metadata_threaded_into_agent_config() -> None:
     out = await stage.run(inp)
     assert out.output.agent_config.cache_mode == "automatic"
     assert out.output.agent_config.skills_context_prompt == "SKILLS"
+    assert out.output.agent_config.metadata is turn.metadata
     assert out.output.agent_config.metadata.get("routed_tier") == "premium"
+    assert turn.metadata["agent_max_iterations"] == 10
+    assert turn.metadata["agent_max_iterations_source"] == "test budget"
 
 
 def test_stage_name_constant() -> None:

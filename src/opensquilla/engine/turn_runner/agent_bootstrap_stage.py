@@ -37,10 +37,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class _ResolvedBudgets:
-    """Six-field frozen value returned by ``TimeoutBudgetPort.resolve_budgets``."""
+    """Frozen value returned by ``TimeoutBudgetPort.resolve_budgets``."""
 
     runtime_timeout: float
     max_iterations: int
+    max_iterations_source: str
     iteration_timeout: float
     tool_timeout: float
     request_timeout: float
@@ -320,6 +321,7 @@ class AgentBootstrapStageOutput:
     agent_config: AgentConfig
     effective_runtime_timeout: float
     effective_max_iterations: int
+    effective_max_iterations_source: str
     effective_iteration_timeout: float
     effective_tool_timeout: float
     effective_request_timeout: float
@@ -407,6 +409,9 @@ class AgentBootstrapStage:
             session_id_for_log=inp.session_id_for_log,
             turn=inp.turn,
         )
+        agent_metadata = inp.turn.metadata
+        agent_metadata["agent_max_iterations"] = budgets.max_iterations
+        agent_metadata["agent_max_iterations_source"] = budgets.max_iterations_source
 
         # 4. Construct AgentConfig (declarative, single call site)
         agent_config = AgentConfig(
@@ -469,7 +474,7 @@ class AgentBootstrapStage:
             tool_result_store_retention_seconds=(
                 aux.tool_result_store_retention_seconds
             ),
-            metadata=inp.turn.metadata,
+            metadata=agent_metadata,
         )
 
         # 5. Resolve tool-result summarizer provider only for summarize mode.
@@ -506,6 +511,7 @@ class AgentBootstrapStage:
                 agent_config=agent_config,
                 effective_runtime_timeout=budgets.runtime_timeout,
                 effective_max_iterations=budgets.max_iterations,
+                effective_max_iterations_source=budgets.max_iterations_source,
                 effective_iteration_timeout=budgets.iteration_timeout,
                 effective_tool_timeout=budgets.tool_timeout,
                 effective_request_timeout=budgets.request_timeout,

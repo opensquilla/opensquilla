@@ -1269,6 +1269,7 @@ class TurnRunner:
         self._skill_loader = skill_loader
         self._usage_tracker = usage_tracker
         self._config = config
+        self._last_agent_max_iterations_source = "AgentConfig default"
         self._memory_sync_managers = memory_sync_managers
         self._model_catalog = model_catalog
         self._memory_retrievers = memory_retrievers
@@ -1978,6 +1979,7 @@ class TurnRunner:
             # frame-walking probe. Do not remove.
             effective_runtime_timeout = ab_out.effective_runtime_timeout  # noqa: F841
             effective_max_iterations = ab_out.effective_max_iterations  # noqa: F841
+            effective_max_iterations_source = ab_out.effective_max_iterations_source  # noqa: F841
             effective_iteration_timeout = ab_out.effective_iteration_timeout  # noqa: F841
             effective_tool_timeout = ab_out.effective_tool_timeout  # noqa: F841
             effective_agent_request_timeout = ab_out.effective_request_timeout  # noqa: F841
@@ -1985,6 +1987,14 @@ class TurnRunner:
             model_caps = ab_out.model_capabilities  # noqa: F841
             private_memory_allowed = ab_out.private_memory_allowed
             sync_manager = ab_out.sync_manager
+            if turn_call_logger is not None:
+                turn_call_logger.write(
+                    "agent_runtime_budget",
+                    {
+                        "max_iterations": effective_max_iterations,
+                        "max_iterations_source": effective_max_iterations_source,
+                    },
+                )
 
             # 6. Compaction (t3 + preflight) + history load + request-context
             # prepend. CompactionAndHistoryStage owns the four-call sequence
@@ -2648,9 +2658,10 @@ class TurnRunner:
         """Resolve model/tool loop budget for this turn."""
 
         if explicit is not None:
-            if self._non_bool_int(explicit) and explicit >= 1:
+            if self._non_bool_int(explicit) and explicit >= 0:
+                self._last_agent_max_iterations_source = "explicit argument"
                 return int(explicit)
-            raise ValueError("max_iterations must be an integer >= 1")
+            raise ValueError("max_iterations must be an integer >= 0")
 
         sm = self._session_manager
         if sm is not None and hasattr(sm, "get_session_config"):
@@ -2658,7 +2669,8 @@ class TurnRunner:
                 session_cfg = sm.get_session_config(session_key)
                 if session_cfg is not None:
                     value = getattr(session_cfg, "agent_max_iterations", None)
-                    if self._non_bool_int(value) and value >= 1:
+                    if self._non_bool_int(value) and value >= 0:
+                        self._last_agent_max_iterations_source = "session config"
                         return int(value)
                     if value is not None:
                         log.warning(
@@ -2677,12 +2689,16 @@ class TurnRunner:
             except ValueError:
                 log.warning("turn_runner.invalid_agent_max_iterations", source="env", raw=raw)
             else:
-                if value >= 1:
+                if value >= 0:
+                    self._last_agent_max_iterations_source = (
+                        "env OPENSQUILLA_AGENT_MAX_ITERATIONS"
+                    )
                     return value
                 log.warning("turn_runner.invalid_agent_max_iterations", source="env", value=value)
 
         value = getattr(self._config, "agent_max_iterations", None)
-        if self._non_bool_int(value) and value >= 1:
+        if self._non_bool_int(value) and value >= 0:
+            self._last_agent_max_iterations_source = "gateway config"
             return int(value)
         if value is not None:
             log.warning(
@@ -2691,6 +2707,7 @@ class TurnRunner:
                 value=value,
             )
 
+        self._last_agent_max_iterations_source = "AgentConfig default"
         return AgentConfig().max_iterations
 
     def _resolve_agent_iteration_timeout(

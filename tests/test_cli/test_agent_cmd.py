@@ -467,6 +467,36 @@ async def test_run_agent_once_forwards_max_iterations(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_once_forwards_zero_max_iterations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeTurnRunner:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def run(self, message: str, session_key: str, **kwargs: Any):
+            captured["max_iterations"] = kwargs.get("max_iterations")
+            yield DoneEvent(text="ok", model=kwargs.get("model") or "")
+
+    async def fake_build_services(*, config: GatewayConfig, **kwargs: Any) -> _FakeServices:
+        return _FakeServices(config)
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.build_services", fake_build_services)
+
+    await run_agent_once(
+        message="hello",
+        agent_id="main",
+        config=GatewayConfig(),
+        max_iterations=0,
+    )
+
+    assert captured["max_iterations"] == 0
+
+
+@pytest.mark.asyncio
 async def test_run_agent_once_defaults_to_unattended_interaction_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -809,7 +839,7 @@ async def test_run_agent_once_rejects_invalid_max_iterations() -> None:
             message="hello",
             agent_id="main",
             config=GatewayConfig(),
-            max_iterations=0,
+            max_iterations=-1,
         )
 
 

@@ -229,7 +229,9 @@ _CHARS_PER_TOKEN = 4
 
 @dataclass
 class AgentConfig:
-    max_iterations: int = 100
+    # Model/tool loop budget. 0 = unlimited; explicit positive values are
+    # bounded operator budgets for CI, benchmarks, and constrained runs.
+    max_iterations: int = 0
     # Total turn wall-clock budget (seconds; 0 = disabled)
     timeout: float = 300.0
     # Per-iteration timeout: one LLM call + its tool executions

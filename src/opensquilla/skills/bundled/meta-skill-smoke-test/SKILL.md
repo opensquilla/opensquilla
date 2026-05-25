@@ -1,6 +1,8 @@
 ---
 name: meta-skill-smoke-test
 description: "Internal tool (not user-invocable). Called by meta-skill-creator as a DAG step (kind: agent) to run G3 (positive smoke) and G4 (negative smoke) gates against a candidate meta-skill SKILL.md. Cross-vendor: fixture-generation LLM != classifier LLM. Returns JSON."
+user-invocable: false
+disable-model-invocation: true
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

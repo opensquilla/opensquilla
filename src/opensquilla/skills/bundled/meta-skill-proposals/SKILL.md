@@ -1,6 +1,8 @@
 ---
 name: meta-skill-proposals
 description: "Internal tool (not user-invocable). Called by meta-skill-creator's persist step and by `opensquilla meta accept` CLI (Phase 2) to manage `~/.opensquilla/proposals/`: write_proposal / list / accept. Returns JSON."
+user-invocable: false
+disable-model-invocation: true
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

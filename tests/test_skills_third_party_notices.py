@@ -34,7 +34,6 @@ ORIGINALS = {
     "meta-skill-linter",
     "meta-skill-proposals",
     "meta-skill-smoke-test",
-    "meta-self-improving-skill-factory",
     "meta-spreadsheet-insight",
     "meta-stack-trace-investigator",
     "meta-travel-planner",

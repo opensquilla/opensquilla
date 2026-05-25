@@ -1,4 +1,4 @@
-"""Trigger collision: creator vs meta-self-improving-skill-factory vs skill-creator."""
+"""Trigger collision: meta-skill creator vs generic skill creation prompts."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ BUNDLED = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills"
 CREATOR_TRIGGERS = [
     "新增 meta 技能", "组合现有 skill 成 meta-skill", "synthesize meta-skill", "compose meta-skill",
 ]
-FACTORY_TRIGGERS = ["新增 skill", "create skill", "skill factory", "author a skill"]
+GENERIC_SKILL_TRIGGERS = ["新增 skill", "create skill", "skill factory", "author a skill"]
 
 
 @pytest.fixture
@@ -45,16 +45,14 @@ def test_creator_triggers_resolve_to_creator(loader) -> None:
         assert _find_first_match(loader, trig) == "meta-skill-creator", f"trigger {trig!r}"
 
 
-def test_factory_triggers_still_resolve_to_factory(loader) -> None:
-    for trig in FACTORY_TRIGGERS:
-        match = _find_first_match(loader, trig)
-        assert match == "meta-self-improving-skill-factory", f"trigger {trig!r} got {match!r}"
+def test_generic_skill_triggers_do_not_resolve_to_meta_factory(loader) -> None:
+    for trig in GENERIC_SKILL_TRIGGERS:
+        assert _find_first_match(loader, trig) is None, f"trigger {trig!r}"
 
 
-def test_factory_wins_on_construct_ambiguous_phrase(loader) -> None:
-    """Intentional tie-break: factory (35) > creator (30)."""
-    expected = "meta-self-improving-skill-factory"
-    assert _find_first_match(loader, "create skill that composes a new meta-skill") == expected
+def test_meta_skill_creator_wins_when_meta_skill_intent_is_explicit(loader) -> None:
+    expected = "meta-skill-creator"
+    assert _find_first_match(loader, "create skill and compose meta-skill") == expected
 
 
 def test_ascii_trigger_does_not_match_meta_skill_explanation_question() -> None:

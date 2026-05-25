@@ -44,10 +44,6 @@ DEFAULTS = {
     "meta-pre-commit-quality-gate",
     "meta-security-review-bundle",
     "meta-skill-creator",
-    "meta-skill-linter",
-    "meta-skill-proposals",
-    "meta-skill-smoke-test",
-    "meta-self-improving-skill-factory",
     "meta-spreadsheet-insight",
     "meta-stack-trace-investigator",
     "meta-travel-planner",
@@ -72,6 +68,11 @@ DEFAULTS = {
     "tmux",
     "weather",
     "xlsx",
+}
+INTERNAL_HELPERS = {
+    "meta-skill-linter",
+    "meta-skill-proposals",
+    "meta-skill-smoke-test",
 }
 
 
@@ -125,7 +126,7 @@ def test_bundled_directory_only_contains_retained_default_skills() -> None:
         if path.is_dir() and (path / "SKILL.md").is_file()
     }
 
-    assert bundled_names == DEFAULTS
+    assert bundled_names == DEFAULTS | INTERNAL_HELPERS
 
 
 def test_skill_filter_defaults_are_release_safe(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,7 +164,27 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
     prompt = ctx.system_prompt[1]
     for name in DEFAULTS:
         assert f"<name>{name}</name>" in prompt
+    for name in INTERNAL_HELPERS:
+        assert f"<name>{name}</name>" not in prompt
     assert "<name>healthcheck</name>" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_internal_meta_helpers_stay_loadable_but_hidden_from_model(
+    tmp_path: Path,
+) -> None:
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
+
+    ctx = await filter_skills(_ctx(loader))
+    prompt = ctx.system_prompt[1]
+
+    for name in INTERNAL_HELPERS:
+        skill = loader.get_by_name(name)
+        assert skill is not None
+        assert skill.user_invocable is False
+        assert skill.disable_model_invocation is True
+        assert name not in {s.name for s in loader.get_user_invocable()}
+        assert f"<name>{name}</name>" not in prompt
 
 
 @pytest.mark.asyncio

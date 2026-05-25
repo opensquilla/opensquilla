@@ -184,7 +184,7 @@ async def _handle_skills_list(params: dict | None, ctx: RpcContext) -> dict[str,
         return {"skills": []}
 
     ctx_eligible = EligibilityContext.auto()
-    skills = loader.load_all()
+    skills = loader.get_user_invocable()
     return {
         "skills": [
             _skill_to_dict(skill, diagnose_eligibility(skill, ctx_eligible), ctx_eligible.os_name)

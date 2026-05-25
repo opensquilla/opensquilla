@@ -124,7 +124,7 @@ def _load_skill_rows() -> list[dict[str, Any]]:
     )
     ctx = EligibilityContext.auto()
     rows: list[dict[str, Any]] = []
-    for skill in sorted(loader.load_all(), key=lambda x: x.name):
+    for skill in sorted(loader.get_user_invocable(), key=lambda x: x.name):
         provenance = getattr(skill, "provenance", None)
         rows.append(
             {

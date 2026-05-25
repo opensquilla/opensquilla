@@ -182,9 +182,8 @@ def sanitize_session_messages(
 ) -> tuple[list[Message], SessionSanitizeResult]:
     """Return a provider-safe request view without mutating stored history.
 
-    The sanitizer only removes metadata from message/block envelopes. It does
-    not truncate or summarize tool result content; that remains the separate
-    ``tool_result_compression`` responsibility.
+    The sanitizer only removes metadata from message/block envelopes. Tool
+    result projection is handled separately by the agent request pipeline.
     """
 
     payload_chars_before = session_payload_chars(messages)

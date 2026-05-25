@@ -1,6 +1,6 @@
 # tokenjuice Backend Provenance
 
-This package contains OpenSquilla's built-in tokenjuice tool-result compression
+This package contains OpenSquilla's built-in tokenjuice tool-result projection
 backend.
 
 ## Upstream
@@ -13,7 +13,7 @@ backend.
 
 OpenSquilla does not depend on the upstream tokenjuice npm package at runtime.
 The Python reducer in this package is maintained by OpenSquilla and adapts the
-rule-driven reduction approach for OpenSquilla's tool-result compression path.
+rule-driven reduction approach for OpenSquilla's tool-result projection path.
 
 The bundled JSON reduction rules are derived from upstream tokenjuice rules and
 are redistributed under the upstream MIT license. The license text is included
@@ -29,4 +29,4 @@ When updating this backend or its bundled rules:
    upstream license or copyright change.
 3. Use synthetic fixtures for OpenSquilla tests; do not copy upstream fixtures
    unless their license/provenance is recorded explicitly.
-4. Run the tokenjuice compression tests and packaging checks before release.
+4. Run the tokenjuice projection tests and packaging checks before release.

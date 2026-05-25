@@ -1,4 +1,4 @@
-"""OpenSquilla-native tokenjuice compression backend."""
+"""OpenSquilla-native tokenjuice projection backend."""
 
 from .plugin import reduce_tool_result
 from .types import Reduction

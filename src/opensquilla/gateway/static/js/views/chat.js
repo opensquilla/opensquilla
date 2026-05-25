@@ -971,18 +971,13 @@ const ChatView = (() => {
             <button class="btn btn--icon btn--ghost" id="chat-btn-attach" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON">${icons.paperclip()}</button>
             <div class="chat-toolbar-wrap">
               <button type="button" class="btn btn--icon btn--ghost chat-toolbar-trigger" id="chat-toolbar-trigger"
-                      title="Run modes — tool compress, approvals, router"
+                      title="Run modes — approvals, router"
                       aria-label="Run modes"
                       aria-haspopup="dialog"
-                      aria-expanded="false">${_iconGear()}<span class="chat-toolbar-trigger-dots" aria-hidden="true"><i data-dot="bypass"></i><i data-dot="compress"></i><i data-dot="router"></i></span></button>
+                      aria-expanded="false">${_iconGear()}<span class="chat-toolbar-trigger-dots" aria-hidden="true"><i data-dot="bypass"></i><i data-dot="router"></i></span></button>
               <div class="chat-toolbar-popover hidden" id="chat-toolbar-popover" role="dialog" aria-label="Composer settings">
                 <div class="chat-toolbar-popover-arrow" aria-hidden="true"></div>
                 <div class="chat-toolbar-popover-inner" id="chat-toolbar">
-                  <div class="chat-toolbar-row">
-                    <span class="chat-toolbar-row-label">Tool Compress</span>
-                    <button class="chat-pill" id="pill-tool-compress"
-                            title="Cycle tool result handling: off, truncate, summarize, or tokenjuice">Tool Compress</button>
-                  </div>
                   <div class="chat-toolbar-row">
                     <span class="chat-toolbar-row-label">Approvals</span>
                     <button class="chat-pill chat-pill--danger" id="pill-elevated"
@@ -1086,25 +1081,6 @@ const ChatView = (() => {
     window.addEventListener('opensquilla:elevated-mode', elevatedListener);
     _unsubs.push(() => window.removeEventListener('opensquilla:elevated-mode', elevatedListener));
 
-    const toolCompressBtn = _el.querySelector('#pill-tool-compress');
-    if (toolCompressBtn) {
-      toolCompressBtn.addEventListener('click', async () => {
-        try {
-          const cfg = await _rpc.call('config.get');
-          const current = _resolveToolCompressMode(cfg?.agent_token_saving);
-          const mode = _nextToolCompressMode(current);
-          await _rpc.call('config.patch.safe', {
-            patches: {
-              'agent_token_saving.tool_result_compression_mode': mode,
-              'agent_token_saving.tool_result_compression_enabled': mode !== 'off'
-            }
-          });
-          _setToolCompressButton(toolCompressBtn, mode);
-          UI.toast('Tool result compression: ' + mode.toUpperCase(), 'info');
-        } catch (e) { UI.toast('Failed: ' + e.message, 'err'); }
-      });
-    }
-
     // Squilla Router toggle switch
     const routerToggle = _el.querySelector('#toggle-router');
     if (routerToggle) {
@@ -1133,13 +1109,6 @@ const ChatView = (() => {
     try {
       await _rpc.waitForConnection();
       const cfg = await _rpc.call('config.get');
-      const toolCompressBtn = _el?.querySelector('#pill-tool-compress');
-      if (toolCompressBtn) {
-        _setToolCompressButton(
-          toolCompressBtn,
-          _resolveToolCompressMode(cfg?.agent_token_saving)
-        );
-      }
       const routerEnabled = (cfg?.squilla_router?.enabled ?? false) && cfg?.squilla_router?.rollout_phase === 'full';
       const routerToggle = _el?.querySelector('#toggle-router');
       if (routerToggle) routerToggle.checked = routerEnabled;
@@ -1152,28 +1121,6 @@ const ChatView = (() => {
       // Load current session usage for the token widget (survives page refresh)
       await _loadCurrentSessionUsage();
     } catch { /* ignore */ }
-  }
-
-  function _resolveToolCompressMode(cfg) {
-    const mode = cfg?.tool_result_compression_mode;
-    if (mode === 'off' || mode === 'truncate' || mode === 'summarize' || mode === 'tokenjuice') return mode;
-    return (cfg?.tool_result_compression_enabled ?? true) ? 'truncate' : 'off';
-  }
-
-  function _nextToolCompressMode(mode) {
-    if (mode === 'off') return 'truncate';
-    if (mode === 'truncate') return 'summarize';
-    if (mode === 'summarize') return 'tokenjuice';
-    return 'off';
-  }
-
-  function _setToolCompressButton(btn, mode) {
-    const labels = { off: 'OFF', truncate: 'TRIM', summarize: 'SUMMARY', tokenjuice: 'TOKENJUICE' };
-    btn.textContent = labels[mode] || 'TRIM';
-    btn.classList.toggle('is-active', mode !== 'off');
-    btn.classList.toggle('chat-pill--summary', mode === 'summarize');
-    _toolbarState.toolCompress = mode;
-    _refreshToolbarTriggerGlow();
   }
 
   /* ── Session Chip ────────────────────────────────────────────────────── */
@@ -1610,18 +1557,15 @@ const ChatView = (() => {
 
   /* ── Composer Toolbar Popover (gear button) ────────────────────────── */
 
-  // Track non-default state on three controls so the gear glows accent only
-  // when at least one is set away from defaults: bypass on, tool-compress
-  // != truncate, OR router off.
+  // Track non-default state on controls so the gear glows accent only when
+  // at least one is set away from defaults: bypass on OR router off.
   let _toolbarState = {
     bypass: false,        // true when elevated mode is on
-    toolCompress: 'truncate', // 'off' | 'truncate' | 'summarize' | 'tokenjuice'
     router: true,         // false when router toggle is off
   };
 
   function _toolbarTriggerActive() {
     if (_toolbarState.bypass) return true;
-    if (_toolbarState.toolCompress !== 'truncate') return true;
     if (_toolbarState.router === false) return true;
     return false;
   }
@@ -1633,13 +1577,11 @@ const ChatView = (() => {
     // Per-toggle status dots — each lights independently so a glance at the
     // composer reveals which mode is non-default, not just that something is.
     const bypass = !!_toolbarState.bypass;
-    const compress = _toolbarState.toolCompress !== 'truncate';
     const routerOff = _toolbarState.router === false;
     trigger.classList.toggle('has-dot-bypass', bypass);
-    trigger.classList.toggle('has-dot-compress', compress);
     trigger.classList.toggle('has-dot-router', routerOff);
     // Bypass warning chip — only "Approvals bypassed" rises to a visible chip.
-    // Tool compress and router-off are non-default but not safety-critical.
+    // Router-off is non-default but not safety-critical.
     const warn = _el && _el.querySelector('#chat-bypass-warn');
     if (warn) {
       const text = warn.querySelector('.chat-bypass-warn__text');
@@ -2637,19 +2579,6 @@ const ChatView = (() => {
     _unsubs.push(_rpc.on('session.event.warning', (payload) => {
       if (_isStaleEpoch(payload)) return;
       const msg = (payload && payload.message) || 'Assistant warning';
-      if (payload && payload.code === 'tool_result_summary_disabled') {
-        const toolCompressBtn = _el?.querySelector('#pill-tool-compress');
-        if (toolCompressBtn) _setToolCompressButton(toolCompressBtn, 'off');
-        const overlay = UI.modal(
-          'Tool Compress Disabled',
-          '<p>' + _esc(msg) + '</p>',
-          [{ label: 'OK', cls: 'btn-primary' }]
-        );
-        setTimeout(() => {
-          if (overlay && document.body.contains(overlay)) overlay.remove();
-        }, 8000);
-        return;
-      }
       UI.toast(msg, 'warn', 5000);
     }));
 

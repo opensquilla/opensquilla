@@ -1,4 +1,4 @@
-"""Tokenjuice bridge for OpenSquilla tool-result compression."""
+"""Tokenjuice bridge for OpenSquilla tool-result projection."""
 
 from __future__ import annotations
 
@@ -39,10 +39,10 @@ def reduce_tool_result_with_tokenjuice(
     max_inline_chars: int | None = None,
     timeout_seconds: float = 5.0,
 ) -> TokenjuiceReduction | None:
-    """Run the built-in tokenjuice compression backend for a tool result.
+    """Run the built-in tokenjuice projection backend for a tool result.
 
     Returns ``None`` when tokenjuice fails or does not reduce the result.
-    Compression is best-effort because tool output must never fail an agent turn.
+    Projection is best-effort because tool output must never fail an agent turn.
     """
 
     del timeout_seconds
@@ -62,6 +62,8 @@ def reduce_tool_result_with_tokenjuice(
     except Exception:
         return None
     if reduction is None:
+        return None
+    if reduction.inline_text.splitlines() == content.splitlines():
         return None
     if len(reduction.inline_text) >= len(content):
         return None

@@ -42,8 +42,7 @@ from opensquilla.engine.tool_result_store import (
     ToolResultStoreBudgetError,
 )
 from opensquilla.engine.tool_text_compat import strip_synthetic_tool_call_suffix
-from opensquilla.engine.tool_truncation import estimate_tokens as get_approx_tokens
-from opensquilla.engine.tool_truncation import truncate_result
+from opensquilla.engine.tool_token_estimate import estimate_tokens as get_approx_tokens
 from opensquilla.execution_status import (
     mark_execution_status_truncated,
     runtime_execution_status,
@@ -96,7 +95,7 @@ from opensquilla.session.compaction_lifecycle import (
     flush_receipt_is_successful_flush,
     new_compaction_id,
 )
-from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
+from opensquilla.session.terminal_reply import build_terminal_reply
 from opensquilla.tool_boundary import AgentToolHandler as ToolHandler
 
 from .context import ContextAssembly
@@ -149,18 +148,13 @@ def _is_direct_deepseek_v4_model_id(model_id: str | None) -> bool:
     return normalized in {"deepseek-v4-flash", "deepseek-v4-pro"}
 
 
-_TOOL_RESULT_SUMMARY_SYSTEM = (
-    "You compress tool output before it is passed to another agent. Preserve exact "
-    "filenames, paths, ids, numbers, commands, error messages, and code-relevant snippets. "
-    "Do not invent facts. Keep the same language as the tool output when possible. "
-    "Return only the compressed tool result, with concise bullets when that helps."
-)
 _LARGE_JSON_TOOL_FIELD_KEYS: frozenset[str] = frozenset({"body", "body_base64"})
 _LARGE_JSON_TOOL_FIELD_CHARS = 20_000
 _TOOL_ARGUMENT_PROJECTION_PREFIX = "[tool_use_argument_projection]\n"
 _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted]\n"
 _INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX = "[invalid_provider_context_projection:"
 _INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY = "_invalid_provider_context_arguments"
+_AGGREGATE_TOOL_RESULT_MAX_SHARE = 0.25
 _TOOL_ARGUMENT_HEARTBEAT_CHARS = 4096
 _PROVIDER_CONTEXT_PROJECTION_REUSED_REASON = "provider_context_projection_reused"
 _PROVIDER_CONTEXT_REPAIR_PROMPT = (
@@ -559,7 +553,6 @@ class Agent:
         usage_tracker: Any | None = None,
         session_key: str | None = None,
         turn_call_logger: TurnCallLogger | None = None,
-        tool_result_summarizer_provider: LLMProvider | None = None,
         memory_sync_manager: Any | None = None,
         session_flush_service: Any | None = None,
     ) -> None:
@@ -572,7 +565,6 @@ class Agent:
         self._usage_tracker = usage_tracker
         self._session_key = session_key
         self._turn_call_logger = turn_call_logger
-        self._tool_result_summarizer_provider = tool_result_summarizer_provider
         self._pending_warnings: list[WarningEvent] = []
 
         self._state: AgentState = AgentState.IDLE
@@ -858,16 +850,7 @@ class Agent:
     def _tokenjuice_max_inline_chars(self, fallback: int | None = None) -> int:
         if fallback is not None and fallback > 0:
             return max(1, int(fallback))
-        budget_chars = int(
-            self.config.context_window_tokens * self.config.tool_result_compression_max_share * 4
-        )
-        return max(
-            1,
-            min(
-                budget_chars,
-                self.config.tool_result_compression_summary_input_max_chars,
-            ),
-        )
+        return max(1, int(self.config.tool_result_projection_max_inline_chars))
 
     def _tokenjuice_tool_reduction(
         self,
@@ -893,9 +876,9 @@ class Agent:
         )
         if reduction is None:
             return None
-        self.config.metadata["tool_compression_backend"] = "tokenjuice"
+        self.config.metadata["tool_projection_backend"] = "tokenjuice"
         if reduction.reducer:
-            self.config.metadata["tool_compression_tokenjuice_reducer"] = reduction.reducer
+            self.config.metadata["tool_projection_tokenjuice_reducer"] = reduction.reducer
         return reduction.inline_text
 
     @staticmethod
@@ -906,18 +889,6 @@ class Agent:
                 continue
             count += sum(1 for block in message.content if isinstance(block, ContentBlockImage))
         return count
-
-    def _tool_result_compression_mode(self) -> str:
-        mode = self.config.tool_result_compression_mode
-        if mode in {"off", "truncate", "summarize", "tokenjuice"}:
-            return mode
-        return "truncate" if self.config.tool_result_compression_enabled else "off"
-
-    def _tool_result_over_budget(self, text: str) -> bool:
-        budget_tokens = int(
-            self.config.context_window_tokens * self.config.tool_result_compression_max_share
-        )
-        return get_approx_tokens(text) > budget_tokens
 
     def _compact_aggregate_tool_results_for_provider(
         self,
@@ -931,9 +902,6 @@ class Agent:
         artifact-producing results unless a successful single result alone
         exceeds the provider request cap.
         """
-
-        if self._tool_result_compression_mode() == "off":
-            return messages
 
         tool_name_by_use_id: dict[str, str] = {}
         tool_result_refs: list[tuple[int, int, ContentBlockToolResult]] = []
@@ -964,7 +932,7 @@ class Agent:
 
         recent_ids = {id(block) for _message_index, _block_index, block in tool_result_refs[-2:]}
         budget_tokens = int(
-            self.config.context_window_tokens * self.config.tool_result_compression_max_share
+            self.config.context_window_tokens * _AGGREGATE_TOOL_RESULT_MAX_SHARE
         )
         eligible_refs: list[tuple[int, int, ContentBlockToolResult, str, int]] = []
         total_tool_result_tokens = 0
@@ -1070,28 +1038,28 @@ class Agent:
         if saved_tokens == 0 and replacements:
             saved_tokens = 1
 
-        self.config.metadata["tool_aggregate_compression_applied"] = True
-        self.config.metadata["tool_aggregate_compression_calls"] = (
-            self.config.metadata.get("tool_aggregate_compression_calls", 0) + 1
+        self.config.metadata["tool_aggregate_projection_applied"] = True
+        self.config.metadata["tool_aggregate_projection_calls"] = (
+            self.config.metadata.get("tool_aggregate_projection_calls", 0) + 1
         )
-        self.config.metadata["tool_aggregate_compression_tokens_before"] = before_tokens
-        self.config.metadata["tool_aggregate_compression_tokens_after"] = after_tokens
-        self.config.metadata["tool_aggregate_compression_tokens_saved"] = saved_tokens
-        self.config.metadata["tool_compression_applied"] = True
-        self.config.metadata["tool_compression_calls"] = self.config.metadata.get(
-            "tool_compression_calls", 0
+        self.config.metadata["tool_aggregate_projection_tokens_before"] = before_tokens
+        self.config.metadata["tool_aggregate_projection_tokens_after"] = after_tokens
+        self.config.metadata["tool_aggregate_projection_tokens_saved"] = saved_tokens
+        self.config.metadata["tool_projection_applied"] = True
+        self.config.metadata["tool_projection_calls"] = self.config.metadata.get(
+            "tool_projection_calls", 0
         ) + len(replacements)
-        self.config.metadata["tool_compression_tokens_before"] = (
-            self.config.metadata.get("tool_compression_tokens_before", 0) + before_tokens
+        self.config.metadata["tool_projection_tokens_before"] = (
+            self.config.metadata.get("tool_projection_tokens_before", 0) + before_tokens
         )
-        self.config.metadata["tool_compression_tokens_after"] = (
-            self.config.metadata.get("tool_compression_tokens_after", 0) + after_tokens
+        self.config.metadata["tool_projection_tokens_after"] = (
+            self.config.metadata.get("tool_projection_tokens_after", 0) + after_tokens
         )
-        self.config.metadata["tool_compression_tokens_saved"] = (
-            self.config.metadata.get("tool_compression_tokens_saved", 0) + saved_tokens
+        self.config.metadata["tool_projection_tokens_saved"] = (
+            self.config.metadata.get("tool_projection_tokens_saved", 0) + saved_tokens
         )
         self._write_turn_call_log(
-            "tool_aggregate_compression",
+            "tool_aggregate_projection",
             original_tool_results=len(tool_result_refs),
             compacted_tool_results=len(replacements),
             tool_result_handles=stored_handles,
@@ -1226,13 +1194,13 @@ class Agent:
                 )
             )
 
-        self.config.metadata["tool_absolute_compression_applied"] = True
-        self.config.metadata["tool_absolute_compression_calls"] = (
-            self.config.metadata.get("tool_absolute_compression_calls", 0) + 1
+        self.config.metadata["tool_provider_guard_projection_applied"] = True
+        self.config.metadata["tool_provider_guard_projection_calls"] = (
+            self.config.metadata.get("tool_provider_guard_projection_calls", 0) + 1
         )
-        self.config.metadata["tool_compression_applied"] = True
-        self.config.metadata["tool_compression_calls"] = self.config.metadata.get(
-            "tool_compression_calls", 0
+        self.config.metadata["tool_projection_applied"] = True
+        self.config.metadata["tool_projection_calls"] = self.config.metadata.get(
+            "tool_projection_calls", 0
         ) + len(replacements)
         return compacted_messages
 
@@ -1428,89 +1396,7 @@ class Agent:
         )
         return record
 
-    @staticmethod
-    def _trim_summary_input(text: str, max_chars: int) -> str:
-        if max_chars <= 0 or len(text) <= max_chars:
-            return text
-        head_chars = int(max_chars * 0.70)
-        tail_chars = int(max_chars * 0.20)
-        omitted = len(text) - head_chars - tail_chars
-        marker = f"\n[...omitted {omitted} chars before summarization...]\n"
-        return text[:head_chars] + marker + text[-tail_chars:]
-
-    async def _summarize_tool_result(self, result: ToolResult) -> str | None:
-        provider = self._tool_result_summarizer_provider
-        if provider is None:
-            return None
-
-        summary_input = self._trim_summary_input(
-            result.content,
-            self.config.tool_result_compression_summary_input_max_chars,
-        )
-        prompt = (
-            f"Tool name: {result.tool_name}\n"
-            f"Original size: {len(result.content)} chars\n\n"
-            "Compress this tool result for the next reasoning step. Preserve actionable "
-            "details and any exact strings that may be needed later.\n\n"
-            f"{summary_input}"
-        )
-        cfg = ChatConfig(
-            max_tokens=self.config.tool_result_compression_summary_max_tokens,
-            temperature=0,
-            system=_TOOL_RESULT_SUMMARY_SYSTEM,
-            timeout=self.config.tool_result_compression_summary_timeout_seconds,
-        )
-        parts: list[str] = []
-        model = self.config.tool_result_compression_summary_model or self.config.model_id or ""
-        try:
-            async for event in provider.chat([Message(role="user", content=prompt)], config=cfg):
-                if isinstance(event, ProviderTextDelta):
-                    parts.append(event.text)
-                elif isinstance(event, ProviderErrorEvent):
-                    raise RuntimeError(event.message)
-                elif isinstance(event, ProviderDoneEvent) and not model:
-                    model = event.model
-        except Exception as exc:  # noqa: BLE001 - compression is best-effort
-            model_label = model or self.config.tool_result_compression_summary_model or "default"
-            _, message = sanitize_agent_error(
-                str(exc),
-                fallback_error_message=str(exc) or "tool result summary failed",
-            )
-            logger.warning(
-                "tool_result_summary_failed",
-                tool=result.tool_name,
-                model=model_label,
-                error=message,
-            )
-            self.config.tool_result_compression_enabled = False
-            self.config.tool_result_compression_mode = "off"
-            self._pending_warnings.append(
-                WarningEvent(
-                    code="tool_result_summary_failed",
-                    message=(
-                        f"Tool result summary model {model_label!r} failed: {message}. "
-                        "Falling back to truncation for this result."
-                    ),
-                )
-            )
-            return None
-
-        summary = "".join(parts).strip()
-        if not summary:
-            return None
-
-        header_model = f" via {model}" if model else ""
-        compressed = (
-            f"[Tool result summarized{header_model}: {len(result.content)} chars -> "
-            f"{len(summary)} chars]\n{summary}"
-        )
-        return truncate_result(
-            compressed,
-            self.config.context_window_tokens,
-            max_share=self.config.tool_result_compression_max_share,
-        )
-
-    async def _compress_tool_result(
+    async def _project_tool_result_for_llm(
         self,
         result: ToolResult,
         *,
@@ -1535,59 +1421,30 @@ class Agent:
                 self.config.metadata.get("tool_json_guard_calls", 0) + 1
             )
 
-        mode = self._tool_result_compression_mode()
-        if mode == "off" or not self._tool_result_over_budget(result.content):
+        self.config.metadata["tool_projection_attempts"] = (
+            self.config.metadata.get("tool_projection_attempts", 0) + 1
+        )
+        projected_content = self._tokenjuice_tool_reduction(
+            tool_name=result.tool_name,
+            content=result.content,
+            is_error=result.is_error,
+            tool_use_id=result.tool_use_id,
+            arguments=tool_call.arguments if tool_call is not None else None,
+            command=self._tool_call_string_arg(tool_call, "command"),
+            cwd=self._tool_call_string_arg(tool_call, "workdir", "cwd"),
+        )
+        if projected_content is None:
+            self.config.metadata["tool_projection_noops"] = (
+                self.config.metadata.get("tool_projection_noops", 0) + 1
+            )
+            self._write_turn_call_log(
+                "tool_projection_noop",
+                tool_use_id=result.tool_use_id,
+                name=result.tool_name,
+                original_chars=len(result.content),
+            )
             return result
 
-        compressed_content: str | None = None
-        applied_mode = mode
-        budget_class = resolve_budget_class(result.tool_name)
-        if mode == "tokenjuice":
-            compressed_content = self._tokenjuice_tool_reduction(
-                tool_name=result.tool_name,
-                content=result.content,
-                is_error=result.is_error,
-                tool_use_id=result.tool_use_id,
-                arguments=tool_call.arguments if tool_call is not None else None,
-                command=self._tool_call_string_arg(tool_call, "command"),
-                cwd=self._tool_call_string_arg(tool_call, "workdir", "cwd"),
-            )
-            if compressed_content is None:
-                applied_mode = "tokenjuice_fallback_truncate"
-                self.config.metadata["tool_compression_tokenjuice_fallbacks"] = (
-                    self.config.metadata.get("tool_compression_tokenjuice_fallbacks", 0) + 1
-                )
-            elif self._tool_result_over_budget(compressed_content):
-                compressed_content = truncate_result(
-                    compressed_content,
-                    self.config.context_window_tokens,
-                    max_share=self.config.tool_result_compression_max_share,
-                )
-                applied_mode = "tokenjuice_truncate"
-                self.config.metadata["tool_compression_tokenjuice_over_budget_fallbacks"] = (
-                    self.config.metadata.get("tool_compression_tokenjuice_over_budget_fallbacks", 0)
-                    + 1
-                )
-        elif budget_class is ToolResultBudgetClass.CONTROL:
-            compressed_content = compact_tool_result_content(
-                tool_name=result.tool_name,
-                content=result.content,
-                max_preview_chars=self.config.tool_result_compression_summary_input_max_chars,
-                budget_class=budget_class,
-                is_error=result.is_error,
-            )
-            applied_mode = "control_truncate"
-        if mode == "summarize" and compressed_content is None:
-            compressed_content = await self._summarize_tool_result(result)
-            if compressed_content is None:
-                applied_mode = "truncate"
-
-        if compressed_content is None:
-            compressed_content = truncate_result(
-                result.content,
-                self.config.context_window_tokens,
-                max_share=self.config.tool_result_compression_max_share,
-            )
         stored = self._store_tool_result_snapshot(
             result.content,
             tool_use_id=result.tool_use_id,
@@ -1595,50 +1452,45 @@ class Agent:
         )
         stored_handle = stored.handle if stored is not None else None
         if stored is not None:
-            compressed_content = (
+            projected_content = (
                 "[tool_result_projection]\n"
                 f"tool_result_handle: {stored.handle}\n"
                 f"sha256: {stored.sha256}\n"
                 f"original_chars: {stored.chars}\n"
-                f"{compressed_content}"
+                f"{projected_content}"
             )
 
         tokens_before = get_approx_tokens(result.content)
-        tokens_after = get_approx_tokens(compressed_content)
-        self.config.metadata["tool_compression_applied"] = True
-        self.config.metadata["tool_compression_calls"] = (
-            self.config.metadata.get("tool_compression_calls", 0) + 1
+        tokens_after = get_approx_tokens(projected_content)
+        self.config.metadata["tool_projection_applied"] = True
+        self.config.metadata["tool_projection_calls"] = (
+            self.config.metadata.get("tool_projection_calls", 0) + 1
         )
-        self.config.metadata["tool_compression_tokens_before"] = (
-            self.config.metadata.get("tool_compression_tokens_before", 0) + tokens_before
+        self.config.metadata["tool_projection_tokens_before"] = (
+            self.config.metadata.get("tool_projection_tokens_before", 0) + tokens_before
         )
-        self.config.metadata["tool_compression_tokens_after"] = (
-            self.config.metadata.get("tool_compression_tokens_after", 0) + tokens_after
+        self.config.metadata["tool_projection_tokens_after"] = (
+            self.config.metadata.get("tool_projection_tokens_after", 0) + tokens_after
         )
-        self.config.metadata["tool_compression_tokens_saved"] = self.config.metadata.get(
-            "tool_compression_tokens_saved", 0
+        self.config.metadata["tool_projection_tokens_saved"] = self.config.metadata.get(
+            "tool_projection_tokens_saved", 0
         ) + max(0, tokens_before - tokens_after)
 
         self._write_turn_call_log(
-            "tool_response_compression",
+            "tool_projection_applied",
             tool_use_id=result.tool_use_id,
             name=result.tool_name,
-            mode=applied_mode,
             tool_result_handle=stored_handle,
             original_chars=len(result.content),
-            compressed_chars=len(compressed_content),
+            projected_chars=len(projected_content),
         )
         return ToolResult(
             tool_use_id=result.tool_use_id,
             tool_name=result.tool_name,
-            content=compressed_content,
+            content=projected_content,
             is_error=result.is_error,
             artifacts=list(result.artifacts),
-            execution_status=(
-                mark_execution_status_truncated(result.execution_status)
-                if result.execution_status is not None
-                else None
-            ),
+            execution_status=result.execution_status,
         )
 
     # ------------------------------------------------------------------
@@ -3332,17 +3184,17 @@ class Agent:
                             execution_status=result.execution_status,
                         )
                     executed_results.append(result)
-                    compressed_result = await self._compress_tool_result(
+                    projected_result = await self._project_tool_result_for_llm(
                         result,
                         tool_call=result_tool_call,
                     )
-                    if compressed_result.content != result.content:
+                    if projected_result.content != result.content:
                         self._provider_tool_result_overrides[result.tool_use_id] = (
                             ContentBlockToolResult(
-                                tool_use_id=compressed_result.tool_use_id,
-                                content=compressed_result.content,
-                                is_error=compressed_result.is_error,
-                                execution_status=compressed_result.execution_status,
+                                tool_use_id=projected_result.tool_use_id,
+                                content=projected_result.content,
+                                is_error=projected_result.is_error,
+                                execution_status=projected_result.execution_status,
                             )
                         )
                     while self._pending_warnings:
@@ -4673,20 +4525,8 @@ class Agent:
                 self.config.flush_compaction_requires_safe_receipt
             ),
             flush_compaction_safety_mode=self.config.flush_compaction_safety_mode,
-            tool_result_compression_enabled=self.config.tool_result_compression_enabled,
-            tool_result_compression_mode=self.config.tool_result_compression_mode,
-            tool_result_compression_max_share=self.config.tool_result_compression_max_share,
-            tool_result_compression_summary_model=(
-                self.config.tool_result_compression_summary_model
-            ),
-            tool_result_compression_summary_max_tokens=(
-                self.config.tool_result_compression_summary_max_tokens
-            ),
-            tool_result_compression_summary_timeout_seconds=(
-                self.config.tool_result_compression_summary_timeout_seconds
-            ),
-            tool_result_compression_summary_input_max_chars=(
-                self.config.tool_result_compression_summary_input_max_chars
+            tool_result_projection_max_inline_chars=(
+                self.config.tool_result_projection_max_inline_chars
             ),
             tool_result_provider_request_max_chars=(
                 self.config.tool_result_provider_request_max_chars
@@ -4713,7 +4553,6 @@ class Agent:
             tool_definitions=filtered_defs,
             tool_handler=_subagent_tool_handler,
             subagent_manager=SubagentManager(spawn_depth=depth),
-            tool_result_summarizer_provider=self._tool_result_summarizer_provider,
         )
 
     async def spawn_subagent(self, spec: SubagentSpec) -> str:

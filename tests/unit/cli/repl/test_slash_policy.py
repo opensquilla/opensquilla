@@ -113,7 +113,6 @@ def test_exit_set_matches_plan_lock() -> None:
         "/model gpt-5",
         "/image /tmp/pic.png",
         "/path /tmp/file.md",
-        "/tool-compress status",
         "/models",
         "/status",
         "/session",

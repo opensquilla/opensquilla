@@ -18,7 +18,6 @@ from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
     AgentFactoryPort,
     MemorySnapshotPort,
     ModelCatalogPort,
-    SummarizerProviderPort,
     TimeoutBudgetPort,
 )
 from opensquilla.engine.turn_runner.attachment_stage import (
@@ -133,7 +132,6 @@ __all__ = [
     "StageOutcome",
     "StreamConsumerStage",
     "StreamConsumerStageInput",
-    "SummarizerProviderPort",
     "SystemPromptRefreshPort",
     "T3UpgradeCompactionPort",
     "TimeoutBudgetPort",

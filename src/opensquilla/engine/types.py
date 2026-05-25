@@ -291,16 +291,9 @@ class AgentConfig:
     repair_max_items_per_tick: int = 5
     flush_workspace_dir: str | None = None
     model_capabilities: Any | None = None  # ModelCapabilities from provider.types
-    # Agent token saving: compress tool results before feeding them back to the LLM.
-    tool_result_compression_enabled: bool = True
-    tool_result_compression_mode: (
-        Literal["off", "truncate", "summarize", "tokenjuice"] | None
-    ) = None
-    tool_result_compression_max_share: float = 0.25
-    tool_result_compression_summary_model: str | None = None
-    tool_result_compression_summary_max_tokens: int = 1024
-    tool_result_compression_summary_timeout_seconds: float = 20.0
-    tool_result_compression_summary_input_max_chars: int = 60_000
+    # Tokenjuice projection: project eligible fresh tool results before the
+    # next LLM turn. This is not user-selectable behavior.
+    tool_result_projection_max_inline_chars: int = 60_000
     tool_result_provider_request_max_chars: int = 0
     provider_request_proof_max_chars: int = 0
     tool_use_argument_provider_request_max_chars: int = 0

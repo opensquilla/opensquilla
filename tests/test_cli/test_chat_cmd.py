@@ -81,7 +81,6 @@ EXPECTED_GATEWAY_COMMANDS = {
     "/models",
     "/cost",
     "/usage",
-    "/tool-compress",
     "/save",
     "/image",
     "/path",
@@ -1269,11 +1268,7 @@ class _FakeGatewayClient:
         self.compact_calls: list[dict[str, object]] = []
         self.config_get_calls: list[str | None] = []
         self.config_patch_safe_calls: list[dict[str, object]] = []
-        self.config_values: dict[str, object] = {
-            "agent_token_saving.tool_result_compression_enabled": True,
-            "agent_token_saving.tool_result_compression_mode": None,
-            "agent_token_saving.tool_result_compression_summary_model": "cheap/model",
-        }
+        self.config_values: dict[str, object] = {}
         self.usage_status_calls = 0
         self.list_models_calls = 0
         self.delete_result: dict[str, object] = {"deleted": [], "errors": []}
@@ -1727,119 +1722,6 @@ async def test_gateway_slash_compact_reports_started_and_failure(monkeypatch) ->
     output = buffer.getvalue()
     assert "compacting context" in output
     assert "compact failed: provider down" in output
-
-
-@pytest.mark.asyncio
-async def test_gateway_slash_tool_compress_toggles_config(monkeypatch) -> None:
-    _FakeGatewayClient.instances.clear()
-    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
-    fake = _FakeGatewayClient()
-    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
-
-    handled = await chat_cmd._handle_gateway_slash_command(
-        "/tool-compress off", state, fake, {"mode": None}
-    )
-
-    assert handled is True
-    assert fake.config_patch_safe_calls == [
-        {
-            "agent_token_saving.tool_result_compression_mode": "off",
-            "agent_token_saving.tool_result_compression_enabled": False,
-        }
-    ]
-    assert fake.config_values["agent_token_saving.tool_result_compression_enabled"] is False
-    assert fake.config_values["agent_token_saving.tool_result_compression_mode"] == "off"
-
-
-@pytest.mark.asyncio
-async def test_gateway_slash_tool_compress_can_switch_to_summarize(monkeypatch) -> None:
-    _FakeGatewayClient.instances.clear()
-    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
-    fake = _FakeGatewayClient()
-    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
-
-    handled = await chat_cmd._handle_gateway_slash_command(
-        "/tool-compress summarize", state, fake, {"mode": None}
-    )
-
-    assert handled is True
-    assert fake.config_patch_safe_calls == [
-        {
-            "agent_token_saving.tool_result_compression_mode": "summarize",
-            "agent_token_saving.tool_result_compression_enabled": True,
-        }
-    ]
-    assert fake.config_values["agent_token_saving.tool_result_compression_mode"] == "summarize"
-
-
-@pytest.mark.asyncio
-async def test_gateway_slash_tool_compress_can_switch_to_tokenjuice(monkeypatch) -> None:
-    _FakeGatewayClient.instances.clear()
-    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
-    fake = _FakeGatewayClient()
-    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
-
-    handled = await chat_cmd._handle_gateway_slash_command(
-        "/tool-compress tokenjuice", state, fake, {"mode": None}
-    )
-
-    assert handled is True
-    assert fake.config_patch_safe_calls == [
-        {
-            "agent_token_saving.tool_result_compression_mode": "tokenjuice",
-            "agent_token_saving.tool_result_compression_enabled": True,
-        }
-    ]
-    assert fake.config_values["agent_token_saving.tool_result_compression_mode"] == "tokenjuice"
-
-
-@pytest.mark.asyncio
-async def test_gateway_slash_tool_compress_status_reads_config(monkeypatch) -> None:
-    _FakeGatewayClient.instances.clear()
-    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
-    fake = _FakeGatewayClient()
-    state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
-
-    handled = await chat_cmd._handle_gateway_slash_command(
-        "/tool-compress status", state, fake, {"mode": None}
-    )
-
-    assert handled is True
-    assert fake.config_get_calls == [
-        "agent_token_saving.tool_result_compression_mode",
-        "agent_token_saving.tool_result_compression_enabled",
-        "agent_token_saving.tool_result_compression_summary_model",
-    ]
-    assert fake.config_patch_safe_calls == []
-
-
-@pytest.mark.asyncio
-async def test_standalone_tool_compress_toggles_config() -> None:
-    config = SimpleNamespace(
-        agent_token_saving=SimpleNamespace(
-            tool_result_compression_enabled=True,
-            tool_result_compression_mode=None,
-            tool_result_compression_summary_model="cheap/model",
-        )
-    )
-
-    await chat_cmd._handle_tool_compress_command("/tool-compress off", config=config)
-    assert config.agent_token_saving.tool_result_compression_enabled is False
-    assert config.agent_token_saving.tool_result_compression_mode == "off"
-
-    await chat_cmd._handle_tool_compress_command("/tool-compress status", config=config)
-    assert config.agent_token_saving.tool_result_compression_enabled is False
-
-    await chat_cmd._handle_tool_compress_command("/tool-compress summarize", config=config)
-    assert config.agent_token_saving.tool_result_compression_enabled is True
-    assert config.agent_token_saving.tool_result_compression_mode == "summarize"
-
-    await chat_cmd._handle_tool_compress_command("/tool-compress tokenjuice", config=config)
-    assert config.agent_token_saving.tool_result_compression_enabled is True
-    assert config.agent_token_saving.tool_result_compression_mode == "tokenjuice"
-
-    await chat_cmd._handle_tool_compress_command("/tool-compress on", config=config)
-    assert config.agent_token_saving.tool_result_compression_mode == "truncate"
 
 
 @pytest.mark.asyncio

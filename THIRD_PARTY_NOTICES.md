@@ -10,7 +10,7 @@ It covers:
   agent runtime to invoke them and is documented here for transparency.
 - The local SquillaRouter V4 Phase 3 model bundle under
   `src/opensquilla/squilla_router/models/v4.2_phase3_inference/`.
-- The built-in tokenjuice tool-result compression backend and bundled
+- The built-in tokenjuice tool-result projection backend and bundled
   reduction rules under `src/opensquilla/plugins/tokenjuice/`.
 - The cron prompt-injection scanner was reviewed against Hermes Agent
   reference material; the MIT notice is reproduced below for conservative
@@ -70,7 +70,7 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 
 ## tokenjuice adapted reduction rules
 
-- Component: built-in tokenjuice tool-result compression backend and bundled
+- Component: built-in tokenjuice tool-result projection backend and bundled
   reduction rules under `src/opensquilla/plugins/tokenjuice/`.
 - Upstream project: https://github.com/vincentkoc/tokenjuice
 - License: MIT

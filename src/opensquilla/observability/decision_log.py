@@ -23,7 +23,7 @@ from typing import Literal
 from opensquilla.bootstrap_types import BootstrapFileReport
 from opensquilla.paths import default_opensquilla_home
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 RoutingSource = Literal[
     "v4_phase3",
@@ -47,12 +47,12 @@ class SavingsTelemetry:
     routing_savings_pct: float | None = None
     routing_savings_usd_estimated_vs_baseline: float | None = None
 
-    # Tool-result compression
-    tool_compression_applied: bool = False
-    tool_compression_calls: int = 0
-    tool_compression_tokens_before: int = 0
-    tool_compression_tokens_after: int = 0
-    tool_compression_tokens_saved: int = 0
+    # Tool-result projection
+    tool_projection_applied: bool = False
+    tool_projection_calls: int = 0
+    tool_projection_tokens_before: int = 0
+    tool_projection_tokens_after: int = 0
+    tool_projection_tokens_saved: int = 0
     tool_result_store_writes: int = 0
     tool_result_store_skips: int = 0
 

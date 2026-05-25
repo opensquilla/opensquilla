@@ -94,7 +94,6 @@ GATEWAY_SLASH_HANDLER_WORDS = frozenset(
         "/sessions",
         "/save",
         "/status",
-        "/tool-compress",
         "/usage",
     }
 )
@@ -114,7 +113,6 @@ STANDALONE_SLASH_HANDLER_WORDS = frozenset(
         "/save",
         "/session",
         "/status",
-        "/tool-compress",
     }
 )
 
@@ -1113,9 +1111,6 @@ async def _standalone_repl(
             if stripped == "/cost":
                 console.print(active_state.usage.render())
                 return True
-            if _slash_parts(stripped, "/tool-compress"):
-                await _handle_tool_compress_command(stripped, config=svc.config)
-                return True
             if stripped in {"/clear", "/reset"}:
                 if svc.session_manager is not None:
                     safe_to_reset = await _flush_before_standalone_rewrite(
@@ -1540,10 +1535,6 @@ async def _handle_gateway_slash_command(
         )
         return True
 
-    if _slash_parts(cmd, "/tool-compress"):
-        await _handle_tool_compress_command(cmd, client=client)
-        return True
-
     if _slash_parts(cmd, "/save"):
         await _save_gateway_transcript_command(cmd, state, client)
         return True
@@ -1637,66 +1628,6 @@ async def _handle_gateway_slash_command(
         return True
 
     return False
-
-
-async def _handle_tool_compress_command(
-    cmd: str,
-    *,
-    config: object | None = None,
-    client: object | None = None,
-) -> None:
-    parts = cmd.split()
-    arg = parts[1].lower() if len(parts) > 1 else "status"
-    aliases = {"on": "truncate", "trim": "truncate", "summary": "summarize"}
-    mode_arg = aliases.get(arg, arg)
-    modes = {"off", "truncate", "summarize", "tokenjuice", "status"}
-    if len(parts) > 2 or mode_arg not in modes:
-        console.print("[red]Usage: /tool-compress [off|truncate|summarize|tokenjuice|status][/red]")
-        return
-
-    enabled_path = "agent_token_saving.tool_result_compression_enabled"
-    mode_path = "agent_token_saving.tool_result_compression_mode"
-    model_path = "agent_token_saving.tool_result_compression_summary_model"
-    if client is not None:
-        from opensquilla.cli.gateway_client import GatewayClient
-
-        assert isinstance(client, GatewayClient)
-        if mode_arg == "status":
-            mode = await client.get_config(mode_path)
-            enabled = bool(await client.get_config(enabled_path))
-            model = await client.get_config(model_path)
-            mode = mode if mode in {"off", "truncate", "summarize", "tokenjuice"} else None
-            resolved_mode = str(mode or ("truncate" if enabled else "off"))
-        else:
-            resolved_mode = mode_arg
-            await client.patch_config_safe(
-                {
-                    mode_path: resolved_mode,
-                    enabled_path: resolved_mode != "off",
-                }
-            )
-            model = await client.get_config(model_path) if resolved_mode == "summarize" else None
-    else:
-        cfg = getattr(config, "agent_token_saving", None)
-        if cfg is None:
-            console.print("[yellow]Tool result compression config is unavailable.[/yellow]")
-            return
-        if mode_arg == "status":
-            mode = getattr(cfg, "tool_result_compression_mode", None)
-            enabled = bool(getattr(cfg, "tool_result_compression_enabled", True))
-            model = getattr(cfg, "tool_result_compression_summary_model", None)
-            if mode in {"off", "truncate", "summarize", "tokenjuice"}:
-                resolved_mode = str(mode)
-            else:
-                resolved_mode = "truncate" if enabled else "off"
-        else:
-            resolved_mode = mode_arg
-            setattr(cfg, "tool_result_compression_mode", resolved_mode)
-            setattr(cfg, "tool_result_compression_enabled", resolved_mode != "off")
-            model = getattr(cfg, "tool_result_compression_summary_model", None)
-
-    model_suffix = f" [dim]model={model}[/dim]" if resolved_mode == "summarize" and model else ""
-    console.print(f"[{ACCENT}]tool result compression:[/] {resolved_mode.upper()}{model_suffix}")
 
 
 def _print_sessions_table(rows: list[dict[str, Any]]) -> None:

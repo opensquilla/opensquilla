@@ -20,7 +20,6 @@ from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
     AgentFactoryPort,
     MemorySnapshotPort,
     ModelCatalogPort,
-    SummarizerProviderPort,
     TimeoutBudgetPort,
     _AgentConfigAuxiliaries,
     _MemorySnapshotResult,
@@ -403,7 +402,6 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
     """Bind the five ``TurnRunner`` helpers AgentConfig assembly needs.
 
     The inline body calls ``_resolve_turn_thinking(turn)``,
-    ``_resolve_tool_result_compression_mode(_agent_token_cfg)``,
     ``_resolve_memory_source_dir(agent_id)``, and reads
     ``media_root_from_config(self._config) / "tool-results"`` plus a
     handful of ``getattr`` reads off ``_mem_cfg`` / ``_agent_token_cfg``.
@@ -432,18 +430,8 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
             else None
         )
         thinking = runner._resolve_turn_thinking(turn)
-        compression_mode = runner._resolve_tool_result_compression_mode(
-            agent_token_cfg
-        )
-        summary_model = getattr(
-            agent_token_cfg,
-            "tool_result_compression_summary_model",
-            None,
-        )
         return _AgentConfigAuxiliaries(
             thinking=thinking,
-            tool_result_compression_mode=compression_mode,
-            tool_result_compression_summary_model=summary_model,
             flush_workspace_dir=str(runner._resolve_memory_source_dir(agent_id)),
             tool_result_store_dir=str(
                 media_root_from_config(runner._config) / "tool-results"
@@ -473,29 +461,9 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
                 "flush_compaction_safety_mode",
                 "protect",
             ),
-            tool_result_compression_enabled=getattr(
+            tool_result_projection_max_inline_chars=getattr(
                 agent_token_cfg,
-                "tool_result_compression_enabled",
-                True,
-            ),
-            tool_result_compression_max_share=getattr(
-                agent_token_cfg,
-                "tool_result_compression_max_share",
-                0.25,
-            ),
-            tool_result_compression_summary_max_tokens=getattr(
-                agent_token_cfg,
-                "tool_result_compression_summary_max_tokens",
-                1024,
-            ),
-            tool_result_compression_summary_timeout_seconds=getattr(
-                agent_token_cfg,
-                "tool_result_compression_summary_timeout_seconds",
-                20.0,
-            ),
-            tool_result_compression_summary_input_max_chars=getattr(
-                agent_token_cfg,
-                "tool_result_compression_summary_input_max_chars",
+                "tool_result_projection_max_inline_chars",
                 60_000,
             ),
             tool_result_store_max_bytes=getattr(
@@ -513,26 +481,6 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
                 "tool_result_store_retention_seconds",
                 7 * 24 * 60 * 60,
             ),
-        )
-
-class _TurnRunnerSummarizerProviderAdapter(SummarizerProviderPort):
-    """Bind ``TurnRunner._resolve_tool_result_summarizer_provider`` (static)."""
-
-    def resolve(
-        self,
-        *,
-        mode: str,
-        cloned_selector: Any | None,
-        current_provider: Any,
-        summary_model: str | None,
-    ) -> Any | None:
-        from opensquilla.engine.runtime import TurnRunner
-
-        return TurnRunner._resolve_tool_result_summarizer_provider(
-            mode=mode,
-            cloned_selector=cloned_selector,
-            current_provider=current_provider,
-            summary_model=summary_model,
         )
 
 class _TurnRunnerMemorySnapshotAdapter(MemorySnapshotPort):
@@ -603,7 +551,6 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
         tool_handler: ToolHandler | None,
         session_key: str,
         turn_call_logger: TurnCallLogger | None,
-        tool_result_summarizer_provider: LLMProvider | None,
         memory_sync_manager: Any | None,
     ) -> Agent:
         from opensquilla.engine.agent import Agent
@@ -616,7 +563,6 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
             usage_tracker=self._runner._usage_tracker,
             session_key=session_key,
             turn_call_logger=turn_call_logger,
-            tool_result_summarizer_provider=tool_result_summarizer_provider,
             memory_sync_manager=memory_sync_manager,
             session_flush_service=self._runner._session_flush_service,
         )

@@ -14,13 +14,12 @@ def test_chat_history_passes_subagent_completion_provenance_to_renderer() -> Non
     assert "provenanceSourceSessionKey: msg.provenance_source_session_key || ''" in source
 
 
-def test_chat_toolbar_supports_tokenjuice_tool_compression_mode() -> None:
+def test_chat_toolbar_has_no_tool_compress_selector() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
-    assert "mode === 'tokenjuice'" in source
-    assert "if (mode === 'summarize') return 'tokenjuice';" in source
-    assert "tokenjuice: 'TOKENJUICE'" in source
-    assert "off, truncate, summarize, or tokenjuice" in source
+    assert "Tool " + "Compress" not in source
+    assert "tool" + "Compress" not in source
+    assert "tool-compress" not in source
 
 
 def test_chat_tool_display_map_does_not_reference_removed_wrapper_tools() -> None:

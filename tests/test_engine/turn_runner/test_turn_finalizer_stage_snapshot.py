@@ -47,7 +47,7 @@ from .test_stream_consumer_stage_snapshot import (
     _MAILBOX,
     _patch_budget_resolvers,
     _patch_compaction_history,
-    _patch_thinking_compression,
+    _patch_thinking,
     _StubAgent,
 )
 
@@ -441,7 +441,7 @@ def _setup_runner(monkeypatch: pytest.MonkeyPatch, case: _Case) -> tuple[
     _patch_resolve_prompt_config(runner, "FINAL", None, None)
     _patch_session_id(runner, "sess-1")
     _patch_budget_resolvers(runner)
-    _patch_thinking_compression(runner)
+    _patch_thinking(runner)
     _patch_memory_helpers(runner)
     _patch_observability(runner)
     _patch_compaction_history(runner)

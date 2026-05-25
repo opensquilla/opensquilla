@@ -94,7 +94,6 @@ from opensquilla.engine.turn_runner.harness import (
     _TurnRunnerRouterContextAdapter,
     _TurnRunnerSessionIdResolverAdapter,
     _TurnRunnerSessionTotalsAdapter,
-    _TurnRunnerSummarizerProviderAdapter,
     _TurnRunnerSystemPromptRefreshAdapter,
     _TurnRunnerT3UpgradeCompactionAdapter,
     _TurnRunnerTimeoutBudgetAdapter,
@@ -455,7 +454,7 @@ def _compute_comprehensive_turn_savings(
     actual_output_side_tokens = _non_negative_int(event.output_tokens) + _non_negative_int(
         event.reasoning_tokens
     )
-    tool_tokens_saved = _non_negative_int(metadata.get("tool_compression_tokens_saved"))
+    tool_tokens_saved = _non_negative_int(metadata.get("tool_projection_tokens_saved"))
     baseline_input_tokens = actual_input_tokens + tool_tokens_saved
     baseline_output_tokens = _restored_output_side_tokens(
         actual_output_side_tokens,
@@ -1340,7 +1339,6 @@ class TurnRunner:
             timeout_budget=_TurnRunnerTimeoutBudgetAdapter(self),
             model_catalog=_TurnRunnerModelCatalogAdapter(self),
             agent_config_builder=_TurnRunnerAgentConfigBuilderAdapter(self),
-            summarizer_provider=_TurnRunnerSummarizerProviderAdapter(),
             memory_snapshot=_TurnRunnerMemorySnapshotAdapter(self),
             agent_factory=_TurnRunnerAgentFactoryAdapter(self),
         )
@@ -2138,14 +2136,14 @@ class TurnRunner:
                         "segment_count": len(turn_segments),
                         "artifact_count": len(turn_artifacts),
                         "error": bool(error_message),
-                        "tool_compression_applied": bool(
-                            turn.metadata.get("tool_compression_applied", False)
+                        "tool_projection_applied": bool(
+                            turn.metadata.get("tool_projection_applied", False)
                         ),
-                        "tool_compression_calls": int(
-                            turn.metadata.get("tool_compression_calls", 0) or 0
+                        "tool_projection_calls": int(
+                            turn.metadata.get("tool_projection_calls", 0) or 0
                         ),
-                        "tool_compression_tokens_saved": int(
-                            turn.metadata.get("tool_compression_tokens_saved", 0) or 0
+                        "tool_projection_tokens_saved": int(
+                            turn.metadata.get("tool_projection_tokens_saved", 0) or 0
                         ),
                         "tool_result_store_writes": int(
                             turn.metadata.get("tool_result_store_writes", 0) or 0
@@ -2445,23 +2443,8 @@ class TurnRunner:
         cloned = self._provider_selector.clone()
         return cloned.resolve(), cloned
 
-    @staticmethod
-    def _resolve_tool_result_compression_mode(agent_token_cfg: Any | None) -> str:
-        if agent_token_cfg is None:
-            return "truncate"
-        mode = getattr(agent_token_cfg, "tool_result_compression_mode", None)
-        if mode in {"off", "truncate", "summarize", "tokenjuice"}:
-            return str(mode)
-        return (
-            "truncate"
-            if getattr(agent_token_cfg, "tool_result_compression_enabled", True)
-            else "off"
-        )
-
     def _handle_runtime_warning(self, event: WarningEvent) -> WarningEvent:
-        if event.code != "tool_result_summary_failed":
-            return event
-        return self._disable_tool_result_compression_after_summary_failure(event)
+        return event
 
     async def _persist_turn_error(
         self,
@@ -2529,81 +2512,6 @@ class TurnRunner:
                 code=event_code,
                 error=str(exc),
             )
-
-    def _disable_tool_result_compression_after_summary_failure(
-        self, event: WarningEvent
-    ) -> WarningEvent:
-        cfg = self._config
-        agent_token_cfg = getattr(cfg, "agent_token_saving", None) if cfg is not None else None
-        summary_model = (
-            getattr(agent_token_cfg, "tool_result_compression_summary_model", None)
-            if agent_token_cfg is not None
-            else None
-        )
-        model_label = summary_model or "the active model"
-
-        disabled = False
-        if agent_token_cfg is not None:
-            try:
-                setattr(agent_token_cfg, "tool_result_compression_enabled", False)
-                setattr(agent_token_cfg, "tool_result_compression_mode", "off")
-                disabled = True
-            except Exception as exc:  # noqa: BLE001 - warning should still surface
-                log.warning(
-                    "tool_result_summary_disable_failed",
-                    model=model_label,
-                    error=str(exc),
-                )
-
-        if disabled and cfg is not None:
-            try:
-                from opensquilla.gateway.rpc_config import _persist_config
-
-                _persist_config(cfg)
-            except Exception as exc:  # noqa: BLE001 - runtime config already disabled
-                log.warning(
-                    "tool_result_summary_disable_persist_failed",
-                    model=model_label,
-                    error=str(exc),
-                )
-
-        base_message = (
-            event.message.strip()
-            if event.message
-            else (f"Tool result summarization failed for model {model_label!r}.")
-        )
-        suffix = " Tool Compress has been turned OFF." if disabled else ""
-        return WarningEvent(
-            code="tool_result_summary_disabled" if disabled else event.code,
-            message=f"{base_message}{suffix}",
-        )
-
-    @staticmethod
-    def _resolve_tool_result_summarizer_provider(
-        *,
-        mode: str,
-        cloned_selector: Any | None,
-        current_provider: Any,
-        summary_model: str | None,
-    ) -> Any | None:
-        if mode != "summarize":
-            return None
-        if not summary_model:
-            return current_provider
-        if cloned_selector is None or not hasattr(cloned_selector, "clone"):
-            return current_provider
-        try:
-            summary_selector = cloned_selector.clone()
-            summary_selector.override_model(summary_model)
-            provider = summary_selector.resolve()
-            return _SelectorFallbackProvider(provider, summary_selector)
-        except Exception as exc:  # noqa: BLE001 - summarization falls back to truncation
-            log.warning(
-                "turn_runner.tool_result_summary_provider_failed",
-                model=summary_model,
-                error=str(exc),
-            )
-            return current_provider
 
     @staticmethod
     def _non_bool_number(value: Any) -> TypeGuard[int | float]:
@@ -3794,22 +3702,22 @@ class TurnRunner:
                         )
                     )
 
-                # Tool-result compression (values will be set in agent.py)
-                savings_telemetry.tool_compression_applied = metadata.get(
-                    "tool_compression_applied",
+                # Tool-result projection (values will be set in agent.py)
+                savings_telemetry.tool_projection_applied = metadata.get(
+                    "tool_projection_applied",
                     False,
                 )
-                savings_telemetry.tool_compression_calls = metadata.get("tool_compression_calls", 0)
-                savings_telemetry.tool_compression_tokens_before = metadata.get(
-                    "tool_compression_tokens_before",
+                savings_telemetry.tool_projection_calls = metadata.get("tool_projection_calls", 0)
+                savings_telemetry.tool_projection_tokens_before = metadata.get(
+                    "tool_projection_tokens_before",
                     0,
                 )
-                savings_telemetry.tool_compression_tokens_after = metadata.get(
-                    "tool_compression_tokens_after",
+                savings_telemetry.tool_projection_tokens_after = metadata.get(
+                    "tool_projection_tokens_after",
                     0,
                 )
-                savings_telemetry.tool_compression_tokens_saved = metadata.get(
-                    "tool_compression_tokens_saved",
+                savings_telemetry.tool_projection_tokens_saved = metadata.get(
+                    "tool_projection_tokens_saved",
                     0,
                 )
                 savings_telemetry.tool_result_store_writes = metadata.get(
@@ -3847,7 +3755,7 @@ class TurnRunner:
                         squilla_router_tiers,
                         _non_negative_int(done_event.input_tokens)
                         + _non_negative_int(
-                            metadata.get("tool_compression_tokens_saved"),
+                            metadata.get("tool_projection_tokens_saved"),
                         ),
                         restored_output_tokens,
                     )

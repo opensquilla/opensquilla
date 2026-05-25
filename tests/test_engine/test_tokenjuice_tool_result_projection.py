@@ -8,12 +8,10 @@ import pytest
 import opensquilla.engine.agent as agent_mod
 import opensquilla.engine.tokenjuice_adapter as tokenjuice_adapter_mod
 from opensquilla.engine import Agent, AgentConfig, ToolCall, ToolResult
-from opensquilla.engine.runtime import TurnRunner
 from opensquilla.engine.types import ToolResultEvent
-from opensquilla.gateway.config import AgentTokenSavingConfig
 from opensquilla.plugins.tokenjuice import reduce_tool_result as backend_reduce_tool_result
-from opensquilla.provider import DoneEvent, TextDeltaEvent, ToolDefinition, ToolInputSchema
 from opensquilla.provider import DoneEvent as ProviderDoneEvent
+from opensquilla.provider import TextDeltaEvent, ToolDefinition, ToolInputSchema
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEndEvent
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStartEvent
 
@@ -28,27 +26,12 @@ class _Provider:
     def chat(self, messages, tools=None, config=None):
         self.chat_calls += 1
         if self.return_text is None:  # pragma: no cover - must not run
-            raise AssertionError("summary provider should not be used")
+            raise AssertionError("provider should not be used")
         return self._stream()
 
     async def _stream(self):
         yield TextDeltaEvent(text=self.return_text or "")
-        yield DoneEvent(stop_reason="stop", model="summary-model")
-
-    async def list_models(self) -> list[Any]:
-        return []
-
-
-class _FailingSummaryProvider:
-    provider_name = "fake"
-    model = "failing-summary-model"
-
-    def __init__(self) -> None:
-        self.chat_calls = 0
-
-    def chat(self, messages, tools=None, config=None):
-        self.chat_calls += 1
-        raise RuntimeError("summary unavailable")
+        yield ProviderDoneEvent(stop_reason="stop", model="fake-model")
 
     async def list_models(self) -> list[Any]:
         return []
@@ -89,99 +72,10 @@ def _tool_def(name: str) -> ToolDefinition:
     )
 
 
-def test_agent_resolves_tokenjuice_compression_mode() -> None:
-    agent = Agent(
-        provider=_Provider(),
-        config=AgentConfig(tool_result_compression_mode="tokenjuice"),
-    )
-
-    assert agent._tool_result_compression_mode() == "tokenjuice"
-
-
-def test_runtime_resolves_tokenjuice_compression_mode() -> None:
-    cfg = SimpleNamespace(
-        tool_result_compression_mode="tokenjuice",
-        tool_result_compression_enabled=True,
-    )
-
-    assert TurnRunner._resolve_tool_result_compression_mode(cfg) == "tokenjuice"
-
-
-def test_gateway_config_accepts_tokenjuice_compression_mode() -> None:
-    cfg = AgentTokenSavingConfig(tool_result_compression_mode="tokenjuice")
-
-    assert cfg.effective_tool_result_compression_mode == "tokenjuice"
-
-
 @pytest.mark.asyncio
-async def test_truncate_mode_does_not_call_tokenjuice(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail_reduce(**kwargs: Any) -> Any:  # pragma: no cover - must not run
-        raise AssertionError("truncate mode must not call tokenjuice")
-
-    monkeypatch.setattr(agent_mod, "reduce_tool_result_with_tokenjuice", fail_reduce, raising=False)
-    agent = Agent(
-        provider=_Provider(),
-        config=AgentConfig(
-            context_window_tokens=100,
-            tool_result_compression_mode="truncate",
-            tool_result_compression_max_share=0.25,
-        ),
-    )
-    result = ToolResult(
-        tool_use_id="tool-1",
-        tool_name="exec_command",
-        content="pytest output\n" + ("x" * 1000),
-    )
-
-    compressed = await agent._compress_tool_result(
-        result,
-        tool_call=ToolCall(
-            tool_use_id="tool-1",
-            tool_name="exec_command",
-            arguments={"command": "pytest -q", "workdir": "/repo"},
-        ),
-    )
-
-    assert compressed.content != result.content
-    assert "pytest output" in compressed.content
-    assert "[...truncated" in compressed.content
-    assert agent.config.metadata.get("tool_compression_backend") is None
-
-
-@pytest.mark.asyncio
-async def test_summarize_mode_does_not_call_tokenjuice(
+async def test_agent_projects_tokenjuice_without_context_window_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = _Provider(return_text="summary result")
-
-    def fail_reduce(**kwargs: Any) -> Any:  # pragma: no cover - must not run
-        raise AssertionError("summarize mode must not call tokenjuice")
-
-    monkeypatch.setattr(agent_mod, "reduce_tool_result_with_tokenjuice", fail_reduce, raising=False)
-    agent = Agent(
-        provider=_Provider(),
-        config=AgentConfig(
-            context_window_tokens=100,
-            tool_result_compression_mode="summarize",
-            tool_result_compression_max_share=0.25,
-        ),
-        tool_result_summarizer_provider=provider,
-    )
-    result = ToolResult(
-        tool_use_id="tool-1",
-        tool_name="exec_command",
-        content="long output\n" + ("x" * 1000),
-    )
-
-    compressed = await agent._compress_tool_result(result)
-
-    assert "summary result" in compressed.content
-    assert provider.chat_calls == 1
-    assert agent.config.metadata.get("tool_compression_backend") is None
-
-
-@pytest.mark.asyncio
-async def test_tokenjuice_mode_uses_tokenjuice_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
 
     def fake_reduce(**kwargs: Any) -> Any:
@@ -197,11 +91,7 @@ async def test_tokenjuice_mode_uses_tokenjuice_adapter(monkeypatch: pytest.Monke
     monkeypatch.setattr(agent_mod, "reduce_tool_result_with_tokenjuice", fake_reduce, raising=False)
     agent = Agent(
         provider=_Provider(),
-        config=AgentConfig(
-            context_window_tokens=100,
-            tool_result_compression_mode="tokenjuice",
-            tool_result_compression_max_share=0.25,
-        ),
+        config=AgentConfig(context_window_tokens=1_000_000),
     )
     result = ToolResult(
         tool_use_id="tool-1",
@@ -209,7 +99,7 @@ async def test_tokenjuice_mode_uses_tokenjuice_adapter(monkeypatch: pytest.Monke
         content="pytest output\n" + ("x" * 1000),
     )
 
-    compressed = await agent._compress_tool_result(
+    projected = await agent._project_tool_result_for_llm(
         result,
         tool_call=ToolCall(
             tool_use_id="tool-1",
@@ -218,15 +108,18 @@ async def test_tokenjuice_mode_uses_tokenjuice_adapter(monkeypatch: pytest.Monke
         ),
     )
 
-    assert compressed.content == "[tokenjuice]\n1 failed, 2 passed"
+    assert calls
+    assert projected.content == "[tokenjuice]\n1 failed, 2 passed"
     assert calls[0]["tool_name"] == "exec_command"
     assert calls[0]["command"] == "pytest -q"
     assert calls[0]["cwd"] == "/repo"
-    assert agent.config.metadata["tool_compression_backend"] == "tokenjuice"
+    assert agent.config.metadata["tool_projection_backend"] == "tokenjuice"
+    assert agent.config.metadata["tool_projection_attempts"] == 1
+    assert agent.config.metadata["tool_projection_calls"] == 1
 
 
 @pytest.mark.asyncio
-async def test_tokenjuice_mode_falls_back_to_truncate_when_tokenjuice_returns_none(
+async def test_tokenjuice_noop_preserves_tool_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -235,123 +128,72 @@ async def test_tokenjuice_mode_falls_back_to_truncate_when_tokenjuice_returns_no
         lambda **kwargs: None,
         raising=False,
     )
-    agent = Agent(
-        provider=_Provider(),
-        config=AgentConfig(
-            context_window_tokens=100,
-            tool_result_compression_mode="tokenjuice",
-            tool_result_compression_max_share=0.25,
-        ),
-    )
+    agent = Agent(provider=_Provider(), config=AgentConfig(context_window_tokens=100))
     result = ToolResult(
         tool_use_id="tool-1",
         tool_name="exec_command",
-        content="long output\n" + ("x" * 1000),
+        content="short output",
     )
 
-    compressed = await agent._compress_tool_result(result)
+    projected = await agent._project_tool_result_for_llm(result)
 
-    assert compressed is not result
-    assert compressed.content != result.content
-    assert "[...truncated" in compressed.content
-    assert agent.config.metadata.get("tool_compression_backend") is None
-    assert agent.config.metadata["tool_compression_calls"] == 1
+    assert projected is result
+    assert projected.content == "short output"
+    assert agent.config.metadata["tool_projection_attempts"] == 1
+    assert agent.config.metadata["tool_projection_noops"] == 1
+    assert "tool_projection_backend" not in agent.config.metadata
 
 
 @pytest.mark.asyncio
-async def test_tokenjuice_mode_truncates_reduction_that_still_exceeds_budget(
+async def test_tokenjuice_projection_stores_raw_content(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     def fake_reduce(**kwargs: Any) -> Any:
         return SimpleNamespace(
-            inline_text="[tokenjuice]\n" + ("important detail " * 40),
+            inline_text="[tokenjuice]\nimportant failure",
             raw_chars=len(kwargs["content"]),
-            reduced_chars=700,
-            ratio=0.7,
-            reducer="generic/fallback",
+            reduced_chars=28,
+            ratio=0.1,
+            reducer="tests/pytest",
         )
 
     monkeypatch.setattr(agent_mod, "reduce_tool_result_with_tokenjuice", fake_reduce, raising=False)
     agent = Agent(
         provider=_Provider(),
         config=AgentConfig(
-            context_window_tokens=100,
-            tool_result_compression_mode="tokenjuice",
-            tool_result_compression_max_share=0.25,
+            tool_result_store_dir=str(tmp_path / "tool-results"),
+            tool_result_store_session_id="session-1",
+            tool_result_store_session_key="agent:main:webchat:session-1",
+            tool_result_store_agent_id="main",
         ),
     )
-    result = ToolResult(
-        tool_use_id="tool-1",
-        tool_name="exec_command",
-        content="raw output\n" + ("x" * 1000),
+    raw_output = "raw output\n" + ("x" * 8000)
+
+    projected = await agent._project_tool_result_for_llm(
+        ToolResult(
+            tool_use_id="tool-1",
+            tool_name="exec_command",
+            content=raw_output,
+            is_error=True,
+        )
     )
 
-    compressed = await agent._compress_tool_result(result)
+    assert projected.content.startswith("[tool_result_projection]\n")
+    assert "tool_result_handle:" in projected.content
+    assert "[tokenjuice]\nimportant failure" in projected.content
 
-    assert compressed.content != result.content
-    assert "[...truncated" in compressed.content
-    assert len(compressed.content) <= 100
-    assert agent.config.metadata["tool_compression_backend"] == "tokenjuice"
-    assert agent.config.metadata["tool_compression_tokenjuice_over_budget_fallbacks"] == 1
+    from opensquilla.engine.tool_result_store import ToolResultStore
 
-
-@pytest.mark.asyncio
-async def test_summarize_mode_falls_back_to_budgeted_truncate_when_summary_fails() -> None:
-    provider = _FailingSummaryProvider()
-    agent = Agent(
-        provider=_Provider(),
-        config=AgentConfig(
-            context_window_tokens=100,
-            tool_result_compression_mode="summarize",
-            tool_result_compression_max_share=0.25,
-        ),
-        tool_result_summarizer_provider=provider,
+    handle = next(
+        line.split(":", 1)[1].strip()
+        for line in projected.content.splitlines()
+        if line.startswith("tool_result_handle:")
     )
-    result = ToolResult(
-        tool_use_id="tool-1",
-        tool_name="exec_command",
-        content="long output\n" + ("x" * 1000),
-    )
-
-    compressed = await agent._compress_tool_result(result)
-
-    assert provider.chat_calls == 1
-    assert compressed is not result
-    assert compressed.content != result.content
-    assert "[...truncated" in compressed.content
-    assert agent.config.metadata["tool_compression_calls"] == 1
-
-
-@pytest.mark.asyncio
-async def test_summarize_mode_falls_back_to_summary_provider_when_tokenjuice_returns_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        agent_mod,
-        "reduce_tool_result_with_tokenjuice",
-        lambda **kwargs: None,
-        raising=False,
-    )
-    provider = _Provider(return_text="summary result")
-    agent = Agent(
-        provider=_Provider(),
-        config=AgentConfig(
-            context_window_tokens=100,
-            tool_result_compression_mode="summarize",
-            tool_result_compression_max_share=0.25,
-        ),
-        tool_result_summarizer_provider=provider,
-    )
-    result = ToolResult(
-        tool_use_id="tool-1",
-        tool_name="exec_command",
-        content="long output\n" + ("x" * 1000),
-    )
-
-    compressed = await agent._compress_tool_result(result)
-
-    assert "summary result" in compressed.content
-    assert provider.chat_calls == 1
+    record = ToolResultStore(tmp_path / "tool-results").read(handle, session_id="session-1")
+    assert record.content == raw_output
+    assert record.session_key == "agent:main:webchat:session-1"
+    assert record.agent_id == "main"
 
 
 def test_tokenjuice_adapter_calls_python_backend(
@@ -446,6 +288,35 @@ def test_tokenjuice_adapter_ignores_non_shrinking_response(
     )
 
 
+def test_tokenjuice_adapter_ignores_trailing_newline_only_reduction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_reduce(**kwargs: Any) -> Any:
+        return SimpleNamespace(
+            inline_text="exit_code=0\ninstalled",
+            raw_chars=22,
+            reduced_chars=21,
+            ratio=21 / 22,
+            reducer="generic/fallback",
+        )
+
+    monkeypatch.setattr(
+        tokenjuice_adapter_mod,
+        "_reduce_tool_result_backend",
+        fake_reduce,
+    )
+
+    assert (
+        tokenjuice_adapter_mod.reduce_tool_result_with_tokenjuice(
+            tool_name="exec_command",
+            content="exit_code=0\ninstalled\n",
+            is_error=False,
+            tool_use_id="tool-1",
+        )
+        is None
+    )
+
+
 def test_python_backend_reduces_pytest_output() -> None:
     output = "\n".join(
         [
@@ -503,12 +374,7 @@ async def test_run_turn_feeds_tokenjuice_reduced_tool_result_to_next_provider_ca
     provider = _ToolCallingProvider()
     agent = Agent(
         provider=provider,
-        config=AgentConfig(
-            context_window_tokens=500,
-            max_iterations=2,
-            tool_result_compression_mode="tokenjuice",
-            tool_result_compression_max_share=0.25,
-        ),
+        config=AgentConfig(context_window_tokens=1_000_000, max_iterations=2),
         tool_definitions=[_tool_def("exec_command")],
         tool_handler=handler,
     )
@@ -520,7 +386,7 @@ async def test_run_turn_feeds_tokenjuice_reduced_tool_result_to_next_provider_ca
     assert "FAILED tests/test_api.py::test_bad" in second_call_tool_result
     assert "AssertionError" in second_call_tool_result
     assert "rootdir:" not in second_call_tool_result
-    assert agent.config.metadata["tool_compression_backend"] == "tokenjuice"
+    assert agent.config.metadata["tool_projection_backend"] == "tokenjuice"
     raw_event = next(event for event in events if isinstance(event, ToolResultEvent))
     assert raw_event.result == output
 

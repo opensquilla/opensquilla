@@ -276,7 +276,7 @@ async def test_agent_emits_artifact_event_independent_of_tool_result_text() -> N
     provider = _LoopingToolProvider()
     agent = Agent(
         provider=provider,
-        config=AgentConfig(max_iterations=1, tool_result_compression_mode="truncate"),
+        config=AgentConfig(max_iterations=1),
         tool_definitions=[_echo_definition()],
         tool_handler=_artifact_tool,
     )

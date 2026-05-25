@@ -146,8 +146,8 @@ def _capture_locals_at_post_slice() -> dict[str, Any]:
         "agent_config_model_id": getattr(agent_config, "model_id", None),
         "agent_config_cache_mode": getattr(agent_config, "cache_mode", None),
         "agent_config_thinking": getattr(agent_config, "thinking", None),
-        "agent_config_tool_result_compression_mode": getattr(
-            agent_config, "tool_result_compression_mode", None
+        "agent_config_tool_result_projection_max_inline_chars": getattr(
+            agent_config, "tool_result_projection_max_inline_chars", None
         ),
         "agent_config_flush_enabled": getattr(
             agent_config, "flush_enabled", None
@@ -300,20 +300,13 @@ def _patch_budget_resolvers(runner, case):
     runner._resolve_agent_max_provider_retries = _retries.__get__(runner, TurnRunner)
 
 
-def _patch_thinking_compression(runner, case):
+def _patch_thinking(runner, case):
     thinking_value = case["thinking"]
-    mode_value = case["compression_mode"]
 
     def _resolve_turn_thinking(self, turn):  # noqa: ARG001, ARG002
         return thinking_value
 
-    def _resolve_tool_result_compression_mode(self, agent_token_cfg):  # noqa: ARG001, ARG002
-        return mode_value
-
     runner._resolve_turn_thinking = _resolve_turn_thinking.__get__(runner, TurnRunner)
-    runner._resolve_tool_result_compression_mode = (
-        _resolve_tool_result_compression_mode.__get__(runner, TurnRunner)
-    )
 
 
 def _patch_memory_helpers(runner):
@@ -402,7 +395,6 @@ _CASE_BASE: dict[str, Any] = dict(
     request_timeout=120.0,
     max_provider_retries=3,
     thinking=False,
-    compression_mode="off",
     catalog_max_tokens=4096,
     catalog_context_window=200_000,
     catalog_capabilities=None,
@@ -424,28 +416,25 @@ def _case(case_id: str, **overrides: Any) -> tuple[str, dict[str, Any]]:
 
 _CORPUS: list[tuple[str, dict[str, Any]]] = [
     _case("success_all_defaults"),
-    _case("per_call_timeout", per_call_timeout=42.0, compression_mode="truncate"),
-    _case("env_var_timeout_proxy", runtime_timeout=99.0, compression_mode="truncate"),
+    _case("per_call_timeout", per_call_timeout=42.0),
+    _case("env_var_timeout_proxy", runtime_timeout=99.0),
     _case(
         "session_max_iterations",
         per_call_max_iterations=5,
         max_iterations=5,
-        compression_mode="truncate",
     ),
     _case(
         "no_model_catalog",
         model_catalog_present=False,
         catalog_max_tokens=8192,
         catalog_context_window=200_000,
-        compression_mode="truncate",
     ),
     _case(
         "model_with_capabilities",
         thinking=True,
-        compression_mode="off",
         catalog_capabilities=SimpleNamespace(supports_reasoning=True),
     ),
-    _case("summarize_without_summary_model", compression_mode="off"),
+    _case("projection_limit_default"),
     _case("sync_manager_warm"),
     _case("private_memory_disabled", private_memory_allowed_value=False),
     _case("snapshot_already_exists", snapshot_pre_existing=True),
@@ -547,7 +536,7 @@ def _setup_runner(case: dict[str, Any]) -> TurnRunner:
     _patch_resolve_prompt_config(runner, "FINAL", None, None)
     _patch_session_id(runner, "sess-1")
     _patch_budget_resolvers(runner, case)
-    _patch_thinking_compression(runner, case)
+    _patch_thinking(runner, case)
     _patch_memory_helpers(runner)
     _patch_post_slice_probe(runner)
     _patch_observability(runner)
@@ -605,7 +594,7 @@ async def test_agent_bootstrap_stage_snapshot(
         "agent_config_model_id": "claude-sonnet-4.5",
         "agent_config_cache_mode": "off",
         "agent_config_thinking": case["thinking"],
-        "agent_config_tool_result_compression_mode": case["compression_mode"],
+        "agent_config_tool_result_projection_max_inline_chars": 60_000,
         "agent_config_flush_enabled": True,
         "effective_runtime_timeout": expected_runtime_timeout,
         "effective_max_iterations": expected_max_iterations,

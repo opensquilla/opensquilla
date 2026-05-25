@@ -65,8 +65,6 @@ class _AgentConfigAuxiliaries:
     """
 
     thinking: bool | ThinkingLevel
-    tool_result_compression_mode: str
-    tool_result_compression_summary_model: str | None
     flush_workspace_dir: str
     tool_result_store_dir: str
     tool_result_store_session_id: str
@@ -80,11 +78,7 @@ class _AgentConfigAuxiliaries:
     flush_compaction_requires_safe_receipt: bool
     flush_compaction_safety_mode: Literal["protect", "best_effort", "block", "off"]
     # Agent-token-cfg-derived
-    tool_result_compression_enabled: bool
-    tool_result_compression_max_share: float
-    tool_result_compression_summary_max_tokens: int
-    tool_result_compression_summary_timeout_seconds: float
-    tool_result_compression_summary_input_max_chars: int
+    tool_result_projection_max_inline_chars: int
     tool_result_store_max_bytes: int
     tool_result_store_disk_budget_bytes: int
     tool_result_store_retention_seconds: int
@@ -146,15 +140,14 @@ class ModelCatalogPort(Protocol):
 
 @runtime_checkable
 class AgentConfigBuilderPort(Protocol):
-    """Wraps the five ``TurnRunner`` helpers AgentConfig assembly needs.
+    """Wraps the ``TurnRunner`` helpers AgentConfig assembly needs.
 
     The inline body calls ``_resolve_turn_thinking(turn)``,
-    ``_resolve_tool_result_compression_mode(_agent_token_cfg)``,
     ``_resolve_memory_source_dir(agent_id)``, and reads
     ``media_root_from_config(self._config) / "tool-results"`` plus a
     handful of ``getattr`` reads off ``_mem_cfg`` / ``_agent_token_cfg``.
 
-    Folding all five into a single port keeps the stage body free of
+    Folding them into a single port keeps the stage body free of
     runtime imports. The adapter returns a typed
     ``_AgentConfigAuxiliaries`` value that the stage feeds straight into
     ``AgentConfig(...)``.
@@ -181,25 +174,6 @@ def _route_max_history_turns(metadata: dict[str, Any]) -> int:
             return 0
     return 0
 
-
-@runtime_checkable
-class SummarizerProviderPort(Protocol):
-    """Wraps ``TurnRunner._resolve_tool_result_summarizer_provider``.
-
-    Pure static helper today. Returns ``None`` when ``mode != "summarize"``;
-    otherwise returns either the current provider (no override) or a
-    wrapped ``_SelectorFallbackProvider`` around a model-overridden clone.
-    Defensive try/except already inside the helper.
-    """
-
-    def resolve(
-        self,
-        *,
-        mode: str,
-        cloned_selector: Any | None,
-        current_provider: Any,
-        summary_model: str | None,
-    ) -> Any | None: ...
 
 @runtime_checkable
 class MemorySnapshotPort(Protocol):
@@ -249,7 +223,6 @@ class AgentFactoryPort(Protocol):
         tool_handler: ToolHandler | None,
         session_key: str,
         turn_call_logger: TurnCallLogger | None,
-        tool_result_summarizer_provider: LLMProvider | None,
         memory_sync_manager: Any | None,
     ) -> Agent: ...
 
@@ -348,9 +321,6 @@ class AgentBootstrapStage:
       ``_mem_cfg`` / ``_agent_token_cfg`` plus
       ``_resolve_memory_source_dir`` filesystem path resolution and
       ``media_root_from_config`` path build. Idempotent.
-    - ``summarizer_provider.resolve`` — synchronous;
-      ``cloned_selector.clone()`` mutates internal selector state
-      (defensive try/except already present inside the helper).
     - ``memory_snapshot.warm_and_capture`` — async; calls
       ``sync_manager.warm_session`` (transcript-driven preload) and
       mutates ``self._memory_snapshots`` dict.
@@ -369,14 +339,12 @@ class AgentBootstrapStage:
         timeout_budget: TimeoutBudgetPort,
         model_catalog: ModelCatalogPort,
         agent_config_builder: AgentConfigBuilderPort,
-        summarizer_provider: SummarizerProviderPort,
         memory_snapshot: MemorySnapshotPort,
         agent_factory: AgentFactoryPort,
     ) -> None:
         self._timeout_budget = timeout_budget
         self._model_catalog = model_catalog
         self._agent_config_builder = agent_config_builder
-        self._summarizer_provider = summarizer_provider
         self._memory_snapshot = memory_snapshot
         self._agent_factory = agent_factory
 
@@ -402,7 +370,7 @@ class AgentBootstrapStage:
         # 2. Resolve max_tokens, context_window, capabilities from catalog
         catalog = self._model_catalog.lookup(inp.resolved_model)
 
-        # 3. Build AgentConfig auxiliaries (thinking, compression, store, mem cfg)
+        # 3. Build AgentConfig auxiliaries (thinking, projection, store, mem cfg)
         aux = self._agent_config_builder.build_auxiliaries(
             agent_id=inp.agent_id,
             session_key=inp.session_key,
@@ -448,20 +416,8 @@ class AgentBootstrapStage:
             flush_workspace_dir=aux.flush_workspace_dir,
             model_capabilities=catalog.capabilities,
             thinking=aux.thinking,
-            tool_result_compression_enabled=aux.tool_result_compression_enabled,
-            tool_result_compression_mode=aux.tool_result_compression_mode,  # type: ignore[arg-type]
-            tool_result_compression_max_share=aux.tool_result_compression_max_share,
-            tool_result_compression_summary_model=(
-                aux.tool_result_compression_summary_model
-            ),
-            tool_result_compression_summary_max_tokens=(
-                aux.tool_result_compression_summary_max_tokens
-            ),
-            tool_result_compression_summary_timeout_seconds=(
-                aux.tool_result_compression_summary_timeout_seconds
-            ),
-            tool_result_compression_summary_input_max_chars=(
-                aux.tool_result_compression_summary_input_max_chars
+            tool_result_projection_max_inline_chars=(
+                aux.tool_result_projection_max_inline_chars
             ),
             tool_result_store_dir=aux.tool_result_store_dir,
             tool_result_store_session_id=aux.tool_result_store_session_id,
@@ -477,17 +433,7 @@ class AgentBootstrapStage:
             metadata=agent_metadata,
         )
 
-        # 5. Resolve tool-result summarizer provider only for summarize mode.
-        summarizer = None
-        if aux.tool_result_compression_mode == "summarize":
-            summarizer = self._summarizer_provider.resolve(
-                mode=aux.tool_result_compression_mode,
-                cloned_selector=inp.cloned_selector,
-                current_provider=inp.provider,
-                summary_model=aux.tool_result_compression_summary_model,
-            )
-
-        # 6. Warm session and capture memory snapshot (async, dict-mutating)
+        # 5. Warm session and capture memory snapshot (async, dict-mutating)
         memory = await self._memory_snapshot.warm_and_capture(
             agent_id=inp.agent_id,
             session_key=inp.session_key,
@@ -501,7 +447,6 @@ class AgentBootstrapStage:
             tool_handler=inp.tool_handler,
             session_key=inp.session_key,
             turn_call_logger=inp.turn_call_logger,
-            tool_result_summarizer_provider=summarizer,
             memory_sync_manager=memory.sync_manager,
         )
 

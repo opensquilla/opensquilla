@@ -355,23 +355,12 @@ def test_historical_replay_projection_compacts_list_tool_results() -> None:
     assert messages[0].content[0].content == large_result
 
 
-def test_tool_result_compression_default_behavior_is_unchanged() -> None:
-    config = AgentConfig()
-    provider = CapturingProvider()
-    agent = Agent(provider=provider, config=config)
-
-    assert config.tool_result_compression_enabled is True
-    assert config.tool_result_compression_mode is None
-    assert agent._tool_result_compression_mode() == "truncate"
-
-
 def test_agent_aggregate_tool_result_budget_compacts_old_bulky_results(tmp_path) -> None:
     raw_old_output = "old bulky output\n" + ("x" * 4000)
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=200,
-            tool_result_compression_max_share=0.25,
             tool_result_store_dir=str(tmp_path / "tool-results"),
             tool_result_store_session_id="session-1",
             tool_result_store_session_key="agent:main:webchat:session-1",
@@ -444,9 +433,9 @@ def test_agent_aggregate_tool_result_budget_compacts_old_bulky_results(tmp_path)
     assert len(err_result.content) > 4000
     assert "recent output" in new_result.content
     assert len(new_result.content) > 4000
-    assert agent.config.metadata["tool_aggregate_compression_applied"] is True
-    assert agent.config.metadata["tool_compression_applied"] is True
-    assert agent.config.metadata["tool_compression_tokens_saved"] > 0
+    assert agent.config.metadata["tool_aggregate_projection_applied"] is True
+    assert agent.config.metadata["tool_projection_applied"] is True
+    assert agent.config.metadata["tool_projection_tokens_saved"] > 0
     from opensquilla.engine.tool_result_store import ToolResultStore
 
     handle = next(
@@ -528,7 +517,7 @@ def test_agent_large_context_compacts_old_local_tool_results_for_provider(tmp_pa
         if isinstance(block, ContentBlockToolResult)
     )
     assert total_result_chars <= agent._tool_result_provider_request_max_chars()
-    assert agent.config.metadata["tool_absolute_compression_applied"] is True
+    assert agent.config.metadata["tool_provider_guard_projection_applied"] is True
 
 
 @pytest.mark.asyncio
@@ -537,7 +526,6 @@ async def test_agent_single_tool_result_projection_stores_raw_content(tmp_path) 
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=200,
-            tool_result_compression_max_share=0.25,
             tool_result_store_dir=str(tmp_path / "tool-results"),
             tool_result_store_session_id="session-1",
             tool_result_store_session_key="agent:main:webchat:session-1",
@@ -584,7 +572,6 @@ async def test_agent_tool_result_projection_skips_raw_handle_when_store_over_bud
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=200,
-            tool_result_compression_max_share=0.25,
             tool_result_store_dir=str(tmp_path / "tool-results"),
             tool_result_store_session_id="session-1",
             tool_result_store_session_key="agent:main:webchat:session-1",
@@ -624,7 +611,6 @@ def test_agent_aggregate_tool_result_budget_uses_total_not_single_result_size() 
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=1200,
-            tool_result_compression_max_share=0.25,
         ),
     )
     messages: list[Message] = []
@@ -669,7 +655,6 @@ def test_agent_provider_backstop_classifies_external_results_from_tool_use_names
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=1_000_000,
-            tool_result_compression_max_share=1.0,
             tool_result_provider_request_max_chars=1300,
             tool_result_external_keep_recent=2,
         ),
@@ -726,7 +711,6 @@ def test_agent_provider_backstop_preserves_sessions_yield_control_json() -> None
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=1_000_000,
-            tool_result_compression_max_share=1.0,
             tool_result_provider_request_max_chars=300,
         ),
     )

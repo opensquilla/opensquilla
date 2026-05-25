@@ -1548,11 +1548,9 @@
 
 /* ─── Composer toolbar trigger + popover ────────────────────────────── */
 /*
- * The three composer-state controls (Tool Compress, Bypass, Squilla Router)
- * live inside a popover anchored to a single gear button in the input bar.
- * The trigger glows accent only when at least one control is in a non-default
- * state — bypass on, tool-compress != truncate, OR router off — so the
- * default chat surface stays calm.
+ * Composer-state controls live inside a popover anchored to a single gear
+ * button in the input bar. The trigger glows accent only when at least one
+ * control is in a non-default state: bypass on OR router off.
  */
 .chat-toolbar-wrap {
   position: relative;
@@ -1567,12 +1565,7 @@
 .chat-toolbar-trigger:hover { color: var(--accent); }
 .chat-toolbar-trigger.is-active { color: var(--accent); }
 
-/* Per-toggle status dots — three vertical dots stacked on the right edge of
-   the trigger button. Each dot represents one runtime mode: bypass (top),
-   tool-compress (middle), router-off (bottom). Dots are invisible when their
-   mode is at default; they appear when the mode deviates. The dot's color
-   communicates severity: bypass=warn, compress=accent, router-off=muted-accent.
-   This replaces a single binary "is-glowing" pip with per-mode visibility. */
+/* Per-toggle status dots reveal which runtime mode is non-default. */
 .chat-toolbar-trigger-dots {
   position: absolute;
   top: 50%;
@@ -1596,11 +1589,6 @@
 .chat-toolbar-trigger.has-dot-bypass .chat-toolbar-trigger-dots i[data-dot="bypass"] {
   background: var(--danger);
   box-shadow: 0 0 4px color-mix(in srgb, var(--danger) 70%, transparent);
-}
-/* Tool compress — accent orange, ordinary mode tweak. */
-.chat-toolbar-trigger.has-dot-compress .chat-toolbar-trigger-dots i[data-dot="compress"] {
-  background: var(--accent);
-  box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 60%, transparent);
 }
 /* Router off — muted, since "off" is intentional but lower-stakes. */
 .chat-toolbar-trigger.has-dot-router .chat-toolbar-trigger-dots i[data-dot="router"] {

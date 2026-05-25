@@ -21,7 +21,6 @@ from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
     AgentFactoryPort,
     MemorySnapshotPort,
     ModelCatalogPort,
-    SummarizerProviderPort,
     TimeoutBudgetPort,
     _AgentConfigAuxiliaries,
     _MemorySnapshotResult,
@@ -59,14 +58,10 @@ def _default_catalog(*, capabilities: Any = None) -> _ResolvedCatalog:
 def _default_aux(
     *,
     thinking: bool | ThinkingLevel = False,
-    mode: str = "off",
-    summary_model: str | None = None,
     flush_compaction_requires_safe_receipt: bool = False,
 ) -> _AgentConfigAuxiliaries:
     return _AgentConfigAuxiliaries(
         thinking=thinking,
-        tool_result_compression_mode=mode,
-        tool_result_compression_summary_model=summary_model,
         flush_workspace_dir="/tmp/flush",
         tool_result_store_dir="/tmp/store",
         tool_result_store_session_id="s1",
@@ -78,11 +73,7 @@ def _default_aux(
         flush_archive_max_bytes=800_000,
         flush_compaction_requires_safe_receipt=flush_compaction_requires_safe_receipt,
         flush_compaction_safety_mode="protect",
-        tool_result_compression_enabled=True,
-        tool_result_compression_max_share=0.25,
-        tool_result_compression_summary_max_tokens=1024,
-        tool_result_compression_summary_timeout_seconds=20.0,
-        tool_result_compression_summary_input_max_chars=60_000,
+        tool_result_projection_max_inline_chars=60_000,
         tool_result_store_max_bytes=8 * 1024 * 1024,
         tool_result_store_disk_budget_bytes=256 * 1024 * 1024,
         tool_result_store_retention_seconds=7 * 24 * 60 * 60,
@@ -122,18 +113,6 @@ class _RecordingAgentConfigBuilder:
         self.calls += 1
         self.last_kwargs = dict(kwargs)
         return self.aux
-
-
-@dataclass
-class _RecordingSummarizerProvider:
-    summarizer: Any = None
-    last_kwargs: dict[str, Any] = field(default_factory=dict)
-    calls: int = 0
-
-    def resolve(self, **kwargs: Any) -> Any | None:
-        self.calls += 1
-        self.last_kwargs = dict(kwargs)
-        return self.summarizer
 
 
 @dataclass
@@ -232,7 +211,6 @@ def _make_stage(
     budgets=None,
     catalog=None,
     aux=None,
-    summarizer=None,
     snapshot=None,
     factory=None,
 ):
@@ -240,7 +218,6 @@ def _make_stage(
         timeout_budget=budgets or _RecordingTimeoutBudget(),
         model_catalog=catalog or _RecordingModelCatalog(),
         agent_config_builder=aux or _RecordingAgentConfigBuilder(),
-        summarizer_provider=summarizer or _RecordingSummarizerProvider(),
         memory_snapshot=snapshot or _RecordingMemorySnapshot(),
         agent_factory=factory or _RecordingAgentFactory(),
     )
@@ -342,7 +319,7 @@ async def test_case05_no_model_catalog_fallback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_case06_model_with_capabilities_and_summarize() -> None:
+async def test_case06_model_with_capabilities_and_projection_limit() -> None:
     caps = SimpleNamespace(supports_reasoning=True)
     catalog = _RecordingModelCatalog(
         catalog=_ResolvedCatalog(
@@ -350,56 +327,15 @@ async def test_case06_model_with_capabilities_and_summarize() -> None:
         )
     )
     aux_builder = _RecordingAgentConfigBuilder(
-        aux=_default_aux(
-            thinking=True, mode="summarize", summary_model="claude-haiku-4.5"
-        )
+        aux=replace(_default_aux(thinking=True), tool_result_projection_max_inline_chars=1234)
     )
-    summarizer_provider = SimpleNamespace(name="summary_wrapped")
-    summarizer = _RecordingSummarizerProvider(summarizer=summarizer_provider)
     factory = _RecordingAgentFactory()
-    stage = _make_stage(
-        catalog=catalog, aux=aux_builder, summarizer=summarizer, factory=factory
-    )
+    stage = _make_stage(catalog=catalog, aux=aux_builder, factory=factory)
     inp = _make_input(cloned_selector=SimpleNamespace())
     out = await stage.run(inp)
     assert out.output.model_capabilities is caps
     assert out.output.agent_config.thinking is True
-    assert summarizer.calls == 1
-    assert summarizer.last_kwargs["mode"] == "summarize"
-    assert summarizer.last_kwargs["summary_model"] == "claude-haiku-4.5"
-    assert factory.last_kwargs["tool_result_summarizer_provider"] is (
-        summarizer_provider
-    )
-
-
-@pytest.mark.asyncio
-async def test_case07_summarize_without_summary_model() -> None:
-    aux_builder = _RecordingAgentConfigBuilder(
-        aux=_default_aux(mode="summarize", summary_model=None)
-    )
-    current_provider = SimpleNamespace(name="current")
-    summarizer = _RecordingSummarizerProvider(summarizer=current_provider)
-    stage = _make_stage(aux=aux_builder, summarizer=summarizer)
-    inp = _make_input(provider=current_provider)
-    await stage.run(inp)
-    assert summarizer.last_kwargs["summary_model"] is None
-
-
-@pytest.mark.asyncio
-async def test_tokenjuice_mode_does_not_resolve_summary_provider() -> None:
-    aux_builder = _RecordingAgentConfigBuilder(
-        aux=_default_aux(mode="tokenjuice", summary_model="cheap/model")
-    )
-    summarizer = _RecordingSummarizerProvider(
-        summarizer=SimpleNamespace(name="summary_wrapped")
-    )
-    factory = _RecordingAgentFactory()
-    stage = _make_stage(aux=aux_builder, summarizer=summarizer, factory=factory)
-
-    await stage.run(_make_input())
-
-    assert summarizer.calls == 0
-    assert factory.last_kwargs["tool_result_summarizer_provider"] is None
+    assert out.output.agent_config.tool_result_projection_max_inline_chars == 1234
 
 
 @pytest.mark.asyncio
@@ -533,7 +469,6 @@ def test_ports_runtime_checkable() -> None:
     assert isinstance(_RecordingTimeoutBudget(), TimeoutBudgetPort)
     assert isinstance(_RecordingModelCatalog(), ModelCatalogPort)
     assert isinstance(_RecordingAgentConfigBuilder(), AgentConfigBuilderPort)
-    assert isinstance(_RecordingSummarizerProvider(), SummarizerProviderPort)
     assert isinstance(_RecordingMemorySnapshot(), MemorySnapshotPort)
     assert isinstance(_RecordingAgentFactory(), AgentFactoryPort)
 

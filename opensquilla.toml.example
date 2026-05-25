@@ -241,17 +241,13 @@ thinking_level = "medium"
 # tier_profile = "dashscope"
 
 [agent_token_saving]
-# Compress oversized tool results before they are fed back into the model.
-# Raw tool responses still go to the turn-call log when that log is enabled.
-tool_result_compression_enabled = true
-# mode: "off" | "truncate" | "summarize"; unset keeps legacy enabled=true/false behavior.
-# "summarize" calls an optional cheap model before falling back to truncation on failure.
-# tool_result_compression_mode = "truncate"
-tool_result_compression_max_share = 0.25
-# tool_result_compression_summary_model = "z-ai/glm-4.5-air"
-# tool_result_compression_summary_max_tokens = 1024
-# tool_result_compression_summary_timeout_seconds = 20.0
-# tool_result_compression_summary_input_max_chars = 60000
+# Project fresh tool results with the built-in tokenjuice reducer before they
+# are fed back into the model. Raw tool responses remain available through the
+# tool-result store when configured by the gateway runtime.
+tool_result_projection_max_inline_chars = 60000
+tool_result_store_max_bytes = 8388608
+tool_result_store_disk_budget_bytes = 268435456
+tool_result_store_retention_seconds = 604800
 
 [compaction]
 enabled = true

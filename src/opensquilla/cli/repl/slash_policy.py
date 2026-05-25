@@ -84,7 +84,6 @@ STATE_MUTATION_SLASH_WORDS: frozenset[str] = frozenset(
         "/model",
         "/image",
         "/path",
-        "/tool-compress",
         "/models",
         "/status",
         "/session",

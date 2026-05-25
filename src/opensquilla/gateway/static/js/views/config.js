@@ -46,10 +46,8 @@ const ConfigView = (() => {
       'Maximum debug.log size before rotation. Set to 0 to disable rotation in the stdlib handler.',
     'log_file_backup_count':
       'Number of rotated debug.log backups to retain.',
-    'agent_token_saving.tool_result_compression_mode':
-      'How tool outputs are compressed before being fed back to the model: "off", "truncate" (default TRIM), "summarize", or "tokenjuice" (experimental rule-based backend).',
-    'agent_token_saving.tool_result_compression_enabled':
-      'Master switch for tool-result compression. Disable to send raw tool output verbatim — useful for debugging, costly otherwise.',
+    'agent_token_saving.tool_result_projection_max_inline_chars':
+      'Maximum inline size for tokenjuice tool-result projections before they are fed back to the model. Raw tool output is preserved separately when storage is available.',
     'squilla_router.enabled':
       'Turn the ML-powered tier router on or off. When off, every request uses the default model regardless of complexity.',
     'squilla_router.rollout_phase':

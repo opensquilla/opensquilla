@@ -1,6 +1,6 @@
 ---
 name: meta-pdf-intelligence
-description: "Extract text/tables from a batch of PDFs, summarize each document, and persist the digest to long-term memory for later recall."
+description: "Use when the user asks to analyze, digest, compare, or query one or more PDF documents with traceable file/page evidence."
 kind: meta
 meta_priority: 55
 always: false
@@ -14,31 +14,83 @@ provenance:
   license: Apache-2.0
 composition:
   steps:
+    - id: intake
+      kind: agent
+      skill: sub-agent
+      with:
+        task: |
+          Parse the PDF request into a document-analysis contract. Determine
+          whether this is a single-PDF summary, multi-PDF comparison, or a
+          targeted question-answer task. Preserve every file path or URL the
+          user mentioned.
+
+          User request:
+          {{ inputs.user_message | xml_escape | truncate(1200) }}
+
+          Return exactly:
+          MODE: <single_summary|multi_compare|question_answer>
+          DOCUMENTS:
+            - <path or URL>
+          QUESTION: <specific question or empty>
+          OUTPUT_LANGUAGE: <language>
     - id: extract
       skill: pdf-toolkit
+      depends_on: [intake]
       with:
-        task: "Extract text and tables from the PDF(s) referenced by this user request: {{ inputs.user_message | xml_escape | truncate(512) }}"
-    - id: digest
+        task: "Extract text, tables, page numbers, headings, and document names for this PDF analysis contract:\n{{ outputs.intake | truncate(2000) }}"
+    - id: per_document_digest
       skill: summarize
       depends_on: [extract]
       with:
-        text: "{{ outputs.extract }}"
-        style: structured
-        max_words: 1500
+        text: "Intake:\n{{ outputs.intake }}\n\nExtracted PDF content:\n{{ outputs.extract }}"
+        style: pdf_per_document_digest
+        max_words: 2500
+    - id: cross_document_synthesis
+      kind: agent
+      skill: sub-agent
+      depends_on: [per_document_digest]
+      with:
+        task: |
+          Synthesize the PDF analysis according to the intake mode. For
+          single_summary, produce a structured summary. For multi_compare,
+          compare agreements, conflicts, and unique claims. For question_answer,
+          answer the question directly first.
+
+          Requirements:
+          - cite file names and page numbers whenever available
+          - never merge evidence from different documents without naming them
+          - list open questions or extraction limits
+
+          Intake:
+          {{ outputs.intake | truncate(2000) }}
+
+          Per-document digest:
+          {{ outputs.per_document_digest | truncate(8000) }}
+    - id: traceable_index
+      kind: agent
+      skill: sub-agent
+      depends_on: [cross_document_synthesis]
+      with:
+        task: |
+          Build a compact memory index for later recall. Use structured fields:
+          documents, key_facts, page_refs, tables, open_questions.
+
+          Analysis:
+          {{ outputs.cross_document_synthesis | truncate(6000) }}
     - id: memorize
       skill: memory
-      depends_on: [digest]
+      depends_on: [traceable_index]
       with:
         action: save
         topic: "pdf-intel"
-        content: "{{ outputs.digest }}"
+        content: "{{ outputs.traceable_index }}"
 ---
 
 # PDF Intelligence (Meta-Skill)
 
-Process a batch of PDFs into a queryable knowledge entry: extract →
-summarize → persist. Subsequent turns can `memory_search` the
-`pdf-intel` topic to recover any document's key facts.
+Process one or more PDFs into a traceable analysis entry. The workflow first
+classifies the request, preserves file/page evidence, synthesizes across
+documents when needed, and stores a structured memory index.
 
 ## Fallback
 

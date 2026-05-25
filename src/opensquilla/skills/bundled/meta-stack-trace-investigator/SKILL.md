@@ -1,6 +1,6 @@
 ---
 name: meta-stack-trace-investigator
-description: "Investigate a Python traceback by fanning out across 4 independent data sources (repo grep + GitHub issues + git history + prior memory), then fan in to a root-cause hypothesis plus 3 file:line suggestions. Use when pasting a stack trace and wanting structured root-cause analysis instead of a one-shot agent guess."
+description: "Use when the user pastes a stack trace or runtime error and wants structured root-cause analysis with repository evidence and next verification commands."
 kind: meta
 meta_priority: 60
 always: false
@@ -15,14 +15,34 @@ provenance:
   license: Apache-2.0
 composition:
   steps:
-    - id: parse_trace
+    - id: classify_language
       kind: agent
       skill: sub-agent
       with:
         task: |
-          You are the *trace parser* for a stack-trace investigation bundle.
-          Extract structured info from the Python traceback below; do not
+          Classify the stack trace language/runtime. Support Python,
+          JavaScript, TypeScript, Go, Rust, and unknown text logs. Do not
           speculate about root cause yet.
+
+          Stack trace under investigation:
+          ---
+          {{ inputs.user_message | xml_escape | truncate(3000) }}
+          ---
+
+          Reply with EXACTLY one JSON object on a single line, no preamble:
+            {"language": "<python|javascript|typescript|go|rust|unknown>", "runtime": "<runtime or empty>", "confidence": "<low|medium|high>"}
+    - id: parse_trace
+      kind: agent
+      skill: sub-agent
+      depends_on: [classify_language]
+      with:
+        task: |
+          You are the trace parser for a stack-trace investigation bundle.
+          Extract structured info from the stack trace below; do not speculate
+          about root cause yet.
+
+          Language classification:
+          {{ outputs.classify_language | truncate(400) }}
 
           Traceback under investigation:
           ---
@@ -30,7 +50,7 @@ composition:
           ---
 
           Reply with EXACTLY one JSON object on a single line, no preamble:
-            {"exception_class": "<ClassName>", "exception_message": "<head of message; ≤120 chars>", "primary_file": "<path/file.py or empty>", "primary_line": <int or 0>, "symbols": ["sym1", "sym2", ...]}
+            {"exception_class": "<ClassNameOrErrorKind>", "exception_message": "<head of message; <=120 chars>", "primary_file": "<path/file or empty>", "primary_line": <int or 0>, "symbols": ["sym1", "sym2", ...], "language": "<python|javascript|typescript|go|rust|unknown>"}
 
           The "symbols" list contains the function/method names that appear in
           the top 3 frames; include at most 6 distinct entries.
@@ -40,8 +60,10 @@ composition:
       depends_on: [parse_trace]
       with:
         task: |
-          Search the current working-directory repository for the symbols
-          referenced in this trace.
+          Search the current working-directory repository for the symbols and
+          file paths referenced in this trace. Use language-appropriate file
+          extensions when useful: Python .py, JavaScript .js/.jsx, TypeScript
+          .ts/.tsx, Go .go, Rust .rs.
 
           Trace-parse output:
           {{ outputs.parse_trace | truncate(800) }}
@@ -128,35 +150,77 @@ composition:
             - <file:line> — <action>
             - <file:line> — <action>
             - <file:line> — <action>
+    - id: repro_suggestion
+      kind: agent
+      skill: sub-agent
+      depends_on: [root_cause]
+      with:
+        task: |
+          Propose the smallest safe verification command(s) for this root-cause
+          hypothesis. Prefer existing tests, targeted unit tests, or a minimal
+          reproducer command. Do not propose destructive commands.
+
+          Language classification:
+          {{ outputs.classify_language | truncate(400) }}
+
+          Root-cause report:
+          {{ outputs.root_cause | truncate(1200) }}
+
+          Reply with:
+          CONFIDENCE: <low|medium|high>
+          VERIFY:
+            - <command or manual check>
+          FIX_FIRST:
+            - <first file/action>
+    - id: degraded_summary
+      kind: agent
+      skill: sub-agent
+      depends_on: [grep_repo, search_issues, git_history, memory_recall, repro_suggestion]
+      with:
+        task: |
+          Produce the final user-facing investigation. If any evidence source
+          returned NO_HITS, NO_MATCHING_ISSUES, NO_RECENT_COMMITS, auth errors,
+          or empty memory, label that source as DEGRADED instead of hiding it.
+
+          Root cause:
+          {{ outputs.root_cause | truncate(1200) }}
+
+          Verification plan:
+          {{ outputs.repro_suggestion | truncate(1000) }}
+
+          Evidence sources:
+          repo={{ outputs.grep_repo | truncate(800) }}
+          issues={{ outputs.search_issues | truncate(800) }}
+          history={{ outputs.git_history | truncate(800) }}
+          memory={{ outputs.memory_recall | truncate(800) }}
     - id: persist
       kind: agent
       skill: memory
-      depends_on: [root_cause]
+      depends_on: [degraded_summary]
       with:
         action: save
         topic: "traceback"
         content: |
           === stack-trace investigation ===
           parse: {{ outputs.parse_trace | truncate(400) }}
-          hypothesis: {{ outputs.root_cause | truncate(800) }}
+          hypothesis: {{ outputs.degraded_summary | truncate(1000) }}
 ---
 
 # Stack-Trace Investigator (Meta-Skill)
 
-A **combinator-style** meta-skill that converts a pasted Python
-traceback into a structured root-cause report. After parsing the
-trace once, four heterogeneous investigations run in parallel:
+A **combinator-style** meta-skill that converts a pasted stack trace into a
+structured root-cause report. It now classifies Python, JavaScript,
+TypeScript, Go, Rust, or unknown traces before running the investigation. After
+parsing the trace once, four heterogeneous investigations run in parallel:
 
 1. **`grep_repo`** — ripgrep for the symbols in the current repo
 2. **`search_issues`** — `gh issue list` for similar reported problems
 3. **`git_history`** — recent commits touching the affected files
 4. **`memory_recall`** — prior incidents stored under the `traceback` topic
 
-The fifth step (`root_cause`) fans the four signals into a single
-hypothesis with citations and 3 concrete fix targets. The final
-`persist` step writes the hypothesis to long-term memory so the next
-occurrence of the same exception class can short-circuit via
-`memory_recall`.
+The `root_cause` and `repro_suggestion` steps fan the signals into a
+hypothesis, concrete fix targets, and verification commands. The final summary
+labels degraded evidence sources explicitly before persisting the incident.
 
 ## Trigger surface
 

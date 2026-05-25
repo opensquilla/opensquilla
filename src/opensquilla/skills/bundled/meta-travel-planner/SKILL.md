@@ -1,6 +1,6 @@
 ---
 name: meta-travel-planner
-description: "Plan a trip: destination weather + POI/restaurant/transport search + day-by-day itinerary summary + self-contained HTML export (browser-openable, mobile-responsive, no external resources)."
+description: "Use when the user asks for a trip plan, travel itinerary, business-trip schedule, or day-by-day travel brief."
 kind: meta
 meta_priority: 50
 always: false
@@ -15,27 +15,86 @@ provenance:
   license: Apache-2.0
 composition:
   steps:
+    - id: trip_preferences
+      kind: agent
+      skill: sub-agent
+      with:
+        task: |
+          Infer the travel-planning contract from the request. If date, party
+          size, budget, pace, or interests are missing, choose practical
+          defaults and list them as assumptions.
+
+          User request:
+          {{ inputs.user_message | xml_escape | truncate(1200) }}
+
+          Return exactly:
+          DESTINATION: <city/region>
+          DATES: <dates or assumed trip length>
+          PARTY: <party size/type>
+          BUDGET: <budget level>
+          PACE: <relaxed|balanced|packed>
+          INTERESTS:
+            - <interest>
+          CONSTRAINTS:
+            - <constraint or assumption>
     - id: weather
       skill: weather
+      depends_on: [trip_preferences]
       with:
-        location: "{{ inputs.user_message | xml_escape | truncate(128) }}"
+        location: "{{ outputs.trip_preferences | truncate(512) }}"
     - id: poi
       skill: multi-search-engine
+      depends_on: [trip_preferences]
       with:
-        query: "{{ inputs.user_message | xml_escape | truncate(256) }} sights restaurants transport"
+        query: "{{ outputs.trip_preferences | truncate(512) }} sights restaurants transport hours neighborhoods"
         engines: [brave, duckduckgo]
-        max_results: 10
-    - id: itinerary
-      skill: summarize
+        max_results: 15
+    - id: constraints
+      kind: agent
+      skill: sub-agent
       depends_on: [weather, poi]
       with:
-        text: "Weather forecast:\n{{ outputs.weather }}\n\nPOI search:\n{{ outputs.poi }}"
+        task: |
+          Extract itinerary constraints from weather and POI results: opening
+          hours, transit time assumptions, weather risks, neighborhoods to
+          group together, and any likely booking constraints.
+
+          Preferences:
+          {{ outputs.trip_preferences | truncate(1200) }}
+
+          Weather:
+          {{ outputs.weather | truncate(2000) }}
+
+          POI search:
+          {{ outputs.poi | truncate(6000) }}
+    - id: itinerary
+      skill: summarize
+      depends_on: [constraints]
+      with:
+        text: "Trip preferences:\n{{ outputs.trip_preferences }}\n\nWeather forecast:\n{{ outputs.weather }}\n\nPOI search:\n{{ outputs.poi }}\n\nConstraints:\n{{ outputs.constraints }}"
         style: daily_itinerary
-        max_words: 1200
-    - id: export
+        max_words: 1800
+    - id: variants
       kind: agent
       skill: sub-agent
       depends_on: [itinerary]
+      with:
+        task: |
+          Add practical variants to this itinerary:
+          - relaxed version
+          - efficient/packed version
+          - bad-weather backup
+          - rough daily budget notes
+
+          Keep the original itinerary as the primary plan, then append the
+          variants. Include map/search links only as plain URLs when useful.
+
+          Itinerary:
+          {{ outputs.itinerary | truncate(6000) }}
+    - id: export
+      kind: agent
+      skill: sub-agent
+      depends_on: [variants]
       with:
         task: |
           Render the day-by-day travel itinerary below into a single
@@ -65,15 +124,14 @@ composition:
 
           ## Itinerary content (markdown)
 
-          {{ outputs.itinerary | xml_escape }}
+          {{ outputs.variants | xml_escape }}
 ---
 
 # Travel Planner (Meta-Skill)
 
-Weather + POI/restaurant/transport search + day-by-day itinerary, exported
-as a self-contained HTML file (browser-openable, mobile-responsive, no
-external resources). Useful for personal trips and assistant-prepared VIP
-travel briefs.
+Weather + POI/restaurant/transport search + constraints + variants, exported
+as a self-contained HTML file. Useful for personal trips, business trips, and
+assistant-prepared travel briefs.
 
 ## Fallback
 

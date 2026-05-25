@@ -1,6 +1,6 @@
 """End-to-end test for meta-paper-write.
 
-Runs the full 15-step DAG against a tmp workspace with the search step
+Runs the full 18-step DAG against a tmp workspace with the search step
 shimmed to a tiny canned JSON, and asserts the pipeline produces a PDF.
 Skips xelatex-dependent assertions when xelatex isn't installed.
 """
@@ -37,7 +37,7 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     plan_spec = specs.get("meta-paper-write")
     assert plan_spec is not None, "meta-paper-write skill not bundled"
     plan = parse_meta_plan(plan_spec)
-    assert plan is not None and len(plan.steps) == 15
+    assert plan is not None and len(plan.steps) == 18
     steps = {step.id: step for step in plan.steps}
     assert steps["paper_preferences"].skill == "paper-preference-planner"
     assert steps["search_papers"].depends_on == ("paper_preferences",)
@@ -51,7 +51,16 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     )
     assert steps["draft_abstract"].skill == "paper-abstract-author"
     assert steps["draft_abstract"].depends_on == ("revised_body", "citation_plan")
-    assert steps["compile_latex"].depends_on == ("draft_abstract",)
+    assert steps["paper_length_gate"].depends_on == (
+        "draft_abstract", "revised_body", "citation_plan", "refbib",
+    )
+    assert steps["citation_integrity_gate"].depends_on == (
+        "draft_abstract", "revised_body", "citation_plan", "refbib",
+    )
+    assert steps["latex_sanitizer"].depends_on == (
+        "paper_length_gate", "citation_integrity_gate",
+    )
+    assert steps["compile_latex"].depends_on == ("latex_sanitizer",)
 
     # Shim: replace multi-search-engine's entrypoint with a stub that
     # echoes a canned JSON. This keeps the test offline (no DuckDuckGo).
@@ -196,6 +205,10 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
             return
         if "paper-outline-author" in system_prompt:
             yield TextDeltaEvent(text=canned_fragments["paper-outline-author"])
+            yield DoneEvent(text="")
+            return
+        if "sub-agent" in system_prompt:
+            yield TextDeltaEvent(text="PASS: paper quality gate satisfied")
             yield DoneEvent(text="")
             return
         yield TextDeltaEvent(text="(unexpected sub-Agent invocation)")

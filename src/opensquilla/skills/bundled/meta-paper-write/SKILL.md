@@ -1,6 +1,6 @@
 ---
 name: meta-paper-write
-description: "Draft a demo research paper end-to-end from a topic phrase: preference planning → web search → source curation → BibTeX → citation plan → topic-aware outline → figure → section drafts → global revision → abstract-last → xelatex compile → PDF."
+description: "Use when the user asks to draft a research paper, academic paper, or long-form LaTeX manuscript from a topic phrase or research direction."
 kind: meta_sop
 meta_priority: 50
 always: false
@@ -95,5 +95,60 @@ Invoke `paper-abstract-author` as agent with:
 - revised_body: `{{ outputs.revised_body | truncate(8000) }}`
 Save as `draft_abstract`.
 
-## Phase 11: Compile [depends_on: draft_abstract]
+## Phase 11: Pre-Compile Quality Gates [parallel; depends_on: [draft_abstract, revised_body, citation_plan, refbib]]
+Invoke `sub-agent` as agent with:
+- task: |
+    Check whether the manuscript is long enough before LaTeX compilation.
+    Requirements:
+    - target 10+ compiled pages
+    - substantial introduction, method, results, and discussion sections
+    - no placeholder-only paragraphs
+    - report estimated page count and missing sections
+
+    Paper preferences:
+    `{{ outputs.paper_preferences | truncate(4000) }}`
+
+    Abstract:
+    `{{ outputs.draft_abstract | truncate(2000) }}`
+
+    Body:
+    `{{ outputs.revised_body | truncate(8000) }}`
+Save as `paper_length_gate`.
+
+Invoke `sub-agent` as agent with:
+- task: |
+    Validate citation integrity before LaTeX compilation.
+    Requirements:
+    - at least 20 references in the bibliography when sources allow it
+    - at least 20 distinct citation keys used or planned in the body
+    - no citation keys absent from references.bib
+    - every major claim has nearby citation support or an explicit caveat
+
+    Citation plan:
+    `{{ outputs.citation_plan | truncate(8000) }}`
+
+    Bibliography:
+    `{{ outputs.refbib | truncate(8000) }}`
+
+    Body:
+    `{{ outputs.revised_body | truncate(8000) }}`
+Save as `citation_integrity_gate`.
+
+## Phase 12: LaTeX Sanitizer [depends_on: [paper_length_gate, citation_integrity_gate]]
+Invoke `sub-agent` as agent with:
+- task: |
+    Sanitize the final LaTeX workspace before compilation. Remove process
+    commentary, markdown fences, chat preambles, debug logs, and any text that
+    is not intended to appear in the paper. Preserve valid LaTeX, CJK text,
+    citations, figure references, and section files. Reply with a concise
+    readiness note only after the workspace is clean.
+
+    Length gate:
+    `{{ outputs.paper_length_gate | truncate(2000) }}`
+
+    Citation gate:
+    `{{ outputs.citation_integrity_gate | truncate(2000) }}`
+Save as `latex_sanitizer`.
+
+## Phase 13: Compile [depends_on: latex_sanitizer]
 Run `latex-compile`. Save as `compile_latex`.

@@ -13,11 +13,12 @@ research paper.
 
 ## Task
 
-Given a research topic and a list of available BibTeX citation keys, write
-a 5-section outline that the downstream section-author can expand into a
-10+ page paper. Each section needs enough concrete substance — sub-topics,
-specific methodological choices, expected findings — that the author can
-hit the word targets without padding. Plan for 6,500-8,000 total words.
+Given a research topic, a curated source pack, and a list of available BibTeX
+citation keys, write a 5-section outline that the downstream section-author
+can expand into a 10+ page paper. Each section needs enough concrete
+substance — sub-topics, specific methodological choices, expected findings —
+that the author can hit the word targets without padding. Plan for 6,500-8,000
+total words.
 
 Use the citation keys (e.g. `ref1`, `ref2`) inline when a section will
 refer to a specific reference. Allocate at least 20+ distinct citation keys
@@ -39,6 +40,7 @@ Hard rules:
 
 - Each section's "sentences" must each carry real content, not throat-clearing.
 - Mention at least one specific number / parameter / dataset in METHOD and RESULTS.
+- Use the source pack to avoid low-quality or off-topic references.
 - Use at least 20 distinct citation keys across the outline when at least 20
   keys are available. Do not invent keys.
 - Do NOT produce LaTeX, Markdown lists, or any additional sections.

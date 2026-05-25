@@ -37,7 +37,14 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     plan_spec = specs.get("meta-paper-write")
     assert plan_spec is not None, "meta-paper-write skill not bundled"
     plan = parse_meta_plan(plan_spec)
-    assert plan is not None and len(plan.steps) == 11
+    assert plan is not None and len(plan.steps) == 14
+    steps = {step.id: step for step in plan.steps}
+    assert "source_pack" in steps
+    assert "citation_plan" in steps
+    assert "revised_body" in steps
+    assert steps["draft_abstract"].skill == "paper-abstract-author"
+    assert steps["draft_abstract"].depends_on == ("revised_body", "citation_plan")
+    assert steps["compile_latex"].depends_on == ("draft_abstract",)
 
     # Shim: replace multi-search-engine's entrypoint with a stub that
     # echoes a canned JSON. This keeps the test offline (no DuckDuckGo).
@@ -78,12 +85,38 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         return "\n\n".join([paragraph * 8 for _ in range(pages)])
 
     canned_fragments: dict[str, str] = {
+        "paper-source-curator": (
+            "SOURCE_PACK:\n"
+            "PRIMARY_SOURCES:\n"
+            + "\n".join(
+                f"- ref{i} | Reference {i} | reliable source for claim {i}"
+                for i in range(1, 21)
+            )
+            + "\nSUPPORTING_SOURCES:\n"
+            + "\n".join(
+                f"- ref{i} | Reference {i} | supporting context"
+                for i in range(21, 26)
+            )
+            + "\nEXCLUDED_OR_WEAK_SOURCES:\nCOVERAGE_NOTES:\nCoverage is sufficient."
+        ),
         "paper-outline-author": (
             "ABSTRACT: This paper studies X.\n"
             "INTRODUCTION: X is important [ref1-ref6].\n"
             "METHOD: We use Y [ref7-ref12].\n"
             "RESULTS: Y improves on baseline [ref13-ref16].\n"
             "DISCUSSION: Future work [ref17-ref20]."
+        ),
+        "paper-citation-planner": (
+            "CITATION_PLAN:\n"
+            "INTRODUCTION:\n"
+            "- claim: background; cite: ref1, ref2, ref3, ref4, ref5, ref6; role: prior work\n"
+            "METHOD:\n"
+            "- claim: setup; cite: ref7, ref8, ref9, ref10, ref11, ref12; role: design\n"
+            "RESULTS:\n"
+            "- claim: comparison; cite: ref13, ref14, ref15, ref16; role: comparison\n"
+            "DISCUSSION:\n"
+            "- claim: implications; cite: ref17, ref18, ref19, ref20; role: limitation\n"
+            "USAGE_RULES:\nUse citations only for supported claims."
         ),
         "abstract": r"\begin{abstract} This paper studies X \cite{ref1}. \end{abstract}",
         "introduction": "\\section{Introduction}\n" + long_body("Introduction", 1, 6, 3),
@@ -98,12 +131,36 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         ),
         "discussion": "\\section{Discussion}\n" + long_body("Discussion", 17, 4, 2),
     }
+    canned_fragments["paper-revision-author"] = "\n\n".join(
+        [
+            canned_fragments["introduction"],
+            canned_fragments["method"],
+            canned_fragments["results"],
+            canned_fragments["discussion"],
+        ],
+    )
 
     async def runner(system_prompt: str, user_message: str) -> AsyncIterator[AgentEvent]:
+        if "paper-source-curator" in system_prompt:
+            yield TextDeltaEvent(text=canned_fragments["paper-source-curator"])
+            yield DoneEvent(text="")
+            return
+        if "paper-citation-planner" in system_prompt:
+            yield TextDeltaEvent(text=canned_fragments["paper-citation-planner"])
+            yield DoneEvent(text="")
+            return
+        if "paper-revision-author" in system_prompt:
+            yield TextDeltaEvent(text=canned_fragments["paper-revision-author"])
+            yield DoneEvent(text="")
+            return
+        if "paper-abstract-author" in system_prompt:
+            yield TextDeltaEvent(text=canned_fragments["abstract"])
+            yield DoneEvent(text="")
+            return
         if "paper-section-author" in system_prompt:
             # The user message includes "section: <name>".
             for section in (
-                "abstract", "introduction", "method", "results", "discussion",
+                "introduction", "method", "results", "discussion",
             ):
                 if f"section: {section}" in user_message:
                     yield TextDeltaEvent(text=canned_fragments[section])

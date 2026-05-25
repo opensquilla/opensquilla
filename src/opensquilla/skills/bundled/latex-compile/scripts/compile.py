@@ -72,6 +72,32 @@ def _extract_title(original: str) -> str:
     return "OpenClaw Self-Evolving Optimization"
 
 
+def _contains_process_wrapper(text: str) -> bool:
+    markers = (
+        "```",
+        "Let me ",
+        "Now let me ",
+        "File written to:",
+        "**File:",
+        "文件路径：",
+        "has been written",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _looks_like_complete_clean_paper(original: str) -> bool:
+    required = (
+        r"\begin{abstract}",
+        r"\section{Introduction}",
+        r"\section{Method}",
+        r"\section{Results}",
+        r"\section{Discussion}",
+    )
+    return all(marker in original for marker in required) and not _contains_process_wrapper(
+        original,
+    )
+
+
 def _cjk_preamble(title: str, body: str) -> str:
     needs_cjk = bool(_CJK_RE.search(title) or _CJK_RE.search(body))
     cjk_lines = ""
@@ -136,6 +162,15 @@ def _section_fragments(cwd: Path) -> dict[str, str]:
 def _prepare_tex_for_compile(tex_path: Path) -> bool:
     """Rewrite paper.tex from clean section files when agent output was noisy."""
     original = tex_path.read_text(encoding="utf-8")
+    if _looks_like_complete_clean_paper(original):
+        if _CJK_RE.search(original) and "\\usepackage{xeCJK}" not in original:
+            insertion = _cjk_preamble(_extract_title(original), original)
+            begin = original.find("\\begin{document}")
+            if begin >= 0:
+                tex_path.write_text(insertion + original[begin:], encoding="utf-8")
+                return True
+        return False
+
     cwd = tex_path.parent
     fragments = _section_fragments(cwd)
     ordered_names = ["abstract", "introduction", "method", "results", "discussion"]

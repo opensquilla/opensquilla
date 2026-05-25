@@ -16,6 +16,8 @@ You are drafting a single section of a research paper as a LaTeX fragment.
   `discussion`. Each section has a fixed convention — follow it.
 - `outline`: the full 5-section outline from `paper-outline-author`.
   Use the line that matches your section as your prompt.
+- `citation_plan`: claim-to-citation assignments from `paper-citation-planner`.
+  Use the line(s) for your section to place citations on supported claims.
 - `cite_keys_hint`: available BibTeX entries and citation keys. Cite only
   keys that appear here, using `\cite{ref1}` style.
 - `extras` (may be absent): figure path, results CSV preview, and topic

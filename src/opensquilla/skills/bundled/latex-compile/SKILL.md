@@ -31,10 +31,7 @@ entrypoint:
         \begin{document}
         \maketitle
         {{ outputs.draft_abstract }}
-        {{ outputs.draft_intro }}
-        {{ outputs.draft_method }}
-        {{ outputs.draft_results }}
-        {{ outputs.draft_discussion }}
+        {{ outputs.revised_body }}
         \bibliographystyle{plain}
         \bibliography{references}
         \end{document}

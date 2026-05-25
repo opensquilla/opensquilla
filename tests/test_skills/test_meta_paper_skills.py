@@ -112,6 +112,22 @@ def test_meta_paper_write_declares_long_paper_generation_contract() -> None:
     assert "{{ outputs.refbib | truncate(8000) }}" in meta
 
 
+def test_meta_paper_write_declares_quality_pipeline_stages() -> None:
+    meta = (BUNDLED / "meta-paper-write" / "SKILL.md").read_text(encoding="utf-8")
+    latex = (BUNDLED / "latex-compile" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "paper-source-curator" in meta
+    assert "Save as `source_pack`" in meta
+    assert "paper-citation-planner" in meta
+    assert "Save as `citation_plan`" in meta
+    assert "paper-revision-author" in meta
+    assert "Save as `revised_body`" in meta
+    assert "paper-abstract-author" in meta
+    assert "Save as `draft_abstract`" in meta
+    assert "depends_on: [revised_body, citation_plan]" in meta
+    assert "{{ outputs.revised_body }}" in latex
+
+
 def test_latex_compile_produces_pdf(tmp_path: Path) -> None:
     pytest = __import__("pytest")
     if shutil.which("xelatex") is None:
@@ -195,6 +211,60 @@ def test_latex_compile_reassembles_clean_cjk_paper_from_section_files(
     assert "\\section{实验方法} 中文方法。" in rewritten
     assert "Let me write the paper first" not in rewritten
     assert "```latex" not in rewritten
+
+
+def test_latex_compile_keeps_clean_revised_body_over_section_files(
+    tmp_path: Path,
+) -> None:
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    script = BUNDLED / "latex-compile" / "scripts" / "compile.py"
+    spec = spec_from_file_location("latex_compile_script", script)
+    assert spec is not None and spec.loader is not None
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    workspace = tmp_path / "workspace"
+    paper_dir = workspace / "paper"
+    paper_dir.mkdir(parents=True)
+    tex = paper_dir / "paper.tex"
+    tex.write_text(
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "\\begin{abstract} Final abstract.\\end{abstract}\n"
+        "\\section{Introduction} Revised intro.\n"
+        "\\section{Method} Revised method.\n"
+        "\\section{Results} Revised results.\n"
+        "\\section{Discussion} Revised discussion.\n"
+        "\\bibliography{references}\n"
+        "\\end{document}\n",
+        encoding="utf-8",
+    )
+    (workspace / "introduction.tex").write_text(
+        "\\section{Introduction} Stale intro.\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "method.tex").write_text(
+        "\\section{Method} Stale method.\n",
+        encoding="utf-8",
+    )
+    (workspace / "results.tex").write_text(
+        "\\section{Results} Stale results.\n",
+        encoding="utf-8",
+    )
+    (workspace / "discussion.tex").write_text(
+        "\\section{Discussion} Stale discussion.\n",
+        encoding="utf-8",
+    )
+    (workspace / "abstract.tex").write_text(
+        "\\begin{abstract} Stale abstract.\\end{abstract}\n",
+        encoding="utf-8",
+    )
+
+    assert mod._prepare_tex_for_compile(tex) is False
+    rewritten = tex.read_text(encoding="utf-8")
+    assert "Revised intro" in rewritten
+    assert "Stale intro" not in rewritten
 
 
 def test_latex_compile_validates_long_paper_citation_contract(

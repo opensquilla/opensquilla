@@ -147,7 +147,7 @@ def test_linter_passes_existing_meta_bundle(bundle: str) -> None:
     """Regression: linter must accept every existing kind=meta bundle.
     Catches over-strict lint rules."""
     skill_path = REPO / "src" / "opensquilla" / "skills" / "bundled" / bundle / "SKILL.md"
-    skill_md = skill_path.read_text()
+    skill_md = skill_path.read_text(encoding="utf-8")
     out = _run_lint(skill_md)
     assert out["G1"]["passed"] is True, f"{bundle} G1 fail: {out['G1']['diagnostics']}"
     assert out["G2"]["passed"] is True, f"{bundle} G2 fail: {out['G2']['diagnostics']}"

@@ -57,6 +57,8 @@ async def test_post_dream_hook_invoked_on_successful_run() -> None:
             class _R:
                 files_processed = 0
                 files_deleted = 0
+                evidence_status = "ok"
+                apply_status = "ok"
                 phase1_status = "ok"
                 phase2_status = "ok"
             return _R()
@@ -86,6 +88,8 @@ async def test_post_dream_hook_exception_does_not_poison_handler_result() -> Non
             class _R:
                 files_processed = 1
                 files_deleted = 0
+                evidence_status = "ok"
+                apply_status = "ok"
                 phase1_status = "ok"
                 phase2_status = "ok"
             return _R()

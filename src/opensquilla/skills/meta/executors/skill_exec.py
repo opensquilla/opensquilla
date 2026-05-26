@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json as _json
+import os
 import shlex
 import sys
 from pathlib import Path as _Path
@@ -26,6 +27,18 @@ from opensquilla.skills.meta.templating import _JINJA_ENV, render_with_args
 from opensquilla.skills.meta.types import MetaStep
 
 log = structlog.get_logger(__name__)
+
+
+def _split_entrypoint_command(command: str) -> list[str]:
+    argv = shlex.split(command, posix=os.name != "nt")
+    if os.name == "nt":
+        argv = [
+            item[1:-1]
+            if len(item) >= 2 and item[0] == item[-1] and item[0] in {"'", '"'}
+            else item
+            for item in argv
+        ]
+    return argv
 
 
 async def run_skill_exec_step(
@@ -209,7 +222,7 @@ async def run_skill_exec_step(
             bytes=len(template_body),
         )
 
-    argv = shlex.split(command_str) + rendered_args
+    argv = _split_entrypoint_command(command_str) + rendered_args
     if not argv:
         raise RuntimeError(f"step {step.id!r}: empty argv after rendering")
 

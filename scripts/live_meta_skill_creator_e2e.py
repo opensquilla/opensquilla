@@ -56,67 +56,79 @@ def run_live_meta_skill_creator_e2e(
     auto_enable_max_risk: str = "low",
 ) -> dict[str, Any]:
     """Run fill_slots -> assemble -> lint -> smoke -> persist/auto-enable."""
+    old_provider = os.environ.get("OPENSQUILLA_LLM_PROVIDER")
+    old_model = os.environ.get("OPENSQUILLA_LLM_MODEL")
     if provider:
         os.environ["OPENSQUILLA_LLM_PROVIDER"] = provider
     if model:
         os.environ["OPENSQUILLA_LLM_MODEL"] = model
 
-    home_path = home or Path(tempfile.mkdtemp(prefix="opensquilla-live-meta-skill-"))
-    home_path.mkdir(parents=True, exist_ok=True)
-    proposals_lib.write_auto_propose_settings(
-        home_path,
-        {
-            "auto_enable": auto_enable,
-            "auto_enable_max_risk": auto_enable_max_risk,
-        },
-    )
+    try:
+        home_path = home or Path(tempfile.mkdtemp(prefix="opensquilla-live-meta-skill-"))
+        home_path.mkdir(parents=True, exist_ok=True)
+        proposals_lib.write_auto_propose_settings(
+            home_path,
+            {
+                "auto_enable": auto_enable,
+                "auto_enable_max_risk": auto_enable_max_risk,
+            },
+        )
 
-    history = history_summary or json.dumps(DEFAULT_HISTORY, ensure_ascii=False)
-    slots_json = proposer.meta_skill_fill_slots(pattern_id, history, user_intent)
-    slots = json.loads(slots_json)
-    skill_md = proposer.meta_skill_assemble(pattern_id, slots_json)
-    lint_result = json.loads(proposer.meta_skill_lint_run(skill_md, "G1,G2"))
-    smoke_result = proposer.run_smoke_gates(
-        skill_md=skill_md,
-        fixture_gen_fn=lambda _md, kind: {
-            "positive": f"please use {slots['triggers'][0]} for recent decisions",
-            "negative": "what is the weather tomorrow in Tokyo?",
-        }[kind],
-        classifier_model=model or "live-meta-skill-creator-e2e",
-    )
-    persist = json.loads(proposer.meta_skill_persist_proposal(
-        skill_md,
-        json.dumps(lint_result),
-        json.dumps(smoke_result),
-        home=str(home_path),
-    ))
-    managed = (
-        sorted(p.name for p in (home_path / "skills").iterdir())
-        if (home_path / "skills").is_dir()
-        else []
-    )
-    pending = (
-        sorted(p.name for p in (home_path / "proposals").iterdir())
-        if (home_path / "proposals").is_dir()
-        else []
-    )
-    return {
-        "ok": True,
-        "home": str(home_path),
-        "llm_slots": {
-            "name": slots.get("name"),
-            "triggers": slots.get("triggers"),
-            "steps": [
-                {"id": s.get("id"), "skill": s.get("skill")}
-                for s in slots.get("steps", [])
-            ],
-        },
-        "lint": lint_result,
-        "smoke": smoke_result,
-        "persist": persist,
-        "managed": managed,
-        "pending": pending,
-    }
+        history = history_summary or json.dumps(DEFAULT_HISTORY, ensure_ascii=False)
+        slots_json = proposer.meta_skill_fill_slots(pattern_id, history, user_intent)
+        slots = json.loads(slots_json)
+        skill_md = proposer.meta_skill_assemble(pattern_id, slots_json)
+        lint_result = json.loads(proposer.meta_skill_lint_run(skill_md, "G1,G2"))
+        smoke_result = proposer.run_smoke_gates(
+            skill_md=skill_md,
+            fixture_gen_fn=lambda _md, kind: {
+                "positive": f"please use {slots['triggers'][0]} for recent decisions",
+                "negative": "what is the weather tomorrow in Tokyo?",
+            }[kind],
+            classifier_model=model or "live-meta-skill-creator-e2e",
+        )
+        persist = json.loads(proposer.meta_skill_persist_proposal(
+            skill_md,
+            json.dumps(lint_result),
+            json.dumps(smoke_result),
+            home=str(home_path),
+        ))
+        managed = (
+            sorted(p.name for p in (home_path / "skills").iterdir())
+            if (home_path / "skills").is_dir()
+            else []
+        )
+        pending = (
+            sorted(p.name for p in (home_path / "proposals").iterdir())
+            if (home_path / "proposals").is_dir()
+            else []
+        )
+        return {
+            "ok": True,
+            "home": str(home_path),
+            "llm_slots": {
+                "name": slots.get("name"),
+                "triggers": slots.get("triggers"),
+                "steps": [
+                    {"id": s.get("id"), "skill": s.get("skill")}
+                    for s in slots.get("steps", [])
+                ],
+            },
+            "lint": lint_result,
+            "smoke": smoke_result,
+            "persist": persist,
+            "managed": managed,
+            "pending": pending,
+        }
+    finally:
+        if old_provider is None:
+            os.environ.pop("OPENSQUILLA_LLM_PROVIDER", None)
+        else:
+            os.environ["OPENSQUILLA_LLM_PROVIDER"] = old_provider
+        if old_model is None:
+            os.environ.pop("OPENSQUILLA_LLM_MODEL", None)
+        else:
+            os.environ["OPENSQUILLA_LLM_MODEL"] = old_model
 
 
 def _parser() -> argparse.ArgumentParser:

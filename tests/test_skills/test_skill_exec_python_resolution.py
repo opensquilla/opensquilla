@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from opensquilla.skills.meta.executors import skill_exec
 from opensquilla.skills.meta.executors.skill_exec import run_skill_exec_step
 from opensquilla.skills.meta.types import MetaStep
 from opensquilla.skills.types import SkillLayer, SkillSpec
@@ -30,6 +31,16 @@ def _spec(base_dir: Path, command: str) -> SkillSpec:
         base_dir=str(base_dir),
         entrypoint={"command": command, "parse": "text", "timeout": 10.0},
     )
+
+
+def test_split_entrypoint_command_preserves_windows_backslashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skill_exec.os, "name", "nt")
+
+    assert skill_exec._split_entrypoint_command(
+        r'python "C:\Users\runner admin\AppData\Local\Temp\hello.py"',
+    ) == ["python", r"C:\Users\runner admin\AppData\Local\Temp\hello.py"]
 
 
 class _Loader:

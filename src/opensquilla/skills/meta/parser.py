@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from graphlib import CycleError, TopologicalSorter
 from typing import TYPE_CHECKING, Any
 
-from opensquilla.skills.meta.types import MetaPlan, MetaStep, RouteCase
+from opensquilla.skills.meta.types import (
+    ClarifyField,
+    ClarifyStepConfig,
+    MetaPlan,
+    MetaStep,
+    RouteCase,
+)
 
 if TYPE_CHECKING:
     from opensquilla.skills.types import SkillSpec
 
 
 _SUPPORTED_KINDS = frozenset(
-    {"agent", "llm_classify", "llm_chat", "tool_call", "skill_exec"},
+    {"agent", "llm_classify", "llm_chat", "tool_call", "skill_exec", "user_input"},
 )
 
 
@@ -69,8 +76,8 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                     f"missing skill",
                 )
         else:
-            # Informational only for llm_classify / llm_chat / tool_call;
-            # default to step_id.
+            # Informational only for llm_classify / llm_chat / tool_call /
+            # user_input; default to step_id.
             if not isinstance(skill_name, str):
                 raise MetaPlanError(
                     f"meta-skill {spec.name!r}: step {step_id!r} skill must be a string",
@@ -118,6 +125,17 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 f"a non-empty string (target step id) or omitted",
             )
 
+        clarify_config = None
+        if kind == "user_input":
+            clarify_config = _parse_clarify_config(
+                spec.name, step_id, raw.get("clarify"),
+            )
+        elif raw.get("clarify") is not None:
+            raise MetaPlanError(
+                f"meta-skill {spec.name!r}: step {step_id!r} 'clarify' only valid "
+                f"for kind=user_input",
+            )
+
         steps.append(
             MetaStep(
                 id=step_id,
@@ -132,6 +150,7 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 tool_args=tool_args,
                 tool_allowlist=tool_allowlist,
                 on_failure=on_failure,
+                clarify_config=clarify_config,
             ),
         )
 
@@ -416,3 +435,288 @@ def _ensure_acyclic(name: str, steps: list[MetaStep]) -> None:
         raise MetaPlanError(
             f"meta-skill {name!r}: dependency cycle: {exc.args[1]}",
         ) from exc
+
+
+_CLARIFY_FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_CLARIFY_VALID_TYPES = frozenset({"string", "enum", "int", "bool"})
+
+
+def _parse_clarify_field(
+    skill_name: str, step_id: str, raw: dict, index: int,
+) -> ClarifyField:
+    if not isinstance(raw, dict):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+            f"must be a mapping",
+        )
+
+    name = raw.get("name")
+    if not isinstance(name, str) or not _CLARIFY_FIELD_NAME_RE.match(name):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+            f"name {name!r} must match ^[a-z][a-z0-9_]{{0,31}}$",
+        )
+
+    type_ = raw.get("type")
+    if type_ not in _CLARIFY_VALID_TYPES:
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+            f"type {type_!r} must be one of {sorted(_CLARIFY_VALID_TYPES)}",
+        )
+
+    raw_required = raw.get("required", False)
+    if not isinstance(raw_required, bool):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+            f"{name!r}: required must be a boolean, got {type(raw_required).__name__}",
+        )
+    required = raw_required
+    default = raw.get("default", None)
+    if required and default is not None:
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+            f"{name!r}: required=true and default are mutually exclusive",
+        )
+
+    choices_raw = raw.get("choices", ())
+    choices: tuple[str, ...] = ()
+    if type_ == "enum":
+        if not isinstance(choices_raw, list) or not choices_raw:
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+                f"{name!r}: enum type requires non-empty choices list",
+            )
+        for ci, c in enumerate(choices_raw):
+            if not isinstance(c, str) or not c.strip():
+                raise MetaPlanError(
+                    f"meta-skill {skill_name!r}: step {step_id!r} "
+                    f"clarify.fields[{index}].choices[{ci}] must be a non-empty string",
+                )
+        if len(set(choices_raw)) != len(choices_raw):
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+                f"{name!r}: choices must be unique",
+            )
+        choices = tuple(str(c) for c in choices_raw)
+    elif choices_raw not in ((), [], None):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+            f"{name!r}: choices only valid when type=enum",
+        )
+
+    min_v = raw.get("min")
+    max_v = raw.get("max")
+    if type_ == "int":
+        if min_v is not None and not isinstance(min_v, int):
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+                f"{name!r}: min must be an integer",
+            )
+        if max_v is not None and not isinstance(max_v, int):
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+                f"{name!r}: max must be an integer",
+            )
+        if min_v is not None and max_v is not None and min_v > max_v:
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+                f"{name!r}: min={min_v} must be <= max={max_v}",
+            )
+    else:
+        if min_v is not None or max_v is not None:
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+                f"{name!r}: min/max only valid when type=int",
+            )
+
+    max_chars = raw.get("max_chars")
+    if type_ == "string":
+        if max_chars is not None and (
+            not isinstance(max_chars, int) or not (1 <= max_chars <= 4000)
+        ):
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+                f"{name!r}: max_chars must be an int in [1, 4000]",
+            )
+    elif max_chars is not None:
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+            f"{name!r}: max_chars only valid when type=string",
+        )
+
+    if default is not None:
+        if type_ == "enum":
+            if default not in choices:
+                raise MetaPlanError(
+                    f"meta-skill {skill_name!r}: step {step_id!r} "
+                    f"clarify.fields[{index}] {name!r}: default {default!r} "
+                    f"not in choices {list(choices)}",
+                )
+        elif type_ == "int":
+            if not isinstance(default, int) or isinstance(default, bool):
+                raise MetaPlanError(
+                    f"meta-skill {skill_name!r}: step {step_id!r} "
+                    f"clarify.fields[{index}] {name!r}: default for int field "
+                    f"must be an int",
+                )
+            if min_v is not None and default < min_v:
+                raise MetaPlanError(
+                    f"meta-skill {skill_name!r}: step {step_id!r} "
+                    f"clarify.fields[{index}] {name!r}: default {default} "
+                    f"is below min={min_v}",
+                )
+            if max_v is not None and default > max_v:
+                raise MetaPlanError(
+                    f"meta-skill {skill_name!r}: step {step_id!r} "
+                    f"clarify.fields[{index}] {name!r}: default {default} "
+                    f"is above max={max_v}",
+                )
+        elif type_ == "bool":
+            if not isinstance(default, bool):
+                raise MetaPlanError(
+                    f"meta-skill {skill_name!r}: step {step_id!r} "
+                    f"clarify.fields[{index}] {name!r}: default for bool field "
+                    f"must be a bool",
+                )
+        elif type_ == "string":
+            if not isinstance(default, str):
+                raise MetaPlanError(
+                    f"meta-skill {skill_name!r}: step {step_id!r} "
+                    f"clarify.fields[{index}] {name!r}: default for string "
+                    f"field must be a string",
+                )
+            if max_chars is not None and len(default) > max_chars:
+                raise MetaPlanError(
+                    f"meta-skill {skill_name!r}: step {step_id!r} "
+                    f"clarify.fields[{index}] {name!r}: default length "
+                    f"{len(default)} exceeds max_chars={max_chars}",
+                )
+
+    prompt = raw.get("prompt", "")
+    if not isinstance(prompt, str):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
+            f"{name!r}: prompt must be a string",
+        )
+
+    return ClarifyField(
+        name=name,
+        type=type_,
+        required=required,
+        prompt=prompt,
+        choices=choices,
+        default=default,
+        min=min_v,
+        max=max_v,
+        max_chars=max_chars,
+    )
+
+
+def _parse_clarify_config(
+    skill_name: str, step_id: str, raw: object,
+) -> ClarifyStepConfig:
+    if not isinstance(raw, dict):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} (kind=user_input) "
+            f"requires a 'clarify' mapping",
+        )
+
+    mode = raw.get("mode", "form")
+    if mode not in ("form", "chat"):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.mode {mode!r} "
+            f"must be 'form' or 'chat'",
+        )
+
+    fields_raw = raw.get("fields")
+    if not isinstance(fields_raw, list) or not fields_raw:
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields must be "
+            f"a non-empty list",
+        )
+
+    fields: list[ClarifyField] = []
+    seen_names: set[str] = set()
+    for index, raw_field in enumerate(fields_raw):
+        cf = _parse_clarify_field(skill_name, step_id, raw_field, index)
+        if cf.name in seen_names:
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields "
+                f"contains duplicate name {cf.name!r}",
+            )
+        seen_names.add(cf.name)
+        fields.append(cf)
+
+    max_fields = 4 if mode == "chat" else 12
+    if len(fields) > max_fields:
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields "
+            f"has {len(fields)} entries; max for mode={mode!r} is {max_fields}",
+        )
+
+    skip_if = raw.get("skip_if", "")
+    if skip_if and not isinstance(skip_if, str):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.skip_if "
+            f"must be a string Jinja expression",
+        )
+    if skip_if:
+        from opensquilla.skills.meta.templating import _JINJA_ENV
+        try:
+            _JINJA_ENV.compile_expression(skip_if)
+        except Exception as exc:  # noqa: BLE001
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} clarify.skip_if "
+                f"failed to compile: {exc}",
+            ) from exc
+
+    cancel_keywords_raw = raw.get("cancel_keywords", [])
+    if cancel_keywords_raw and (
+        not isinstance(cancel_keywords_raw, list)
+        or not all(isinstance(k, str) and k.strip() for k in cancel_keywords_raw)
+    ):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.cancel_keywords "
+            f"must be a list of non-empty strings (or omitted)",
+        )
+    cancel_keywords = tuple(str(k).strip().lower() for k in cancel_keywords_raw)
+
+    timeout_hours = raw.get("timeout_hours", 24)
+    if not isinstance(timeout_hours, int) or not (1 <= timeout_hours <= 168):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.timeout_hours "
+            f"must be an int in [1, 168]",
+        )
+
+    intro = raw.get("intro", "")
+    if not isinstance(intro, str):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.intro "
+            f"must be a string",
+        )
+
+    nl_extract = raw.get("nl_extract", False)
+    if not isinstance(nl_extract, bool):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.nl_extract "
+            f"must be a boolean",
+        )
+
+    nl_extract_tier_raw = raw.get("nl_extract_tier", "")
+    if nl_extract_tier_raw and not isinstance(nl_extract_tier_raw, str):
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} clarify.nl_extract_tier "
+            f"must be a string (router tier name) or omitted",
+        )
+    nl_extract_tier = nl_extract_tier_raw if nl_extract else ""
+
+    return ClarifyStepConfig(
+        mode=mode,
+        fields=tuple(fields),
+        skip_if=skip_if,
+        cancel_keywords=cancel_keywords,
+        timeout_hours=timeout_hours,
+        intro=intro,
+        nl_extract=nl_extract,
+        nl_extract_tier=nl_extract_tier,
+    )

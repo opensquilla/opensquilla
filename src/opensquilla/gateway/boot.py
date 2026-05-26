@@ -1799,14 +1799,18 @@ async def build_services(
     try:
         persistence_cfg = getattr(getattr(config, "meta_skill", None), "persistence", None)
         if persistence_cfg is not None and getattr(persistence_cfg, "enabled", False):
-            storage = get_session_storage(session_manager)
-            db_path = getattr(storage, "_db_path", None) if storage is not None else None
+            meta_storage = get_session_storage(session_manager)
+            db_path = (
+                getattr(meta_storage, "_db_path", None)
+                if meta_storage is not None
+                else None
+            )
             if db_path and db_path != ":memory:":
                 from opensquilla.persistence.meta_run_writer import open_meta_run_writer
 
                 meta_run_writer = open_meta_run_writer(db_path)
-                if hasattr(storage, "_meta_run_writer"):
-                    storage._meta_run_writer = meta_run_writer
+                if meta_storage is not None and hasattr(meta_storage, "_meta_run_writer"):
+                    meta_storage._meta_run_writer = meta_run_writer
                 meta_run_writer.mark_orphans_failed(
                     age_ms=int(
                         getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)

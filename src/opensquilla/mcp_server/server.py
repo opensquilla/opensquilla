@@ -17,7 +17,7 @@ def create_mcp_server(
 
     if fastmcp_cls is None:
         try:
-            from mcp.server.fastmcp import FastMCP
+            from mcp.server.fastmcp import FastMCP  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover - exercised through CLI behavior.
             raise RuntimeError(
                 "The MCP server requires the optional dependency: install opensquilla[mcp]."

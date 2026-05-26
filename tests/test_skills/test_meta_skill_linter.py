@@ -54,6 +54,15 @@ def test_g1_passes_on_valid_p1() -> None:
     assert out["G1"]["passed"] is True
 
 
+def test_g1_accepts_utf8_stdin_with_localized_trigger() -> None:
+    localized = VALID_P1.replace(
+        '  - "lint test trigger"',
+        '  - "处理 PDF — 质量门"',
+    )
+    out = _run_lint(localized)
+    assert out["G1"]["passed"] is True
+
+
 def test_g1_fails_on_missing_xml_escape() -> None:
     bad = VALID_P1.replace("{{ inputs.user_message | xml_escape | truncate(512) }}",
                             "{{ inputs.user_message }}")

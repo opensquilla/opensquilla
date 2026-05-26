@@ -19,6 +19,8 @@ def _run_lint(skill_md: str, gates: str = "G1,G2") -> dict:
         [sys.executable, str(LINT), "--gates", gates, "--skill-md-stdin"],
         input=skill_md, capture_output=True, text=True, encoding="utf-8",
     )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout, proc.stderr
     return json.loads(proc.stdout)
 
 

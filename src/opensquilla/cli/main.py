@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
 from opensquilla.env import load_env, warn_if_proxy_ignored
@@ -19,6 +21,7 @@ from opensquilla.cli.cost_cmd import app as cost_app  # noqa: E402
 from opensquilla.cli.cron_cmd import cron_app  # noqa: E402
 from opensquilla.cli.diagnostics_cmd import diagnostics_app  # noqa: E402
 from opensquilla.cli.dist_cmd import app as dist_app  # noqa: E402
+from opensquilla.cli.doctor_cmd import doctor_command  # noqa: E402
 from opensquilla.cli.init_cmd import init_command  # noqa: E402
 from opensquilla.cli.mcp_server_cmd import app as mcp_server_app  # noqa: E402
 from opensquilla.cli.memory_flush_cmd import memory_flush_session_cmd  # noqa: E402
@@ -58,6 +61,7 @@ app.add_typer(sessions_app, name="sessions")
 app.add_typer(skills_app, name="skills")
 
 app.command("init")(init_command)
+app.command("doctor")(doctor_command)
 app.add_typer(onboard_app, name="onboard")
 app.command("configure")(configure_command)
 
@@ -104,6 +108,7 @@ def memory_status_cmd(
     agent_id: str = typer.Option("main", "--agent", help="Agent id (default: main)"),
     deep: bool = typer.Option(False, "--deep", help="Include detailed retrieval health"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Show read-only memory backend status from the running gateway."""
 
@@ -119,7 +124,7 @@ def memory_status_cmd(
             params["deep"] = True
         return await client.call("doctor.memory.status", params)
 
-    payload = run_gateway_sync(_run, json_output=json_output)
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if json_output:
         print_json(payload)
         return
@@ -360,6 +365,7 @@ def memory_repair_list_cmd(
     agent_id: str = typer.Option("main", "--agent", help="Agent id (default: main)"),
     limit: int = typer.Option(50, "--limit", min=1, help="Maximum pending repairs"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """List degraded compaction records pending repair."""
 
@@ -375,7 +381,7 @@ def memory_repair_list_cmd(
             {"agentId": agent_id, "limit": limit},
         )
 
-    payload = run_gateway_sync(_run, json_output=json_output)
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if json_output:
         print_json(payload)
         return
@@ -445,6 +451,7 @@ def memory_repair_run_cmd(
     agent_id: str = typer.Option("main", "--agent", help="Agent id (default: main)"),
     limit: int = typer.Option(50, "--limit", min=1, help="Maximum repairs to run"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Retry extraction from archived compaction preimages."""
 
@@ -464,7 +471,7 @@ def memory_repair_run_cmd(
             params["compactionId"] = compaction_id
         return await client.call("memory.repair.run", params)
 
-    payload = run_gateway_sync(_run, json_output=json_output)
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if json_output:
         print_json(payload)
         return
@@ -531,14 +538,25 @@ app.add_typer(gateway_app, name="gateway")
 
 @gateway_app.command("run")
 def gateway_run(
-    port: int = typer.Option(18791, "--port", "-p", help="Port to bind"),
-    bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to bind"),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port to bind (default: config port, usually 18791)",
+    ),
+    bind: str | None = typer.Option(
+        None,
+        "--bind",
+        "-b",
+        help="Host to bind (default: config host, usually 127.0.0.1)",
+    ),
     listen: str = typer.Option(
         "",
         "--listen",
         help="Host to bind (alias of --bind; wins over --bind when both supplied)",
     ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Start the ASGI gateway server.
 
@@ -548,14 +566,31 @@ def gateway_run(
     """
     from opensquilla.cli.gateway_cmd import run_gateway
 
-    run_gateway(port=port, bind=bind, listen=listen, debug=debug)
+    run_gateway(
+        port=port,
+        bind=bind,
+        listen=listen,
+        debug=debug,
+        config_path=config_path,
+    )
 
 
 @gateway_app.command("start")
 def gateway_start(
-    port: int = typer.Option(18791, "--port", "-p", help="Port to bind"),
-    bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to bind"),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port to bind (default: config port, usually 18791)",
+    ),
+    bind: str | None = typer.Option(
+        None,
+        "--bind",
+        "-b",
+        help="Host to bind (default: config host, usually 127.0.0.1)",
+    ),
     listen: str = typer.Option("", "--listen", help="Host to bind (wins over --bind)"),
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
     health_timeout: float = typer.Option(60.0, "--timeout", help="Readiness wait timeout"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
@@ -566,6 +601,7 @@ def gateway_start(
         port=port,
         bind=bind,
         listen=listen,
+        config_path=config_path,
         health_timeout=health_timeout,
         json_output=json_output,
     )
@@ -573,22 +609,56 @@ def gateway_start(
 
 @gateway_app.command("status")
 def gateway_status(
-    port: int = typer.Option(18791, "--port", "-p", help="Port to inspect"),
-    bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to inspect"),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port to inspect (default: config port, usually 18791)",
+    ),
+    bind: str | None = typer.Option(
+        None,
+        "--bind",
+        "-b",
+        help="Host to inspect (default: config host, usually 127.0.0.1)",
+    ),
     listen: str = typer.Option("", "--listen", help="Host to inspect (wins over --bind)"),
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
+    gateway_url: str | None = typer.Option(
+        None,
+        "--gateway",
+        help="Remote gateway URL to inspect instead of local lifecycle state.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Inspect the managed gateway process without mutating state."""
     from opensquilla.cli.gateway_cmd import status_gateway
 
-    status_gateway(port=port, bind=bind, listen=listen, json_output=json_output)
+    status_gateway(
+        port=port,
+        bind=bind,
+        listen=listen,
+        config_path=config_path,
+        gateway_url=gateway_url,
+        json_output=json_output,
+    )
 
 
 @gateway_app.command("stop")
 def gateway_stop(
-    port: int = typer.Option(18791, "--port", "-p", help="Port to stop"),
-    bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to stop"),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port to stop (default: config port, usually 18791)",
+    ),
+    bind: str | None = typer.Option(
+        None,
+        "--bind",
+        "-b",
+        help="Host to stop (default: config host, usually 127.0.0.1)",
+    ),
     listen: str = typer.Option("", "--listen", help="Host to stop (wins over --bind)"),
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
     shutdown_timeout: float = typer.Option(10.0, "--timeout", help="Shutdown wait timeout"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
@@ -599,6 +669,7 @@ def gateway_stop(
         port=port,
         bind=bind,
         listen=listen,
+        config_path=config_path,
         shutdown_timeout=shutdown_timeout,
         json_output=json_output,
     )
@@ -606,9 +677,20 @@ def gateway_stop(
 
 @gateway_app.command("restart")
 def gateway_restart(
-    port: int = typer.Option(18791, "--port", "-p", help="Port to restart"),
-    bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to restart"),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port to restart (default: config port, usually 18791)",
+    ),
+    bind: str | None = typer.Option(
+        None,
+        "--bind",
+        "-b",
+        help="Host to restart (default: config host, usually 127.0.0.1)",
+    ),
     listen: str = typer.Option("", "--listen", help="Host to restart (wins over --bind)"),
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
     health_timeout: float = typer.Option(60.0, "--timeout", help="Readiness wait timeout"),
     shutdown_timeout: float = typer.Option(
         10.0, "--shutdown-timeout", help="Shutdown wait timeout"
@@ -622,6 +704,7 @@ def gateway_restart(
         port=port,
         bind=bind,
         listen=listen,
+        config_path=config_path,
         health_timeout=health_timeout,
         shutdown_timeout=shutdown_timeout,
         json_output=json_output,

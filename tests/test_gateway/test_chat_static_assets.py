@@ -361,3 +361,10 @@ def test_chat_interrupt_mark_is_rendered_and_styled() -> None:
     # CSS for the marker exists and is themed via the project's muted token.
     assert ".msg-interrupt-mark" in css
     assert "var(--text-muted)" in css.split(".msg-interrupt-mark", 1)[1].split("}", 1)[0]
+
+
+def test_health_assets_are_loaded_by_index_template() -> None:
+    index = Path("src/opensquilla/gateway/templates/index.html").read_text(encoding="utf-8")
+
+    assert "views/health.css" in index
+    assert "views/health.js" in index

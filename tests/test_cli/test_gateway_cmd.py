@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from opensquilla.cli import gateway_lifecycle
+from opensquilla.cli import gateway_cmd, gateway_lifecycle
 from opensquilla.cli.gateway_cmd import gateway_startup_guidance
 from opensquilla.cli.main import app
 from opensquilla.paths import default_opensquilla_home
@@ -100,6 +100,14 @@ def test_gateway_help_lists_lifecycle_commands() -> None:
     assert "restart" in result.stdout
 
 
+def test_gateway_start_help_explains_config_backed_target_defaults() -> None:
+    result = runner.invoke(app, ["gateway", "start", "--help"])
+
+    assert result.exit_code == 0
+    assert "Port to bind (default: config port, usually 18791)" in result.stdout
+    assert "Host to bind (default: config host, usually 127.0.0.1)" in result.stdout
+
+
 def test_gateway_status_json_reports_not_started(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
     _patch_health(monkeypatch, False)
@@ -111,6 +119,68 @@ def test_gateway_status_json_reports_not_started(tmp_path, monkeypatch) -> None:
     assert payload["ok"] is True
     assert payload["state"] == "not_started"
     assert payload["managed"] is False
+
+
+def test_gateway_status_gateway_url_probes_remote_https_health(monkeypatch) -> None:
+    urls = []
+
+    def fake_urlopen(request, timeout):
+        urls.append(request.full_url)
+        assert timeout == 0.5
+        return _FakeHealthResponse()
+
+    monkeypatch.setattr(gateway_lifecycle, "urlopen", fake_urlopen)
+
+    result = runner.invoke(
+        app,
+        ["gateway", "status", "--gateway", "https://squilla.example.com", "--json"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["remote"] is True
+    assert payload["managed"] is False
+    assert payload["state"] == "running"
+    assert payload["gatewayUrl"] == "wss://squilla.example.com/ws"
+    assert payload["url"] == "https://squilla.example.com"
+    assert payload["healthUrl"] == "https://squilla.example.com/health"
+    assert urls == ["https://squilla.example.com/health"]
+
+
+def test_gateway_status_gateway_url_reports_remote_unavailable(monkeypatch) -> None:
+    urls = []
+
+    def fake_urlopen(request, timeout):
+        urls.append(request.full_url)
+        assert timeout == 0.5
+        raise OSError("offline")
+
+    monkeypatch.setattr(gateway_lifecycle, "urlopen", fake_urlopen)
+
+    result = runner.invoke(
+        app,
+        ["gateway", "status", "--gateway", "wss://squilla.example.com/ws", "--json"],
+    )
+
+    assert result.exit_code == 1, result.stdout
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["remote"] is True
+    assert payload["managed"] is False
+    assert payload["state"] == "unavailable"
+    assert payload["code"] == "REMOTE_GATEWAY_UNAVAILABLE"
+    assert payload["gatewayUrl"] == "wss://squilla.example.com/ws"
+    assert payload["url"] == "https://squilla.example.com"
+    assert payload["healthUrl"] == "https://squilla.example.com/health"
+    assert urls == [
+        "https://squilla.example.com/health",
+        "https://squilla.example.com/healthz",
+    ]
+    assert [attempt["errorType"] for attempt in payload["details"]["attempts"]] == [
+        "OSError",
+        "OSError",
+    ]
 
 
 def test_gateway_status_reports_stale_without_mutating_pidfile(tmp_path, monkeypatch) -> None:
@@ -167,6 +237,126 @@ def test_gateway_start_uses_same_interpreter_cli_boundary(tmp_path, monkeypatch)
     assert "--listen" in argv
     assert argv[argv.index("--listen") + 1] == "127.0.0.2"
     assert kwargs["shell"] is False
+
+
+def test_gateway_start_uses_explicit_config_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    default_config = tmp_path / "default.toml"
+    custom_config = tmp_path / "custom.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(default_config))
+    calls = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(pid=4245)
+
+    monkeypatch.setattr(gateway_lifecycle.subprocess, "Popen", fake_popen)
+    _patch_health(monkeypatch, False)
+    _patch_wait_for_health(monkeypatch, True)
+
+    result = runner.invoke(
+        app,
+        ["gateway", "start", "--config", str(custom_config), "--json"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    argv, kwargs = calls[0]
+    assert argv[argv.index("--config") + 1] == str(custom_config)
+    assert kwargs["env"]["OPENSQUILLA_GATEWAY_CONFIG_PATH"] == str(custom_config)
+    record = json.loads(gateway_lifecycle.gateway_pidfile_path().read_text(encoding="utf-8"))
+    assert record["configPath"] == str(custom_config)
+
+
+def test_gateway_start_uses_config_host_port_when_flags_are_omitted(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    custom_config = tmp_path / "custom.toml"
+    custom_config.write_text('host = "127.0.0.2"\nport = 19999\n', encoding="utf-8")
+    calls = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(pid=4246)
+
+    monkeypatch.setattr(gateway_lifecycle.subprocess, "Popen", fake_popen)
+    _patch_health(monkeypatch, False)
+    _patch_wait_for_health(monkeypatch, True)
+
+    result = runner.invoke(
+        app,
+        ["gateway", "start", "--config", str(custom_config), "--json"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    argv, _kwargs = calls[0]
+    assert argv[argv.index("--listen") + 1] == "127.0.0.2"
+    assert argv[argv.index("--port") + 1] == "19999"
+    payload = _payload(result)
+    assert payload["url"] == "http://127.0.0.2:19999"
+
+
+def test_gateway_status_uses_config_host_port_when_flags_are_omitted(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    custom_config = tmp_path / "custom.toml"
+    custom_config.write_text('host = "127.0.0.2"\nport = 19999\n', encoding="utf-8")
+    probes = []
+
+    def fake_probe(self):
+        probes.append((self.host, self.port))
+        return False
+
+    monkeypatch.setattr(Manager, "_probe_health", fake_probe)
+
+    result = runner.invoke(
+        app,
+        ["gateway", "status", "--config", str(custom_config), "--json"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert probes == [("127.0.0.2", 19999)]
+    payload = _payload(result)
+    assert payload["url"] == "http://127.0.0.2:19999"
+
+
+def test_gateway_run_uses_config_host_port_when_flags_are_omitted(
+    tmp_path, monkeypatch
+) -> None:
+    custom_config = tmp_path / "custom.toml"
+    custom_config.write_text('host = "127.0.0.2"\nport = 19999\n', encoding="utf-8")
+    captured = {}
+
+    class FakeServer:
+        def __init__(self, task):
+            self._task = task
+
+        async def close(self, _reason):
+            return None
+
+    async def fake_start_gateway_server(*, config, subscription_manager, run):
+        captured["config"] = config
+
+        async def done():
+            return None
+
+        import asyncio
+
+        return FakeServer(asyncio.create_task(done()))
+
+    monkeypatch.setattr(gateway_cmd, "start_gateway_server", fake_start_gateway_server)
+
+    gateway_cmd.run_gateway(
+        port=None,
+        bind=None,
+        listen="",
+        debug=False,
+        config_path=str(custom_config),
+    )
+
+    assert captured["config"].host == "127.0.0.2"
+    assert captured["config"].port == 19999
 
 
 def test_gateway_start_waits_for_readiness_after_liveness(tmp_path, monkeypatch) -> None:
@@ -292,6 +482,32 @@ def test_gateway_start_refuses_live_pidfile_for_different_target(tmp_path, monke
     assert payload["state"] == "target_mismatch"
     assert payload["code"] == "MANAGED_GATEWAY_TARGET_MISMATCH"
     assert gateway_lifecycle.gateway_pidfile_path().exists()
+
+
+def test_gateway_status_reports_recorded_config_mismatch(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    record = _record(pid=321, port=18791)
+    record["configPath"] = str(tmp_path / "first.toml")
+    _write_pidfile(record)
+    _patch_pid_running(monkeypatch, True)
+    _patch_health(monkeypatch, False)
+
+    result = runner.invoke(
+        app,
+        [
+            "gateway",
+            "status",
+            "--config",
+            str(tmp_path / "second.toml"),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = _payload(result)
+    assert payload["state"] == "target_mismatch"
+    assert payload["details"]["recordedConfigPath"] == str(tmp_path / "first.toml")
+    assert payload["details"]["requestedConfigPath"] == str(tmp_path / "second.toml")
 
 
 def test_gateway_stop_clears_stale_pidfile(tmp_path, monkeypatch) -> None:

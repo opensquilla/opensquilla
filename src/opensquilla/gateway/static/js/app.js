@@ -29,6 +29,7 @@ const App = (() => {
     _bindConnectionState();
 
     Router.register('/overview', (el) => OverviewView.render(el), () => OverviewView.destroy());
+    Router.register('/health', (el) => HealthView.render(el), () => HealthView.destroy());
     Router.register('/chat', (el) => ChatView.render(el), () => ChatView.destroy());
     Router.register('/sessions', (el) => SessionsView.render(el), () => SessionsView.destroy());
     Router.register('/agents', (el) => AgentsView.render(el), () => AgentsView.destroy());
@@ -60,6 +61,7 @@ const App = (() => {
         <a class="nav-item" href="#" data-path="/chat">${icons.chat()} Chat</a>
         <div class="nav-group-label">Control</div>
         <a class="nav-item" href="#" data-path="/overview">${icons.home()} Overview</a>
+        <a class="nav-item" href="#" data-path="/health">${icons.logs()} Health</a>
         <a class="nav-item" href="#" data-path="/channels">${icons.channels()} Channels</a>
         <a class="nav-item" href="#" data-path="/skills">${icons.skills()} Skills</a>
         <a class="nav-item" href="#" data-path="/sessions">${icons.sessions()} Sessions</a>

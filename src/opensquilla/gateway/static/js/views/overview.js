@@ -63,6 +63,12 @@ const OverviewView = (() => {
             <div class="ov-stat__value ov-stat__value--mono" id="ov-provider">${UI.skeleton('100px', '1.4rem')}</div>
             <div class="ov-stat__hint">manage agents →</div>
           </button>
+          <button class="ov-stat" data-nav="/health" type="button" id="ov-health">
+            <div class="ov-stat__icon">${icons.logs()}</div>
+            <div class="ov-stat__label">Health</div>
+            <div class="ov-stat__value ov-stat__value--mono" id="ov-health-status">${UI.skeleton('90px', '1.4rem')}</div>
+            <div class="ov-stat__hint" id="ov-health-summary">doctor.status</div>
+          </button>
           <div class="ov-stat ov-stat--static">
             <div class="ov-stat__icon">${icons.cron()}</div>
             <div class="ov-stat__label">Uptime</div>
@@ -227,6 +233,16 @@ const OverviewView = (() => {
       setText('ov-version-line', data.version ? `v${data.version}` : '—');
       set('ov-provider', _esc(data.provider ?? '—'));
     }).catch(err => UI.toast('Failed to load status: ' + err.message, 'err'));
+
+    _rpc.call('doctor.status', { agentId: 'main', deep: false }).then(report => {
+      if (!_el) return;
+      set('ov-health-status', _esc(report.status ?? 'unknown'));
+      setText('ov-health-summary', report.summary ?? 'view details');
+    }).catch(() => {
+      if (!_el) return;
+      set('ov-health-status', 'unavailable');
+      setText('ov-health-summary', 'open health');
+    });
 
     _rpc.call('usage.status').then(data => {
       if (!_el) return;

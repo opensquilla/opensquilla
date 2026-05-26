@@ -68,6 +68,16 @@ def _active_llm_provider(ctx: RpcContext) -> str | None:
     return str(provider) if provider else None
 
 
+def _provider_api_key_env(provider_id: str, default_env_key: str, ctx: RpcContext) -> str:
+    active = provider_id == _active_llm_provider(ctx)
+    llm_cfg = getattr(getattr(ctx, "config", None), "llm", None)
+    if active:
+        configured_env = str(getattr(llm_cfg, "api_key_env", "") or "")
+        if configured_env:
+            return configured_env
+    return default_env_key
+
+
 def _provider_key_configured(provider_id: str, env_key: str, ctx: RpcContext) -> bool:
     active = provider_id == _active_llm_provider(ctx)
     llm_cfg = getattr(getattr(ctx, "config", None), "llm", None)
@@ -129,7 +139,8 @@ async def _handle_providers_status(params: dict | None, ctx: RpcContext) -> dict
     rows: list[dict[str, Any]] = []
     for spec in specs:
         is_active = spec.provider_id == active
-        api_key_configured = _provider_key_configured(spec.provider_id, spec.env_key, ctx)
+        api_key_env = _provider_api_key_env(spec.provider_id, spec.env_key, ctx)
+        api_key_configured = _provider_key_configured(spec.provider_id, api_key_env, ctx)
         base_url = _provider_base_url(spec.provider_id, spec.default_base_url, ctx)
         base_url_configured = bool(base_url)
         configured = (
@@ -138,13 +149,16 @@ async def _handle_providers_status(params: dict | None, ctx: RpcContext) -> dict
             and (not spec.requires_base_url or base_url_configured)
         )
         model = str(getattr(llm_cfg, "model", "") or "") if is_active else ""
+        api_key = str(getattr(llm_cfg, "api_key", "") or "") if is_active else ""
+        if is_active and not api_key and api_key_env:
+            api_key = os.environ.get(api_key_env, "")
         error: str | None = None
         buildable = False
         try:
             build_provider(
                 spec.provider_id,
                 model or "diagnostic-model",
-                api_key=str(getattr(llm_cfg, "api_key", "") or "") if is_active else "",
+                api_key=api_key,
                 base_url=base_url,
             )
             buildable = True
@@ -165,6 +179,7 @@ async def _handle_providers_status(params: dict | None, ctx: RpcContext) -> dict
                 "buildable": buildable,
                 "model": model,
                 "requiresApiKey": spec.requires_api_key,
+                "apiKeyEnv": api_key_env,
                 "apiKeyConfigured": api_key_configured,
                 "baseUrlConfigured": base_url_configured,
                 "error": error,

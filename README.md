@@ -396,9 +396,21 @@ opensquilla chat                       # interactive REPL
 opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 ```
 
-Open the Web UI at <http://127.0.0.1:18791/control/> and check health
-with `curl http://127.0.0.1:18791/health`. Press `Ctrl+C` to stop a
-foreground gateway.
+Open the Web UI at <http://127.0.0.1:18791/control/>. The **Health**
+view shows whether OpenSquilla is ready, what is not ready, and the
+next recovery steps. From the CLI, run:
+
+```sh
+opensquilla doctor
+opensquilla doctor --json
+opensquilla doctor --config ./opensquilla.toml --json
+```
+
+`/health` and `/healthz` are lightweight liveness endpoints for process
+checks. `opensquilla doctor` and the Web UI Health view are the readiness
+surfaces for provider config, memory, logs, search, channels, sandbox
+posture, router, image generation, and recovery guidance. Press
+`Ctrl+C` to stop a foreground gateway.
 
 Other command groups include `sessions`, `skills`, `memory`, `migrate`,
 `cron`, `channels`, `providers`, `models`, and `cost`. Run

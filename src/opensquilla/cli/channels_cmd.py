@@ -149,13 +149,14 @@ def channels_list(
 def channels_status(
     name: str | None = typer.Argument(None, help="Optional channel name to inspect"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Show runtime channel status from the running gateway."""
 
     async def _run(client):
         return await client.call("channels.status", {})
 
-    payload = run_gateway_sync(_run, json_output=json_output)
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if name:
         filtered = {"channels": _filter_status_rows(payload, name)}
         if json_output:
@@ -174,6 +175,7 @@ def channels_restart(
     name: str = typer.Argument(..., help="Channel name to restart"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Restart a live messaging channel."""
 
@@ -186,7 +188,7 @@ def channels_restart(
     async def _run(client):
         return await client.call("channels.restart", {"name": name})
 
-    payload = run_gateway_sync(_run, json_output=json_output)
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if json_output:
         print_json(payload)
         return
@@ -198,6 +200,7 @@ def channels_logout(
     name: str = typer.Argument(..., help="Channel name to log out"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Log out and disconnect a live messaging channel."""
 
@@ -210,7 +213,7 @@ def channels_logout(
     async def _run(client):
         return await client.call("channels.logout", {"name": name})
 
-    payload = run_gateway_sync(_run, json_output=json_output)
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if json_output:
         print_json(payload)
         return

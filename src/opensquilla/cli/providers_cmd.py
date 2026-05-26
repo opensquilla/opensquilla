@@ -62,6 +62,7 @@ def providers_status(
         help="Probe model listing for the active provider",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Show runtime provider diagnostics from the running gateway."""
 
@@ -71,7 +72,7 @@ def providers_status(
             params["provider"] = provider
         return await client.call("providers.status", params)
 
-    payload = run_gateway_sync(_run, json_output=json_output)
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if json_output:
         print_json(payload)
         return

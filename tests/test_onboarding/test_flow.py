@@ -1183,6 +1183,63 @@ def test_interactive_configure_image_generation_persists(tmp_path, monkeypatch):
     assert data["image_generation"]["primary"] == "openai/gpt-image-1"
 
 
+def test_interactive_configure_image_generation_uses_explicit_config_path(
+    tmp_path,
+    monkeypatch,
+):
+    import sys
+    import tomllib
+    import types
+
+    from opensquilla.onboarding import flow
+
+    default_target = tmp_path / "default.toml"
+    target = tmp_path / "custom.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(default_target))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-image-env")
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary(types.SimpleNamespace):
+        def select(self, message: str, **kwargs):
+            if message == "Image generation provider":
+                return _Answer("openai (OpenAI Images)")
+            if message == "Image API key source":
+                return _Answer("Use environment variable OPENAI_API_KEY")
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def text(self, message: str, **kwargs):
+            if message == "Primary image model":
+                return _Answer(kwargs.get("default"))
+            if message == "Image base URL":
+                return _Answer(kwargs.get("default"))
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected password prompt: {message}")
+
+        def confirm(self, message: str, **kwargs):
+            if message == "Image generation enabled?":
+                assert kwargs.get("default") is True
+                return _Answer(True)
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    flow.run_interactive_configure("image-generation", config_path=target)
+
+    data = tomllib.loads(target.read_text())
+    assert data["image_generation"]["enabled"] is True
+    assert data["image_generation"]["providers"]["openai"]["api_key_env"] == "OPENAI_API_KEY"
+    assert not default_target.exists()
+
+
 def test_router_tier_overrides_edit_only_selected_tiers():
     from opensquilla.gateway.config import GatewayConfig
     from opensquilla.onboarding.flow import _router_tier_overrides
@@ -1302,6 +1359,72 @@ def test_interactive_feishu_websocket_prompts_only_core_fields(tmp_path, monkeyp
     assert 'type = "feishu"' in data
     assert 'app_id = "cli_test"' in data
     assert 'connection_mode = "websocket"' in data
+
+
+def test_interactive_channel_add_uses_explicit_config_path(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from opensquilla.onboarding import flow
+
+    default_target = tmp_path / "default.toml"
+    target = tmp_path / "custom.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(default_target))
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary(types.SimpleNamespace):
+        def select(self, message: str, **kwargs):
+            if message == "Channel type":
+                return _Answer("slack")
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def text(self, message: str, **kwargs):
+            if message == "Channel name":
+                return _Answer("slack-main")
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            if message == "Bot token (xoxb-...)":
+                return _Answer("xoxb-test")
+            if message == "Signing secret":
+                return _Answer("signing-secret")
+            raise AssertionError(f"unexpected password prompt: {message}")
+
+        def confirm(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    flow.run_interactive_channel_add(None, config_path=target)
+
+    assert 'type = "slack"' in target.read_text()
+    assert not default_target.exists()
+
+
+def test_optional_onboarding_section_receives_explicit_config_path(tmp_path):
+    from opensquilla.onboarding import flow
+
+    target = tmp_path / "custom.toml"
+    seen = {}
+
+    def runner(*, config_path=None):
+        seen["config_path"] = config_path
+
+    flow._run_optional_section(
+        section="search",
+        label="search",
+        runner=runner,
+        config_path=target,
+    )
+
+    assert seen["config_path"] == target
 
 
 def test_channel_saved_output_separates_configured_from_connected(monkeypatch):
@@ -1607,6 +1730,89 @@ def test_noninteractive_channel_add_writes_config(tmp_path, monkeypatch):
     result = run_noninteractive_channel_add("slack", {"name": "w", "token": "x"})
     assert result.path == target
     assert "slack" in target.read_text()
+
+
+def test_interactive_configure_search_uses_explicit_config_path(tmp_path, monkeypatch):
+    import sys
+    import tomllib
+    import types
+
+    from opensquilla.onboarding import flow
+
+    default_target = tmp_path / "default.toml"
+    target = tmp_path / "custom.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(default_target))
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary(types.SimpleNamespace):
+        def select(self, message: str, **kwargs):
+            if message == "Search provider":
+                return _Answer("duckduckgo (DuckDuckGo)")
+            if message == "Search fallback policy":
+                return _Answer(kwargs.get("default"))
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def text(self, message: str, **kwargs):
+            if message == "Max search results":
+                return _Answer("7")
+            if message == "Search HTTP proxy":
+                return _Answer("")
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected password prompt: {message}")
+
+        def confirm(self, message: str, **_kwargs):
+            if message in {
+                "Use environment proxy for search?",
+                flow._SEARCH_DIAGNOSTICS_PROMPT,
+            }:
+                return _Answer(False)
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    flow.run_interactive_configure("search", config_path=target)
+
+    data = tomllib.loads(target.read_text())
+    assert data["search_provider"] == "duckduckgo"
+    assert data["search_max_results"] == 7
+    assert not default_target.exists()
+
+
+def test_interactive_configure_provider_receives_explicit_config_path(
+    tmp_path,
+    monkeypatch,
+):
+    from opensquilla.onboarding import flow
+    from opensquilla.onboarding.config_store import PersistResult
+
+    target = tmp_path / "custom.toml"
+    seen = {}
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    def fake_run_interactive_onboard(options):
+        seen["config_path"] = options.config_path
+        return PersistResult(
+            path=target,
+            backup_path=None,
+            restart_required=False,
+            warnings=[],
+        )
+
+    monkeypatch.setattr(flow, "run_interactive_onboard", fake_run_interactive_onboard)
+
+    result = flow.run_interactive_configure("providers", config_path=target)
+
+    assert result is not None
+    assert seen["config_path"] == target
 
 
 def test_interactive_configure_without_tty_does_not_create_config(

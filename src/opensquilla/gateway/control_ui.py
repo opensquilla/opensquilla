@@ -61,13 +61,29 @@ _jinja_env = jinja2.Environment(
 _jinja_env.filters["tojson"] = lambda v, **kw: json.dumps(v)
 
 
+def _client_ws_host(host: str) -> str:
+    if host == "0.0.0.0":
+        return "127.0.0.1"
+    if host == "::":
+        return "::1"
+    return host
+
+
+def _format_ws_host(host: str) -> str:
+    if ":" in host and not (host.startswith("[") and host.endswith("]")):
+        return f"[{host}]"
+    return host
+
+
 def _build_bootstrap_context(config: GatewayConfig) -> dict:
     """Build the template context for bootstrap config injection."""
+    ws_host = _format_ws_host(_client_ws_host(str(config.host or "127.0.0.1")))
     return {
         "version": f"{config.version}+{_TEMPLATE_VERSION_SUFFIX}",
-        "ws_url": f"ws://{config.host}:{config.port}/ws",
+        "ws_url": f"ws://{ws_host}:{config.port}/ws",
         "auth_mode": config.auth.mode,
         "base_path": config.control_ui.base_path,
+        "config_path": getattr(config, "config_path", None) or "",
         "features": {
             "diagnostics": config.diagnostics_enabled,
         },

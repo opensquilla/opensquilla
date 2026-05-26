@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json as _json
+import shlex
+from pathlib import Path
 
 import typer
 from rich.table import Table
@@ -52,6 +54,12 @@ def _format_missing_sections(status: OnboardingStatus) -> str:
     return ", ".join(parts) if parts else "none"
 
 
+def _config_cli_arg(config_path: Path | None) -> str:
+    if config_path is None:
+        return ""
+    return f" --config {shlex.quote(str(config_path))}"
+
+
 onboard_app = typer.Typer(
     help="Run or inspect OpenSquilla onboarding.",
     invoke_without_command=True,
@@ -79,6 +87,7 @@ def onboard_command(
     skip_image_generation: bool = typer.Option(False, "--skip-image-generation"),
     skip_migration: bool = typer.Option(False, "--skip-migration"),
     if_needed: bool = typer.Option(False, "--if-needed"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Run first-run onboarding (interactive or non-interactive)."""
     if ctx.invoked_subcommand is not None:
@@ -86,7 +95,7 @@ def onboard_command(
         # handler take over instead of running the interactive flow.
         return
     if if_needed:
-        cfg = load_config()
+        cfg = load_config(config_path)
         status = get_onboarding_status(cfg)
         if status.has_config and not status.needs_onboarding:
             console.print(
@@ -112,6 +121,7 @@ def onboard_command(
                 "base_url": base_url,
                 "router": router,
             },
+            path=config_path,
         )
         console.print(
             banner_panel(
@@ -141,6 +151,7 @@ def onboard_command(
         router_mode=router,
         minimal=minimal,
         skip_migration=skip_migration,
+        config_path=config_path,
     )
     result = run_interactive_onboard(options)
     if "tty_required" in result.warnings:
@@ -186,9 +197,10 @@ def _status_payload(status: OnboardingStatus) -> dict:
 @onboard_app.command("status")
 def onboard_status_command(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Print readiness of every onboarding section without mutating state."""
-    cfg = load_config()
+    cfg = load_config(config_path)
     status = get_onboarding_status(cfg)
 
     if json_output:
@@ -222,8 +234,9 @@ def onboard_status_command(
         f"{'yes' if status.needs_onboarding else 'no'}"
     )
     if status.needs_onboarding:
+        command = f"opensquilla onboard --if-needed{_config_cli_arg(config_path)}"
         console.print(
-            f"  [dim]Run[/] [{ACCENT_SOFT}]opensquilla onboard --if-needed[/] "
+            f"  [dim]Run[/] [{ACCENT_SOFT}]{markup_escape(command)}[/] "
             f"[dim]to address:[/] "
             f"{markup_escape(_format_missing_sections(status))}"
         )
@@ -256,6 +269,7 @@ def configure_command(
     primary: str = typer.Option("", "--primary"),
     memory_provider: str = typer.Option("", "--memory-provider"),
     onnx_dir: str = typer.Option("", "--onnx-dir"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Reconfigure a section (providers/channels/search/image-generation)."""
     selected = section or section_arg
@@ -265,7 +279,7 @@ def configure_command(
         normalized = selected.strip().lower()
         try:
             if normalized in {"provider", "providers"} and provider:
-                engine = SetupEngine()
+                engine = SetupEngine(path=config_path)
                 engine.apply(
                     "provider",
                     {
@@ -281,14 +295,14 @@ def configure_command(
                 _print_env_reference_warnings(load_config(result.path))
                 return
             if normalized == "router" and router:
-                engine = SetupEngine()
+                engine = SetupEngine(path=config_path)
                 engine.apply("router", {"mode": router})
                 result = engine.persist()
                 _print_saved_path(result.path)
                 _print_env_reference_warnings(load_config(result.path))
                 return
             if normalized == "search" and search_provider:
-                engine = SetupEngine()
+                engine = SetupEngine(path=config_path)
                 engine.apply(
                     "search",
                     {
@@ -308,7 +322,7 @@ def configure_command(
                     parse_channel_field_pairs,
                 )
 
-                engine = SetupEngine()
+                engine = SetupEngine(path=config_path)
                 entry = {"type": channel_type, "name": name}
                 apply_channel_token(entry, channel_type, token)
                 entry.update(parse_channel_field_pairs(fields, channel_type))
@@ -317,7 +331,7 @@ def configure_command(
                 _print_saved_path(result.path)
                 return
             if normalized in {"image-generation", "image_generation"} and image_provider:
-                engine = SetupEngine()
+                engine = SetupEngine(path=config_path)
                 engine.apply(
                     "image-generation",
                     {
@@ -333,7 +347,7 @@ def configure_command(
                 _print_saved_path(result.path)
                 return
             if normalized in {"memory-embedding", "memory_embedding"} and memory_provider:
-                engine = SetupEngine()
+                engine = SetupEngine(path=config_path)
                 engine.apply(
                     "memory-embedding",
                     {
@@ -351,6 +365,6 @@ def configure_command(
             error_console.print(f"[red]Error:[/red] {markup_escape(exc)}")
             raise typer.Exit(code=2) from exc
 
-    interactive_result = run_interactive_configure(selected or None)
+    interactive_result = run_interactive_configure(selected or None, config_path=config_path)
     if interactive_result is not None:
         _print_saved_path(interactive_result.path)

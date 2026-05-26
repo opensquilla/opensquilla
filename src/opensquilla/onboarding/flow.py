@@ -6,6 +6,7 @@ import importlib
 import importlib.util
 import os
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -116,6 +117,7 @@ class OnboardOptions:
     router_mode: str = "recommended"
     minimal: bool = False
     skip_migration: bool = False
+    config_path: str | Path | None = None
 
 
 def _is_tty() -> bool:
@@ -154,11 +156,14 @@ def _wait_for_setup_start() -> None:
 
 
 def run_noninteractive_provider_configure(
-    provider_id: str, values: dict[str, Any]
+    provider_id: str,
+    values: dict[str, Any],
+    *,
+    path: str | Path | None = None,
 ) -> PersistResult:
     from opensquilla.onboarding.setup_engine import SetupEngine
 
-    engine = SetupEngine()
+    engine = SetupEngine(path=path)
     engine.apply(
         "provider",
         {
@@ -177,18 +182,24 @@ def run_noninteractive_provider_configure(
 
 
 def run_noninteractive_channel_add(
-    type_name: str, values: dict[str, Any]
+    type_name: str,
+    values: dict[str, Any],
+    *,
+    path: str | Path | None = None,
 ) -> PersistResult:
-    cfg = load_config()
+    cfg = load_config(path)
     payload = {"type": type_name, **values}
     result = upsert_channel(cfg, entry_payload=payload)
-    return persist_config(result.config, restart_required=True)
+    return persist_config(result.config, path=path, restart_required=True)
 
 
 def run_noninteractive_search_configure(
-    provider_id: str, values: dict[str, Any]
+    provider_id: str,
+    values: dict[str, Any],
+    *,
+    path: str | Path | None = None,
 ) -> PersistResult:
-    cfg = load_config()
+    cfg = load_config(path)
     result = upsert_search_provider(
         cfg,
         provider_id=provider_id,
@@ -200,16 +211,27 @@ def run_noninteractive_search_configure(
         fallback_policy=values.get("fallback_policy", "off"),
         diagnostics=bool(values.get("diagnostics", False)),
     )
-    return persist_config(result.config, restart_required=False)
+    return persist_config(result.config, path=path, restart_required=False)
 
 
-def _print_noninteractive_hint() -> PersistResult:
+def _config_cli_arg(config_path: str | Path | None) -> str:
+    if config_path is None:
+        return ""
+    return f" --config {shlex.quote(str(config_path))}"
+
+
+def _print_noninteractive_hint(
+    config_path: str | Path | None = None,
+) -> PersistResult:
+    config_arg = _config_cli_arg(config_path)
     print(
         "Onboarding requires a TTY. Run a non-interactive equivalent, e.g.:\n"
         "  opensquilla onboard --provider openrouter "
-        "--api-key-env OPENROUTER_API_KEY --router recommended --minimal\n"
-        "  opensquilla search configure brave --api-key $BRAVE_SEARCH_API_KEY\n"
-        "  opensquilla channels add slack --name work --token $SLACK_TOKEN"
+        f"--api-key-env OPENROUTER_API_KEY --router recommended --minimal{config_arg}\n"
+        "  opensquilla search configure brave "
+        f"--api-key $BRAVE_SEARCH_API_KEY{config_arg}\n"
+        "  opensquilla channels add slack "
+        f"--name work --token $SLACK_TOKEN{config_arg}"
     )
     return PersistResult(
         path=default_config_path(),
@@ -438,9 +460,11 @@ def _ask_search_fields(questionary, spec) -> dict[str, Any]:
     return answers
 
 
-def run_interactive_search_configure() -> PersistResult:
+def run_interactive_search_configure(
+    config_path: str | Path | None = None,
+) -> PersistResult:
     if not _is_tty():
-        return _print_noninteractive_hint()
+        return _print_noninteractive_hint(config_path)
 
     import questionary as _qmod
     questionary = _styled(_qmod)
@@ -448,7 +472,7 @@ def run_interactive_search_configure() -> PersistResult:
     console.print(banner_panel("Search Setup", "Wire a web search provider"))
     spec, provider_id = _ask_search_choice(questionary)
     answers = _ask_search_fields(questionary, spec)
-    cfg = load_config()
+    cfg = load_config(config_path)
     result = upsert_search_provider(
         cfg,
         provider_id=provider_id,
@@ -460,7 +484,7 @@ def run_interactive_search_configure() -> PersistResult:
         fallback_policy=answers.get("fallback_policy", "off"),
         diagnostics=answers.get("diagnostics", False),
     )
-    return persist_config(result.config, restart_required=False)
+    return persist_config(result.config, path=config_path, restart_required=False)
 
 
 def _image_generation_choice_label(spec: ImageGenerationProviderSetupSpec) -> str:
@@ -578,14 +602,16 @@ def _print_image_generation_saved(provider_id: str) -> None:
     )
 
 
-def run_interactive_image_generation_configure() -> PersistResult:
+def run_interactive_image_generation_configure(
+    config_path: str | Path | None = None,
+) -> PersistResult:
     if not _is_tty():
-        return _print_noninteractive_hint()
+        return _print_noninteractive_hint(config_path)
 
     import questionary as _qmod
     questionary = _styled(_qmod)
 
-    cfg = load_config()
+    cfg = load_config(config_path)
     spec, provider_id = _ask_image_generation_choice(questionary, cfg)
     _print_image_generation_intro(spec)
     answers = _ask_image_generation_fields(questionary, spec, cfg)
@@ -594,10 +620,11 @@ def run_interactive_image_generation_configure() -> PersistResult:
         provider_id=provider_id,
         primary=answers.get("primary", ""),
         api_key=answers.get("api_key", ""),
+        api_key_env=answers.get("api_key_env", ""),
         base_url=answers.get("base_url", ""),
         enabled=bool(answers.get("enabled", True)),
     )
-    persisted = persist_config(result.config, restart_required=False)
+    persisted = persist_config(result.config, path=config_path, restart_required=False)
     _print_image_generation_saved(provider_id)
     return persisted
 
@@ -1449,13 +1476,18 @@ def _ask_imported_provider_credentials(
 
 
 def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
-    cfg = load_config()
+    cfg = load_config(options.config_path)
     status = get_onboarding_status(cfg)
     if options.if_needed and status.has_config and not status.needs_onboarding:
-        return persist_config(cfg, restart_required=False, backup=False)
+        return persist_config(
+            cfg,
+            path=options.config_path,
+            restart_required=False,
+            backup=False,
+        )
 
     if not _is_tty():
-        return _print_noninteractive_hint()
+        return _print_noninteractive_hint(options.config_path)
 
     import questionary as _qmod
     questionary = _styled(_qmod)
@@ -1492,7 +1524,11 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
                     cfg,
                     requested_mode=options.router_mode,
                 )
-                persist = persist_config(cfg_after_provider, restart_required=False)
+                persist = persist_config(
+                    cfg_after_provider,
+                    path=options.config_path,
+                    restart_required=False,
+                )
             else:
                 cfg_after_provider = cfg
                 persist = _migration_result_path(cfg, migration_result, config_path=config_path)
@@ -1559,7 +1595,11 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
                     tiers=router_payload.get("tiers"),
                 )
                 cfg_after_provider = router_res.config
-        persist = persist_config(cfg_after_provider, restart_required=False)
+        persist = persist_config(
+            cfg_after_provider,
+            path=options.config_path,
+            restart_required=False,
+        )
 
     if options.minimal:
         return persist
@@ -1572,6 +1612,7 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
             label="channel",
             runner=run_interactive_channel_add,
             args=(None,),
+            config_path=options.config_path,
         )
 
     if not options.skip_search and questionary.confirm(
@@ -1581,6 +1622,7 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
             section="search",
             label="search",
             runner=run_interactive_search_configure,
+            config_path=options.config_path,
         )
 
     if not options.skip_image_generation and questionary.confirm(
@@ -1590,6 +1632,7 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
             section="image-generation",
             label="image generation",
             runner=run_interactive_image_generation_configure,
+            config_path=options.config_path,
         )
 
     return persist
@@ -1602,6 +1645,7 @@ def _run_optional_section(
     runner,
     args: tuple = (),
     kwargs: dict | None = None,
+    config_path: str | Path | None = None,
 ) -> None:
     """Run an optional onboarding step, isolating cancellation from siblings.
 
@@ -1612,14 +1656,18 @@ def _run_optional_section(
     instead of being silently buried alongside the "skipping" message.
     """
     try:
-        runner(*args, **(kwargs or {}))
+        runner_kwargs = {**(kwargs or {})}
+        if config_path is not None:
+            runner_kwargs.setdefault("config_path", config_path)
+        runner(*args, **runner_kwargs)
     except UserCancelledError:
+        config_arg = _config_cli_arg(config_path)
         console.print(
             f"[yellow]{label} setup cancelled — skipping.[/yellow]"
         )
         console.print(
             f"  [dim]Resume later with[/dim] "
-            f"[{ACCENT_SOFT}]opensquilla configure {section}[/]"
+            f"[{ACCENT_SOFT}]opensquilla configure {section}{config_arg}[/]"
         )
     except KeyboardInterrupt:
         console.print(
@@ -1627,9 +1675,13 @@ def _run_optional_section(
         )
 
 
-def run_interactive_channel_add(type_name: str | None) -> PersistResult:
+def run_interactive_channel_add(
+    type_name: str | None,
+    *,
+    config_path: str | Path | None = None,
+) -> PersistResult:
     if not _is_tty():
-        return _print_noninteractive_hint()
+        return _print_noninteractive_hint(config_path)
 
     import questionary as _qmod
     questionary = _styled(_qmod)
@@ -1644,28 +1696,37 @@ def run_interactive_channel_add(type_name: str | None) -> PersistResult:
     answers = _ask_channel_fields(questionary, spec, type_name=type_name)
     _warn_channel_dependency_gaps(spec, answers)
 
-    cfg = load_config()
+    cfg = load_config(config_path)
     res = upsert_channel(cfg, entry_payload=answers)
-    persisted = persist_config(res.config, restart_required=True)
+    persisted = persist_config(res.config, path=config_path, restart_required=True)
     _print_channel_saved(str(res.public_payload.get("name") or answers.get("name")))
     return persisted
 
 
-def run_interactive_channel_edit(name: str | None = None) -> PersistResult:
+def run_interactive_channel_edit(
+    name: str | None = None,
+    *,
+    config_path: str | Path | None = None,
+) -> PersistResult:
     if not _is_tty():
-        return _print_noninteractive_hint()
+        return _print_noninteractive_hint(config_path)
 
     import questionary as _qmod
     questionary = _styled(_qmod)
 
-    cfg = load_config()
+    cfg = load_config(config_path)
     existing_entries = [e.model_dump(mode="python") for e in cfg.channels.channels]
     if not existing_entries:
         console.print(
             f"[{ACCENT_DIM}]no channels to edit[/]"
             " [dim]· run `configure --section channels` to add one[/dim]"
         )
-        return persist_config(cfg, restart_required=False, backup=False)
+        return persist_config(
+            cfg,
+            path=config_path,
+            restart_required=False,
+            backup=False,
+        )
 
     if name is None:
         name = questionary.select(
@@ -1686,14 +1747,18 @@ def run_interactive_channel_edit(name: str | None = None) -> PersistResult:
     _warn_channel_dependency_gaps(spec, answers)
 
     res = upsert_channel(cfg, entry_payload=answers)
-    persisted = persist_config(res.config, restart_required=True)
+    persisted = persist_config(res.config, path=config_path, restart_required=True)
     _print_channel_saved(str(res.public_payload.get("name") or name))
     return persisted
 
 
-def run_interactive_configure(section: str | None = None) -> PersistResult | None:
+def run_interactive_configure(
+    section: str | None = None,
+    *,
+    config_path: str | Path | None = None,
+) -> PersistResult | None:
     if not _is_tty():
-        _print_noninteractive_hint()
+        _print_noninteractive_hint(config_path)
         return None
 
     import questionary as _qmod
@@ -1705,10 +1770,14 @@ def run_interactive_configure(section: str | None = None) -> PersistResult | Non
     ).ask()
     if section == "providers":
         return run_interactive_onboard(
-            OnboardOptions(skip_channels=True, skip_search=True)
+            OnboardOptions(
+                skip_channels=True,
+                skip_search=True,
+                config_path=config_path,
+            )
         )
     if section == "channels":
-        existing = load_config().channels.channels
+        existing = load_config(config_path).channels.channels
         if existing:
             mode = questionary.select(
                 "Channel action",
@@ -1716,12 +1785,12 @@ def run_interactive_configure(section: str | None = None) -> PersistResult | Non
                 default="add",
             ).ask()
             if mode == "edit":
-                return run_interactive_channel_edit(None)
-        return run_interactive_channel_add(None)
+                return run_interactive_channel_edit(None, config_path=config_path)
+        return run_interactive_channel_add(None, config_path=config_path)
     if section == "search":
-        return run_interactive_search_configure()
+        return run_interactive_search_configure(config_path=config_path)
     if section in {"image-generation", "image_generation"}:
-        return run_interactive_image_generation_configure()
+        return run_interactive_image_generation_configure(config_path=config_path)
     console.print(
         f"[{ACCENT_DIM}]section[/] [{ACCENT_SOFT}]{markup_escape(repr(section))}[/]"
         " [dim]not yet supported in the wizard · edit "

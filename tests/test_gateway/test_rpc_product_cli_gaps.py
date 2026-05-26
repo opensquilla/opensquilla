@@ -786,6 +786,32 @@ async def test_providers_status_redacts_keys_and_rejects_unknown_provider():
     assert unknown.error.code == "INVALID_REQUEST"
 
 
+@pytest.mark.asyncio
+async def test_providers_status_honors_configured_active_api_key_env(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_KEY", "custom-env-key")
+    cfg = GatewayConfig(
+        llm={
+            "provider": "openrouter",
+            "model": "openrouter/model",
+            "api_key_env": "OPENSQUILLA_PROVIDER_KEY",
+        }
+    )
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "providers.status",
+        {"provider": "openrouter"},
+        _ctx(config=cfg),
+    )
+
+    assert res.error is None, res.error
+    row = res.payload["providers"][0]
+    assert row["apiKeyConfigured"] is True
+    assert row["apiKeyEnv"] == "OPENSQUILLA_PROVIDER_KEY"
+    assert "custom-env-key" not in repr(res.payload)
+
+
 class FakeSearchProvider:
     name = "fake_search_ok"
 

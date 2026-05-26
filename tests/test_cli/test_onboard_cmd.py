@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 import tomllib
 
 from typer.testing import CliRunner
@@ -186,6 +187,26 @@ def test_onboard_if_needed_skips_when_configured(tmp_path, monkeypatch):
     assert target.stat().st_mtime == mtime_before
 
 
+def test_onboard_if_needed_uses_explicit_config_path(tmp_path, monkeypatch):
+    default_target = tmp_path / "default.toml"
+    target = tmp_path / "custom.toml"
+    target.write_text(
+        '[llm]\n'
+        'provider = "openrouter"\n'
+        'model = "deepseek/deepseek-v4-flash"\n'
+        'api_key_env = "CUSTOM_LLM_KEY"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(default_target))
+    monkeypatch.setenv("CUSTOM_LLM_KEY", "sk-from-custom-env")
+
+    result = runner.invoke(app, ["onboard", "--if-needed", "--config", str(target)])
+
+    assert result.exit_code == 0
+    assert "already complete" in result.stdout.lower()
+    assert not default_target.exists()
+
+
 def test_onboard_if_needed_skips_when_key_comes_from_env(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     target.write_text(
@@ -298,6 +319,69 @@ def test_onboard_if_needed_requires_referenced_env_even_with_settings_env(
     assert "already complete" not in result.stdout.lower()
 
 
+def test_onboard_status_uses_explicit_config_path(tmp_path, monkeypatch):
+    default_target = tmp_path / "default.toml"
+    target = tmp_path / "custom.toml"
+    target.write_text(
+        '[llm]\n'
+        'provider = "openrouter"\n'
+        'model = "deepseek/deepseek-v4-flash"\n'
+        'api_key_env = "CUSTOM_LLM_KEY"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(default_target))
+    monkeypatch.delenv("CUSTOM_LLM_KEY", raising=False)
+
+    result = runner.invoke(app, ["onboard", "status", "--json", "--config", str(target)])
+
+    assert result.exit_code == 0, result.stdout
+    payload = _json.loads(result.stdout)
+    assert payload["configPath"] == str(target)
+    assert payload["sections"]["llm"] == "degraded"
+    assert not default_target.exists()
+
+
+def test_onboard_status_table_keeps_explicit_config_path_in_next_step(
+    tmp_path,
+    monkeypatch,
+):
+    default_target = tmp_path / "default.toml"
+    target = tmp_path / "custom.toml"
+    target.write_text(
+        '[llm]\n'
+        'provider = "openrouter"\n'
+        'model = "deepseek/deepseek-v4-flash"\n'
+        'api_key_env = "CUSTOM_LLM_KEY"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(default_target))
+    monkeypatch.delenv("CUSTOM_LLM_KEY", raising=False)
+
+    result = runner.invoke(app, ["onboard", "status", "--config", str(target)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        f"opensquilla onboard --if-needed --config {target}"
+        in " ".join(result.stdout.split())
+    )
+    assert not default_target.exists()
+
+
+def test_onboard_if_needed_non_tty_hint_keeps_explicit_config_path(
+    tmp_path,
+    monkeypatch,
+):
+    default_target = tmp_path / "default.toml"
+    target = tmp_path / "custom.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(default_target))
+
+    result = runner.invoke(app, ["onboard", "--if-needed", "--config", str(target)])
+
+    assert result.exit_code == 2
+    assert f"--config {target}" in result.stdout
+    assert not default_target.exists()
+
+
 def test_configure_provider_noninteractive_uses_setup_engine(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
@@ -321,6 +405,34 @@ def test_configure_provider_noninteractive_uses_setup_engine(tmp_path, monkeypat
     assert data["llm"]["provider"] == "openrouter"
     assert data["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
     assert "api_key" not in data["llm"]
+
+
+def test_configure_provider_uses_explicit_config_path(tmp_path, monkeypatch):
+    default_target = tmp_path / "default.toml"
+    target = tmp_path / "custom.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(default_target))
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "provider",
+            "--provider",
+            "openrouter",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--api-key-env",
+            "OPENROUTER_API_KEY",
+            "--config",
+            str(target),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    data = tomllib.loads(target.read_text())
+    assert data["llm"]["provider"] == "openrouter"
+    assert data["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
+    assert not default_target.exists()
 
 
 def test_configure_provider_can_omit_model_for_router_profile(tmp_path, monkeypatch):

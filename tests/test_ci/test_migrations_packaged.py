@@ -90,6 +90,7 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
     os.environ.get("OPENSQUILLA_SKIP_DOCKER_SMOKE") == "1",
     reason="docker smoke disabled via env",
 )
+@pytest.mark.skipif(os.name == "nt", reason="docker image smoke builds Linux images")
 def test_docker_image_resolves_migrations() -> None:
     """`docker build` + `docker run` resolves _migrations including V010.
 

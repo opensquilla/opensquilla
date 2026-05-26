@@ -165,6 +165,7 @@ def test_resolve_log_dir_respects_env_overrides(tmp_path: Path, monkeypatch) -> 
 
     # CLI arg with ~ is expanded (never stays literal)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     resolved = _resolve_log_dir("~/foo")
     assert not str(resolved).startswith("~"), f"tilde not expanded: {resolved}"
     assert str(resolved).startswith(str(tmp_path))

@@ -219,7 +219,7 @@ _XML_ESCAPE_RE = re.compile(
 def test_xml_escape_present_on_user_message(bundle: str) -> None:
     """G1.6 enforcement: every bundle's SKILL.md must xml_escape (or slugify)
     `inputs.user_message` references."""
-    skill_md = (_G1_BUNDLED / bundle / "SKILL.md").read_text()
+    skill_md = (_G1_BUNDLED / bundle / "SKILL.md").read_text(encoding="utf-8")
     bad = _XML_ESCAPE_RE.findall(skill_md)
     assert not bad, (
         f"{bundle}/SKILL.md: 'inputs.user_message' not immediately followed by "

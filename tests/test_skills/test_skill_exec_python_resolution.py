@@ -39,8 +39,8 @@ def test_split_entrypoint_command_preserves_windows_backslashes(
     monkeypatch.setattr(skill_exec.os, "name", "nt")
 
     assert skill_exec._split_entrypoint_command(
-        r'python "C:\Users\runner admin\AppData\Local\Temp\hello.py"',
-    ) == ["python", r"C:\Users\runner admin\AppData\Local\Temp\hello.py"]
+        r'python "C:\Temp\runner admin\AppData\Local\Temp\hello.py"',
+    ) == ["python", r"C:\Temp\runner admin\AppData\Local\Temp\hello.py"]
 
 
 class _Loader:

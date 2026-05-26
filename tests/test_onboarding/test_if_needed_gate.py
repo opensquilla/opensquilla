@@ -64,7 +64,7 @@ def test_if_needed_skips_when_all_sections_ok_or_optional(
     config_path.write_text("")
     cfg.config_path = str(config_path)
 
-    monkeypatch.setattr("opensquilla.cli.onboard_cmd.load_config", lambda: cfg)
+    monkeypatch.setattr("opensquilla.cli.onboard_cmd.load_config", lambda _path=None: cfg)
 
     result = runner.invoke(app, ["onboard", "--if-needed"])
     assert result.exit_code == 0, result.output
@@ -89,7 +89,7 @@ def test_if_needed_does_not_skip_when_search_was_cancelled(
     config_path.write_text("")
     cfg.config_path = str(config_path)
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
-    monkeypatch.setattr("opensquilla.cli.onboard_cmd.load_config", lambda: cfg)
+    monkeypatch.setattr("opensquilla.cli.onboard_cmd.load_config", lambda _path=None: cfg)
 
     status = get_onboarding_status(cfg)
     assert status.needs_onboarding is True
@@ -109,7 +109,7 @@ def test_onboard_status_subcommand_emits_json(monkeypatch, tmp_path, runner):
     config_path = tmp_path / "config.toml"
     config_path.write_text("")
     cfg.config_path = str(config_path)
-    monkeypatch.setattr("opensquilla.cli.onboard_cmd.load_config", lambda: cfg)
+    monkeypatch.setattr("opensquilla.cli.onboard_cmd.load_config", lambda _path=None: cfg)
 
     result = runner.invoke(app, ["onboard", "status", "--json"])
     assert result.exit_code == 0, result.output

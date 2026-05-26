@@ -8,7 +8,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any, cast
 
-from opensquilla.cli.sandbox_cmd import _status_payload as _sandbox_status_payload
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.rpc_channels import _handle_channels_status
@@ -28,6 +27,7 @@ from opensquilla.health.evaluator import (
 )
 from opensquilla.health.model import FixStep, HealthFinding, HealthSeverity, build_report
 from opensquilla.health.recovery_commands import command_with_config as _command_with_config
+from opensquilla.sandbox.status import status_payload as _sandbox_status_payload
 from opensquilla.session.keys import normalize_agent_id
 
 _d = get_dispatcher()

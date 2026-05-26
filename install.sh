@@ -87,7 +87,7 @@ if [[ -n "${extras_csv}" ]]; then
 fi
 
 install_extras=()
-for extra in "${raw_extras[@]}"; do
+for extra in ${raw_extras[@]+"${raw_extras[@]}"}; do
     [[ -n "${extra}" ]] || continue
     if [[ "${valid_extras}" != *" ${extra} "* ]]; then
         echo "install.sh: unsupported extra '${extra}'." >&2
@@ -95,7 +95,7 @@ for extra in "${raw_extras[@]}"; do
         exit 1
     fi
     duplicate=0
-    for existing in "${install_extras[@]}"; do
+    for existing in ${install_extras[@]+"${install_extras[@]}"}; do
         if [[ "${existing}" == "${extra}" ]]; then
             duplicate=1
             break

@@ -6,9 +6,10 @@ import inspect
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 from opensquilla.cli.sandbox_cmd import _status_payload as _sandbox_status_payload
+from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.rpc_channels import _handle_channels_status
 from opensquilla.gateway.rpc_logs import _build_logs_status
@@ -25,7 +26,7 @@ from opensquilla.health.evaluator import (
     evaluate_sandbox,
     evaluate_search,
 )
-from opensquilla.health.model import FixStep, HealthFinding, build_report
+from opensquilla.health.model import FixStep, HealthFinding, HealthSeverity, build_report
 from opensquilla.health.recovery_commands import command_with_config as _command_with_config
 from opensquilla.session.keys import normalize_agent_id
 
@@ -63,7 +64,9 @@ def _collection_error(surface: str, exc: Exception) -> HealthFinding:
             FixStep(label="Inspect diagnostics", command="opensquilla diagnostics status")
         )
     fix_steps.append(FixStep(label="Restart gateway", command="opensquilla gateway restart"))
-    severity = "error" if surface in _READINESS_CRITICAL_COLLECTIONS else "warn"
+    severity: HealthSeverity = (
+        "error" if surface in _READINESS_CRITICAL_COLLECTIONS else "warn"
+    )
     return HealthFinding(
         id=f"{surface}.diagnostic.unavailable",
         severity=severity,
@@ -126,7 +129,7 @@ def _search_api_key_env(ctx: RpcContext, payload: dict[str, Any]) -> str:
 
 async def _search_payload(ctx: RpcContext) -> dict[str, Any]:
     try:
-        payload = await _handle_search_status({}, ctx)
+        payload = cast(dict[str, Any], await _handle_search_status({}, ctx))
         payload.setdefault("apiKeyEnv", _search_api_key_env(ctx, payload))
         return payload
     except (KeyError, ValueError) as exc:
@@ -211,8 +214,19 @@ def _image_generation_api_key_env(config: Any, provider: str) -> str:
 
 
 def _router_payload(ctx: RpcContext) -> dict[str, Any]:
-    config = getattr(ctx, "config", None)
-    router = getattr(config, "squilla_router", None) if config is not None else None
+    config = cast(GatewayConfig | None, getattr(ctx, "config", None))
+    if config is None:
+        return {
+            "enabled": False,
+            "rolloutPhase": "unknown",
+            "strategy": "unknown",
+            "tierProfile": "custom",
+            "defaultTier": None,
+            "runtimeValid": True,
+            "requireRouterRuntime": False,
+        }
+
+    router = config.squilla_router
     if router is None:
         return {
             "enabled": False,

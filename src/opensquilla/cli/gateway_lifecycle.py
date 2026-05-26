@@ -452,7 +452,7 @@ class GatewayLifecycleManager:
             return False
         record_config_path = record.get("configPath")
         if self.config_path is not None and record_config_path:
-            return record_config_path == self.config_path
+            return bool(record_config_path == self.config_path)
         return True
 
     def _record_pid(self, record: dict[str, Any]) -> int | None:

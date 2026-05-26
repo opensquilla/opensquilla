@@ -3,7 +3,7 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
-from opensquilla.health.model import FixStep, HealthFinding
+from opensquilla.health.model import FixStep, HealthFinding, HealthSeverity
 
 _LEGACY_PROVIDER_REPLACEMENTS = {
     "zai": "zhipu",
@@ -35,7 +35,7 @@ def _int_from_payload(payload: dict[str, Any], *keys: str) -> int:
         if value in (None, ""):
             continue
         try:
-            return int(value)
+            return int(str(value))
         except (TypeError, ValueError):
             continue
     return 0
@@ -836,7 +836,7 @@ def evaluate_router(payload: dict[str, Any]) -> list[HealthFinding]:
             )
         ]
     if not runtime_valid:
-        severity = "error" if require_runtime else "warn"
+        severity: HealthSeverity = "error" if require_runtime else "warn"
         return [
             HealthFinding(
                 id="router.runtime.missing",

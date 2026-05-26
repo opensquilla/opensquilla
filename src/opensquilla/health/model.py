@@ -81,7 +81,7 @@ def _readiness_impact(finding: HealthFinding) -> ReadinessImpact:
     return finding.readiness_impact or _DEFAULT_IMPACT_BY_SEVERITY[finding.severity]
 
 
-def _summary(impact_counts: dict[str, int]) -> str:
+def _summary(impact_counts: dict[ReadinessImpact, int]) -> str:
     parts: list[str] = []
     if impact_counts["blocks_ready"]:
         label = "action" if impact_counts["blocks_ready"] == 1 else "actions"
@@ -100,7 +100,7 @@ def _summary(impact_counts: dict[str, int]) -> str:
     return "Ready"
 
 
-def _status(impact_counts: dict[str, int]) -> HealthStatus:
+def _status(impact_counts: dict[ReadinessImpact, int]) -> HealthStatus:
     # "unavailable" is reserved for callers that cannot reach doctor.status at all.
     if impact_counts["blocks_ready"]:
         return "action_required"
@@ -110,8 +110,8 @@ def _status(impact_counts: dict[str, int]) -> HealthStatus:
 
 
 def build_report(findings: list[HealthFinding]) -> dict[str, Any]:
-    counts = {key: 0 for key in _COUNT_KEYS}
-    impact_counts = {key: 0 for key in _IMPACT_KEYS}
+    counts: dict[HealthSeverity, int] = {key: 0 for key in _COUNT_KEYS}
+    impact_counts: dict[ReadinessImpact, int] = {key: 0 for key in _IMPACT_KEYS}
     for finding in findings:
         counts[finding.severity] += 1
         impact_counts[_readiness_impact(finding)] += 1

@@ -123,7 +123,7 @@ def _is_local_gateway(gateway_url: str) -> bool:
 
 
 def _gateway_unavailable_finding(
-    error: Exception,
+    error: BaseException,
     *,
     gateway_url: str,
     config_path: str | Path | None = None,
@@ -353,7 +353,7 @@ def _local_config_findings(config_path: str | Path | None = None) -> list[Health
 
 
 def _offline_report(
-    error: Exception,
+    error: BaseException,
     *,
     gateway_url: str,
     config_path: str | Path | None = None,

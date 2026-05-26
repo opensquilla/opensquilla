@@ -100,6 +100,25 @@ class ClarifyField:
 
 
 @dataclass(frozen=True)
+class ClarifyStepConfig:
+    """Static schema describing what a user_input step collects.
+
+    All side-effect semantics (skip_if evaluation, cancel detection,
+    timeout, nl_extract LLM call) live in the executor and meta_resolution
+    layer; this dataclass is the parsed declaration only.
+    """
+
+    mode: str  # "form" | "chat"
+    fields: tuple[ClarifyField, ...]
+    skip_if: str = ""
+    cancel_keywords: tuple[str, ...] = ()
+    timeout_hours: int = 24
+    intro: str = ""
+    nl_extract: bool = False
+    nl_extract_tier: str = ""  # "" ⇒ lowest configured router tier
+
+
+@dataclass(frozen=True)
 class MetaPlan:
     """Parsed composition plan for a Meta-Skill."""
 

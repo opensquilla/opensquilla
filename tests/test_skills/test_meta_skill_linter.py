@@ -1,4 +1,4 @@
-"""Tests for meta-skill-linter (G1 + G2 gates)."""
+"""Tests for skill-creator-linter (G1 + G2 gates)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-_LINTER_DIR = REPO / "src" / "opensquilla" / "skills" / "bundled" / "meta-skill-linter"
+_LINTER_DIR = REPO / "src" / "opensquilla" / "skills" / "bundled" / "skill-creator-linter"
 LINT = _LINTER_DIR / "scripts" / "lint.py"
 
 
@@ -76,7 +76,7 @@ EXISTING_META_BUNDLES = [
     "meta-pdf-intelligence", "meta-travel-planner", "meta-security-review-bundle",
     "meta-migration-assistant", "meta-knowledge-base-bootstrap",
     "meta-multi-format-export-pack", "meta-compliance-audit-bundle",
-    "meta-spreadsheet-insight", "meta-research-to-deck", "meta-web-research-to-report",
+    "meta-spreadsheet-insight", "meta-web-research-to-report",
     "meta-web-to-pdf-briefing", "meta-github-pr-watch-digest",
     "meta-issue-to-pr-autopilot", "meta-long-running-build-watchdog",
     "meta-pdf-reformat-pipeline", "meta-scheduled-morning-digest",

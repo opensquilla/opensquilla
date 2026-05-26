@@ -2764,12 +2764,17 @@ class Agent:
                 tool_handler=self.tool_handler,
                 agent_factory=type(self),
                 workspace_dir=str(workspace_dir) if workspace_dir else None,
+                usage_tracker=self._usage_tracker,
+                session_key=self._session_key,
             )
             llm_chat = (
                 getattr(self, "_test_llm_chat_override", None)
                 or (
                     make_llm_chat_from_provider(
-                        provider=self.provider, base_config=self.config
+                        provider=self.provider,
+                        base_config=self.config,
+                        usage_tracker=self._usage_tracker,
+                        session_key=self._session_key,
                     )
                     if self.provider is not None
                     else None
@@ -2810,6 +2815,7 @@ class Agent:
                 session_key=getattr(self, "_session_key", None),
                 turn_id=getattr(self, "_turn_id", None),
                 memory_persist_enabled=memory_persist_enabled,
+                usage_tracker=self._usage_tracker,
             )
 
             # Prefer the live turn message captured at run_turn entry (canonical
@@ -2819,7 +2825,20 @@ class Agent:
                 getattr(self, "_current_turn_message", "")
                 or metadata.get("user_message", "")
             )
-            match = MetaMatch(plan=plan, inputs={"user_message": user_message})
+            from opensquilla.skills.meta.inputs import make_meta_inputs
+
+            system_prompt = (
+                self._context.system_prompt
+                if self._context is not None
+                else self.config.system_prompt or ""
+            )
+            match = MetaMatch(
+                plan=plan,
+                inputs=make_meta_inputs(
+                    user_message=user_message,
+                    system_prompt=system_prompt,
+                ),
+            )
 
             # Stream events; capture final MetaResult sentinel.
             # Suppress nested TextDeltaEvents from sub-Agent steps: when the
@@ -2871,7 +2890,11 @@ class Agent:
             yield ToolResult(
                 tool_use_id=tc.tool_use_id,
                 tool_name="meta_invoke",
-                content=result.final_text or "(meta-skill completed with no output text)",
+                content=(
+                    f"meta-skill {name!r} completed; final answer streamed separately."
+                    if result.final_text
+                    else "(meta-skill completed with no output text)"
+                ),
                 is_error=False,
                 terminates_turn=True,
             )

@@ -2,9 +2,30 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import Iterator
 
 from .pricing import lookup_price
+
+_current_usage_scope: ContextVar[str | None] = ContextVar(
+    "opensquilla_usage_scope",
+    default=None,
+)
+
+
+@contextmanager
+def usage_scope(scope_key: str | None) -> Iterator[None]:
+    """Attribute UsageTracker.add calls in this async context to scope_key."""
+    if not scope_key:
+        yield
+        return
+    token = _current_usage_scope.set(scope_key)
+    try:
+        yield
+    finally:
+        _current_usage_scope.reset(token)
 
 
 @dataclass
@@ -109,6 +130,7 @@ class UsageTracker:
 
     def __init__(self) -> None:
         self._sessions: dict[str, SessionUsage] = {}
+        self._scopes: dict[tuple[str, str], SessionUsage] = {}
 
     def add(
         self,
@@ -134,10 +156,29 @@ class UsageTracker:
         )
         if model_id:
             usage.model_id = model_id
+        scope_key = _current_usage_scope.get()
+        if scope_key:
+            scoped = self._scopes.get((session_key, scope_key))
+            if scoped is None:
+                scoped = SessionUsage(model_id=model_id)
+                self._scopes[(session_key, scope_key)] = scoped
+            scoped.add(
+                input_tokens,
+                output_tokens,
+                model_id=model_id,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+            )
+            if model_id:
+                scoped.model_id = model_id
 
     def get(self, session_key: str) -> SessionUsage | None:
         """Return accumulated usage for a session, or None."""
         return self._sessions.get(session_key)
+
+    def get_scope(self, session_key: str, scope_key: str) -> SessionUsage | None:
+        """Return accumulated usage for a session within one attribution scope."""
+        return self._scopes.get((session_key, scope_key))
 
     def get_cost(self, session_key: str) -> float:
         """Return accumulated cost in USD for a session."""

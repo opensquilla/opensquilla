@@ -1,6 +1,6 @@
 """Library functions for the ``~/.opensquilla/proposals/`` directory.
 
-Lifted out of ``skills/bundled/meta-skill-proposals/scripts/proposals.py``
+Lifted out of ``skills/bundled/skill-creator-proposals/scripts/proposals.py``
 so the gateway RPC layer (Path 3) can call them in-process — the
 bundled script's hyphenated path is not importable.
 

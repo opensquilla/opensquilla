@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import inspect
+
 from opensquilla.engine.runtime import TurnRunner
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.tools.registry import get_default_registry
@@ -139,3 +141,16 @@ def test_build_tools_preserves_existing_surfaced_tools(tmp_path: Path) -> None:
     assert "some_other_tool" in ctx.surfaced_tools, (
         "must extend existing surfaced_tools, not replace it"
     )
+
+
+def test_runtime_does_not_hard_auto_invoke_meta_match() -> None:
+    """Meta trigger matches must go through the outer LLM prompt/tool path.
+
+    The meta_resolution step already injects a system-prompt hint and exposes
+    meta_invoke. Runtime must not bypass that prompt by directly calling
+    _run_one_streaming when metadata["meta_match"] is present.
+    """
+    source = inspect.getsource(TurnRunner._run_turn)
+
+    assert "meta_resolution.auto_invoke" not in source
+    assert "auto_meta_invoke_" not in source

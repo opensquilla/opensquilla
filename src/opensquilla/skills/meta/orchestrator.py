@@ -33,7 +33,10 @@ from opensquilla.engine.types import AgentConfig, AgentEvent
 from opensquilla.provider.protocol import LLMProvider
 from opensquilla.skills.meta.events import _StepDone, yield_skill_view_preface
 from opensquilla.skills.meta.executors.agent import run_step_with_skill_stream
-from opensquilla.skills.meta.executors.llm_classify import run_llm_classify_step
+from opensquilla.skills.meta.executors.llm_classify import (
+    run_llm_chat_step,
+    run_llm_classify_step,
+)
 from opensquilla.skills.meta.executors.skill_exec import run_skill_exec_step
 from opensquilla.skills.meta.executors.tool_call import run_tool_call_step
 from opensquilla.skills.meta.scheduler import run_dag
@@ -99,6 +102,7 @@ class MetaOrchestrator:
         session_key: str | None = None,
         turn_id: str | None = None,
         memory_persist_enabled: bool = True,
+        usage_tracker: Any | None = None,
     ) -> None:
         self._agent_runner = agent_runner
         self._skill_loader = skill_loader
@@ -125,6 +129,7 @@ class MetaOrchestrator:
         self._triggered_by = triggered_by
         self._session_key = session_key
         self._turn_id = turn_id
+        self._usage_tracker = usage_tracker
         # When False the orchestrator skips any ``skill: memory`` step
         # (the conventional last-step archive pattern). Honoured by
         # ``_dispatch_step_stream`` — see GatewayConfig.meta_skill
@@ -264,6 +269,9 @@ class MetaOrchestrator:
                 on_step_begin=on_step_begin if self._run_writer else None,
                 on_step_finish=on_step_finish if self._run_writer else None,
                 on_step_failover=on_step_failover if self._run_writer else None,
+                usage_tracker=self._usage_tracker,
+                session_key=self._session_key,
+                usage_scope_prefix=run_id or f"meta:{match.plan.name}:{id(match)}",
             ):
                 if isinstance(item, MetaResult):
                     # Resolve user-facing ``final_text`` per
@@ -383,6 +391,16 @@ class MetaOrchestrator:
             )
             yield _StepDone(text=text)
             return
+        if step.kind == "llm_chat":
+            text = await run_llm_chat_step(
+                step,
+                inputs,
+                outputs,
+                llm_chat=self._llm_chat,
+                agent_runner=self._agent_runner,
+            )
+            yield _StepDone(text=text)
+            return
         if step.kind == "tool_call":
             text = await run_tool_call_step(
                 step,
@@ -426,7 +444,8 @@ class MetaOrchestrator:
 
         - ``"raw"``         → preserve scheduler-seeded last-step output.
         - ``"step:<id>"``   → outputs[id] verbatim (falls through to current
-                              on miss so callers never get an empty reply).
+                              on miss or empty output so callers never get an
+                              empty reply).
         - ``"auto"``/other  → LLM post-processes step_outputs into a short
                               Markdown summary; falls back to the seeded
                               value on any failure (missing llm_chat,
@@ -438,7 +457,10 @@ class MetaOrchestrator:
             return current_final_text
         if mode.startswith("step:"):
             sid = mode[len("step:"):].strip()
-            return step_outputs.get(sid, current_final_text)
+            selected = step_outputs.get(sid, "")
+            if selected.strip():
+                return selected
+            return current_final_text
         if mode != "auto":
             log.warning(
                 "orchestrator.unknown_final_text_mode mode=%s skill=%s",
@@ -529,6 +551,8 @@ def make_agent_runner_from_parent(
     tool_handler: Any,
     agent_factory: Callable[..., Any],
     workspace_dir: str | None = None,
+    usage_tracker: Any | None = None,
+    session_key: str | None = None,
 ) -> AgentRunner:
     """Build an :class:`AgentRunner` that mirrors the parent turn's surface.
 
@@ -611,6 +635,8 @@ def make_agent_runner_from_parent(
             config=sub_config,
             tool_definitions=filtered_tool_definitions,
             tool_handler=tool_handler,
+            usage_tracker=usage_tracker,
+            session_key=session_key,
         )
         from opensquilla.engine.agent import _flatten_content_blocks
         from opensquilla.engine.types import TextDeltaEvent
@@ -650,7 +676,9 @@ def make_llm_chat_from_provider(
     *,
     provider: LLMProvider,
     base_config: AgentConfig,
-    max_tokens: int = 2048,
+    max_tokens: int = 4096,
+    usage_tracker: Any | None = None,
+    session_key: str | None = None,
 ) -> LLMChat:
     """Build a single-turn LLM caller — no tools, no agent loop.
 
@@ -658,7 +686,7 @@ def make_llm_chat_from_provider(
     the final text. Used by ``llm_classify`` steps to avoid sub-Agent
     overhead.
 
-    ``max_tokens`` defaults to 2048. The earlier 256 default was sized for
+    ``max_tokens`` defaults to 4096. The earlier 256 default was sized for
     "classifier returns one short label", which is correct in steady state
     — but reasoning-capable models (e.g. deepseek-v4-flash with
     ``reasoning_format='deepseek'``) emit a chain-of-thought into
@@ -668,12 +696,13 @@ def make_llm_chat_from_provider(
     visible content stays empty, producing zero output_chars and tripping
     downstream ``meta_skill_fill_slots`` with an invalid empty argument
     (observed live on meta-skill-creator pick_pattern step 2026-05-23).
-    2048 gives reasoning room while still being cheap (~$0.0006 per call
-    on v4-flash). Callers that need full JSON payloads (e.g. slot-filling)
-    should still pass a larger value.
+    2048 gives reasoning room for classifiers but is too small for final
+    deliverable steps such as travel plans and paper sections; 4096 keeps
+    those outputs from truncating while still bounding no-tool calls.
+    Callers that need very large payloads should still pass a larger value.
     """
 
-    from opensquilla.provider.types import ChatConfig, Message
+    from opensquilla.provider.types import ChatConfig, DoneEvent, Message
     from opensquilla.provider.types import TextDeltaEvent as ProviderTextDelta
 
     async def _chat(system_prompt: str, user_message: str) -> str:
@@ -688,6 +717,16 @@ def make_llm_chat_from_provider(
         async for event in provider.chat(messages, tools=None, config=config):
             if isinstance(event, ProviderTextDelta):
                 parts.append(event.text)
+            elif isinstance(event, DoneEvent):
+                if usage_tracker is not None and session_key:
+                    usage_tracker.add(
+                        session_key,
+                        input_tokens=event.input_tokens,
+                        output_tokens=event.output_tokens,
+                        model_id=event.model or base_config.model_id or "",
+                        cache_read_tokens=event.cached_tokens,
+                        cache_write_tokens=event.cache_write_tokens,
+                    )
             elif type(event).__name__ == "ErrorEvent" and not first_error:
                 # Capture provider-level errors (auth, network, illegal
                 # header, rate-limit) so the caller does not see a
@@ -708,8 +747,6 @@ def make_llm_chat_from_provider(
             )
         return result
 
-    # base_config is reserved for future use (model selection, capabilities).
-    del base_config
     return _chat
 
 

@@ -263,8 +263,8 @@ const UsageView = (() => {
   function _costSourceLabel(source, ephemeral) {
     if (ephemeral) return 'Ephemeral';
     switch (source) {
-      case 'provider_billed': return 'Actual';
-      case 'opensquilla_estimate': return 'Estimated';
+      case 'provider_billed': return 'Billed';
+      case 'opensquilla_estimate': return 'Cost est.';
       case 'mixed': return 'Mixed';
       case 'unavailable': return 'Unpriced';
       default: return 'None';
@@ -279,7 +279,7 @@ const UsageView = (() => {
   }
 
   function _sourceCompositionHint(rows) {
-    const counts = { Actual: 0, Estimated: 0, Mixed: 0, Unpriced: 0, Ephemeral: 0 };
+    const counts = { Billed: 0, 'Cost est.': 0, Mixed: 0, Unpriced: 0, Ephemeral: 0 };
     rows.forEach(row => {
       const label = _costSourceLabel(_costSource(row), Boolean(_rowVal(row, 'cost_ephemeral', 'costEphemeral')));
       if (counts[label] != null) counts[label] += 1;
@@ -413,7 +413,7 @@ const UsageView = (() => {
       { key: 'cache_read_tokens', label: 'Cache R' },
       { key: 'cache_write_tokens', label: 'Cache W' },
       { key: 'cost_usd', label: 'Cost' },
-      { key: 'cost_source', label: 'Source' },
+      { key: 'cost_source', label: 'Cost Source' },
       { key: 'model', label: 'Model' },
     ];
 

@@ -2206,7 +2206,7 @@ async def start_gateway_server(
 
                     cfg = ChatConfig(
                         system=system_prompt,
-                        max_tokens=2048,
+                        max_tokens=4096,
                         temperature=0.0,
                     )
                     msgs = [Message(role="user", content=user_message)]

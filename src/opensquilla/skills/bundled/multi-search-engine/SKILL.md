@@ -19,11 +19,11 @@ entrypoint:
   command: python {baseDir}/scripts/search.py
   args:
     - --query
-    - "{{ inputs.user_message }}"
+    - "{{ with.query | default(inputs.user_message) }}"
     - --engines
-    - brave,duckduckgo
+    - "{{ with.engines | default(['brave', 'duckduckgo']) | join(',') }}"
     - --limit
-    - "25"
+    - "{{ with.max_results | default(25) }}"
     - --json
   parse: json
   timeout: 60

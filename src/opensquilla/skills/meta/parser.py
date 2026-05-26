@@ -12,7 +12,9 @@ if TYPE_CHECKING:
     from opensquilla.skills.types import SkillSpec
 
 
-_SUPPORTED_KINDS = frozenset({"agent", "llm_classify", "tool_call", "skill_exec"})
+_SUPPORTED_KINDS = frozenset(
+    {"agent", "llm_classify", "llm_chat", "tool_call", "skill_exec"},
+)
 
 
 class MetaPlanError(ValueError):
@@ -67,7 +69,8 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                     f"missing skill",
                 )
         else:
-            # Informational only for llm_classify / tool_call; default to step_id.
+            # Informational only for llm_classify / llm_chat / tool_call;
+            # default to step_id.
             if not isinstance(skill_name, str):
                 raise MetaPlanError(
                     f"meta-skill {spec.name!r}: step {step_id!r} skill must be a string",
@@ -86,6 +89,7 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 f"meta-skill {spec.name!r}: step {step_id!r} with must be a mapping",
             )
         route = _parse_route(spec.name, step_id, raw.get("route") or [])
+        when = _parse_when(spec.name, step_id, raw.get("when"))
 
         output_choices = _parse_output_choices(spec.name, step_id, kind, raw.get("output_choices"))
         tool, tool_args = _parse_tool_call(
@@ -120,6 +124,7 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 skill=skill_name,
                 with_args=dict(with_args),
                 depends_on=tuple(str(d) for d in depends_on_raw),
+                when=when,
                 route=route,
                 kind=kind,
                 output_choices=output_choices,
@@ -151,6 +156,19 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
         fallback_body=fallback_body,
         final_text_mode=final_text_mode,
     )
+
+
+def _parse_when(skill_name: str, step_id: str, raw: object) -> str:
+    """Validate an optional step-level ``when`` expression."""
+
+    if raw is None or raw == "":
+        return ""
+    if not isinstance(raw, str) or not raw.strip():
+        raise MetaPlanError(
+            f"meta-skill {skill_name!r}: step {step_id!r} when must be "
+            f"a non-empty string or omitted",
+        )
+    return raw.strip()
 
 
 def topological_order(steps: tuple[MetaStep, ...]) -> Iterator[MetaStep]:

@@ -1,13 +1,13 @@
 """End-to-end test for meta-paper-write.
 
-Runs the full 18-step DAG against a tmp workspace with the search step
-shimmed to a tiny canned JSON, and asserts the pipeline produces a PDF.
-Skips xelatex-dependent assertions when xelatex isn't installed.
+Runs the default compact DAG against a tmp workspace with external/search
+steps shimmed to canned outputs. The default path returns a clean manuscript
+package and compile-readiness note; producing a PDF is an explicit follow-up
+through latex-compile.
 """
 
 from __future__ import annotations
 
-import shutil
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -37,30 +37,31 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     plan_spec = specs.get("meta-paper-write")
     assert plan_spec is not None, "meta-paper-write skill not bundled"
     plan = parse_meta_plan(plan_spec)
-    assert plan is not None and len(plan.steps) == 18
+    assert plan is not None and len(plan.steps) == 14
+    assert plan.final_text_mode == "step:final_manuscript_package"
     steps = {step.id: step for step in plan.steps}
-    assert steps["paper_preferences"].skill == "paper-preference-planner"
+    assert steps["paper_mode"].kind == "llm_classify"
+    assert steps["paper_preferences"].kind == "llm_chat"
     assert steps["search_papers"].depends_on == ("paper_preferences",)
     assert steps["experiment"].depends_on == ("paper_preferences",)
+    assert steps["search_papers"].kind == "skill_exec"
+    assert steps["experiment"].kind == "skill_exec"
+    assert steps["refbib"].kind == "skill_exec"
+    assert steps["plot"].kind == "skill_exec"
     assert "source_pack" in steps
     assert "citation_plan" in steps
-    assert "revised_body" in steps
-    assert (
-        steps["source_pack"].with_args["paper_preferences"]
-        == "{{ outputs.paper_preferences | truncate(4000) }}"
-    )
-    assert steps["draft_abstract"].skill == "paper-abstract-author"
-    assert steps["draft_abstract"].depends_on == ("revised_body", "citation_plan")
+    assert "final_manuscript_package" in steps
     assert steps["paper_length_gate"].depends_on == (
-        "draft_abstract", "revised_body", "citation_plan", "refbib",
+        "final_manuscript_package", "citation_plan", "refbib",
     )
     assert steps["citation_integrity_gate"].depends_on == (
-        "draft_abstract", "revised_body", "citation_plan", "refbib",
+        "final_manuscript_package", "citation_plan", "refbib",
     )
     assert steps["latex_sanitizer"].depends_on == (
         "paper_length_gate", "citation_integrity_gate",
     )
     assert steps["compile_latex"].depends_on == ("latex_sanitizer",)
+    assert steps["compile_latex"].kind == "llm_chat"
 
     # Shim: replace multi-search-engine's entrypoint with a stub that
     # echoes a canned JSON. This keeps the test offline (no DuckDuckGo).
@@ -87,8 +88,25 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         "timeout": 10,
     }
 
-    # Sub-Agent runner that returns short canned fragments for the
-    # outline + section steps. Deterministic; no LLM.
+    # Stub the plot step too, so the test does not depend on matplotlib.
+    plot_stub = stub_dir / "plot_stub.py"
+    plot_stub.write_text(
+        "from pathlib import Path\n"
+        "out = Path('paper/figure_1.pdf')\n"
+        "out.parent.mkdir(parents=True, exist_ok=True)\n"
+        "out.write_bytes(b'%PDF-1.4\\n% stub figure\\n')\n"
+        "print(str(out))\n",
+        encoding="utf-8",
+    )
+    plot = specs["paper-plot-stub"]
+    plot.base_dir = str(stub_dir)
+    plot.entrypoint = {
+        "command": f"{sys.executable} {plot_stub}",
+        "args": [],
+        "parse": "text",
+        "timeout": 10,
+    }
+
     def long_body(label: str, start_ref: int, count: int, pages: int) -> str:
         cites = " ".join(f"\\cite{{ref{i}}}" for i in range(start_ref, start_ref + count))
         paragraph = (
@@ -101,7 +119,7 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         return "\n\n".join([paragraph * 8 for _ in range(pages)])
 
     canned_fragments: dict[str, str] = {
-        "paper-preference-planner": (
+        "paper_preferences": (
             "PAPER_PREFERENCES:\n"
             "MODE: DIRECT\n"
             "TOPIC: RAG in low-resource settings\n"
@@ -115,7 +133,7 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
             "AVOID:\n- unsupported claims\n"
             "DEFAULTS_USED:\n- academic audience\n"
         ),
-        "paper-source-curator": (
+        "source_pack": (
             "SOURCE_PACK:\n"
             "PRIMARY_SOURCES:\n"
             + "\n".join(
@@ -129,14 +147,14 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
             )
             + "\nEXCLUDED_OR_WEAK_SOURCES:\nCOVERAGE_NOTES:\nCoverage is sufficient."
         ),
-        "paper-outline-author": (
+        "outline": (
             "ABSTRACT: This paper studies X.\n"
             "INTRODUCTION: X is important [ref1-ref6].\n"
             "METHOD: We use Y [ref7-ref12].\n"
             "RESULTS: Y improves on baseline [ref13-ref16].\n"
             "DISCUSSION: Future work [ref17-ref20]."
         ),
-        "paper-citation-planner": (
+        "citation_plan": (
             "CITATION_PLAN:\n"
             "INTRODUCTION:\n"
             "- claim: background; cite: ref1, ref2, ref3, ref4, ref5, ref6; role: prior work\n"
@@ -161,58 +179,49 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         ),
         "discussion": "\\section{Discussion}\n" + long_body("Discussion", 17, 4, 2),
     }
-    canned_fragments["paper-revision-author"] = "\n\n".join(
+    manuscript_body = "\n\n".join(
         [
+            canned_fragments["abstract"],
             canned_fragments["introduction"],
             canned_fragments["method"],
             canned_fragments["results"],
             canned_fragments["discussion"],
         ],
     )
+    canned_fragments["final_manuscript_package"] = (
+        "MANUSCRIPT_TEX:\n"
+        + manuscript_body
+        + "\n\nREFERENCES_BIB:\n"
+        + "\n".join(f"@misc{{ref{i}, title={{Reference {i}}}}}" for i in range(1, 26))
+        + "\n\nCOMPILE_NOTES:\n- figure_1.pdf provided by plot step"
+    )
 
-    async def runner(system_prompt: str, user_message: str) -> AsyncIterator[AgentEvent]:
-        if "paper-preference-planner" in system_prompt:
-            yield TextDeltaEvent(text=canned_fragments["paper-preference-planner"])
-            yield DoneEvent(text="")
-            return
-        if "paper-source-curator" in system_prompt:
-            yield TextDeltaEvent(text=canned_fragments["paper-source-curator"])
-            yield DoneEvent(text="")
-            return
-        if "paper-citation-planner" in system_prompt:
-            yield TextDeltaEvent(text=canned_fragments["paper-citation-planner"])
-            yield DoneEvent(text="")
-            return
-        if "paper-revision-author" in system_prompt:
-            yield TextDeltaEvent(text=canned_fragments["paper-revision-author"])
-            yield DoneEvent(text="")
-            return
-        if "paper-abstract-author" in system_prompt:
-            yield TextDeltaEvent(text=canned_fragments["abstract"])
-            yield DoneEvent(text="")
-            return
-        if "paper-section-author" in system_prompt:
-            # The user message includes "section: <name>".
-            for section in (
-                "introduction", "method", "results", "discussion",
-            ):
-                if f"section: {section}" in user_message:
-                    yield TextDeltaEvent(text=canned_fragments[section])
-                    break
-            else:
-                yield TextDeltaEvent(text=r"\section{??}")
-            yield DoneEvent(text="")
-            return
-        if "paper-outline-author" in system_prompt:
-            yield TextDeltaEvent(text=canned_fragments["paper-outline-author"])
-            yield DoneEvent(text="")
-            return
-        if "sub-agent" in system_prompt:
-            yield TextDeltaEvent(text="PASS: paper quality gate satisfied")
-            yield DoneEvent(text="")
-            return
-        yield TextDeltaEvent(text="(unexpected sub-Agent invocation)")
+    async def runner(_system_prompt: str, _user_message: str) -> AsyncIterator[AgentEvent]:
+        yield TextDeltaEvent(text="(unexpected agent invocation)")
         yield DoneEvent(text="")
+
+    async def llm_chat(system_prompt: str, _user_message: str) -> str:
+        if "deterministic classifier" in system_prompt:
+            return "FULL_MANUSCRIPT"
+        if "academic-paper requirements" in system_prompt:
+            return canned_fragments["paper_preferences"]
+        if "curate paper sources" in system_prompt:
+            return canned_fragments["source_pack"]
+        if "long-form LaTeX paper outlines" in system_prompt:
+            return canned_fragments["outline"]
+        if "citation placement" in system_prompt:
+            return canned_fragments["citation_plan"]
+        if "clean LaTeX manuscripts" in system_prompt:
+            return canned_fragments["final_manuscript_package"]
+        if "manuscript length requirements" in system_prompt:
+            return "PASS: estimated 10+ compiled pages"
+        if "citation integrity" in system_prompt:
+            return "PASS: 25 references available; 20+ cite keys used"
+        if "sanitize LaTeX" in system_prompt:
+            return "PASS: no markdown fences, process text, or debug logs detected"
+        if "compile handoff" in system_prompt:
+            return "COMPILE_READY: yes\nNEXT_STEP: run latex-compile explicitly when the user asks for a PDF\nBLOCKERS:\n  - none"
+        raise AssertionError(f"unexpected llm_chat prompt: {system_prompt}")
 
     # Each skill_exec step writes relative paths like ``paper/results.csv``;
     # they must all anchor against the same workspace so a downstream step
@@ -224,6 +233,7 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         agent_runner=runner,
         skill_loader=_PatchedLoader(loader, specs),
         workspace_dir=str(workdir),
+        llm_chat=llm_chat,
     )
     final: MetaResult | None = None
     async for ev in orch.iter_events(
@@ -236,21 +246,9 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
             final = ev
 
     assert final is not None
-    if shutil.which("xelatex") is None:
-        # Without xelatex (or matplotlib for the plot step), the pipeline
-        # fails before producing a PDF. Accept either of the two
-        # missing-dep failure points — both are legitimate "the host lacks
-        # the system dependency" branches, not contract violations.
-        assert final.ok is False
-        assert final.failed_step_id in {"plot", "compile_latex"}
-        if final.failed_step_id == "compile_latex":
-            assert "xelatex" in (final.error or "").lower()
-        return
-
     assert final.ok, final.error
-    pdf = workdir / "paper" / "paper.pdf"
-    assert pdf.is_file()
-    assert pdf.read_bytes()[:4] == b"%PDF"
+    assert final.final_text.startswith("MANUSCRIPT_TEX:")
+    assert "COMPILE_READY" not in final.final_text
     bib = workdir / "paper" / "references.bib"
     assert bib.is_file() and "@misc{ref1," in bib.read_text(encoding="utf-8")
     csv = workdir / "paper" / "results.csv"

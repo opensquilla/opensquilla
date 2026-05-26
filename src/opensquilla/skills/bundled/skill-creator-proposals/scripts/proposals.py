@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""meta-skill-proposals: write/list/show/accept/reject proposals.
+"""skill-creator-proposals: write/list/show/accept/reject proposals.
 
 Subprocess entrypoint. The real logic lives in
 ``opensquilla.skills.proposals_lib`` so the gateway RPC layer can
@@ -17,7 +17,7 @@ from pathlib import Path
 
 # Wheel-install / editable-install compatibility: make the opensquilla package
 # importable when this script is invoked directly. parents layout:
-#   scripts[0] → meta-skill-proposals[1] → bundled[2] → skills[3]
+#   scripts[0] → skill-creator-proposals[1] → bundled[2] → skills[3]
 #   → opensquilla[4] → src (or site-packages)[5]
 _OPENSQUILLA_ROOT = Path(__file__).resolve().parents[4]
 if str(_OPENSQUILLA_ROOT.parent) not in sys.path:

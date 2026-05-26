@@ -1,6 +1,6 @@
 """Unit tests for SessionUsage / UsageTracker cache token accumulation."""
 
-from opensquilla.engine.usage import ModelUsage, SessionUsage, UsageTracker
+from opensquilla.engine.usage import ModelUsage, SessionUsage, UsageTracker, usage_scope
 
 
 def test_session_usage_accumulates_cache_tokens() -> None:
@@ -89,6 +89,45 @@ def test_usage_tracker_isolates_sessions() -> None:
     assert a.cache_write_tokens == 5
     assert b.cache_read_tokens == 70
     assert b.cache_write_tokens == 15
+
+
+def test_usage_tracker_records_current_scope_without_changing_session_total() -> None:
+    tracker = UsageTracker()
+
+    with usage_scope("meta-run:step-a"):
+        tracker.add(
+            "session-a",
+            input_tokens=100,
+            output_tokens=10,
+            model_id="m-a",
+            cache_read_tokens=3,
+            cache_write_tokens=2,
+        )
+    with usage_scope("meta-run:step-b"):
+        tracker.add(
+            "session-a",
+            input_tokens=200,
+            output_tokens=20,
+            model_id="m-b",
+        )
+
+    total = tracker.get("session-a")
+    assert total is not None
+    assert total.input_tokens == 300
+    assert total.output_tokens == 30
+
+    step_a = tracker.get_scope("session-a", "meta-run:step-a")
+    step_b = tracker.get_scope("session-a", "meta-run:step-b")
+    assert step_a is not None
+    assert step_b is not None
+    assert step_a.input_tokens == 100
+    assert step_a.output_tokens == 10
+    assert step_a.cache_read_tokens == 3
+    assert step_a.cache_write_tokens == 2
+    assert step_a.model_id == "m-a"
+    assert step_b.input_tokens == 200
+    assert step_b.output_tokens == 20
+    assert step_b.model_id == "m-b"
 
 
 # ---------------------------------------------------------------------------

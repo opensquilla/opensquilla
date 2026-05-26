@@ -1,12 +1,18 @@
 ---
 name: meta-skill-creator
-description: "Use when the user explicitly asks to compose, synthesize, or create a new meta-skill that orchestrates existing skills."
+description: "Use this meta-skill instead of answering directly when the user explicitly asks to create, compose, or synthesize a new meta-skill that benefits from multi-skill orchestration across intent clarification, history mining, collision checks, linting, smoke tests, and proposal persistence."
 kind: meta
-meta_priority: 30
+meta_priority: 90
 always: false
+final_text_mode: "step:preview"
 triggers:
   - "新增 meta 技能"
   - "组合现有 skill 成 meta-skill"
+  - "create a meta-skill"
+  - "new meta-skill"
+  - "orchestrates existing skills"
+  - "orchestrates search"
+  - "compose existing skills"
   - "synthesize meta-skill"
   - "compose meta-skill"
 provenance:
@@ -29,6 +35,31 @@ composition:
           User request:
           {{ inputs.user_message | xml_escape | truncate(1200) }}
 
+    - id: creator_mode
+      kind: llm_classify
+      depends_on: [clarify_intent]
+      output_choices:
+        - PREVIEW_ONLY
+        - PERSISTED_PROPOSAL
+        - FULL_GATED
+      with:
+        text: |
+          Classify how far the creator workflow should go.
+
+          User request:
+          {{ inputs.user_message | xml_escape | truncate(1200) }}
+
+          Clarified intent:
+          {{ outputs.clarify_intent | truncate(1200) }}
+
+          Decision rules:
+          - PREVIEW_ONLY: user asks for an example, template, plan, draft,
+            or wants to inspect before writing/persisting anything.
+          - PERSISTED_PROPOSAL: user asks to create/save/write/propose a
+            meta-skill but does not ask for exhaustive smoke testing.
+          - FULL_GATED: user asks for a production-ready, accepted, tested,
+            validated, or fully gated meta-skill.
+
     - id: harvest
       kind: skill_exec
       skill: history-explorer
@@ -48,7 +79,7 @@ composition:
 
     - id: pick_pattern
       kind: llm_classify
-      depends_on: [harvest]
+      depends_on: [creator_mode, harvest]
       output_choices: [p1_sequential, p2_fan_out_merge]
       with:
         history_summary: "{{ outputs.harvest | truncate(2000) }}"
@@ -114,9 +145,73 @@ composition:
           Lint result:
           {{ outputs.lint | truncate(2000) }}
 
+    - id: single_model_baseline
+      kind: llm_chat
+      depends_on: [creator_mode]
+      when: "outputs.creator_mode == 'FULL_GATED'"
+      with:
+        system: |
+          You are the highest-tier baseline model for meta-skill authoring.
+          Solve the same task directly in one pass under the same outer
+          assistant system prompt and user request, but without history
+          mining, intent clarification output, deterministic slot filling,
+          lint tools, smoke tools, persistence, or sub-skill orchestration.
+          Produce the strongest standalone SKILL.md candidate you can from
+          that full prompt context.
+        task: |
+          Same task as the orchestrated meta-skill creator workflow, but solve
+          it as a standalone highest-tier model response. Use the outer system
+          prompt and raw user request below; do not rely on any meta-skill
+          intermediate output.
+
+          Outer system prompt:
+          {{ inputs.system_prompt | xml_escape | truncate(12000) }}
+
+          User request:
+          {{ inputs.user_message | xml_escape | truncate(1600) }}
+
+          Return:
+          - proposed meta-skill name
+          - triggers
+          - inputs
+          - step graph
+          - gates
+          - collision risks
+          - SKILL.md preview
+
+    - id: acceptance_compare
+      kind: llm_chat
+      depends_on: [assemble, single_model_baseline]
+      when: "outputs.creator_mode == 'FULL_GATED'"
+      with:
+        system: |
+          You are an acceptance reviewer. Compare an orchestrated candidate
+          against a single-model baseline that used the highest-tier model on
+          the same task. Reward verifiable skill composition, trigger safety,
+          gates, operational risk handling, and reusable SKILL.md quality.
+        task: |
+          User request:
+          {{ inputs.user_message | xml_escape | truncate(1200) }}
+
+          Orchestrated candidate:
+          {{ outputs.assemble | truncate(7000) }}
+
+          Single-model baseline:
+          {{ outputs.single_model_baseline | truncate(7000) }}
+
+          Return this exact structure:
+          WINNER: orchestrated|single-model|tie
+          REASONS:
+          - <specific evidence>
+          REGRESSIONS:
+          - <what the orchestrated candidate lacks versus the baseline>
+          REQUIRED_IMPROVEMENTS:
+          - <concrete edit before acceptance, or "none">
+
     - id: smoke
       kind: tool_call
       depends_on: [risk_classify]
+      when: "outputs.creator_mode != 'PREVIEW_ONLY'"
       tool: meta_skill_smoke_run
       tool_args:
         skill_md: "{{ outputs.assemble }}"
@@ -126,14 +221,14 @@ composition:
     - id: preview
       kind: agent
       skill: sub-agent
-      depends_on: [smoke]
+      depends_on: [smoke, acceptance_compare]
       with:
         task: |
           Produce a concise proposal preview for the user/operator before
           persistence. Include proposed name, triggers, DAG summary, collision
-          result, risk classification, lint status, smoke status, and whether
-          it appears eligible for acceptance. Do not invent paths or proposal
-          IDs.
+          result, risk classification, lint status, smoke status, baseline
+          comparison status, and whether it appears eligible for acceptance.
+          Do not invent paths or proposal IDs.
 
           Candidate SKILL.md:
           {{ outputs.assemble | truncate(8000) }}
@@ -144,15 +239,22 @@ composition:
           Risk:
           {{ outputs.risk_classify | truncate(1200) }}
 
+          Creator mode:
+          {{ outputs.creator_mode }}
+
           Lint:
           {{ outputs.lint | truncate(2000) }}
 
           Smoke:
           {{ outputs.smoke | truncate(2000) }}
 
+          Baseline comparison:
+          {{ outputs.acceptance_compare | truncate(2000) }}
+
     - id: persist
       kind: tool_call
       depends_on: [preview]
+      when: "outputs.creator_mode != 'PREVIEW_ONLY'"
       tool: meta_skill_persist_proposal
       tool_args:
         skill_md: "{{ outputs.assemble }}"
@@ -164,9 +266,11 @@ composition:
 
 Safeguarded DAG that synthesizes a new bundled meta-skill from observed skill
 co-occurrence patterns + user description of the desired workflow. It now
-separates generic skill creation from meta-skill composition, checks trigger
-collisions, classifies operational risk, and previews the proposal before
-persisting it.
+separates preview-only, persisted-proposal, and fully gated modes so lightweight
+requests do not pay for persistence or smoke testing. The workflow separates
+generic skill creation from meta-skill composition, checks trigger collisions,
+classifies operational risk, and previews the proposal before optional
+persistence.
 
 Output is a SKILL.md candidate written to `~/.opensquilla/proposals/<id>/`.
 By default it is not auto-loaded; run `opensquilla meta accept <id>` (Phase 2)

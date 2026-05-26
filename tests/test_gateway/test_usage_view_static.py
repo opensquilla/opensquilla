@@ -10,7 +10,8 @@ def test_usage_view_renders_cost_source_badges_and_exports_fields() -> None:
     source = USAGE_JS.read_text(encoding="utf-8")
 
     assert "_renderCostSourceBadge(row)" in source
-    assert "{ key: 'cost_source', label: 'Source' }" in source
+    assert "{ key: 'cost_source', label: 'Cost Source' }" in source
+    assert "case 'opensquilla_estimate': return 'Cost est.'" in source
     assert "billed_cost_usd" in source
     assert "estimated_cost_usd" in source
     assert "missing_cost_entries" in source

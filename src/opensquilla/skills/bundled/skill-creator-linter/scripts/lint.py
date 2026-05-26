@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
 # Derive the opensquilla package root from this file's location.
 # Path layout from lint.py:
-#   .../opensquilla/skills/bundled/meta-skill-linter/scripts/lint.py
-# parents: [0]=scripts  [1]=meta-skill-linter  [2]=bundled
+#   .../opensquilla/skills/bundled/skill-creator-linter/scripts/lint.py
+# parents: [0]=scripts  [1]=skill-creator-linter  [2]=bundled
 #          [3]=skills    [4]=opensquilla
 # This works for both source-tree checkouts and wheel installs (site-packages).
 _OPENSQUILLA_ROOT = Path(__file__).resolve().parents[4]
@@ -76,7 +76,7 @@ def _load_main_loader() -> tuple[SkillLoader, dict[str, str]]:
     """
     # NOTE: snapshot lives under a session tmp that outlives this function
     # so the loader's internal paths remain valid for subsequent calls.
-    tmpdir = Path(tempfile.mkdtemp(prefix="meta-skill-linter-"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="skill-creator-linter-"))
     loader = SkillLoader(
         bundled_dir=BUNDLED,
         snapshot_path=tmpdir / "snapshot.json",

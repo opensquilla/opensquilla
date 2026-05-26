@@ -100,4 +100,37 @@ async def run_llm_classify_step(
     return _coerce_to_choice(raw, choices)
 
 
-__all__ = ["_drain_agent_runner", "run_llm_classify_step"]
+async def run_llm_chat_step(
+    step: MetaStep,
+    inputs: dict[str, Any],
+    outputs: dict[str, str],
+    *,
+    llm_chat: Callable[[str, str], Awaitable[str]] | None,
+    agent_runner: Callable[[str, str], AsyncIterator[AgentEvent]],
+) -> str:
+    """Single unconstrained LLM call — no tools and no sub-Agent loop."""
+
+    rendered_args = render_with_args(step.with_args, inputs=inputs, outputs=outputs)
+    system_prompt = str(
+        rendered_args.get("system")
+        or "You are a precise workflow step. Reply only with the requested deliverable.",
+    )
+    user_message = str(
+        rendered_args.get("task")
+        or rendered_args.get("prompt")
+        or rendered_args.get("text")
+        or "",
+    )
+    if not user_message.strip():
+        raise RuntimeError(f"step {step.id!r} (kind=llm_chat) has no task/prompt/text")
+
+    if llm_chat is None:
+        return await _drain_agent_runner(
+            system_prompt,
+            user_message,
+            agent_runner=agent_runner,
+        )
+    return (await llm_chat(system_prompt, user_message)).strip()
+
+
+__all__ = ["_drain_agent_runner", "run_llm_chat_step", "run_llm_classify_step"]

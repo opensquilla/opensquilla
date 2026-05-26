@@ -67,6 +67,24 @@ def test_entrypoint_manifest_survives_snapshot_roundtrip(tmp_path: Path) -> None
         assert from_snapshot[name] == ep, f"entrypoint mismatch for {name}"
 
 
+def test_meta_final_text_mode_survives_snapshot_roundtrip(tmp_path: Path) -> None:
+    """Gateway cold-starts often load skills from snapshot; meta final output
+    controls must not degrade back to auto-summary mode."""
+
+    snapshot = tmp_path / "snapshot.json"
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=snapshot)
+    fresh = {skill.name: skill.final_text_mode for skill in loader.load_all()}
+    loader.save_snapshot()
+
+    reloaded = SkillLoader(bundled_dir=BUNDLED, snapshot_path=snapshot)
+    from_snapshot = {
+        skill.name: skill.final_text_mode for skill in reloaded.load_all()
+    }
+
+    assert fresh["meta-travel-planner"] == "step:final_plan"
+    assert from_snapshot["meta-travel-planner"] == fresh["meta-travel-planner"]
+
+
 def test_capability_risk_metadata_survives_snapshot_roundtrip(tmp_path: Path) -> None:
     """Auto-enable decisions must see the same risk manifest after cold-start."""
 

@@ -188,10 +188,11 @@ def test_resolve_log_dir_respects_env_overrides(tmp_path: Path, monkeypatch) -> 
     assert default.parent.name == ".opensquilla"
 
 
-def test_meta_usage_filters_by_kind_not_prefix(tmp_path: Path) -> None:
-    """N12: aggregate_meta_usage must NOT count kind=skill bundles whose name
-    happens to start with 'meta-' (e.g. meta-skill-linter, meta-skill-proposals,
-    meta-skill-smoke-test). Only kind=meta skills should appear in the output.
+def test_meta_usage_filters_out_normal_helper_skills(tmp_path: Path) -> None:
+    """N12: aggregate_meta_usage must NOT count kind=skill helper bundles.
+
+    Only kind=meta skills should appear in the output, even when normal helper
+    skills are present in the decision log.
 
     This test calls aggregate_meta_usage directly (in-process) with an explicit
     meta_names set so the test is hermetic — it does not depend on the live
@@ -232,9 +233,9 @@ def test_meta_usage_filters_by_kind_not_prefix(tmp_path: Path) -> None:
     log.write_text(
         "\n".join([
             _line(["meta-pdf-intelligence"], "t1"),   # kind: meta — count
-            _line(["meta-skill-linter"], "t2"),        # kind: skill — do NOT count
+            _line(["skill-creator-linter"], "t2"),        # kind: skill — do NOT count
             _line(["meta-travel-planner"], "t3"),      # kind: meta — count
-            _line(["meta-skill-proposals"], "t4"),     # kind: skill — do NOT count
+            _line(["skill-creator-proposals"], "t4"),     # kind: skill — do NOT count
         ]) + "\n",
         encoding="utf-8",
     )
@@ -246,9 +247,9 @@ def test_meta_usage_filters_by_kind_not_prefix(tmp_path: Path) -> None:
 
     assert "meta-pdf-intelligence" in usage, "kind=meta entry must be counted"
     assert "meta-travel-planner" in usage, "kind=meta entry must be counted"
-    assert "meta-skill-linter" not in usage, (
-        "N12: meta-skill-linter is kind=skill, must not appear in meta_usage"
+    assert "skill-creator-linter" not in usage, (
+        "N12: skill-creator-linter is kind=skill, must not appear in meta_usage"
     )
-    assert "meta-skill-proposals" not in usage, (
-        "N12: meta-skill-proposals is kind=skill, must not appear in meta_usage"
+    assert "skill-creator-proposals" not in usage, (
+        "N12: skill-creator-proposals is kind=skill, must not appear in meta_usage"
     )

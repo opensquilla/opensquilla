@@ -1,9 +1,10 @@
 ---
 name: meta-migration-assistant
-description: "Produce a concrete migration plan: classify the migration kind, fetch the right authoritative guide (SDK release notes / framework docs / synthesized research), then write a step-by-step checklist."
+description: "Use this meta-skill instead of answering directly when the user needs a concrete migration plan that benefits from multi-skill orchestration across migration classification, authoritative guide lookup, optional repo diff inspection, and step-by-step validation planning."
 kind: meta
 meta_priority: 50
 always: false
+final_text_mode: "step:write_plan"
 triggers:
   - "migration plan"
   - "migrate from"
@@ -51,9 +52,16 @@ composition:
           Authoritative migration guide for: {{ inputs.user_message | xml_escape | truncate(300) }}.
           Classifier verdict: {{ outputs.classify }}.
           Return the most relevant excerpt with source URL(s).
+    - id: repo_context
+      kind: skill_exec
+      skill: git-diff
+      depends_on: [classify]
+      when: "'current repo' in (inputs.user_message | lower) or 'this repo' in (inputs.user_message | lower) or '代码仓' in inputs.user_message or '当前仓库' in inputs.user_message"
+      with:
+        mode: cached_fallback_worktree
     - id: write_plan
       skill: sub-agent
-      depends_on: [fetch_guide]
+      depends_on: [classify, fetch_guide, repo_context]
       with:
         task: |
           Migration kind: {{ outputs.classify }}
@@ -62,10 +70,14 @@ composition:
           Authoritative guide excerpt:
           {{ outputs.fetch_guide | truncate(2000) }}
 
+          Optional repository diff context:
+          {{ outputs.repo_context | truncate(3000) }}
+
           Produce a concrete migration checklist as Markdown with these sections:
           ## Summary
           ## Breaking changes
           ## Step-by-step
+          ## Skill routing evidence
           ## Files likely affected (grep patterns the user can run)
           ## Validation (tests/checks to confirm the migration)
 ---
@@ -73,7 +85,7 @@ composition:
 # Migration Assistant (Meta-Skill)
 
 Take a "help me migrate X → Y" request and produce a concrete, runnable
-checklist. The pipeline does three things:
+checklist. The pipeline does four things:
 
 1. **classify** the migration kind via an LLM tag (one of six tokens).
 2. **fetch_guide** the most authoritative source for THAT migration:
@@ -87,7 +99,10 @@ checklist. The pipeline does three things:
    | `CJS_TO_ESM`                | (fuzzy, synthesize)    | `multi-search-engine` |
    | `OTHER` (default)           | (synthesize)           | `deep-research`       |
 
-3. **write_plan** uses `sub-agent` regardless of branch — the plan
+3. **repo_context** optionally inspects the current repo diff only when the
+   prompt indicates that local repository context should shape the migration.
+
+4. **write_plan** uses `sub-agent` regardless of branch — the plan
    format is identical across migrations.
 
 ## Fallback

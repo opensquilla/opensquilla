@@ -50,7 +50,7 @@ def test_live_soft_activation_harness_observes_model_meta_invoke(tmp_path: Path)
     assert result["model_decision"]["meta_invoke_called"] is True
     assert result["model_decision"]["selected_meta_skill"] == "meta-live-soft-activation"
     assert "meta-step:classify" in result["observed_tool_results"]
-    assert result["expected_output"] in result["meta_invoke_result"]
+    assert result["expected_output"] in result["final_text"]
 
 
 def test_live_soft_activation_harness_runs_multiple_model_decision_cases(

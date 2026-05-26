@@ -133,9 +133,9 @@ select = ["E", "F", "I", "N", "W", "UP"]
 # example code meant to be copy-pasted verbatim; reformatting would
 # harm readability. E402 imports-after-sys.path-munge is intentional.
 "src/opensquilla/skills/bundled/skill-creator/scripts/*.py" = ["E501", "N806", "E402"]
-# Meta-skill-linter script: E402 + I001 are intentional (sys.path insert and
+# Skill creator linter script: E402 + I001 are intentional (sys.path insert and
 # structlog.configure() interleaved with imports to redirect output before load).
-"src/opensquilla/skills/bundled/meta-skill-linter/scripts/*.py" = ["E402", "I001"]
+"src/opensquilla/skills/bundled/skill-creator-linter/scripts/*.py" = ["E402", "I001"]
 
 [tool.mypy]
 python_version = "3.12"

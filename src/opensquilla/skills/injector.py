@@ -39,11 +39,12 @@ class SkillInjector:
         ]
         if has_meta:
             lines.append(
-                'Meta-skills (kind="meta"): call `meta_invoke(name="<name>")` to run '
-                "the playbook end-to-end. The framework drives the multi-step DAG; do "
-                "NOT call skill_view for sub-skills inside. On success the meta-skill's "
-                "deliverable IS the assistant's reply for this turn — no further "
-                "commentary needed."
+                'Meta-skills (kind="meta"): When a kind="meta" entry clearly matches '
+                'and the task benefits from multi-skill orchestration, prefer '
+                '`meta_invoke(name="<name>")` over answering directly. The framework '
+                "drives the multi-step DAG; do NOT call skill_view for sub-skills "
+                "inside. On success the meta-skill's deliverable IS the assistant's "
+                "reply for this turn — no further commentary needed."
             )
         lines.extend(
             [
@@ -79,8 +80,10 @@ class SkillInjector:
         ]
         if has_meta:
             lines.append(
-                'For kind="meta" entries, call `meta_invoke(name="<name>")` instead; '
-                "the framework runs the DAG and the deliverable is the turn reply."
+                'For kind="meta" entries: When a kind="meta" entry clearly matches '
+                'and the task benefits from multi-skill orchestration, prefer '
+                '`meta_invoke(name="<name>")` over answering directly; the framework '
+                "runs the DAG and the deliverable is the turn reply."
             )
         lines.extend(["", "<available_skills>"])
         for s in visible:

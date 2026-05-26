@@ -8,6 +8,12 @@ import pytest
 from opensquilla.gateway.approval_queue import ApprovalQueue
 
 
+def test_approval_queue_defaults_to_auto_approve(tmp_path) -> None:
+    queue = ApprovalQueue(db_path=str(tmp_path / "approval_queue.sqlite"))
+
+    assert queue.get_settings().mode == "auto-approve"
+
+
 def test_approval_queue_request_persists_across_queue_restart(tmp_path) -> None:
     db_path = tmp_path / "approval_queue.sqlite"
     queue = ApprovalQueue(db_path=str(db_path))

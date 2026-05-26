@@ -384,7 +384,7 @@ def runs_replay(
 # results). Acceptance promotes a proposal into ~/.opensquilla/skills/
 # so the next gateway boot picks it up as a MANAGED-layer skill. The
 # core logic mirrors the in-tree
-# ``skills/bundled/meta-skill-proposals/scripts/proposals.py`` cmd_accept
+# ``skills/bundled/skill-creator-proposals/scripts/proposals.py`` cmd_accept
 # so the CLI and the in-meta-skill code path stay byte-identical.
 
 

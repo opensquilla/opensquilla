@@ -36,7 +36,6 @@ DEFAULTS = {
     "meta-paper-write",
     "meta-pdf-intelligence",
     "meta-pdf-reformat-pipeline",
-    "meta-research-to-deck",
     "meta-scheduled-morning-digest",
     "meta-arxiv-daily-digest-deck",
     "meta-codereview-current-diff",
@@ -70,9 +69,14 @@ DEFAULTS = {
     "xlsx",
 }
 INTERNAL_HELPERS = {
-    "meta-skill-linter",
-    "meta-skill-proposals",
-    "meta-skill-smoke-test",
+    "skill-creator-linter",
+    "skill-creator-proposals",
+    "skill-creator-smoke-test",
+    "stack-trace-generic-probe",
+    "stack-trace-go-probe",
+    "stack-trace-js-probe",
+    "stack-trace-python-probe",
+    "stack-trace-rust-probe",
 }
 
 
@@ -167,6 +171,20 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
     for name in INTERNAL_HELPERS:
         assert f"<name>{name}</name>" not in prompt
     assert "<name>healthcheck</name>" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_default_prompt_prefers_matching_meta_skills_over_direct_answers(
+    tmp_path: Path,
+) -> None:
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
+
+    ctx = await filter_skills(_ctx(loader))
+
+    prompt = ctx.system_prompt[1]
+    assert "When a kind=\"meta\" entry clearly matches" in prompt
+    assert "prefer `meta_invoke(name=\"<name>\")` over answering directly" in prompt
+    assert "multi-skill orchestration" in prompt
 
 
 @pytest.mark.asyncio

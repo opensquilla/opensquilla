@@ -22,6 +22,7 @@ from typing import Any
 
 import structlog
 
+from opensquilla.engine.usage import usage_scope
 from opensquilla.engine.types import (
     AgentEvent,
     ToolResultEvent,
@@ -29,7 +30,11 @@ from opensquilla.engine.types import (
 )
 from opensquilla.skills.meta.events import _FailoverTriggered, _StepDone
 from opensquilla.skills.meta.parser import topological_order
-from opensquilla.skills.meta.templating import render_with_args, resolve_route
+from opensquilla.skills.meta.templating import (
+    evaluate_when,
+    render_with_args,
+    resolve_route,
+)
 from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
 
 log = structlog.get_logger(__name__)
@@ -53,6 +58,9 @@ async def run_dag(
     ]
     | None = None,
     on_step_failover: Callable[[str, str, str], Awaitable[None]] | None = None,
+    usage_tracker: Any | None = None,
+    session_key: str | None = None,
+    usage_scope_prefix: str | None = None,
 ) -> AsyncIterator[AgentEvent | MetaResult]:
     """Run the plan and stream a flat sequence of events for the UI.
 
@@ -134,10 +142,88 @@ async def run_dag(
             AgentEvent | MetaResult | _StepDone | _FailoverTriggered | Exception,
         ]
     ] = asyncio.Queue()
+    scope_prefix = usage_scope_prefix or f"meta:{match.plan.name}:{id(match)}"
+
+    def _step_usage_args(step_id: str) -> dict[str, Any]:
+        if usage_tracker is None or not session_key:
+            return {}
+        get_scope = getattr(usage_tracker, "get_scope", None)
+        if not callable(get_scope):
+            return {}
+        scoped = get_scope(session_key, f"{scope_prefix}:{step_id}")
+        if scoped is None:
+            return {}
+        input_tokens = int(getattr(scoped, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(scoped, "output_tokens", 0) or 0)
+        cache_read_tokens = int(getattr(scoped, "cache_read_tokens", 0) or 0)
+        cache_write_tokens = int(getattr(scoped, "cache_write_tokens", 0) or 0)
+        if not (
+            input_tokens
+            or output_tokens
+            or cache_read_tokens
+            or cache_write_tokens
+        ):
+            return {}
+        return {
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
+                "cost_usd": round(float(getattr(scoped, "cost", 0.0) or 0.0), 6),
+                "model": str(getattr(scoped, "model_id", "") or ""),
+            }
+        }
 
     async def _run_one(step: MetaStep) -> None:
         """Drive a single step; push its events into the shared queue."""
         try:
+            if not evaluate_when(
+                step.when, inputs=match.inputs, outputs=outputs,
+            ):
+                log.info(
+                    "meta_orchestrator.step_skipped",
+                    step=step.id,
+                    kind=step.kind,
+                    skill=step.skill,
+                    when=step.when,
+                )
+                step_use_id = f"meta_step_{step.id}"
+                step_tool_name = f"meta-step:{step.id}"
+                await event_queue.put(
+                    (
+                        step.id,
+                        ToolUseStartEvent(
+                            tool_use_id=step_use_id,
+                            tool_name=step_tool_name,
+                        ),
+                    ),
+                )
+                outputs[step.id] = ""
+                await event_queue.put(
+                    (
+                        step.id,
+                        ToolResultEvent(
+                            tool_use_id=step_use_id,
+                            tool_name=step_tool_name,
+                            result="skipped: condition evaluated false",
+                            is_error=False,
+                            arguments={
+                                "kind": step.kind,
+                                "skill": step.skill,
+                                "default_skill": step.skill,
+                                "routed": False,
+                                "skipped": True,
+                                "when": step.when,
+                                "output_chars": 0,
+                            },
+                        ),
+                    ),
+                )
+                await event_queue.put((step.id, _StepDone(text="", status="skipped")))
+                return
+
             routed_to = resolve_route(
                 step.route, inputs=match.inputs, outputs=outputs,
             )
@@ -185,13 +271,14 @@ async def run_dag(
                     )
 
             final_text = ""
-            async for ev in dispatch_step_stream(
-                step, effective_skill, match.inputs, outputs,
-            ):
-                if isinstance(ev, _StepDone):
-                    final_text = ev.text
-                else:
-                    await event_queue.put((step.id, ev))
+            with usage_scope(f"{scope_prefix}:{step.id}"):
+                async for ev in dispatch_step_stream(
+                    step, effective_skill, match.inputs, outputs,
+                ):
+                    if isinstance(ev, _StepDone):
+                        final_text = ev.text
+                    else:
+                        await event_queue.put((step.id, ev))
 
             outputs[step.id] = final_text
             log.info(
@@ -227,6 +314,7 @@ async def run_dag(
                             "default_skill": step.skill,
                             "routed": routed_to is not None,
                             "output_chars": len(final_text),
+                            **_step_usage_args(step.id),
                         },
                     ),
                 ),
@@ -328,7 +416,7 @@ async def run_dag(
                     await task
                 if on_step_finish is not None:
                     try:
-                        await on_step_finish(step_id, "ok", item.text, None)
+                        await on_step_finish(step_id, item.status, item.text, None)
                     except Exception as exc:  # noqa: BLE001
                         log.warning(
                             "scheduler.on_step_finish_failed",

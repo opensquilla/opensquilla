@@ -11,7 +11,7 @@ from opensquilla.skills.loader import SkillLoader
 
 REPO = Path(__file__).resolve().parents[2]
 _BUNDLED = REPO / "src" / "opensquilla" / "skills" / "bundled"
-PROPOSALS = _BUNDLED / "meta-skill-proposals" / "scripts" / "proposals.py"
+PROPOSALS = _BUNDLED / "skill-creator-proposals" / "scripts" / "proposals.py"
 
 VALID_SKILL_MD = """---
 name: accept-flow-test-skill

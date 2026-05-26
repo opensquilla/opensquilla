@@ -26,11 +26,32 @@ metadata:
           ],
       },
   }
+entrypoint:
+  command: python {baseDir}/scripts/weather_fetch.py
+  args:
+    - --location
+    - "{{ with.location | default(inputs.user_message) }}"
+    - --days
+    - "{{ with.days | default(3) }}"
+    - --timeout
+    - "{{ with.timeout | default(8) }}"
+    - --max-chars
+    - "{{ with.max_chars | default(2500) }}"
+  parse: json
+  timeout: 15
 ---
 
 # Weather Skill
 
 Get current weather conditions and forecasts.
+
+## Meta-Skill Entrypoint
+
+Meta-skills can run this skill as `skill_exec` for a bounded JSON forecast
+without spawning an LLM sub-agent. The entrypoint extracts `DESTINATION:` from
+planner contracts, queries wttr.in, and returns compact `current`, `forecast`,
+`seasonal_hint`, and `errors` fields. Network failures are reported in
+`errors` while preserving a usable seasonal hint.
 
 ## Location
 

@@ -18,8 +18,8 @@ from opensquilla.skills.meta.types import MetaMatch, MetaResult
 
 REPO = Path(__file__).resolve().parents[2]
 _BUNDLED_BASE = REPO / "src" / "opensquilla" / "skills" / "bundled"
-PROPOSALS = _BUNDLED_BASE / "meta-skill-proposals" / "scripts" / "proposals.py"
-LINT = _BUNDLED_BASE / "meta-skill-linter" / "scripts" / "lint.py"
+PROPOSALS = _BUNDLED_BASE / "skill-creator-proposals" / "scripts" / "proposals.py"
+LINT = _BUNDLED_BASE / "skill-creator-linter" / "scripts" / "lint.py"
 BUNDLED = _BUNDLED_BASE
 
 

@@ -1,5 +1,5 @@
 ---
-name: meta-skill-smoke-test
+name: skill-creator-smoke-test
 description: "Internal tool (not user-invocable). Called by meta-skill-creator as a DAG step (kind: agent) to run G3 (positive smoke) and G4 (negative smoke) gates against a candidate meta-skill SKILL.md. Cross-vendor: fixture-generation LLM != classifier LLM. Returns JSON."
 user-invocable: false
 disable-model-invocation: true
@@ -8,9 +8,9 @@ provenance:
   license: Apache-2.0
 ---
 
-# Meta-Skill Smoke Test
+# Skill Creator Smoke Test
 
-When invoked as a `kind: agent, skill: meta-skill-smoke-test` step, this sub-agent:
+When invoked as a `kind: agent, skill: skill-creator-smoke-test` step, this sub-agent:
 
 1. Receives `skill_md`, `fixture_gen_model`, `classifier_model` from the parent step's `with:`
 2. Calls `simulate_meta_resolution` with a positive fixture (LLM-generated using `fixture_gen_model`)

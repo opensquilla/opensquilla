@@ -260,6 +260,99 @@ async def test_run_one_streaming_success_yields_events_then_terminating_result(
 
 
 @pytest.mark.asyncio
+async def test_meta_invoke_llm_chat_step_records_usage(tmp_path) -> None:
+    """Meta-skill llm_chat steps call the provider outside the normal Agent
+    loop, but their tokens still belong to the parent session usage."""
+    from opensquilla.engine.agent import Agent
+    from opensquilla.engine.types import AgentConfig
+    from opensquilla.engine.usage import UsageTracker
+    from opensquilla.provider.types import DoneEvent as ProviderDoneEvent
+    from opensquilla.provider.types import TextDeltaEvent as ProviderTextDeltaEvent
+    from opensquilla.skills.loader import SkillLoader
+    from opensquilla.tool_boundary import ToolCall, ToolResult
+    from opensquilla.tools.builtin import meta_tools  # noqa: F401
+    from opensquilla.tools.registry import get_default_registry
+    from opensquilla.tools.types import ToolContext
+
+    bundled = tmp_path / "skills" / "bundled"
+    skill_dir = bundled / "meta-usage"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-usage\n"
+        "kind: meta\n"
+        "description: usage accounting meta-skill\n"
+        "final_text_mode: raw\n"
+        "triggers: [usage accounting]\n"
+        "composition:\n"
+        "  steps:\n"
+        "    - id: write\n"
+        "      kind: llm_chat\n"
+        "      with:\n"
+        "        system: s\n"
+        "        task: t\n"
+        "---\n"
+        "# meta-usage\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    loader.load_all()
+
+    class _UsageProvider:
+        provider_name = "stub"
+
+        async def chat(self, *_args, **_kwargs):
+            yield ProviderTextDeltaEvent(text="done")
+            yield ProviderDoneEvent(
+                input_tokens=11,
+                output_tokens=7,
+                cached_tokens=3,
+                cache_write_tokens=2,
+                model="stub/meta",
+            )
+
+        async def list_models(self):
+            return []
+
+    usage = UsageTracker()
+    agent = Agent(
+        provider=_UsageProvider(),  # type: ignore[arg-type]
+        config=AgentConfig(
+            model_id="stub/base",
+            metadata={"skill_loader": loader, "bootstrap_workspace_dir": str(tmp_path)},
+        ),
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=get_default_registry(),
+        usage_tracker=usage,
+        session_key="agent:main:test-usage",
+    )
+
+    final = None
+    async for ev in agent._run_one_streaming(
+        ToolCall(
+            tool_use_id="u1",
+            tool_name="meta_invoke",
+            arguments={"name": "meta-usage"},
+        ),
+        ToolContext(workspace_dir=str(tmp_path), is_owner=True),
+    ):
+        if isinstance(ev, ToolResult):
+            final = ev
+
+    assert final is not None
+    assert final.is_error is False
+    tracked = usage.get("agent:main:test-usage")
+    assert tracked is not None
+    assert tracked.input_tokens == 11
+    assert tracked.output_tokens == 7
+    assert tracked.cache_read_tokens == 3
+    assert tracked.cache_write_tokens == 2
+    assert tracked.model_id == "stub/meta"
+
+
+@pytest.mark.asyncio
 async def test_run_one_streaming_unknown_meta_skill_returns_error_result(
     tmp_path,
 ) -> None:
@@ -457,7 +550,7 @@ async def test_run_one_streaming_propagates_current_turn_message_to_inputs(
 
     registry = get_default_registry()
     config = AgentConfig(
-        model_id="stub", max_iterations=1, system_prompt="",
+        model_id="stub", max_iterations=1, system_prompt="outer system prompt",
         metadata={"skill_loader": loader, "bootstrap_workspace_dir": str(tmp_path)},
     )
     agent = Agent(
@@ -500,8 +593,12 @@ async def test_run_one_streaming_propagates_current_turn_message_to_inputs(
 
     assert final is not None
     assert final.is_error is False
+    assert final.content == "meta-skill 'meta-tiny' completed; final answer streamed separately."
     assert captured.get("inputs", {}).get("user_message") == "RAG in low-resource settings", (
         f"expected user_message to propagate from _current_turn_message; got {captured!r}"
+    )
+    assert captured.get("inputs", {}).get("system_prompt") == "outer system prompt", (
+        f"expected system_prompt to propagate into meta-skill inputs; got {captured!r}"
     )
 
 
@@ -526,6 +623,7 @@ async def test_dispatch_intercepts_meta_invoke_and_terminates_turn(
         AgentConfig,
         DoneEvent,
         ErrorEvent,
+        TextDeltaEvent,
         ToolResultEvent,
     )
     from opensquilla.provider.types import (
@@ -669,11 +767,13 @@ async def test_dispatch_intercepts_meta_invoke_and_terminates_turn(
     # must surface in the meta_invoke ToolResultEvent content — proves
     # the orchestrator actually ran the composition, not just that the
     # dispatch interceptor silently returned an empty success.
-    success_contents = " | ".join(r.result or "" for r in meta_invoke_results)
-    assert "A" in success_contents, (
-        "Expected llm_classify result 'A' in meta_invoke ToolResultEvent; "
-        f"got: {success_contents[:300]!r}"
+    streamed_text = "".join(e.text for e in events if isinstance(e, TextDeltaEvent))
+    assert "A" in streamed_text, (
+        "Expected llm_classify result 'A' to stream as final answer; "
+        f"got: {streamed_text[:300]!r}"
     )
+    success_contents = " | ".join(r.result or "" for r in meta_invoke_results)
+    assert "final answer streamed separately" in success_contents
 
     # The orchestrator emits ToolUseStartEvent / ToolResultEvent for each
     # meta-step (tool_name="meta-step:<step_id>"). The dispatch interceptor
@@ -712,7 +812,7 @@ async def test_dispatch_coerces_meta_skill_view_to_meta_invoke(
     from collections.abc import AsyncIterator
 
     from opensquilla.engine.agent import Agent
-    from opensquilla.engine.types import AgentConfig, DoneEvent, ToolResultEvent
+    from opensquilla.engine.types import AgentConfig, DoneEvent, TextDeltaEvent, ToolResultEvent
     from opensquilla.provider.types import DoneEvent as ProviderDoneEvent
     from opensquilla.provider.types import ToolUseDeltaEvent as ProviderToolUseDelta
     from opensquilla.provider.types import ToolUseEndEvent as ProviderToolUseEnd
@@ -801,7 +901,8 @@ async def test_dispatch_coerces_meta_skill_view_to_meta_invoke(
         "skill_view(name=<meta-skill>) must be coerced into meta_invoke"
     )
     assert all(not r.is_error for r in meta_invoke_results)
-    assert any("A" in (r.result or "") for r in meta_invoke_results)
+    assert any("final answer streamed separately" in (r.result or "") for r in meta_invoke_results)
+    assert "A" in "".join(e.text for e in events if isinstance(e, TextDeltaEvent))
 
 
 # ---------------------------------------------------------------------------

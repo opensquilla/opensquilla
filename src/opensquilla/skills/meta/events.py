@@ -34,6 +34,7 @@ class _StepDone:
     """
 
     text: str
+    status: str = "ok"
 
 
 @_dataclass(frozen=True)

@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from opensquilla.engine.runtime import TurnRunner
+from opensquilla.engine.runtime import (
+    TurnRunner,
+    _UsageSnapshot,
+    _done_event_with_usage_delta,
+)
+from opensquilla.engine.types import DoneEvent
 from opensquilla.provider import DoneEvent as ProviderDone
 from opensquilla.provider import Message, ModelInfo
 from opensquilla.provider import TextDeltaEvent as ProviderText
@@ -66,6 +71,36 @@ class _ProviderSelector:
 
     def clone(self) -> _SelectorClone:
         return _SelectorClone(self.provider)
+
+
+def test_runtime_terminal_usage_uses_tracker_delta_for_nested_meta_calls() -> None:
+    event = DoneEvent(
+        input_tokens=0,
+        output_tokens=0,
+        cost_source="unavailable",
+        model="",
+    )
+
+    merged = _done_event_with_usage_delta(
+        event,
+        before=_UsageSnapshot(input_tokens=100, output_tokens=20, cost_usd=0.01),
+        after=_UsageSnapshot(
+            input_tokens=145,
+            output_tokens=37,
+            cache_read_tokens=5,
+            cache_write_tokens=2,
+            cost_usd=0.025,
+            model_id="stub/meta",
+        ),
+    )
+
+    assert merged.input_tokens == 45
+    assert merged.output_tokens == 17
+    assert merged.cached_tokens == 5
+    assert merged.cache_write_tokens == 2
+    assert merged.cost_usd == pytest.approx(0.015)
+    assert merged.cost_source == "opensquilla_estimate"
+    assert merged.model == "stub/meta"
 
 
 @pytest.mark.asyncio

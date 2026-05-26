@@ -222,6 +222,89 @@ class _SavingsBaseline:
 
 
 @dataclass(frozen=True)
+class _UsageSnapshot:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float = 0.0
+    model_id: str = ""
+
+
+def _usage_snapshot(usage_tracker: Any | None, session_key: str) -> _UsageSnapshot:
+    if usage_tracker is None:
+        return _UsageSnapshot()
+    get_usage = getattr(usage_tracker, "get", None)
+    if not callable(get_usage):
+        return _UsageSnapshot()
+    usage = get_usage(session_key)
+    if usage is None:
+        return _UsageSnapshot()
+    return _UsageSnapshot(
+        input_tokens=max(0, int(getattr(usage, "input_tokens", 0) or 0)),
+        output_tokens=max(0, int(getattr(usage, "output_tokens", 0) or 0)),
+        cache_read_tokens=max(0, int(getattr(usage, "cache_read_tokens", 0) or 0)),
+        cache_write_tokens=max(0, int(getattr(usage, "cache_write_tokens", 0) or 0)),
+        cost_usd=max(0.0, float(getattr(usage, "cost", 0.0) or 0.0)),
+        model_id=str(getattr(usage, "model_id", "") or ""),
+    )
+
+
+def _usage_delta(
+    before: _UsageSnapshot,
+    after: _UsageSnapshot,
+) -> _UsageSnapshot:
+    return _UsageSnapshot(
+        input_tokens=max(0, after.input_tokens - before.input_tokens),
+        output_tokens=max(0, after.output_tokens - before.output_tokens),
+        cache_read_tokens=max(0, after.cache_read_tokens - before.cache_read_tokens),
+        cache_write_tokens=max(0, after.cache_write_tokens - before.cache_write_tokens),
+        cost_usd=max(0.0, after.cost_usd - before.cost_usd),
+        model_id=after.model_id or before.model_id,
+    )
+
+
+def _done_event_with_usage_delta(
+    event: DoneEvent,
+    *,
+    before: _UsageSnapshot,
+    after: _UsageSnapshot,
+) -> DoneEvent:
+    """Use whole-turn tracker deltas when nested meta-skill work used tokens."""
+
+    delta = _usage_delta(before, after)
+    event_tokens = max(0, int(event.input_tokens or 0)) + max(
+        0,
+        int(event.output_tokens or 0),
+    )
+    delta_tokens = delta.input_tokens + delta.output_tokens
+    if (
+        delta_tokens <= event_tokens
+        and delta.cache_read_tokens <= max(0, int(event.cached_tokens or 0))
+        and delta.cache_write_tokens <= max(0, int(event.cache_write_tokens or 0))
+    ):
+        return event
+
+    cost_usd = event.cost_usd
+    cost_source = event.cost_source
+    if delta.cost_usd > cost_usd:
+        cost_usd = delta.cost_usd
+        if cost_source in {"", "none", "unavailable"}:
+            cost_source = "opensquilla_estimate"
+
+    return replace(
+        event,
+        input_tokens=delta.input_tokens,
+        output_tokens=delta.output_tokens,
+        cached_tokens=delta.cache_read_tokens,
+        cache_write_tokens=delta.cache_write_tokens,
+        cost_usd=cost_usd,
+        cost_source=cost_source,
+        model=event.model or delta.model_id,
+    )
+
+
+@dataclass(frozen=True)
 class _ComprehensiveTurnSavings:
     pct: float = 0.0
     usd: float = 0.0
@@ -1879,16 +1962,6 @@ class TurnRunner:
             if _accepts_keyword_arg(agent.run_turn, "semantic_message"):
                 agent_run_kwargs["semantic_message"] = semantic_input
 
-            # ── Meta-Skill: soft path only ────────────────────────────────
-            # The hard-takeover branch (orchestrator-driven turn when
-            # ``meta_resolution`` matched a trigger) has been retired. A
-            # trigger match now produces a *soft hint* injected into
-            # ``system_prompt`` by ``engine.steps.meta_resolution``; the
-            # LLM decides whether to call ``meta_invoke(name=...)``, and
-            # the orchestrator runs as a tool inside ``Agent._run_one_streaming``
-            # (see ``tools.builtin.meta_tools.meta_invoke``). One execution
-            # path, observable end-to-end via ``agent.meta_invoke_eligible``.
-
             async def _build_event_source() -> AsyncIterator[AgentEvent]:
                 async for ev in agent.run_turn(
                     turn_input,
@@ -1896,6 +1969,8 @@ class TurnRunner:
                     **agent_run_kwargs,
                 ):
                     yield ev
+
+            usage_before_turn = _usage_snapshot(self._usage_tracker, session_key)
 
             async for event in _build_event_source():
                 if isinstance(event, TextDeltaEvent):
@@ -1967,6 +2042,11 @@ class TurnRunner:
                 elif isinstance(event, WarningEvent):
                     event = self._handle_runtime_warning(event)
                 elif isinstance(event, DoneEvent):
+                    event = _done_event_with_usage_delta(
+                        event,
+                        before=usage_before_turn,
+                        after=_usage_snapshot(self._usage_tracker, session_key),
+                    )
                     normalized_text = _normalize_heartbeat_text(
                         event.text,
                         run_kind=run_kind,

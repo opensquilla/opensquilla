@@ -89,7 +89,7 @@ def aggregate_meta_usage(
         meta_names: set of skill names where kind == "meta". When None,
             falls back to the name-prefix heuristic (skill.startswith("meta-")).
             The heuristic is less accurate because helper bundles like
-            meta-skill-linter / meta-skill-proposals / meta-skill-smoke-test
+            skill-creator-linter / skill-creator-proposals / skill-creator-smoke-test
             are kind=skill but share the prefix (N12 fix).
     """
     cutoff = datetime.now(UTC) - timedelta(days=window_days)

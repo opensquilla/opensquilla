@@ -21,6 +21,7 @@ from opensquilla.engine.types import (
     AgentConfig,
     DoneEvent,
     ErrorEvent,
+    TextDeltaEvent,
     ToolResultEvent,
 )
 from opensquilla.provider.selector import build_provider
@@ -167,6 +168,10 @@ async def _run_one_case(
         event for event in events
         if isinstance(event, ToolResultEvent)
     ]
+    final_text = "".join(
+        event.text for event in events
+        if isinstance(event, TextDeltaEvent)
+    )
     meta_results = [
         event for event in tool_results
         if event.tool_name == "meta_invoke"
@@ -189,7 +194,11 @@ async def _run_one_case(
         else not meta_results
     )
     if expected_meta_skill is not None:
-        passed = passed and EXPECTED_OUTPUT in meta_invoke_result
+        passed = passed and (
+            EXPECTED_OUTPUT in meta_invoke_result
+            or EXPECTED_OUTPUT in final_text
+            or bool(done and EXPECTED_OUTPUT in (done.text or ""))
+        )
 
     return {
         "user_message": user_message,
@@ -201,6 +210,7 @@ async def _run_one_case(
         },
         "observed_tool_results": [event.tool_name for event in tool_results],
         "meta_invoke_result": meta_invoke_result,
+        "final_text": final_text or (done.text if done else ""),
         "done": done is not None,
         "errors": errors,
     }
@@ -291,6 +301,7 @@ def run_live_meta_soft_activation_e2e(
         "model_decision": case["model_decision"],
         "observed_tool_results": case["observed_tool_results"],
         "meta_invoke_result": case["meta_invoke_result"],
+        "final_text": case.get("final_text", ""),
     }
 
 

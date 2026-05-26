@@ -1,4 +1,4 @@
-"""Tests for meta-skill-proposals bundled skill (write/list/accept/reject)."""
+"""Tests for skill-creator-proposals bundled skill (write/list/accept/reject)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 _BUNDLED = REPO / "src" / "opensquilla" / "skills" / "bundled"
-PROPOSALS = _BUNDLED / "meta-skill-proposals" / "scripts" / "proposals.py"
+PROPOSALS = _BUNDLED / "skill-creator-proposals" / "scripts" / "proposals.py"
 
 
 def _run(action: str, *args, home: Path, **kwargs) -> dict:

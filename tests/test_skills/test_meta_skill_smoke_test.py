@@ -1,4 +1,4 @@
-"""Tests for meta-skill-smoke-test (G3+G4) and simulate_meta_resolution tool."""
+"""Tests for skill-creator-smoke-test (G3+G4) and simulate_meta_resolution tool."""
 
 from __future__ import annotations
 

@@ -3219,14 +3219,18 @@ const ChatView = (() => {
   /* ── Tool Call / Tool Result Display ────────────────────────────────── */
 
   function _buildToolCallDOM(name, toolId, input, isRunning) {
-    const preview = _truncate(
-      typeof input === 'string' ? input : JSON.stringify(input || '', null, 2),
-      200
-    );
+    const isMetaInvoke = name === 'meta_invoke';
+    const preview = isMetaInvoke
+      ? ''
+      : _truncate(
+          typeof input === 'string' ? input : JSON.stringify(input || '', null, 2),
+          200
+        );
 
     const details = document.createElement('details');
     details.className = 'chat-tools-collapse' + (isRunning ? ' chat-tools-collapse--running' : '');
     if (toolId) details.setAttribute('data-tool-id', toolId);
+    details.dataset.toolName = name || 'tool';
 
     const summary = document.createElement('summary');
     summary.className = 'chat-tools-summary';
@@ -3255,6 +3259,35 @@ const ChatView = (() => {
     details.appendChild(summary);
     details.appendChild(toolsBody);
     return details;
+  }
+
+  function _toolResultDisplayContent(toolName, content, isError, args) {
+    if (!isError && String(toolName || '') === 'meta_invoke') {
+      const skillName = args && typeof args === 'object' ? (args.name || '') : '';
+      return skillName
+        ? `Meta-skill ${skillName} completed; final answer is shown in the chat.`
+        : 'Meta-skill completed; final answer is shown in the chat.';
+    }
+    if (!isError && String(toolName || '').startsWith('meta-step:')) {
+      const usage = args && typeof args === 'object' ? (args.usage || args) : null;
+      const inputTokens = usage ? Number(usage.input_tokens || usage.inputTokens || 0) : 0;
+      const outputTokens = usage ? Number(usage.output_tokens || usage.outputTokens || 0) : 0;
+      const cacheReadTokens = usage ? Number(usage.cache_read_tokens || usage.cacheReadTokens || 0) : 0;
+      const cacheWriteTokens = usage ? Number(usage.cache_write_tokens || usage.cacheWriteTokens || 0) : 0;
+      const totalTokens = inputTokens + outputTokens;
+      if (totalTokens || cacheReadTokens || cacheWriteTokens) {
+        const parts = [
+          `${totalTokens.toLocaleString()} tok`,
+          `${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out`,
+        ];
+        if (cacheReadTokens || cacheWriteTokens) {
+          parts.push(`${cacheReadTokens.toLocaleString()} cache R / ${cacheWriteTokens.toLocaleString()} cache W`);
+        }
+        return `Step completed; usage: ${parts.join(' · ')}.`;
+      }
+      return 'Step completed; no LLM token usage recorded for this step.';
+    }
+    return content;
   }
 
   function _buildToolResultDOM(content, isError) {
@@ -3310,9 +3343,11 @@ const ChatView = (() => {
   function _appendToolResult(payload) {
     if (!payload) return;
     const raw = payload.result || payload.content || payload.output || '';
-    const content = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
+    const originalContent = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
     const isError = !!(payload.is_error || payload.isError || payload.error);
     const toolId = payload.tool_use_id || '';
+    let toolName = payload.name || payload.tool_name || '';
+    let content = originalContent;
 
     const bubble = _ensureStreamBubble();
     const body = bubble.querySelector('.msg-body');
@@ -3322,6 +3357,7 @@ const ChatView = (() => {
     if (toolId) {
       const details = body.querySelector('[data-tool-id="' + toolId + '"]');
       if (details) {
+        toolName = toolName || details.dataset.toolName || '';
         details.classList.remove('chat-tools-collapse--running');
         details.classList.add(isError ? 'chat-tools-collapse--error' : 'chat-tools-collapse--success');
         // Auto-expand error tool cards so failure details (partial step
@@ -3344,6 +3380,8 @@ const ChatView = (() => {
         }
       }
     }
+
+    content = _toolResultDisplayContent(toolName, originalContent, isError, payload.arguments || payload.input);
 
     // Only show result preview if non-empty
     const resultDiv = _buildToolResultDOM(content, isError);
@@ -3475,9 +3513,11 @@ const ChatView = (() => {
 
       // Build tool_use_id → tool name map so tool_result segments can look up the name
       const _toolNameById = {};
+      const _toolInputById = {};
       for (const seg of segments) {
         if (seg.type === 'tool_use' && seg.tool_use_id) {
           _toolNameById[seg.tool_use_id] = seg.name || 'tool';
+          _toolInputById[seg.tool_use_id] = seg.input || null;
         }
       }
 
@@ -3497,7 +3537,8 @@ const ChatView = (() => {
         } else if (seg.type === 'tool_result') {
           const toolId = seg.tool_use_id || '';
           const isError = !!seg.is_error;
-          const content = seg.result || '';
+          const toolName = _toolNameById[toolId] || seg.name || seg.tool_name || '';
+          const content = _toolResultDisplayContent(toolName, seg.result || '', isError, _toolInputById[toolId]);
 
           if (toolId) {
             const details = body.querySelector('[data-tool-id="' + toolId + '"]');

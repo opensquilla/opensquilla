@@ -269,3 +269,23 @@ def test_chat_interrupt_mark_is_rendered_and_styled() -> None:
     # CSS for the marker exists and is themed via the project's muted token.
     assert ".msg-interrupt-mark" in css
     assert "var(--text-muted)" in css.split(".msg-interrupt-mark", 1)[1].split("}", 1)[0]
+
+
+def test_chat_meta_step_success_results_are_collapsed_to_status() -> None:
+    source = _read_chat_js()
+
+    assert "function _toolResultDisplayContent" in source
+    assert "startsWith('meta-step:')" in source
+    assert "Step completed; usage:" in source
+    assert "details.dataset.toolName = name || 'tool';" in source
+    assert "_toolResultDisplayContent(toolName, originalContent, isError, payload.arguments || payload.input)" in source
+    assert "_toolResultDisplayContent(toolName, seg.result || '', isError, _toolInputById[toolId])" in source
+
+
+def test_chat_meta_invoke_hides_internal_payload_and_status() -> None:
+    source = _read_chat_js()
+
+    assert "const isMetaInvoke = name === 'meta_invoke';" in source
+    assert "? ''" in source
+    assert "String(toolName || '') === 'meta_invoke'" in source
+    assert "final answer is shown in the chat" in source

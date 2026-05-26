@@ -27,14 +27,48 @@ import re
 import structlog
 
 from opensquilla.engine.pipeline import TurnContext
+from opensquilla.skills.meta.inputs import make_meta_inputs
 from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
 from opensquilla.skills.meta.types import MetaMatch
 
 log = structlog.get_logger(__name__)
 
 _META_SKILL_EXPLANATION_RE = re.compile(
-    r"\b(how|what|why|explain|describe|about)\b.*\bmeta-skill\b"
+    r"\b(how|what|why|explain|describe)\b.*\bmeta-skill\b"
 )
+
+
+def _tier_sort_key(name: str, index: int) -> tuple[int, int]:
+    """Prefer numeric router tiers (t0 < t1 < t2 < t3), then declaration order."""
+
+    match = re.fullmatch(r"t(\d+)", name.strip().lower())
+    if match:
+        return (int(match.group(1)), index)
+    return (-1, index)
+
+
+def _highest_text_tier(ctx: TurnContext) -> tuple[str, str] | None:
+    """Return ``(tier_name, model)`` for the highest configured text tier."""
+
+    router_cfg = getattr(getattr(ctx, "config", None), "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", None)
+    if not isinstance(tiers, dict) or not tiers:
+        return None
+
+    candidates: list[tuple[tuple[int, int], str, str]] = []
+    for index, (name, tier_cfg) in enumerate(tiers.items()):
+        if not isinstance(tier_cfg, dict):
+            continue
+        if bool(tier_cfg.get("image_only", False)):
+            continue
+        model = str(tier_cfg.get("model") or "").strip()
+        tier_name = str(name).strip()
+        if tier_name and model:
+            candidates.append((_tier_sort_key(tier_name, index), tier_name, model))
+    if not candidates:
+        return None
+    _key, tier_name, model = max(candidates, key=lambda item: item[0])
+    return tier_name, model
 
 
 def _trigger_matches(trigger: str, message_lower: str) -> bool:
@@ -185,11 +219,31 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
 
     match = MetaMatch(
         plan=chosen_plan,  # type: ignore[arg-type]
-        inputs={"user_message": ctx.message},
+        inputs=make_meta_inputs(
+            user_message=ctx.message,
+            system_prompt=getattr(ctx, "system_prompt", ""),
+        ),
     )
     ctx.metadata["meta_match"] = match
     ctx.metadata["meta_match_trigger"] = chosen_trigger
     ctx.metadata["meta_match_candidates"] = candidate_digest
+
+    if getattr(chosen_plan, "name", "") == "meta-skill-creator":
+        highest = _highest_text_tier(ctx)
+        if highest is not None:
+            tier_name, model = highest
+            baseline_model = str(getattr(ctx, "model", "") or "")
+            ctx.model = model
+            ctx.metadata["meta_required_tier"] = tier_name
+            ctx.metadata["meta_required_model"] = model
+            ctx.metadata["meta_required_source"] = "meta-skill-creator"
+            ctx.metadata.setdefault("baseline_model", baseline_model)
+            ctx.metadata["routed_tier"] = tier_name
+            ctx.metadata["routed_model"] = model
+            ctx.metadata["routing_source"] = "meta_skill_required_tier"
+            ctx.metadata["routing_confidence"] = 1.0
+            ctx.metadata["routing_applied"] = True
+            ctx.metadata["applied_model"] = model
 
     # ── Soft-hint injection ────────────────────────────────────────────
     # Append to the uncached suffix slot of system_prompt so cache

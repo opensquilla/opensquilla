@@ -526,3 +526,62 @@ async def test_run_dag_on_step_begin_gets_rendered_inputs() -> None:
         pass
 
     assert begin_inputs == [{"q": "hello world"}]
+
+
+@pytest.mark.asyncio
+async def test_run_dag_tool_result_includes_scoped_step_usage() -> None:
+    from opensquilla.engine.types import ToolResultEvent
+    from opensquilla.engine.usage import UsageTracker
+    from opensquilla.skills.meta.events import _StepDone
+    from opensquilla.skills.meta.scheduler import run_dag
+    from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaStep
+
+    plan = MetaPlan(
+        name="step-usage-test",
+        triggers=("x",),
+        priority=10,
+        steps=(
+            MetaStep(id="a", skill="alpha", kind="llm_chat"),
+            MetaStep(id="b", skill="beta", kind="llm_chat"),
+        ),
+    )
+    match = MetaMatch(plan=plan, inputs={})
+    tracker = UsageTracker()
+    results: dict[str, ToolResultEvent] = {}
+
+    async def dispatch_stub(step, effective_skill, inputs, outputs):
+        tracker.add(
+            "session-a",
+            input_tokens=10 if step.id == "a" else 20,
+            output_tokens=1 if step.id == "a" else 2,
+            model_id=f"model-{step.id}",
+        )
+        yield _StepDone(text=f"{step.id}-done")
+
+    async def preface_stub(step_id: str, effective_skill: str):
+        if False:
+            yield None
+        return
+
+    async for event in run_dag(
+        match,
+        dispatch_step_stream=dispatch_stub,
+        yield_skill_view_preface=preface_stub,
+        max_parallelism=2,
+        usage_tracker=tracker,
+        session_key="session-a",
+        usage_scope_prefix="run-1",
+    ):
+        if isinstance(event, ToolResultEvent):
+            results[event.tool_name] = event
+
+    usage_a = (results["meta-step:a"].arguments or {})["usage"]
+    usage_b = (results["meta-step:b"].arguments or {})["usage"]
+    assert usage_a["input_tokens"] == 10
+    assert usage_a["output_tokens"] == 1
+    assert usage_a["total_tokens"] == 11
+    assert usage_a["model"] == "model-a"
+    assert usage_b["input_tokens"] == 20
+    assert usage_b["output_tokens"] == 2
+    assert usage_b["total_tokens"] == 22
+    assert usage_b["model"] == "model-b"

@@ -102,6 +102,10 @@ def test_list_proposals_surfaces_auto_enable_decision(tmp_path: Path) -> None:
         "reason": "risk_too_high",
         "risk_level": "high",
         "max_risk": "low",
+        "validation_profile": "unknown",
+        "skills": [],
+        "tools": [],
+        "reasons": [],
     }
 
 
@@ -165,6 +169,10 @@ def test_list_and_disable_auto_enabled_skill(tmp_path: Path) -> None:
         "max_risk": "low",
         "triggered_by": "manual",
         "enabled_at_ms": 123,
+        "validation_profile": "unknown",
+        "skills": [],
+        "tools": [],
+        "reasons": [],
     }]
 
     out = proposals_lib.disable_auto_enabled_skill(home, "synth-test-pipeline")

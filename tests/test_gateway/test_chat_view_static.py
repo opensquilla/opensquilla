@@ -41,6 +41,16 @@ def test_live_subagent_completion_event_uses_same_renderer() -> None:
     assert "_appendSubagentCompletion(payload)" in source
 
 
+def test_meta_step_tool_results_render_usage_counts() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "startsWith('meta-step:')" in source
+    assert "Step completed; usage:" in source
+    assert "input_tokens" in source
+    assert "output_tokens" in source
+    assert "_toolInputById[seg.tool_use_id]" in source
+
+
 def test_chat_renders_live_and_historical_artifacts_as_header_auth_downloads() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 

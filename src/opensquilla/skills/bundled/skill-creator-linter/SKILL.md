@@ -1,5 +1,5 @@
 ---
-name: meta-skill-linter
+name: skill-creator-linter
 description: "Internal tool (not user-invocable). Called by meta-skill-creator as a DAG step (kind: agent) to lint a candidate meta-skill SKILL.md against G1 (parse + reference check + xml_escape grep + structural lint) and G2 (scheduler dry-run with stub executors). Deterministic, sub-second, no LLM. Returns JSON diagnostics."
 user-invocable: false
 disable-model-invocation: true
@@ -20,7 +20,7 @@ entrypoint:
   timeout: 30
 ---
 
-# Meta-Skill Linter
+# Skill Creator Linter
 
 Validates a candidate meta-skill SKILL.md before it gets registered.
 

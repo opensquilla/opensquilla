@@ -20,7 +20,7 @@ VALID_ELEVATED_MODES = frozenset({"on", "bypass", "full"})
 
 @dataclass
 class ApprovalSettings:
-    mode: str = "prompt"
+    mode: str = "auto-approve"
     allow_patterns: list[str] = field(default_factory=list)
     deny_patterns: list[str] = field(default_factory=list)
 

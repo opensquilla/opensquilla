@@ -33,7 +33,7 @@ MAX_SKILLS_PER_SOURCE = 200  # per layer cap
 # Bump when on-disk snapshot fields change so stale caches are invalidated
 # instead of silently losing new fields. v6 adds skill risk/capability metadata
 # for unattended meta-skill auto-enable decisions.
-_SNAPSHOT_SCHEMA_VERSION = 6
+_SNAPSHOT_SCHEMA_VERSION = 7
 
 
 def _string_list(value: object) -> list[str]:
@@ -322,6 +322,7 @@ class SkillLoader:
                     "kind": s.kind,
                     "meta_priority": s.meta_priority,
                     "composition_raw": s.composition_raw,
+                    "final_text_mode": s.final_text_mode,
                     "entrypoint": s.entrypoint,
                 }
                 for s in skills
@@ -412,6 +413,7 @@ class SkillLoader:
                     kind=s.get("kind", "skill"),
                     meta_priority=int(s.get("meta_priority", 0) or 0),
                     composition_raw=s.get("composition_raw"),
+                    final_text_mode=str(s.get("final_text_mode", "auto") or "auto"),
                     entrypoint=(
                         s["entrypoint"]
                         if isinstance(s.get("entrypoint"), dict)

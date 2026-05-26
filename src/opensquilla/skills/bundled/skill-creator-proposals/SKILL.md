@@ -1,5 +1,5 @@
 ---
-name: meta-skill-proposals
+name: skill-creator-proposals
 description: "Internal tool (not user-invocable). Called by meta-skill-creator's persist step and by `opensquilla meta accept` CLI (Phase 2) to manage `~/.opensquilla/proposals/`: write_proposal / list / accept. Returns JSON."
 user-invocable: false
 disable-model-invocation: true
@@ -24,7 +24,7 @@ entrypoint:
   timeout: 30
 ---
 
-# Meta-Skill Proposals
+# Skill Creator Proposals
 
 CRUD for meta-skill proposal candidates at `~/.opensquilla/proposals/<id>/`.
 
@@ -40,4 +40,4 @@ write_proposal writes to `~/.opensquilla/.tmp/proposal-<id>/` then `os.rename()`
 
 ## Fallback
 
-If invoked from chat, manually create the proposals dir, copy SKILL.md, run the meta-skill-linter to populate gates.json by hand.
+If invoked from chat, manually create the proposals dir, copy SKILL.md, run the skill-creator-linter to populate gates.json by hand.

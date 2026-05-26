@@ -206,7 +206,7 @@ _G1_META_BUNDLES = sorted(
     + [p.parent.name for p in _G1_BUNDLED.glob("history-explorer/SKILL.md")]
 )
 
-# Match same regex as meta-skill-linter G1.6 (Task 2 + relaxation for slugify).
+# Match same regex as skill-creator-linter G1.6 (Task 2 + relaxation for slugify).
 # The positive lookahead (?=[\s|}]) adds a word boundary so that fields with a
 # user_message prefix (e.g. inputs.user_message_body) are not false-positively
 # matched.  The \b after each filter name prevents prefix matches.

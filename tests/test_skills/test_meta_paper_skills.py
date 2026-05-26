@@ -104,7 +104,7 @@ def test_meta_paper_write_declares_long_paper_generation_contract() -> None:
     outline = (BUNDLED / "paper-outline-author" / "SKILL.md").read_text(encoding="utf-8")
     section = (BUNDLED / "paper-section-author" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert "- \"25\"" in search
+    assert "{{ with.max_results | default(25) }}" in search
     assert "10+ page" in outline
     assert "20+ distinct citation keys" in outline
     assert "10+ compiled pages" in section
@@ -114,21 +114,20 @@ def test_meta_paper_write_declares_long_paper_generation_contract() -> None:
 
 def test_meta_paper_write_declares_quality_pipeline_stages() -> None:
     meta = (BUNDLED / "meta-paper-write" / "SKILL.md").read_text(encoding="utf-8")
-    latex = (BUNDLED / "latex-compile" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert "paper-preference-planner" in meta
+    assert "multi-search-engine" in meta
+    assert "paper-experiment-stub" in meta
+    assert "paper-refbib-stub" in meta
+    assert "paper-plot-stub" in meta
     assert "Save as `paper_preferences`" in meta
-    assert "{{ outputs.paper_preferences | truncate(4000) }}" in meta
-    assert "paper-source-curator" in meta
+    assert "{{ outputs.paper_preferences | truncate(2000) }}" in meta
     assert "Save as `source_pack`" in meta
-    assert "paper-citation-planner" in meta
     assert "Save as `citation_plan`" in meta
-    assert "paper-revision-author" in meta
-    assert "Save as `revised_body`" in meta
-    assert "paper-abstract-author" in meta
-    assert "Save as `draft_abstract`" in meta
-    assert "depends_on: [revised_body, citation_plan]" in meta
-    assert "{{ outputs.revised_body }}" in latex
+    assert "final_manuscript_package" in meta
+    assert "10+ compiled pages" in meta
+    assert "20 distinct citation keys" in meta
+    assert "Do not run xelatex in the" in meta
+    assert "default meta-skill path" in meta
 
 
 def test_paper_preference_planner_declares_two_generation_modes() -> None:

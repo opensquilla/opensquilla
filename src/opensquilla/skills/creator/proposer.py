@@ -497,7 +497,7 @@ def real_fixture_gen(
     llm_chat,
     fixture_gen_model: str,
 ) -> str:
-    """LLM-driven fixture gen for cross-vendor smoke (Step 2 of meta-skill-smoke-test's SKILL.md).
+    """LLM-driven fixture gen for cross-vendor smoke (Step 2 of skill-creator-smoke-test's SKILL.md).
 
     Phase 1 fallback to deterministic when llm_chat is None. Real LLM wiring
     deferred to follow-on iteration.
@@ -565,13 +565,13 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
 
 _LINT_SCRIPT = (
     Path(__file__).resolve().parents[1]
-    / "bundled" / "meta-skill-linter" / "scripts" / "lint.py"
+    / "bundled" / "skill-creator-linter" / "scripts" / "lint.py"
 )
 _BUNDLED_DIR = _LINT_SCRIPT.parents[2]
 
 _PROPOSALS_SCRIPT = (
     Path(__file__).resolve().parents[1]
-    / "bundled" / "meta-skill-proposals" / "scripts" / "proposals.py"
+    / "bundled" / "skill-creator-proposals" / "scripts" / "proposals.py"
 )
 
 
@@ -580,7 +580,7 @@ _PROPOSALS_SCRIPT = (
 # ---------------------------------------------------------------------------
 
 def meta_skill_lint_run(skill_md: str, gates: str = "G1,G2") -> str:
-    """Run meta-skill-linter on the given SKILL.md text. Returns JSON.
+    """Run skill-creator-linter on the given SKILL.md text. Returns JSON.
 
     Gates parameter is a comma-separated list (e.g. "G1,G2"). Default
     runs both G1 (structural lint) and G2 (scheduler dry-run).
@@ -726,7 +726,7 @@ async def emit_text_tool(text: str) -> str:
 @tool(
     name="meta_skill_lint_run",
     description=(
-        "Run meta-skill-linter G1+G2 on a SKILL.md candidate. "
+        "Run skill-creator-linter G1+G2 on a SKILL.md candidate. "
         "Returns JSON with G1/G2 pass status + diagnostics."
     ),
     params={

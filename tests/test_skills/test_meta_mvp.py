@@ -11,6 +11,7 @@ import pytest
 
 from opensquilla.engine.steps.meta_resolution import meta_resolution
 from opensquilla.engine.types import (
+    AgentConfig,
     AgentEvent,
     DoneEvent,
     TextDeltaEvent,
@@ -19,11 +20,12 @@ from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.orchestrator import (
     MetaOrchestrator,
     format_step_prompt,
+    make_llm_chat_from_provider,
     render_with_args,
     resolve_route,
 )
 from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
-from opensquilla.skills.meta.types import MetaMatch, RouteCase
+from opensquilla.skills.meta.types import MetaMatch, MetaResult, RouteCase
 from opensquilla.skills.types import SkillLayer, SkillSpec
 
 # ---------------------------------------------------------------------------
@@ -144,6 +146,16 @@ def test_render_with_args_unknown_variable_raises() -> None:
         )
 
 
+def test_when_expression_supports_lower_filter() -> None:
+    from opensquilla.skills.meta.templating import evaluate_when
+
+    assert evaluate_when(
+        "'current repo' in (inputs.user_message | lower)",
+        inputs={"user_message": "Please use the CURRENT REPO"},
+        outputs={},
+    )
+
+
 def test_format_step_prompt_includes_all_args() -> None:
     out = format_step_prompt("summarize", {"text": "hello", "max_words": 100})
     assert "summarize" in out
@@ -211,6 +223,51 @@ async def test_meta_resolution_highest_priority_wins() -> None:
     )
     out = await meta_resolution(ctx)  # type: ignore[arg-type]
     assert out.metadata["meta_match"].plan.name == "meta-hi"
+
+
+@pytest.mark.asyncio
+async def test_meta_resolution_promotes_meta_skill_creator_to_highest_text_tier() -> None:
+    spec = _make_meta_spec(
+        name="meta-skill-creator",
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["create a meta-skill"],
+        priority=90,
+    )
+    loader = _FakeLoader([spec])
+    ctx = SimpleNamespace(
+        message="please create a meta-skill for analyst briefs",
+        semantic_message="please create a meta-skill for analyst briefs",
+        model="router-default-model",
+        system_prompt=("base system prompt", "dynamic system prompt"),
+        metadata={"skill_loader": loader},
+        config=SimpleNamespace(
+            squilla_router=SimpleNamespace(
+                tiers={
+                    "t0": {"model": "cheap-model"},
+                    "t1": {"model": "balanced-model"},
+                    "t2": {"model": "strong-model"},
+                    "t3": {"model": "frontier-model"},
+                    "image": {"model": "vision-model", "image_only": True},
+                },
+            ),
+        ),
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert out.metadata["meta_match"].plan.name == "meta-skill-creator"
+    assert out.metadata["meta_match"].inputs["system_prompt"] == (
+        "base system prompt\n\n"
+        "dynamic system prompt"
+    )
+    assert out.model == "frontier-model"
+    assert out.metadata["meta_required_tier"] == "t3"
+    assert out.metadata["meta_required_model"] == "frontier-model"
+    assert out.metadata["meta_required_source"] == "meta-skill-creator"
+    assert out.metadata["routed_tier"] == "t3"
+    assert out.metadata["routed_model"] == "frontier-model"
+    assert out.metadata["routing_source"] == "meta_skill_required_tier"
+    assert out.metadata["routing_confidence"] == 1.0
 
 
 @pytest.mark.asyncio
@@ -307,6 +364,69 @@ async def test_orchestrator_runs_steps_in_topological_order() -> None:
     assert "A-skill" in call_log[0][0]
     assert "B-skill" in call_log[1][0]
     assert "C-skill" in call_log[2][0]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_skips_step_when_condition_is_false() -> None:
+    from opensquilla.engine.types import ToolResultEvent
+
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "a", "skill": "skill_a"},
+                {
+                    "id": "b",
+                    "skill": "skill_b",
+                    "depends_on": ["a"],
+                    "when": "outputs.a == 'RUN_B'",
+                },
+                {
+                    "id": "c",
+                    "skill": "skill_c",
+                    "depends_on": ["b"],
+                    "with": {"upstream": "{{ outputs.b }}"},
+                },
+            ],
+        },
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader(
+        [
+            _make_skill_spec("skill_a", content="A-skill"),
+            _make_skill_spec("skill_b", content="B-skill"),
+            _make_skill_spec("skill_c", content="C-skill"),
+        ],
+    )
+
+    call_log: list[str] = []
+
+    async def stub_runner(system_prompt: str, user_message: str) -> AsyncIterator[AgentEvent]:
+        call_log.append(system_prompt)
+        if "A-skill" in system_prompt:
+            yield TextDeltaEvent(text="SKIP_B")
+        elif "B-skill" in system_prompt:
+            yield TextDeltaEvent(text="must-not-run")
+        elif "C-skill" in system_prompt:
+            yield TextDeltaEvent(text=f"C saw {user_message!r}")
+        yield DoneEvent(text="")
+
+    orch = MetaOrchestrator(agent_runner=stub_runner, skill_loader=loader)
+    skipped_results: list[ToolResultEvent] = []
+    final: MetaResult | None = None
+    async for ev in orch.iter_events(MetaMatch(plan=plan, inputs={"user_message": "x"})):
+        if isinstance(ev, ToolResultEvent) and ev.tool_name == "meta-step:b":
+            skipped_results.append(ev)
+        if isinstance(ev, MetaResult):
+            final = ev
+
+    assert final is not None
+    assert final.ok, final.error
+    assert final.step_outputs["b"] == ""
+    assert "B-skill" not in "\n".join(call_log)
+    assert skipped_results
+    assert skipped_results[-1].arguments is not None
+    assert skipped_results[-1].arguments["skipped"] is True
 
 
 @pytest.mark.asyncio
@@ -424,6 +544,37 @@ def test_parser_rejects_route_not_a_list() -> None:
         },
     )
     with pytest.raises(MetaPlanError, match="route must be a list"):
+        parse_meta_plan(spec)
+
+
+def test_parser_accepts_step_when() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "a", "skill": "x"},
+                {
+                    "id": "b",
+                    "skill": "y",
+                    "depends_on": ["a"],
+                    "when": "outputs.a == 'RUN'",
+                },
+            ],
+        },
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    assert plan.steps[1].when == "outputs.a == 'RUN'"
+
+
+def test_parser_rejects_malformed_step_when() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "a", "skill": "x", "when": []},
+            ],
+        },
+    )
+    with pytest.raises(MetaPlanError, match="when must be"):
         parse_meta_plan(spec)
 
 
@@ -589,6 +740,24 @@ def test_parser_llm_classify_accepts_with_choices() -> None:
     assert plan.steps[0].output_choices == ("A", "B")
     # skill defaults to step id when not specified for non-agent kinds
     assert plan.steps[0].skill == "classify"
+
+
+def test_parser_llm_chat_accepts_prompt_only_step() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {
+                    "id": "synthesize",
+                    "kind": "llm_chat",
+                    "with": {"task": "Summarize {{ inputs.user_message }}"},
+                },
+            ],
+        },
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    assert plan.steps[0].kind == "llm_chat"
+    assert plan.steps[0].skill == "synthesize"
 
 
 def test_parser_llm_classify_rejects_duplicate_choices() -> None:
@@ -985,6 +1154,70 @@ async def test_orchestrator_llm_classify_uses_llm_chat_when_wired() -> None:
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_llm_chat_uses_single_llm_call_when_wired() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {
+                    "id": "synthesize",
+                    "kind": "llm_chat",
+                    "with": {
+                        "system": "Write a compact report.",
+                        "task": "Input: {{ inputs.user_message }}",
+                    },
+                },
+            ],
+        },
+        final_text_mode="step:synthesize",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader([])
+
+    chat_calls: list[tuple[str, str]] = []
+
+    async def fake_chat(system_prompt: str, user_message: str) -> str:
+        chat_calls.append((system_prompt, user_message))
+        return "compact report"
+
+    async def explode_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("agent runner must not be called for llm_chat")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=explode_runner,
+        skill_loader=loader,
+        llm_chat=fake_chat,
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "x"}))
+
+    assert result.ok, result.error
+    assert result.final_text == "compact report"
+    assert chat_calls == [("Write a compact report.", "Input: x")]
+
+
+@pytest.mark.asyncio
+async def test_make_llm_chat_from_provider_uses_deliverable_sized_token_budget() -> None:
+    from opensquilla.provider.types import TextDeltaEvent as ProviderTextDelta
+
+    captured: dict[str, int | None] = {}
+
+    class FakeProvider:
+        async def chat(self, _messages, *, tools, config):
+            assert tools is None
+            captured["max_tokens"] = config.max_tokens
+            yield ProviderTextDelta(text="ok")
+
+    llm_chat = make_llm_chat_from_provider(
+        provider=FakeProvider(),
+        base_config=AgentConfig(model_id="fake"),
+    )
+
+    assert await llm_chat("system", "user") == "ok"
+    assert captured["max_tokens"] == 4096
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_final_text_auto_prepends_llm_summary_to_raw() -> None:
     """``final_text_mode='auto'`` (default) renders ``final_text`` as
     ``<LLM Markdown summary>\n\n---\n\n**Output details:**\n\n<raw last
@@ -1103,6 +1336,53 @@ async def test_orchestrator_final_text_step_picks_named_output() -> None:
     # first runs first → output-from-call-1; second runs second → call-2;
     # final_text should pick `first`, not the last step.
     assert result.final_text == "output-from-call-1"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_final_text_step_falls_back_when_named_output_empty() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {
+                    "id": "final_report",
+                    "kind": "llm_chat",
+                    "with": {"task": "write final"},
+                },
+                {
+                    "id": "handoff",
+                    "kind": "llm_chat",
+                    "depends_on": ["final_report"],
+                    "with": {"task": "write fallback"},
+                },
+            ],
+        },
+        final_text_mode="step:final_report",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader([])
+
+    calls = {"n": 0}
+
+    async def fake_chat(_s: str, _u: str) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ""
+        return "fallback handoff"
+
+    async def explode_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("agent runner must not be called for llm_chat")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=explode_runner,
+        skill_loader=loader,
+        llm_chat=fake_chat,
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+
+    assert result.ok, result.error
+    assert result.final_text == "fallback handoff"
 
 
 @pytest.mark.asyncio
@@ -2024,7 +2304,12 @@ def test_bundled_migration_assistant_has_routes() -> None:
     skill = specs["meta-migration-assistant"]
     plan = parse_meta_plan(skill)
     assert plan is not None
-    assert [s.id for s in plan.steps] == ["classify", "fetch_guide", "write_plan"]
+    assert [s.id for s in plan.steps] == [
+        "classify",
+        "fetch_guide",
+        "repo_context",
+        "write_plan",
+    ]
     classify = plan.steps[0]
     assert classify.kind == "llm_classify"
     assert "OPENAI_V0_TO_V1" in classify.output_choices
@@ -2033,3 +2318,6 @@ def test_bundled_migration_assistant_has_routes() -> None:
     assert routes_to == {"github", "multi-search-engine"}
     # Default fallthrough must be deep-research (for OTHER verdict)
     assert fetch.skill == "deep-research"
+    repo_context = plan.steps[2]
+    assert repo_context.skill == "git-diff"
+    assert "current repo" in repo_context.when

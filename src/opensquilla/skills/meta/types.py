@@ -28,6 +28,9 @@ class RouteCase:
 #:                       must reply with exactly one of ``output_choices``.
 #:                       Cheap & deterministic. Use for routing classifiers,
 #:                       label extraction, etc.
+#: * ``llm_chat``      — single unconstrained LLM call, no tool loop. Use for
+#:                       bounded synthesis steps that should not spawn a full
+#:                       sub-Agent or call tools.
 #: * ``tool_call``     — direct tool handler invocation, no LLM. The named
 #:                       ``tool`` is invoked with ``tool_args`` (Jinja-rendered).
 #:                       Use for deterministic side-effects (memory_save,
@@ -49,6 +52,10 @@ class MetaStep:
     skill: str
     with_args: dict[str, Any] = field(default_factory=dict)
     depends_on: tuple[str, ...] = ()
+    # Optional Jinja boolean expression evaluated against ``inputs`` and
+    # ``outputs`` after dependencies complete. False skips this step while
+    # still satisfying downstream ``depends_on`` links with an empty output.
+    when: str = ""
     route: tuple[RouteCase, ...] = ()
     # New in B: execution-mode dispatch.
     kind: StepKind = "agent"

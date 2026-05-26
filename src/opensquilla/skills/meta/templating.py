@@ -60,6 +60,7 @@ def _build_jinja_env() -> jinja2.Environment:
         "default": jinja2.filters.do_default,
         "length": len,
         "join": jinja2.filters.do_join,
+        "lower": lambda value: str(value).lower(),
     }
     return env
 
@@ -139,6 +140,27 @@ def resolve_route(
         if value:
             return case.to
     return None
+
+
+def evaluate_when(
+    expression: str,
+    *,
+    inputs: dict[str, Any],
+    outputs: dict[str, str],
+) -> bool:
+    """Evaluate a step-level ``when`` expression with route-like semantics."""
+
+    if not expression:
+        return True
+    context = {"inputs": inputs, "outputs": outputs}
+    try:
+        expr = _JINJA_ENV.compile_expression(expression)
+    except jinja2.TemplateSyntaxError as exc:
+        raise ValueError(f"when expression syntax error: {exc}") from exc
+    try:
+        return bool(expr(**context))
+    except jinja2.UndefinedError as exc:
+        raise ValueError(f"when references undefined variable: {exc}") from exc
 
 
 def format_step_prompt(skill_name: str, args: dict[str, Any]) -> str:
@@ -238,6 +260,7 @@ __all__ = [
     "_expand_skill_placeholders",
     "_format_classify_prompt",
     "format_step_prompt",
+    "evaluate_when",
     "render_with_args",
     "resolve_route",
 ]

@@ -13,6 +13,7 @@ from opensquilla.onboarding.config_store import (
     persist_config,
     resolve_config_path,
 )
+from opensquilla.sandbox.status import status_payload as _status_payload
 
 sandbox_app = typer.Typer(help="Show or change the default sandbox posture.")
 
@@ -29,31 +30,6 @@ def _resolve_path(config_path: Path | None) -> Path:
     target, source = resolve_config_path(config_path)
     typer.echo(f"Config: {target} ({_SOURCE_LABEL[source]})")
     return target
-
-
-def _posture(config: Any) -> str:
-    sandbox_enabled = bool(config.sandbox.sandbox)
-    grading_enabled = bool(config.sandbox.security_grading)
-    default_mode = str(config.permissions.default_mode)
-    if sandbox_enabled and grading_enabled and default_mode == "off":
-        return "on"
-    if not sandbox_enabled and not grading_enabled and default_mode in {"bypass", "full"}:
-        return default_mode
-    return "custom"
-
-
-def _status_payload(config: Any, *, restart_required: bool = False) -> dict[str, Any]:
-    return {
-        "posture": _posture(config),
-        "sandbox": {
-            "sandbox": bool(config.sandbox.sandbox),
-            "security_grading": bool(config.sandbox.security_grading),
-        },
-        "permissions": {
-            "default_mode": str(config.permissions.default_mode),
-        },
-        "restart_required": restart_required,
-    }
 
 
 def _apply_posture(config: Any, posture: Literal["on", "bypass", "full"]) -> Any:

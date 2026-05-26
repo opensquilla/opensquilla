@@ -1,8 +1,8 @@
 from scripts.compare_meta_skill_openclaw import (
     COMPARISON_CASES,
-    score_response,
     render_markdown,
     render_prompts_markdown,
+    score_response,
 )
 
 
@@ -49,7 +49,10 @@ def test_score_response_rewards_structured_evidence_and_artifacts() -> None:
     assert strong_score.total > weak_score.total
     assert strong_score.dimensions["structure"] > weak_score.dimensions["structure"]
     assert strong_score.dimensions["evidence"] > weak_score.dimensions["evidence"]
-    assert strong_score.dimensions["artifact_readiness"] > weak_score.dimensions["artifact_readiness"]
+    assert (
+        strong_score.dimensions["artifact_readiness"]
+        > weak_score.dimensions["artifact_readiness"]
+    )
 
 
 def test_reports_persist_conclusion_and_prompts() -> None:

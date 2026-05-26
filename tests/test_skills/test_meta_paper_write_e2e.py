@@ -71,7 +71,9 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     stub_script.write_text(
         "import json\n"
         "results = [\n"
-        "  {'title': f'Reference {i}', 'url': f'https://example.com/{i}', 'snippet': f'snippet {i}'}\n"
+        "  {'title': f'Reference {i}', "
+        "'url': f'https://example.com/{i}', "
+        "'snippet': f'snippet {i}'}\n"
         "  for i in range(1, 26)\n"
         "]\n"
         "print(json.dumps({\n"
@@ -220,7 +222,11 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         if "sanitize LaTeX" in system_prompt:
             return "PASS: no markdown fences, process text, or debug logs detected"
         if "compile handoff" in system_prompt:
-            return "COMPILE_READY: yes\nNEXT_STEP: run latex-compile explicitly when the user asks for a PDF\nBLOCKERS:\n  - none"
+            return (
+                "COMPILE_READY: yes\n"
+                "NEXT_STEP: run latex-compile explicitly when the user asks for a PDF\n"
+                "BLOCKERS:\n  - none"
+            )
         raise AssertionError(f"unexpected llm_chat prompt: {system_prompt}")
 
     # Each skill_exec step writes relative paths like ``paper/results.csv``;

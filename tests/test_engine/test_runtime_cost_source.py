@@ -9,8 +9,8 @@ import pytest
 
 from opensquilla.engine.runtime import (
     TurnRunner,
-    _UsageSnapshot,
     _done_event_with_usage_delta,
+    _UsageSnapshot,
 )
 from opensquilla.engine.types import DoneEvent
 from opensquilla.provider import DoneEvent as ProviderDone

@@ -14,3 +14,12 @@
 ## Live Checks
 
 If this pull request changes provider, browser UI, gateway, or channel behavior, note whether a maintainer should run the `Live Release E2E` workflow.
+
+## Documentation Changes
+
+If this pull request changes documentation:
+
+- [ ] Links point to existing repository files or stable external pages.
+- [ ] Code fences and Markdown tables render correctly on GitHub.
+- [ ] Examples avoid real secrets, local private paths, and private transcripts.
+- [ ] User-facing feature pages explain when to use the feature, how to start, and where to troubleshoot next.

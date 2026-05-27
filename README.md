@@ -35,6 +35,10 @@ schema.
 
 OpenSquilla 0.2.1 is the current release.
 
+For task-oriented product documentation, start with the
+[OpenSquilla Product Guide](README.product.md) or the
+[documentation index](docs/README.md).
+
 ---
 
 ## Installation

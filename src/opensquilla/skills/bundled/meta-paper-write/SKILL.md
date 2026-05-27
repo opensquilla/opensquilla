@@ -440,9 +440,530 @@ composition:
 
           Bibliography (authoritative — cite keys MUST come from here):
           {{ outputs.refbib | truncate(8000) }}
+    # ─── Plan→Write→Unify (FULL_MANUSCRIPT mode only) ──────────────────
+    # COMPACT_SKELETON / REPAIR_EXISTING still use the single-shot
+    # `final_manuscript_package` step further below; this branch is
+    # the section-by-section flow for 10+/20+ page papers that hit
+    # the LLM single-call token cap.
+    - id: writing_plan
+      kind: llm_chat
+      depends_on: [paper_preferences, outline, citation_plan, experiment_design, figure_placeholders, table_placeholders, analysis_outline, refbib]
+      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      with:
+        system: "You build a writing blueprint for a long-form academic manuscript. The blueprint is consumed verbatim by per-section authors; precision matters more than prose."
+        task: |
+          Synthesize the upstream planning outputs into a single
+          authoritative WRITING_PLAN that every section author must
+          obey. Lock terminology, notation, claim mapping, and
+          per-section length budget BEFORE any prose is written.
+
+          Paper facts:
+          TOPIC: {{ inputs.collected.paper_collect.topic | xml_escape }}
+          MODE: {{ inputs.collected.paper_collect.paper_mode }}
+          LANGUAGE: {{ inputs.collected.paper_collect.language }}
+          TARGET_PAGES: {{ inputs.collected.paper_collect.target_length_pages }}
+          AUDIENCE: {{ inputs.collected.paper_collect.audience }}
+
+          Preferences:
+          {{ outputs.paper_preferences | truncate(2000) }}
+
+          Outline:
+          {{ outputs.outline | truncate(6000) }}
+
+          Experiment design:
+          {{ outputs.experiment_design | truncate(6000) }}
+
+          Citation plan:
+          {{ outputs.citation_plan | truncate(6000) }}
+
+          Bibliography (cite keys MUST come from here):
+          {{ outputs.refbib | truncate(4000) }}
+
+          Figure placeholders (IDs only):
+          {{ outputs.figure_placeholders | truncate(1500) }}
+
+          Table placeholders (IDs only):
+          {{ outputs.table_placeholders | truncate(1500) }}
+
+          Length budget rules:
+          - target_pages 10 → roughly 4500 words total
+          - target_pages 15 → roughly 7000 words total
+          - target_pages 20 → roughly 9500 words total
+          - target_pages 30 → roughly 14000 words total
+          Allocate words across sections roughly: 5% abstract, 18%
+          introduction, 12% related_work, 22% method, 24% experiments,
+          12% discussion, 7% conclusion. Tune ±20% based on contributions.
+
+          Return EXACTLY this structure (no preamble, no markdown headings):
+
+          TITLE:
+          <final paper title, ≤16 words>
+
+          ABSTRACT_DRAFT:
+          <120-220 word draft abstract — section authors may polish but
+          may not change claims/numbers>
+
+          NARRATIVE_ARC:
+          - thesis: <one sentence>
+          - story_beats:
+              1. <intro beat>
+              2. <related-work positioning>
+              3. <method core idea>
+              4. <experimental verification>
+              5. <discussion+conclusion takeaway>
+
+          KEY_CLAIMS:
+          - C1: <one sentence, must be defensible by an experiment>
+          - C2: ...
+          - ...
+          - Cn: ... (5-8 total)
+
+          NOTATION_LOCK:
+          - symbol: $\theta$  meaning: model parameters
+          - symbol: $\mathcal{D}$  meaning: dataset
+          - (list every symbol that will appear in math)
+
+          TERMINOLOGY_LOCK:
+          - "ours" (proposed method)  forbidden_aliases: ["our method", "the proposed", "本文方法", "the method"]
+          - "DPR" (baseline)  forbidden_aliases: ["dpr", "Dpr"]
+          - ... (every named entity that appears more than once)
+
+          PER_SECTION_BLUEPRINT:
+            abstract:
+              target_words: <int>
+              key_claims: [C1, C2, ...]
+              cite_keys: []           # abstract never cites
+              figures: []
+              must_mention: [TITLE, headline_result_number]
+            introduction:
+              target_words: <int>
+              key_claims: [C1, C2]
+              cite_keys: [ref_x, ref_y, ...]   # from citation_plan
+              figures: []
+              structure: [motivation, problem, contributions]
+              contributions_count: <int>
+            related_work:
+              target_words: <int>
+              key_claims: []
+              cite_keys: [ref_x, ...]
+              figures: []
+              structure: [survey by axis]
+            method:
+              target_words: <int>
+              key_claims: [C3, C4]
+              cite_keys: [...]
+              figures: [fig1, ...]
+              tables: []
+              structure: [overview → component A → component B → algorithm box]
+              notation_introduced: [θ, f_φ, ...]
+            experiments:
+              target_words: <int>
+              key_claims: [C5, C6]
+              cite_keys: [...]
+              figures: [fig2, ...]
+              tables: [tab1, ...]
+              structure: [setup → main results → ablations]
+              must_include_baselines: [...]
+            discussion:
+              target_words: <int>
+              key_claims: [C7]
+              cite_keys: [...]
+              figures: []
+              structure: [insights → limitations → threats_to_validity]
+            conclusion:
+              target_words: <int>
+              key_claims: [C1-Cn 重申]
+              cite_keys: []
+              figures: []
+              must_call_back_to_abstract: yes
+
+          CROSS_SECTION_DEPENDENCIES:
+          - method.NOTATION_LOCK symbols MUST be reused verbatim in experiments + discussion
+          - intro.contributions_count MUST equal method.structure step count
+          - abstract.headline_result_number == experiments.main_result_number
+
+          WRITING_VOICE:
+          - tense: <e.g. "we present / we observe", active>
+          - perspective: <e.g. third-person except contributions list>
+          - formality: academic; no contractions, no marketing language
+          - language: {{ inputs.collected.paper_collect.language }}
+    - id: section_abstract
+      kind: agent
+      skill: paper-section-author
+      depends_on: [writing_plan]
+      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      with:
+        task: |
+          You are writing the ABSTRACT section. Follow the writing plan
+          and produce a single dense paragraph 4-6 sentences covering
+          problem → approach → key result → significance.
+
+          section: abstract
+          writing_plan:
+          {{ outputs.writing_plan | truncate(8000) }}
+
+          outline:
+          {{ outputs.outline | truncate(3000) }}
+
+          citation_plan:
+          {{ outputs.citation_plan | truncate(3000) }}
+
+          cite_keys_hint:
+          {{ outputs.refbib | truncate(2000) }}
+
+          Output rules:
+          - Use \begin{abstract} ... \end{abstract}.
+          - Do not include \cite{...}.
+          - Match TERMINOLOGY_LOCK and NOTATION_LOCK exactly.
+          - target_words from writing_plan.PER_SECTION_BLUEPRINT.abstract.target_words
+          - Only output the LaTeX fragment. No commentary, no fences.
+    - id: section_introduction
+      kind: agent
+      skill: paper-section-author
+      depends_on: [writing_plan, section_abstract]
+      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      with:
+        task: |
+          You are writing the INTRODUCTION section.
+
+          section: introduction
+          writing_plan:
+          {{ outputs.writing_plan | truncate(8000) }}
+
+          previous_section_tail (last paragraphs of the abstract):
+          {{ outputs.section_abstract | truncate(2000) }}
+
+          outline:
+          {{ outputs.outline | truncate(3000) }}
+
+          citation_plan (your assigned cite keys are listed under introduction:):
+          {{ outputs.citation_plan | truncate(3000) }}
+
+          cite_keys_hint (only these keys exist in the bibliography):
+          {{ outputs.refbib | truncate(2000) }}
+
+          Output rules:
+          - Start with \section{Introduction}.
+          - Structure: motivation → problem → prior-work clusters → gap →
+            our contributions (numbered \begin{enumerate}) → paper roadmap.
+          - Use only cite keys assigned to introduction in citation_plan,
+            and only keys present in cite_keys_hint.
+          - Match TERMINOLOGY_LOCK and NOTATION_LOCK exactly.
+          - target_words from writing_plan.PER_SECTION_BLUEPRINT.introduction.target_words.
+          - Output ONLY the LaTeX fragment for this section. No fences.
+    - id: section_related_work
+      kind: llm_chat
+      depends_on: [writing_plan, section_introduction]
+      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      with:
+        system: "You author the Related Work section of an academic paper as a pure LaTeX fragment. NEVER invent cite keys."
+        task: |
+          Write the RELATED WORK section.
+
+          writing_plan:
+          {{ outputs.writing_plan | truncate(8000) }}
+
+          previous_section_tail (last paragraphs of the introduction):
+          {{ outputs.section_introduction | truncate(2000) }}
+
+          outline:
+          {{ outputs.outline | truncate(3000) }}
+
+          citation_plan (your assigned cite keys are listed under related_work:):
+          {{ outputs.citation_plan | truncate(3000) }}
+
+          cite_keys_hint (only these keys exist in the bibliography):
+          {{ outputs.refbib | truncate(2500) }}
+
+          Output rules:
+          - Start with \section{Related Work}.
+          - Survey by 2-4 thematic axes (e.g. efficiency / fidelity /
+            agentic / dataset construction). Use \subsection for each.
+          - Cite from your assigned keys; do not introduce new claims.
+          - Do NOT include figures/tables here.
+          - Match TERMINOLOGY_LOCK exactly.
+          - target_words from writing_plan.PER_SECTION_BLUEPRINT.related_work.target_words.
+          - Output ONLY the LaTeX fragment. No fences, no preamble.
+    - id: section_method
+      kind: agent
+      skill: paper-section-author
+      depends_on: [writing_plan, section_related_work, figure_placeholders]
+      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      with:
+        task: |
+          You are writing the METHOD section.
+
+          section: method
+          writing_plan:
+          {{ outputs.writing_plan | truncate(8000) }}
+
+          previous_section_tail (last paragraphs of related work):
+          {{ outputs.section_related_work | truncate(2000) }}
+
+          outline:
+          {{ outputs.outline | truncate(3000) }}
+
+          citation_plan:
+          {{ outputs.citation_plan | truncate(3000) }}
+
+          cite_keys_hint:
+          {{ outputs.refbib | truncate(2500) }}
+
+          figure_placeholders (you may reference these via \ref{fig:<id>} when relevant):
+          {{ outputs.figure_placeholders | truncate(2000) }}
+
+          Output rules:
+          - Start with \section{Method}.
+          - Use \subsection{Setup}, \subsection{Algorithm} (or {Approach}),
+            \subsection{Instrumentation}, and \subsection{Baselines}.
+          - Introduce notation per writing_plan.NOTATION_LOCK
+            (every symbol used later in experiments/discussion MUST
+            be defined here).
+          - You may inline ONE figure environment from figure_placeholders
+            that supports method exposition; reference it via \ref{fig:<id>}.
+          - Match TERMINOLOGY_LOCK / NOTATION_LOCK exactly.
+          - target_words from writing_plan.PER_SECTION_BLUEPRINT.method.target_words.
+          - Output ONLY the LaTeX fragment. No fences.
+    - id: section_experiments
+      kind: agent
+      skill: paper-section-author
+      depends_on: [writing_plan, section_method, figure_placeholders, table_placeholders]
+      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      with:
+        task: |
+          You are writing the EXPERIMENTS / RESULTS section. Use the
+          paper-section-author "results" contract.
+
+          section: results
+          writing_plan:
+          {{ outputs.writing_plan | truncate(8000) }}
+
+          previous_section_tail (last paragraphs of method):
+          {{ outputs.section_method | truncate(2500) }}
+
+          outline:
+          {{ outputs.outline | truncate(3000) }}
+
+          citation_plan:
+          {{ outputs.citation_plan | truncate(3000) }}
+
+          cite_keys_hint:
+          {{ outputs.refbib | truncate(2500) }}
+
+          figure_placeholders (inline ALL remaining figures here):
+          {{ outputs.figure_placeholders | truncate(4000) }}
+
+          table_placeholders (inline ALL tables here):
+          {{ outputs.table_placeholders | truncate(4000) }}
+
+          Output rules:
+          - Start with \section{Experiments}.
+          - Inline EVERY figure and table from figure_placeholders /
+            table_placeholders that has not already been inlined in method.
+          - Reference via \ref{fig:<id>} and \ref{tab:<id>}.
+          - Structure: \subsection{Setup} → \subsection{Main Results} →
+            \subsection{Ablations} → \subsection{Sensitivity}.
+          - Headline result number MUST equal writing_plan.ABSTRACT_DRAFT's
+            headline number.
+          - Use ONLY notation/terminology locked in writing_plan.
+          - target_words from writing_plan.PER_SECTION_BLUEPRINT.experiments.target_words.
+          - Output ONLY the LaTeX fragment. No fences.
+    - id: section_discussion
+      kind: agent
+      skill: paper-section-author
+      depends_on: [writing_plan, section_experiments, analysis_outline]
+      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      with:
+        task: |
+          You are writing the DISCUSSION section.
+
+          section: discussion
+          writing_plan:
+          {{ outputs.writing_plan | truncate(8000) }}
+
+          previous_section_tail (last paragraphs of experiments):
+          {{ outputs.section_experiments | truncate(2500) }}
+
+          outline:
+          {{ outputs.outline | truncate(3000) }}
+
+          citation_plan:
+          {{ outputs.citation_plan | truncate(3000) }}
+
+          cite_keys_hint:
+          {{ outputs.refbib | truncate(2500) }}
+
+          analysis_outline (use this as the structural blueprint):
+          {{ outputs.analysis_outline | truncate(4000) }}
+
+          Output rules:
+          - Start with \section{Discussion}.
+          - Inline the analysis_outline subsections verbatim where they
+            fit, but expand each with 1-2 paragraphs of substantive
+            commentary referencing concrete experiment results.
+          - End the section with explicit \subsection{Limitations} and
+            \subsection{Threats to Validity}.
+          - Match TERMINOLOGY_LOCK / NOTATION_LOCK exactly.
+          - target_words from writing_plan.PER_SECTION_BLUEPRINT.discussion.target_words.
+          - Output ONLY the LaTeX fragment.
+    - id: section_conclusion
+      kind: llm_chat
+      depends_on: [writing_plan, section_discussion, section_abstract]
+      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      with:
+        system: "You author the Conclusion section of an academic paper as a pure LaTeX fragment."
+        task: |
+          Write the CONCLUSION section. Must close the loop on the abstract.
+
+          writing_plan:
+          {{ outputs.writing_plan | truncate(8000) }}
+
+          abstract (the conclusion must echo its claims):
+          {{ outputs.section_abstract | truncate(1500) }}
+
+          previous_section_tail (discussion ending):
+          {{ outputs.section_discussion | truncate(2000) }}
+
+          Output rules:
+          - Start with \section{Conclusion}.
+          - 2-3 paragraphs covering: 1) restated thesis + headline result,
+            2) key contributions reiterated, 3) future-work pointer.
+          - No new claims, no new figures, no \cite{}.
+          - Match TERMINOLOGY_LOCK exactly.
+          - target_words from writing_plan.PER_SECTION_BLUEPRINT.conclusion.target_words.
+          - Output ONLY the LaTeX fragment.
+    - id: assemble_manuscript_tex
+      kind: tool_call
+      tool: exec_command
+      tool_allowlist: [exec_command]
+      depends_on: [writing_plan, section_abstract, section_introduction, section_related_work, section_method, section_experiments, section_discussion, section_conclusion, refbib]
+      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      tool_args:
+        # Concatenate all section outputs into a full LaTeX document
+        # wrapped with \documentclass + preamble + \begin{document} +
+        # \end{document}. Emit the canonical MANUSCRIPT_TEX: /
+        # REFERENCES_BIB: envelope so downstream citation_map /
+        # compile_pdf parse the same shape as the old single-shot path.
+        command: |
+          python3 - <<'PY'
+          import os, re, sys
+          # Helper to strip ```latex fences and surrounding markdown.
+          def clean(text):
+              text = re.sub(r'^```(?:latex|tex)?\s*\n', '', text or '', flags=re.MULTILINE)
+              text = re.sub(r'\n```\s*$', '', text)
+              return text.strip()
+          sections = {
+              'abstract':     os.environ.get('SEC_ABSTRACT', ''),
+              'introduction': os.environ.get('SEC_INTRO', ''),
+              'related_work': os.environ.get('SEC_RELATED', ''),
+              'method':       os.environ.get('SEC_METHOD', ''),
+              'experiments':  os.environ.get('SEC_EXPERIMENTS', ''),
+              'discussion':   os.environ.get('SEC_DISCUSSION', ''),
+              'conclusion':   os.environ.get('SEC_CONCLUSION', ''),
+          }
+          for k in list(sections):
+              sections[k] = clean(sections[k])
+          bib = os.environ.get('BIB_TEXT', '').strip()
+          # Build preamble — load xeCJK if any section has CJK
+          any_cjk = any(re.search(r'[一-鿿]', v) for v in sections.values())
+          preamble = [
+              r"\documentclass{article}",
+              r"\usepackage{xeCJK}" if any_cjk else r"% no CJK",
+              r"\usepackage{graphicx}",
+              r"\usepackage{booktabs}",
+              r"\usepackage{amsmath,amssymb}",
+              r"\usepackage{hyperref}",
+              r"\usepackage{geometry}",
+              r"\geometry{margin=2.5cm}",
+              r"\title{From writing_plan TITLE — see paper.tex header}",
+              r"\author{OpenSquilla meta-paper-write}",
+              r"\date{\today}",
+              r"\begin{document}",
+              r"\maketitle",
+          ]
+          body_parts = [
+              sections['abstract'],     # \begin{abstract}...\end{abstract}
+              sections['introduction'], # \section{Introduction}...
+              sections['related_work'],
+              sections['method'],
+              sections['experiments'],
+              sections['discussion'],
+              sections['conclusion'],
+          ]
+          tail = [
+              r"\bibliographystyle{plain}",
+              r"\bibliography{references}",
+              r"\end{document}",
+          ]
+          tex = '\n'.join(preamble) + '\n\n' + '\n\n'.join(p for p in body_parts if p) + '\n\n' + '\n'.join(tail)
+          print('MANUSCRIPT_TEX:')
+          print(tex)
+          print()
+          print('REFERENCES_BIB:')
+          print(bib if bib else '% no verified references')
+          print()
+          print('COMPILE_NOTES:')
+          print('- assembled section-by-section via paper-section-author')
+          print(f'- sections present: {", ".join(k for k, v in sections.items() if v)}')
+          print(f'- total chars: {sum(len(v) for v in sections.values())}')
+          PY
+        workdir: "{{ inputs.workspace_dir }}"
+        timeout: 30
+        env:
+          SEC_ABSTRACT:    "{{ outputs.section_abstract }}"
+          SEC_INTRO:       "{{ outputs.section_introduction }}"
+          SEC_RELATED:     "{{ outputs.section_related_work }}"
+          SEC_METHOD:      "{{ outputs.section_method }}"
+          SEC_EXPERIMENTS: "{{ outputs.section_experiments }}"
+          SEC_DISCUSSION:  "{{ outputs.section_discussion }}"
+          SEC_CONCLUSION:  "{{ outputs.section_conclusion }}"
+          BIB_TEXT:        "{{ outputs.refbib }}"
+    - id: consistency_pass
+      kind: llm_chat
+      depends_on: [writing_plan, assemble_manuscript_tex]
+      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      with:
+        system: "You are the consistency editor. You only fix term/notation/number drift across an academic manuscript. You do NOT add new content, new claims, new citations, or new figures. Pure LaTeX in, pure LaTeX out."
+        task: |
+          Scan the assembled manuscript for drift versus the writing plan
+          and produce a corrected copy. Do not invent content; only
+          unify what already exists.
+
+          Drift to fix:
+          1. Terminology: any synonym variant of a TERMINOLOGY_LOCK term
+             gets replaced with the locked spelling.
+          2. Notation: any math symbol that disagrees with NOTATION_LOCK
+             gets normalized.
+          3. Numbers: if abstract / experiments / discussion mention the
+             same headline metric with different values, pick the
+             experiments-section value (authoritative) and propagate.
+          4. Cite keys: ensure every \cite{...} key exists in the
+             REFERENCES_BIB block. Replace stray keys with the closest
+             match by ref# proximity; if none plausible, replace with
+             [citation needed].
+          5. Section ordering: keep abstract → intro → related → method →
+             experiments → discussion → conclusion.
+
+          Writing plan (authoritative):
+          {{ outputs.writing_plan | truncate(8000) }}
+
+          Assembled draft (input):
+          {{ outputs.assemble_manuscript_tex | truncate(15000) }}
+
+          Output EXACTLY:
+          MANUSCRIPT_TEX:
+          <corrected LaTeX, full \documentclass … \end{document} block>
+
+          REFERENCES_BIB:
+          <verbatim copy of the REFERENCES_BIB block from the input>
+
+          COMPILE_NOTES:
+          - consistency_pass_changes: <one line per fix applied, OR "none">
+
     - id: final_manuscript_package
       kind: llm_chat
       depends_on: [paper_collect, outline, citation_plan, refbib, figure_placeholders, table_placeholders, analysis_outline]
+      when: "inputs.collected.paper_collect.paper_mode in ('COMPACT_SKELETON', 'REPAIR_EXISTING')"
       with:
         system: "You write clean LaTeX manuscripts. Output only the requested manuscript package. NEVER invent cite keys — every \\cite{...} you emit MUST exist verbatim in REFERENCES_BIB below."
         task: |
@@ -593,7 +1114,7 @@ composition:
           audit table.
 
           Manuscript:
-          {{ outputs.final_manuscript_package | truncate(12000) }}
+          {% if outputs.consistency_pass %}{{ outputs.consistency_pass | truncate(12000) }}{% elif outputs.assemble_manuscript_tex %}{{ outputs.assemble_manuscript_tex | truncate(12000) }}{% else %}{{ outputs.final_manuscript_package | truncate(12000) }}{% endif %}
 
           References bib (authoritative source for title/url/eprint/doi):
           {{ outputs.refbib | truncate(8000) }}
@@ -647,7 +1168,7 @@ composition:
             also empty)
 
           Manuscript:
-          {{ outputs.final_manuscript_package | truncate(12000) }}
+          {% if outputs.consistency_pass %}{{ outputs.consistency_pass | truncate(12000) }}{% elif outputs.assemble_manuscript_tex %}{{ outputs.assemble_manuscript_tex | truncate(12000) }}{% else %}{{ outputs.final_manuscript_package | truncate(12000) }}{% endif %}
 
           Citation plan:
           {{ outputs.citation_plan | truncate(4000) }}
@@ -681,7 +1202,7 @@ composition:
           {{ outputs.refbib | truncate(8000) }}
 
           Manuscript:
-          {{ outputs.final_manuscript_package | truncate(12000) }}
+          {% if outputs.consistency_pass %}{{ outputs.consistency_pass | truncate(12000) }}{% elif outputs.assemble_manuscript_tex %}{{ outputs.assemble_manuscript_tex | truncate(12000) }}{% else %}{{ outputs.final_manuscript_package | truncate(12000) }}{% endif %}
 
           Citation audit table (read this — do NOT re-derive):
           {{ outputs.citation_map | truncate(4000) }}
@@ -849,7 +1370,7 @@ composition:
         workdir: "{{ inputs.workspace_dir }}"
         timeout: 120
         env:
-          MANUSCRIPT_PKG: "{{ outputs.final_manuscript_package }}"
+          MANUSCRIPT_PKG: "{% if outputs.consistency_pass %}{{ outputs.consistency_pass }}{% elif outputs.assemble_manuscript_tex %}{{ outputs.assemble_manuscript_tex }}{% else %}{{ outputs.final_manuscript_package }}{% endif %}"
     - id: publish_pdf
       kind: tool_call
       tool: publish_artifact

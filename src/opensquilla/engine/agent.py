@@ -11,7 +11,7 @@ import hashlib
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -583,6 +583,7 @@ class Agent:
         turn_call_logger: TurnCallLogger | None = None,
         memory_sync_manager: Any | None = None,
         session_flush_service: Any | None = None,
+        session_checkpoint_recorder: Callable[..., Any] | None = None,
         tool_registry: ToolRegistry | None = None,
         tool_context: ToolContext | None = None,
     ) -> None:
@@ -615,6 +616,7 @@ class Agent:
         self._flush_backoff_until: float = 0.0
         self._flush_backoff_seconds: float = 0.0
         self._session_flush_service = session_flush_service
+        self._session_checkpoint_recorder = session_checkpoint_recorder
         self._last_compaction_refusal_reason: str | None = None
         self._tool_failure_loop_counts: dict[tuple[str, str], int] = {}
 
@@ -3604,6 +3606,13 @@ class Agent:
             )
 
         compaction_id = new_compaction_id()
+        if self._session_key and self._session_checkpoint_recorder is not None:
+            await self._session_checkpoint_recorder(
+                self._session_key,
+                list(messages),
+                turn_id=compaction_id,
+                source="agent_inline_overflow",
+            )
         # --- Pre-compaction flush; inline compaction can continue on degraded flush. ---
         flush_task: asyncio.Task | None = None
         self._consume_completed_flush_task()

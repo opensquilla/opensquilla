@@ -89,6 +89,24 @@ class _LegacyCompactSessionManager(_FakeSessionManager):
         return "[summary]"
 
 
+class _CheckpointingSessionManager(_FakeSessionManager):
+    def __init__(self, transcript: list[_FakeEntry]) -> None:
+        super().__init__(transcript)
+        self.calls: list[str] = []
+
+    async def record_memory_checkpoint(
+        self,
+        session_key: str,
+        transcript: list[_FakeEntry],
+        **kwargs,
+    ) -> None:
+        self.calls.append("checkpoint")
+
+    async def compact(self, session_key: str, budget: int, config=None) -> str:
+        self.calls.append("compact")
+        return await super().compact(session_key, budget, config)
+
+
 class _SummaryReadFailureSessionManager(_FakeSessionManager):
     async def get_summaries(self, session_key: str) -> list[Any]:
         raise RuntimeError(f"summary store unavailable for {session_key}")
@@ -350,6 +368,23 @@ async def test_auto_summarize_invokes_compaction_and_retries_once() -> None:
     assert outcome.tokens_after is not None
     assert outcome.remaining_budget_tokens is not None
     assert outcome.tokens_after <= outcome.budget_tokens
+
+
+@pytest.mark.asyncio
+async def test_auto_summarize_checkpoint_runs_before_compact() -> None:
+    sm = _CheckpointingSessionManager(_history(6, 40))
+
+    outcome = await apply_context_overflow_policy(
+        config=_cfg(ContextOverflowPolicy.AUTO_SUMMARIZE, budget=10),
+        message="m",
+        transcript=sm._transcript,
+        session_key="s-checkpoint",
+        session_manager=sm,
+    )
+
+    assert outcome.summarized is True
+    assert sm.calls[0] == "checkpoint"
+    assert "compact" in sm.calls
 
 
 @pytest.mark.asyncio

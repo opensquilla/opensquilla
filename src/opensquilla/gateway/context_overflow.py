@@ -325,6 +325,33 @@ async def _estimate_session_payload_tokens(
     return total
 
 
+async def _record_checkpoint_before_compaction(
+    session_manager: Any,
+    session_key: str,
+    transcript: list[Any],
+    *,
+    turn_id: str,
+    source: str,
+) -> None:
+    if not transcript:
+        return
+    method = getattr(type(session_manager), "record_memory_checkpoint", None)
+    if method is None:
+        method = getattr(
+            getattr(session_manager, "__dict__", {}),
+            "get",
+            lambda *_: None,
+        )("record_memory_checkpoint")
+    if not callable(method):
+        return
+    await session_manager.record_memory_checkpoint(
+        session_key,
+        list(transcript),
+        turn_id=turn_id,
+        source=source,
+    )
+
+
 # Envelope shape note:
 # This UI-facing refusal shares the common tool-failure fields, but it
 # intentionally carries overflow-specific metadata as extra keys.
@@ -456,6 +483,13 @@ async def apply_context_overflow_policy(
                     compaction_id,
                     COMPACTION_TRIGGERED_EVENT,
                 ),
+            )
+            await _record_checkpoint_before_compaction(
+                session_manager,
+                session_key,
+                list(transcript or []),
+                turn_id=compaction_id,
+                source="gateway_auto_summarize",
             )
             outcome.flush_receipt = await _await_auto_summarize_flush_grace(
                 config=config,

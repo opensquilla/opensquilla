@@ -3795,6 +3795,32 @@ class TurnRunner:
             "session_flush_fallback_reason": fallback_reason,
         }
 
+    async def _record_checkpoint_before_compaction(
+        self,
+        session_key: str,
+        transcript: Sequence[Any],
+        *,
+        turn_id: str,
+        source: str,
+    ) -> None:
+        if self._session_manager is None:
+            return
+        method = getattr(type(self._session_manager), "record_memory_checkpoint", None)
+        if method is None:
+            method = getattr(
+                getattr(self._session_manager, "__dict__", {}),
+                "get",
+                lambda *_: None,
+            )("record_memory_checkpoint")
+        if not callable(method):
+            return
+        await self._session_manager.record_memory_checkpoint(
+            session_key,
+            list(transcript),
+            turn_id=turn_id,
+            source=source,
+        )
+
     def _emit_decision_entry(
         self,
         *,
@@ -4136,6 +4162,12 @@ class TurnRunner:
             context_window_tokens=context_window_tokens,
             **compaction_lifecycle_payload(compaction_id, COMPACTION_TRIGGERED_EVENT),
         )
+        await self._record_checkpoint_before_compaction(
+            session_key,
+            transcript,
+            turn_id=compaction_id,
+            source="t3_upgrade_compaction",
+        )
 
         flush_receipt_status = "not_required"
         if self._pre_compaction_flush_enabled():
@@ -4354,6 +4386,12 @@ class TurnRunner:
             tokens_before=total_tokens,
             context_window_tokens=context_window_tokens,
             **compaction_lifecycle_payload(compaction_id, COMPACTION_TRIGGERED_EVENT),
+        )
+        await self._record_checkpoint_before_compaction(
+            session_key,
+            transcript,
+            turn_id=compaction_id,
+            source="preflight_compaction",
         )
         flush_receipt_status = "not_required"
         if self._pre_compaction_flush_enabled():

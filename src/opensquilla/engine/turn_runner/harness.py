@@ -544,6 +544,7 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
             turn_call_logger=turn_call_logger,
             memory_sync_manager=memory_sync_manager,
             session_flush_service=self._runner._session_flush_service,
+            session_checkpoint_recorder=self._runner._record_checkpoint_before_compaction,
             tool_registry=self._runner._tool_registry,
             tool_context=tool_context,
         )

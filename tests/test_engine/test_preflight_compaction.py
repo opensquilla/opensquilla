@@ -318,6 +318,29 @@ async def test_preflight_above_threshold_triggers_compact() -> None:
 
 
 @pytest.mark.asyncio
+async def test_preflight_checkpoint_runs_before_compact() -> None:
+    context_window = 1000
+    entries = [_make_entry("early durable fact " + ("a" * 4000))]
+    calls: list[str] = []
+    mock_sm = MagicMock()
+    mock_sm.get_transcript = AsyncMock(return_value=entries)
+    mock_sm.compact = AsyncMock(
+        side_effect=lambda *args, **kwargs: calls.append("compact") or "summary"
+    )
+    mock_sm.record_memory_checkpoint = AsyncMock(
+        side_effect=lambda *args, **kwargs: calls.append("checkpoint")
+    )
+
+    runner = TurnRunner(provider_selector=MagicMock(), session_manager=mock_sm)
+
+    with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
+        await runner._maybe_preflight_compact("agent:ops:long-session", context_window)
+
+    assert calls[0] == "checkpoint"
+    assert "compact" in calls
+
+
+@pytest.mark.asyncio
 async def test_preflight_completed_event_reports_compaction_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1026,9 +1049,10 @@ async def test_preflight_exactly_at_threshold_does_not_compact() -> None:
 
 
 @pytest.mark.asyncio
-async def test_preflight_integration_with_real_session_manager(session_mgr) -> None:
+async def test_preflight_integration_with_real_session_manager(session_mgr, tmp_path) -> None:
     """Integration: pre-flight with real SessionManager compacts when over threshold."""
     mgr = session_mgr
+    mgr.workspace_dir = tmp_path
     key = "user:preflight-test"
     await mgr.create(key)
 
@@ -1083,6 +1107,16 @@ async def test_preflight_integration_with_real_session_manager(session_mgr) -> N
     assert compact_calls[0]["compaction_id"]
     assert compact_calls[0]["trigger_reason"] == "preflight"
     assert compact_calls[0]["flush_receipt_status"] == "not_required"
+    receipts = await mgr.storage.list_memory_durable_receipts(
+        session_key=key,
+        status="checkpoint_saved",
+        limit=1,
+    )
+    assert receipts
+    assert receipts[0].scope == "checkpoint"
+    assert receipts[0].status == "checkpoint_saved"
+    assert receipts[0].source_path
+    assert (tmp_path / receipts[0].source_path).exists()
 
 
 @pytest.mark.asyncio

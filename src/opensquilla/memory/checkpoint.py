@@ -7,7 +7,8 @@ import re
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from time import time
+from typing import Any, Literal
 
 CheckpointRole = Literal[
     "user",
@@ -59,6 +60,152 @@ class CheckpointWriteResult:
 def checkpoint_event_hash(content: str) -> str:
     normalized = str(content or "").strip().encode("utf-8")
     return hashlib.sha256(normalized).hexdigest()
+
+
+def checkpoint_turn_id(entries: list[Any]) -> str:
+    entry_ids = [
+        int(entry_id)
+        for entry in entries
+        if (entry_id := getattr(entry, "id", None)) is not None
+    ]
+    if entry_ids:
+        return f"through-{max(entry_ids)}"
+    seed = json.dumps(
+        [
+            {
+                "role": getattr(entry, "role", ""),
+                "content": getattr(entry, "content", "") or "",
+                "tool_call_id": getattr(entry, "tool_call_id", None),
+                "tool_calls": getattr(entry, "tool_calls", None),
+                "reasoning_content": getattr(entry, "reasoning_content", None),
+            }
+            for entry in entries
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return f"turn-{checkpoint_event_hash(seed)[:16]}"
+
+
+def _content_type_for(content: str) -> CheckpointContentType:
+    stripped = str(content or "").strip()
+    if stripped.startswith(("{", "[")):
+        try:
+            json.loads(stripped)
+        except json.JSONDecodeError:
+            return "text"
+        return "json"
+    return "text"
+
+
+def _checkpoint_role_for(role: str) -> CheckpointRole:
+    if role == "tool":
+        return "tool_result"
+    if role in {"user", "assistant"}:
+        return role  # type: ignore[return-value]
+    if role == "system":
+        return "system_notice"
+    return "system_notice"
+
+
+def _tool_call_name(tool_call: dict[str, Any]) -> str | None:
+    function = tool_call.get("function")
+    if isinstance(function, dict):
+        return function.get("name")
+    return tool_call.get("name")
+
+
+def _tool_call_content(tool_call: dict[str, Any]) -> str:
+    function = tool_call.get("function")
+    if isinstance(function, dict) and function.get("arguments") is not None:
+        return str(function.get("arguments") or "")
+    return json.dumps(tool_call, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def build_checkpoint_events(
+    *,
+    session_key: str,
+    session_id: str,
+    entries: list[Any],
+    source: str,
+    turn_id: str | None = None,
+) -> list[CheckpointEvent]:
+    if not entries:
+        raise ValueError("checkpoint entries cannot be empty")
+    resolved_turn_id = turn_id or checkpoint_turn_id(entries)
+    events: list[CheckpointEvent] = []
+    timestamp_ms = int(time() * 1000)
+    for entry in entries:
+        sequence = len(events) + 1
+        content = str(
+            getattr(entry, "content", None)
+            or getattr(entry, "reasoning_content", None)
+            or ""
+        )
+        event_seed = (
+            f"{session_key}:{resolved_turn_id}:{sequence}:"
+            f"{getattr(entry, 'role', '')}:{checkpoint_event_hash(content)}"
+        )
+        events.append(
+            CheckpointEvent(
+                schema_version=1,
+                event_id=f"checkpoint-{checkpoint_event_hash(event_seed)[:16]}",
+                session_key=session_key,
+                session_id=session_id,
+                turn_id=resolved_turn_id,
+                sequence=sequence,
+                timestamp_ms=int(getattr(entry, "created_at", None) or timestamp_ms),
+                role=_checkpoint_role_for(str(getattr(entry, "role", ""))),
+                content_type=_content_type_for(content),
+                content=content,
+                summary=None,
+                tool_name=None,
+                tool_call_id=getattr(entry, "tool_call_id", None),
+                status="ok",
+                token_estimate=int(getattr(entry, "token_count", None) or 0),
+                source=source,
+                attachments=[],
+                content_hash="",
+            )
+        )
+        tool_calls = getattr(entry, "tool_calls", None) or []
+        if isinstance(tool_calls, list):
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                sequence = len(events) + 1
+                tool_content = _tool_call_content(tool_call)
+                tool_call_id = tool_call.get("id")
+                event_seed = (
+                    f"{session_key}:{resolved_turn_id}:{sequence}:"
+                    f"tool_call:{checkpoint_event_hash(tool_content)}"
+                )
+                events.append(
+                    CheckpointEvent(
+                        schema_version=1,
+                        event_id=f"checkpoint-{checkpoint_event_hash(event_seed)[:16]}",
+                        session_key=session_key,
+                        session_id=session_id,
+                        turn_id=resolved_turn_id,
+                        sequence=sequence,
+                        timestamp_ms=int(
+                            getattr(entry, "created_at", None) or timestamp_ms
+                        ),
+                        role="tool_call",
+                        content_type=_content_type_for(tool_content),
+                        content=tool_content,
+                        summary=None,
+                        tool_name=_tool_call_name(tool_call),
+                        tool_call_id=str(tool_call_id) if tool_call_id else None,
+                        status="ok",
+                        token_estimate=0,
+                        source=source,
+                        attachments=[],
+                        content_hash="",
+                    )
+                )
+    return events
 
 
 def _safe_path_component(value: str) -> str:

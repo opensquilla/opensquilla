@@ -148,3 +148,29 @@ def test_try_claim_awaiting_partial_unique_index_blocks_double_awaiting(writer):
         session_id="S1", inputs_json="{}", step_outputs_json="{}",
         awaiting_since=0.0,
     ) is False
+
+
+def test_try_claim_resume_wins_on_first_call(writer):
+    _seed_awaiting(writer, run_id="r1", session_key="S1")
+    payload = writer.try_claim_resume(run_id="r1", session_id="S1")
+    assert payload is not None
+    assert payload.run_id == "r1"
+    assert payload.awaiting_step_id == "collect"
+    assert payload.inputs_json == "{}"
+    peek_after = writer.peek_awaiting(session_id="S1")
+    assert peek_after is None
+
+
+def test_try_claim_resume_loses_when_already_consumed(writer):
+    _seed_awaiting(writer, run_id="r1", session_key="S1")
+    first = writer.try_claim_resume(run_id="r1", session_id="S1")
+    assert first is not None
+    second = writer.try_claim_resume(run_id="r1", session_id="S1")
+    assert second is None
+
+
+def test_try_claim_resume_rejects_session_mismatch(writer):
+    _seed_awaiting(writer, run_id="r1", session_key="S1")
+    payload = writer.try_claim_resume(run_id="r1", session_id="DIFFERENT")
+    assert payload is None
+    assert writer.peek_awaiting(session_id="S1") is not None

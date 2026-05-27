@@ -612,6 +612,58 @@ class MetaRunWriter:
             log.warning("meta_run_writer.try_claim_awaiting_failed: %s", exc)
             return False
 
+    def try_claim_resume(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+    ) -> ResumePayload | None:
+        """Atomically transition awaiting_user → running, scoped by session.
+
+        On rowcount==1, returns the full payload for MetaOrchestrator.resume.
+        On rowcount==0, returns None (race lost, or cancelled/expired).
+        """
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT plan_snapshot_json, inputs_json, step_outputs_json, "
+                    "       awaiting_step_id, awaiting_schema_json, "
+                    "       awaiting_filled_json "
+                    "  FROM meta_skill_runs "
+                    " WHERE run_id=? AND session_key=? AND status='awaiting_user' "
+                    "LIMIT 1",
+                    (run_id, session_id),
+                ).fetchone()
+                if row is None:
+                    return None
+                cur = self._conn.execute(
+                    """
+                    UPDATE meta_skill_runs
+                       SET status='running',
+                           awaiting_step_id=NULL,
+                           awaiting_schema_json=NULL,
+                           awaiting_since=NULL
+                     WHERE run_id=? AND session_key=? AND status='awaiting_user'
+                    """,
+                    (run_id, session_id),
+                )
+                if cur.rowcount == 0:
+                    self._conn.rollback()
+                    return None
+                self._conn.commit()
+                return ResumePayload(
+                    run_id=run_id,
+                    plan_snapshot_json=row["plan_snapshot_json"] or "{}",
+                    inputs_json=row["inputs_json"] or "{}",
+                    step_outputs_json=row["step_outputs_json"] or "{}",
+                    awaiting_step_id=row["awaiting_step_id"] or "",
+                    awaiting_schema_json=row["awaiting_schema_json"] or "{}",
+                    awaiting_filled_json=row["awaiting_filled_json"] or "{}",
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("meta_run_writer.try_claim_resume_failed: %s", exc)
+            return None
+
     # ------------- cleanup -------------
 
     def purge_for_session(self, session_key: str) -> int:

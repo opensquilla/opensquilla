@@ -593,7 +593,7 @@ async def test_run_one_streaming_propagates_current_turn_message_to_inputs(
 
     assert final is not None
     assert final.is_error is False
-    assert final.content == "meta-skill 'meta-tiny' completed; final answer streamed separately."
+    assert final.content == "meta-skill 'meta-tiny' completed."
     assert captured.get("inputs", {}).get("user_message") == "RAG in low-resource settings", (
         f"expected user_message to propagate from _current_turn_message; got {captured!r}"
     )
@@ -773,7 +773,7 @@ async def test_dispatch_intercepts_meta_invoke_and_terminates_turn(
         f"got: {streamed_text[:300]!r}"
     )
     success_contents = " | ".join(r.result or "" for r in meta_invoke_results)
-    assert "final answer streamed separately" in success_contents
+    assert "meta-skill 'meta-tiny' completed." in success_contents
 
     # The orchestrator emits ToolUseStartEvent / ToolResultEvent for each
     # meta-step (tool_name="meta-step:<step_id>"). The dispatch interceptor
@@ -901,7 +901,10 @@ async def test_dispatch_coerces_meta_skill_view_to_meta_invoke(
         "skill_view(name=<meta-skill>) must be coerced into meta_invoke"
     )
     assert all(not r.is_error for r in meta_invoke_results)
-    assert any("final answer streamed separately" in (r.result or "") for r in meta_invoke_results)
+    assert any(
+        "meta-skill 'meta-tiny' completed." in (r.result or "")
+        for r in meta_invoke_results
+    )
     assert "A" in "".join(e.text for e in events if isinstance(e, TextDeltaEvent))
 
 

@@ -293,6 +293,43 @@ async def test_meta_resolution_promotes_meta_skill_creator_to_highest_text_tier(
 
 
 @pytest.mark.asyncio
+async def test_meta_resolution_does_not_promote_non_creator_meta_to_highest_text_tier() -> None:
+    spec = _make_meta_spec(
+        name="meta-pdf-intelligence",
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["PDF intelligence"],
+        priority=55,
+    )
+    loader = _FakeLoader([spec])
+    ctx = SimpleNamespace(
+        message="Run this as a PDF intelligence task",
+        semantic_message="Run this as a PDF intelligence task",
+        model="router-default-model",
+        system_prompt=("base system prompt", ""),
+        metadata={"skill_loader": loader},
+        config=SimpleNamespace(
+            squilla_router=SimpleNamespace(
+                tiers={
+                    "t1": {"model": "cheap-model"},
+                    "t3": {"model": "frontier-model"},
+                    "vision": {"model": "vision-model", "image_only": True},
+                },
+            ),
+        ),
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert out.metadata["meta_match"].plan.name == "meta-pdf-intelligence"
+    assert out.model == "router-default-model"
+    assert "meta_required_tier" not in out.metadata
+    assert "meta_required_model" not in out.metadata
+    assert "meta_required_source" not in out.metadata
+    assert "routing_source" not in out.metadata
+    assert "routing_confidence" not in out.metadata
+
+
+@pytest.mark.asyncio
 async def test_meta_resolution_no_match_keeps_metadata_clean() -> None:
     spec = _make_meta_spec(
         composition={"steps": [{"id": "a", "skill": "summarize"}]},

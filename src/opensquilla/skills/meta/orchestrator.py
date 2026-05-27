@@ -297,8 +297,11 @@ class MetaOrchestrator:
             if run_id is not None and self._run_writer is not None:
                 try:
                     if cancelled:
-                        await _to_thread(
-                            self._run_writer.finish_run_sync,
+                        # A cancelled task may interrupt an awaited executor
+                        # future before the sqlite update is visible. The
+                        # cancel marker is a single local UPDATE, so keep it
+                        # in this task's finalizer.
+                        self._run_writer.finish_run_sync(
                             run_id=run_id,
                             status="cancelled",
                             result=None,

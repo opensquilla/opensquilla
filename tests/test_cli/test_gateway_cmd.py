@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import platform
 import sys
 from types import SimpleNamespace
 
@@ -13,6 +14,12 @@ from opensquilla.paths import default_opensquilla_home
 
 runner = CliRunner()
 Manager = gateway_lifecycle.GatewayLifecycleManager
+
+
+def _env_hint(env_key: str) -> str:
+    if platform.system().lower().startswith("win"):
+        return f'PowerShell: $env:{env_key} = "<your-key>"'
+    return f'export {env_key}="<your-key>"'
 
 
 def _payload(result):
@@ -115,7 +122,10 @@ def test_gateway_run_turns_missing_onboarding_env_into_recovery_hint(
     output = result.stdout + (result.stderr or "")
     compact = "".join(output.split())
     assert "Gateway could not start" in output
-    assert 'Set memory key: export OPENAI_EMBEDDINGS_API_KEY="<your-key>"' in output
+    assert (
+        f"Set memory key: {_env_hint('OPENAI_EMBEDDINGS_API_KEY')}".replace(" ", "")
+        in compact
+    )
     assert f"opensquillaonboardstatus--config{target}" in compact
     assert "Traceback" not in output
 

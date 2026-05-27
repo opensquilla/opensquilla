@@ -40,13 +40,22 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     # Pipeline rewrite: experiment/plot (skill_exec stubs) → 4 LLM
     # steps that design the experiments and render LaTeX placeholder
     # figures/tables/analysis. Plus a citation_map audit step.
-    assert plan is not None and len(plan.steps) == 17
+    # paper_collect extracts a same-turn contract instead of pausing on a
+    # form. search_query_translation then turns non-English topics into an
+    # arXiv-friendly query before hitting Brave/DDG/Tavily.
+    assert plan is not None and len(plan.steps) == 18
     assert plan.final_text_mode == "step:final_manuscript_package"
     steps = {step.id: step for step in plan.steps}
+    # paper_collect stays in the same model turn; it extracts a visible
+    # contract instead of pausing on a form.
     assert steps["paper_collect"].kind == "user_input"
     assert steps["paper_preferences"].kind == "llm_chat"
     assert steps["paper_preferences"].depends_on == ("paper_collect",)
-    assert steps["search_papers"].depends_on == ("paper_preferences",)
+    assert steps["search_query_translation"].kind == "llm_chat"
+    assert steps["search_query_translation"].depends_on == ("paper_collect",)
+    assert steps["search_papers"].depends_on == (
+        "paper_preferences", "search_query_translation",
+    )
     # No more skill_exec experiment/plot stubs.
     assert "experiment" not in steps
     assert "plot" not in steps
@@ -308,11 +317,24 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         yield DoneEvent(text="")
 
     async def llm_chat(system_prompt: str, _user_message: str) -> str:
-        # paper_mode (llm_classify) was removed; the user picks the mode
-        # via paper_collect (user_input) — this fixture pre-populates
-        # inputs.collected so skip_if fires and the pause is bypassed.
+        if "paper-drafting requirements" in system_prompt:
+            return (
+                "TOPIC: RAG in low-resource settings\n"
+                "PAPER_MODE: FULL_MANUSCRIPT\n"
+                "LANGUAGE: en\n"
+                "TARGET_PAGES: 10\n"
+                "AUDIENCE: academic\n"
+                "MIN_REFERENCES: 20\n"
+                "SEARCH_QUERY: RAG low-resource benchmark\n"
+                "ASSUMPTIONS:\n  - offline fixture"
+            )
         if "paper requirements" in system_prompt:
             return canned_fragments["paper_preferences"]
+        if "translate paper topics" in system_prompt:
+            # search_query_translation stub: echo a clean English query
+            # (the real LLM picks up canonical jargon; here we keep it
+            # deterministic for the offline test).
+            return "RAG low-resource benchmark"
         if "curate paper sources" in system_prompt:
             return canned_fragments["source_pack"]
         if "design rigorous, falsifiable experiments" in system_prompt:
@@ -360,21 +382,8 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     async for ev in orch.iter_events(
         MetaMatch(
             plan=plan,
-            # Pre-populate collected.paper_collect so paper_collect's
-            # skip_if ("inputs.collected.paper_collect is defined")
-            # short-circuits the pause and the rest of the DAG runs
-            # exactly as before.
             inputs={
                 "user_message": "RAG in low-resource settings",
-                "collected": {
-                    "paper_collect": {
-                        "topic": "RAG in low-resource settings",
-                        "paper_mode": "FULL_MANUSCRIPT",
-                        "language": "en",
-                        "target_length_pages": 10,
-                        "audience": "academic",
-                    },
-                },
             },
         ),
     ):

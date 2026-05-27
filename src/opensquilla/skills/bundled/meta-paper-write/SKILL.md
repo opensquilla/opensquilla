@@ -26,100 +26,110 @@ metadata:
 composition:
   steps:
     - id: paper_collect
-      kind: user_input
-      clarify:
-        mode: form
-        intro: |
-          开始之前，请确认 5 件事 —— 我会用它生成完整论文 / Before drafting,
-          please confirm 5 items — I'll use them to generate the manuscript.
-        skip_if: "inputs.collected.paper_collect is defined"
-        nl_extract: true
-        fields:
-          - name: topic
-            type: string
-            required: true
-            prompt: "论文主题 / Paper topic"
-            max_chars: 200
-          - name: paper_mode
-            type: enum
-            required: true
-            choices:
-              - FULL_MANUSCRIPT
-              - COMPACT_SKELETON
-              - REPAIR_EXISTING
-              - COMPILE_ONLY
-            prompt: "类型 / Mode (FULL_MANUSCRIPT=10+页完整稿; COMPACT_SKELETON=骨架; REPAIR_EXISTING=修复; COMPILE_ONLY=只编译)"
-          - name: language
-            type: enum
-            choices: [en, zh, ja, other]
-            default: en
-            prompt: "语言 / Language"
-          - name: target_length_pages
-            type: int
-            min: 1
-            max: 50
-            default: 10
-            prompt: "目标页数 / Target pages (1–50)"
-          - name: audience
-            type: enum
-            choices: [academic, technical, business, general]
-            default: academic
-            prompt: "受众 / Audience"
-        cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
-        timeout_hours: 24
+      kind: llm_chat
+      with:
+        system: "You extract paper-drafting requirements from the same user turn. Do NOT ask follow-up questions."
+        task: |
+          Extract the paper-drafting contract from the user request. This
+          step must complete inline; never ask the user to fill a form.
+
+          User request:
+          {{ inputs.user_message | xml_escape | truncate(1800) }}
+
+          Rules:
+          - If the user asks for a finished/long paper, choose FULL_MANUSCRIPT.
+          - If the user asks for a concise skeleton, outline, or benchmark
+            response that must fit inline, choose COMPACT_SKELETON.
+          - If the user asks to repair an existing manuscript, choose REPAIR_EXISTING.
+          - If the user asks only to compile/check LaTeX, choose COMPILE_ONLY.
+          - Infer language from the request; default to en.
+          - Infer target pages when explicit; default to 10 for FULL_MANUSCRIPT,
+            6 for COMPACT_SKELETON, and 1 for COMPILE_ONLY.
+          - Keep assumptions visible instead of pausing for clarification.
+
+          Return exactly:
+          TOPIC: <paper topic>
+          PAPER_MODE: <FULL_MANUSCRIPT|COMPACT_SKELETON|REPAIR_EXISTING|COMPILE_ONLY>
+          LANGUAGE: <en|zh|ja|other>
+          TARGET_PAGES: <integer>
+          AUDIENCE: <academic|technical|business|general>
+          MIN_REFERENCES: <integer, default 20 unless compile-only>
+          SEARCH_QUERY: <concise English academic search query, <=12 words>
+          ASSUMPTIONS:
+            - <assumption or none>
     - id: paper_preferences
       kind: llm_chat
       depends_on: [paper_collect]
       with:
-        system: "You expand user-confirmed paper requirements into a structured planning contract."
+        system: "You expand extracted paper requirements into a structured planning contract."
         task: |
-          Expand the user-confirmed paper facts into a full planning contract.
+          Expand the extracted paper facts into a full planning contract.
 
-          User-confirmed facts (DO NOT override these):
-          TOPIC: {{ inputs.collected.paper_collect.topic | xml_escape }}
-          PAPER_MODE: {{ inputs.collected.paper_collect.paper_mode }}
-          LANGUAGE: {{ inputs.collected.paper_collect.language }}
-          TARGET_PAGES: {{ inputs.collected.paper_collect.target_length_pages }}
-          AUDIENCE: {{ inputs.collected.paper_collect.audience }}
+          Extracted paper contract (DO NOT override these):
+          {{ outputs.paper_collect | xml_escape | truncate(1600) }}
 
           Original user request (context only, do NOT override confirmed facts):
           {{ inputs.user_message | xml_escape | truncate(1200) }}
 
           Return exactly:
-          PAPER_MODE: {{ inputs.collected.paper_collect.paper_mode }}
+          PAPER_MODE: <copy PAPER_MODE from extracted contract>
           MODE: DIRECT
-          TOPIC: {{ inputs.collected.paper_collect.topic | xml_escape }}
-          AUDIENCE: {{ inputs.collected.paper_collect.audience }}
+          TOPIC: <copy TOPIC from extracted contract>
+          AUDIENCE: <copy AUDIENCE from extracted contract>
           VENUE_STYLE: <generic research paper or inferred venue>
-          LANGUAGE: {{ inputs.collected.paper_collect.language }}
-          TARGET_LENGTH: {{ inputs.collected.paper_collect.target_length_pages }}+ compiled pages
+          LANGUAGE: <copy LANGUAGE from extracted contract>
+          TARGET_LENGTH: <copy TARGET_PAGES from extracted contract>+ compiled pages
           MIN_REFERENCES: 20
           CITATION_STYLE: BibTeX cite keys, LaTeX \cite{...}
           ASSUMPTIONS:
             - <assumption>
+    - id: search_query_translation
+      kind: llm_chat
+      depends_on: [paper_collect]
+      when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_collect"
+      with:
+        system: "You translate paper topics into concise English academic search queries. Output only the query text."
+        task: |
+          Translate the user-confirmed paper topic into one concise
+          English academic search query optimised for arXiv / ACL
+          Anthology / ACM DL / OpenReview / IEEE / Nature / Science.
+
+          Strict rules:
+          - Output ONLY the English query text on a single line.
+          - Do NOT include preambles, labels (no "Query:", "Translation:"),
+            quotes, the word "search", boolean operators, site filters,
+            or the year — those are appended downstream by the runtime.
+          - Keep it ≤ 12 words; prefer the canonical English term for any
+            non-English research area (e.g. 检索增强生成 → retrieval-augmented
+            generation; 大模型对齐 → large language model alignment).
+          - If the topic is already in English, return it unchanged
+            (clean up only obvious typos / extraneous words).
+
+          Topic (may be Chinese, Japanese, or English):
+          {{ outputs.paper_collect | xml_escape | truncate(1200) }}
     - id: search_papers
       kind: skill_exec
       skill: multi-search-engine
-      depends_on: [paper_preferences]
-      when: "inputs.collected.paper_collect.paper_mode != 'COMPILE_ONLY'"
+      depends_on: [paper_preferences, search_query_translation]
+      when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_collect"
       with:
-        # Academic-site bias: search results favour real paper venues so
-        # the refbib step gets URLs that translate into arxiv eprint /
-        # doi identifiers — not blog posts or wikipedia.
-        query: "{{ inputs.collected.paper_collect.topic | xml_escape | truncate(400) }} (site:arxiv.org OR site:aclanthology.org OR site:dl.acm.org OR site:openreview.net OR site:ieee.org OR site:nature.com OR site:science.org)"
+        # search_query_translation returns ONLY the English query text
+        # (no labels / no preamble), so we can inline it directly.
+        # Academic-site bias filters out blog/wiki/social.
+        query: "{{ outputs.search_query_translation | xml_escape | truncate(200) }} (site:arxiv.org OR site:aclanthology.org OR site:dl.acm.org OR site:openreview.net OR site:ieee.org OR site:nature.com OR site:science.org)"
         engines: [brave, duckduckgo, tavily]
         max_results: 25
     - id: refbib
       kind: skill_exec
       skill: paper-refbib-stub
       depends_on: [search_papers]
-      when: "inputs.collected.paper_collect.paper_mode != 'COMPILE_ONLY'"
+      when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_collect"
       with:
         search_results: "{{ outputs.search_papers | truncate(8000) }}"
     - id: source_pack
       kind: llm_chat
       depends_on: [search_papers, refbib]
-      when: "inputs.collected.paper_collect.paper_mode != 'COMPILE_ONLY'"
+      when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_collect"
       with:
         system: "You curate paper sources and enforce citation coverage."
         task: |
@@ -147,7 +157,7 @@ composition:
     - id: experiment_design
       kind: llm_chat
       depends_on: [paper_preferences, source_pack]
-      when: "inputs.collected.paper_collect.paper_mode in ('FULL_MANUSCRIPT', 'COMPACT_SKELETON')"
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_collect or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_collect"
       with:
         system: "You design rigorous, falsifiable experiments. You also decide how many figures and tables the paper needs based on the target page budget, the research questions, and the analysis dimensions — do not over- or under-provision."
         task: |
@@ -157,10 +167,7 @@ composition:
           straight from your output.
 
           Paper facts:
-          TOPIC: {{ inputs.collected.paper_collect.topic | xml_escape }}
-          PAPER_MODE: {{ inputs.collected.paper_collect.paper_mode }}
-          TARGET_PAGES: {{ inputs.collected.paper_collect.target_length_pages }}
-          AUDIENCE: {{ inputs.collected.paper_collect.audience }}
+          {{ outputs.paper_collect | xml_escape | truncate(1600) }}
 
           Preferences:
           {{ outputs.paper_preferences | truncate(2000) }}
@@ -240,7 +247,7 @@ composition:
     - id: figure_placeholders
       kind: llm_chat
       depends_on: [experiment_design]
-      when: "inputs.collected.paper_collect.paper_mode in ('FULL_MANUSCRIPT', 'COMPACT_SKELETON')"
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_collect or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_collect"
       with:
         system: "You render LaTeX placeholder figure environments from a structured figure plan. Output is pure LaTeX, ready to inline into a manuscript."
         task: |
@@ -289,7 +296,7 @@ composition:
     - id: table_placeholders
       kind: llm_chat
       depends_on: [experiment_design]
-      when: "inputs.collected.paper_collect.paper_mode in ('FULL_MANUSCRIPT', 'COMPACT_SKELETON')"
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_collect or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_collect"
       with:
         system: "You render LaTeX placeholder table environments from a structured table plan. Output is pure LaTeX, ready to inline into a manuscript."
         task: |
@@ -330,7 +337,7 @@ composition:
     - id: analysis_outline
       kind: llm_chat
       depends_on: [experiment_design, figure_placeholders, table_placeholders]
-      when: "inputs.collected.paper_collect.paper_mode in ('FULL_MANUSCRIPT', 'COMPACT_SKELETON')"
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_collect or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_collect"
       with:
         system: "You design analysis-chapter outlines that bind every figure/table to a claim and an analysis dimension."
         task: |
@@ -377,11 +384,11 @@ composition:
     - id: outline
       kind: llm_chat
       depends_on: [source_pack, experiment_design]
-      when: "inputs.collected.paper_collect.paper_mode != 'COMPILE_ONLY'"
+      when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_collect"
       with:
         system: "You design long-form LaTeX paper outlines with citation plans."
         task: |
-          Create a {{ inputs.collected.paper_collect.target_length_pages }}+ page
+          Create a paper outline matching TARGET_PAGES from paper_preferences
           research-paper outline with enough section depth for a substantial
           manuscript. Every section must name planned cite keys from the
           bibliography. Tie the Method section to experiment_design's
@@ -402,7 +409,7 @@ composition:
     - id: citation_plan
       kind: llm_chat
       depends_on: [outline, source_pack, refbib]
-      when: "inputs.collected.paper_collect.paper_mode != 'COMPILE_ONLY'"
+      when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_collect"
       with:
         system: "You plan citation placement for clean BibTeX/LaTeX manuscripts. You ONLY use cite keys that exist in the provided bibliography — never invent keys."
         task: |
@@ -412,8 +419,8 @@ composition:
           string match before you write it). Attach citations to claims,
           not paragraphs in bulk.
 
-          Topic:
-          {{ inputs.collected.paper_collect.topic | xml_escape | truncate(200) }}
+          Topic and mode:
+          {{ outputs.paper_collect | xml_escape | truncate(1600) }}
 
           Outline:
           {{ outputs.outline | truncate(6000) }}
@@ -434,18 +441,25 @@ composition:
           fences, chat commentary, progress notes, or tool logs.
 
           Paper mode:
-          {{ inputs.collected.paper_collect.paper_mode }}
+          {{ outputs.paper_collect | xml_escape | truncate(1600) }}
 
           Mode behavior:
           - FULL_MANUSCRIPT: produce enough substance for
-            {{ inputs.collected.paper_collect.target_length_pages }}+ compiled
+            TARGET_PAGES from paper_preferences as compiled
             pages (default 10+ compiled pages), at least 20 references when
             provided, and at least 20 distinct citation keys used across
             abstract, introduction, related work, method, results, discussion,
             limitations, and conclusion.
           - COMPACT_SKELETON: produce a compact LaTeX-ready manuscript
             skeleton with section goals, planned citations, and expansion
-            notes; do not pretend it is a 10+ page finished paper.
+            notes; do not pretend it is a 10+ page finished paper. For this
+            mode, the final package MUST include an explicit manuscript plan,
+            a 10+ page expansion plan, limitations/threats-to-validity, and
+            at least 20 reference placeholders when verified BibTeX entries
+            are unavailable. Keep the compact package short enough that all
+            required sections are visible before any evaluator truncation:
+            put the plan and expansion plan before the LaTeX skeleton, and
+            keep MANUSCRIPT_TEX under 2,500 words.
           - REPAIR_EXISTING: return a repaired clean LaTeX package focused on
             citation integrity, structure, and removal of process text.
           - COMPILE_ONLY: return a compile handoff package and blockers only;
@@ -458,6 +472,11 @@ composition:
           - Every claim that needs evidence MUST cite at least one key from
             REFERENCES_BIB.
           - Distribute citations: avoid citing the same key 10+ times.
+          - If REFERENCES_BIB is empty or lacks enough verified entries, do
+            not emit \cite{...}. Use visible placeholders such as
+            [REF-01 needed: agent benchmark survey] in the LaTeX text and
+            list them under REFERENCE_PLACEHOLDERS instead. Placeholder
+            references are safer than fabricated BibTeX.
 
           FIGURE/TABLE CONTRACT:
           - Inline the figure_placeholders block verbatim into Results.
@@ -489,10 +508,23 @@ composition:
           Bibliography (cite keys MUST come from here):
           {{ outputs.refbib | truncate(8000) }}
 
-          Return exactly:
+          Return exactly, in this order:
+          MANUSCRIPT_PLAN:
+          - <section-by-section plan with target pages and contribution>
+
+          EXPANSION_PLAN_10_PLUS_PAGES:
+          - <concrete section-by-section expansion plan to reach 10+ pages>
+
+          REFERENCE_PLACEHOLDERS:
+          - <at least 20 placeholder references if REFERENCES_BIB is empty or sparse>
+
           MANUSCRIPT_TEX:
-          <clean LaTeX body, starting with \begin{abstract} and continuing
-          through conclusion, with placeholders inlined>
+          <complete minimal LaTeX document with \documentclass,
+          \begin{document}, \begin{abstract}, Introduction, Related Work,
+          Method, Evaluation Design, Expected Results, Limitations and
+          Threats to Validity, Ethics, Conclusion, and \end{document};
+          inline placeholders and use TODO/reference placeholders when
+          verified BibTeX is unavailable>
 
           REFERENCES_BIB:
           <BibTeX entries copied verbatim from the provided bibliography —
@@ -503,7 +535,7 @@ composition:
     - id: citation_map
       kind: llm_chat
       depends_on: [final_manuscript_package, refbib]
-      when: "inputs.collected.paper_collect.paper_mode != 'COMPILE_ONLY'"
+      when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_collect"
       with:
         system: "You audit citation provenance. You read manuscript LaTeX and a BibTeX file and emit a strict markdown table. NEVER invent titles or URLs — copy fields verbatim from the BibTeX block."
         task: |
@@ -550,7 +582,7 @@ composition:
     - id: paper_length_gate
       kind: llm_chat
       depends_on: [final_manuscript_package, citation_plan, refbib]
-      when: "inputs.collected.paper_collect.paper_mode == 'FULL_MANUSCRIPT'"
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_collect"
       with:
         system: "You verify manuscript length requirements without rewriting the paper."
         task: |
@@ -559,7 +591,7 @@ composition:
           needs expansion. Do not include process commentary.
 
           Requirements:
-          - target {{ inputs.collected.paper_collect.target_length_pages }}+ compiled pages
+          - target TARGET_PAGES from paper_preferences as compiled pages
           - substantial introduction, method, results, and discussion sections
           - no placeholder-only paragraphs (placeholder figures/tables ARE
             allowed and expected — only flag if the text body around them is
@@ -573,7 +605,7 @@ composition:
     - id: citation_integrity_gate
       kind: llm_chat
       depends_on: [final_manuscript_package, citation_plan, refbib, citation_map]
-      when: "inputs.collected.paper_collect.paper_mode in ('FULL_MANUSCRIPT', 'REPAIR_EXISTING')"
+      when: "inputs.collected.paper_collect.paper_mode in ('FULL_MANUSCRIPT', 'COMPACT_SKELETON', 'REPAIR_EXISTING')"
       with:
         system: "You verify LaTeX/BibTeX citation integrity."
         task: |
@@ -617,7 +649,7 @@ composition:
     - id: latex_sanitizer
       kind: llm_chat
       depends_on: [paper_length_gate, citation_integrity_gate]
-      when: "inputs.collected.paper_collect.paper_mode in ('FULL_MANUSCRIPT', 'REPAIR_EXISTING', 'COMPILE_ONLY')"
+      when: "inputs.collected.paper_collect.paper_mode in ('FULL_MANUSCRIPT', 'COMPACT_SKELETON', 'REPAIR_EXISTING', 'COMPILE_ONLY')"
       with:
         system: "You sanitize LaTeX deliverables and reject process text."
         task: |
@@ -636,7 +668,7 @@ composition:
     - id: compile_latex
       kind: llm_chat
       depends_on: [latex_sanitizer]
-      when: "inputs.collected.paper_collect.paper_mode == 'COMPILE_ONLY'"
+      when: "'PAPER_MODE: COMPILE_ONLY' in outputs.paper_collect"
       with:
         system: "You prepare compile handoff notes without invoking LaTeX in the default path."
         task: |
@@ -663,10 +695,10 @@ deliverable can be reviewed for academic rigor, not just length.
 
 DAG (in order):
 
-1. **`paper_collect`** (user_input) — confirm topic, mode, language,
-   target length, audience. Replaces the previous `paper_mode`
-   (llm_classify) + `paper_preferences` inference so the model no
-   longer guesses fundamental paper requirements.
+1. **`paper_collect`** — extracts topic, mode, language, target length,
+   audience, and reference count from the same turn without pausing for a
+   form. Missing facts are marked as assumptions so first-pass paper
+   requests complete inline.
 2. **`paper_preferences`** — expand the collected facts into a planning
    contract.
 3. **`search_papers`** — `multi-search-engine` query biased toward arXiv
@@ -710,7 +742,7 @@ DAG (in order):
 
 Removed from the previous version:
 
-- `paper_mode` (llm_classify) — superseded by `paper_collect.paper_mode`
+- `paper_mode` (llm_classify) — superseded by `paper_collect`
 - `experiment` (skill_exec → `paper-experiment-stub`, fake CSV) —
   superseded by `experiment_design` (real plan, not data). The
   bundled `paper-experiment-stub` skill was deleted with this rewrite.

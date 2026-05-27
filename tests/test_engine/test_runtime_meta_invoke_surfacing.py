@@ -12,7 +12,11 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+import pytest
+
+from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.runtime import TurnRunner
+from opensquilla.provider import ToolDefinition, ToolInputSchema
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.tools.registry import get_default_registry
 from opensquilla.tools.types import ToolContext
@@ -153,3 +157,115 @@ def test_runtime_does_not_hard_auto_invoke_meta_match() -> None:
 
     assert "meta_resolution.auto_invoke" not in source
     assert "auto_meta_invoke_" not in source
+
+
+@pytest.mark.asyncio
+async def test_runtime_pipeline_runs_meta_resolution_before_skill_filter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def noop_router(ctx: TurnContext) -> TurnContext:
+        return ctx
+
+    noop_router.__name__ = "apply_squilla_router"
+    monkeypatch.setattr("opensquilla.engine.steps.apply_squilla_router", noop_router)
+
+    loader = _make_loader_with_meta(tmp_path)
+    runner = TurnRunner(provider_selector=None, config=None)
+    runner._skill_loader = loader
+
+    turn, _provider = await runner._run_pipeline(
+        "please run tiny-meta-trigger for this request",
+        "agent:main:test-meta-resolution",
+        None,
+        None,
+        [
+            ToolDefinition(
+                name="meta_invoke",
+                description="invoke meta skills",
+                input_schema=ToolInputSchema(),
+            ),
+            ToolDefinition(
+                name="web_search",
+                description="search the web",
+                input_schema=ToolInputSchema(),
+            ),
+        ],
+        "base prompt",
+        [],
+    )
+
+    step_names = [record.step_name for record in turn.metadata["pipeline_steps"]]
+    assert step_names.index("meta_resolution") < step_names.index("filter_skills")
+    assert turn.metadata["meta_match"].plan.name == "meta-tiny"
+    assert "meta_invoke(name=\"meta-tiny\")" in str(turn.system_prompt)
+    assert "meta-tiny" in str(turn.system_prompt)
+
+    # filter_enabled defaults to False (config=None here). In that mode the
+    # LLM already sees the full toolbox + the meta-skill description in
+    # ``<available_skills>``, so skills_filter does NOT restrict tool_defs
+    # and does NOT force tool_choice — the LLM decides whether to invoke.
+    assert {tool.name for tool in turn.tool_defs} == {"meta_invoke", "web_search"}
+    assert "meta_match_tool_surface_restricted" not in turn.metadata
+    assert "meta_match_tool_choice" not in turn.metadata
+
+
+@pytest.mark.asyncio
+async def test_runtime_pipeline_restricts_tools_only_when_skill_filter_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the retriever is on, ``<available_skills>`` may drop the
+    meta-skill description out of the prompt. To preserve "must invoke
+    meta_invoke" semantics in that mode, skills_filter pins the
+    description AND narrows the tool surface to a forced ``meta_invoke``.
+    """
+    from types import SimpleNamespace
+
+    async def noop_router(ctx: TurnContext) -> TurnContext:
+        return ctx
+
+    noop_router.__name__ = "apply_squilla_router"
+    monkeypatch.setattr("opensquilla.engine.steps.apply_squilla_router", noop_router)
+
+    loader = _make_loader_with_meta(tmp_path)
+    skills_cfg = SimpleNamespace(
+        filter_enabled=True,
+        filter_top_k=5,
+        max_skills_prompt_chars=8000,
+        injection_mode="system",
+    )
+    runner = TurnRunner(
+        provider_selector=None,
+        config=SimpleNamespace(skills=skills_cfg),
+    )
+    runner._skill_loader = loader
+
+    turn, _provider = await runner._run_pipeline(
+        "please run tiny-meta-trigger for this request",
+        "agent:main:test-meta-restrict",
+        None,
+        None,
+        [
+            ToolDefinition(
+                name="meta_invoke",
+                description="invoke meta skills",
+                input_schema=ToolInputSchema(),
+            ),
+            ToolDefinition(
+                name="web_search",
+                description="search the web",
+                input_schema=ToolInputSchema(),
+            ),
+        ],
+        "base prompt",
+        [],
+    )
+
+    assert turn.metadata["meta_match"].plan.name == "meta-tiny"
+    assert [tool.name for tool in turn.tool_defs] == ["meta_invoke"]
+    assert turn.metadata["meta_match_tool_surface_restricted"] is True
+    assert turn.metadata["meta_match_tool_choice"] == {
+        "type": "function",
+        "function": {"name": "meta_invoke"},
+    }

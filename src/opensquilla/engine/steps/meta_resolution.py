@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import time
+from typing import Any
 
 import structlog
 
@@ -36,6 +38,102 @@ from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
 from opensquilla.skills.meta.types import MetaMatch
 
 log = structlog.get_logger(__name__)
+
+
+# ── Session-sticky meta match (continuation across multi-turn chats) ──
+#
+# Hard problem the trigger-only matcher could not solve: once T1 of a
+# chat hits a meta-skill trigger (e.g. "帮我写篇论文"), the LLM might
+# fail to actually emit ``meta_invoke`` on that turn — for example
+# deepseek-v4-flash can length-cap on reasoning before producing the
+# forced tool call. Then T2 carries follow-up details ("我想写 RAG…")
+# which does not contain the trigger phrase, so the matcher returns
+# nothing, ``meta_invoke`` falls out of the tool surface, and the LLM
+# tries ``read_file`` / ``glob_search`` instead.
+#
+# This module-level cache keeps the chosen ``(skill_name, trigger)``
+# alive for a small number of follow-up turns. It is in-memory only
+# (lost on gateway restart, which is fine — restart is rare and an
+# unstuck T1 will re-trigger naturally). The cache is bounded by:
+# * ``_STICKY_TTL_SECONDS`` — wall-clock window
+# * ``_STICKY_MAX_USES`` — max follow-up turns where a sticky hit re-arms
+#   the match before we give up
+#
+# Eviction triggers:
+# * TTL expires → entry dropped on next access
+# * Uses exhausted → entry dropped on next access
+# * User message contains a sticky-cancel keyword → entry dropped now
+# * The awaiting branch fires (proper continuation took over) → entry
+#   dropped because we never reach the trigger/sticky code path
+_STICKY_TTL_SECONDS = 1800.0
+_STICKY_MAX_USES = 3
+_STICKY_CANCEL_KEYWORDS = (
+    "取消", "算了", "别写了", "不写了", "停止",
+    "cancel", "stop", "nevermind", "never mind", "forget it",
+)
+_sticky_lock = threading.Lock()
+_meta_sticky_cache: dict[str, dict[str, Any]] = {}
+
+
+def _sticky_get(session_id: str) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    now = time.time()
+    with _sticky_lock:
+        entry = _meta_sticky_cache.get(session_id)
+        if entry is None:
+            return None
+        if now - entry["ts"] > _STICKY_TTL_SECONDS or entry["uses"] <= 0:
+            _meta_sticky_cache.pop(session_id, None)
+            return None
+        return dict(entry)
+
+
+def _sticky_put(session_id: str, skill: str, trigger: str) -> None:
+    if not session_id or not skill:
+        return
+    with _sticky_lock:
+        _meta_sticky_cache[session_id] = {
+            "ts": time.time(),
+            "uses": _STICKY_MAX_USES,
+            "skill": skill,
+            "trigger": trigger,
+        }
+
+
+def _sticky_consume(session_id: str) -> None:
+    """Decrement uses on a sticky hit; drop entry when exhausted."""
+    if not session_id:
+        return
+    with _sticky_lock:
+        entry = _meta_sticky_cache.get(session_id)
+        if entry is None:
+            return
+        entry["uses"] -= 1
+        if entry["uses"] <= 0:
+            _meta_sticky_cache.pop(session_id, None)
+
+
+def _sticky_drop(session_id: str) -> None:
+    if not session_id:
+        return
+    with _sticky_lock:
+        _meta_sticky_cache.pop(session_id, None)
+
+
+def _clamp_thinking_for_meta(ctx: TurnContext) -> None:
+    """Force ``thinking_level=low`` on a meta-matched turn.
+
+    Even with ``meta_match_tool_choice`` forcing ``meta_invoke``, some
+    models (notably deepseek-v4-flash) burn the entire output budget on
+    reasoning before producing the tool call. The structured argument
+    list for ``meta_invoke`` does not need deep reasoning, so we clamp
+    to low here. Recorded in ``thinking_source`` so the next pipeline
+    step can see who set it last.
+    """
+    ctx.metadata["thinking_level"] = "low"
+    ctx.metadata["thinking_requested"] = True
+    ctx.metadata["thinking_source"] = "meta_resolution"
 
 
 def _hits_cancel_keywords(message: str, keywords: tuple[str, ...]) -> bool:
@@ -298,9 +396,13 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                 ctx.metadata["meta_clarify_race_lost"] = awaiting.run_id
                 return ctx
             ctx.metadata["meta_resume"] = (claim, parsed)
+            # Proper continuation (awaiting → resume) took over. Drop any
+            # stale sticky entry — the DAG is now driving and the trigger
+            # path should be inert for the remainder of this run.
+            _sticky_drop(session_id)
             return ctx
 
-    # ── Original trigger-matching path (unchanged) ────────────────
+    # ── Original trigger-matching path (with sticky continuation) ──
     loader = ctx.metadata.get("skill_loader")
     if loader is None:
         return ctx
@@ -319,6 +421,10 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
     message_lower = (ctx.message or "").lower()
     if not message_lower:
         return ctx
+
+    # Sticky-cancel: explicit user opt-out always wins over a stale match.
+    if _hits_cancel_keywords(ctx.message or "", _STICKY_CANCEL_KEYWORDS):
+        _sticky_drop(session_id)
 
     matched: list[tuple[int, str, object, str]] = []
     for spec in all_skills:
@@ -343,13 +449,49 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         trigger_phrase = _first_matching_trigger(triggers, message_lower)
         matched.append((plan.priority, plan.name, plan, trigger_phrase))
 
+    sticky_replay = False
     if not matched:
-        return ctx
+        # No current trigger — try the sticky cache for this session.
+        # The contract: a recent prior turn matched a meta-skill but the
+        # LLM never managed to actually fire ``meta_invoke`` (e.g. it
+        # length-capped on reasoning, the user closed the form and is
+        # now retrying with details, etc.). Replay the stored choice
+        # for up to ``_STICKY_MAX_USES`` follow-up turns so meta_invoke
+        # stays on the toolbox and tool_choice stays forced.
+        sticky = _sticky_get(session_id)
+        if sticky is None:
+            return ctx
+        for spec in all_skills:
+            if (
+                getattr(spec, "kind", "skill") != "meta"
+                or getattr(spec, "name", None) != sticky["skill"]
+            ):
+                continue
+            try:
+                plan = parse_meta_plan(spec)
+            except MetaPlanError:
+                continue
+            if plan is None:
+                continue
+            matched.append((plan.priority, plan.name, plan, sticky["trigger"]))
+            break
+        if not matched:
+            # Skill no longer present (loader changed) — drop stale entry.
+            _sticky_drop(session_id)
+            return ctx
+        _sticky_consume(session_id)
+        sticky_replay = True
 
     # Highest priority wins; ties broken by name for determinism.
     matched.sort(key=lambda item: (-item[0], item[1]))
     chosen_plan = matched[0][2]
     chosen_trigger = matched[0][3]
+
+    if not sticky_replay:
+        # Fresh trigger match — arm/refresh the sticky cache so the next
+        # 1-3 turns can replay this choice if the LLM stalls on the
+        # current turn.
+        _sticky_put(session_id, str(matched[0][1]), str(chosen_trigger))
 
     # Candidate digest for the hint (priority, name, trigger). The hint
     # surfaces this so the LLM sees runner-ups, not just the
@@ -371,6 +513,14 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
     ctx.metadata["meta_match"] = match
     ctx.metadata["meta_match_trigger"] = chosen_trigger
     ctx.metadata["meta_match_candidates"] = candidate_digest
+    if sticky_replay:
+        ctx.metadata["meta_match_sticky"] = True
+
+    # Clamp reasoning budget so the LLM cannot length-cap on thinking
+    # before producing the forced ``meta_invoke`` call. Applies to both
+    # fresh matches and sticky replays — the meta-invoke argument shape
+    # never needs deep reasoning.
+    _clamp_thinking_for_meta(ctx)
 
     if getattr(chosen_plan, "name", "") == "meta-skill-creator":
         highest = _highest_text_tier(ctx)
@@ -411,6 +561,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         meta_skill=skill_name,
         trigger=chosen_trigger,
         candidates=len(matched),
+        sticky_replay=sticky_replay,
         # D1: log all candidate names + priorities so operators can
         # spot trigger overlaps from logs without re-running the turn.
         candidate_list=[(n, p) for p, n, _t in candidate_digest],

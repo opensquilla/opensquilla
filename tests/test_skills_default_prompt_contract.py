@@ -185,6 +185,7 @@ async def test_default_prompt_prefers_matching_meta_skills_over_direct_answers(
     prompt = ctx.system_prompt[1]
     assert "When a kind=\"meta\" entry clearly matches" in prompt
     assert "prefer `meta_invoke(name=\"<name>\")` over answering directly" in prompt
+    assert "Do not call `skill_view` for kind=\"meta\" entries" in prompt
     assert "multi-skill orchestration" in prompt
 
 

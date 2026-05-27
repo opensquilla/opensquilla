@@ -202,6 +202,28 @@ async def test_meta_resolution_matches_trigger() -> None:
 
 
 @pytest.mark.asyncio
+async def test_meta_resolution_soft_hint_directs_meta_invoke_not_skill_view() -> None:
+    spec = _make_meta_spec(
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["travel plan"],
+        priority=10,
+    )
+    loader = _FakeLoader([spec])
+    ctx = SimpleNamespace(
+        message="please make a travel plan for Dalian",
+        semantic_message="please make a travel plan for Dalian",
+        metadata={"skill_loader": loader},
+        system_prompt=("base prompt", ""),
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    hint = out.system_prompt[1]
+    assert 'call `meta_invoke(name="meta-x")`' in hint
+    assert "Do not call `skill_view` for this meta-skill" in hint
+
+
+@pytest.mark.asyncio
 async def test_meta_resolution_highest_priority_wins() -> None:
     lo = _make_meta_spec(
         name="meta-lo",

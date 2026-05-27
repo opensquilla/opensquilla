@@ -34,6 +34,7 @@ def test_injector_emits_meta_skill_header_when_any_meta_present() -> None:
     out = inj.inject_full("", skills)
     # The header tells the LLM how to invoke meta-skills
     assert "meta_invoke" in out
+    assert "Do not call `skill_view` for kind=\"meta\" entries" in out
     assert "kind=\"meta\"" in out or "kind='meta'" in out
 
 
@@ -51,5 +52,6 @@ def test_injector_compact_mode_also_marks_kind() -> None:
     out = inj.inject_compact("", skills)
     # Compact mode is more terse, but kind must still be visible
     assert "meta-paper-write" in out
+    assert "Do not call `skill_view` for kind=\"meta\" entries" in out
     # Either inline kind attr or a separate line indicating meta nature
     assert ('kind="meta"' in out) or ("(meta)" in out) or ("meta_invoke" in out)

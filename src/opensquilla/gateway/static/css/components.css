@@ -221,21 +221,41 @@
   height: 6px;
   border-radius: 50%;
   background: currentColor;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 22%, transparent);
 }
 .conn-pill.ok {
   color: var(--ok);
   border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
   background: color-mix(in srgb, var(--ok) 10%, var(--bg-elevated));
 }
+/* Heartbeat halo on connected — barely there, just enough to read "alive".  */
+.conn-pill.ok::before {
+  animation: conn-pill-heartbeat 2.4s ease-in-out infinite;
+}
+@keyframes conn-pill-heartbeat {
+  0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 22%, transparent); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 6%, transparent); }
+}
 .conn-pill.warn {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 35%, var(--border));
   background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated));
 }
+/* Reconnecting (warn) pulses faster — signals "actively trying". */
+.conn-pill.warn::before {
+  animation: conn-pill-reconnect 0.9s ease-in-out infinite;
+}
+@keyframes conn-pill-reconnect {
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%      { transform: scale(1.4); opacity: 0.55; }
+}
 .conn-pill.err {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
   background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated));
+}
+@media (prefers-reduced-motion: reduce) {
+  .conn-pill::before { animation: none !important; }
 }
 
 /* Tier badge — compact monospaced t0/t1/t2/t3 indicator for router decisions. */

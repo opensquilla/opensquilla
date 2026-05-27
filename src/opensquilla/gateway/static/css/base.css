@@ -419,6 +419,45 @@ pre {
   }
 }
 
+/* Sidebar brand footer — small identity anchor at the bottom of the rail.
+   margin-top: auto pushes it to the bottom whether the nav list is long or
+   short; the small accent dot doubles as a discreet liveness cue so the
+   brand reads alive without competing with the nav-active accent rail. */
+.nav-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding: var(--sp-3) var(--sp-4) calc(var(--sp-3) + env(safe-area-inset-bottom, 0px));
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+  background: linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--accent) 4%, transparent) 100%);
+  user-select: none;
+}
+.nav-foot__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+  flex-shrink: 0;
+  animation: nav-foot-pulse 2.4s ease-in-out infinite;
+}
+.nav-foot__ver {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+@keyframes nav-foot-pulse {
+  0%, 100% { box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent); }
+  50%      { box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 65%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nav-foot__dot { animation: none; }
+}
+
 /* Approval count badge */
 .nav-badge {
   margin-left: auto;

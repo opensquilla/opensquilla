@@ -48,19 +48,58 @@
   flex-shrink: 0;
 }
 
+/* Chat run-status pill — leading dot picks up the chip color via currentColor
+   so each lifecycle state (idle/queued/running/failed/interrupted) reads at
+   a glance without relying on text alone. Running/queued get a soft pulse. */
 #chat-run-status {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   min-height: 28px;
-  padding-inline: 10px;
+  padding-inline: 10px 12px;
   line-height: 1;
   white-space: nowrap;
   flex-shrink: 0;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10.5px;
+}
+#chat-run-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.75;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 25%, transparent);
+  flex-shrink: 0;
+}
+#chat-run-status.chip-ok::before,
+#chat-run-status.chip-running::before,
+#chat-run-status.chip-warn::before,
+#chat-run-status.chip-queued::before {
+  animation: chat-status-pulse 1.6s ease-in-out infinite;
+}
+@keyframes chat-status-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 25%, transparent); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 6%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #chat-run-status::before { animation: none !important; }
 }
 
+/* Chat header label — promoted to the same small-caps mono treatment used
+   by every other page's "CONTROL · PAGENAME" breadcrumb, so the chat
+   surface reads as part of the same design language even without the
+   full breadcrumb + bold view-title row above the conversation. */
 .chat-label {
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
   flex-shrink: 0;
 }
 
@@ -342,11 +381,75 @@
   background: rgba(255, 92, 92, 0.04);
 }
 
+/* Empty state — quiet but structured. The signal-bar mark uses three
+   accent bars climbing left-to-right (loose CRT/loading-bar reference);
+   title is light-weight so the composer below stays the primary CTA. */
 .chat-empty {
-  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--text-muted);
   text-align: center;
-  padding: var(--sp-8) 0;
+  padding: clamp(var(--sp-6), 8vh, var(--sp-8) * 2) var(--sp-4);
   font-size: var(--fs-sm);
+  margin: auto;
+  max-width: 520px;
+}
+.chat-empty__mark {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 5px;
+  height: 28px;
+  margin-bottom: var(--sp-2);
+}
+.chat-empty__bar {
+  display: block;
+  width: 6px;
+  background: color-mix(in srgb, var(--accent) 75%, transparent);
+  border-radius: 1px;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: chat-empty-bar 1.8s cubic-bezier(.6,.05,.4,1) infinite;
+}
+.chat-empty__bar:nth-child(1) { height: 30%; animation-delay: 0s; }
+.chat-empty__bar:nth-child(2) { height: 65%; animation-delay: 0.15s; }
+.chat-empty__bar:nth-child(3) { height: 100%; animation-delay: 0.30s; }
+@keyframes chat-empty-bar {
+  0%, 100% { transform: scaleY(0.55); opacity: 0.45; }
+  50%      { transform: scaleY(1);    opacity: 1; }
+}
+.chat-empty__bar { transform-origin: 50% 100%; }
+.chat-empty__title {
+  font-family: var(--font-display, var(--font-sans));
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  letter-spacing: var(--track-display);
+  color: var(--text);
+  margin: 0;
+}
+.chat-empty__hint {
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  color: var(--text-dim);
+  margin: 0;
+  max-width: 38em;
+}
+.chat-empty__hint kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 2px;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  line-height: 1.2;
+  vertical-align: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-empty__bar { animation: none; transform: scaleY(0.7); opacity: 0.7; }
 }
 
 /* ─── Day separator ────────────────────────────────────────────────────── */
@@ -357,9 +460,10 @@
   gap: var(--sp-3);
   color: var(--text-dim);
   font-size: var(--fs-xs);
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  margin: var(--sp-2) 0;
+  margin: var(--sp-4) 0 var(--sp-3);
   user-select: none;
 }
 .chat-day-sep::before,
@@ -444,7 +548,10 @@
   font-size: var(--fs-sm);
   line-height: 1.6;
   word-break: break-word;
-  max-width: 70%;
+  /* Reading-column cap: on ultra-wide screens 70% becomes ~1000px which
+     reads as a banner, not a message. The 56ch ceiling holds the bubble
+     to a comfortable line length without changing mobile (where 70% wins). */
+  max-width: min(70%, 56ch);
   min-width: 56px;
   min-height: 32px;
   margin-left: auto;
@@ -465,7 +572,10 @@
   font-size: var(--fs-sm);
   line-height: 1.7;
   word-break: break-word;
-  max-width: 85%;
+  /* Reading-column cap (see user bubble); assistant bubbles get a bit more
+     room — 72ch — to fit longer prose, code, and lists without wrapping
+     awkwardly while still preventing edge-to-edge sprawl on wide screens. */
+  max-width: min(85%, 72ch);
   min-width: 56px;
   min-height: 32px;
 }
@@ -560,19 +670,28 @@
   position: relative;
 }
 
+/* Streaming caret — thin terminal-style block bar in mantis orange.
+   Replaces the U+25CD "broken circle" glyph that didn't read as a cursor
+   at typographic size. The bar is a CSS box so it inherits theme accent
+   on the fly instead of relying on font fallback. */
 .chat-msg--streaming .chat-msg-text::after,
 .msg.streaming .msg-body:not(:has(.msg-text-seg:not(:empty)))::after,
 .msg.streaming .msg-text-seg:not(:empty):last-of-type::after {
-  content: '\25CD';
+  content: '';
   display: inline-block;
-  color: var(--accent);
-  animation: blink 1.2s ease-in-out infinite;
-  margin-left: 2px;
+  width: 0.5em;
+  height: 1em;
+  vertical-align: -0.14em;
+  background: var(--accent);
+  border-radius: 1px;
+  margin-left: 3px;
+  animation: blink 1.0s steps(2, end) infinite;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 @keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.2; }
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0.15; }
 }
 
 /* Interrupted-turn marker. Appended to the .msg-body when a streaming
@@ -660,7 +779,7 @@
   gap: 4px 8px;
   font-size: var(--fs-xs);
   color: var(--text-muted);
-  opacity: 0.75;
+  opacity: 0.85;
   padding: 0 2px;
   user-select: none;
   /* Cap the row width to the bubble so long model names break cleanly
@@ -723,9 +842,17 @@
   color: var(--text-muted);
 }
 
+/* Headings inside assistant responses: tinted toward the accent but mostly
+   text-colored so long answers with many h2/h3 don't read as a citrus
+   warning bar. h2 keeps a thin accent underline to retain a visual anchor. */
 .msg.assistant .msg-body h2,
 .msg.assistant .msg-body h3 {
-  color: var(--accent);
+  color: color-mix(in srgb, var(--accent) 35%, var(--text));
+  font-weight: 700;
+}
+.msg.assistant .msg-body h2 {
+  padding-bottom: 0.18em;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
 /* ─── Thinking / Typing indicator ──────────────────────────────────────── */
@@ -1804,6 +1931,12 @@
     padding-inline: 4px;
   }
 
+  /* Sub-360 widths drop the new-chat (+) button so the composer rail
+     can breathe — paperclip + run-modes + textarea + send is enough on
+     tiny phones; new chat stays reachable via session chip popover. */
+  #chat-btn-new { display: none !important; }
+  .chat-input-bar { gap: 3px; }
+
   .chat-header-right {
     margin-left: 0;
   }
@@ -1992,6 +2125,11 @@
 
 .chat-textarea:focus {
   border-color: var(--accent);
+  /* Match the 3px accent ring used by base.css inputs so the composer focus
+     state is consistent with the rest of the WebUI. Layer over the existing
+     drop shadow so the textarea keeps its lift off the input bar. */
+  box-shadow: var(--shadow-md),
+              0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .chat-textarea::placeholder {
@@ -2006,28 +2144,32 @@
 }
 
 @media (max-width: 480px) {
+  /* Single-row composer on phones: paperclip · run-modes · + · textarea · send.
+     The textarea shrinks aggressively (flex:1 1 0; min-width:0) so all controls
+     stay reachable in one row without wrapping. New-chat (+) keeps its order=2
+     between settings and the input — only hidden on the tiniest screens. */
   .chat-input-bar {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
-    row-gap: 6px;
+    gap: 4px;
   }
 
-  #chat-btn-attach,
-  .chat-toolbar-wrap,
-  #chat-btn-new {
-    order: 0;
-  }
+  #chat-btn-attach { order: 0; }
+  .chat-toolbar-wrap { order: 1; }
+  #chat-btn-new { order: 2; }
 
   .chat-input-wrap {
-    order: 1;
-    flex: 1 1 calc(100% - 44px);
+    order: 3;
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   #chat-btn-send,
   #chat-btn-stop {
-    order: 2;
+    order: 4;
   }
 }
+
 
 /* Stop button pulse animation during streaming */
 #chat-btn-send.danger {
@@ -2197,7 +2339,7 @@
   cursor: default;
   user-select: none;
   /* Lift past the parent's opacity so the savings figure reads */
-  opacity: calc(1 / 0.75);
+  opacity: calc(1 / 0.85);
   transition: border-color 200ms ease, background 200ms ease, color 200ms ease;
 }
 [data-theme="dark"] .msg-meta__saved {
@@ -2289,9 +2431,10 @@
   white-space: nowrap;
   cursor: default;
   user-select: none;
-  /* The parent .msg-meta uses opacity:0.75; lift the combo back to full
-     so the celebration reads against the muted model/tokens text. */
-  opacity: calc(1 / 0.75);
+  /* The parent .msg-meta is dimmed (see .msg-meta opacity); lift the combo
+     back to full so the celebration reads against the muted model/tokens
+     text. The reciprocal is computed from the parent value above. */
+  opacity: calc(1 / 0.85);
   animation: msg-combo-in 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
   transition: border-color 200ms ease, background 200ms ease, color 200ms ease, box-shadow 200ms ease;
 }
@@ -2366,8 +2509,8 @@
 
 @keyframes msg-combo-in {
   0%   { opacity: 0;              transform: scale(0.6); }
-  60%  { opacity: calc(1 / 0.75); transform: scale(1.15); }
-  100% { opacity: calc(1 / 0.75); transform: scale(1); }
+  60%  { opacity: calc(1 / 0.85); transform: scale(1.15); }
+  100% { opacity: calc(1 / 0.85); transform: scale(1); }
 }
 
 @keyframes msg-combo-flicker {
@@ -2431,7 +2574,9 @@
   user-select: none;
   align-self: center;
   width: 100%;
-  max-width: 560px;
+  /* Wider envelope so the 5-col grid keeps cells readable without
+     forcing model names to ellipsis at common breakpoints. */
+  max-width: 680px;
 }
 
 .router-fx-header {
@@ -2466,8 +2611,14 @@
   0%, 100% { transform: translateX(0); }
   50%      { transform: translateX(3px); }
 }
+/* Settled header — keeps a faint accent tint so the strip reads "dial
+   locked on a tier" rather than "abandoned." Glyph arrows go translucent
+   accent so the "← MODEL ROUTER →" line continues to point at the pick. */
 .router-fx[data-state="settled"] .router-fx-header {
-  color: var(--text-dim);
+  color: color-mix(in srgb, var(--accent) 38%, var(--text-dim));
+}
+.router-fx[data-state="settled"] .router-fx-header .glyph {
+  color: color-mix(in srgb, var(--accent) 70%, transparent);
 }
 
 /* The grid surface — circuit-board hairlines with a faint dot field
@@ -2476,7 +2627,9 @@
 .router-fx-grid {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* 5 × 3 cells. JS pulls from _ROUTER_FX_GRID_COLS / _ROUTER_FX_GRID_ROWS;
+     keep these in sync with that constant when changing dimensions. */
+  grid-template-columns: repeat(5, 1fr);
   grid-template-rows: repeat(3, 30px);
   gap: 4px;
   padding: 8px;
@@ -2514,7 +2667,8 @@
 /* Real (operator-configured) cells: brighter type only — the accent
  * dot in the top-right corner is the sole "this is on the dial"
  * marker; the cell border stays neutral hairline so the grid reads
- * as one field, not as two segregated zones. */
+ * as one field, not as two segregated zones. The dot breathes slowly
+ * so the dial reads alive while idle. */
 .router-fx-cell[data-kind="real"] {
   color: var(--text);
 }
@@ -2528,6 +2682,15 @@
   border-radius: 50%;
   background: var(--accent);
   opacity: 0.7;
+  box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: router-fx-dot-idle 3.2s ease-in-out infinite;
+}
+@keyframes router-fx-dot-idle {
+  0%, 100% { opacity: 0.55; box-shadow: 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
+  50%      { opacity: 0.95; box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .router-fx-cell[data-kind="real"]::after { animation: none; }
 }
 
 /* Decoy cells: dim, italic, no dot — clearly "not on the dial" but
@@ -2553,29 +2716,89 @@
   animation-duration: 170ms;
 }
 
-/* Winner: solid orange border, accent text, gentle lift. */
+/* Winner: solid orange border, accent text, with a soft outer halo +
+ * inner top-edge highlight + a one-shot scan-line that sweeps top-to-
+ * bottom on landing. Reads as the locked pick, not just "selected".
+ * The dot in the corner accelerates its pulse to confirm the lock. */
 .router-fx-cell.win {
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 9%, var(--bg));
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 14%, var(--bg)) 0%,
+      color-mix(in srgb, var(--accent) 7%, var(--bg)) 100%);
   border-color: var(--accent);
-  font-weight: 600;
+  font-weight: 700;
   font-style: normal;
-  transform: translateY(-1px);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--accent) 35%, transparent);
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 8px 22px -8px color-mix(in srgb, var(--accent) 55%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 40%, transparent);
+  z-index: 4;
 }
 .router-fx-cell.win::after {
   opacity: 1;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 75%, transparent);
+  animation: router-fx-dot-locked 1.4s ease-in-out infinite;
+}
+/* Scan-line sweep — fires once when .win lands. Sits above the cell
+   surface but below text via z-index management. Pointer-events stay
+   off so it never interferes with click/copy on the model name. */
+.router-fx-cell.win::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent) 90%, transparent) 50%,
+    transparent 100%);
+  pointer-events: none;
+  opacity: 0;
+  animation: router-fx-scan 720ms cubic-bezier(.4,0,.2,1) 1 forwards;
+  z-index: 1;
+}
+@keyframes router-fx-scan {
+  0%   { opacity: 0;    top: 0;    }
+  20%  { opacity: 1;    top: 10%;  }
+  80%  { opacity: 0.85; top: 90%;  }
+  100% { opacity: 0;    top: 100%; }
+}
+@keyframes router-fx-dot-locked {
+  0%, 100% { opacity: 0.9; box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent); }
+  50%      { opacity: 1;   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 85%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .router-fx-cell.win::before { animation: none; opacity: 0; }
+  .router-fx-cell.win::after { animation: none; }
 }
 
-/* Fallback variant — chosen tier was the safe net, not the routed pick. */
+/* Fallback variant — chosen tier was the safe net, not the routed pick.
+   Mirrors the locked-winner treatment but in the danger palette so the
+   shape is the same and the colour change carries the signal. */
 .router-fx[data-source="fallback"] .router-fx-cell.win {
   color: var(--danger);
   border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 9%, var(--bg));
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--danger) 35%, transparent);
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--danger) 14%, var(--bg)) 0%,
+      color-mix(in srgb, var(--danger) 7%, var(--bg)) 100%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent),
+    0 8px 22px -8px color-mix(in srgb, var(--danger) 55%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--danger) 40%, transparent);
 }
 .router-fx[data-source="fallback"] .router-fx-cell.win::after {
   background: var(--danger);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--danger) 75%, transparent);
+}
+.router-fx[data-source="fallback"] .router-fx-cell.win::before {
+  background: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--danger) 90%, transparent) 50%,
+    transparent 100%);
 }
 
 /* Hammer selector — absolutely positioned, JS sets transform per hop.
@@ -2701,12 +2924,14 @@
   }
 }
 
-/* Mobile: collapse to 3 columns x 4 rows + smaller type. The hammer
- * still hops; the grid just gets denser. */
+/* Mobile: collapse to 3 columns × 5 rows + smaller type. The hammer
+ * still hops; the grid just gets denser. JS still renders 15 cells —
+ * keep the cell count divisible across the active grid template so no
+ * row ends short. */
 @media (max-width: 640px) {
   .router-fx-grid {
     grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: repeat(4, 28px);
+    grid-template-rows: repeat(5, 28px);
     padding: 6px;
     gap: 3px;
   }
@@ -2715,8 +2940,8 @@
 }
 @media (max-width: 380px) {
   .router-fx-grid {
-    grid-template-columns: repeat(2, 1fr);
-    grid-template-rows: repeat(6, 26px);
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(5, 26px);
   }
-  .router-fx-cell { font-size: 9.5px; }
+  .router-fx-cell { font-size: 9.5px; padding: 0 4px; }
 }

@@ -50,6 +50,17 @@ const App = (() => {
   function _buildLayout() {
     const app = document.getElementById('app');
     const basePath = _basePath();
+    // Strip the build-suffix from the cache-buster version ("0.1.0+1779915602")
+    // so the footer shows a stable semver. Whitelist to safe semver chars
+    // before interpolating — defense in depth against a tampered data attr.
+    // When the version attribute is absent or filtered to empty (no usable
+    // characters), the brand-foot block is suppressed entirely so "v" alone
+    // doesn't render as a broken-looking stub.
+    const rawVersion = document.getElementById('opensquilla-data')?.dataset.version || '';
+    const semver = (rawVersion.split('+')[0] || '').replace(/[^0-9A-Za-z.\-]/g, '').slice(0, 32);
+    const navFootHTML = semver
+      ? `<div class="nav-foot"><span class="nav-foot__dot" aria-hidden="true"></span><span class="nav-foot__ver">v${semver}</span></div>`
+      : '';
     app.innerHTML = `
       <nav class="sidebar" id="sidebar-nav" aria-label="Primary">
         <div class="nav-brand"><img class="brand-mark" src="${basePath}/static/img/opensquilla-mark.png" alt="" aria-hidden="true"> OpenSquilla</div>
@@ -68,6 +79,7 @@ const App = (() => {
         <a class="nav-item" href="#" data-path="/config">${icons.config()} Config</a>
         <a class="nav-item" href="#" data-path="/logs">${icons.logs()} Logs</a>
         <a class="nav-item" href="#" data-path="/approvals">${icons.approvals()} Approvals <span class="nav-badge hidden" id="approval-count">0</span></a>
+        ${navFootHTML}
       </nav>
       <div class="main">
         <header class="topbar">

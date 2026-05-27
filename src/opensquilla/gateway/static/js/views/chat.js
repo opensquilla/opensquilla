@@ -439,10 +439,30 @@ const ChatView = (() => {
 
   /* ── Welcome / empty-state card ──────────────────────────────────────── */
 
-  // Empty state — a single muted line, no interactive elements. The textarea
-  // below is the entry point; the empty thread shouldn't compete with it.
+  // Empty state — structured but quiet: a small signal-bar mark + a one-line
+  // title + a hint row of keyboard shortcuts. The textarea below remains the
+  // primary entry point, so this card uses subdued contrast and no actions.
+  // Outer `.chat-empty` class is preserved because chat.js elsewhere selects
+  // and removes it when the first message arrives.
   function _emptyStateHTML() {
-    return '<div class="chat-empty">No messages yet.</div>';
+    // Title is a styled <p>, not <h2>, so it stays out of the page's heading
+    // outline — the chat surface has no <h1> and other views reserve <h2> for
+    // content sections; using <h2> here would imply a structural section that
+    // isn't there. .chat-empty stays as the outer class so existing
+    // remove-on-first-message selectors still find this node.
+    return ''
+      + '<div class="chat-empty" role="status">'
+      +   '<div class="chat-empty__mark" aria-hidden="true">'
+      +     '<span class="chat-empty__bar"></span>'
+      +     '<span class="chat-empty__bar"></span>'
+      +     '<span class="chat-empty__bar"></span>'
+      +   '</div>'
+      +   '<p class="chat-empty__title">Start a conversation</p>'
+      +   '<p class="chat-empty__hint">Type below, or paste an image or file. '
+      +     '<kbd>↑</kbd> recalls history · <kbd>Esc</kbd> aborts a running turn · '
+      +     '<kbd>/</kbd> opens slash commands.'
+      +   '</p>'
+      + '</div>';
   }
 
   /* ── Per-bubble hover action row (Copy / Regenerate / Edit) ───────── */
@@ -2570,7 +2590,11 @@ const ChatView = (() => {
    * burst. The strip is non-blocking — assistant text streams below
    * the grid while the chase plays above. */
 
-  const _ROUTER_FX_GRID_COLS = 4;
+  // 5 cols × 3 rows = 15 cells. The wider grid gives the hammer more
+  // hops to play and shows the model space as a proper "dial" rather
+  // than a tight 4-cell strip. Mobile breakpoints collapse this down
+  // (see chat.css @media rules).
+  const _ROUTER_FX_GRID_COLS = 5;
   const _ROUTER_FX_GRID_ROWS = 3;
   const _ROUTER_FX_GRID_CELLS = _ROUTER_FX_GRID_COLS * _ROUTER_FX_GRID_ROWS;
 
@@ -2789,7 +2813,7 @@ const ChatView = (() => {
     return arr;
   }
 
-  // Assemble the 12-cell grid: real (deduped) entries + decoys
+  // Assemble the grid (_ROUTER_FX_GRID_CELLS cells): real (deduped) entries + decoys
   // filtered to avoid collisions with real model names, then shuffled
   // with a SEEDED RNG so the same turn always produces the same
   // layout across re-renders (live → DoneEvent → history-sync, plus

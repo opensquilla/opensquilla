@@ -70,3 +70,5 @@ tests/functional/reports/
 # Generated local outputs from document/meta-skill smoke runs.
 /texput.log
 /src/opensquilla/skills/bundled/multi-search-engine/Tokyo_5日出差行程.docx
+.design-state/
+audit/

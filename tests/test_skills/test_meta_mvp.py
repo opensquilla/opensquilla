@@ -2396,4 +2396,5 @@ def test_bundled_migration_assistant_has_routes() -> None:
     assert fetch.skill == "deep-research"
     repo_context = plan.steps[2]
     assert repo_context.skill == "git-diff"
-    assert "current repo" in repo_context.when
+    assert "current diff" in repo_context.when
+    assert "current branch" in repo_context.when

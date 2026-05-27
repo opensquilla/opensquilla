@@ -52,6 +52,54 @@ async def test_terminal_surface_wraps_existing_interactive_session(monkeypatch) 
     assert redraw_count == [1]
 
 
+async def test_terminal_surface_honors_legacy_prompt_session_monkeypatch(
+    monkeypatch,
+) -> None:
+    from opensquilla.cli.repl.terminal_surface import open_terminal_surface
+
+    yielded: list[dict[str, Any]] = []
+
+    class _FakeHandle:
+        async def next_line(self) -> str | None:
+            return "patched"
+
+        def invalidate(self) -> None:
+            return None
+
+    @asynccontextmanager
+    async def _fake_session(**kwargs: Any) -> AsyncIterator[_FakeHandle]:
+        yielded.append(kwargs)
+        yield _FakeHandle()
+
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.prompt.interactive_session",
+        _fake_session,
+    )
+
+    def _fail_if_original_session_runs(*_args: Any, **_kwargs: Any) -> object:
+        raise AssertionError("open_terminal_surface used the original prompt session")
+
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.prompt._get_or_create_chat_app",
+        _fail_if_original_session_runs,
+    )
+
+    async with open_terminal_surface(
+        surface=Surface.CLI_STANDALONE,
+        model="model-a",
+        session_id="session-a",
+    ) as tui_surface:
+        assert await tui_surface.next_line() == "patched"
+
+    assert yielded == [
+        {
+            "surface": Surface.CLI_STANDALONE,
+            "model": "model-a",
+            "session_id": "session-a",
+        }
+    ]
+
+
 async def test_terminal_surface_fails_fast_for_missing_output_contract() -> None:
     from opensquilla.cli.repl.terminal_surface import TerminalSurface
 

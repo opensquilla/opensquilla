@@ -207,6 +207,23 @@ def test_tui_backend_package_does_not_import_terminal_or_chat_adapters() -> None
     assert offenders == []
 
 
+def test_terminal_package_owns_prompt_toolkit_and_rich_terminal_presentation() -> None:
+    terminal_dir = PROJECT_ROOT / "src/opensquilla/cli/tui/terminal"
+
+    assert (terminal_dir / "app.py").exists()
+    assert (terminal_dir / "prompt.py").exists()
+    assert (terminal_dir / "renderer.py").exists()
+    assert (terminal_dir / "approval.py").exists()
+
+
+def test_adapter_package_owns_chat_runtime_composition() -> None:
+    adapter_dir = PROJECT_ROOT / "src/opensquilla/cli/tui/adapters"
+
+    assert (adapter_dir / "runtime_bridge.py").exists()
+    assert (adapter_dir / "launch_bridge.py").exists()
+    assert (adapter_dir / "turn_stream_defaults.py").exists()
+
+
 def test_repl_adapter_modules_are_legacy_aliases_to_tui_adapters() -> None:
     for repl_name, tui_name in (
         ("approval", "approval_adapter"),
@@ -276,11 +293,13 @@ def test_repl_gateway_runtime_is_legacy_alias_to_chat_core() -> None:
 
 
 def test_terminal_chat_adapter_uses_tui_slash_policy() -> None:
-    adapter_path = PROJECT_ROOT / "src/opensquilla/cli/tui/terminal_chat_adapter.py"
+    adapter_path = (
+        PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/terminal_chat_adapter.py"
+    )
 
     assert _imports_from_module(
         adapter_path,
-        "opensquilla.cli.tui.slash_policy",
+        "opensquilla.cli.tui.adapters.slash_policy",
     )
     assert not _imports_from_module(
         adapter_path,
@@ -290,22 +309,22 @@ def test_terminal_chat_adapter_uses_tui_slash_policy() -> None:
 
 def test_terminal_adapters_use_tui_prompt_and_signal_handlers() -> None:
     terminal_imports = {
-        "src/opensquilla/cli/tui/approval_adapter.py": {
-            "required": {"opensquilla.cli.tui.prompt"},
+        "src/opensquilla/cli/tui/terminal/approval.py": {
+            "required": {"opensquilla.cli.tui.terminal.prompt"},
             "forbidden": {"opensquilla.cli.repl.prompt"},
         },
-        "src/opensquilla/cli/tui/terminal_chat_adapter.py": {
+        "src/opensquilla/cli/tui/adapters/terminal_chat_adapter.py": {
             "required": {
-                "opensquilla.cli.tui.prompt",
-                "opensquilla.cli.tui.signal_handlers",
+                "opensquilla.cli.tui.terminal.prompt",
+                "opensquilla.cli.tui.terminal.signals",
             },
             "forbidden": {
                 "opensquilla.cli.repl.prompt",
                 "opensquilla.cli.repl.signal_handlers",
             },
         },
-        "src/opensquilla/cli/tui/terminal_surface.py": {
-            "required": {"opensquilla.cli.tui.prompt"},
+        "src/opensquilla/cli/tui/terminal/surface.py": {
+            "required": {"opensquilla.cli.tui.terminal.prompt"},
             "forbidden": {"opensquilla.cli.repl.prompt"},
         },
     }
@@ -323,24 +342,24 @@ def test_terminal_adapters_use_tui_prompt_and_signal_handlers() -> None:
 
 
 def test_tui_stream_uses_tui_prompt_toolbar_context() -> None:
-    stream_path = PROJECT_ROOT / "src/opensquilla/cli/tui/stream.py"
+    stream_path = PROJECT_ROOT / "src/opensquilla/cli/tui/terminal/stream.py"
 
     assert stream_path.exists()
-    assert _imports_from_module(stream_path, "opensquilla.cli.tui.prompt")
+    assert _imports_from_module(stream_path, "opensquilla.cli.tui.terminal.prompt")
     assert not _imports_from_module(stream_path, "opensquilla.cli.repl.prompt")
 
 
 def test_tui_prompt_uses_tui_chat_application_driver() -> None:
-    prompt_path = PROJECT_ROOT / "src/opensquilla/cli/tui/prompt.py"
+    prompt_path = PROJECT_ROOT / "src/opensquilla/cli/tui/terminal/prompt.py"
 
-    assert _imports_from_module(prompt_path, "opensquilla.cli.tui.app")
+    assert _imports_from_module(prompt_path, "opensquilla.cli.tui.terminal.app")
     assert not _imports_from_module(prompt_path, "opensquilla.cli.repl.app")
 
 
 def test_tui_terminal_renderer_uses_tui_stream_renderer() -> None:
-    renderer_path = PROJECT_ROOT / "src/opensquilla/cli/tui/terminal_renderer.py"
+    renderer_path = PROJECT_ROOT / "src/opensquilla/cli/tui/terminal/renderer.py"
 
-    assert _imports_from_module(renderer_path, "opensquilla.cli.tui.stream")
+    assert _imports_from_module(renderer_path, "opensquilla.cli.tui.terminal.stream")
     assert not _imports_from_module(renderer_path, "opensquilla.cli.repl.stream")
 
 
@@ -360,20 +379,26 @@ def test_tui_turn_bridge_uses_chat_turn_stream_core() -> None:
 
 
 def test_tui_turn_stream_defaults_owns_terminal_turn_dependencies() -> None:
-    defaults_path = PROJECT_ROOT / "src/opensquilla/cli/tui/turn_stream_defaults.py"
+    defaults_path = (
+        PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/turn_stream_defaults.py"
+    )
 
     assert _imports_name_from_module(
         defaults_path,
-        "opensquilla.cli.tui.terminal_renderer",
+        "opensquilla.cli.tui.terminal.renderer",
         "TerminalRenderer",
     )
     assert _imports_name_from_module(
         defaults_path,
-        "opensquilla.cli.tui.approval_adapter",
+        "opensquilla.cli.tui.terminal.approval",
         "maybe_handle_approval",
     )
-    assert _imports_from_module(defaults_path, "opensquilla.cli.tui.input_bridge")
-    assert _imports_from_module(defaults_path, "opensquilla.cli.tui.terminal_bridge")
+    assert _imports_from_module(
+        defaults_path, "opensquilla.cli.tui.adapters.input_bridge"
+    )
+    assert _imports_from_module(
+        defaults_path, "opensquilla.cli.tui.adapters.terminal_bridge"
+    )
     assert _imports_from_module(defaults_path, "opensquilla.cli.ui")
 
 
@@ -382,25 +407,25 @@ def test_tui_turn_bridge_delegates_terminal_turn_defaults() -> None:
 
     assert _imports_from_module(
         bridge_path,
-        "opensquilla.cli.tui.turn_stream_defaults",
+        "opensquilla.cli.tui.adapters.turn_stream_defaults",
     )
     assert not _imports_name_from_module(
         bridge_path,
-        "opensquilla.cli.tui.terminal_renderer",
+        "opensquilla.cli.tui.terminal.renderer",
         "TerminalRenderer",
     )
     assert not _imports_name_from_module(
         bridge_path,
-        "opensquilla.cli.tui.approval_adapter",
+        "opensquilla.cli.tui.terminal.approval",
         "maybe_handle_approval",
     )
     assert not _imports_from_module(
         bridge_path,
-        "opensquilla.cli.tui.input_bridge",
+        "opensquilla.cli.tui.adapters.input_bridge",
     )
     assert not _imports_from_module(
         bridge_path,
-        "opensquilla.cli.tui.terminal_bridge",
+        "opensquilla.cli.tui.adapters.terminal_bridge",
     )
     assert not _imports_from_module(bridge_path, "opensquilla.cli.ui")
 
@@ -410,21 +435,21 @@ def test_tui_turn_bridge_import_does_not_load_terminal_turn_defaults(
 ) -> None:  # noqa: ANN001
     for module_name in (
         "opensquilla.cli.tui.turn_bridge",
-        "opensquilla.cli.tui.turn_stream_defaults",
-        "opensquilla.cli.tui.terminal_renderer",
-        "opensquilla.cli.tui.approval_adapter",
-        "opensquilla.cli.tui.input_bridge",
-        "opensquilla.cli.tui.terminal_bridge",
+        "opensquilla.cli.tui.adapters.turn_stream_defaults",
+        "opensquilla.cli.tui.terminal.renderer",
+        "opensquilla.cli.tui.terminal.approval",
+        "opensquilla.cli.tui.adapters.input_bridge",
+        "opensquilla.cli.tui.adapters.terminal_bridge",
     ):
         monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     importlib.import_module("opensquilla.cli.tui.turn_bridge")
 
-    assert "opensquilla.cli.tui.turn_stream_defaults" not in sys.modules
-    assert "opensquilla.cli.tui.terminal_renderer" not in sys.modules
-    assert "opensquilla.cli.tui.approval_adapter" not in sys.modules
-    assert "opensquilla.cli.tui.input_bridge" not in sys.modules
-    assert "opensquilla.cli.tui.terminal_bridge" not in sys.modules
+    assert "opensquilla.cli.tui.adapters.turn_stream_defaults" not in sys.modules
+    assert "opensquilla.cli.tui.terminal.renderer" not in sys.modules
+    assert "opensquilla.cli.tui.terminal.approval" not in sys.modules
+    assert "opensquilla.cli.tui.adapters.input_bridge" not in sys.modules
+    assert "opensquilla.cli.tui.adapters.terminal_bridge" not in sys.modules
 
 
 def test_chat_gateway_runtime_has_no_terminal_presentation_dependencies() -> None:
@@ -521,21 +546,21 @@ def test_tui_chat_cmd_exports_resolves_runtime_dependencies_from_tui() -> None:
     exports = importlib.import_module("opensquilla.cli.tui.chat_cmd_exports")
 
     assert exports.MODULE_COMPAT_EXPORTS["chat_compat"] == (
-        "opensquilla.cli.tui.chat_compat"
+        "opensquilla.cli.tui.adapters.chat_compat"
     )
     assert exports.MODULE_EXPORTS["_chat_compat"] == (
-        "opensquilla.cli.tui.chat_compat"
+        "opensquilla.cli.tui.adapters.chat_compat"
     )
     assert exports.MODULE_COMPAT_EXPORTS["runtime_bridge"] == (
-        "opensquilla.cli.tui.runtime_bridge"
+        "opensquilla.cli.tui.adapters.runtime_bridge"
     )
     assert exports.MODULE_EXPORTS["_runtime_bridge"] == (
-        "opensquilla.cli.tui.runtime_bridge"
+        "opensquilla.cli.tui.adapters.runtime_bridge"
     )
 
 
 def test_tui_launch_bridge_uses_chat_core_launch_request() -> None:
-    launch_bridge_path = PROJECT_ROOT / "src/opensquilla/cli/tui/launch_bridge.py"
+    launch_bridge_path = PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/launch_bridge.py"
 
     assert _imports_name_from_module(
         launch_bridge_path,
@@ -544,16 +569,16 @@ def test_tui_launch_bridge_uses_chat_core_launch_request() -> None:
     )
     assert _imports_from_module(
         launch_bridge_path,
-        "opensquilla.cli.tui.chat_cmd_exports",
+        "opensquilla.cli.tui.adapters.chat_cmd_exports",
     )
 
 
 def test_runtime_bridge_uses_tui_slash_bridge() -> None:
-    runtime_bridge = PROJECT_ROOT / "src/opensquilla/cli/tui/runtime_bridge.py"
+    runtime_bridge = PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/runtime_bridge.py"
 
     assert _imports_name_from_package(
         runtime_bridge,
-        "opensquilla.cli.tui",
+        "opensquilla.cli.tui.adapters",
         "slash_bridge",
     )
     assert not _imports_name_from_package(
@@ -594,27 +619,27 @@ def test_runtime_bridge_uses_tui_slash_bridge() -> None:
 
 
 def test_tui_commands_use_chat_exit_policy() -> None:
-    commands = PROJECT_ROOT / "src/opensquilla/cli/tui/commands.py"
+    commands = PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/commands.py"
 
     assert _imports_from_module(commands, "opensquilla.cli.chat.commands")
 
 
 def test_tui_slash_bridge_uses_tui_slash_adapters() -> None:
-    slash_bridge = PROJECT_ROOT / "src/opensquilla/cli/tui/slash_bridge.py"
+    slash_bridge = PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/slash_bridge.py"
 
     assert _imports_name_from_package(
         slash_bridge,
-        "opensquilla.cli.tui",
-        "slash_adapter",
+        "opensquilla.cli.tui.adapters",
+        "slash_gateway",
     )
     assert _imports_name_from_package(
         slash_bridge,
-        "opensquilla.cli.tui",
-        "standalone_slash_adapter",
+        "opensquilla.cli.tui.adapters",
+        "slash_standalone",
     )
     assert _imports_from_module(
         slash_bridge,
-        "opensquilla.cli.tui.slash_adapter",
+        "opensquilla.cli.tui.adapters.slash_gateway",
     )
     assert not _imports_name_from_package(
         slash_bridge,
@@ -630,7 +655,7 @@ def test_tui_slash_bridge_uses_tui_slash_adapters() -> None:
 
 def test_tui_slash_adapters_use_shared_chat_models() -> None:
     adapter_imports = {
-        "src/opensquilla/cli/tui/slash_adapter.py": {
+        "src/opensquilla/cli/tui/adapters/slash_gateway.py": {
             "required": {
                 "opensquilla.cli.chat.session_state",
                 "opensquilla.cli.chat.turn",
@@ -640,11 +665,11 @@ def test_tui_slash_adapters_use_shared_chat_models() -> None:
                 "opensquilla.cli.repl.stream",
             },
         },
-        "src/opensquilla/cli/tui/slash_bridge.py": {
+        "src/opensquilla/cli/tui/adapters/slash_bridge.py": {
             "required": {"opensquilla.cli.chat.session_state"},
             "forbidden": {"opensquilla.cli.repl.session_state"},
         },
-        "src/opensquilla/cli/tui/standalone_slash_adapter.py": {
+        "src/opensquilla/cli/tui/adapters/slash_standalone.py": {
             "required": {
                 "opensquilla.cli.chat.session_state",
                 "opensquilla.cli.chat.turn",
@@ -670,50 +695,50 @@ def test_tui_slash_adapters_use_shared_chat_models() -> None:
 
 def test_tui_input_and_command_adapters_do_not_import_repl_helpers() -> None:
     adapter_imports = {
-        "src/opensquilla/cli/tui/app.py": {
-            "required": {"opensquilla.cli.tui.paste"},
+        "src/opensquilla/cli/tui/terminal/app.py": {
+            "required": {"opensquilla.cli.tui.terminal.paste"},
             "forbidden": {"opensquilla.cli.repl.paste"},
         },
-        "src/opensquilla/cli/tui/prompt.py": {
+        "src/opensquilla/cli/tui/terminal/prompt.py": {
             "required": {
-                "opensquilla.cli.tui.commands",
-                "opensquilla.cli.tui.paste",
+                "opensquilla.cli.tui.adapters.commands",
+                "opensquilla.cli.tui.terminal.paste",
             },
             "forbidden": {
                 "opensquilla.cli.repl.commands",
                 "opensquilla.cli.repl.paste",
             },
         },
-        "src/opensquilla/cli/tui/slash_adapter.py": {
+        "src/opensquilla/cli/tui/adapters/slash_gateway.py": {
             "required": {
-                "opensquilla.cli.tui.commands",
-                "opensquilla.cli.tui.input_bridge",
+                "opensquilla.cli.tui.adapters.commands",
+                "opensquilla.cli.tui.adapters.input_bridge",
             },
             "forbidden": {
                 "opensquilla.cli.repl.commands",
                 "opensquilla.cli.repl.input_bridge",
             },
         },
-        "src/opensquilla/cli/tui/standalone_slash_adapter.py": {
+        "src/opensquilla/cli/tui/adapters/slash_standalone.py": {
             "required": {
-                "opensquilla.cli.tui.commands",
-                "opensquilla.cli.tui.input_bridge",
+                "opensquilla.cli.tui.adapters.commands",
+                "opensquilla.cli.tui.adapters.input_bridge",
             },
             "forbidden": {
                 "opensquilla.cli.repl.commands",
                 "opensquilla.cli.repl.input_bridge",
             },
         },
-        "src/opensquilla/cli/tui/chat_compat.py": {
-            "required": {"opensquilla.cli.tui.input_bridge"},
+        "src/opensquilla/cli/tui/adapters/chat_compat.py": {
+            "required": {"opensquilla.cli.tui.adapters.input_bridge"},
             "forbidden": {"opensquilla.cli.repl.input_bridge"},
         },
         "src/opensquilla/cli/tui/turn_bridge.py": {
-            "required": {"opensquilla.cli.tui.turn_stream_defaults"},
+            "required": {"opensquilla.cli.tui.adapters.turn_stream_defaults"},
             "forbidden": {"opensquilla.cli.repl.input_bridge"},
         },
-        "src/opensquilla/cli/tui/turn_stream_defaults.py": {
-            "required": {"opensquilla.cli.tui.input_bridge"},
+        "src/opensquilla/cli/tui/adapters/turn_stream_defaults.py": {
+            "required": {"opensquilla.cli.tui.adapters.input_bridge"},
             "forbidden": {"opensquilla.cli.repl.input_bridge"},
         },
         "src/opensquilla/cli/chat/gateway_runtime.py": {
@@ -726,7 +751,7 @@ def test_tui_input_and_command_adapters_do_not_import_repl_helpers() -> None:
             },
         },
         "src/opensquilla/cli/tui/standalone_runtime.py": {
-            "required": {"opensquilla.cli.tui.commands"},
+            "required": {"opensquilla.cli.tui.adapters.commands"},
             "forbidden": {"opensquilla.cli.repl.commands"},
         },
     }
@@ -745,7 +770,7 @@ def test_tui_input_and_command_adapters_do_not_import_repl_helpers() -> None:
 
 def test_tui_owned_compat_modules_do_not_import_repl_modules() -> None:
     paths = [
-        PROJECT_ROOT / "src/opensquilla/cli/tui/chat_compat.py",
+        PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/chat_compat.py",
         PROJECT_ROOT / "src/opensquilla/cli/tui/standalone_runtime.py",
     ]
 
@@ -910,7 +935,7 @@ def test_runtime_contracts_are_tui_native() -> None:
 def test_runtime_module_does_not_import_prompt_toolkit(monkeypatch) -> None:
     for name in list(sys.modules):
         if name == "opensquilla.cli.tui.runtime":
-            del sys.modules[name]
+            monkeypatch.delitem(sys.modules, name, raising=False)
 
     original_import = __import__
 
@@ -933,7 +958,7 @@ def test_runtime_module_does_not_import_chat_or_engine_surface(monkeypatch) -> N
     }
     for name in list(sys.modules):
         if name in fresh_runtime_modules:
-            del sys.modules[name]
+            monkeypatch.delitem(sys.modules, name, raising=False)
 
     original_import = __import__
     forbidden = {
@@ -1016,7 +1041,7 @@ def test_runtime_module_does_not_import_chat_or_engine_surface(monkeypatch) -> N
 def test_chat_cmd_import_does_not_load_terminal_runtime(monkeypatch) -> None:
     for name in list(sys.modules):
         if name == "opensquilla.cli.chat_cmd" or name.startswith("opensquilla.cli.tui."):
-            del sys.modules[name]
+            monkeypatch.delitem(sys.modules, name, raising=False)
 
     original_import = __import__
 

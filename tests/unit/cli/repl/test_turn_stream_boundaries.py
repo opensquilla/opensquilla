@@ -8,12 +8,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 CHAT_CMD = PROJECT_ROOT / "src/opensquilla/cli/chat_cmd.py"
 TURN_STREAM = PROJECT_ROOT / "src/opensquilla/cli/chat/turn_stream.py"
 TURN_BRIDGE = PROJECT_ROOT / "src/opensquilla/cli/tui/turn_bridge.py"
-TURN_STREAM_DEFAULTS = PROJECT_ROOT / "src/opensquilla/cli/tui/turn_stream_defaults.py"
-GATEWAY_SLASH_ADAPTER = PROJECT_ROOT / "src/opensquilla/cli/tui/slash_adapter.py"
-STANDALONE_SLASH_ADAPTER = (
-    PROJECT_ROOT / "src/opensquilla/cli/tui/standalone_slash_adapter.py"
+TURN_STREAM_DEFAULTS = (
+    PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/turn_stream_defaults.py"
 )
-TUI_APPROVAL_ADAPTER = "opensquilla.cli.tui.approval_adapter"
+GATEWAY_SLASH_ADAPTER = (
+    PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/slash_gateway.py"
+)
+STANDALONE_SLASH_ADAPTER = (
+    PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/slash_standalone.py"
+)
+TUI_APPROVAL_ADAPTER = "opensquilla.cli.tui.terminal.approval"
 
 
 def _imports_name_from_module(path: Path, module: str, name: str) -> bool:
@@ -320,7 +324,7 @@ def test_turn_stream_defaults_uses_tui_approval_adapter() -> None:
 def test_turn_bridge_delegates_tui_approval_defaults() -> None:
     assert _imports_from_module(
         TURN_BRIDGE,
-        "opensquilla.cli.tui.turn_stream_defaults",
+        "opensquilla.cli.tui.adapters.turn_stream_defaults",
     )
     assert not _imports_name_from_module(
         TURN_BRIDGE,

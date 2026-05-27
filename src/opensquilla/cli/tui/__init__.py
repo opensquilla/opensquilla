@@ -1,6 +1,7 @@
 """Backend contracts and runtime for OpenSquilla terminal UI surfaces."""
 
 __all__ = [
+    "adapters",
     "approval_adapter",
     "app",
     "backend",
@@ -20,6 +21,7 @@ __all__ = [
     "state",
     "standalone_slash_adapter",
     "standalone_runtime",
+    "terminal",
     "terminal_bridge",
     "terminal_chat_adapter",
     "terminal_renderer",

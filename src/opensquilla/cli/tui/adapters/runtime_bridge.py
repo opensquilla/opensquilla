@@ -1,0 +1,408 @@
+"""TUI runtime launch bridge for chat command wiring.
+
+This module owns concrete runtime dependency assembly and terminal bridge
+defaults. ``chat_cmd.py`` supplies mode-level CLI parameters; the TUI bridge
+decides how terminal, slash-command, and turn-stream callbacks become gateway
+or standalone runtime dependencies.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, Protocol
+
+from rich.panel import Panel
+
+import opensquilla.cli.tui.adapters.terminal_bridge as _terminal_bridge
+from opensquilla.cli.chat import gateway_runtime as _gateway_runtime
+from opensquilla.cli.chat.session_context import (
+    GatewayRuntimeScope,
+    StandaloneRuntimeScope,
+)
+from opensquilla.cli.chat.turn import TurnResult
+from opensquilla.cli.tui import standalone_runtime as _standalone_runtime
+from opensquilla.cli.tui.adapters import commands as _commands
+from opensquilla.cli.tui.adapters import slash_bridge as _slash_bridge
+from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
+from opensquilla.cli.ui import ACCENT, console, error_panel
+from opensquilla.engine.commands import Surface
+
+PENDING_QUEUE_MAX_SIZE = 8
+
+GatewayRuntimeDependencies = _gateway_runtime.GatewayRuntimeDependencies
+GatewayClientLike = _gateway_runtime.GatewayClientLike
+StandaloneRuntimeDependencies = _standalone_runtime.StandaloneRuntimeDependencies
+
+
+class GatewayTerminalReplRunner(Protocol):
+    async def __call__(
+        self,
+        *,
+        surface: Surface,
+        scope: GatewayRuntimeScope,
+        dispatch: Callable[[str], Coroutine[Any, Any, bool]]
+        | Callable[[str], Awaitable[bool]],
+        abort_active_turn: Callable[[], Awaitable[None]] | None = None,
+        queue_max_size: int | None = None,
+    ) -> None: ...
+
+
+async def run_concurrent_repl(
+    *,
+    surface: Surface,
+    scope: GatewayRuntimeScope | StandaloneRuntimeScope,
+    dispatch: Callable[[str], Coroutine[Any, Any, bool]] | Callable[[str], Awaitable[bool]],
+    abort_active_turn: Callable[[], Awaitable[None]] | None = None,
+    queue_max_size: int | None = None,
+) -> None:
+    await _terminal_bridge.run_concurrent_repl(
+        surface=surface,
+        scope=scope,
+        dispatch=dispatch,
+        queue_max_size=PENDING_QUEUE_MAX_SIZE
+        if queue_max_size is None
+        else queue_max_size,
+        abort_active_turn=abort_active_turn,
+    )
+
+
+def get_tui_output(
+    scope: GatewayRuntimeScope | StandaloneRuntimeScope,
+) -> TuiOutputHandle | None:
+    return _terminal_bridge.get_tui_output(scope)
+
+
+def clear_current_cancel() -> None:
+    _terminal_bridge.clear_current_cancel()
+
+
+def cli_sender_id() -> str:
+    return _standalone_runtime.cli_sender_id()
+
+
+async def read_standalone_transcript(
+    session_manager: Any,
+    session_key: str,
+) -> list[Any] | None:
+    return await _standalone_runtime.read_standalone_transcript(
+        session_manager,
+        session_key,
+    )
+
+
+def standalone_slash_services_from_runtime(
+    svc: Any,
+) -> Any:
+    return _standalone_runtime.standalone_slash_services_from_runtime(svc)
+
+
+def _turn_stream_dependencies() -> Any:
+    from opensquilla.cli.tui import turn_bridge as _turn_bridge
+
+    return _turn_bridge.default_turn_stream_dependencies()
+
+
+async def stream_response_gateway(
+    client: GatewayClientLike,
+    session_key: str,
+    message: str,
+    elevated_state: dict[str, str | None] | None = None,
+    attachments: list[dict] | None = None,
+    *,
+    tui_output: TuiOutputHandle | None = None,
+) -> TurnResult:
+    from opensquilla.cli.tui import turn_bridge as _turn_bridge
+
+    return await _turn_bridge.stream_response_gateway(
+        client,
+        session_key,
+        message,
+        elevated_state,
+        attachments=attachments,
+        tui_output=tui_output,
+        deps=_turn_stream_dependencies(),
+    )
+
+
+async def handle_gateway_slash_command(
+    cmd: str,
+    state: Any,
+    client: GatewayClientLike,
+    elevated_state: dict[str, str | None],
+    *,
+    tui_output: TuiOutputHandle | None = None,
+) -> bool:
+    return await _slash_bridge.handle_gateway_slash_command(
+        cmd,
+        state,
+        client,
+        elevated_state,
+        tui_output=tui_output,
+        stream_response=stream_response_gateway,
+    )
+
+
+def _gateway_input_loop_for(
+    repl_runner: GatewayTerminalReplRunner,
+) -> _gateway_runtime.GatewayRunInputLoop:
+    async def _run_gateway_input_loop(
+        *,
+        scope: GatewayRuntimeScope,
+        dispatch: Callable[[str], Coroutine[Any, Any, bool]],
+        abort_active_turn: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        await repl_runner(
+            surface=Surface.CLI_GATEWAY,
+            scope=scope,
+            dispatch=dispatch,
+            abort_active_turn=abort_active_turn,
+        )
+
+    return _run_gateway_input_loop
+
+
+def _gateway_runtime_notifier(
+    output_console: Any,
+    error_panel_factory: Callable[[str], Any],
+) -> Callable[[_gateway_runtime.GatewayRuntimeNotice], None]:
+    def _notify(notice: _gateway_runtime.GatewayRuntimeNotice) -> None:
+        if notice.kind == "created":
+            output_console.print(
+                f"[dim]Connected to gateway. Session: {notice.session_key}[/dim]"
+            )
+            return
+        if notice.kind == "resumed":
+            output_console.print(
+                "[dim]Connected to gateway. "
+                f"Resuming session: {notice.session_key}[/dim]"
+            )
+            return
+        if notice.kind == "resume_model_ignored":
+            output_console.print(
+                "[yellow]Note: --model is honored only at session creation; "
+                "ignored when resuming a session.[/yellow]"
+            )
+            return
+        if notice.kind == "model":
+            output_console.print(f"[dim]Model: {notice.model}[/dim]")
+            return
+        if notice.kind == "welcome":
+            output_console.print(
+                Panel(
+                    f"[bold {ACCENT}]OpenSquilla Chat[/bold {ACCENT}]\n"
+                    "[dim]Enter sends. Ctrl+C cancels the current turn or clears "
+                    "input. Ctrl+D exits. /help lists commands.[/dim]",
+                    title="Gateway",
+                    border_style=ACCENT,
+                )
+            )
+            return
+        if notice.kind == "goodbye":
+            output_console.print("[yellow]Goodbye.[/yellow]")
+            return
+        if notice.kind == "unknown_command":
+            output_console.print("[red]Unknown command.[/red] [dim]Use /help.[/dim]")
+            return
+        if notice.kind == "error":
+            output_console.print(error_panel_factory(notice.message or ""))
+
+    return _notify
+
+
+async def stream_response_turnrunner(
+    turn_runner: object,
+    session_key: str,
+    tool_ctx: object,
+    message: str,
+    model: str | None = None,
+    svc: object = None,
+    timeout: float | None = None,
+    *,
+    tui_output: TuiOutputHandle | None = None,
+) -> TurnResult:
+    from opensquilla.cli.tui import turn_bridge as _turn_bridge
+
+    return await _turn_bridge.stream_response_turnrunner(
+        turn_runner,
+        session_key,
+        tool_ctx,
+        message,
+        model=model,
+        svc=svc,
+        timeout=timeout,
+        tui_output=tui_output,
+        deps=_turn_stream_dependencies(),
+    )
+
+
+async def handle_image_command_turnrunner(
+    turn_runner: object,
+    session_key: str,
+    tool_ctx: object,
+    command: str,
+    model: str | None = None,
+    svc: object = None,
+    timeout: float | None = None,
+    *,
+    tui_output: TuiOutputHandle | None = None,
+) -> TurnResult:
+    from opensquilla.cli.tui import turn_bridge as _turn_bridge
+
+    return await _turn_bridge.handle_image_command_turnrunner(
+        turn_runner,
+        session_key,
+        tool_ctx,
+        command,
+        model=model,
+        svc=svc,
+        timeout=timeout,
+        tui_output=tui_output,
+        deps=_turn_stream_dependencies(),
+    )
+
+
+async def run_gateway_chat(
+    *,
+    model: str | None,
+    session_id: str | None,
+    stream_response: _gateway_runtime.GatewayStreamResponse | None = None,
+    handle_slash_command: _gateway_runtime.GatewayHandleSlashCommand | None = None,
+    run_concurrent_repl: GatewayTerminalReplRunner | None = None,
+    output_console: Any | None = None,
+    error_panel_factory: Callable[[str], Any] | None = None,
+) -> None:
+    repl_runner = (
+        globals()["run_concurrent_repl"] if run_concurrent_repl is None else run_concurrent_repl
+    )
+    active_console = console if output_console is None else output_console
+    active_error_panel = (
+        error_panel if error_panel_factory is None else error_panel_factory
+    )
+    active_stream_response = (
+        stream_response_gateway if stream_response is None else stream_response
+    )
+    if handle_slash_command is None:
+        if (
+            stream_response is None
+            and output_console is None
+            and error_panel_factory is None
+        ):
+            active_handle_slash_command = handle_gateway_slash_command
+        else:
+
+            async def _handle_gateway_slash_command_with_runtime_defaults(
+                cmd: str,
+                state: Any,
+                client: GatewayClientLike,
+                elevated_state: dict[str, str | None],
+                *,
+                tui_output: TuiOutputHandle | None = None,
+            ) -> bool:
+                return await _slash_bridge.handle_gateway_slash_command(
+                    cmd,
+                    state,
+                    client,
+                    elevated_state,
+                    tui_output=tui_output,
+                    stream_response=active_stream_response,
+                    output_console=active_console,
+                    error_panel_factory=active_error_panel,
+                )
+
+            active_handle_slash_command = (
+                _handle_gateway_slash_command_with_runtime_defaults
+            )
+    else:
+        active_handle_slash_command = handle_slash_command
+
+    await _gateway_runtime.run_gateway_chat(
+        model=model,
+        session_id=session_id,
+        deps=_gateway_runtime.GatewayRuntimeDependencies(
+            stream_response=active_stream_response,
+            handle_slash_command=active_handle_slash_command,
+            run_input_loop=_gateway_input_loop_for(repl_runner),
+            get_tui_output=get_tui_output,
+            is_exit_command=lambda value: _commands.is_exit_command(
+                value,
+                Surface.CLI_GATEWAY,
+            ),
+            notify=_gateway_runtime_notifier(active_console, active_error_panel),
+        ),
+    )
+
+
+async def gateway_chat_runner(model: str | None, session_id: str | None) -> None:
+    await run_gateway_chat(
+        model=model,
+        session_id=session_id,
+    )
+
+
+async def run_standalone_chat(
+    *,
+    model: str | None,
+    session_id: str | None,
+    stream_response: _standalone_runtime.StandaloneStreamResponse | None = None,
+    image_command_handler: _standalone_runtime.StandaloneImageCommandHandler | None = None,
+    run_concurrent_repl: _standalone_runtime.StandaloneRunConcurrentRepl | None = None,
+    workspace: str | None = None,
+    workspace_strict: bool | None = None,
+    timeout: float | None = None,
+    output_console: Any | None = None,
+    error_panel_factory: Callable[[str], Any] | None = None,
+) -> None:
+    repl_runner = (
+        globals()["run_concurrent_repl"] if run_concurrent_repl is None else run_concurrent_repl
+    )
+    active_console = console if output_console is None else output_console
+    active_error_panel = (
+        error_panel if error_panel_factory is None else error_panel_factory
+    )
+    active_stream_response = (
+        stream_response_turnrunner if stream_response is None else stream_response
+    )
+    active_image_command_handler = (
+        handle_image_command_turnrunner
+        if image_command_handler is None
+        else image_command_handler
+    )
+
+    def _sync_slash_adapter_io() -> None:
+        _slash_bridge.sync_standalone_slash_adapter_io(
+            output_console=active_console,
+            error_panel_factory=active_error_panel,
+        )
+
+    await _standalone_runtime.run_standalone_chat(
+        model=model,
+        session_id=session_id,
+        workspace=workspace,
+        workspace_strict=workspace_strict,
+        timeout=timeout,
+        deps=_standalone_runtime.StandaloneRuntimeDependencies(
+            stream_response=active_stream_response,
+            image_command_handler=active_image_command_handler,
+            run_concurrent_repl=repl_runner,
+            slash_services_factory=standalone_slash_services_from_runtime,
+            sync_slash_adapter_io=_sync_slash_adapter_io,
+            get_tui_output=get_tui_output,
+            output_console=active_console,
+        ),
+    )
+
+
+async def standalone_chat_runner(
+    model: str | None,
+    session_id: str | None,
+    workspace: str | None = None,
+    workspace_strict: bool | None = None,
+    timeout: float | None = None,
+) -> None:
+    await run_standalone_chat(
+        model=model,
+        session_id=session_id,
+        workspace=workspace,
+        workspace_strict=workspace_strict,
+        timeout=timeout,
+    )

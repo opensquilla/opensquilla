@@ -54,7 +54,7 @@ def approval_surface_for_tui_output(
     tui_output: TuiOutputHandle | None,
     default: Surface,
 ) -> Surface:
-    import opensquilla.cli.tui.turn_stream_defaults as turn_stream_defaults  # noqa: PLC0415
+    import opensquilla.cli.tui.adapters.turn_stream_defaults as turn_stream_defaults  # noqa: PLC0415
 
     return turn_stream_defaults.approval_surface_for_tui_output(tui_output, default)
 
@@ -63,7 +63,7 @@ def _approval_surface_for_terminal_output(
     tui_output: TuiOutputHandle | None,
     default: object | None,
 ) -> object | None:
-    import opensquilla.cli.tui.turn_stream_defaults as turn_stream_defaults  # noqa: PLC0415
+    import opensquilla.cli.tui.adapters.turn_stream_defaults as turn_stream_defaults  # noqa: PLC0415
 
     return turn_stream_defaults._approval_surface_for_terminal_output(
         tui_output,
@@ -72,7 +72,7 @@ def _approval_surface_for_terminal_output(
 
 
 def image_prompt_and_attachments(command: str) -> tuple[str, list[dict[str, str]]]:
-    import opensquilla.cli.tui.turn_stream_defaults as turn_stream_defaults  # noqa: PLC0415
+    import opensquilla.cli.tui.adapters.turn_stream_defaults as turn_stream_defaults  # noqa: PLC0415
 
     return turn_stream_defaults.image_prompt_and_attachments(command)
 
@@ -88,7 +88,7 @@ def default_turn_stream_dependencies(
     output_console: Any | None = None,
     error_panel_factory: Callable[[str], Any] | None = None,
 ) -> TurnStreamDependencies:
-    import opensquilla.cli.tui.turn_stream_defaults as turn_stream_defaults  # noqa: PLC0415
+    import opensquilla.cli.tui.adapters.turn_stream_defaults as turn_stream_defaults  # noqa: PLC0415
 
     return turn_stream_defaults.default_turn_stream_dependencies(
         renderer_factory=renderer_factory,

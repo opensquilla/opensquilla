@@ -6,8 +6,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 TERMINAL_CHAT_ADAPTER = "opensquilla.cli.repl.terminal_chat_adapter"
 TERMINAL_CHAT_ADAPTER_PACKAGE = "opensquilla.cli.repl"
-TUI_TERMINAL_BRIDGE = "opensquilla.cli.tui.terminal_bridge"
-TUI_TERMINAL_CHAT_ADAPTER = "opensquilla.cli.tui.terminal_chat_adapter"
+TUI_TERMINAL_BRIDGE = "opensquilla.cli.tui.adapters.terminal_bridge"
+TUI_TERMINAL_CHAT_ADAPTER = "opensquilla.cli.tui.adapters.terminal_chat_adapter"
 
 
 def _imports_terminal_chat_adapter(path: Path) -> bool:
@@ -44,14 +44,14 @@ def test_repl_terminal_modules_do_not_own_terminal_chat_adapter() -> None:
 
 
 def test_runtime_bridge_imports_tui_terminal_bridge() -> None:
-    runtime_bridge = PROJECT_ROOT / "src/opensquilla/cli/tui/runtime_bridge.py"
+    runtime_bridge = PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/runtime_bridge.py"
 
     assert _imports_from_module(runtime_bridge, TUI_TERMINAL_BRIDGE)
     assert not _imports_terminal_chat_adapter(runtime_bridge)
 
 
 def test_tui_terminal_bridge_imports_tui_terminal_chat_adapter() -> None:
-    terminal_bridge = PROJECT_ROOT / "src/opensquilla/cli/tui/terminal_bridge.py"
+    terminal_bridge = PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/terminal_bridge.py"
 
     assert _imports_from_module(terminal_bridge, TUI_TERMINAL_CHAT_ADAPTER)
 

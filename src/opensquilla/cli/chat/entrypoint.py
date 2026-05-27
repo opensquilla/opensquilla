@@ -43,11 +43,11 @@ class LazyChatCommandAll(Sequence[str]):
 
 
 def _chat_cmd_exports() -> Any:
-    return importlib.import_module("opensquilla.cli.tui.chat_cmd_exports")
+    return importlib.import_module("opensquilla.cli.tui.adapters.chat_cmd_exports")
 
 
 def default_chat_launcher() -> ChatCommandLauncher:
-    module = importlib.import_module("opensquilla.cli.tui.launch_bridge")
+    module = importlib.import_module("opensquilla.cli.tui.adapters.launch_bridge")
     return cast(ChatCommandLauncher, module.launch_chat_command)
 
 

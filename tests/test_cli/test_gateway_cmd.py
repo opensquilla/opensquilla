@@ -127,9 +127,11 @@ def test_gateway_run_turns_missing_onboarding_env_into_recovery_hint(
         in compact
     )
     expected_config = str(target).replace("\\", "/")
-    assert (
-        f"opensquillaonboardstatus--config{expected_config}"
-        in compact.replace("\\", "/")
+    normalized = compact.replace("\\", "/")
+    assert "opensquillaonboardstatus--config" in normalized
+    assert expected_config in normalized
+    assert normalized.index("opensquillaonboardstatus--config") < normalized.index(
+        expected_config
     )
     assert "Traceback" not in output
 

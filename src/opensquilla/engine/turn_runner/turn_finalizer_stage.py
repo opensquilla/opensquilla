@@ -92,12 +92,49 @@ def _with_unconfirmed_action_notice(final_text: str, turn_segments: list[dict]) 
 # ---------------------------------------------------------------------------
 
 
+def _field_qualifier_text(field: Any) -> str:
+    """Build the inline qualifier ("[1-14]", "[budget|mid|premium]" …)."""
+    type_ = field.type
+    if type_ == "int":
+        lo, hi = field.min, field.max
+        if lo is not None and hi is not None:
+            return f"({lo}-{hi})"
+        if lo is not None:
+            return f"(>={lo})"
+        if hi is not None:
+            return f"(<={hi})"
+    elif type_ == "enum" and field.choices:
+        return "[" + "|".join(str(c) for c in field.choices) + "]"
+    elif type_ == "string" and field.max_chars is not None:
+        return f"(<={field.max_chars} chars)"
+    return ""
+
+
+def _field_flag_text(field: Any) -> str:
+    """Render required / default / optional marker per spec §9.3."""
+    if field.required:
+        return "[必填]"
+    if field.default is not None:
+        return f"（默认 {field.default}）"
+    return "[可选]"
+
+
 def render_paused_outcome(result: MetaResult) -> str:
     """Render a paused MetaResult into a plain-text form description.
 
-    PR3 ships a minimal text rendering; PR5/6/7 add per-surface rich
-    renderings (Web card / CLI prompt-toolkit / IM list). This text is
-    the fallback used by any surface that has not yet been upgraded.
+    Matches the spec §9.3 IM-fallback layout:
+      <intro>
+      请回复以下字段：
+        1) <name> — <prompt> <qualifier?> <flag>
+        ...
+      回复格式示例：
+        <name>: <type-appropriate placeholder>
+      或回复 <cancel-kw> 终止。
+
+    Surface-specific rich rendering (Web card / CLI prompt-toolkit)
+    rides on the synthetic ToolResultEvent's ``clarify_schema`` payload,
+    not on this text. This rendering is what IM bots and any
+    text-only fallback present to the user.
     """
     if not result.paused or result.paused_payload is None:
         return result.final_text or ""
@@ -109,14 +146,46 @@ def render_paused_outcome(result: MetaResult) -> str:
         lines.append("")
     lines.append("请回复以下字段：")
     for index, field in enumerate(schema.fields, start=1):
-        flag = "[必填]" if field.required else "[可选]"
+        flag = _field_flag_text(field)
         prompt = field.prompt or field.name
-        lines.append(f"  {index}) {field.name} — {prompt} {flag}")
+        qualifier = _field_qualifier_text(field)
+        bits = [field.name, "—", prompt]
+        if qualifier:
+            bits.append(qualifier)
+        bits.append(flag)
+        lines.append(f"  {index}) {' '.join(bits)}")
+
+    sample_fields = [f for f in schema.fields if f.required] or list(schema.fields)
+    if sample_fields:
+        lines.append("")
+        lines.append("回复格式示例：")
+        for field in sample_fields[:3]:
+            placeholder = _field_sample_value(field)
+            lines.append(f"  {field.name}: {placeholder}")
+
     if schema.cancel_keywords:
         kws = " / ".join(schema.cancel_keywords)
         lines.append("")
         lines.append(f"或回复 {kws} 取消。")
     return "\n".join(lines)
+
+
+def _field_sample_value(field: Any) -> str:
+    """Produce a placeholder reply value for the format-example block."""
+    type_ = field.type
+    if type_ == "enum" and field.choices:
+        return str(field.choices[0])
+    if type_ == "int":
+        if field.min is not None:
+            return str(field.min)
+        if field.max is not None:
+            return str(field.max)
+        return "1"
+    if type_ == "bool":
+        return "true"
+    if field.default is not None:
+        return str(field.default)
+    return "<value>"
 
 
 # ---------------------------------------------------------------------------

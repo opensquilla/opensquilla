@@ -4862,6 +4862,28 @@ class Agent:
                     terminates_turn=False,
                 )
                 return
+            # PR7: a paused MetaResult (awaiting user_input) is NOT a
+            # failure. Render the form description into assistant text
+            # so IM/CLI/Web fallbacks all see it; the surface-specific
+            # rich card (PR5/6) rides on the synthetic ToolResultEvent
+            # already emitted by the scheduler.
+            if result.paused:
+                from opensquilla.engine.turn_runner.turn_finalizer_stage import (
+                    render_paused_outcome,
+                )
+                paused_text = render_paused_outcome(result)
+                if paused_text:
+                    yield TextDeltaEvent(text=paused_text)
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content=(
+                        f"meta-skill {name!r} paused awaiting user input."
+                    ),
+                    is_error=False,
+                    terminates_turn=True,
+                )
+                return
             if not result.ok:
                 yield self._format_meta_invoke_failure(tc, result, plan)
                 return

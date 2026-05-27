@@ -1925,7 +1925,7 @@ def _run_optional_section(
     section: str,
     label: str,
     runner,
-    args: tuple = (),
+    args: tuple[Any, ...] = (),
     kwargs: dict | None = None,
     config_path: str | Path | None = None,
 ) -> None:
@@ -2023,7 +2023,7 @@ def _run_action_required_optional_sections(
             section=str(action["section"]),
             label=str(action["label"]),
             runner=action["runner"],
-            args=action.get("args", ()),
+            args=cast(tuple[Any, ...], action.get("args", ())),
             config_path=options.config_path,
         )
 

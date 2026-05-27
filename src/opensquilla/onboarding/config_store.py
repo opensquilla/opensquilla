@@ -149,10 +149,10 @@ def persist_config(
     os.chmod(target, 0o600)
 
     log.debug(
-        "onboarding.config_persisted",
-        path=str(target),
-        backup=str(backup_path) if backup_path else None,
-        restart_required=restart_required,
+        "onboarding.config_persisted path=%s backup=%s restart_required=%s",
+        str(target),
+        str(backup_path) if backup_path else None,
+        restart_required,
     )
 
     return PersistResult(

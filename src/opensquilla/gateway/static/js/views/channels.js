@@ -174,7 +174,7 @@ const ChannelsView = (() => {
         <div class="ch-empty__actions">
           <button class="btn btn--primary" id="ch-guided-setup" type="button">${icons.config()}<span>Guided setup</span></button>
         </div>
-        <code class="ch-empty__code">opensquilla configure --section channels · opensquilla channels list</code>
+        <code class="ch-empty__code">opensquilla onboard configure channels · opensquilla channels list</code>
       </div>`;
       _el.querySelector('#ch-guided-setup')?.addEventListener('click', () => Router.navigate('/setup'));
       return;
@@ -223,7 +223,7 @@ const ChannelsView = (() => {
 
   function _statusHint({ status, isRunning, isDead, enabled, name }) {
     const safeName = name || '<name>';
-    if (!enabled) return `Disabled in config — gateway restart required after re-enabling. Run \`opensquilla configure --section channels\` to change.`;
+    if (!enabled) return `Disabled in config — gateway restart required after re-enabling. Run \`opensquilla onboard configure channels\` to change.`;
     if (isDead) return `Adapter is dead. Inspect gateway logs, then \`opensquilla channels restart ${safeName}\`.`;
     if (isRunning) return 'Adapter is live in the current gateway process.';
     if (status === 'restarting') return 'Adapter is restarting after dispatch errors.';

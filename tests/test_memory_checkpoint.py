@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from opensquilla.memory.checkpoint import (
     CheckpointEvent,
     checkpoint_event_hash,
@@ -53,3 +55,23 @@ def test_checkpoint_relative_path_is_sidecar_only() -> None:
     )
 
     assert path == Path("memory/.checkpoints/agent-main-webchat-abc/turn-1.jsonl")
+
+
+@pytest.mark.parametrize(
+    ("session_key", "expected_component"),
+    [
+        ("..", "unknown"),
+        (".", "unknown"),
+        ("../abc", "..-abc"),
+        ("a/b", "a-b"),
+    ],
+)
+def test_checkpoint_relative_path_sanitizes_unsafe_session_components(
+    session_key: str,
+    expected_component: str,
+) -> None:
+    path = checkpoint_relative_path(session_key=session_key, turn_id="turn-1")
+
+    assert path == Path("memory/.checkpoints") / expected_component / "turn-1.jsonl"
+    assert ".." not in path.relative_to("memory/.checkpoints").parts
+    assert "." not in path.relative_to("memory/.checkpoints").parts

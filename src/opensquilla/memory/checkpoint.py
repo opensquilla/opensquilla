@@ -54,6 +54,8 @@ def checkpoint_event_hash(content: str) -> str:
 
 def _safe_path_component(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip())
+    if safe in {".", ".."}:
+        return "unknown"
     return safe.strip("-") or "unknown"
 
 

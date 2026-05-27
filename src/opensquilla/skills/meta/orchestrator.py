@@ -1066,30 +1066,32 @@ def make_llm_chat_from_provider(
     *,
     provider: LLMProvider,
     base_config: AgentConfig,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     usage_tracker: Any | None = None,
     session_key: str | None = None,
 ) -> LLMChat:
     """Build a single-turn LLM caller — no tools, no agent loop.
 
     Concatenates the streamed visible ``TextDeltaEvent`` payloads and returns
-    the final text. Used by ``llm_classify`` steps to avoid sub-Agent
-    overhead.
+    the final text. Used by ``llm_classify`` and ``llm_chat`` meta-skill
+    steps to avoid sub-Agent overhead.
 
-    ``max_tokens`` defaults to 4096. The earlier 256 default was sized for
-    "classifier returns one short label", which is correct in steady state
-    — but reasoning-capable models (e.g. deepseek-v4-flash with
-    ``reasoning_format='deepseek'``) emit a chain-of-thought into
-    ``reasoning_content`` BEFORE producing the visible label, and that
-    chain is counted against the same ``max_tokens`` budget. With 256
-    tokens the budget is exhausted inside the reasoning stream and the
-    visible content stays empty, producing zero output_chars and tripping
-    downstream ``meta_skill_fill_slots`` with an invalid empty argument
-    (observed live on meta-skill-creator pick_pattern step 2026-05-23).
-    2048 gives reasoning room for classifiers but is too small for final
-    deliverable steps such as travel plans and paper sections; 4096 keeps
-    those outputs from truncating while still bounding no-tool calls.
-    Callers that need very large payloads should still pass a larger value.
+    ``max_tokens`` defaults to 16384. History:
+      - 256 (classifiers): exhausted inside reasoning_content for
+        reasoning-format=deepseek models, producing empty visible output
+        (observed 2026-05-23 on meta-skill-creator pick_pattern).
+      - 4096 (earlier): big enough for short classifiers but truncated
+        meta-skill `llm_chat` steps that produce long deliverables.
+        meta-paper-write's final_manuscript_package routinely emitted
+        14k+ chars (≈ 5k+ tokens) of MANUSCRIPT_PLAN before reaching the
+        MANUSCRIPT_TEX section the compile_pdf step needed, then got
+        cut off (observed 2026-05-27).
+      - 16384: matches the deepseek/deepseek-v4-flash catalog upper
+        bound and is comfortably above what other OpenRouter-fronted
+        deepseek/glm models accept. Providers that cap lower will
+        clamp/error gracefully.
+    Callers that need MORE than 16k should pass a larger value
+    explicitly; callers that want LESS (classifiers) should also override.
     """
 
     from opensquilla.provider.types import ChatConfig, DoneEvent, Message

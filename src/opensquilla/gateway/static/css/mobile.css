@@ -7,7 +7,7 @@
 
   /* Touch-friendly tap targets */
   .btn { min-height: 44px; min-width: 44px; }
-  .btn--sm { min-height: 36px; }
+  .btn--sm { min-height: 40px; }
   .btn--icon { min-width: 44px; min-height: 44px; }
 
   /* Safe area insets for notched phones */

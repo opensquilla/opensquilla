@@ -159,8 +159,13 @@ const HealthView = (() => {
     }
     if (report.agentId) items.push(['Agent', report.agentId]);
     if (!items.length) return '';
+    const contextItems = items.map(([label, value]) => `
+        <span class="health-report-context__item">
+          <b>${_esc(label)}</b>
+          <span class="health-report-context__value">${_esc(value)}</span>
+        </span>`).join('');
     return `<div class="health-report-context" aria-label="Health report context">
-      ${items.map(([label, value]) => `<span><b>${_esc(label)}</b>${_esc(value)}</span>`).join('')}
+      ${contextItems}
     </div>`;
   }
 

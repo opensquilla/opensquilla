@@ -939,7 +939,7 @@ const ChatView = (() => {
           <div class="chat-header-left">
             <label class="chat-label">Chat session</label>
             <button type="button" class="chat-session-chip" id="chat-session-chip"
-                    aria-label="Switch chat session" aria-haspopup="dialog" aria-expanded="false">
+                    aria-label="Switch chat session: ${_esc(_sessionKey)}" aria-haspopup="dialog" aria-expanded="false">
               <span class="chat-session-chip-key" id="chat-session-chip-key" title="${_esc(_sessionKey)}">${_esc(_sessionKey)}</span>
               <span class="chat-session-chip-caret" aria-hidden="true">${_iconChevronDown()}</span>
             </button>
@@ -963,10 +963,6 @@ const ChatView = (() => {
         <div class="chat-slash hidden" id="chat-slash"></div>
         <div class="chat-composer" id="chat-composer">
           <div class="chat-attachments hidden" id="chat-attach-preview"></div>
-          <div class="chat-bypass-warn hidden" id="chat-bypass-warn" role="status" aria-live="polite">
-            <span class="chat-bypass-warn__glyph" aria-hidden="true">!</span>
-            <span class="chat-bypass-warn__text">Approvals bypassed for this session</span>
-          </div>
           <div class="chat-input-bar">
             <button class="btn btn--icon btn--ghost" id="chat-btn-attach" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON">${icons.paperclip()}</button>
             <div class="chat-toolbar-wrap">
@@ -974,7 +970,7 @@ const ChatView = (() => {
                       title="Run modes — approvals, router"
                       aria-label="Run modes"
                       aria-haspopup="dialog"
-                      aria-expanded="false">${_iconGear()}<span class="chat-toolbar-trigger-dots" aria-hidden="true"><i data-dot="bypass"></i><i data-dot="router"></i></span></button>
+                      aria-expanded="false">${_iconGear()}<span class="chat-toolbar-trigger-label" id="chat-toolbar-trigger-label"></span><span class="chat-toolbar-trigger-dots" aria-hidden="true"><i data-dot="bypass"></i><i data-dot="router"></i></span></button>
               <div class="chat-toolbar-popover hidden" id="chat-toolbar-popover" role="dialog" aria-label="Composer settings">
                 <div class="chat-toolbar-popover-arrow" aria-hidden="true"></div>
                 <div class="chat-toolbar-popover-inner" id="chat-toolbar">
@@ -1047,11 +1043,20 @@ const ChatView = (() => {
     _loadFeatureToggles();
     _loadSlashCommands();
 
-    // Autofocus chat input
-    if (_textarea) _textarea.focus();
+    // Keep desktop keyboard flow quick, but avoid opening the soft keyboard on
+    // mobile/touch devices before the user asks to type.
+    if (_textarea && _shouldAutofocusComposer()) _textarea.focus();
   }
 
   /* ── Toolbar Pills (feature toggles) ────────────────────────────────── */
+
+  function _shouldAutofocusComposer() {
+    try {
+      if (window.matchMedia('(max-width: 768px)').matches) return false;
+      if (window.matchMedia('(pointer: coarse)').matches) return false;
+    } catch {}
+    return true;
+  }
 
   function _bindToolbarPills() {
     if (_elevatedPill) {
@@ -1128,11 +1133,13 @@ const ChatView = (() => {
   function _updateSessionChip(key) {
     _sessionKey = key;
     const chipKey = _el && _el.querySelector('#chat-session-chip-key');
+    const chip = _el && _el.querySelector('#chat-session-chip');
     const copyBtn = _el && _el.querySelector('#chat-session-copy');
     if (chipKey) {
       chipKey.textContent = key;
       chipKey.title = key;
     }
+    if (chip) chip.setAttribute('aria-label', 'Switch chat session: ' + key);
     if (copyBtn) copyBtn.title = 'Copy session key: ' + key;
   }
 
@@ -1573,25 +1580,31 @@ const ChatView = (() => {
   function _refreshToolbarTriggerGlow() {
     const trigger = _el && _el.querySelector('#chat-toolbar-trigger');
     if (!trigger) return;
+    const triggerLabel = trigger.querySelector('#chat-toolbar-trigger-label');
     trigger.classList.toggle('is-glowing', _toolbarTriggerActive());
     // Per-toggle status dots — each lights independently so a glance at the
     // composer reveals which mode is non-default, not just that something is.
-    const bypass = !!_toolbarState.bypass;
+    const effectiveMode = _effectiveElevatedMode();
+    const bypass = _isApprovalBypassMode(effectiveMode);
     const routerOff = _toolbarState.router === false;
     trigger.classList.toggle('has-dot-bypass', bypass);
     trigger.classList.toggle('has-dot-router', routerOff);
-    // Bypass warning chip — only "Approvals bypassed" rises to a visible chip.
-    // Router-off is non-default but not safety-critical.
-    const warn = _el && _el.querySelector('#chat-bypass-warn');
-    if (warn) {
-      const text = warn.querySelector('.chat-bypass-warn__text');
-      if (text) {
-        text.textContent = _elevatedMode
-          ? 'Approvals bypassed for this session'
-          : 'Approvals bypassed by global default';
-      }
-      warn.classList.toggle('hidden', !bypass);
+    trigger.classList.toggle('has-bypass-signal', bypass);
+    const bypassLabel = effectiveMode === 'full' ? 'FULL' : 'BYPASS';
+    if (triggerLabel) {
+      triggerLabel.textContent = '';
+      if (bypass) triggerLabel.textContent = bypassLabel;
     }
+    const signalParts = [];
+    if (effectiveMode === 'full') {
+      signalParts.push(`${bypassLabel}: Full permission mode active`);
+    } else if (bypass) {
+      signalParts.push(`${bypassLabel}: Approvals bypassed`);
+    }
+    if (routerOff) signalParts.push('router off');
+    const statusLabel = signalParts.length ? `Run modes: ${signalParts.join(', ')}` : 'Run modes';
+    trigger.setAttribute('aria-label', statusLabel);
+    trigger.title = statusLabel;
   }
 
   function _bindToolbarTrigger() {

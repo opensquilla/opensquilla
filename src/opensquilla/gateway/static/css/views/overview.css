@@ -33,7 +33,7 @@
 .ov-stage__title {
   font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
   font-weight: 700;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
   line-height: 1.05;
   position: relative;
 }
@@ -128,12 +128,17 @@
 .ov-stat__value {
   font-size: 1.75rem;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   color: var(--text);
-  line-height: 1;
+  line-height: 1.18;
   font-variant-numeric: tabular-nums;
 }
-.ov-stat__value--mono { font-family: var(--font-mono); font-size: 1.375rem; }
+.ov-stat__value--mono { font-family: var(--font-mono); font-size: 1.375rem; line-height: 1.3; }
+.ov-stat__value--status {
+  font-size: clamp(1.35rem, 1.35vw, 1.55rem);
+  line-height: 1.2;
+  white-space: nowrap;
+}
 .ov-stat__hint {
   margin-top: 6px;
   font-size: var(--fs-xs);
@@ -179,7 +184,7 @@
 .ov-panel__title {
   font-size: var(--fs-lg);
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 .ov-panel__meta {
   font-size: var(--fs-xs);
@@ -190,9 +195,13 @@
 }
 
 .ov-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   border: 0;
-  padding: 0;
+  min-height: 40px;
+  padding: 0 var(--sp-1);
   cursor: pointer;
   color: var(--accent);
   font-size: var(--fs-xs);
@@ -296,8 +305,9 @@
   width: 36px;
   height: 36px;
   color: var(--text-dim);
+  line-height: 1;
 }
-.ov-recent__empty-icon svg { width: 36px; height: 36px; }
+.ov-recent__empty-icon svg { display: block; width: 36px; height: 36px; }
 
 /* ─── Form fields (connection panel) ─────────────────────────────────── */
 
@@ -313,6 +323,7 @@
 .ov-field__optional { color: var(--text-dim); text-transform: none; letter-spacing: 0; font-weight: 500; margin-left: 4px; }
 .ov-field__input {
   width: 100%;
+  min-height: 40px;
   padding: 8px 12px;
   font-size: var(--fs-sm);
   background: var(--bg);
@@ -426,6 +437,13 @@
   .ov-stage__actions { width: 100%; }
   .ov-stat__icon { top: 8px; right: 8px; }
   .ov-recent__row { grid-template-columns: auto 1fr auto; gap: 8px; }
+  .ov-recent__key {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+  }
+  .ov-recent__arrow { display: none; }
   .ov-recent__model, .ov-recent__msgs { display: none; }
   .ov-event-log__row { grid-template-columns: 70px 1fr; }
   .ov-event-log__payload { grid-column: 1 / -1; padding-left: 82px; color: var(--text-dim); }

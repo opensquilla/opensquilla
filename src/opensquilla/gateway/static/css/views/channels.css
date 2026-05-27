@@ -41,27 +41,19 @@
   opacity: 0.85;
 }
 .ch-stage__eyebrow {
-  font-family: var(--font-mono);
-  font-size: 10.5px; font-weight: 600;
-  letter-spacing: 0.22em;
+  font-size: 11px; font-weight: 700;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--text-dim);
   display: inline-flex;
   align-items: center;
   gap: 8px;
-}
-.ch-stage__eyebrow::before {
-  content: "";
-  width: 16px; height: 1px;
-  background: currentColor;
-  display: inline-block;
-  opacity: 0.7;
 }
 .ch-stage__title {
   font-family: var(--font-display);
   font-size: clamp(1.875rem, 1.2rem + 1.4vw, 2.625rem);
   font-weight: 800;
-  letter-spacing: -0.045em;
+  letter-spacing: 0;
   line-height: 1.0;
   position: relative;
   font-feature-settings: "ss01", "cv11";
@@ -96,7 +88,7 @@
 }
 .ch-list__title {
   font-size: var(--fs-lg); font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   display: flex; align-items: center; gap: 10px;
   font-family: var(--font-display);
 }
@@ -176,7 +168,7 @@
 }
 .ch-card__name {
   font-weight: 700; font-size: var(--fs-md); flex: 1;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   min-width: 0;
   font-family: var(--font-display);
@@ -190,7 +182,7 @@
 
 .ch-card__meta {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 8px 18px; margin: 0;
   padding-top: var(--sp-3);
   border-top: 1px dashed var(--border);
@@ -213,10 +205,13 @@
 .ch-card__meta dd {
   margin: 0;
   font-size: var(--fs-sm);
+  max-width: 100%;
+  min-width: 0;
   color: var(--text);
-  white-space: nowrap;
+  white-space: normal;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
   font-weight: 500;
 }
 .ch-mono {
@@ -230,6 +225,7 @@
   cursor: pointer;
   color: var(--text-muted);
   user-select: none;
+  min-height: 38px;
   font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.16em;
@@ -320,22 +316,27 @@
 .ch-empty__art {
   width: 120px; height: 120px;
   color: var(--text-muted);
+  line-height: 1;
   margin-bottom: var(--sp-4);
   filter: drop-shadow(0 0 24px color-mix(in srgb, var(--accent) 18%, transparent));
 }
+.ch-empty__art svg { display: block; width: 100%; height: 100%; }
 .ch-empty__title {
   font-family: var(--font-display);
   font-size: 1.625rem; font-weight: 800;
-  letter-spacing: -0.035em;
+  letter-spacing: 0;
   color: var(--text);
   margin-bottom: 10px;
 }
 .ch-empty__msg {
+  width: 100%;
+  max-width: 56ch;
+  box-sizing: border-box;
   color: var(--text-muted);
   font-size: var(--fs-sm);
-  max-width: 56ch;
   line-height: 1.6;
   margin-bottom: var(--sp-4);
+  overflow-wrap: anywhere;
 }
 .ch-empty__actions {
   display: flex;
@@ -381,5 +382,23 @@
   .ch-stage__header { flex-direction: column; align-items: stretch; }
   .ch-stage__actions { width: 100%; }
   .ch-cards { grid-template-columns: 1fr; }
+  .ch-card__head { align-items: flex-start; flex-wrap: wrap; }
+  .ch-card__name {
+    flex: 1 1 180px;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+  }
+  .ch-card__head .chip {
+    max-width: 100%;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
   .ch-stage__title-block { padding-left: 14px; }
+  .ch-stage__title-block::before {
+    bottom: auto;
+    height: 16px;
+  }
 }

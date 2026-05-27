@@ -25,7 +25,7 @@
 }
 .sk-stage__title {
   font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
-  font-weight: 700; letter-spacing: -0.025em; line-height: 1.05;
+  font-weight: 700; letter-spacing: 0; line-height: 1.05;
   position: relative;
 }
 .sk-stage__title::after {
@@ -50,6 +50,7 @@
 .sk-search-icon svg { width: 14px; height: 14px; }
 .sk-search-input {
   width: 240px; padding: 8px 12px 8px 32px;
+  min-height: 40px;
   font-size: var(--fs-sm);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -62,12 +63,14 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 .sk-search-wrap--lg { flex: 1; }
-.sk-search-input--lg { width: 100%; height: 38px; font-size: var(--fs-md); padding-left: 36px; }
+.sk-search-input--lg { width: 100%; height: 40px; font-size: var(--fs-md); padding-left: 36px; }
 .sk-search-wrap--lg .sk-search-icon svg { width: 16px; height: 16px; }
 
 .sk-iconbtn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px;
+  width: 40px; height: 40px;
+  min-width: 40px;
+  flex: 0 0 40px;
   border: 1px solid var(--border); border-radius: var(--radius-md);
   background: var(--bg-surface);
   color: var(--text-muted);
@@ -130,7 +133,7 @@
 }
 .sk-stat__value {
   font-size: 1.75rem; font-weight: 700;
-  letter-spacing: -0.02em; line-height: 1;
+  letter-spacing: 0; line-height: 1;
   font-variant-numeric: tabular-nums;
 }
 .sk-stat__hint { margin-top: 6px; font-size: var(--fs-xs); color: var(--text-muted); }
@@ -150,6 +153,7 @@
 }
 .sk-tab {
   display: inline-flex; align-items: center; gap: 6px;
+  min-height: 40px;
   padding: 5px 16px;
   font-size: var(--fs-sm); font-weight: 600;
   letter-spacing: 0.02em;
@@ -161,8 +165,10 @@
 }
 .sk-tab svg { width: 14px; height: 14px; }
 .sk-tab:hover { color: var(--text); }
-.sk-tab.is-active { background: var(--accent); color: #1a0e02; }
+.sk-tab.is-active { background: var(--accent); color: var(--accent-foreground); }
 .sk-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#skills-refresh { min-height: 40px; }
+#skills-github-install { min-height: 40px; }
 
 /* ─── Layer groups ───────────────────────────────────────────────────── */
 
@@ -246,7 +252,7 @@
 }
 .sk-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .sk-card__head {
-  display: flex; align-items: center; gap: 8px; min-width: 0;
+  display: flex; align-items: flex-start; gap: 8px; min-width: 0;
 }
 .sk-card__dot {
   width: 8px; height: 8px; border-radius: 50%;
@@ -275,22 +281,28 @@
 .sk-card__name {
   font-weight: 600;
   font-size: var(--fs-sm);
+  line-height: 1.25;
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .sk-card:hover .sk-card__name { color: var(--accent); }
 .sk-card__desc {
   margin: 0;
+  max-width: 100%;
+  min-width: 0;
   color: var(--text-muted);
   font-size: 12.5px;
   line-height: 1.45;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  min-height: calc(12.5px * 1.45 * 3);
+  line-clamp: 3;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
+  mask-image: linear-gradient(180deg, #000 0%, #000 68%, transparent 100%);
 }
 
 .sk-error {
@@ -452,7 +464,7 @@
 }
 .sk-dialog__head-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .sk-dialog__emoji { font-size: 1.4em; }
-.sk-dialog__name { font-size: var(--fs-md); font-weight: 700; letter-spacing: -0.01em; }
+.sk-dialog__name { font-size: var(--fs-md); font-weight: 700; letter-spacing: 0; }
 .sk-dialog__chips { display: flex; align-items: center; gap: 6px; }
 .sk-dialog__body {
   padding: var(--sp-4);
@@ -528,6 +540,10 @@
   .sk-stage__actions { width: 100%; }
   .sk-search-input { flex: 1; width: 100%; }
   .sk-search-wrap { flex: 1; }
+  .sk-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
+  .sk-stat { min-height: 86px; padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4); }
+  .sk-stat__value { font-size: 1.35rem; }
+  .sk-stat__hint { margin-top: 4px; line-height: 1.2; }
   .sk-registry__head,
   .sk-github-install { flex-direction: column; align-items: stretch; }
   .sk-grid { grid-template-columns: 1fr; }
@@ -583,12 +599,15 @@
 }
 .sk-card__sub-chip {
   padding: 1px 6px;
+  max-width: 100%;
+  min-width: 0;
   border-radius: 3px;
   background: color-mix(in oklab, var(--text) 8%, transparent);
   color: var(--text-dim);
   font-size: 11px;
   font-family: var(--font-mono);
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 .sk-card__sub-chip--more {
   background: transparent;

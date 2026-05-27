@@ -17,8 +17,8 @@
   --fs-xl: 1.5rem;
   --fs-2xl: 2rem;
 
-  /* Display tracking — Inter looks crisper with negative tracking at large sizes. */
-  --track-display: -0.035em;
+  /* Display tracking stays neutral to keep compact WebUI labels readable. */
+  --track-display: 0;
   --track-tabular: 0.01em;
 
   /* Radius */
@@ -63,7 +63,7 @@
   --bg-hover: #232328;
   --text: #ECECEF;
   --text-muted: #A1A1AA;
-  --text-dim: #71717A;
+  --text-dim: #82828A;
   --border: rgba(255,255,255,0.07);
   --border-strong: rgba(255,255,255,0.13);
   --border-focus: rgba(255,255,255,0.18);
@@ -77,8 +77,8 @@
   --accent-foreground: #1a0e02;
   --ok: #22C55E;
   --warn: #EAB308;
-  --danger: #EF4444;
-  --info: #3B82F6;
+  --danger: #F87171;
+  --info: #60A5FA;
   --shadow: rgba(0, 0, 0, 0.5);
   --shadow-color: rgba(0,0,0,0.5);
   --grain-opacity: 0.05;
@@ -101,22 +101,22 @@
   --bg-hover: #E7E4DD;
   --text: #18181B;
   --text-muted: #4B4B53;
-  --text-dim: #8A8A93;
+  --text-dim: #66666E;
   --border: rgba(20,18,15,0.10);
   --border-strong: rgba(20,18,15,0.18);
   --border-focus: rgba(20,18,15,0.24);
   --card: #FFFFFF;
   --hairline: rgba(20,18,15,0.08);
 
-  --accent: #C44B05;
+  --accent: #B84404;
   --accent-hover: #A23C02;
   --accent-deep: #7A2C00;
   --accent-secondary: #DD6224;
   --accent-foreground: #FFFFFF;
-  --ok: #16A34A;
-  --warn: #B47800;
-  --danger: #DC2626;
-  --info: #2563EB;
+  --ok: #166534;
+  --warn: #7A4F00;
+  --danger: #A61B1B;
+  --info: #1D4ED8;
   --shadow: rgba(40,30,20,0.10);
   --shadow-color: rgba(40,30,20,0.10);
   --grain-opacity: 0.03;
@@ -350,6 +350,7 @@ pre {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-height: 40px;
   padding: 7px var(--sp-3);
   color: var(--text-muted);
   cursor: pointer;
@@ -358,7 +359,7 @@ pre {
   font-size: var(--fs-sm);
   position: relative;
   z-index: 1;
-  letter-spacing: -0.005em;
+  letter-spacing: 0;
   transition: background var(--transition), color var(--transition);
 }
 .nav-item:hover { background: var(--bg-hover); color: var(--text); }
@@ -398,6 +399,24 @@ pre {
   outline-offset: 2px;
 }
 
+@media (min-width: 769px) and (max-height: 640px) {
+  .nav-brand {
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .nav-group-label {
+    margin-top: var(--sp-2);
+    padding: 5px var(--sp-4) 2px;
+    font-size: 9.5px;
+    line-height: 1.1;
+  }
+
+  .nav-group-label:first-of-type {
+    margin-top: 4px;
+  }
+}
+
 /* Approval count badge */
 .nav-badge {
   margin-left: auto;
@@ -423,7 +442,7 @@ pre {
 /* Accessibility: improved color contrast (WCAG AA) */
 [data-theme="dark"] {
   --text-muted: #A8A8B0;
-  --text-dim: #76767E;
+  --text-dim: #82828A;
 }
 
 /* View headers — display weight, very tight tracking, baseline accent rule. */

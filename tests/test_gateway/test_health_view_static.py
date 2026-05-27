@@ -4,6 +4,7 @@ from pathlib import Path
 
 APP_JS = Path("src/opensquilla/gateway/static/js/app.js")
 OVERVIEW_JS = Path("src/opensquilla/gateway/static/js/views/overview.js")
+OVERVIEW_CSS = Path("src/opensquilla/gateway/static/css/views/overview.css")
 HEALTH_JS = Path("src/opensquilla/gateway/static/js/views/health.js")
 HEALTH_CSS = Path("src/opensquilla/gateway/static/css/views/health.css")
 INDEX_HTML = Path("src/opensquilla/gateway/templates/index.html")
@@ -36,12 +37,51 @@ def test_overview_surfaces_readiness_summary() -> None:
     assert 'data-nav="/health"' in source
 
 
+def test_overview_humanizes_readiness_status() -> None:
+    source = OVERVIEW_JS.read_text(encoding="utf-8")
+    css = OVERVIEW_CSS.read_text(encoding="utf-8")
+    health_tile_start = source.index('id="ov-health-status"')
+    health_tile = source[health_tile_start - 120 : health_tile_start + 180]
+
+    assert "function _readinessStatusLabel(status)" in source
+    assert "action_required: 'Action required'" in source
+    assert "_readinessStatusLabel(report.status ?? 'unknown')" in source
+    assert "ov-stat__value--mono" not in health_tile
+    assert "ov-stat__value--status" in health_tile
+    value_rule = css.split(".ov-stat__value {", 1)[1].split("}", 1)[0]
+    mono_rule = css.split(".ov-stat__value--mono", 1)[1].split("}", 1)[0]
+    status_rule = css.split(".ov-stat__value--status", 1)[1].split("}", 1)[0]
+    assert "line-height: 1.18" in value_rule
+    assert "line-height: 1.3" in mono_rule
+    assert "line-height: 1.2" in status_rule
+    assert "white-space: nowrap" in status_rule
+
+
 def test_health_css_defines_responsive_finding_rows() -> None:
     css = HEALTH_CSS.read_text(encoding="utf-8")
 
     assert ".health-layout" in css
     assert ".health-finding" in css
     assert "@media (max-width: 760px)" in css
+
+
+def test_health_mobile_refresh_button_keeps_visible_width() -> None:
+    css = HEALTH_CSS.read_text(encoding="utf-8")
+    mobile = css.split("@media (max-width: 760px)", 1)[1]
+    refresh_rule = mobile.split(".health-stage__header .btn", 1)[1].split("}", 1)[0]
+
+    assert "align-self: flex-start" in refresh_rule
+    assert "width: auto" in refresh_rule
+    assert "width: 100%" not in refresh_rule
+
+
+def test_health_status_numerals_have_breathing_room() -> None:
+    css = HEALTH_CSS.read_text(encoding="utf-8")
+    score_rule = css.split(".health-score strong {", 1)[1].split("}", 1)[0]
+    count_rule = css.split(".health-count strong {", 1)[1].split("}", 1)[0]
+
+    assert "line-height: 1.12" in score_rule
+    assert "line-height: 1.12" in count_rule
 
 
 def test_health_view_uses_status_visual_system() -> None:
@@ -160,15 +200,50 @@ def test_health_view_surfaces_report_context_for_config_and_agent() -> None:
     assert "Requested config" in source
     assert "report.agentId" in source
     assert "health-report-context" in source
+    assert "health-report-context__item" in source
+    assert "health-report-context__value" in source
     assert ".health-report-context" in css
 
 
 def test_health_report_context_wraps_long_paths_on_mobile() -> None:
     css = HEALTH_CSS.read_text(encoding="utf-8")
+    source = HEALTH_JS.read_text(encoding="utf-8")
 
-    context_span = css.split(".health-report-context span", 1)[1].split("}", 1)[0]
-    assert "min-width: 0" in context_span
-    assert "word-break: break-word" in context_span
+    assert "class=\"health-report-context__item\"" in source
+    assert "class=\"health-report-context__value\"" in source
+    context_item = css.split(".health-report-context__item", 1)[1].split("}", 1)[0]
+    context_value = css.split(".health-report-context__value", 1)[1].split("}", 1)[0]
+    mobile_context = css.split("@media (max-width: 480px)", 1)[1]
+    mobile_context_item = mobile_context.split(".health-report-context__item", 1)[1].split(
+        "}", 1
+    )[0]
+
+    assert "display: inline-grid" in context_item
+    assert "grid-template-columns: auto minmax(0, 1fr)" in context_item
+    assert "min-width: 0" in context_value
+    assert "overflow-wrap: anywhere" in context_value
+    assert "word-break: break-word" in context_value
+    assert "grid-template-columns: minmax(0, 1fr)" in mobile_context_item
+    assert "width: 100%" in mobile_context_item
+
+
+def test_health_runtime_diagnostics_wrap_inside_cards() -> None:
+    css = HEALTH_CSS.read_text(encoding="utf-8")
+
+    wrapping_selectors = (
+        ".health-score__summary",
+        ".health-finding__meta",
+        ".health-finding__title",
+        ".health-finding__detail",
+        ".health-evidence",
+        ".health-evidence span",
+        ".health-step__command",
+    )
+
+    for selector in wrapping_selectors:
+        rule = css.split(f"{selector} {{", 1)[1].split("}", 1)[0]
+        assert "min-width: 0" in rule
+        assert "overflow-wrap: anywhere" in rule
 
 
 def test_health_view_scopes_local_fallback_commands_to_bootstrap_config() -> None:
@@ -259,3 +334,19 @@ def test_health_view_makes_recovery_commands_copyable() -> None:
     assert "Copied command" in source
     assert "health-step__copy" in source
     assert ".health-step__copy" in css
+    copy_start = css.index(".health-step__copy {")
+    copy_rule = css[copy_start : css.index("}", copy_start)]
+    assert "height: 40px" in copy_rule
+    assert "width: 40px" in copy_rule
+
+    mobile_start = css.index("@media (max-width: 480px)")
+    mobile_css = css[mobile_start:]
+    command_start = mobile_css.index(".health-step__command {")
+    command_rule = mobile_css[command_start : mobile_css.index("}", command_start)]
+    command_code_start = mobile_css.index(".health-step__command code {")
+    command_code_rule = mobile_css[
+        command_code_start : mobile_css.index("}", command_code_start)
+    ]
+    assert "width: 100%" in command_rule
+    assert "flex: 1 1 auto" in command_code_rule
+    assert "min-width: 0" in command_code_rule

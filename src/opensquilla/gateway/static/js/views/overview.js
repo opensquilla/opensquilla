@@ -6,6 +6,7 @@ const OverviewView = (() => {
   let _unsubs = [];
   let _intervals = [];
   let _eventLog = [];
+  let _viewGeneration = 0;
 
   function _ensureCss() {
     if (document.querySelector('link[data-view-css="overview"]')) return;
@@ -20,6 +21,7 @@ const OverviewView = (() => {
   }
 
   function render(el) {
+    _viewGeneration += 1;
     _el = el;
     _rpc = App.getRpc();
     _ensureCss();
@@ -66,7 +68,7 @@ const OverviewView = (() => {
           <button class="ov-stat" data-nav="/health" type="button" id="ov-health">
             <div class="ov-stat__icon">${icons.logs()}</div>
             <div class="ov-stat__label">Health</div>
-            <div class="ov-stat__value ov-stat__value--mono" id="ov-health-status">${UI.skeleton('90px', '1.4rem')}</div>
+            <div class="ov-stat__value ov-stat__value--status" id="ov-health-status">${UI.skeleton('90px', '1.4rem')}</div>
             <div class="ov-stat__hint" id="ov-health-summary">doctor.status</div>
           </button>
           <div class="ov-stat ov-stat--static">
@@ -177,6 +179,7 @@ const OverviewView = (() => {
   }
 
   function destroy() {
+    _viewGeneration += 1;
     _unsubs.forEach(fn => fn());
     _unsubs = [];
     _intervals.forEach(id => clearInterval(id));
@@ -207,20 +210,27 @@ const OverviewView = (() => {
   }
 
   async function _loadData() {
-    if (!_el) return;
-    await _rpc.waitForConnection();
+    const root = _el;
+    const generation = _viewGeneration;
+    if (!root) return;
+    const rpc = _rpc;
+    if (!rpc) return;
+    await rpc.waitForConnection();
+    if (!_isCurrentView(root, rpc, generation)) return;
 
     const set = (id, val) => {
-      const el = _el && _el.querySelector('#' + id);
+      if (!_isCurrentView(root, rpc, generation)) return;
+      const el = root.querySelector('#' + id);
       if (el) el.innerHTML = val != null ? String(val) : '—';
     };
     const setText = (id, val) => {
-      const el = _el && _el.querySelector('#' + id);
+      if (!_isCurrentView(root, rpc, generation)) return;
+      const el = root.querySelector('#' + id);
       if (el) el.textContent = val != null ? String(val) : '—';
     };
 
-    _rpc.call('status').then(data => {
-      if (!_el) return;
+    rpc.call('status').then(data => {
+      if (!_isCurrentView(root, rpc, generation)) return;
       const ms = data.uptime_ms;
       if (ms != null) {
         const s = Math.floor(ms / 1000);
@@ -232,24 +242,27 @@ const OverviewView = (() => {
       }
       setText('ov-version-line', data.version ? `v${data.version}` : '—');
       set('ov-provider', _esc(data.provider ?? '—'));
-    }).catch(err => UI.toast('Failed to load status: ' + err.message, 'err'));
+    }).catch(err => {
+      if (!_isCurrentView(root, rpc, generation)) return;
+      UI.toast('Failed to load status: ' + err.message, 'err');
+    });
 
-    _rpc.call('doctor.status', { agentId: 'main', deep: false }).then(report => {
-      if (!_el) return;
-      set('ov-health-status', _esc(report.status ?? 'unknown'));
+    rpc.call('doctor.status', { agentId: 'main', deep: false }).then(report => {
+      if (!_isCurrentView(root, rpc, generation)) return;
+      set('ov-health-status', _esc(_readinessStatusLabel(report.status ?? 'unknown')));
       setText('ov-health-summary', report.summary ?? 'view details');
     }).catch(() => {
-      if (!_el) return;
+      if (!_isCurrentView(root, rpc, generation)) return;
       set('ov-health-status', 'unavailable');
       setText('ov-health-summary', 'open health');
     });
 
-    _rpc.call('usage.status').then(data => {
-      if (!_el) return;
+    rpc.call('usage.status').then(data => {
+      if (!_isCurrentView(root, rpc, generation)) return;
       const cur = localStorage.getItem('opensquilla-currency') || 'USD';
       set('ov-sessions', data.totalSessions ?? '—');
       set('ov-tokens', data.totalTokens != null ? data.totalTokens.toLocaleString() : '—');
-      const costLine = _el.querySelector('#ov-cost-line');
+      const costLine = root.querySelector('#ov-cost-line');
       if (costLine) {
         if (data.totalCostUsd != null) {
           // CNY rate sourced from SquillaConstants — kept in sync across
@@ -265,8 +278,8 @@ const OverviewView = (() => {
       }
     }).catch(() => {});
 
-    _rpc.call('sessions.list', { limit: 5 }).then(data => {
-      if (!_el) return;
+    rpc.call('sessions.list', { limit: 5 }).then(data => {
+      if (!_isCurrentView(root, rpc, generation)) return;
       const sessions = (data.sessions || [])
         .slice()
         .sort((a, b) => {
@@ -275,7 +288,7 @@ const OverviewView = (() => {
           return tb - ta;
         })
         .slice(0, 6);
-      const container = _el.querySelector('#ov-recent-sessions');
+      const container = root.querySelector('#ov-recent-sessions');
       if (!container) return;
       if (sessions.length === 0) {
         container.innerHTML = `<div class="ov-recent__empty">
@@ -304,6 +317,10 @@ const OverviewView = (() => {
         b.addEventListener('click', () => Router.navigate('/chat?session=' + encodeURIComponent(b.dataset.key)));
       });
     }).catch(() => {});
+  }
+
+  function _isCurrentView(root, rpc, generation) {
+    return _el === root && _rpc === rpc && _viewGeneration === generation;
   }
 
   function _pushEvent(eventName, payload) {
@@ -339,6 +356,21 @@ const OverviewView = (() => {
         <span class="ov-event-log__name">${_esc(e.eventName)}</span>
         <span class="ov-event-log__payload">${_esc(e.payloadStr)}</span>
       </div>`).join('');
+  }
+
+  function _readinessStatusLabel(status) {
+    const labels = {
+      ready: 'Ready',
+      degraded: 'Degraded',
+      action_required: 'Action required',
+      unavailable: 'Unavailable',
+      unknown: 'Unknown',
+    };
+    const key = String(status || 'unknown').toLowerCase();
+    if (labels[key]) return labels[key];
+    return key
+      .replace(/[_-]+/g, ' ')
+      .replace(/\b\w/g, c => c.toUpperCase());
   }
 
   function _esc(s) {

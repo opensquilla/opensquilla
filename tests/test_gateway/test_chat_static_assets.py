@@ -76,11 +76,19 @@ def test_chat_permission_pill_distinguishes_global_and_session_modes() -> None:
     assert "cfg?.permissions?.default_mode" in source
     assert "Global ${_globalElevatedMode.toUpperCase()}" in source
     assert "Session ${_elevatedMode.toUpperCase()}" in source
-    assert "Approvals bypassed by global default" in source
     assert "opensquilla sandbox on|bypass|full|reset" in source
 
     # The legacy image-only `accept="image/*" multiple` literal must be gone:
     assert 'accept="image/*" multiple' not in source
+
+
+def test_chat_does_not_render_persistent_bypass_warning_chip() -> None:
+    chat_source = _read_chat_js()
+    chat_css = _read_chat_css()
+
+    assert "chat-bypass-warn" not in chat_source
+    assert "chat-bypass-warn" not in chat_css
+    assert "Approvals bypassed by global default" not in chat_source
 
 
 def test_webui_bypass_shortcuts_do_not_enable_full_mode() -> None:
@@ -106,6 +114,63 @@ def test_app_uses_dynamic_viewport_height_after_100vh_fallback_for_mobile_compos
     assert "height: 100vh;" in css
     assert "height: 100dvh;" in css
     assert css.index("height: 100vh;") < css.index("height: 100dvh;")
+
+
+def test_app_preserves_explicit_mobile_routes_instead_of_forcing_chat() -> None:
+    app = _read_app_js()
+    router = Path("src/opensquilla/gateway/static/js/router.js").read_text(encoding="utf-8")
+
+    assert "Router.currentPath() === '/overview'" not in app
+    assert "Router.navigate('/chat');" not in app
+    assert "window.matchMedia('(max-width: 768px)').matches ? '/chat' : '/overview'" in router
+
+
+def test_chat_composer_autofocus_is_desktop_only() -> None:
+    source = _read_chat_js()
+
+    assert "function _shouldAutofocusComposer()" in source
+    assert "window.matchMedia('(max-width: 768px)')" in source
+    assert "window.matchMedia('(pointer: coarse)')" in source
+    assert "if (_textarea && _shouldAutofocusComposer()) _textarea.focus();" in source
+    assert "// Autofocus chat input\n    if (_textarea) _textarea.focus();" not in source
+
+
+def test_mobile_sidebar_closed_state_leaves_focus_order() -> None:
+    app = _read_app_js()
+
+    assert 'id="sidebar-nav"' in app
+    assert 'aria-controls="sidebar-nav"' in app
+    assert "_syncSidebarAccessibility(sidebar, toggle, mobileQuery)" in app
+    assert "window.matchMedia('(max-width: 768px)')" in app
+    assert "sidebar.setAttribute('aria-hidden', 'true')" in app
+    assert "sidebar.setAttribute('inert', '')" in app
+    assert "sidebar.removeAttribute('aria-hidden')" in app
+    assert "sidebar.removeAttribute('inert')" in app
+    assert "toggle.setAttribute('aria-expanded', String(isOpen));" in app
+
+
+def test_desktop_sidebar_nav_items_keep_polished_hit_areas() -> None:
+    css = _read_base_css()
+
+    nav_start = css.index(".nav-item {")
+    nav_rule = css[nav_start : css.index("}", nav_start)]
+
+    assert "min-height: 40px" in nav_rule
+
+
+def test_short_desktop_sidebar_keeps_primary_nav_visible() -> None:
+    css = _read_base_css()
+
+    assert "@media (min-width: 769px) and (max-height: 640px)" in css
+    compact_start = css.index("@media (min-width: 769px) and (max-height: 640px)")
+    compact_rule = css[compact_start:]
+
+    assert ".nav-brand {" in compact_rule
+    assert "min-height: 44px" in compact_rule
+    assert ".nav-group-label {" in compact_rule
+    assert "padding: 5px var(--sp-4) 2px" in compact_rule
+    assert ".nav-group-label:first-of-type" in compact_rule
+    assert "margin-top: 4px" in compact_rule
 
 
 # ---------------------------------------------------------------------------

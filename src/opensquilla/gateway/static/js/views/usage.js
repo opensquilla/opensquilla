@@ -44,16 +44,16 @@ const UsageView = (() => {
                  burying it in the chart legend — it applies to the whole view's filtered set. -->
             <small class="usage-range-notice" id="usage-range-hint" aria-live="polite"></small>
           </div>
-          <div class="usage-stage__actions">
-            <div class="usage-currency" role="group" aria-label="Currency">
+          <div class="usage-stage__actions mobile-action-strip">
+            <div class="usage-currency mobile-action-strip__item" role="group" aria-label="Currency">
               <button class="usage-currency__btn" data-cur="USD" title="US Dollar">$ USD</button>
               <button class="usage-currency__btn" data-cur="CNY" title="Chinese Yuan">¥ CNY</button>
             </div>
-            <button class="btn btn--ghost" id="usage-export" title="Download CSV">
-              ${icons.download()}<span>Export</span>
+            <button class="btn btn--ghost mobile-action-strip__button" id="usage-export" title="Download CSV">
+              ${icons.download()}<span class="mobile-action-strip__label">Export</span>
             </button>
-            <button class="btn btn--ghost" id="usage-refresh" title="Refresh">
-              ${icons.refresh()}<span>Refresh</span>
+            <button class="btn btn--ghost mobile-action-strip__button" id="usage-refresh" title="Refresh">
+              ${icons.refresh()}<span class="mobile-action-strip__label">Refresh</span>
             </button>
           </div>
         </header>
@@ -512,15 +512,15 @@ const UsageView = (() => {
         const timestamp = _sessionTimestamp(row);
         const modified = timestamp != null ? UI.relTime(timestamp) : '—';
         html += `<tr>
-          <td>${sessionLink}</td>
-          <td class="usage-mono usage-dim">${_esc(modified)}</td>
-          <td class="usage-mono">${_rowVal(row, 'input_tokens', 'inputTokens') != null ? Number(_rowVal(row, 'input_tokens', 'inputTokens')).toLocaleString() : '—'}</td>
-          <td class="usage-mono">${_rowVal(row, 'output_tokens', 'outputTokens') != null ? Number(_rowVal(row, 'output_tokens', 'outputTokens')).toLocaleString() : '—'}</td>
-          <td class="usage-mono usage-dim">${_rowVal(row, 'cache_read_tokens', 'cacheReadTokens') != null ? Number(_rowVal(row, 'cache_read_tokens', 'cacheReadTokens')).toLocaleString() : '—'}</td>
-          <td class="usage-mono usage-dim">${_rowVal(row, 'cache_write_tokens', 'cacheWriteTokens') != null ? Number(_rowVal(row, 'cache_write_tokens', 'cacheWriteTokens')).toLocaleString() : '—'}</td>
-          <td class="usage-mono usage-cost">${_fmtCost(cost)}</td>
-          <td>${_renderCostSourceBadge(row)}</td>
-          <td>${_renderModelCell(row)}</td>
+          <td data-label="Session">${sessionLink}</td>
+          <td data-label="Modified" class="usage-mono usage-dim">${_esc(modified)}</td>
+          <td data-label="Input" class="usage-mono">${_rowVal(row, 'input_tokens', 'inputTokens') != null ? Number(_rowVal(row, 'input_tokens', 'inputTokens')).toLocaleString() : '—'}</td>
+          <td data-label="Output" class="usage-mono">${_rowVal(row, 'output_tokens', 'outputTokens') != null ? Number(_rowVal(row, 'output_tokens', 'outputTokens')).toLocaleString() : '—'}</td>
+          <td data-label="Cache R" class="usage-mono usage-dim">${_rowVal(row, 'cache_read_tokens', 'cacheReadTokens') != null ? Number(_rowVal(row, 'cache_read_tokens', 'cacheReadTokens')).toLocaleString() : '—'}</td>
+          <td data-label="Cache W" class="usage-mono usage-dim">${_rowVal(row, 'cache_write_tokens', 'cacheWriteTokens') != null ? Number(_rowVal(row, 'cache_write_tokens', 'cacheWriteTokens')).toLocaleString() : '—'}</td>
+          <td data-label="Cost" class="usage-mono usage-cost">${_fmtCost(cost)}</td>
+          <td data-label="Source">${_renderCostSourceBadge(row)}</td>
+          <td data-label="Model">${_renderModelCell(row)}</td>
         </tr>`;
       });
     }
@@ -777,6 +777,7 @@ const UsageView = (() => {
         const expandTr = document.createElement('tr');
         expandTr.className = 'usage-expand-row';
         const td = document.createElement('td');
+        td.className = 'usage-expand-cell';
         td.colSpan = USAGE_SESSION_TABLE_COLUMNS.length;
         td.appendChild(_buildExpandedContent(row));
         expandTr.appendChild(td);

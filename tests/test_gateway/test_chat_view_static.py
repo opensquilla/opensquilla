@@ -22,6 +22,38 @@ def test_chat_toolbar_has_no_tool_compress_selector() -> None:
     assert "tool-compress" not in source
 
 
+def test_chat_run_modes_keep_bypass_visible_and_accessible() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert 'id="chat-toolbar-trigger-label"' in source
+    assert "triggerLabel.textContent = bypassLabel;" in source
+    assert "has-bypass-signal" in source
+    assert "`${bypassLabel}: Approvals bypassed`" in source
+    assert "`${bypassLabel}: Full permission mode active`" in source
+    assert ".chat-toolbar-trigger.has-bypass-signal" in css
+    assert ".chat-toolbar-trigger-label" in css
+
+
+def test_chat_session_chip_accessible_name_includes_visible_key() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert 'aria-label="Switch chat session: ${_esc(_sessionKey)}"' in source
+    assert "chip.setAttribute('aria-label', 'Switch chat session: ' + key)" in source
+
+
+def test_chat_mobile_run_modes_keep_error_toasts_visible() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    mobile_start = css.index("@media (max-width: 480px)")
+    mobile_block = css[mobile_start : css.index("@media (max-width: 360px)", mobile_start)]
+
+    assert "body:has(.chat-toolbar-popover.is-open) .toast-stack {" in mobile_block
+    assert "body:has(.chat-toolbar-popover.is-open) .toast:not(.err)" in mobile_block
+    assert "body:has(.chat-toolbar-popover.is-open) .toast.err" in mobile_block
+    hidden_stack_rule = "body:has(.chat-toolbar-popover.is-open) .toast-stack {\n    opacity: 0;"
+    assert hidden_stack_rule not in mobile_block
+
+
 def test_chat_tool_display_map_does_not_reference_removed_wrapper_tools() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("const _TOOL_EMOJI = {")
@@ -207,6 +239,125 @@ def test_chat_url_agent_query_resolves_default_webchat_session() -> None:
     assert "const urlAgent = _readAgentFromUrl();" in source
     assert "urlSession || (urlAgent ? _webchatSessionKey(urlAgent) : storedSession)" in source
     assert "url.searchParams.delete('agent');" in source
+
+
+def test_chat_mobile_session_controls_keep_touch_targets() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    mobile_start = css.index("@media (max-width: 480px)")
+    mobile_block = css[mobile_start : css.index("@media (max-width: 360px)", mobile_start)]
+    label_start = mobile_block.index(".chat-label {")
+    label_rule = mobile_block[label_start : mobile_block.index("}", label_start)]
+    popover_start = mobile_block.index(".chat-session-popover {")
+    popover_rule = mobile_block[popover_start : mobile_block.index("}", popover_start)]
+    chip_start = mobile_block.index(".chat-session-chip {")
+    chip_rule = mobile_block[chip_start : mobile_block.index("}", chip_start)]
+    copy_start = mobile_block.index(".chat-session-copy-btn {")
+    copy_rule = mobile_block[copy_start : mobile_block.index("}", copy_start)]
+
+    assert ".chat-session-chip" in mobile_block
+    assert "display: none" in label_rule
+    assert "left: 12px !important" in popover_rule
+    assert "right: 12px" in popover_rule
+    assert "width: auto" in popover_rule
+    assert "min-height: 40px" in chip_rule
+    assert ".chat-session-copy-btn" in mobile_block
+    assert "width: 40px" in copy_rule
+    assert "height: 40px" in copy_rule
+
+
+def test_chat_tiny_phone_header_gives_session_key_full_row() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    tiny_start = css.index("@media (max-width: 360px)")
+    tiny_block = css[tiny_start : css.index(".chat-pill {", tiny_start)]
+    header_start = tiny_block.index(".chat-header {")
+    header_rule = tiny_block[header_start : tiny_block.index("}", header_start)]
+    left_start = tiny_block.index(".chat-header-left {")
+    left_rule = tiny_block[left_start : tiny_block.index("}", left_start)]
+    chip_start = tiny_block.index(".chat-session-chip {")
+    chip_rule = tiny_block[chip_start : tiny_block.index("}", chip_start)]
+
+    assert "flex-wrap: wrap" in header_rule
+    assert "align-items: flex-start" in header_rule
+    assert "flex: 1 1 100%" in left_rule
+    assert "gap: var(--sp-1)" in chip_rule
+    assert "padding-inline: 4px" in chip_rule
+
+
+def test_chat_mobile_composer_gives_message_input_a_full_row() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    base_wrap_start = css.index(".chat-input-wrap {")
+    mobile_start = css.index("@media (max-width: 480px)", base_wrap_start)
+    mobile_block = css[mobile_start : css.index("/* Stop button pulse animation", mobile_start)]
+    input_start = mobile_block.index(".chat-input-bar {")
+    input_rule = mobile_block[input_start : mobile_block.index("}", input_start)]
+    wrap_start = mobile_block.index(".chat-input-wrap {")
+    wrap_rule = mobile_block[wrap_start : mobile_block.index("}", wrap_start)]
+    send_start = mobile_block.index("#chat-btn-send,")
+    send_rule = mobile_block[send_start : mobile_block.index("}", send_start)]
+
+    assert "#chat-btn-new { display: none" not in css
+    assert mobile_start > base_wrap_start
+    assert "flex-wrap: wrap" in input_rule
+    assert "row-gap: 6px" in input_rule
+    assert "flex: 1 1 calc(100% - 44px)" in wrap_rule
+    assert "order: 2" in send_rule
+
+
+def test_chat_desktop_session_controls_keep_polished_hit_areas() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    chip_start = css.index(".chat-session-chip {")
+    copy_start = css.index(".chat-session-copy-btn {")
+    chip_rule = css[chip_start : css.index("}", chip_start)]
+    copy_rule = css[copy_start : css.index("}", copy_start)]
+
+    assert "min-height: 40px" in chip_rule
+    assert "width: 40px" in copy_rule
+    assert "height: 40px" in copy_rule
+    assert "border: 1px solid var(--border)" in copy_rule
+
+
+def test_chat_run_status_chip_aligns_with_header_controls() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    status_start = css.index("#chat-run-status {")
+    status_rule = css[status_start : css.index("}", status_start)]
+
+    assert "display: inline-flex" in status_rule
+    assert "align-items: center" in status_rule
+    assert "min-height: 28px" in status_rule
+    assert "padding-inline: 10px" in status_rule
+    assert "line-height: 1" in status_rule
+    assert "white-space: nowrap" in status_rule
+    assert "flex-shrink: 0" in status_rule
+
+
+def test_chat_run_mode_pills_keep_touch_friendly_hit_areas() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    pill_start = css.index(".chat-pill {")
+    pill_rule = css[pill_start : css.index("}", pill_start)]
+
+    assert "display: inline-flex" in pill_rule
+    assert "align-items: center" in pill_rule
+    assert "justify-content: center" in pill_rule
+    assert "min-height: 40px" in pill_rule
+
+
+def test_chat_router_toggle_keeps_touch_friendly_hit_area() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    wrap_start = css.index(".toggle-switch-wrap {")
+    switch_start = css.index(".toggle-switch {")
+    thumb_start = css.index(".toggle-thumb {")
+    checked_start = css.index(".toggle-switch input:checked + .toggle-track .toggle-thumb {")
+    wrap_rule = css[wrap_start : css.index("}", wrap_start)]
+    switch_rule = css[switch_start : css.index("}", switch_start)]
+    thumb_rule = css[thumb_start : css.index("}", thumb_start)]
+    checked_rule = css[checked_start : css.index("}", checked_start)]
+
+    assert "min-height: 40px" in wrap_rule
+    assert "width: 40px" in switch_rule
+    assert "height: 22px" in switch_rule
+    assert "width: 18px" in thumb_rule
+    assert "height: 18px" in thumb_rule
+    assert "transform: translateX(18px)" in checked_rule
 
 
 def test_chat_new_session_uses_current_agent_namespace() -> None:

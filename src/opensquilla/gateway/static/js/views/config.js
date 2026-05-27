@@ -118,14 +118,14 @@ const ConfigView = (() => {
             <h2 class="cfg-stage__title">Config</h2>
             <p class="cfg-stage__subtitle">Advanced gateway configuration. Use guided setup for provider, router, channels, and extras.</p>
           </div>
-          <div class="cfg-stage__actions">
-            <div class="cfg-mode-toggle" role="group" aria-label="Editor mode">
+          <div class="cfg-stage__actions mobile-action-strip">
+            <div class="cfg-mode-toggle mobile-action-strip__item" role="group" aria-label="Editor mode">
               <button class="cfg-mode-btn ${_mode === 'form' ? 'is-active' : ''}" type="button" data-cfg-mode="form">Form</button>
               <button class="cfg-mode-btn ${_mode === 'yaml' ? 'is-active' : ''}" type="button" data-cfg-mode="yaml">YAML</button>
             </div>
-            <button class="cfg-btn cfg-btn--ghost" id="cfg-guided-setup" type="button" title="Open guided setup">${icons.config()}<span>Guided setup</span></button>
-            <button class="cfg-btn cfg-btn--ghost" id="cfg-reload" type="button" title="Reload config">${icons.refresh()}<span>Reload</span></button>
-            <button class="cfg-btn cfg-btn--ghost" id="cfg-save" type="button" title="Save config">${icons.check()}<span>Save</span></button>
+            <button class="cfg-btn cfg-btn--ghost mobile-action-strip__button" id="cfg-guided-setup" type="button" title="Open guided setup">${icons.config()}<span class="mobile-action-strip__label">Guided setup</span></button>
+            <button class="cfg-btn cfg-btn--ghost mobile-action-strip__button" id="cfg-reload" type="button" title="Reload config">${icons.refresh()}<span class="mobile-action-strip__label">Reload</span></button>
+            <button class="cfg-btn cfg-btn--ghost mobile-action-strip__button" id="cfg-save" type="button" title="Save config">${icons.check()}<span class="mobile-action-strip__label">Save</span></button>
           </div>
         </header>
 

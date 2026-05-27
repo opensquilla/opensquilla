@@ -48,6 +48,16 @@
   flex-shrink: 0;
 }
 
+#chat-run-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding-inline: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .chat-label {
   font-size: var(--fs-sm);
   color: var(--text-muted);
@@ -63,6 +73,7 @@
   align-items: center;
   gap: var(--sp-2);
   padding: var(--sp-1) var(--sp-3);
+  min-height: 40px;
   font-size: var(--fs-sm);
   font-family: var(--font-mono);
   background: var(--bg);
@@ -122,12 +133,12 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
+  width: 40px;
+  height: 40px;
   padding: 0;
   color: var(--text-muted);
-  background: none;
-  border: none;
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
@@ -1564,6 +1575,21 @@
 }
 .chat-toolbar-trigger:hover { color: var(--accent); }
 .chat-toolbar-trigger.is-active { color: var(--accent); }
+.chat-toolbar-trigger.has-bypass-signal {
+  min-width: 76px;
+  padding-inline: 8px 10px;
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-surface));
+  color: var(--danger);
+}
+.chat-toolbar-trigger-label {
+  display: none;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+.chat-toolbar-trigger.has-bypass-signal .chat-toolbar-trigger-label { display: inline; }
 
 /* Per-toggle status dots reveal which runtime mode is non-default. */
 .chat-toolbar-trigger-dots {
@@ -1597,60 +1623,6 @@
 /* Open state highlights the trigger itself. */
 .chat-toolbar-trigger.is-active .chat-toolbar-trigger-dots i {
   background: color-mix(in srgb, currentColor 30%, transparent);
-}
-
-/* ─── Bypass warning chip ──────────────────────────────────────────────
-   Surfaces ONLY when Approvals = bypassed. Sits inside the composer above
-   the input bar so it can't be missed before Send. Costs zero rows in the
-   default (non-bypassed) case. */
-.chat-bypass-warn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 var(--sp-3) var(--sp-2);
-  padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--border));
-  border-left: 3px solid var(--danger);
-  border-radius: var(--radius-sm);
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--danger) 14%, transparent), transparent 60%),
-    var(--bg-surface);
-  color: var(--danger);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  animation: chat-bypass-warn-in 220ms cubic-bezier(.2,.7,.2,1);
-}
-.chat-bypass-warn.hidden { display: none !important; }
-.chat-bypass-warn__glyph {
-  display: inline-grid;
-  place-items: center;
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: var(--danger);
-  color: #fff;
-  font-family: var(--font-display, var(--font-sans));
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0;
-  flex-shrink: 0;
-}
-.chat-bypass-warn__text {
-  letter-spacing: 0.08em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-@keyframes chat-bypass-warn-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chat-bypass-warn { animation: none; }
 }
 
 .chat-toolbar-popover {
@@ -1750,6 +1722,35 @@
 @media (max-width: 480px) {
   #chat-btn-export { display: none !important; }
 
+  .chat-header {
+    gap: var(--sp-2);
+  }
+
+  .chat-label {
+    display: none;
+  }
+
+  .chat-session-chip {
+    flex: 1 1 auto;
+    max-width: none;
+    min-height: 40px;
+    padding-inline: var(--sp-2);
+  }
+
+  .chat-session-copy-btn {
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .chat-session-popover {
+    left: 12px !important;
+    right: 12px;
+    width: auto;
+    max-width: none;
+  }
+
   /* On narrow phones the input was getting squeezed to ~80px. Tighten icon
      targets to the touch minimum (40px instead of 44px) so the input gets
      back enough width to read its own placeholder. */
@@ -1781,29 +1782,54 @@
     max-width: none;
     z-index: 2500;
   }
-  /* When the run-modes popover is open, mute the toast stack so transient
-     "Squilla Router: ON/OFF" confirmations don't cover the popover content
-     the user is still interacting with. The toggle's own visible state is
-     the canonical feedback in this moment. */
+  /* When the run-modes popover is open, mute non-critical toasts so transient
+     "Squilla Router: ON/OFF" confirmations don't cover the popover content.
+     Error toasts stay visible because they may be the only failure feedback. */
   body:has(.chat-toolbar-popover.is-open) .toast-stack {
+    pointer-events: none;
+  }
+  body:has(.chat-toolbar-popover.is-open) .toast:not(.err) {
     opacity: 0;
     pointer-events: none;
     transition: opacity 120ms ease;
+  }
+  body:has(.chat-toolbar-popover.is-open) .toast.err {
+    opacity: 1;
+    pointer-events: auto;
   }
   /* Hide the desktop arrow notch — it can't reliably point at the trigger
      once we're using viewport-anchored positioning on phone. */
   .chat-toolbar-popover-arrow { display: none; }
 }
 
-/* Tiny phones only (iPhone SE 1st-gen, etc) — hide the "+" new-chat button.
-   Most modern iPhones are 375–393px so they keep it. New chat is reachable
-   from the session chip dropdown either way. */
+/* Tiny phones only (iPhone SE 1st-gen, etc). Most modern iPhones are
+   375-393px, so they keep the standard compact header. */
 @media (max-width: 360px) {
-  #chat-btn-new { display: none !important; }
+  .chat-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .chat-header-left {
+    flex: 1 1 100%;
+  }
+
+  .chat-session-chip {
+    gap: var(--sp-1);
+    padding-inline: 4px;
+  }
+
+  .chat-header-right {
+    margin-left: 0;
+  }
 }
 
 .chat-pill {
-  padding: 2px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 6px 12px;
   border-radius: 12px;
   border: 1px solid var(--border);
   background: transparent;
@@ -1870,6 +1896,7 @@
   font-size: var(--fs-xs);
   color: var(--text-muted);
   cursor: pointer;
+  min-height: 40px;
   user-select: none;
 }
 
@@ -1881,8 +1908,8 @@
 .toggle-switch {
   position: relative;
   display: inline-block;
-  width: 32px;
-  height: 18px;
+  width: 40px;
+  height: 22px;
   flex-shrink: 0;
 }
 
@@ -1907,10 +1934,10 @@
 
 .toggle-thumb {
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 12px;
-  height: 12px;
+  top: 1px;
+  left: 1px;
+  width: 18px;
+  height: 18px;
   background: var(--text-dim);
   border-radius: 50%;
   transition: transform 0.2s, background 0.2s;
@@ -1923,7 +1950,7 @@
 }
 
 .toggle-switch input:checked + .toggle-track .toggle-thumb {
-  transform: translateX(14px);
+  transform: translateX(18px);
   background: #fff;
 }
 
@@ -1970,7 +1997,7 @@
   font-family: inherit;
   font-size: var(--fs-sm);
   line-height: 1.4;
-  min-height: 0;
+  min-height: 40px;
   max-height: 150px;
   overflow-y: auto;
   outline: none;
@@ -1991,6 +2018,30 @@
 }
 #chat-btn-send:active {
   transform: scale(0.92);
+}
+
+@media (max-width: 480px) {
+  .chat-input-bar {
+    flex-wrap: wrap;
+    align-items: center;
+    row-gap: 6px;
+  }
+
+  #chat-btn-attach,
+  .chat-toolbar-wrap,
+  #chat-btn-new {
+    order: 0;
+  }
+
+  .chat-input-wrap {
+    order: 1;
+    flex: 1 1 calc(100% - 44px);
+  }
+
+  #chat-btn-send,
+  #chat-btn-stop {
+    order: 2;
+  }
 }
 
 /* Stop button pulse animation during streaming */

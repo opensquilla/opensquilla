@@ -24,7 +24,7 @@
 }
 .ap-stage__title {
   font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
-  font-weight: 700; letter-spacing: -0.025em; line-height: 1.05;
+  font-weight: 700; letter-spacing: 0; line-height: 1.05;
   position: relative;
 }
 .ap-stage__title::after {
@@ -61,7 +61,7 @@
   color: var(--text-dim);
 }
 .ap-panel__title {
-  font-size: var(--fs-md); font-weight: 600; letter-spacing: -0.01em;
+  font-size: var(--fs-md); font-weight: 600; letter-spacing: 0;
 }
 .ap-strategy__options {
   display: grid;
@@ -94,7 +94,11 @@
   border: 1.5px solid var(--text-dim);
   border-radius: 50%;
   position: relative;
-  transition: border-color var(--transition);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.ap-radio input:focus-visible + .ap-radio__indicator {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .ap-radio.is-active .ap-radio__indicator {
   border-color: var(--accent);
@@ -111,7 +115,7 @@
   font-size: var(--fs-sm); font-weight: 600;
   color: var(--text);
 }
-.ap-radio.is-active .ap-radio__label { color: var(--accent); }
+.ap-radio.is-active .ap-radio__label { color: var(--accent-hover); }
 .ap-radio__desc {
   font-size: var(--fs-xs);
   color: var(--text-muted);
@@ -122,7 +126,7 @@
 
 .ap-list-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sp-3); }
 .ap-list__title {
-  font-size: var(--fs-lg); font-weight: 600; letter-spacing: -0.01em;
+  font-size: var(--fs-lg); font-weight: 600; letter-spacing: 0;
   display: flex; align-items: center; gap: 8px;
 }
 .ap-list__count {
@@ -165,7 +169,7 @@
 .ap-card__name {
   font-weight: 700;
   font-size: var(--fs-md);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 .ap-card__time {
   font-size: 10.5px;
@@ -193,6 +197,13 @@
   gap: 16px;
   font-size: var(--fs-xs);
   color: var(--text-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ap-card__meta span {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .ap-card__meta em {
   font-style: normal;
@@ -210,6 +221,10 @@
   border-radius: var(--radius-sm);
   color: var(--text);
   font-size: 11px;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .ap-card__block { display: flex; flex-direction: column; gap: 4px; }

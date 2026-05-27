@@ -91,6 +91,7 @@
   --color-red: var(--danger);
   --color-blue: var(--info);
   --text-secondary: var(--text-muted);
+
 }
 
 /* Light theme — paper-warm with the same hue family as the dark accent. */
@@ -128,6 +129,7 @@
   --color-red: var(--danger);
   --color-blue: var(--info);
   --text-secondary: var(--text-muted);
+
 }
 
 html, body {

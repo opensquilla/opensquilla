@@ -109,6 +109,7 @@ from opensquilla.engine.types import (
     DoneEvent,
     ErrorEvent,
     RouterControlReplayEvent,
+    RouterDecisionEvent,
     ThinkingLevel,
     ToolResultEvent,
     WarningEvent,
@@ -405,6 +406,70 @@ def _non_negative_int(value: object) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _build_router_decision_event(turn: TurnContext) -> RouterDecisionEvent | None:
+    """Construct a RouterDecisionEvent from post-pipeline turn metadata.
+
+    Returns None ONLY when squilla_router did not fire for this turn
+    (router fully disabled, tier-detection bailed for an image turn
+    with no supports_image tier, etc.). In observe-mode rollout the
+    event IS emitted, with ``routing_applied=False`` — the routed
+    model was NOT swapped into the actual provider call. The WebUI
+    uses ``routing_applied`` to decide whether to animate the strip
+    or render it in a dimmed "observing" state.
+    """
+    routed_tier = turn.metadata.get("routed_tier")
+    if not routed_tier:
+        return None
+    extra = turn.metadata.get("routing_extra")
+    if not isinstance(extra, dict):
+        extra = {}
+    probs_raw = extra.get("probs")
+    probs: list[float] = []
+    if isinstance(probs_raw, list | tuple):
+        for value in probs_raw[:4]:
+            try:
+                probs.append(float(value))
+            except (TypeError, ValueError):
+                probs.append(0.0)
+    tier_savings = extra.get("tier_savings")
+    savings_pct = 0.0
+    if isinstance(tier_savings, dict):
+        try:
+            savings_pct = float(tier_savings.get("pct", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            savings_pct = 0.0
+    # Natural mapping: "t0" → 0, "t1" → 1, ... Non-numeric tier ids
+    # ("image_model", custom names) fall to -1 via the except clause.
+    # Earlier revisions subtracted 1 and floored at 0, which collapsed
+    # both t0 and t1 to the same index.
+    tier_idx = -1
+    try:
+        tier_idx = int(str(routed_tier).lstrip("t"))
+    except (TypeError, ValueError):
+        tier_idx = -1
+    source = str(turn.metadata.get("routing_source") or "none")
+    routing_applied = turn.metadata.get("routing_applied")
+    if routing_applied is None:
+        # Legacy default — assume applied when the field is missing,
+        # so older transcripts (pre-this-field) keep rendering normally.
+        routing_applied = True
+    return RouterDecisionEvent(
+        tier=str(routed_tier),
+        tier_index=tier_idx,
+        model=str(turn.metadata.get("routed_model") or turn.model or ""),
+        baseline_model=str(turn.metadata.get("baseline_model") or ""),
+        source=source,
+        confidence=float(turn.metadata.get("routing_confidence") or 0.0),
+        probs=probs,
+        savings_pct=savings_pct,
+        fallback=source == "fallback",
+        thinking_mode=str(turn.metadata.get("thinking_mode") or ""),
+        prompt_policy=str(turn.metadata.get("prompt_policy") or ""),
+        routing_applied=bool(routing_applied),
+        rollout_phase=str(turn.metadata.get("rollout_phase") or "full"),
+    )
 
 
 def _token_cost_usd(input_tokens: float, output_tokens: float, price: PriceEntry) -> float:
@@ -2001,6 +2066,9 @@ class TurnRunner:
                 tool_context.router_control_turn_hold_applied = bool(
                     turn.metadata.get("router_control_hold_applied")
                 )
+            router_event = _build_router_decision_event(turn)
+            if router_event is not None:
+                yield router_event
             ab_outcome = await self._agent_bootstrap_stage.run(
                 AgentBootstrapStageInput(
                     provider=provider,

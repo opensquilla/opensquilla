@@ -832,6 +832,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         ctx.metadata["routed_tier"] = decision.tier
         ctx.metadata["routed_model"] = decision.model
         ctx.metadata["routing_applied"] = routing_applied
+        ctx.metadata["rollout_phase"] = rollout_phase
         ctx.metadata["applied_model"] = ctx.model
         ctx.metadata["routing_confidence"] = decision.confidence
         ctx.metadata["routing_source"] = decision.source
@@ -1001,6 +1002,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
     ctx.metadata["routed_tier"] = decision.tier
     ctx.metadata["routed_model"] = decision.model
     ctx.metadata["routing_applied"] = routing_applied
+    ctx.metadata["rollout_phase"] = rollout_phase
     ctx.metadata["applied_model"] = ctx.model
     ctx.metadata["routing_confidence"] = decision.confidence
     ctx.metadata["routing_source"] = decision.source

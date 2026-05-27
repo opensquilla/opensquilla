@@ -235,6 +235,158 @@ async def test_db_outage_falls_through_to_trigger_match(tmp_path):
     assert not awaiting_keys
 
 
+# ── PR9: nl_extract fallback integration ──
+
+def _seed_awaiting_with_nl_extract(writer, **kwargs):
+    """Variant of _seed_awaiting that enables nl_extract on the schema."""
+    cfg = ClarifyStepConfig(
+        mode="form",
+        fields=(ClarifyField(name="x", type="string", required=True),),
+        timeout_hours=24,
+        cancel_keywords=(),
+        nl_extract=True,
+    )
+    plan = MetaPlan(
+        name="t",
+        triggers=(),
+        priority=0,
+        steps=(
+            MetaStep(id="collect", skill="collect", kind="user_input",
+                     clarify_config=cfg),
+        ),
+    )
+    snapshot = to_jsonable(plan)
+    with writer._lock:
+        writer._conn.execute(
+            "INSERT INTO meta_skill_runs "
+            "(run_id, meta_skill_name, meta_skill_digest, plan_snapshot_json, "
+            " triggered_by, session_key, status, started_at_ms, inputs_json, "
+            " awaiting_step_id, awaiting_schema_json, awaiting_since, "
+            " awaiting_filled_json, step_outputs_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("r1", "t", "d", json.dumps(snapshot),
+             "soft_meta_invoke", "S1", "awaiting_user", 0,
+             json.dumps({"user_message": "original trigger", "collected": {}}),
+             "collect",
+             json.dumps(snapshot["plan"]["steps"][0]["clarify_config"]),
+             time.time(), "{}", "{}"),
+        )
+        writer._conn.commit()
+    return plan
+
+
+def _ctx_with_nl_chat(writer, *, message, llm_response):
+    """Build ctx with both meta_run_writer and a mock llm_chat callable."""
+    loader = MagicMock()
+    loader.load_all.return_value = []
+
+    async def _nl_chat(system, user):
+        return llm_response
+
+    return SimpleNamespace(
+        message=message,
+        session_key="S1",
+        metadata={
+            "skill_loader": loader,
+            "meta_run_writer": writer,
+            "meta_llm_chat": _nl_chat,
+        },
+        system_prompt="",
+        config=SimpleNamespace(squilla_router=SimpleNamespace(tiers={})),
+        surface_kind="cli",
+    )
+
+
+@pytest.mark.asyncio
+async def test_nl_extract_fills_field_when_deterministic_parser_fails(tmp_path):
+    """A 3-line natural-language reply causes positional parser to reject
+    (too many lines for a 1-field schema); nl_extract LLM picks up the
+    structured JSON and resumes the DAG."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_with_nl_extract(writer)
+
+    ctx = _ctx_with_nl_chat(
+        writer,
+        # 3 lines → positional rejects (schema has 1 field) →
+        # nl_extract fallback is invoked.
+        message="I have been thinking\nabout my next vacation\nand want to visit Tokyo!",
+        llm_response=json.dumps({"x": "Tokyo"}),
+    )
+    out = await meta_resolution(ctx)
+    assert "meta_resume" in out.metadata, (
+        f"expected nl_extract to fill field; got metadata={dict(out.metadata)}"
+    )
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {"x": "Tokyo"}
+
+
+@pytest.mark.asyncio
+async def test_nl_extract_skipped_when_deterministic_parser_succeeds(tmp_path):
+    """When `x: Tokyo` already parses cleanly, the LLM is NOT called."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_with_nl_extract(writer)
+
+    llm_called = {"count": 0}
+
+    async def _nl_chat(system, user):
+        llm_called["count"] += 1
+        return json.dumps({"x": "WRONG"})
+
+    loader = MagicMock()
+    loader.load_all.return_value = []
+    ctx = SimpleNamespace(
+        message="x: Tokyo",  # deterministic parser succeeds here
+        session_key="S1",
+        metadata={
+            "skill_loader": loader,
+            "meta_run_writer": writer,
+            "meta_llm_chat": _nl_chat,
+        },
+        system_prompt="",
+        config=SimpleNamespace(squilla_router=SimpleNamespace(tiers={})),
+        surface_kind="cli",
+    )
+    out = await meta_resolution(ctx)
+    assert "meta_resume" in out.metadata
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {"x": "Tokyo"}  # deterministic value, not LLM value
+    assert llm_called["count"] == 0, (
+        "nl_extract LLM must NOT be called when deterministic parser wins"
+    )
+
+
+@pytest.mark.asyncio
+async def test_nl_extract_disabled_when_flag_false(tmp_path):
+    """nl_extract: false (default) → no LLM fallback, even if llm_chat is wired."""
+    writer = _writer(tmp_path)
+    _seed_awaiting(writer)  # default schema does NOT have nl_extract enabled
+
+    llm_called = {"count": 0}
+
+    async def _nl_chat(system, user):
+        llm_called["count"] += 1
+        return json.dumps({"x": "Tokyo"})
+
+    loader = MagicMock()
+    loader.load_all.return_value = []
+    ctx = SimpleNamespace(
+        message="multi\nline\nhybrid: x",  # forces deterministic failure
+        session_key="S1",
+        metadata={
+            "skill_loader": loader,
+            "meta_run_writer": writer,
+            "meta_llm_chat": _nl_chat,
+        },
+        system_prompt="",
+        config=SimpleNamespace(squilla_router=SimpleNamespace(tiers={})),
+        surface_kind="cli",
+    )
+    out = await meta_resolution(ctx)
+    # Should be in error state (strike incremented), NOT resumed.
+    assert "meta_resume" not in out.metadata
+    assert llm_called["count"] == 0
+
+
 # ── PR4: real parser happy-path integration ──
 
 @pytest.mark.asyncio

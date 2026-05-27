@@ -29,6 +29,7 @@ import time
 import structlog
 
 from opensquilla.engine.pipeline import TurnContext
+from opensquilla.skills.meta.clarify_nl_extract import extract as _nl_extract
 from opensquilla.skills.meta.clarify_text import parse_clarify_reply
 from opensquilla.skills.meta.inputs import make_meta_inputs
 from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
@@ -45,6 +46,24 @@ def _hits_cancel_keywords(message: str, keywords: tuple[str, ...]) -> bool:
         if kw and kw in lower:
             return True
     return False
+
+
+def _chat_pending_fields(schema, awaiting):
+    """Return tuple of fields not yet in awaiting_filled_json (chat mode).
+
+    The nl_extract whitelist is the SINGLE currently-asked field in chat
+    mode so the LLM cannot accidentally fill out later fields the user
+    has not been prompted for yet.
+    """
+    import json as _json
+    try:
+        filled = _json.loads(awaiting.awaiting_filled_json or "{}")
+    except Exception:  # noqa: BLE001
+        filled = {}
+    for field in schema.fields:
+        if field.name not in filled:
+            return (field,)
+    return tuple(schema.fields)  # all filled — defensive (shouldn't reach here)
 
 
 def _deserialize_awaiting_schema(schema_json: str):
@@ -223,6 +242,34 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                 ctx.message, schema,
                 surface=getattr(ctx, "surface_kind", "unknown"),
             )
+            if errors and schema.nl_extract:
+                # PR9: opt-in LLM fallback. Run ONLY when the
+                # deterministic parser failed. Validators are reapplied
+                # inside extract() so prompt-injection in user_message
+                # cannot bypass type/range/choice constraints.
+                nl_chat = ctx.metadata.get("meta_llm_chat")
+                if nl_chat is not None:
+                    active = (
+                        _chat_pending_fields(schema, awaiting)
+                        if schema.mode == "chat"
+                        else schema.fields
+                    )
+                    try:
+                        nl_result = await _nl_extract(
+                            reply_text=ctx.message,
+                            schema=schema,
+                            active_fields=active,
+                            llm_chat=nl_chat,
+                            tier=schema.nl_extract_tier,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "meta_resolution.nl_extract_failed",
+                            error=str(exc),
+                        )
+                    else:
+                        if not nl_result.errors and nl_result.fields:
+                            parsed, errors = nl_result.fields, []
             if errors:
                 failure_count = writer.increment_parse_failures(
                     run_id=awaiting.run_id,

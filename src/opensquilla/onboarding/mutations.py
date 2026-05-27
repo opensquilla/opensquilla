@@ -67,6 +67,16 @@ def _clean_optional_str(value: str | None) -> str:
     return value.strip()
 
 
+def _positive_int(value: int | str, *, label: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be an integer >= 1") from None
+    if parsed < 1:
+        raise ValueError(f"{label} must be >= 1")
+    return parsed
+
+
 def _reconcile_router_profile_for_provider(
     cfg: GatewayConfig,
     provider_id: str,
@@ -95,6 +105,17 @@ def _reconcile_router_profile_for_provider(
 def _default_text_tier(default_tier: str | None) -> str:
     tier = (default_tier or "t1").strip()
     return tier if tier in _TEXT_ROUTER_TIERS else "t1"
+
+
+def _normalize_explicit_text_tier(default_tier: str | None) -> str | None:
+    if default_tier is None:
+        return None
+    tier = str(default_tier).strip()
+    if not tier:
+        return None
+    if tier not in _TEXT_ROUTER_TIERS:
+        raise ValueError("defaultTier must reference a text tier")
+    return tier
 
 
 def _router_default_model_for_provider(provider_id: str, default_tier: str | None) -> str:
@@ -256,8 +277,11 @@ def upsert_router(
     router_payload = config.squilla_router.model_dump(mode="python")
     router_payload.pop("tiers", None)
 
-    default_tier_clean = str(default_tier or router_payload.get("default_tier") or "t1")
-    if default_tier is not None:
+    default_tier_override = _normalize_explicit_text_tier(default_tier)
+    default_tier_clean = default_tier_override or str(
+        router_payload.get("default_tier") or "t1"
+    )
+    if default_tier_override is not None:
         router_payload["default_tier"] = default_tier_clean
 
     public_payload: dict[str, Any] = {"mode": router_mode}
@@ -314,7 +338,7 @@ def upsert_search_provider(
     provider_id: str,
     api_key: str = "",
     api_key_env: str = "",
-    max_results: int = 5,
+    max_results: int | str = 5,
     proxy: str = "",
     use_env_proxy: bool = False,
     fallback_policy: str = "off",
@@ -325,14 +349,21 @@ def upsert_search_provider(
         raise ValueError(
             f"search provider {provider_id!r} is not runtime-supported and cannot be configured"
         )
-    if max_results < 1:
-        raise ValueError("max_results must be >= 1")
+    effective_max_results = _positive_int(max_results, label="max_results")
     if fallback_policy not in {"off", "network"}:
         raise ValueError("fallback_policy must be 'off' or 'network'")
     fallback_policy_value = cast(SearchFallbackPolicy, fallback_policy)
 
-    effective_api_key = clean_header_secret(api_key, label="Search API key")
-    effective_api_key_env = "" if api_key else api_key_env.strip()
+    effective_api_key = (
+        clean_header_secret(api_key, label="Search API key")
+        if spec.requires_api_key
+        else ""
+    )
+    effective_api_key_env = (
+        ""
+        if api_key or not spec.requires_api_key
+        else api_key_env.strip()
+    )
     if (
         not effective_api_key
         and not effective_api_key_env
@@ -348,7 +379,7 @@ def upsert_search_provider(
     new_cfg.search_provider = provider_id
     new_cfg.search_api_key = effective_api_key
     new_cfg.search_api_key_env = effective_api_key_env
-    new_cfg.search_max_results = max_results
+    new_cfg.search_max_results = effective_max_results
     new_cfg.search_proxy = proxy
     new_cfg.search_use_env_proxy = bool(use_env_proxy)
     new_cfg.search_fallback_policy = fallback_policy_value
@@ -364,7 +395,7 @@ def upsert_search_provider(
         "api_key": effective_api_key,
         "api_key_env": effective_api_key_env,
         "api_key_source": api_key_source,
-        "max_results": max_results,
+        "max_results": effective_max_results,
         "proxy": proxy,
         "use_env_proxy": bool(use_env_proxy),
         "fallback_policy": fallback_policy_value,
@@ -425,21 +456,23 @@ def upsert_image_generation_provider(
         raise ValueError(
             "primary must be a provider/model reference for "
             f"image generation provider {provider_id!r}"
-        )
+    )
 
     current_provider_cfg = _image_generation_provider_config(config, provider_id)
-    if api_key and api_key_env.strip():
+    explicit_env_key = _clean_optional_str(api_key_env)
+    if api_key and explicit_env_key:
         raise ValueError("configure either api_key or api_key_env, not both")
     effective_api_key = clean_header_secret(
         api_key or getattr(current_provider_cfg, "api_key", ""),
         label="Image API key",
     )
-    env_key = (
-        ""
-        if api_key
-        else api_key_env.strip()
-        or getattr(current_provider_cfg, "api_key_env", spec.env_key)
-        or spec.env_key
+    current_env_key = getattr(current_provider_cfg, "api_key_env", spec.env_key) or ""
+    if api_key:
+        env_key = ""
+    else:
+        env_key = explicit_env_key or current_env_key or spec.env_key
+    has_saved_env_reference = bool(
+        explicit_env_key or (current_env_key and current_env_key != spec.env_key)
     )
     api_key_source = _image_generation_api_key_source(
         config,
@@ -447,11 +480,18 @@ def upsert_image_generation_provider(
         api_key=effective_api_key,
         env_key=env_key,
     )
-    if spec.requires_api_key and api_key_source == "none":
+    if (
+        enabled
+        and spec.requires_api_key
+        and api_key_source == "none"
+        and not has_saved_env_reference
+    ):
         raise ValueError(
             f"image generation provider {provider_id!r} requires an api_key, "
             f"{spec.env_key}, or a matching configured LLM provider"
         )
+    if api_key_source == "none" and has_saved_env_reference:
+        api_key_source = "missing_env"
 
     effective_base_url = (
         base_url or getattr(current_provider_cfg, "base_url", "") or spec.default_base_url
@@ -485,12 +525,28 @@ def upsert_image_generation_provider(
     )
 
 
+def disable_image_generation(config: GatewayConfig) -> MutationResult:
+    new_cfg = _clone(config)
+    new_cfg.image_generation.enabled = False
+    return MutationResult(
+        config=new_cfg,
+        changed=True,
+        restart_required=False,
+        warnings=[],
+        public_payload={
+            "enabled": False,
+            "primary": new_cfg.image_generation.primary,
+        },
+    )
+
+
 def upsert_memory_embedding(
     config: GatewayConfig,
     *,
     provider: str,
     model: str | None = None,
     api_key: str | None = None,
+    api_key_env: str | None = None,
     base_url: str | None = None,
     onnx_dir: str | None = None,
 ) -> MutationResult:
@@ -502,16 +558,29 @@ def upsert_memory_embedding(
     current = config.memory.embedding
     model_value = _clean_optional_str(model)
     api_key_value = _clean_optional_str(api_key)
+    api_key_env_value = _clean_optional_str(api_key_env)
+    if api_key_value and api_key_env_value:
+        raise ValueError("configure either api_key or api_key_env, not both")
     base_url_value = _clean_optional_str(base_url)
     onnx_dir_value = _clean_optional_str(onnx_dir)
     payload: dict[str, Any] = {"provider": provider}
 
     if provider in _REMOTE_MEMORY_EMBEDDING_PROVIDERS:
-        effective_api_key = api_key_value or current.remote.api_key or current.api_key or ""
-        if not effective_api_key:
-            raise ValueError("remote memory embedding provider requires an api_key")
+        current_api_key_env = _clean_optional_str(
+            getattr(current.remote, "api_key_env", None)
+        )
+        effective_api_key_env = "" if api_key_value else (
+            api_key_env_value or current_api_key_env or ""
+        )
+        effective_api_key = (
+            api_key_value
+            or ("" if effective_api_key_env else current.remote.api_key or current.api_key or "")
+        )
+        if not effective_api_key and not effective_api_key_env:
+            raise ValueError(
+                "remote memory embedding provider requires an api_key or api_key_env"
+            )
         payload["remote"] = {
-            "api_key": effective_api_key,
             "base_url": (
                 base_url_value
                 or current.remote.base_url
@@ -519,19 +588,34 @@ def upsert_memory_embedding(
                 or _DEFAULT_REMOTE_EMBEDDING_BASE_URL
             ),
         }
+        if effective_api_key:
+            payload["remote"]["api_key"] = effective_api_key
+        if effective_api_key_env:
+            payload["remote"]["api_key_env"] = effective_api_key_env
         remote_model = model_value or current.remote.model or current.model
         if remote_model:
             payload["remote"]["model"] = remote_model
     elif provider == "auto":
         remote_payload: dict[str, str] = {}
-        effective_api_key = api_key_value or current.remote.api_key or current.api_key or ""
+        current_api_key_env = _clean_optional_str(
+            getattr(current.remote, "api_key_env", None)
+        )
+        effective_api_key_env = "" if api_key_value else (
+            api_key_env_value or current_api_key_env or ""
+        )
+        effective_api_key = (
+            api_key_value
+            or ("" if effective_api_key_env else current.remote.api_key or current.api_key or "")
+        )
         if effective_api_key:
             remote_payload["api_key"] = effective_api_key
+        if effective_api_key_env:
+            remote_payload["api_key_env"] = effective_api_key_env
         remote_base_url = base_url_value or current.remote.base_url or current.base_url
         if remote_base_url:
             remote_payload["base_url"] = remote_base_url
         remote_model = model_value or current.remote.model or (
-            current.model if effective_api_key else None
+            current.model if (effective_api_key or effective_api_key_env) else None
         )
         if remote_model:
             remote_payload["model"] = remote_model
@@ -558,7 +642,7 @@ def upsert_memory_embedding(
 
     new_cfg.memory.embedding = MemoryEmbeddingConfig.model_validate(payload)
     changed = old_memory != new_cfg.memory.model_dump(mode="python")
-    if api_key_value:
+    if api_key_value or api_key_env_value:
         new_cfg.clear_runtime_secret("memory.embedding.remote.api_key")
         new_cfg.clear_runtime_secret("memory.embedding.api_key")
 

@@ -46,6 +46,15 @@ _ALL_DEPRECATED_MEMORY_FIELDS = {
 }
 
 
+def test_explicit_missing_config_path_stays_attached_to_defaults(tmp_path: Path) -> None:
+    target = tmp_path / "new-user-config.toml"
+
+    cfg = GatewayConfig.load(target)
+
+    assert cfg.config_path == str(target)
+    assert not target.exists()
+
+
 def _build_toml_with_deprecated(tmp_path: Path) -> Path:
     """Write a minimal config.toml that contains all deprecated fields."""
     lines = ["[memory]\n"]

@@ -109,6 +109,29 @@ def test_ollama_does_not_require_api_key_in_setup_spec():
     assert spec.requires_api_key is False
     api_field = next(f for f in spec.fields if f.name == "api_key")
     assert api_field.required is False
+    assert all(f.name != "api_key_env" for f in spec.fields)
+
+
+def test_api_key_providers_expose_env_key_field_in_setup_spec():
+    spec = get_provider_setup_spec("openrouter")
+    env_field = next(f for f in spec.fields if f.name == "api_key_env")
+
+    assert env_field.label == "API key env"
+    assert env_field.default == "OPENROUTER_API_KEY"
+    assert env_field.required is False
+    assert env_field.secret is False
+
+
+def test_non_router_providers_explain_required_model_in_setup_spec():
+    for provider_id in ("anthropic", "ollama", "qianfan"):
+        spec = get_provider_setup_spec(provider_id)
+        model_field = next(f for f in spec.fields if f.name == "model")
+
+        assert spec.router_supported is False
+        assert model_field.required is True
+        assert "Required" in model_field.description
+        assert "router" not in model_field.description.lower()
+        assert any("model" in item.lower() for item in spec.what_you_need)
 
 
 def test_azure_requires_base_url_in_setup_spec():
@@ -146,3 +169,14 @@ def test_payload_exposes_only_verified_runtime_supported_providers():
 
     assert {row["providerId"] for row in payload} == EXPECTED_SUPPORTED
     assert all(row["runtimeSupported"] is True for row in payload)
+
+
+def test_provider_payload_exposes_readiness_metadata_for_every_provider():
+    payload = provider_catalog_payload()
+
+    for row in payload:
+        assert row["blocking"] is True
+        assert row["deployment"] in {"cloud", "local", "custom", "oauth"}
+        assert row["canProbe"] is False
+        assert row["readmeScenarios"]
+        assert row["whatYouNeed"]

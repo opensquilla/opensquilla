@@ -145,8 +145,11 @@ def test_channel_catalog_payload_exposes_ui_metadata():
     assert fields["app_secret"]["placeholder"]
     assert fields["webhook_path"]["showWhen"] == {"connection_mode": "webhook"}
     assert fields["encrypt_key"]["advanced"] is True
+    assert feishu["blocking"] is False
+    assert feishu["whatYouNeed"]
     slack = next(c for c in payload if c["type"] == "slack")
     assert "public URL" in slack["help"]
+    assert any("public URL" in item for item in slack["whatYouNeed"])
 
 
 def test_matrix_encryption_choices():

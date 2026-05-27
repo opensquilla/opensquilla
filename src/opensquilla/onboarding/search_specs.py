@@ -31,6 +31,11 @@ class SearchProviderSetupSpec:
     metadata_supported: bool
     requires_api_key: bool
     env_key: str
+    deployment: Literal["cloud", "local"]
+    blocking: bool
+    can_probe: bool
+    readme_scenarios: tuple[str, ...]
+    what_you_need: tuple[str, ...]
     capabilities: tuple[str, ...]
     fields: tuple[SearchProviderSetupField, ...]
 
@@ -102,6 +107,11 @@ def _fields_for(spec: SearchProviderSpec) -> tuple[SearchProviderSetupField, ...
 
 
 def _to_setup_spec(spec: SearchProviderSpec) -> SearchProviderSetupSpec:
+    what_you_need = (
+        (f"API key via {spec.env_key} or a one-time paste.",)
+        if spec.requires_api_key
+        else ("No API key required.",)
+    )
     return SearchProviderSetupSpec(
         provider_id=spec.provider_id,
         label=_SEARCH_PROVIDER_LABELS.get(spec.provider_id, spec.provider_id),
@@ -109,6 +119,11 @@ def _to_setup_spec(spec: SearchProviderSpec) -> SearchProviderSetupSpec:
         metadata_supported=spec.metadata_supported,
         requires_api_key=spec.requires_api_key,
         env_key=spec.env_key,
+        deployment="cloud" if spec.requires_api_key else "local",
+        blocking=False,
+        can_probe=False,
+        readme_scenarios=("built-in web search", "first-run setup"),
+        what_you_need=what_you_need,
         capabilities=tuple(sorted(spec.capabilities)),
         fields=_fields_for(spec),
     )
@@ -134,6 +149,11 @@ def search_provider_catalog_payload() -> list[dict[str, Any]]:
             "metadataSupported": s.metadata_supported,
             "requiresApiKey": s.requires_api_key,
             "envKey": s.env_key,
+            "deployment": s.deployment,
+            "blocking": s.blocking,
+            "canProbe": s.can_probe,
+            "readmeScenarios": list(s.readme_scenarios),
+            "whatYouNeed": list(s.what_you_need),
             "capabilities": list(s.capabilities),
             "fields": [
                 {

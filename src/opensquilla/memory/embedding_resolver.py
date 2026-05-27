@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -113,8 +114,11 @@ def resolve_memory_embedding(
         or top_model
         or OpenAIEmbeddingProvider.DEFAULT_MODEL
     )
-    remote_api_key = _clean_str(getattr(remote_cfg, "api_key", None)) or _clean_str(
-        getattr(embed_cfg, "api_key", None)
+    remote_api_key_env = _clean_str(getattr(remote_cfg, "api_key_env", None))
+    remote_api_key = (
+        _clean_str(getattr(remote_cfg, "api_key", None))
+        or _clean_str(getattr(embed_cfg, "api_key", None))
+        or (os.environ.get(remote_api_key_env) if remote_api_key_env else None)
     )
     remote_base_url = (
         _clean_str(getattr(remote_cfg, "base_url", None))

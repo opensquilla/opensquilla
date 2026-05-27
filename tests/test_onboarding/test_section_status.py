@@ -7,6 +7,7 @@ import pytest
 from opensquilla.gateway.config import (
     GatewayConfig,
     LlmProviderConfig,
+    MemoryEmbeddingConfig,
     SlackChannelEntry,
 )
 from opensquilla.onboarding.section_status import (
@@ -14,6 +15,7 @@ from opensquilla.onboarding.section_status import (
     channels_section_status,
     image_generation_section_status,
     llm_section_status,
+    memory_embedding_section_status,
     needs_onboarding,
     router_section_status,
     search_section_status,
@@ -183,6 +185,83 @@ def test_image_generation_env_key_reference_missing_is_degraded(cfg, monkeypatch
     assert image_generation_section_status(cfg) is SectionStatus.DEGRADED
 
 
+def test_image_generation_missing_custom_env_is_not_masked_by_default_env(
+    cfg,
+    monkeypatch,
+):
+    cfg.image_generation.enabled = True
+    cfg.image_generation.primary = "openai/gpt-image-1"
+    cfg.llm = LlmProviderConfig(provider="openrouter", model="m", api_key="")
+    openai_provider = cfg.image_generation.providers.openai
+    openai_provider.api_key = ""
+    openai_provider.api_key_env = "CUSTOM_IMAGE_KEY"
+    monkeypatch.delenv("CUSTOM_IMAGE_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "default-env-key")
+
+    assert image_generation_section_status(cfg) is SectionStatus.DEGRADED
+
+
+def test_image_generation_custom_default_primary_is_not_masked_by_other_provider(
+    cfg,
+    monkeypatch,
+):
+    cfg.image_generation.enabled = True
+    cfg.image_generation.primary = "openai/gpt-image-1"
+    cfg.llm = LlmProviderConfig(provider="openrouter", model="m", api_key="sk-or")
+    openai_provider = cfg.image_generation.providers.openai
+    openai_provider.api_key = ""
+    openai_provider.api_key_env = "CUSTOM_IMAGE_KEY"
+    monkeypatch.delenv("CUSTOM_IMAGE_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    assert image_generation_section_status(cfg) is SectionStatus.DEGRADED
+
+
+# ── memory embedding ────────────────────────────────────────────────────────
+
+def test_memory_embedding_auto_is_ok(cfg):
+    cfg.memory.embedding = MemoryEmbeddingConfig(provider="auto")
+    assert memory_embedding_section_status(cfg) is SectionStatus.OK
+
+
+def test_memory_embedding_none_is_optional(cfg):
+    cfg.memory.embedding = MemoryEmbeddingConfig(provider="none")
+    assert memory_embedding_section_status(cfg) is SectionStatus.OPTIONAL
+
+
+def test_memory_embedding_remote_without_key_is_missing(cfg):
+    cfg.memory.embedding = MemoryEmbeddingConfig(provider="openai")
+    assert memory_embedding_section_status(cfg) is SectionStatus.MISSING
+
+
+def test_memory_embedding_remote_with_missing_env_key_is_degraded(cfg, monkeypatch):
+    monkeypatch.delenv("OPENAI_EMBEDDINGS_API_KEY", raising=False)
+    cfg.memory.embedding = MemoryEmbeddingConfig(
+        provider="openai",
+        remote={"api_key_env": "OPENAI_EMBEDDINGS_API_KEY"},
+    )
+
+    assert memory_embedding_section_status(cfg) is SectionStatus.DEGRADED
+
+
+def test_memory_embedding_remote_with_env_key_is_ok(cfg, monkeypatch):
+    monkeypatch.setenv("OPENAI_EMBEDDINGS_API_KEY", "mem-env-key")
+    cfg.memory.embedding = MemoryEmbeddingConfig(
+        provider="openai",
+        remote={"api_key_env": "OPENAI_EMBEDDINGS_API_KEY"},
+    )
+
+    assert memory_embedding_section_status(cfg) is SectionStatus.OK
+
+
+def test_memory_embedding_remote_with_key_is_ok(cfg):
+    cfg.memory.embedding = MemoryEmbeddingConfig(
+        provider="openai",
+        remote={"api_key": "sk-embedding"},
+    )
+    assert memory_embedding_section_status(cfg) is SectionStatus.OK
+
+
 # ── needs_onboarding reduction ───────────────────────────────────────────────
 
 def test_needs_onboarding_false_when_all_ok_or_optional():
@@ -192,38 +271,42 @@ def test_needs_onboarding_false_when_all_ok_or_optional():
         "search": SectionStatus.OK,
         "channels": SectionStatus.OPTIONAL,
         "image_generation": SectionStatus.OPTIONAL,
+        "memory_embedding": SectionStatus.OK,
     }
     assert needs_onboarding(sections) is False
 
 
-def test_needs_onboarding_true_when_any_missing():
+def test_needs_onboarding_false_when_optional_section_missing():
     sections = {
         "llm": SectionStatus.OK,
         "router": SectionStatus.OPTIONAL,
         "search": SectionStatus.MISSING,
         "channels": SectionStatus.OPTIONAL,
         "image_generation": SectionStatus.OPTIONAL,
+        "memory_embedding": SectionStatus.OK,
     }
-    assert needs_onboarding(sections) is True
+    assert needs_onboarding(sections) is False
 
 
-def test_needs_onboarding_true_when_any_degraded():
+def test_needs_onboarding_true_when_required_section_degraded():
     sections = {
         "llm": SectionStatus.DEGRADED,
         "router": SectionStatus.OK,
         "search": SectionStatus.OK,
         "channels": SectionStatus.OPTIONAL,
         "image_generation": SectionStatus.OPTIONAL,
+        "memory_embedding": SectionStatus.OK,
     }
     assert needs_onboarding(sections) is True
 
 
-def test_needs_onboarding_true_when_any_unknown():
+def test_needs_onboarding_false_when_optional_section_unknown():
     sections = {
         "llm": SectionStatus.OK,
         "router": SectionStatus.UNKNOWN,
         "search": SectionStatus.OK,
         "channels": SectionStatus.OPTIONAL,
         "image_generation": SectionStatus.OPTIONAL,
+        "memory_embedding": SectionStatus.OK,
     }
-    assert needs_onboarding(sections) is True
+    assert needs_onboarding(sections) is False

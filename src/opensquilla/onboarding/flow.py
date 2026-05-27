@@ -30,12 +30,23 @@ from opensquilla.onboarding.image_generation_specs import (
     get_image_generation_provider_setup_spec,
     list_image_generation_provider_setup_specs,
 )
+from opensquilla.onboarding.memory_embedding_specs import (
+    MemoryEmbeddingProviderSetupSpec,
+    get_memory_embedding_provider_setup_spec,
+    list_memory_embedding_provider_setup_specs,
+)
 from opensquilla.onboarding.mutations import (
     upsert_channel,
     upsert_image_generation_provider,
     upsert_llm_provider,
+    upsert_memory_embedding,
     upsert_router,
     upsert_search_provider,
+)
+from opensquilla.onboarding.next_steps import (
+    headless_setup_command,
+    headless_setup_commands,
+    setup_catalog_command,
 )
 from opensquilla.onboarding.provider_specs import (
     get_provider_setup_spec,
@@ -45,6 +56,7 @@ from opensquilla.onboarding.search_specs import (
     get_search_provider_setup_spec,
     list_search_provider_setup_specs,
 )
+from opensquilla.onboarding.setup_paths import web_setup_url
 from opensquilla.onboarding.status import get_onboarding_status
 from opensquilla.ui import (
     ACCENT,
@@ -114,6 +126,7 @@ class OnboardOptions:
     api_key: str | None = None
     api_key_env: str | None = None
     base_url: str | None = None
+    proxy: str | None = None
     router_mode: str = "recommended"
     minimal: bool = False
     skip_migration: bool = False
@@ -220,19 +233,57 @@ def _config_cli_arg(config_path: str | Path | None) -> str:
     return f" --config {shlex.quote(str(config_path))}"
 
 
+def _first_blocking_setup_section(cfg: Any) -> str:
+    status = get_onboarding_status(cfg)
+    for name in status.sections:
+        if status.section_details.get(name, {}).get("blocking"):
+            return name
+    return "provider"
+
+
 def _print_noninteractive_hint(
+    cfg: Any,
     config_path: str | Path | None = None,
+    *,
+    section: str | None = None,
 ) -> PersistResult:
+    if config_path is None and isinstance(cfg, (str, Path)):
+        config_path = cfg
+        cfg = load_config(config_path)
     config_arg = _config_cli_arg(config_path)
-    print(
-        "Onboarding requires a TTY. Run a non-interactive equivalent, e.g.:\n"
-        "  opensquilla onboard --provider openrouter "
-        f"--api-key-env OPENROUTER_API_KEY --router recommended --minimal{config_arg}\n"
-        "  opensquilla search configure brave "
-        f"--api-key $BRAVE_SEARCH_API_KEY{config_arg}\n"
-        "  opensquilla channels add slack "
-        f"--name work --token $SLACK_TOKEN{config_arg}"
+    normalized = (section or _first_blocking_setup_section(cfg)).replace("_", "-")
+    headless_commands = headless_setup_commands(normalized)
+    if not headless_commands:
+        headless_commands = [
+            headless_setup_command("provider")
+            or (
+                "Provider recipes",
+                "opensquilla onboard catalog providers",
+            )
+        ]
+    guided_command = (
+        f"opensquilla onboard configure {normalized}{config_arg}"
+        if section
+        else f"opensquilla onboard --if-needed{config_arg}"
     )
+    lines = [
+        "Onboarding requires a TTY-compatible interactive terminal for the guided wizard.",
+        "Use a runnable setup path from this shell:",
+    ]
+    setup_url = web_setup_url(cfg)
+    if setup_url:
+        lines.append(f"  Web UI: opensquilla gateway run{config_arg} -> {setup_url}")
+    catalog_label, catalog_command = setup_catalog_command(config_arg)
+    lines.append(f"  {catalog_label}: {catalog_command}")
+    for label, command in headless_commands:
+        lines.append(f"  {label}: {command}{config_arg}")
+    lines.extend(
+        [
+            f"  Guided CLI: {guided_command} (interactive terminal only)",
+            f"  Check status: opensquilla onboard status{config_arg}",
+        ]
+    )
+    print("\n".join(lines))
     return PersistResult(
         path=default_config_path(),
         backup_path=None,
@@ -309,6 +360,12 @@ def _api_key_source_choices(env_key: str) -> list[str]:
     return choices
 
 
+def _api_key_source_default(env_key: str) -> str:
+    if env_key and os.environ.get(env_key):
+        return _api_key_env_choice(env_key, detected=True)
+    return _PASTE_API_KEY_CHOICE
+
+
 def _secret_value_validator(label: str):
     required = _required_value(label)
 
@@ -360,7 +417,7 @@ def _ask_provider_fields(
             key_source = questionary.select(
                 "LLM API key source",
                 choices=_api_key_source_choices(env_key or ""),
-                default=_PASTE_API_KEY_CHOICE,
+                default=_api_key_source_default(env_key or ""),
             ).ask()
             selected_env_key = _api_key_env_from_choice(key_source or "")
             answers["api_key_env"] = selected_env_key
@@ -383,6 +440,7 @@ def _ask_provider_fields(
         )
     else:
         answers["base_url"] = options.base_url or spec.default_base_url
+    answers["proxy"] = options.proxy or ""
     return answers
 
 
@@ -409,7 +467,7 @@ def _ask_search_fields(questionary, spec) -> dict[str, Any]:
                 _ask_or_cancel(
                     questionary.confirm(
                         f"Use {env_key} from environment?",
-                        default=False,
+                        default=True,
                     ),
                     section="search",
                 )
@@ -464,7 +522,7 @@ def run_interactive_search_configure(
     config_path: str | Path | None = None,
 ) -> PersistResult:
     if not _is_tty():
-        return _print_noninteractive_hint(config_path)
+        return _print_noninteractive_hint(config_path, section="search")
 
     import questionary as _qmod
     questionary = _styled(_qmod)
@@ -540,13 +598,15 @@ def _ask_image_generation_fields(
     llm_choice = "Reuse matching LLM provider key"
     if config.llm.provider == spec.provider_id and config.llm.api_key:
         key_choices.append(llm_choice)
-    key_choices.append(_PASTE_API_KEY_CHOICE)
     env_choice = (
         _api_key_env_choice(spec.env_key)
         if spec.env_key
         else ""
     )
-    if env_choice:
+    if env_choice and os.environ.get(spec.env_key):
+        key_choices.append(env_choice)
+    key_choices.append(_PASTE_API_KEY_CHOICE)
+    if env_choice and not os.environ.get(spec.env_key):
         key_choices.append(env_choice)
 
     key_source = questionary.select(
@@ -606,7 +666,7 @@ def run_interactive_image_generation_configure(
     config_path: str | Path | None = None,
 ) -> PersistResult:
     if not _is_tty():
-        return _print_noninteractive_hint(config_path)
+        return _print_noninteractive_hint(config_path, section="image-generation")
 
     import questionary as _qmod
     questionary = _styled(_qmod)
@@ -626,6 +686,179 @@ def run_interactive_image_generation_configure(
     )
     persisted = persist_config(result.config, path=config_path, restart_required=False)
     _print_image_generation_saved(provider_id)
+    return persisted
+
+
+def _memory_embedding_choice_label(spec: MemoryEmbeddingProviderSetupSpec) -> str:
+    return f"{spec.provider_id} ({spec.label})"
+
+
+def _memory_embedding_choice_to_provider_id(choice: str | None) -> str:
+    return (choice or "").split(" ", 1)[0]
+
+
+def _ask_memory_embedding_choice(
+    questionary,
+    config,
+) -> tuple[MemoryEmbeddingProviderSetupSpec, str]:
+    providers = [
+        s
+        for s in list_memory_embedding_provider_setup_specs()
+        if s.runtime_supported
+    ]
+    current_provider = getattr(config.memory.embedding, "requested_provider", "auto")
+    default_spec = next(
+        (s for s in providers if s.provider_id == current_provider),
+        providers[0],
+    )
+    choice = _ask_or_cancel(
+        questionary.select(
+            "Memory embedding provider",
+            choices=[_memory_embedding_choice_label(s) for s in providers],
+            default=_memory_embedding_choice_label(default_spec),
+        ),
+        section="memory embedding",
+    )
+    provider_id = _memory_embedding_choice_to_provider_id(choice)
+    return get_memory_embedding_provider_setup_spec(provider_id), provider_id
+
+
+def _memory_embedding_key_choices(
+    spec: MemoryEmbeddingProviderSetupSpec,
+    config,
+) -> list[str]:
+    embedding = config.memory.embedding
+    current_env = str(getattr(embedding.remote, "api_key_env", "") or "").strip()
+    current_key = str(
+        getattr(embedding.remote, "api_key", "")
+        or getattr(embedding, "api_key", "")
+        or ""
+    ).strip()
+    choices: list[str] = []
+    if current_key:
+        choices.append("Keep stored memory API key")
+    env_key = current_env or spec.env_key
+    if env_key:
+        choices.append(
+            _api_key_env_choice(env_key, detected=bool(os.environ.get(env_key)))
+        )
+    choices.append(_PASTE_API_KEY_CHOICE)
+    return choices
+
+
+def _ask_memory_embedding_fields(
+    questionary,
+    spec: MemoryEmbeddingProviderSetupSpec,
+    config,
+) -> dict[str, Any]:
+    embedding = config.memory.embedding
+    answers: dict[str, Any] = {}
+    if spec.provider_id == "none":
+        return answers
+    if spec.provider_id == "local":
+        answers["onnx_dir"] = _ask_or_cancel(
+            questionary.text(
+                "Local ONNX directory",
+                default=(
+                    embedding.local.onnx_dir
+                    if embedding.requested_provider == "local"
+                    else ""
+                ),
+            ),
+            section="memory embedding",
+        )
+        return answers
+    if spec.provider_id in {"openai", "openai-compatible"}:
+        answers["model"] = _ask_or_cancel(
+            questionary.text(
+                "Memory embedding model",
+                default=embedding.remote.model
+                or embedding.model
+                or "text-embedding-3-small",
+            ),
+            section="memory embedding",
+        )
+        key_source = _ask_or_cancel(
+            questionary.select(
+                "Memory API key source",
+                choices=_memory_embedding_key_choices(spec, config),
+            ),
+            section="memory embedding",
+        )
+        selected_env_key = _api_key_env_from_choice(key_source or "")
+        if key_source == _PASTE_API_KEY_CHOICE:
+            answers["api_key"] = _ask_or_cancel(
+                questionary.password(
+                    "Memory embedding API key",
+                    validate=_secret_value_validator("Memory embedding API key"),
+                ),
+                section="memory embedding",
+            )
+            answers["api_key_env"] = ""
+        elif selected_env_key:
+            answers["api_key"] = ""
+            answers["api_key_env"] = selected_env_key
+        else:
+            answers["api_key"] = ""
+            answers["api_key_env"] = ""
+        answers["base_url"] = _ask_or_cancel(
+            questionary.text(
+                "Memory embedding base URL",
+                default=embedding.remote.base_url
+                or embedding.base_url
+                or "https://api.openai.com/v1",
+            ),
+            section="memory embedding",
+        )
+        return answers
+    if spec.provider_id == "ollama":
+        answers["model"] = _ask_or_cancel(
+            questionary.text(
+                "Memory embedding model",
+                default=embedding.ollama.model or "nomic-embed-text",
+            ),
+            section="memory embedding",
+        )
+        answers["base_url"] = _ask_or_cancel(
+            questionary.text(
+                "Memory embedding base URL",
+                default=embedding.ollama.base_url or "http://localhost:11434",
+            ),
+            section="memory embedding",
+        )
+    return answers
+
+
+def run_interactive_memory_embedding_configure(
+    config_path: str | Path | None = None,
+) -> PersistResult:
+    if not _is_tty():
+        cfg = load_config(config_path)
+        return _print_noninteractive_hint(cfg, config_path, section="memory-embedding")
+
+    import questionary as _qmod
+    questionary = _styled(_qmod)
+
+    cfg = load_config(config_path)
+    spec, provider_id = _ask_memory_embedding_choice(questionary, cfg)
+    answers = _ask_memory_embedding_fields(questionary, spec, cfg)
+    result = upsert_memory_embedding(
+        cfg,
+        provider=provider_id,
+        model=answers.get("model"),
+        api_key=answers.get("api_key"),
+        api_key_env=answers.get("api_key_env"),
+        base_url=answers.get("base_url"),
+        onnx_dir=answers.get("onnx_dir"),
+    )
+    persisted = persist_config(result.config, path=config_path, restart_required=False)
+    console.print(
+        f"[bold {ACCENT}]◆[/] [bold]Memory embedding configured.[/]"
+    )
+    console.print(
+        f"  [dim]Provider:[/dim] [{ACCENT_SOFT}]{markup_escape(provider_id)}[/]"
+        " [dim]· new memory indexing will use this setting[/dim]"
+    )
     return persisted
 
 
@@ -804,6 +1037,33 @@ def _ask_router_fields(
     if questionary.confirm("Edit router tier models now?", default=False).ask():
         payload["tiers"] = _router_tier_overrides(questionary, preview)
     return payload
+
+
+def run_interactive_router_configure(
+    *, config_path: str | Path | None = None
+) -> PersistResult:
+    cfg = load_config(config_path)
+    if not _is_tty():
+        return _print_noninteractive_hint(cfg, config_path, section="router")
+
+    import questionary as _qmod
+
+    questionary = _styled(_qmod)
+    provider_id = _provider_id_from_config(cfg)
+    requested_mode = "recommended" if cfg.squilla_router.enabled else "disabled"
+    payload = _ask_router_fields(
+        questionary,
+        cfg,
+        provider_id=provider_id,
+        requested_mode=requested_mode,
+    )
+    result = upsert_router(
+        cfg,
+        mode=payload["mode"],
+        default_tier=payload.get("defaultTier"),
+        tiers=payload.get("tiers"),
+    )
+    return persist_config(result.config, path=config_path, restart_required=False)
 
 
 def _channel_control_fields(spec: ChannelSetupSpec) -> set[str]:
@@ -1487,7 +1747,7 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
         )
 
     if not _is_tty():
-        return _print_noninteractive_hint(options.config_path)
+        return _print_noninteractive_hint(cfg, options.config_path)
 
     import questionary as _qmod
     questionary = _styled(_qmod)
@@ -1495,10 +1755,23 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
     console.print(
         banner_panel(
             "OpenSquilla Onboarding",
-            "Migration · Provider · Router · Channel · Search",
+            "Migration · Provider · SquillaRouter · Channels · Capabilities",
         )
     )
     _wait_for_setup_start()
+    if options.if_needed and status.has_config and status.llm_configured:
+        _run_action_required_optional_sections(
+            questionary,
+            status,
+            options=options,
+        )
+        return persist_config(
+            load_config(options.config_path),
+            path=options.config_path,
+            restart_required=False,
+            backup=False,
+        )
+
     config_path = _config_path_from_loaded_config(cfg)
     migration_result: Any | None = None
     if not options.skip_migration:
@@ -1579,6 +1852,7 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
                 api_key=answers.get("api_key", ""),
                 api_key_env=answers.get("api_key_env", ""),
                 base_url=answers.get("base_url", ""),
+                proxy=answers.get("proxy", ""),
             )
             cfg_after_provider = res.config
             if options.router_mode:
@@ -1635,6 +1909,14 @@ def run_interactive_onboard(options: OnboardOptions) -> PersistResult:
             config_path=options.config_path,
         )
 
+    refreshed_status = get_onboarding_status(load_config(options.config_path))
+    _run_action_required_optional_sections(
+        questionary,
+        refreshed_status,
+        options=options,
+        sections=("memory_embedding",),
+    )
+
     return persist
 
 
@@ -1649,7 +1931,7 @@ def _run_optional_section(
 ) -> None:
     """Run an optional onboarding step, isolating cancellation from siblings.
 
-    ``section`` is the slug consumed by ``opensquilla configure <section>``;
+    ``section`` is the slug consumed by ``opensquilla onboard configure <section>``;
     ``label`` is the user-facing wording (which can contain spaces). Only
     cancellation-shaped exceptions are caught here — real validation or
     programming errors propagate so they surface in the operator's terminal
@@ -1667,11 +1949,82 @@ def _run_optional_section(
         )
         console.print(
             f"  [dim]Resume later with[/dim] "
-            f"[{ACCENT_SOFT}]opensquilla configure {section}{config_arg}[/]"
+            f"[{ACCENT_SOFT}]opensquilla onboard configure {section}{config_arg}[/]"
         )
     except KeyboardInterrupt:
         console.print(
             f"[yellow]{label} setup interrupted — skipping.[/yellow]"
+        )
+
+
+def _section_needs_action(status, section: str) -> bool:
+    detail = status.section_details.get(section, {})
+    return bool(detail.get("blocking") or detail.get("actionRequired"))
+
+
+def _run_action_required_optional_sections(
+    questionary,
+    status,
+    *,
+    options: OnboardOptions,
+    sections: tuple[str, ...] = (
+        "router",
+        "channels",
+        "search",
+        "image_generation",
+        "memory_embedding",
+    ),
+) -> None:
+    actions = {
+        "router": {
+            "prompt": "Configure SquillaRouter now?",
+            "section": "router",
+            "label": "router",
+            "runner": run_interactive_router_configure,
+            "skip": False,
+        },
+        "channels": {
+            "prompt": "Configure messaging channels now?",
+            "section": "channels",
+            "label": "channel",
+            "runner": run_interactive_channel_add,
+            "args": (None,),
+            "skip": options.skip_channels,
+        },
+        "search": {
+            "prompt": "Configure web search now?",
+            "section": "search",
+            "label": "search",
+            "runner": run_interactive_search_configure,
+            "skip": options.skip_search,
+        },
+        "image_generation": {
+            "prompt": "Fix image generation now?",
+            "section": "image-generation",
+            "label": "image generation",
+            "runner": run_interactive_image_generation_configure,
+            "skip": options.skip_image_generation,
+        },
+        "memory_embedding": {
+            "prompt": "Configure memory embeddings now?",
+            "section": "memory-embedding",
+            "label": "memory embedding",
+            "runner": run_interactive_memory_embedding_configure,
+            "skip": False,
+        },
+    }
+    for name in sections:
+        action = actions.get(name)
+        if not action or action.get("skip") or not _section_needs_action(status, name):
+            continue
+        if not questionary.confirm(str(action["prompt"]), default=True).ask():
+            continue
+        _run_optional_section(
+            section=str(action["section"]),
+            label=str(action["label"]),
+            runner=action["runner"],
+            args=action.get("args", ()),
+            config_path=options.config_path,
         )
 
 
@@ -1681,7 +2034,7 @@ def run_interactive_channel_add(
     config_path: str | Path | None = None,
 ) -> PersistResult:
     if not _is_tty():
-        return _print_noninteractive_hint(config_path)
+        return _print_noninteractive_hint(config_path, section="channels")
 
     import questionary as _qmod
     questionary = _styled(_qmod)
@@ -1709,7 +2062,7 @@ def run_interactive_channel_edit(
     config_path: str | Path | None = None,
 ) -> PersistResult:
     if not _is_tty():
-        return _print_noninteractive_hint(config_path)
+        return _print_noninteractive_hint(config_path, section="channels")
 
     import questionary as _qmod
     questionary = _styled(_qmod)
@@ -1719,7 +2072,7 @@ def run_interactive_channel_edit(
     if not existing_entries:
         console.print(
             f"[{ACCENT_DIM}]no channels to edit[/]"
-            " [dim]· run `configure --section channels` to add one[/dim]"
+            " [dim]· run `opensquilla onboard configure channels` to add one[/dim]"
         )
         return persist_config(
             cfg,
@@ -1758,7 +2111,8 @@ def run_interactive_configure(
     config_path: str | Path | None = None,
 ) -> PersistResult | None:
     if not _is_tty():
-        _print_noninteractive_hint(config_path)
+        cfg = load_config(config_path)
+        _print_noninteractive_hint(cfg, config_path, section=section)
         return None
 
     import questionary as _qmod
@@ -1766,9 +2120,16 @@ def run_interactive_configure(
 
     section = section or questionary.select(
         "Section",
-        choices=["providers", "channels", "search", "image-generation"],
+        choices=[
+            "provider",
+            "router",
+            "channels",
+            "search",
+            "image-generation",
+            "memory-embedding",
+        ],
     ).ask()
-    if section == "providers":
+    if section in {"provider", "providers"}:
         return run_interactive_onboard(
             OnboardOptions(
                 skip_channels=True,
@@ -1776,7 +2137,9 @@ def run_interactive_configure(
                 config_path=config_path,
             )
         )
-    if section == "channels":
+    if section == "router":
+        return run_interactive_router_configure(config_path=config_path)
+    if section in {"channel", "channels"}:
         existing = load_config(config_path).channels.channels
         if existing:
             mode = questionary.select(
@@ -1791,6 +2154,8 @@ def run_interactive_configure(
         return run_interactive_search_configure(config_path=config_path)
     if section in {"image-generation", "image_generation"}:
         return run_interactive_image_generation_configure(config_path=config_path)
+    if section in {"memory-embedding", "memory_embedding"}:
+        return run_interactive_memory_embedding_configure(config_path=config_path)
     console.print(
         f"[{ACCENT_DIM}]section[/] [{ACCENT_SOFT}]{markup_escape(repr(section))}[/]"
         " [dim]not yet supported in the wizard · edit "

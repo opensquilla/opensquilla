@@ -409,6 +409,7 @@ class MemoryEmbeddingRemoteConfig(BaseModel):
     """OpenAI-compatible remote memory embedding settings."""
 
     api_key: str | None = None
+    api_key_env: str | None = None
     base_url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
     model: str | None = None
@@ -1768,7 +1769,10 @@ class GatewayConfig(BaseSettings):
                 cfg.config_path = str(path)
                 return cfg
 
-        return cls()
+        cfg = cls()
+        if config_path:
+            cfg.config_path = str(Path(config_path))
+        return cfg
 
 
 # --- bind-address resolution ----------------------------------------------

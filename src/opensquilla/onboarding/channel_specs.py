@@ -38,6 +38,9 @@ class ChannelSetupSpec:
     docs_hint: str
     fields: tuple[ChannelSetupField, ...]
     help: str = ""
+    blocking: bool = False
+    can_probe: bool = True
+    readme_scenarios: tuple[str, ...] = ("chat channels", "first-run setup")
 
 
 def _common_fields() -> tuple[ChannelSetupField, ...]:
@@ -373,6 +376,10 @@ def channel_catalog_payload() -> list[dict[str, Any]]:
             "restartRequired": s.restart_required,
             "docsHint": s.docs_hint,
             "help": s.help,
+            "blocking": s.blocking,
+            "canProbe": s.can_probe,
+            "readmeScenarios": list(s.readme_scenarios),
+            "whatYouNeed": _what_you_need(s),
             "fields": [
                 {
                     "name": f.name,
@@ -394,3 +401,18 @@ def channel_catalog_payload() -> list[dict[str, Any]]:
         }
         for s in list_channel_setup_specs()
     ]
+
+
+def _what_you_need(spec: ChannelSetupSpec) -> list[str]:
+    needs = [
+        f"{field.label}."
+        for field in spec.fields
+        if field.required and field.name not in {"name", "enabled", "agent_id"}
+    ]
+    if spec.requires_public_url:
+        needs.append("A public URL reachable by the channel provider.")
+    if spec.dependency_extra:
+        needs.append(f"Install the `{spec.dependency_extra}` optional extra.")
+    if not needs:
+        needs.append("A channel entry name and provider-side bot/app setup.")
+    return needs

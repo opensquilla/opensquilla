@@ -157,6 +157,9 @@ def test_interactive_provider_fields_default_to_pasted_api_key(monkeypatch):
         def confirm(self, message: str, **_kwargs):
             raise AssertionError(f"unexpected confirm prompt: {message}")
 
+        def checkbox(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected checkbox prompt: {message}")
+
     answers = _ask_provider_fields(
         _Questionary(),
         get_provider_setup_spec("openrouter"),
@@ -188,7 +191,9 @@ def test_interactive_provider_fields_explains_detected_env_key(monkeypatch):
                 "Paste API key now",
                 "Use environment variable OPENROUTER_API_KEY (detected)",
             ]
-            assert kwargs.get("default") == "Paste API key now"
+            assert kwargs.get("default") == (
+                "Use environment variable OPENROUTER_API_KEY (detected)"
+            )
             return _Answer("Use environment variable OPENROUTER_API_KEY (detected)")
 
         def password(self, message: str, **_kwargs):
@@ -1062,8 +1067,10 @@ def test_interactive_onboard_can_enable_image_generation(tmp_path, monkeypatch):
             if message == "LLM provider":
                 return _Answer("openrouter (OpenRouter)")
             if message == "LLM API key source":
-                assert kwargs.get("default") == "Paste API key now"
-                return _Answer("Paste API key now")
+                assert kwargs.get("default") == (
+                    "Use environment variable OPENROUTER_API_KEY (detected)"
+                )
+                return _Answer("Use environment variable OPENROUTER_API_KEY (detected)")
             if message == "Router mode":
                 return _Answer("SquillaRouter")
             if message == "Default text model":
@@ -1072,10 +1079,13 @@ def test_interactive_onboard_can_enable_image_generation(tmp_path, monkeypatch):
                 assert kwargs.get("default") == "openrouter (OpenRouter Images)"
                 return _Answer("openrouter (OpenRouter Images)")
             if message == "Image API key source":
-                assert "Use environment variable OPENROUTER_API_KEY" in kwargs.get("choices", [])
-                assert "Reuse matching LLM provider key" in kwargs.get("choices", [])
-                assert kwargs.get("default") == "Reuse matching LLM provider key"
-                return _Answer("Reuse matching LLM provider key")
+                assert (
+                    "Use environment variable OPENROUTER_API_KEY"
+                    in kwargs.get("choices", [])
+                )
+                assert "Reuse matching LLM provider key" not in kwargs.get("choices", [])
+                assert kwargs.get("default") == "Use environment variable OPENROUTER_API_KEY"
+                return _Answer("Use environment variable OPENROUTER_API_KEY")
             raise AssertionError(f"unexpected select prompt: {message}")
 
         def text(self, message: str, **kwargs):
@@ -1117,6 +1127,103 @@ def test_interactive_onboard_can_enable_image_generation(tmp_path, monkeypatch):
         data["image_generation"]["primary"]
         == "openrouter/google/gemini-3.1-flash-image-preview"
     )
+
+
+def test_onboard_if_needed_core_ready_repairs_memory_embedding_without_provider_setup(
+    tmp_path,
+    monkeypatch,
+):
+    import sys
+    import tomllib
+    import types
+
+    from opensquilla.gateway.config import (
+        GatewayConfig,
+        LlmProviderConfig,
+        MemoryEmbeddingConfig,
+    )
+    from opensquilla.onboarding import flow
+    from opensquilla.onboarding.config_store import persist_config
+
+    target = tmp_path / "c.toml"
+    cfg = GatewayConfig(config_path=str(target))
+    cfg.llm = LlmProviderConfig(
+        provider="openrouter",
+        model="deepseek/deepseek-v4-flash",
+        api_key="sk-core",
+    )
+    cfg.memory.embedding = MemoryEmbeddingConfig(provider="openai")
+    persist_config(cfg, path=target, backup=False)
+
+    calls: list[str] = []
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-memory-env")
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+    monkeypatch.setattr(flow, "_wait_for_setup_start", lambda: calls.append("start gate"))
+    monkeypatch.setattr(flow, "detect_default_sources", lambda: [])
+
+    banner_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        flow,
+        "banner_panel",
+        lambda title, subtitle: banner_calls.append((title, subtitle)) or title,
+    )
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary(types.SimpleNamespace):
+        def confirm(self, message: str, **kwargs):
+            calls.append(message)
+            if message == "Configure memory embeddings now?":
+                assert kwargs.get("default") is True
+                return _Answer(True)
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+        def select(self, message: str, **kwargs):
+            calls.append(message)
+            if message == "Memory embedding provider":
+                return _Answer("openai (OpenAI)")
+            if message == "Memory API key source":
+                assert "Use environment variable OPENAI_API_KEY (detected)" in kwargs.get(
+                    "choices", []
+                )
+                return _Answer("Use environment variable OPENAI_API_KEY (detected)")
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def text(self, message: str, **kwargs):
+            calls.append(message)
+            if message == "Memory embedding model":
+                return _Answer(kwargs.get("default"))
+            if message == "Memory embedding base URL":
+                return _Answer(kwargs.get("default"))
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected password prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    flow.run_interactive_onboard(flow.OnboardOptions(if_needed=True))
+
+    assert "LLM provider" not in calls
+    assert calls.index("Configure memory embeddings now?") < calls.index(
+        "Memory embedding provider"
+    )
+    assert banner_calls == [
+        (
+            "OpenSquilla Onboarding",
+            "Migration · Provider · SquillaRouter · Channels · Capabilities",
+        )
+    ]
+    data = tomllib.loads(target.read_text())
+    assert data["memory"]["embedding"]["provider"] == "openai"
+    assert data["memory"]["embedding"]["remote"]["api_key_env"] == "OPENAI_API_KEY"
+    assert "api_key" not in data["memory"]["embedding"]["remote"]
 
 
 def test_interactive_configure_image_generation_persists(tmp_path, monkeypatch):
@@ -1400,6 +1507,9 @@ def test_interactive_channel_add_uses_explicit_config_path(tmp_path, monkeypatch
         def confirm(self, message: str, **_kwargs):
             raise AssertionError(f"unexpected confirm prompt: {message}")
 
+        def checkbox(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected checkbox prompt: {message}")
+
     monkeypatch.setitem(sys.modules, "questionary", _Questionary())
 
     flow.run_interactive_channel_add(None, config_path=target)
@@ -1498,7 +1608,7 @@ def test_search_provider_key_defaults_to_pasted_key_with_brave_hint(monkeypatch)
     assert answers["api_key_env"] == ""
 
 
-def test_search_provider_detected_env_still_defaults_to_manual_key(monkeypatch):
+def test_search_provider_detected_env_prefers_env_but_can_use_manual_key(monkeypatch):
     from opensquilla.onboarding.flow import _ask_search_fields
     from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
 
@@ -1519,7 +1629,7 @@ def test_search_provider_detected_env_still_defaults_to_manual_key(monkeypatch):
 
         def confirm(self, message: str, **kwargs):
             if message == "Use BRAVE_SEARCH_API_KEY from environment?":
-                assert kwargs.get("default") is False
+                assert kwargs.get("default") is True
                 return _Answer(False)
             if message == "Use environment proxy for search?":
                 return _Answer(False)
@@ -1574,7 +1684,7 @@ def test_search_provider_can_use_detected_env_when_requested(monkeypatch):
 
         def confirm(self, message: str, **kwargs):
             if message == "Use BRAVE_SEARCH_API_KEY from environment?":
-                assert kwargs.get("default") is False
+                assert kwargs.get("default") is True
                 return _Answer(True)
             if message == "Use environment proxy for search?":
                 return _Answer(False)
@@ -1787,6 +1897,154 @@ def test_interactive_configure_search_uses_explicit_config_path(tmp_path, monkey
     assert not default_target.exists()
 
 
+def test_interactive_configure_memory_embedding_is_in_section_menu(
+    tmp_path,
+    monkeypatch,
+):
+    import sys
+    import tomllib
+    import types
+
+    from opensquilla.onboarding import flow
+
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-memory-env")
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary(types.SimpleNamespace):
+        def select(self, message: str, **kwargs):
+            if message == "Section":
+                assert "memory-embedding" in kwargs["choices"]
+                return _Answer("memory-embedding")
+            if message == "Memory embedding provider":
+                return _Answer("openai (OpenAI)")
+            if message == "Memory API key source":
+                return _Answer("Use environment variable OPENAI_API_KEY")
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def text(self, message: str, **kwargs):
+            if message == "Memory embedding model":
+                return _Answer("text-embedding-3-small")
+            if message == "Memory embedding base URL":
+                return _Answer(kwargs.get("default"))
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected password prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    flow.run_interactive_configure(config_path=target)
+
+    data = tomllib.loads(target.read_text())
+    remote = data["memory"]["embedding"]["remote"]
+    assert data["memory"]["embedding"]["provider"] == "openai"
+    assert remote["api_key_env"] == "OPENAI_API_KEY"
+    assert "api_key" not in remote
+
+
+def test_interactive_memory_embedding_configure_without_tty_prints_hint(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from opensquilla.onboarding import flow
+
+    target = tmp_path / "c.toml"
+    monkeypatch.setattr(flow, "_is_tty", lambda: False)
+
+    result = flow.run_interactive_memory_embedding_configure(config_path=target)
+
+    assert result.warnings == ["tty_required"]
+    assert not target.exists()
+    out = capsys.readouterr().out
+    assert "Headless memory embedding:" in out
+    assert "opensquilla onboard configure memory-embedding --config" in out
+
+
+def test_interactive_configure_provider_accepts_singular_section_alias(
+    tmp_path,
+    monkeypatch,
+):
+    from opensquilla.onboarding import flow
+    from opensquilla.onboarding.config_store import PersistResult
+
+    target = tmp_path / "custom.toml"
+    seen = {}
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    def fake_run_interactive_onboard(options):
+        seen["config_path"] = options.config_path
+        return PersistResult(
+            path=target,
+            backup_path=None,
+            restart_required=False,
+            warnings=[],
+        )
+
+    monkeypatch.setattr(flow, "run_interactive_onboard", fake_run_interactive_onboard)
+
+    result = flow.run_interactive_configure("provider", config_path=target)
+
+    assert result is not None
+    assert seen["config_path"] == target
+
+
+def test_interactive_configure_router_persists(tmp_path, monkeypatch):
+    import sys
+    import tomllib
+    import types
+
+    from opensquilla.onboarding import flow
+
+    target = tmp_path / "c.toml"
+    target.write_text(
+        '[llm]\nprovider = "openrouter"\nmodel = "deepseek/deepseek-v4-flash"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary(types.SimpleNamespace):
+        def select(self, message: str, **kwargs):
+            if message == "Router mode":
+                return _Answer("Disabled")
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def text(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected password prompt: {message}")
+
+        def confirm(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+        def checkbox(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected checkbox prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    flow.run_interactive_configure("router", config_path=target)
+
+    data = tomllib.loads(target.read_text())
+    assert data["squilla_router"]["enabled"] is False
+
+
 def test_interactive_configure_provider_receives_explicit_config_path(
     tmp_path,
     monkeypatch,
@@ -1816,7 +2074,7 @@ def test_interactive_configure_provider_receives_explicit_config_path(
 
 
 def test_interactive_configure_without_tty_does_not_create_config(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
@@ -1826,4 +2084,9 @@ def test_interactive_configure_without_tty_does_not_create_config(
     result = flow.run_interactive_configure("providers")
 
     assert result is None
+    out = capsys.readouterr().out
+    assert "Guided CLI:" in out
+    assert "Provider recipes:" in out
+    assert "Headless provider:" not in out
+    assert "Check status:" in out
     assert not target.exists()

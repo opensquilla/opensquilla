@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import structlog
 import tomli_w
 
 try:
@@ -24,7 +24,7 @@ from opensquilla.gateway.config_migration import (
 )
 from opensquilla.paths import default_opensquilla_home
 
-log = structlog.get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -148,7 +148,7 @@ def persist_config(
 
     os.chmod(target, 0o600)
 
-    log.info(
+    log.debug(
         "onboarding.config_persisted",
         path=str(target),
         backup=str(backup_path) if backup_path else None,

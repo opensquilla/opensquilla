@@ -186,7 +186,7 @@ def test_optional_section_runner_swallows_user_cancelled(monkeypatch):
 
     text = recorder.joined().lower()
     assert "search setup cancelled" in text
-    assert "opensquilla configure search" in recorder.joined()
+    assert "opensquilla onboard configure search" in recorder.joined()
 
 
 def test_optional_section_runner_resume_hint_uses_section_slug_not_label(monkeypatch):
@@ -205,7 +205,7 @@ def test_optional_section_runner_resume_hint_uses_section_slug_not_label(monkeyp
         runner=_runner,
     )
 
-    assert "opensquilla configure image-generation" in recorder.joined()
+    assert "opensquilla onboard configure image-generation" in recorder.joined()
 
 
 def test_optional_section_runner_swallows_keyboard_interrupt(monkeypatch):

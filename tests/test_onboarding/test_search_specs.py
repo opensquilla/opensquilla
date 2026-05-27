@@ -40,6 +40,8 @@ def test_search_catalog_payload_is_web_safe_shape():
     assert "providerId" in first
     assert "runtimeSupported" in first
     assert "fields" in first
+    assert "blocking" in first
+    assert "whatYouNeed" in first
 
 
 def test_search_catalog_explains_fallback_and_diagnostics_fields():
@@ -48,3 +50,11 @@ def test_search_catalog_explains_fallback_and_diagnostics_fields():
 
     assert "DuckDuckGo" in fields["fallback_policy"].description
     assert "attempt/error details" in fields["diagnostics"].description
+
+
+def test_search_payload_marks_search_as_optional_capability():
+    payload = search_provider_catalog_payload()
+
+    assert all(row["blocking"] is False for row in payload)
+    assert all(row["canProbe"] is False for row in payload)
+    assert all(row["readmeScenarios"] for row in payload)

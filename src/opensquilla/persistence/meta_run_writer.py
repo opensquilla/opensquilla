@@ -15,7 +15,6 @@ so a writer failure cannot fail a meta-skill turn.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -195,30 +194,19 @@ def _redact_inputs_json(raw: Mapping[str, Any], *, max_bytes: int) -> str:
 
 
 def _serialize_plan(plan: MetaPlan) -> tuple[str, str]:
-    """Returns (plan_snapshot_json, meta_skill_digest)."""
-    snapshot = {
-        "name": plan.name,
-        "triggers": list(plan.triggers),
-        "priority": plan.priority,
-        "steps": [
-            {
-                "id": s.id,
-                "skill": s.skill,
-                "kind": s.kind,
-                "with_args": dict(s.with_args),
-                "depends_on": list(s.depends_on),
-                "route": [{"when": r.when, "to": r.to} for r in s.route],
-                "output_choices": list(s.output_choices),
-                "tool": s.tool,
-                "tool_args": dict(s.tool_args),
-                "tool_allowlist": list(s.tool_allowlist),
-                "on_failure": s.on_failure,
-            }
-            for s in plan.steps
-        ],
-    }
+    """Returns (plan_snapshot_json, meta_skill_digest).
+
+    Thin wrapper over opensquilla.skills.meta.plan_serde — see PR2 of
+    docs/superpowers/specs/2026-05-26-meta-skill-user-input-design.md.
+    The snapshot JSON is the *envelope* (with ``"v": 1``); the digest is
+    over the same canonical JSON. Existing rows' digests will change on
+    next write — this is a one-time churn at the V013 cut-over.
+    """
+    from opensquilla.skills.meta.plan_serde import plan_digest, to_jsonable
+
+    snapshot = to_jsonable(plan)
     snapshot_json = json.dumps(snapshot, sort_keys=True, ensure_ascii=False)
-    digest = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+    digest = plan_digest(plan)
     return snapshot_json, digest
 
 

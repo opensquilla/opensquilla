@@ -8,3 +8,5 @@ the orchestrator facade.
 """
 
 from __future__ import annotations
+
+from opensquilla.skills.meta.executors.user_input import run_user_input_step  # noqa: F401

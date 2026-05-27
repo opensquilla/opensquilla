@@ -1,0 +1,139 @@
+"""Unit tests for the user_input step executor (PR3, design §8.1)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from unittest.mock import MagicMock
+
+import pytest
+
+from opensquilla.skills.meta.executors.user_input import run_user_input_step
+from opensquilla.skills.meta.types import (
+    ClarifyField,
+    ClarifyStepConfig,
+    MetaPaused,
+    MetaStep,
+)
+
+
+def _cfg(skip_if: str = "") -> ClarifyStepConfig:
+    return ClarifyStepConfig(
+        mode="form",
+        fields=(ClarifyField(name="destination", type="string", required=True),),
+        skip_if=skip_if,
+    )
+
+
+def _step(cfg: ClarifyStepConfig) -> MetaStep:
+    return MetaStep(
+        id="collect",
+        skill="collect",
+        kind="user_input",
+        clarify_config=cfg,
+    )
+
+
+@pytest.mark.asyncio
+async def test_skip_if_true_returns_empty_without_pausing():
+    """skip_if='True' (or any truthy expression) bypasses the pause."""
+    dao = MagicMock()
+    text = await run_user_input_step(
+        _step(_cfg(skip_if="True")),
+        inputs={"user_message": "hi", "collected": {}},
+        outputs={},
+        run_id="r1",
+        session_id="S1",
+        dao=dao,
+        now=lambda: 1700000000.0,
+    )
+    assert text == ""
+    dao.try_claim_awaiting.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_no_skip_raises_meta_paused_after_successful_cas():
+    dao = MagicMock()
+    dao.try_claim_awaiting.return_value = True
+    with pytest.raises(MetaPaused) as exc:
+        await run_user_input_step(
+            _step(_cfg()),
+            inputs={"user_message": "hi", "collected": {}},
+            outputs={"upstream": "some output"},
+            run_id="r1",
+            session_id="S1",
+            dao=dao,
+            now=lambda: 1700000000.0,
+        )
+    assert exc.value.run_id == "r1"
+    assert exc.value.step_id == "collect"
+    assert exc.value.schema.fields[0].name == "destination"
+
+    dao.try_claim_awaiting.assert_called_once()
+    kwargs = dao.try_claim_awaiting.call_args.kwargs
+    assert kwargs["run_id"] == "r1"
+    assert kwargs["session_id"] == "S1"
+    assert kwargs["step_id"] == "collect"
+    assert json.loads(kwargs["inputs_json"])["user_message"] == "hi"
+    assert json.loads(kwargs["step_outputs_json"])["upstream"] == "some output"
+    assert kwargs["awaiting_since"] == 1700000000.0
+
+
+@pytest.mark.asyncio
+async def test_cas_failure_does_not_raise_meta_paused():
+    """When the DAO rejects the claim, the executor signals a normal failure
+    by raising RuntimeError. The orchestrator treats it as a regular step
+    failure — on_failure substitute may fire (design §10)."""
+    dao = MagicMock()
+    dao.try_claim_awaiting.return_value = False
+    with pytest.raises(RuntimeError, match="awaiting claim rejected"):
+        await run_user_input_step(
+            _step(_cfg()),
+            inputs={"user_message": "hi", "collected": {}},
+            outputs={},
+            run_id="r1",
+            session_id="S1",
+            dao=dao,
+            now=lambda: 1700000000.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_skip_if_uses_inputs_and_outputs_context():
+    """Verify Jinja context wiring matches the rest of the meta-skill engine."""
+    dao = MagicMock()
+    cfg = _cfg(skip_if='"done" in outputs.upstream')
+    text = await run_user_input_step(
+        _step(cfg),
+        inputs={"user_message": "hi", "collected": {}},
+        outputs={"upstream": "done with prep"},
+        run_id="r1",
+        session_id="S1",
+        dao=dao,
+        now=lambda: 1700000000.0,
+    )
+    assert text == ""
+    dao.try_claim_awaiting.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_propagates_unchanged():
+    """If the DAO call is cancelled mid-call, the executor must not swallow
+    the CancelledError — the scheduler relies on it to tear down siblings.
+
+    `try_claim_awaiting` is a SYNCHRONOUS method on MetaRunWriter; the
+    executor wraps it with asyncio.to_thread. We simulate the raise by
+    giving the MagicMock a sync `side_effect`."""
+    dao = MagicMock()
+    dao.try_claim_awaiting = MagicMock(side_effect=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_user_input_step(
+            _step(_cfg()),
+            inputs={"user_message": "hi", "collected": {}},
+            outputs={},
+            run_id="r1",
+            session_id="S1",
+            dao=dao,
+            now=lambda: 1700000000.0,
+        )

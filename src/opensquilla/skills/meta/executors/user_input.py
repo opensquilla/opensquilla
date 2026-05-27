@@ -1,0 +1,149 @@
+"""Executor for the user_input meta-skill step.
+
+Behavior (design §8.1):
+  1. If skip_if (Jinja boolean) evaluates truthy against inputs + outputs,
+     return immediately with an empty output ("" markdown). The step is
+     treated like a successfully-completed pass-through.
+  2. Otherwise, try to claim awaiting_user state via the injected DAO.
+     On success, raise MetaPaused — the scheduler catches it ahead of
+     CancelledError and emits a paused MetaResult.
+     On failure (CAS rowcount==0 or partial unique index conflict),
+     raise RuntimeError to signal normal step failure; on_failure
+     substitute may then fire.
+
+The executor itself is async to fit the scheduler's contract; DAO calls
+are sync (MetaRunWriter holds a sync sqlite3 connection) and run off
+the event loop via `asyncio.to_thread`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from collections.abc import Callable
+from typing import Any, Protocol
+
+from opensquilla.skills.meta.templating import evaluate_when
+from opensquilla.skills.meta.types import (
+    ClarifyStepConfig,
+    MetaPaused,
+    MetaStep,
+)
+
+log = logging.getLogger(__name__)
+
+
+class _DAOProto(Protocol):
+    """Minimal DAO surface this executor depends on (PR2 MetaRunWriter)."""
+
+    def try_claim_awaiting(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        schema_json: str,
+        session_id: str,
+        inputs_json: str,
+        step_outputs_json: str,
+        awaiting_since: float,
+    ) -> bool: ...
+
+
+async def run_user_input_step(
+    step: MetaStep,
+    *,
+    inputs: dict[str, Any],
+    outputs: dict[str, str],
+    run_id: str,
+    session_id: str,
+    dao: _DAOProto,
+    now: Callable[[], float],
+) -> str:
+    """Either pass through (skip_if true) or raise MetaPaused.
+
+    Returns empty str on the pass-through path so downstream depends_on
+    consumers see a defined output value. Never returns a non-empty
+    string: the only "filled" content comes from the resume path,
+    which writes via ``MetaOrchestrator.resume``.
+    """
+
+    cfg = step.clarify_config
+    if cfg is None:
+        # parser.py guarantees this won't happen for kind=user_input.
+        raise RuntimeError(
+            f"user_input step {step.id!r} missing clarify_config "
+            f"(parser invariant violated)",
+        )
+
+    if cfg.skip_if:
+        try:
+            should_skip = evaluate_when(
+                cfg.skip_if, inputs=inputs, outputs=outputs,
+            )
+        except ValueError as exc:
+            # Per design §10: skip_if raising UndefinedError is treated
+            # as "skip-not-applicable" — proceed to pause.
+            log.warning(
+                "meta_user_input.skip_if_error",
+                extra={"step": step.id, "error": str(exc)},
+            )
+            should_skip = False
+        if should_skip:
+            log.info("meta_user_input.skipped", extra={"step": step.id})
+            return ""
+
+    schema_json = _serialize_schema(cfg)
+    inputs_json = json.dumps(inputs, ensure_ascii=False, sort_keys=True)
+    step_outputs_json = json.dumps(outputs, ensure_ascii=False, sort_keys=True)
+
+    awaiting_since = now()
+
+    # Run the DAO call off the event loop. MetaRunWriter holds a sync
+    # sqlite3 connection — its docstring requires `loop.run_in_executor`
+    # wrapping when called from async code. `asyncio.to_thread` is the
+    # idiomatic equivalent.
+    #
+    # CancelledError MUST propagate so the scheduler can tear down
+    # sibling tasks consistently — see design §8.1.
+    try:
+        claimed = await asyncio.to_thread(
+            dao.try_claim_awaiting,
+            run_id=run_id,
+            step_id=step.id,
+            schema_json=schema_json,
+            session_id=session_id,
+            inputs_json=inputs_json,
+            step_outputs_json=step_outputs_json,
+            awaiting_since=awaiting_since,
+        )
+    except asyncio.CancelledError:
+        raise
+
+    if not claimed:
+        raise RuntimeError(
+            f"awaiting claim rejected for run_id={run_id!r} step={step.id!r} "
+            f"(run is no longer 'running' or partial unique index conflict)",
+        )
+
+    raise MetaPaused(
+        run_id=run_id,
+        step_id=step.id,
+        schema=cfg,
+        intro=cfg.intro,
+    )
+
+
+def _serialize_schema(cfg: ClarifyStepConfig) -> str:
+    """JSON-serialize ClarifyStepConfig for persistence (DAO + surface renderers).
+
+    Format mirrors clarify_config sub-tree in plan_serde.to_jsonable
+    (PR2). The full meta-skill envelope is not needed here — only the
+    awaiting_user row's schema column."""
+    from opensquilla.skills.meta.plan_serde import clarify_config_to_jsonable
+
+    payload = clarify_config_to_jsonable(cfg)
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+__all__ = ["run_user_input_step"]

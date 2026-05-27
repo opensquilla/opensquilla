@@ -130,6 +130,18 @@ def _is_raw_fallback_save_path(path: str) -> bool:
     )
 
 
+def _is_checkpoint_sidecar_path(path: str) -> bool:
+    """Return True for durable checkpoint sidecar JSONL paths."""
+    rel = Path(path)
+    return (
+        not rel.is_absolute()
+        and not any(part in {"", ".", ".."} for part in rel.parts)
+        and len(rel.parts) >= 4
+        and rel.parts[:2] == ("memory", ".checkpoints")
+        and rel.suffix == ".jsonl"
+    )
+
+
 def _is_memory_save_path(path: str) -> bool:
     """Return True for writable memory files.
 
@@ -689,6 +701,7 @@ def create_memory_tools(
             result
             for result in await r.retriever.search(query, opts, intent=SearchIntent.TOOL)
             if is_searchable_source_path(result.source, str(result.path))
+            and not _is_checkpoint_sidecar_path(str(result.path))
         ]
         if not results:
             return "No results found."

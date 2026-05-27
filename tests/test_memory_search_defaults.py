@@ -6,6 +6,7 @@ import pytest
 
 from opensquilla.memory.retrieval import MemoryRetriever
 from opensquilla.memory.types import MemorySearchResult, MemorySource, SearchIntent
+from opensquilla.tools.builtin import memory_tools
 from opensquilla.tools.builtin.memory_tools import create_memory_tools
 from opensquilla.tools.builtin.session_search import create_session_search_tool
 from opensquilla.tools.registry import ToolRegistry
@@ -332,6 +333,16 @@ async def test_memory_search_tool_filters_non_source_paths_from_retriever(tmp_pa
                 text="raw",
             ),
             MemorySearchResult(
+                chunk_id="checkpoint",
+                path="memory/.checkpoints/agent-main-webchat-abc/turn-1.jsonl",
+                source=MemorySource.memory,
+                start_line=1,
+                end_line=1,
+                snippet="checkpoint",
+                score=0.97,
+                text="checkpoint",
+            ),
+            MemorySearchResult(
                 chunk_id="curated",
                 path="memory/a.md",
                 source=MemorySource.memory,
@@ -357,6 +368,52 @@ async def test_memory_search_tool_filters_non_source_paths_from_retriever(tmp_pa
     assert "memory/a.md" in output
     assert ".hidden.md" not in output
     assert ".raw_fallbacks" not in output
+    assert ".checkpoints" not in output
+
+
+@pytest.mark.asyncio
+async def test_memory_search_tool_filters_checkpoint_sidecars_after_source_gate(
+    tmp_path, monkeypatch
+):
+    registry = ToolRegistry()
+    retriever = _FakeRetriever(
+        [
+            MemorySearchResult(
+                chunk_id="checkpoint",
+                path="memory/.checkpoints/agent-main-webchat-abc/turn-1.jsonl",
+                source=MemorySource.memory,
+                start_line=1,
+                end_line=1,
+                snippet="checkpoint",
+                score=0.97,
+                text="checkpoint",
+            ),
+            MemorySearchResult(
+                chunk_id="curated",
+                path="memory/a.md",
+                source=MemorySource.memory,
+                start_line=1,
+                end_line=1,
+                snippet="alpha",
+                score=0.9,
+                text="alpha",
+            ),
+        ]
+    )
+    monkeypatch.setattr(memory_tools, "is_searchable_source_path", lambda *_args: True)
+    create_memory_tools(
+        stores=SimpleNamespace(),
+        retrievers=retriever,
+        memory_dir=str(tmp_path),
+        registry=registry,
+    )
+
+    registered = registry.get("memory_search")
+    assert registered is not None
+    output = await registered.handler(query="alpha")
+
+    assert "memory/a.md" in output
+    assert ".checkpoints" not in output
 
 
 @pytest.mark.asyncio

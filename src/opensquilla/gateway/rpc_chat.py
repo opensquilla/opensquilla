@@ -6,8 +6,9 @@ from typing import cast
 
 import structlog
 
-from opensquilla.artifacts import artifact_payload
-from opensquilla.channels.artifact_delivery import strip_artifact_markers_from_channel_text
+from opensquilla.chat.conversation import ChatSendRequest, sessions_send_params
+from opensquilla.chat.history import transcript_entries_to_chat_messages
+from opensquilla.chat.source import chat_source_metadata
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.context_overflow import apply_context_overflow_policy
 from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
@@ -200,28 +201,9 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
         if not isinstance(incoming_source, dict):
             incoming_source = {}
 
-        send_params: dict = {
-            "key": session_key,
-            "message": message,
-            "_source": {
-                "caller_kind": "web",
-                "channel_kind": "webchat",
-                "channel_id": f"webchat:{session_key}",
-                "sender_id": ctx.principal.role,
-                "source_kind": "webui",
-                "source_name": "WebChat",
-            },
-        }
         elevated_hint = incoming_source.get("elevated")
-        if elevated_hint in ("on", "bypass", "full"):
-            send_params["_source"]["elevated"] = elevated_hint
         attachments = params.get("attachments")
-        if attachments:
-            send_params["attachments"] = attachments
-            if "displayText" in params:
-                send_params["displayText"] = params.get("displayText")
-        if intent is not None:
-            send_params["intent"] = intent
+        extra: dict = {}
         for source_key, target_key in (
             ("noMemoryCapture", "noMemoryCapture"),
             ("no_memory_capture", "no_memory_capture"),
@@ -234,7 +216,28 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             ("run_kind", "run_kind"),
         ):
             if source_key in params:
-                send_params[target_key] = params[source_key]
+                extra[target_key] = params[source_key]
+        send_params = sessions_send_params(
+            ChatSendRequest(
+                session_key=session_key,
+                message=message,
+                attachments=attachments if isinstance(attachments, list) else [],
+                display_text=params.get("displayText")
+                if attachments and "displayText" in params
+                else None,
+                intent=cast(str, intent) if intent is not None else None,
+                extra=extra,
+            ),
+            chat_source_metadata(
+                caller_kind="web",
+                channel_kind="webchat",
+                channel_id=f"webchat:{session_key}",
+                sender_id=ctx.principal.role,
+                source_kind="webui",
+                source_name="WebChat",
+                elevated=elevated_hint if isinstance(elevated_hint, str) else None,
+            ),
+        )
         result = await _handle_sessions_send(send_params, ctx)
         return {"ok": True, "sessionKey": session_key, **result}
     except Exception:
@@ -270,81 +273,7 @@ async def _handle_chat_history(params: dict | None, ctx: RpcContext) -> dict:
     if not transcript:
         return {"messages": []}
 
-    import json as _json
-
-    messages = []
-    for entry in transcript[-limit:]:
-        content = getattr(entry, "content", "") or ""
-        attachments = None
-        artifacts = None
-        # Parse JSON-encoded content with attachments
-        if content and content.startswith("{"):
-            try:
-                parsed = _json.loads(content)
-                if isinstance(parsed, dict) and "text" in parsed:
-                    display_text = parsed.get("display_text")
-                    content = display_text if isinstance(display_text, str) else parsed["text"]
-                    attachments = parsed.get("attachments")
-                    parsed_artifacts = parsed.get("artifacts")
-                    if isinstance(parsed_artifacts, list):
-                        artifacts = [
-                            artifact_payload(item)
-                            for item in parsed_artifacts
-                            if isinstance(item, dict)
-                        ]
-                        if artifacts:
-                            content = strip_artifact_markers_from_channel_text(content)
-            except (ValueError, KeyError):
-                pass
-        # Recover from corrupted Python repr of content blocks (old compaction bug).
-        # Extract text from ContentBlockText entries; skip pure tool-only messages.
-        if content and content.lstrip().startswith("[ContentBlock"):
-            import re
-
-            texts = re.findall(
-                r"ContentBlockText\(type='text', text='(.*?)'\)",
-                content,
-            )
-            content = "\n".join(t.replace("\\n", "\n") for t in texts) if texts else ""
-            if not content.strip():
-                continue
-        msg = {
-            "id": getattr(entry, "message_id", None),
-            "message_id": getattr(entry, "message_id", None),
-            "role": getattr(entry, "role", "unknown"),
-            "text": content,
-            "timestamp": getattr(entry, "created_at", None),
-            "provenance_kind": getattr(entry, "provenance_kind", None),
-            "provenance_source_session_key": getattr(
-                entry, "provenance_source_session_key", None
-            ),
-            "provenance_source_tool": getattr(entry, "provenance_source_tool", None),
-        }
-        if attachments:
-            msg["attachments"] = attachments
-        if artifacts:
-            msg["artifacts"] = artifacts
-        usage = getattr(entry, "turn_usage", None)
-        if isinstance(usage, dict):
-            msg["usage"] = usage
-            model = usage.get("model") or usage.get("routed_model")
-            if model:
-                msg["model"] = model
-            input_tokens = int(usage.get("input_tokens") or usage.get("inputTokens") or 0)
-            output_tokens = int(
-                usage.get("output_tokens") or usage.get("outputTokens") or 0
-            )
-            msg["input"] = input_tokens
-            msg["output"] = output_tokens
-            msg["input_tokens"] = input_tokens
-            msg["output_tokens"] = output_tokens
-            if usage.get("cost_usd") is not None:
-                msg["cost_usd"] = float(usage.get("cost_usd") or 0.0)
-        tc = getattr(entry, "tool_calls", None)
-        if tc:
-            msg["tool_calls"] = tc
-        messages.append(msg)
-    return {"messages": messages}
+    return {"messages": transcript_entries_to_chat_messages(transcript, limit=limit)}
 
 
 @_d.method("chat.inject", scope="operator.admin")

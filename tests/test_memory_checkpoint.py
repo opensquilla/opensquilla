@@ -62,6 +62,11 @@ def test_checkpoint_relative_path_is_sidecar_only() -> None:
     [
         ("..", "unknown"),
         (".", "unknown"),
+        ("..-", "unknown"),
+        ("-..", "unknown"),
+        ("---..---", "unknown"),
+        (".-", "unknown"),
+        ("-.", "unknown"),
         ("../abc", "..-abc"),
         ("a/b", "a-b"),
     ],

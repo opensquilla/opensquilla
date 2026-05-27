@@ -36,6 +36,10 @@ composition:
         # and bypass the live pause; production turns leave it empty so the
         # form fires.
         skip_if: "inputs.collected.paper_collect is defined"
+        # Accept natural-language replies — when the deterministic
+        # parser fails the runtime falls through to an LLM extractor
+        # that maps free-form prose onto the schema fields.
+        nl_extract: true
         fields:
           - name: topic
             type: string

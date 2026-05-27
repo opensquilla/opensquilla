@@ -236,6 +236,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                     run_id=awaiting.run_id, reason="user_cancel",
                 )
                 ctx.metadata["meta_clarify_cancelled"] = awaiting
+                ctx.metadata["meta_clarify_cancel_reason"] = "user_cancel"
                 return ctx
 
             parsed, errors = parse_clarify_reply(
@@ -279,6 +280,9 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                         run_id=awaiting.run_id, reason="parse_failure_limit",
                     )
                     ctx.metadata["meta_clarify_cancelled"] = awaiting
+                    ctx.metadata["meta_clarify_cancel_reason"] = (
+                        "parse_failure_limit"
+                    )
                     return ctx
                 ctx.metadata["meta_clarify_errors"] = errors
                 ctx.metadata["meta_clarify_reprompt"] = awaiting

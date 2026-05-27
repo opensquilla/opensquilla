@@ -1642,15 +1642,26 @@ class Agent:
         # ------ IDLE → THINKING ------
         yield self._transition(AgentState.THINKING)
 
-        # PR7 E2E fix: when meta_resolution claimed a paused run via
-        # try_claim_resume + parsed the reply, the runtime already holds
-        # everything needed to advance the DAG. Skip the LLM call entirely
-        # and stream the resume's events through the normal event
-        # pipeline.
-        meta_resume = (self.config.metadata or {}).get("meta_resume")
+        # PR7/9 E2E fix — consume meta_resolution's awaiting-branch
+        # outcomes. meta_resolution stages six distinct outcomes on
+        # ctx.metadata (resume / errors / cancelled / expired /
+        # race_lost / [trigger match for fresh turn]) and returns; the
+        # runtime owns the user-visible feedback for the first five so
+        # the turn terminates cleanly instead of falling through to the
+        # LLM (which would re-trigger meta_invoke and hit the
+        # awaiting-guard with an opaque message).
+        metadata = self.config.metadata or {}
+        meta_resume = metadata.get("meta_resume")
         if meta_resume is not None:
             async for ev in self._run_meta_resume(meta_resume):
                 yield ev
+            return
+        clarify_outcome = self._read_clarify_outcome(metadata)
+        if clarify_outcome is not None:
+            text, terminates = clarify_outcome
+            async for ev in self._emit_terminal_text(text, iterations=0):
+                yield ev
+            _ = terminates  # always terminates today; reserved for future
             return
 
         # Use the system prompt from config (wired by gateway via identity.prompt)
@@ -5086,6 +5097,100 @@ class Agent:
             input_tokens=0,
             output_tokens=0,
             iterations=1,
+            cost_usd=0.0,
+            cost_source="none",
+            model=self.config.model_id or "",
+        )
+
+    def _read_clarify_outcome(
+        self, metadata: dict[str, Any],
+    ) -> tuple[str, bool] | None:
+        """Translate meta_resolution awaiting-branch metadata into the
+        user-visible text dictated by spec §10.
+
+        Returns ``(text, terminates)`` on hit, ``None`` when no clarify
+        outcome is staged. Pops the consumed keys so the same turn can't
+        re-handle them and a re-entry into ``_turn_generator`` won't
+        echo a stale outcome.
+        """
+        # parse-failure (<3 strikes) — show error list + re-render form
+        errors = metadata.pop("meta_clarify_errors", None)
+        reprompt = metadata.pop("meta_clarify_reprompt", None)
+        if errors and reprompt is not None:
+            return self._render_clarify_errors(errors, reprompt), True
+
+        cancelled = metadata.pop("meta_clarify_cancelled", None)
+        reason = metadata.pop("meta_clarify_cancel_reason", "")
+        if cancelled is not None:
+            if reason == "parse_failure_limit":
+                return "无法解析回复，已取消上一轮收集。", True
+            return "好，已取消。", True
+
+        expired = metadata.pop("meta_clarify_expired", None)
+        if expired is not None:
+            return "上一轮收集已超时，请重新发起。", True
+
+        race_lost = metadata.pop("meta_clarify_race_lost", None)
+        if race_lost is not None:
+            return "你之前的回答已被处理。", True
+
+        return None
+
+    def _render_clarify_errors(
+        self, errors: Any, awaiting: Any,
+    ) -> str:
+        """Build the parse-error feedback block plus a re-rendered form.
+
+        ``errors`` is the ``list[str]`` returned by ``parse_clarify_reply``;
+        ``awaiting`` is the ``AwaitingPeek`` row whose ``awaiting_schema_json``
+        is reused to render the form a second time.
+        """
+        from opensquilla.engine.turn_runner.turn_finalizer_stage import (
+            render_paused_outcome,
+        )
+        from opensquilla.skills.meta.plan_serde import (
+            clarify_config_from_jsonable,
+        )
+        from opensquilla.skills.meta.types import MetaPaused, MetaResult
+
+        lines: list[str] = ["未能解析回复："]
+        for err in (errors or []):
+            lines.append(f"  - {err}")
+        try:
+            schema_payload = json.loads(awaiting.awaiting_schema_json or "{}")
+            cfg = clarify_config_from_jsonable(schema_payload)
+            synthetic = MetaResult(
+                ok=False,
+                paused=True,
+                paused_payload=MetaPaused(
+                    run_id=awaiting.run_id,
+                    step_id=awaiting.step_id,
+                    schema=cfg,
+                    intro=cfg.intro,
+                ),
+            )
+            form_text = render_paused_outcome(synthetic)
+            if form_text:
+                lines.append("")
+                lines.append(form_text)
+        except Exception:  # noqa: BLE001 — best-effort re-render
+            lines.append("")
+            lines.append("请按上次的表单格式重新回答，或回 '取消' 终止。")
+        return "\n".join(lines)
+
+    async def _emit_terminal_text(
+        self, text: str, *, iterations: int,
+    ) -> AsyncIterator[Any]:
+        """Yield ``TextDeltaEvent(text)`` + a minimal ``DoneEvent`` so the
+        stream consumer + transcript treat this as a full assistant turn."""
+        from opensquilla.engine.types import DoneEvent, TextDeltaEvent
+        if text:
+            yield TextDeltaEvent(text=text)
+        yield DoneEvent(
+            text=text,
+            input_tokens=0,
+            output_tokens=0,
+            iterations=iterations,
             cost_usd=0.0,
             cost_source="none",
             model=self.config.model_id or "",

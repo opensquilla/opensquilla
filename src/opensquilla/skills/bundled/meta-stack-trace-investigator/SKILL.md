@@ -35,6 +35,8 @@ composition:
         intro: |
           开始诊断前，请确认 3 件事 / Before diagnosing, confirm 3 items.
         skip_if: "inputs.collected.trace_collect is defined"
+        # Accept free-form replies — see meta-paper-write for context.
+        nl_extract: true
         fields:
           - name: language
             type: enum

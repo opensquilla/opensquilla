@@ -3419,6 +3419,31 @@ class TurnRunner:
             return content[:max_chars] + "\n..."
         return content
 
+    def _make_meta_llm_chat(self, provider: Any, session_key: str) -> Any:
+        """Construct the (system_prompt, user_message) -> str callable that
+        meta_resolution's awaiting branch invokes for ``nl_extract: true``.
+
+        Returns None when the provider isn't available — the awaiting
+        branch silently falls back to the deterministic parser's errors,
+        which is exactly the behavior we want for non-LLM unit tests.
+        """
+        if provider is None:
+            return None
+        from opensquilla.engine.types import AgentConfig
+        from opensquilla.skills.meta.orchestrator import make_llm_chat_from_provider
+
+        base_config = (
+            self._config
+            if isinstance(self._config, AgentConfig)
+            else AgentConfig()
+        )
+        return make_llm_chat_from_provider(
+            provider=provider,
+            base_config=base_config,
+            usage_tracker=getattr(self, "_usage_tracker", None),
+            session_key=session_key,
+        )
+
     def _load_daily_notes(self, workspace_dir: Any) -> dict[str, str]:
         from opensquilla.identity.workspace import load_daily_notes
 
@@ -3509,6 +3534,10 @@ class TurnRunner:
         initial_metadata: dict[str, Any] = {
             "skill_loader": self._skill_loader,
             "meta_run_writer": getattr(self, "_meta_run_writer", None),
+            # PR9: meta_resolution's awaiting branch calls this when the
+            # deterministic clarify_text parser fails and the SKILL.md
+            # has ``nl_extract: true``. None disables the LLM fallback.
+            "meta_llm_chat": self._make_meta_llm_chat(provider, session_key),
         }
         if ingress_pipeline_steps:
             initial_metadata["pipeline_steps"] = list(ingress_pipeline_steps)

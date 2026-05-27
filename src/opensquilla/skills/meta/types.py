@@ -200,3 +200,6 @@ class MetaResult:
     step_outputs: dict[str, str] = field(default_factory=dict)
     error: str | None = None
     failed_step_id: str | None = None
+    # New in PR3 (design §8.1, §8.3): pause signal vs failure distinction.
+    paused: bool = False
+    paused_payload: MetaPaused | None = None

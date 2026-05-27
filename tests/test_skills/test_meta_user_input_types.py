@@ -118,3 +118,20 @@ def test_meta_step_can_carry_clarify_config():
     s = MetaStep(id="collect", skill="collect", kind="user_input", clarify_config=cfg)
     assert s.kind == "user_input"
     assert s.clarify_config is cfg
+
+
+def test_meta_result_paused_defaults_to_false():
+    from opensquilla.skills.meta.types import MetaResult
+    r = MetaResult(ok=True, final_text="done")
+    assert r.paused is False
+    assert r.paused_payload is None
+
+
+def test_meta_result_paused_carries_payload():
+    from opensquilla.skills.meta.types import MetaPaused, MetaResult
+    cfg = ClarifyStepConfig(mode="form", fields=())
+    paused = MetaPaused(run_id="r1", step_id="collect", schema=cfg)
+    r = MetaResult(ok=False, paused=True, paused_payload=paused)
+    assert r.ok is False
+    assert r.paused is True
+    assert r.paused_payload is paused

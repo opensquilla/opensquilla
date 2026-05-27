@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 import tomllib
 
 import pytest
@@ -9,6 +10,12 @@ import pytest
 import opensquilla.gateway.rpc_onboarding  # noqa: F401  ensures registration
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+
+
+def _env_hint(env_key: str) -> str:
+    if platform.system().lower().startswith("win"):
+        return f'PowerShell: $env:{env_key} = "<your-key>"'
+    return f'export {env_key}="<your-key>"'
 
 
 def _admin_ctx() -> RpcContext:
@@ -519,17 +526,17 @@ async def test_onboarding_status_exposes_missing_env_keys_for_optional_capabilit
         {
             "section": "memory_embedding",
             "label": "Set memory key",
-            "command": 'export OPENAI_EMBEDDINGS_API_KEY="<your-key>"',
+            "command": _env_hint("OPENAI_EMBEDDINGS_API_KEY"),
         },
         {
             "section": "search",
             "label": "Set search key",
-            "command": 'export BRAVE_SEARCH_API_KEY="<your-key>"',
+            "command": _env_hint("BRAVE_SEARCH_API_KEY"),
         },
         {
             "section": "image_generation",
             "label": "Set image key",
-            "command": 'export OPENAI_IMAGE_KEY="<your-key>"',
+            "command": _env_hint("OPENAI_IMAGE_KEY"),
         },
     ]
 

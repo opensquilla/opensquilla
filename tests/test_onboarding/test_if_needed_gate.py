@@ -69,7 +69,8 @@ def test_if_needed_skips_when_all_sections_ok_or_optional(
     assert "core setup is ready" in recorder.joined()
     assert "optional capabilities need action" in recorder.joined()
     assert "Optional next moves" in recorder.joined()
-    assert "Headless channel" in recorder.joined()
+    assert "Channel recipes:" in recorder.joined()
+    assert "Image recipes:" in recorder.joined()
 
 
 def test_if_needed_surfaces_optional_actions_without_running_wizard(

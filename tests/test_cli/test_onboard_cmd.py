@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json as _json
+import platform
+import re
 import shlex
 import tomllib
 
@@ -12,6 +14,21 @@ from typer.testing import CliRunner
 from opensquilla.cli.main import app
 
 runner = CliRunner()
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _plain_text(value: str) -> str:
+    return " ".join(_ANSI_RE.sub("", value).replace("│", " ").split())
+
+
+def _compact_text(value: str) -> str:
+    return "".join(_ANSI_RE.sub("", value).replace("│", " ").split())
+
+
+def _env_hint(env_key: str) -> str:
+    if platform.system().lower().startswith("win"):
+        return f'PowerShell: $env:{env_key} = "<your-key>"'
+    return f'export {env_key}="<your-key>"'
 
 
 def _config_arg(path) -> str:
@@ -465,7 +482,7 @@ def test_onboard_status_json_exposes_provider_section_alias(tmp_path, monkeypatc
         {
             "section": "llm",
             "label": "Set provider key",
-            "command": 'export CUSTOM_LLM_KEY="<your-key>"',
+            "command": _env_hint("CUSTOM_LLM_KEY"),
         }
     ]
 
@@ -478,7 +495,7 @@ def test_onboard_status_reports_invalid_config_without_traceback(tmp_path):
 
     assert result.exit_code == 2
     assert "OpenSquilla config error" in result.stderr
-    assert str(target) in result.stderr
+    assert _compact_text(str(target)) in _compact_text(result.stderr)
     assert "search" in result.stderr
     assert "Fix:" in result.stderr
     assert (
@@ -700,7 +717,9 @@ def test_onboard_status_prioritizes_missing_env_recovery(
     result = runner.invoke(app, ["onboard", "status", "--config", str(target)])
 
     assert result.exit_code == 0, result.stdout
-    assert 'Set provider key: export CUSTOM_LLM_KEY="<your-key>"' in result.stdout
+    assert f"Set provider key: {_env_hint('CUSTOM_LLM_KEY')}" in _plain_text(
+        result.stdout
+    )
     assert result.stdout.index("Set provider key:") < result.stdout.index("Guided CLI:")
 
 
@@ -735,10 +754,13 @@ def test_onboard_help_exposes_configure_command():
     assert result.exit_code == 0, result.stdout
     assert "status" in result.stdout
     assert "catalog" in result.stdout
-    assert "List onboarding setup options for every configurable section." in result.stdout
+    compact = _compact_text(result.stdout)
+    assert "Listonboardingsetupoptionsforeveryconfigurablesection." in compact
     assert "configure" in result.stdout
-    assert "Reconfigure provider, router, channels, search, image generation" in result.stdout
-    assert "or memory." in result.stdout
+    assert (
+        "Reconfigureprovider,router,channels,search,imagegeneration,ormemory."
+        in compact
+    )
 
 
 def test_onboard_catalog_json_exposes_all_setup_options(tmp_path, monkeypatch):
@@ -769,9 +791,9 @@ def test_onboard_catalog_help_names_short_capability_section_aliases():
     result = runner.invoke(app, ["onboard", "catalog", "--help"])
 
     assert result.exit_code == 0, result.stdout
-    plain = " ".join(result.stdout.replace("│", " ").split())
-    assert "image (alias for image-generation)" in plain
-    assert "memory (alias for memory-embedding)" in plain
+    compact = _compact_text(result.stdout)
+    assert "image(aliasforimage-generation)" in compact
+    assert "memory(aliasformemory-embedding)" in compact
 
 
 def test_onboard_catalog_can_focus_one_setup_section():
@@ -1166,10 +1188,10 @@ def test_onboard_configure_help_groups_options_by_setup_area():
     for panel, option in expected_option_locations:
         assert result.stdout.index(panel) < result.stdout.index(option)
 
-    plain = " ".join(result.stdout.replace("│", " ").split())
-    assert "API key for provider, search, image generation, or memory embedding." in plain
-    assert "image (alias for image-generation)" in plain
-    assert "memory (alias for memory-embedding)" in plain
+    compact = _compact_text(result.stdout)
+    assert "APIkeyforprovider,search,imagegeneration,ormemoryembedding." in compact
+    assert "image(aliasforimage-generation)" in compact
+    assert "memory(aliasformemory-embedding)" in compact
 
 
 def test_onboard_status_summarizes_blocking_and_optional_sections(
@@ -1294,11 +1316,11 @@ def test_onboard_status_table_names_missing_env_keys_for_optional_capabilities(
     assert "OPENAI_IMAGE_KEY" in result.stdout
     assert "Memory embedding" in result.stdout
     assert "OPENAI_EMBEDDINGS_API_KEY" in result.stdout
-    assert 'Set search key: export BRAVE_SEARCH_API_KEY="<your-key>"' in result.stdout
-    assert 'Set image key: export OPENAI_IMAGE_KEY="<your-key>"' in result.stdout
+    stdout_plain = _plain_text(result.stdout)
+    assert f"Set search key: {_env_hint('BRAVE_SEARCH_API_KEY')}" in stdout_plain
+    assert f"Set image key: {_env_hint('OPENAI_IMAGE_KEY')}" in stdout_plain
     assert (
-        'Set memory key: export OPENAI_EMBEDDINGS_API_KEY="<your-key>"'
-        in result.stdout
+        f"Set memory key: {_env_hint('OPENAI_EMBEDDINGS_API_KEY')}" in stdout_plain
     )
     assert "Fix now:" in result.stdout
     assert result.stdout.index("Fix now:") < result.stdout.index("Set memory key:")
@@ -1753,7 +1775,7 @@ def test_configure_provider_reports_invalid_config_without_schema_traceback(tmp_
 
     assert result.exit_code == 2
     assert "OpenSquilla config error" in result.stderr
-    assert str(target) in result.stderr
+    assert _compact_text(str(target)) in _compact_text(result.stderr)
     assert "search" in result.stderr
     assert (
         f"opensquillaonboard--if-needed--config{_config_arg(target)}"

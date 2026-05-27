@@ -712,13 +712,11 @@ Removed from the previous version:
 
 - `paper_mode` (llm_classify) — superseded by `paper_collect.paper_mode`
 - `experiment` (skill_exec → `paper-experiment-stub`, fake CSV) —
-  superseded by `experiment_design` (real plan, not data)
+  superseded by `experiment_design` (real plan, not data). The
+  bundled `paper-experiment-stub` skill was deleted with this rewrite.
 - `plot` (skill_exec → `paper-plot-stub`, matplotlib line chart) —
-  superseded by `figure_placeholders` (zero-dependency LaTeX)
-
-The bundled `paper-experiment-stub` and `paper-plot-stub` skills
-remain on disk for backward compatibility with anything that still
-references them, but `meta-paper-write` no longer invokes them.
+  superseded by `figure_placeholders` (zero-dependency LaTeX). The
+  bundled `paper-plot-stub` skill was deleted with this rewrite.
 
 The default path intentionally returns `final_manuscript_package` instead
 of running `latex-compile`. This avoids timeout and prevents process

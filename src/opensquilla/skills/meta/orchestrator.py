@@ -647,8 +647,7 @@ class MetaOrchestrator:
         outputs = json.loads(payload.step_outputs_json or "{}")
 
         schema_dict = json.loads(payload.awaiting_schema_json or "{}")
-        allowed = {f["name"] for f in schema_dict.get("fields", []) or []}
-        filled_clean = {k: v for k, v in filled_fields.items() if k in allowed}
+        filled_clean = _merge_clarify_defaults(schema_dict, filled_fields)
 
         inputs.setdefault("collected", {})
         inputs["collected"][payload.awaiting_step_id] = filled_clean
@@ -730,8 +729,7 @@ class MetaOrchestrator:
         outputs = json.loads(payload.step_outputs_json or "{}")
 
         schema_dict = json.loads(payload.awaiting_schema_json or "{}")
-        allowed = {f["name"] for f in schema_dict.get("fields", []) or []}
-        filled_clean = {k: v for k, v in filled_fields.items() if k in allowed}
+        filled_clean = _merge_clarify_defaults(schema_dict, filled_fields)
 
         inputs.setdefault("collected", {})
         inputs["collected"][payload.awaiting_step_id] = filled_clean
@@ -892,6 +890,47 @@ class MetaOrchestrator:
             + ("\n\n".join(snippets) if snippets else "(no step outputs)")
         )
         return (await self._llm_chat(system_prompt, user_msg)).strip()
+
+
+def _merge_clarify_defaults(
+    schema_dict: dict[str, Any],
+    filled_fields: dict[str, Any],
+) -> dict[str, Any]:
+    """Filter filled_fields to schema-declared names and back-fill
+    schema-declared defaults for fields the user did not supply.
+
+    Without this, optional fields with a ``default:`` value are missing
+    entirely from ``inputs.collected.<step>`` whenever the user skips
+    them — and any downstream Jinja template that reads
+    ``inputs.collected.<step>.<field>`` blows up with
+    ``UndefinedError: 'dict object' has no attribute '<field>'``.
+
+    The schema declaration is the contract: a default is the value the
+    author opted into when they wrote ``default: en`` / ``default: 10`` /
+    etc. The runtime should honour it; the manuscript prompt should
+    never need ``| default(...)`` to compensate for the runtime not
+    materializing what the schema promised.
+    """
+    fields = schema_dict.get("fields") or []
+    allowed = {
+        f["name"] for f in fields if isinstance(f, dict) and "name" in f
+    }
+    merged: dict[str, Any] = {}
+    # Step 1: schema-declared defaults form the baseline.
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        name = field.get("name")
+        if not isinstance(name, str):
+            continue
+        if "default" in field and field["default"] is not None:
+            merged[name] = field["default"]
+    # Step 2: user-supplied values win over defaults (and unknown keys
+    # are still dropped to keep prompt-injection vectors closed).
+    for k, v in (filled_fields or {}).items():
+        if k in allowed:
+            merged[k] = v
+    return merged
 
 
 def make_agent_runner_from_parent(

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
@@ -895,6 +896,55 @@ def test_router_fx_uses_fixed_model_slots_and_keeps_decoy_seed() -> None:
     assert "const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];" in builder_body
     assert "const orderedDecoys = _routerFxShuffle(decoys," in builder_body
     assert "return _routerFxShuffle(cells, seedKey);" not in builder_body
+
+
+def test_router_fx_cells_have_equal_prominence_and_hide_roster() -> None:
+    # Every model cell must render identically; the panel must not reveal which
+    # names are the operator's actually-configured (active) models. So the old
+    # real/decoy visual distinction is gone (no breathing accent dot, no
+    # dimmed/italic decoys) AND the DOM no longer carries data-kind/data-tiers.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    # No DOM attribute leaks the real/decoy split.
+    assert "cell.dataset.kind" not in source
+    assert "cell.dataset.tiers" not in source
+    # No CSS differentiates real vs decoy cells; the "on the dial" dot is gone.
+    assert '[data-kind="real"]' not in css
+    assert '[data-kind="decoy"]' not in css
+    assert "router-fx-dot-idle" not in css
+    # Cells share one uniform colour; only the winner is emphasised.
+    cell_start = css.index(".router-fx-cell {")
+    cell_end = css.index("}", cell_start)
+    assert "color: var(--text);" in css[cell_start:cell_end]
+    assert ".router-fx-cell.win {" in css
+    # Winner keeps a self-contained lock dot (no longer inherited from a
+    # real-cell dot that no longer exists).
+    win_after = css.index(".router-fx-cell.win::after {")
+    win_after_end = css.index("}", win_after)
+    assert "content: '';" in css[win_after:win_after_end]
+    # Winner detection reads the in-memory grid-cell array, not a DOM attribute,
+    # so it still lands on the routed cell without exposing the rest. Pin the
+    # predicate (reads .kind off the array) and the cell-idx stamping that the
+    # positional DOM lookup relies on — so a refactor that broke landing fails.
+    assert "const cells = wrap._fxGridCells || [];" in source
+    assert "cells[i].kind === 'real'" in source
+    assert "cell.dataset.cellIdx = String(i);" in source
+
+
+def test_router_fx_decoy_pool_doubled_with_current_models() -> None:
+    # Roster expanded to >= 2x the previous 16, sourced from OpenRouter's
+    # highest-usage models (ordered by volume, highest first).
+    source = CHAT_JS.read_text(encoding="utf-8")
+    pool_start = source.index("const _ROUTER_FX_DECOY_POOL = [")
+    pool_end = source.index("];", pool_start)
+    pool = source[pool_start:pool_end]
+    names = re.findall(r"'([^']+)'", pool)
+    assert len(names) >= 32, f"expected >= 32 pooled models, found {len(names)}"
+    # Ordered by usage, highest first — the documented #1 leads.
+    assert names[0] == "deepseek-v4-flash"
+    for name in ("claude-sonnet-4.6", "glm-5.1", "qwen3.6-plus"):
+        assert name in names
 
 
 def test_router_fx_history_and_turn_meta_preserve_observe_rollout_state() -> None:

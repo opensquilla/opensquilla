@@ -2656,29 +2656,54 @@ const ChatView = (() => {
   const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11, 3, 5, 9, 12, 14, 0, 4, 7, 10, 2];
 
   // Popular OpenRouter models used as visual decoys, ordered by
-  // approximate openrouter.ai traffic ranking. Anything already on
-  // the operator's router (matched after stripping the provider
-  // prefix) is filtered out at render-time, so the highest-traffic
-  // models that aren't on this user's dial bubble to the top of the
-  // visible decoys. The actual route is always chosen from the
-  // operator's configured tiers — these only decorate.
+  // approximate openrouter.ai traffic ranking (highest volume first),
+  // refreshed 2026-05 from the OpenRouter usage leaderboard. Anything
+  // already on the operator's router (matched after stripping the
+  // provider prefix) is filtered out at render-time, so the
+  // highest-traffic models that aren't on this user's dial bubble to
+  // the top of the visible field. The actual route is always chosen
+  // from the operator's configured tiers — these only populate the
+  // field. With the real/decoy distinction removed, configured models
+  // are no longer VISUALLY distinguishable from the rest (the roster can
+  // still be inferred by correlating shown names against this public
+  // pool — closing that fully is a separate, deeper change).
   const _ROUTER_FX_DECOY_POOL = [
+    'deepseek-v4-flash',
     'claude-sonnet-4.6',
-    'claude-haiku-4.5',
-    'gpt-5-mini',
-    'gemini-2.5-flash',
-    'deepseek-r1',
-    'gpt-5',
+    'qwen3.6-plus',
+    'minimax-m2.7',
+    'gpt-5.5',
+    'gemini-3.5-flash',
+    'glm-5-turbo',
+    'claude-opus-4.8',
+    'nemotron-3-super',
+    'deepseek-v4-pro',
+    'mimo-v2.5-pro',
+    'gpt-5.4',
+    'kimi-k2.6',
     'claude-opus-4.7',
+    'gemini-3.1-flash-lite',
+    'glm-5.1',
+    'qwen3.6-max',
+    'claude-haiku-4.5',
+    'grok-4.3',
+    'gpt-5.4-mini',
+    'gemini-2.5-flash',
+    'step-3.5-flash',
+    'mistral-medium-3.5',
+    'ling-2.6-1t',
+    'deepseek-v3.2',
+    'trinity-large-thinking',
     'gemini-2.5-pro',
-    'gemini-2.0-flash',
-    'llama-4-405b',
-    'mistral-large-3',
-    'qwen-3-72b',
-    'grok-3-mini',
-    'sonar-large',
+    'seed-2.0-mini',
+    'gpt-5.3-codex',
+    'grok-4.20',
+    'mercury-2',
+    'hunyuan-3',
+    'mimo-v2-omni',
     'command-r-plus',
-    'jamba-1.5-large',
+    'llama-4-405b',
+    'sonar-large',
   ];
 
   // OpenSquilla's tier ids vary by tier_profile. We seed the slot
@@ -2999,11 +3024,12 @@ const ChatView = (() => {
     gridCells.forEach((cellInfo, i) => {
       const cell = document.createElement('div');
       cell.className = 'router-fx-cell';
-      cell.dataset.kind = cellInfo.kind;
       cell.dataset.cellIdx = String(i);
-      if (cellInfo.kind === 'real') {
-        cell.dataset.tiers = cellInfo.entry.tiers.join(',');
-      }
+      // Intentionally NOT stamping which cell is real (configured) vs decoy:
+      // every cell renders identically, and the DOM must not leak the
+      // operator's wired-up model roster. Winner detection reads the in-memory
+      // _fxGridCells array (below), not any DOM attribute, so the routing
+      // result still lands on the right cell without exposing the rest.
       cell.innerHTML = `<span class="nm">${_esc(cellInfo.displayName)}</span>`;
       grid.appendChild(cell);
     });

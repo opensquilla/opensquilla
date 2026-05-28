@@ -2569,6 +2569,7 @@ select.clarify-form-input {
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 10.5px;
+  color: var(--text);
   letter-spacing: 0.01em;
   white-space: nowrap;
   overflow: hidden;
@@ -2582,42 +2583,11 @@ select.clarify-form-input {
     box-shadow 240ms ease;
 }
 
-/* Real (operator-configured) cells: brighter type only — the accent
- * dot in the top-right corner is the sole "this is on the dial"
- * marker; the cell border stays neutral hairline so the grid reads
- * as one field, not as two segregated zones. The dot breathes slowly
- * so the dial reads alive while idle. */
-.router-fx-cell[data-kind="real"] {
-  color: var(--text);
-}
-.router-fx-cell[data-kind="real"]::after {
-  content: '';
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--accent);
-  opacity: 0.7;
-  box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent);
-  animation: router-fx-dot-idle 3.2s ease-in-out infinite;
-}
-@keyframes router-fx-dot-idle {
-  0%, 100% { opacity: 0.55; box-shadow: 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
-  50%      { opacity: 0.95; box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .router-fx-cell[data-kind="real"]::after { animation: none; }
-}
-
-/* Decoy cells: dim, italic, no dot — clearly "not on the dial" but
- * present to make the routing space feel real. */
-.router-fx-cell[data-kind="decoy"] {
-  color: var(--text-dim);
-  font-style: italic;
-  opacity: 0.78;
-}
+/* Equal prominence: every model cell renders identically at rest — no
+ * "this one is configured" accent dot and no dimmed/italic "decoy"
+ * treatment. The grid reads as one uniform field so an observer cannot
+ * tell which names are actually on the operator's router; only the
+ * routing RESULT (.win, below) is ever emphasised. */
 
 /* Mole-pop: scale up + tiny lift + accent tint as the hammer arrives. */
 @keyframes router-fx-mole-pop {
@@ -2629,15 +2599,11 @@ select.clarify-form-input {
   animation: router-fx-mole-pop 200ms cubic-bezier(.34,1.7,.5,1) both;
   z-index: 3;
 }
-.router-fx-cell.pinging[data-kind="decoy"] {
-  /* Decoy gets a subtler pop than real cells. */
-  animation-duration: 170ms;
-}
-
 /* Winner: solid orange border, accent text, with a soft outer halo +
  * inner top-edge highlight + a one-shot scan-line that sweeps top-to-
  * bottom on landing. Reads as the locked pick, not just "selected".
- * The dot in the corner accelerates its pulse to confirm the lock. */
+ * A lock dot in the corner pulses to confirm the lock (the only dot in
+ * the grid now that idle cells carry none). */
 .router-fx-cell.win {
   color: var(--accent);
   background:
@@ -2655,6 +2621,14 @@ select.clarify-form-input {
   z-index: 4;
 }
 .router-fx-cell.win::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
   opacity: 1;
   box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 75%, transparent);
   animation: router-fx-dot-locked 1.4s ease-in-out infinite;

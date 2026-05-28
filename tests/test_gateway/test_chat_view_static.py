@@ -1009,6 +1009,68 @@ def test_savings_popup_persists_cache_hit_active_to_turn_meta() -> None:
     assert "__savings_ui_suppressed: !!u.__savings_ui_suppressed," in source
 
 
+def test_router_fx_header_names_ai_model_router() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert '<span class="title">AI model router</span>' in source
+    assert '<span class="title">model router</span>' not in source
+
+
+def test_router_fx_live_routes_keep_random_chase_animation() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    handler_start = source.index("async function _handleRouterDecision(payload) {")
+    handler_end = source.index("  // History-load entry point", handler_start)
+    handler_body = source[handler_start:handler_end]
+    subscription_start = source.index("function _subscribeRpcEvents() {")
+    subscription_end = source.index("    // Text delta: accumulate into streaming bubble", subscription_start)
+    subscription_body = source[subscription_start:subscription_end]
+
+    assert "function _routerFxShouldAnimateIdentity" not in source
+    assert "shouldAnimate" not in handler_body
+    assert "_rpc.on('session.event.router_decision'" in subscription_body
+    assert "_handleRouterDecision(payload);" in subscription_body
+    assert "if (observeMode)" in handler_body
+    assert "_animateRouterFx(wrap, winnerIdx)" in handler_body
+    assert handler_body.index("if (observeMode)") < handler_body.index(
+        "_animateRouterFx(wrap, winnerIdx)"
+    )
+
+
+def test_router_fx_history_reuses_settled_strip_for_same_turn_identity() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("  /* ── Send Message", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "function _routerFxUserMessageForAssistant(referenceAssistant) {" in source
+    assert "const userMsg = _routerFxUserMessageForAssistant(div);" in history_body
+    assert "const userMsg = _routerFxLastUserMessage();" not in history_body
+    assert "el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex" in source
+    assert "const routerIdentity = _routerFxUsageIdentity(savedUsage);" in source
+    assert "existingStrip.dataset.routerIdentity === routerIdentity" in source
+    assert "if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();" in source
+    assert "routerStrip.dataset.turnIndex = String(_histUserIdx);" in source
+
+
+def test_router_fx_uses_fixed_model_slots_and_keeps_decoy_seed() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    builder_start = source.index("function _routerFxBuildGridCells(realEntries, seedKey) {")
+    builder_end = source.index("  function _buildRouterFxElement", builder_start)
+    builder_body = source[builder_start:builder_end]
+    live_start = source.index("async function _handleRouterDecision(payload) {")
+    live_end = source.index("  // History-load entry point", live_start)
+    live_body = source[live_start:live_end]
+
+    assert "const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11" in source
+    assert "function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp)" in source
+    assert "const liveSeed = _routerFxResolveLayoutSeed(_sessionKey);" in live_body
+    assert "const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);" in source
+    assert "const orderedRealEntries = realEntries.slice().sort" in builder_body
+    assert "const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];" in builder_body
+    assert "const orderedDecoys = _routerFxShuffle(decoys," in builder_body
+    assert "return _routerFxShuffle(cells, seedKey);" not in builder_body
+
+
 def test_router_fx_history_and_turn_meta_preserve_observe_rollout_state() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     history_start = source.index("function _buildRouterFxFromUsage(usage, seedKey) {")

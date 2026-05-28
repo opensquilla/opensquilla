@@ -2630,6 +2630,7 @@ const ChatView = (() => {
   const _ROUTER_FX_GRID_COLS = 5;
   const _ROUTER_FX_GRID_ROWS = 3;
   const _ROUTER_FX_GRID_CELLS = _ROUTER_FX_GRID_COLS * _ROUTER_FX_GRID_ROWS;
+  const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11, 3, 5, 9, 12, 14, 0, 4, 7, 10, 2];
 
   // Popular OpenRouter models used as visual decoys, ordered by
   // approximate openrouter.ai traffic ranking. Anything already on
@@ -2768,6 +2769,23 @@ const ChatView = (() => {
     } catch (_) { /* ignore */ }
     return fresh;
   }
+  function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp) {
+    return _routerFxResolveSeed(sessionKey, 0, 'layout', hintTimestamp);
+  }
+  function _routerFxIdentity(model, tier) {
+    const modelPart = typeof model === 'string' ? model.trim().toLowerCase() : '';
+    const tierPart = typeof tier === 'string' ? tier.trim().toLowerCase() : '';
+    if (!modelPart && !tierPart) return '';
+    return modelPart + '|' + tierPart;
+  }
+  function _routerFxDecisionIdentity(decision) {
+    if (!decision || typeof decision !== 'object') return '';
+    return _routerFxIdentity(decision.model || decision.routed_model || '', decision.tier || decision.routed_tier || '');
+  }
+  function _routerFxUsageIdentity(usage) {
+    if (!usage || typeof usage !== 'object') return '';
+    return _routerFxIdentity(usage.routed_model || usage.model || '', usage.routed_tier || '');
+  }
   function _routerFxCountUserMessages() {
     if (!_thread) return 0;
     return _thread.querySelectorAll(
@@ -2846,27 +2864,39 @@ const ChatView = (() => {
     return arr;
   }
 
-  // Assemble the grid (_ROUTER_FX_GRID_CELLS cells): real (deduped) entries + decoys
-  // filtered to avoid collisions with real model names, then shuffled
-  // with a SEEDED RNG so the same turn always produces the same
-  // layout across re-renders (live → DoneEvent → history-sync, plus
-  // page refresh). seedKey is typically the turn's stable timestamp.
+  // Assemble the grid (_ROUTER_FX_GRID_CELLS cells): real (deduped) entries + decoys.
+  // Real cells land on distributed anchor slots in a deterministic model order,
+  // so each available model keeps a stable position. The live selector animation
+  // remains random; only the underlying dial layout is fixed.
   function _routerFxBuildGridCells(realEntries, seedKey) {
-    const cells = [];
+    const cells = Array.from({ length: _ROUTER_FX_GRID_CELLS }, () => null);
     const realNames = new Set();
-    realEntries.forEach((entry) => {
-      cells.push({ kind: 'real', entry, displayName: entry.displayName });
+    const orderedRealEntries = realEntries.slice().sort((a, b) => (
+      (a.displayName || a.key || '').localeCompare(b.displayName || b.key || '')
+    ));
+    orderedRealEntries.forEach((entry, i) => {
+      const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];
+      const idx = typeof anchor === 'number' ? anchor : cells.findIndex((cell) => cell == null);
+      if (idx < 0 || idx >= cells.length) return;
+      cells[idx] = { kind: 'real', entry, displayName: entry.displayName };
       if (entry.displayName) realNames.add(entry.displayName);
     });
-    for (let i = 0; i < _ROUTER_FX_DECOY_POOL.length && cells.length < _ROUTER_FX_GRID_CELLS; i++) {
+
+    const decoys = [];
+    for (let i = 0; i < _ROUTER_FX_DECOY_POOL.length && decoys.length < _ROUTER_FX_GRID_CELLS; i++) {
       const name = _ROUTER_FX_DECOY_POOL[i];
       if (realNames.has(name)) continue;
-      cells.push({ kind: 'decoy', displayName: name });
+      decoys.push({ kind: 'decoy', displayName: name });
     }
-    while (cells.length < _ROUTER_FX_GRID_CELLS) {
-      cells.push({ kind: 'decoy', displayName: '—' });
+    while (decoys.length < _ROUTER_FX_GRID_CELLS) {
+      decoys.push({ kind: 'decoy', displayName: '—' });
     }
-    return _routerFxShuffle(cells, seedKey);
+    const orderedDecoys = _routerFxShuffle(decoys, seedKey ? seedKey + ':decoy' : undefined);
+    let decoyIdx = 0;
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] == null) cells[i] = orderedDecoys[decoyIdx++];
+    }
+    return cells;
   }
 
   function _buildRouterFxElement(decision, opts) {
@@ -2877,6 +2907,8 @@ const ChatView = (() => {
     wrap.dataset.state = 'idle';
     wrap.dataset.tier = decision.tier || '';
     wrap.dataset.source = decision.source || 'none';
+    const identity = _routerFxDecisionIdentity(decision);
+    if (identity) wrap.dataset.routerIdentity = identity;
     const observeMode = decision && decision.routing_applied === false;
     if (observeMode) {
       wrap.dataset.observe = 'true';
@@ -2889,7 +2921,7 @@ const ChatView = (() => {
     header.className = 'router-fx-header';
     header.innerHTML =
       '<span class="glyph">←</span>' +
-      '<span class="title">model router</span>' +
+      '<span class="title">AI model router</span>' +
       '<span class="glyph">→</span>';
     wrap.appendChild(header);
 
@@ -3103,23 +3135,25 @@ const ChatView = (() => {
     return null;
   }
 
+  function _routerFxUserMessageForAssistant(referenceAssistant) {
+    if (!referenceAssistant) return null;
+    let prev = referenceAssistant.previousElementSibling;
+    while (prev) {
+      if (prev.classList && (prev.classList.contains('user')
+          || prev.getAttribute('data-history-role') === 'user')) {
+        return prev;
+      }
+      prev = prev.previousElementSibling;
+    }
+    return null;
+  }
+
   function _routerFxInsertAnchored(wrap, referenceAssistant) {
     if (!_thread) return;
     // Prefer the user msg that immediately precedes the assistant
     // turn we're about to render (during history rebuild we have a
     // concrete reference div; live, we don't).
-    let anchor = null;
-    if (referenceAssistant) {
-      let prev = referenceAssistant.previousElementSibling;
-      while (prev) {
-        if (prev.classList && (prev.classList.contains('user')
-            || prev.getAttribute('data-history-role') === 'user')) {
-          anchor = prev;
-          break;
-        }
-        prev = prev.previousElementSibling;
-      }
-    }
+    let anchor = _routerFxUserMessageForAssistant(referenceAssistant);
     if (!anchor) anchor = _routerFxLastUserMessage();
     if (anchor && anchor.parentNode === _thread) {
       if (anchor.nextSibling) {
@@ -3167,12 +3201,10 @@ const ChatView = (() => {
     // correctly-anchored strip for this decision.
     const anchorUser = _routerFxLastUserMessage();
     if (!anchorUser) return;
-    // Resolve a seed that's deterministic for this turn: cached in
-    // localStorage by (sessionKey, user-msg-index, tier). Subsequent
-    // rebuilds (history sync, F5) hit the same cache and produce the
-    // same shuffle — no visible reorder after the lock.
+    // Resolve a seed that's deterministic for this session: the first routed
+    // turn establishes the dial layout and later turns reuse it.
     const turnIndex = _routerFxCountUserMessages();
-    const liveSeed = _routerFxResolveSeed(_sessionKey, turnIndex, tier);
+    const liveSeed = _routerFxResolveLayoutSeed(_sessionKey);
     const wrap = _buildRouterFxElement(payload, { seedKey: liveSeed });
     const winnerIdx = _routerFxWinnerCellIndex(wrap, tier);
     if (winnerIdx < 0) return;
@@ -3209,9 +3241,8 @@ const ChatView = (() => {
     });
     _routerFxInsertAnchored(wrap, null);
     if (observeMode) {
-      // Skip the hop animation entirely — settle immediately on the
-      // winner cell with no sweep. The dimmed strip says "we would
-      // have routed here, but we didn't".
+      // Observe-mode only: settle immediately because the routed model did not
+      // drive the response. Live applied routes keep the random chase animation.
       requestAnimationFrame(() => _settleRouterFxImmediate(wrap, winnerIdx, { burst: false }));
     } else {
       requestAnimationFrame(() => _animateRouterFx(wrap, winnerIdx));
@@ -3777,6 +3808,7 @@ const ChatView = (() => {
       // gone. Only the in-flight live animation is preserved.
       _thread.querySelectorAll('.router-fx').forEach((el) => {
         if (el.dataset.live === 'true') return;
+        if (el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex) return;
         el.remove();
       });
       _messages = [];
@@ -3886,20 +3918,23 @@ const ChatView = (() => {
               // circuit rebuild; everything else was already wiped
               // by the cleanup above and needs to be re-inserted
               // with the seed-cached layout.
-              const userMsg = _routerFxLastUserMessage();
+              const userMsg = _routerFxUserMessageForAssistant(div);
               const placed = userMsg && userMsg.nextSibling;
               const existingStrip = (placed && placed.classList
                   && placed.classList.contains('router-fx')) ? placed : null;
+              const routerIdentity = _routerFxUsageIdentity(savedUsage);
               const alreadyInPlace = existingStrip
-                && existingStrip.dataset.live === 'true';
+                && existingStrip.dataset.routerIdentity === routerIdentity;
               if (!alreadyInPlace) {
-                const tierForSeed = String(savedUsage.routed_tier || '').toLowerCase();
+                if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();
                 const hint = msg.timestamp || msg.ts || msg.message_id || '';
-                const cachedSeed = _routerFxResolveSeed(
-                  _sessionKey, _histUserIdx, tierForSeed, hint
-                );
+                const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);
                 const routerStrip = _buildRouterFxFromUsage(savedUsage, cachedSeed);
-                if (routerStrip) _routerFxInsertAnchored(routerStrip, div);
+                if (routerStrip) {
+                  routerStrip.dataset.sessionKey = _sessionKey || '';
+                  routerStrip.dataset.turnIndex = String(_histUserIdx);
+                  _routerFxInsertAnchored(routerStrip, div);
+                }
               }
             } else if (window.SavingsFX) {
               window.SavingsFX.noteTurn(null);

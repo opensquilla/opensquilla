@@ -24,6 +24,9 @@ data/
 .opensquilla/
 benchmarks/
 specs/
+!docs/superpowers/specs/
+docs/superpowers/specs/*
+!docs/superpowers/specs/2026-05-28-tui-frontend-architecture-design.md
 # Local agent/editor instructions and runtime state.
 AGENTS.md
 !docs/agents.md

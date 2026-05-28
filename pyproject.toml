@@ -171,4 +171,5 @@ ignore_missing_imports = true
 dev = [
     "laboratory>=1.0.2",
     "syrupy>=5.1.0",
+    "textual>=8.2.7",
 ]

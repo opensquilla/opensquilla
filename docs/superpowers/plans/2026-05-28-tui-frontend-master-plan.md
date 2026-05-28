@@ -72,7 +72,7 @@ worktree status and preserving user/agent changes.
 ## Tooling And Agent Orchestration Requirements
 
 Every implementation session for this plan must start from the repository root
-`/Users/cwan0785/opensquilla` on `codex/tui-frontend` unless the leader
+on `codex/tui-frontend` unless the leader
 explicitly creates an isolated worktree from that branch. Before editing code,
 the leader and each child agent must do the following:
 

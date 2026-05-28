@@ -5,13 +5,15 @@ Date: 2026-05-28
 ## Recommendation
 
 Keep the terminal renderer as the production default. Keep Textual as an
-optional experimental backend scaffold for later evaluation, but do not promote
-it and do not add it as a dependency in this phase.
+explicit experimental backend for evaluation, but do not promote it to the
+default terminal chat path yet.
 
-The local environment does not have Textual installed, so the relative Textual
-thresholds could not be evaluated. The explicit Textual path now skips cleanly
-with `Textual is not installed`, which is enough to preserve optional-dependency
-behavior without changing the default CLI surface.
+Textual is installed in the development dependency group for this branch, so
+the replay thresholds can run locally. The replay evidence is clean, but the
+current Textual backend is still a headless evaluation renderer rather than a
+live interactive app. Promotion should wait until the real-terminal visual test
+environment exercises the live TUI flow and confirms the layout/interaction
+quality.
 
 ## Evidence
 
@@ -28,25 +30,34 @@ Local JSON summaries:
 
 - `.artifacts/tui/terminal-long-stream.json`: available, 4,011 events,
   160,000 text chars, 86 flushes, coalescing ratio 0.02,
-  max buffer 2,040 chars, rendered text matched, 0 plugin errors, 0 errors.
+  max buffer 2,040 chars, rendered text matched, 0 plugin errors, 0 errors,
+  wall time 16.019 ms.
+- `.artifacts/tui/textual-long-stream.json`: available, 4,011 events,
+  160,000 text chars, 80 flushes, coalescing ratio 0.02,
+  max buffer 2,040 chars, rendered text matched, 0 plugin errors, 0 errors,
+  wall time 146.097 ms.
 - `.artifacts/tui/terminal-dense-history.json`: available, 624 events,
   624 transcript items, 30 visible items, 20 expanded tools,
-  projection wall time 0.146 ms, 0 plugin errors, 0 errors.
-- `.artifacts/tui/textual-long-stream.json`: unavailable, skipped with
-  `Textual is not installed`, 0 errors.
-- `.artifacts/tui/textual-dense-history.json`: unavailable, skipped with
-  `Textual is not installed`, 0 errors.
+  projection wall time 0.059 ms, 0 plugin errors, 0 errors,
+  wall time 2.782 ms.
+- `.artifacts/tui/textual-dense-history.json`: available, 624 events,
+  624 transcript items, 30 visible items, 20 expanded tools,
+  projection wall time 0.060 ms, 0 plugin errors, 0 errors,
+  wall time 2.675 ms.
 
 ## Threshold Assessment
 
-- Long-stream terminal replay preserved final text exactly.
-- Terminal coalescing stayed bounded at 86 flushes for 4,000 text deltas.
+- Long-stream terminal and Textual replay preserved final text exactly.
+- Textual long-stream flush count was 80 versus terminal's 86, within the
+  25 percent relative threshold.
 - Dense-history projection stayed bounded to 30 visible items from 624
-  transcript items.
+  transcript items for both terminal and Textual.
 - No replay summary reported plugin dispatch errors.
-- Textual import and availability checks are lazy, so existing prompt-toolkit
-  behavior is unchanged when Textual is absent.
+- Textual is in the development dependency group, not the production dependency
+  list, so existing prompt-toolkit behavior and default CLI launch remain
+  unchanged.
 
-Textual promotion remains blocked until it is installed in an evaluation
-environment and passes the same long-stream and dense-history thresholds against
-the terminal baseline.
+Textual promotion remains blocked until a live interactive terminal visual test
+environment validates the actual app surface, keyboard/input behavior, and
+layout quality. Replay evidence is necessary but not sufficient for changing
+the production default.

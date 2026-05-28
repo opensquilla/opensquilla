@@ -2466,3 +2466,400 @@ select.clarify-form-input {
   opacity: 0.6;
   pointer-events: none;
 }
+
+
+/* ──────────────────────────────────────────────────────────────────
+ * Router slider — arcade-brutalist whac-a-mole grid that fires when
+ * the squilla router lands a tier.
+ *
+ * The strip is a 3 × 4 grid of cells: the operator's real configured
+ * tiers (deduped by model) sit in the top rows, padded with popular
+ * decoy model names so the grid feels populated. A square hammer-
+ * selector hops between cells with bouncy easing and locks onto the
+ * routed cell — each visited cell does a quick mole-pop, the winner
+ * cell additionally fires a particle burst.
+ *
+ * Aesthetic: hairline mantis-brutalist. Orange is the only colour
+ * that signals; decoys read dim. Live and history-loaded renders
+ * share the same component (history skips the hop animation and
+ * settles immediately on the winner cell). ─────────────────────── */
+.router-fx {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: var(--sp-3) auto 4px;
+  padding: 0;
+  user-select: none;
+  align-self: center;
+  width: 100%;
+  /* Wider envelope so the 5-col grid keeps cells readable without
+     forcing model names to ellipsis at common breakpoints. */
+  max-width: 680px;
+}
+
+.router-fx-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.44em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 2px 0 0;
+}
+.router-fx-header .title {
+  padding-left: 0.44em; /* compensate for letter-spacing offset */
+}
+.router-fx-header .glyph {
+  color: var(--accent);
+  font-size: 12px;
+  letter-spacing: 0;
+  transition: transform 220ms ease;
+}
+.router-fx[data-state="playing"] .router-fx-header .glyph {
+  animation: router-fx-chev 900ms cubic-bezier(.4,0,.6,1) infinite;
+}
+.router-fx[data-state="playing"] .router-fx-header .glyph:last-child {
+  animation-delay: 450ms;
+}
+@keyframes router-fx-chev {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(3px); }
+}
+/* Settled header — keeps a faint accent tint so the strip reads "dial
+   locked on a tier" rather than "abandoned." Glyph arrows go translucent
+   accent so the "← MODEL ROUTER →" line continues to point at the pick. */
+.router-fx[data-state="settled"] .router-fx-header {
+  color: color-mix(in srgb, var(--accent) 38%, var(--text-dim));
+}
+.router-fx[data-state="settled"] .router-fx-header .glyph {
+  color: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* The grid surface — circuit-board hairlines with a faint dot field
+ * in the gaps. Padded so the absolute-positioned selector can sit
+ * inside without overflowing the rounded border. */
+.router-fx-grid {
+  position: relative;
+  display: grid;
+  /* 5 × 3 cells. JS pulls from _ROUTER_FX_GRID_COLS / _ROUTER_FX_GRID_ROWS;
+     keep these in sync with that constant when changing dimensions. */
+  grid-template-columns: repeat(5, 1fr);
+  grid-template-rows: repeat(3, 30px);
+  gap: 4px;
+  padding: 8px;
+  background:
+    radial-gradient(color-mix(in srgb, var(--text) 8%, transparent) 0.7px, transparent 1.2px) 0 0 / 8px 8px,
+    var(--bg-surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.router-fx-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 6px;
+  transition:
+    transform 220ms cubic-bezier(.34,1.65,.5,1),
+    background 240ms ease,
+    color 240ms ease,
+    border-color 240ms ease,
+    box-shadow 240ms ease;
+}
+
+/* Real (operator-configured) cells: brighter type only — the accent
+ * dot in the top-right corner is the sole "this is on the dial"
+ * marker; the cell border stays neutral hairline so the grid reads
+ * as one field, not as two segregated zones. The dot breathes slowly
+ * so the dial reads alive while idle. */
+.router-fx-cell[data-kind="real"] {
+  color: var(--text);
+}
+.router-fx-cell[data-kind="real"]::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.7;
+  box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: router-fx-dot-idle 3.2s ease-in-out infinite;
+}
+@keyframes router-fx-dot-idle {
+  0%, 100% { opacity: 0.55; box-shadow: 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
+  50%      { opacity: 0.95; box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .router-fx-cell[data-kind="real"]::after { animation: none; }
+}
+
+/* Decoy cells: dim, italic, no dot — clearly "not on the dial" but
+ * present to make the routing space feel real. */
+.router-fx-cell[data-kind="decoy"] {
+  color: var(--text-dim);
+  font-style: italic;
+  opacity: 0.78;
+}
+
+/* Mole-pop: scale up + tiny lift + accent tint as the hammer arrives. */
+@keyframes router-fx-mole-pop {
+  0%   { transform: translateY(0)    scale(1);    background: color-mix(in srgb, var(--bg) 65%, transparent); }
+  35%  { transform: translateY(-2px) scale(1.16); background: color-mix(in srgb, var(--accent) 14%, var(--bg)); }
+  100% { transform: translateY(0)    scale(1);    background: color-mix(in srgb, var(--bg) 65%, transparent); }
+}
+.router-fx-cell.pinging {
+  animation: router-fx-mole-pop 200ms cubic-bezier(.34,1.7,.5,1) both;
+  z-index: 3;
+}
+.router-fx-cell.pinging[data-kind="decoy"] {
+  /* Decoy gets a subtler pop than real cells. */
+  animation-duration: 170ms;
+}
+
+/* Winner: solid orange border, accent text, with a soft outer halo +
+ * inner top-edge highlight + a one-shot scan-line that sweeps top-to-
+ * bottom on landing. Reads as the locked pick, not just "selected".
+ * The dot in the corner accelerates its pulse to confirm the lock. */
+.router-fx-cell.win {
+  color: var(--accent);
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 14%, var(--bg)) 0%,
+      color-mix(in srgb, var(--accent) 7%, var(--bg)) 100%);
+  border-color: var(--accent);
+  font-weight: 700;
+  font-style: normal;
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 8px 22px -8px color-mix(in srgb, var(--accent) 55%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 40%, transparent);
+  z-index: 4;
+}
+.router-fx-cell.win::after {
+  opacity: 1;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 75%, transparent);
+  animation: router-fx-dot-locked 1.4s ease-in-out infinite;
+}
+/* Scan-line sweep — fires once when .win lands. Sits above the cell
+   surface but below text via z-index management. Pointer-events stay
+   off so it never interferes with click/copy on the model name. */
+.router-fx-cell.win::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent) 90%, transparent) 50%,
+    transparent 100%);
+  pointer-events: none;
+  opacity: 0;
+  animation: router-fx-scan 720ms cubic-bezier(.4,0,.2,1) 1 forwards;
+  z-index: 1;
+}
+@keyframes router-fx-scan {
+  0%   { opacity: 0;    top: 0;    }
+  20%  { opacity: 1;    top: 10%;  }
+  80%  { opacity: 0.85; top: 90%;  }
+  100% { opacity: 0;    top: 100%; }
+}
+@keyframes router-fx-dot-locked {
+  0%, 100% { opacity: 0.9; box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent); }
+  50%      { opacity: 1;   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 85%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .router-fx-cell.win::before { animation: none; opacity: 0; }
+  .router-fx-cell.win::after { animation: none; }
+}
+
+/* Fallback variant — chosen tier was the safe net, not the routed pick.
+   Mirrors the locked-winner treatment but in the danger palette so the
+   shape is the same and the colour change carries the signal. */
+.router-fx[data-source="fallback"] .router-fx-cell.win {
+  color: var(--danger);
+  border-color: var(--danger);
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--danger) 14%, var(--bg)) 0%,
+      color-mix(in srgb, var(--danger) 7%, var(--bg)) 100%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent),
+    0 8px 22px -8px color-mix(in srgb, var(--danger) 55%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.router-fx[data-source="fallback"] .router-fx-cell.win::after {
+  background: var(--danger);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--danger) 75%, transparent);
+}
+.router-fx[data-source="fallback"] .router-fx-cell.win::before {
+  background: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--danger) 90%, transparent) 50%,
+    transparent 100%);
+}
+
+/* Hammer selector — absolutely positioned, JS sets transform per hop.
+ * Each translate uses a bouncy ease for the "thwack" feel. */
+.router-fx-selector {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  left: 8px;
+  width: 0;
+  height: 0;
+  border: 2px solid color-mix(in srgb, var(--accent) 80%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(0, 0) rotate(0deg);
+  transition:
+    transform 150ms cubic-bezier(.18,1.7,.5,1),
+    opacity 180ms ease,
+    border-color 220ms ease,
+    background 220ms ease,
+    box-shadow 220ms ease;
+}
+.router-fx-selector.visible { opacity: 1; }
+.router-fx-selector.lock {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.router-fx[data-source="fallback"] .router-fx-selector.lock {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--danger) 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+/* Lock impact — selector overshoots slightly horizontally then snaps. */
+@keyframes router-fx-impact {
+  0%   { outline: 0 solid transparent; outline-offset: 0; }
+  35%  { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 4px; }
+  100% { outline: 0 solid transparent; outline-offset: 0; }
+}
+.router-fx-selector.lock-impact {
+  animation: router-fx-impact 280ms cubic-bezier(.34,1.6,.5,1) both;
+}
+
+/* Particle burst — 4 tiny orange squares scatter outward from the
+ * winning cell. Pure CSS via pseudo-element layers on a dedicated
+ * .router-fx-burst overlay that the JS appends on lock. */
+.router-fx-burst {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  width: 0; height: 0;
+}
+.router-fx-burst i {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  left: -2px; top: -2px;
+  background: var(--accent);
+  border-radius: 1px;
+  opacity: 0;
+  animation: router-fx-burst 540ms cubic-bezier(.2,.7,.2,1) forwards;
+}
+.router-fx-burst i:nth-child(1) { --bx: -22px; --by: -10px; }
+.router-fx-burst i:nth-child(2) { --bx:  22px; --by: -10px; }
+.router-fx-burst i:nth-child(3) { --bx: -22px; --by:  10px; }
+.router-fx-burst i:nth-child(4) { --bx:  22px; --by:  10px; }
+.router-fx-burst i:nth-child(5) { --bx:   0;   --by: -18px; width: 3px; height: 3px; }
+.router-fx-burst i:nth-child(6) { --bx:   0;   --by:  18px; width: 3px; height: 3px; }
+@keyframes router-fx-burst {
+  0%   { opacity: 1; transform: translate(0, 0) scale(1); }
+  60%  { opacity: 0.7; }
+  100% { opacity: 0; transform: translate(var(--bx, 16px), var(--by, 0)) scale(0.4); }
+}
+.router-fx[data-source="fallback"] .router-fx-burst i {
+  background: var(--danger);
+}
+
+/* Observe-mode rollout: router classified the turn but did NOT swap
+ * the model in. Strip dims and the winner cell wears an "observe"
+ * badge so users understand the routed model wasn't the one that
+ * actually answered. No animation — the strip lands settled. */
+.router-fx[data-observe="true"] {
+  opacity: 0.55;
+}
+.router-fx[data-observe="true"] .router-fx-header::after {
+  content: 'observe';
+  margin-left: 12px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.router-fx[data-observe="true"] .router-fx-cell.win {
+  /* Less commitment than the bright accent — the model wasn't used. */
+  background: color-mix(in srgb, var(--text-muted) 8%, var(--bg));
+  border-color: color-mix(in srgb, var(--text-muted) 35%, var(--hairline));
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.router-fx[data-observe="true"] .router-fx-cell.win::after {
+  background: var(--text-muted);
+}
+
+/* Reduced motion: kill the chase, render the settled board only. */
+@media (prefers-reduced-motion: reduce) {
+  .router-fx-cell, .router-fx-selector { transition: none !important; }
+  .router-fx-cell.pinging,
+  .router-fx-selector.lock-impact,
+  .router-fx-burst i,
+  .router-fx[data-state="playing"] .router-fx-header .glyph {
+    animation: none !important;
+  }
+}
+
+/* Mobile: collapse to 3 columns × 5 rows + smaller type. The hammer
+ * still hops; the grid just gets denser. JS still renders 15 cells —
+ * keep the cell count divisible across the active grid template so no
+ * row ends short. */
+@media (max-width: 640px) {
+  .router-fx-grid {
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(5, 28px);
+    padding: 6px;
+    gap: 3px;
+  }
+  .router-fx-cell { font-size: 10px; padding: 0 5px; }
+  .router-fx-header { font-size: 9.5px; letter-spacing: 0.36em; }
+}
+@media (max-width: 380px) {
+  .router-fx-grid {
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(5, 26px);
+  }
+  .router-fx-cell { font-size: 9.5px; padding: 0 4px; }
+}

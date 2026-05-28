@@ -1049,9 +1049,15 @@ const ChatView = (() => {
     _restoreWidgetState();
     _subscribeRpcEvents();
     _subscribeSession();
-    _loadHistory();
-    _loadFeatureToggles();
+    // Config (which populates _routerFxModels and registers all
+    // configured tiers including image_only ones) must finish before
+    // the first history render — otherwise non-winner cells fall back
+    // to the tier id ("t1", "t2") instead of the real model name.
+    _loadFeatureToggles()
+      .catch(() => { /* fall through to history anyway */ })
+      .finally(() => _loadHistory());
     _loadSlashCommands();
+    _bindRouterConfigRefresh();
 
     // Keep desktop keyboard flow quick, but avoid opening the soft keyboard on
     // mobile/touch devices before the user asks to type.
@@ -1120,6 +1126,33 @@ const ChatView = (() => {
 
   }
 
+  // Re-pull router config (and rebuild history strips) when the chat
+  // tab regains visibility/focus. Covers the common case where the
+  // operator switches to the config view, edits tier mappings or
+  // toggles squilla_router.enabled, then comes back to chat without
+  // a hard refresh. We debounce so a quick visibility→focus burst
+  // produces a single refresh.
+  let _routerConfigRefreshTimer = null;
+  function _scheduleRouterConfigRefresh() {
+    if (_routerConfigRefreshTimer) clearTimeout(_routerConfigRefreshTimer);
+    _routerConfigRefreshTimer = setTimeout(() => {
+      _routerConfigRefreshTimer = null;
+      _loadFeatureToggles()
+        .catch(() => { /* keep going; history rebuild is harmless */ })
+        .finally(() => _scheduleHistorySync());
+    }, 120);
+  }
+  function _bindRouterConfigRefresh() {
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') _scheduleRouterConfigRefresh();
+    };
+    const onFocus = () => _scheduleRouterConfigRefresh();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', onFocus);
+    _unsubs.push(() => document.removeEventListener('visibilitychange', onVisibility));
+    _unsubs.push(() => window.removeEventListener('focus', onFocus));
+  }
+
   async function _loadFeatureToggles() {
     try {
       await _rpc.waitForConnection();
@@ -1128,19 +1161,62 @@ const ChatView = (() => {
       const routerToggle = _el?.querySelector('#toggle-router');
       if (routerToggle) routerToggle.checked = routerEnabled;
       _toolbarState.router = routerEnabled;
+      _routerFeatureEnabled = !!(cfg?.squilla_router?.enabled);
       _globalElevatedMode = _normalizeElevatedMode(cfg?.permissions?.default_mode);
       _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
       _updateElevatedPill();
       _refreshToolbarTriggerGlow();
 
+      // Pre-populate the router slider's tier list and model cache
+      // from the operator's actual configured tiers. We register EVERY
+      // tier (including image-only ones like "image_model") into the
+      // slot list, so image-capable models like kimi-k2.6 show up in
+      // the slider even before the first image route fires for the
+      // current session.
+      //
+      // We REPLACE _routerFxSlotList from config (rather than merge)
+      // so that tiers the operator has removed drop out of the grid
+      // on the next config refresh. _routerFxConfigTiers records the
+      // authoritative set for downstream filtering of historic strips
+      // whose routed_tier has been deleted.
+      const tiers = cfg?.squilla_router?.tiers;
+      const configTierKeys = [];
+      const configTierSet = new Set();
+      if (tiers && typeof tiers === 'object') {
+        Object.keys(tiers).forEach((tier) => {
+          if (typeof tier !== 'string' || !tier) return;
+          const lower = tier.toLowerCase();
+          configTierKeys.push(lower);
+          configTierSet.add(lower);
+          const model = tiers[tier]?.model;
+          if (typeof model === 'string' && model) {
+            _routerFxModels[lower] = model;
+          }
+        });
+      }
+      if (configTierKeys.length > 0) {
+        _routerFxSlotList = _routerFxSortTiers(configTierKeys);
+        _routerFxConfigTiers = configTierSet;
+      }
+      // Mark config ready as soon as the tier cache is populated.
+      // Anything waiting on _routerFxAwaitConfig() (history rebuild)
+      // unblocks here, even if loadCurrentSessionUsage below throws.
+      _routerFxMarkConfigReady();
+
       // Load current session usage for the token widget (survives page refresh)
       await _loadCurrentSessionUsage();
-    } catch { /* ignore */ }
+    } catch {
+      // If config fetch itself failed, still release the gate so
+      // history rebuild doesn't hang forever waiting for tiers we
+      // can't fetch.
+      _routerFxMarkConfigReady();
+    }
   }
 
   /* ── Session Chip ────────────────────────────────────────────────────── */
 
   function _updateSessionChip(key) {
+    const previousKey = _sessionKey;
     _sessionKey = key;
     const chipKey = _el && _el.querySelector('#chat-session-chip-key');
     const copyBtn = _el && _el.querySelector('#chat-session-copy');
@@ -1149,6 +1225,16 @@ const ChatView = (() => {
       chipKey.title = key;
     }
     if (copyBtn) copyBtn.title = 'Copy session key: ' + key;
+    // Drop every router strip that belonged to the previous session
+    // the moment the chip flips, even before the new session's
+    // history_load reconciles. Otherwise a persisted strip from the
+    // outgoing session sits orphaned at the top of the thread.
+    if (previousKey && previousKey !== key && _thread) {
+      _thread.querySelectorAll('.router-fx').forEach((el) => {
+        if (el.dataset.sessionKey === key) return;
+        el.remove();
+      });
+    }
   }
 
   function _runStatusLabel(status) {
@@ -2480,6 +2566,682 @@ const ChatView = (() => {
     );
   }
 
+  /* ── Router slider — arcade-brutalist whac-a-mole grid ─────────────
+   * Fires once per user message when session.event.router_decision
+   * lands. A 3 × 4 cell grid mixes the operator's real configured
+   * tiers (deduped by model) with popular decoy models from the
+   * OpenRouter ecosystem; a hammer-selector hops between cells with
+   * bouncy easing and locks onto the routed cell with a particle
+   * burst. The strip is non-blocking — assistant text streams below
+   * the grid while the chase plays above. */
+
+  // 5 cols × 3 rows = 15 cells. The wider grid gives the hammer more
+  // hops to play and shows the model space as a proper "dial" rather
+  // than a tight 4-cell strip. Mobile breakpoints collapse this down
+  // (see chat.css @media rules).
+  const _ROUTER_FX_GRID_COLS = 5;
+  const _ROUTER_FX_GRID_ROWS = 3;
+  const _ROUTER_FX_GRID_CELLS = _ROUTER_FX_GRID_COLS * _ROUTER_FX_GRID_ROWS;
+  const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11, 3, 5, 9, 12, 14, 0, 4, 7, 10, 2];
+
+  // Popular OpenRouter models used as visual decoys, ordered by
+  // approximate openrouter.ai traffic ranking. Anything already on
+  // the operator's router (matched after stripping the provider
+  // prefix) is filtered out at render-time, so the highest-traffic
+  // models that aren't on this user's dial bubble to the top of the
+  // visible decoys. The actual route is always chosen from the
+  // operator's configured tiers — these only decorate.
+  const _ROUTER_FX_DECOY_POOL = [
+    'claude-sonnet-4.6',
+    'claude-haiku-4.5',
+    'gpt-5-mini',
+    'gemini-2.5-flash',
+    'deepseek-r1',
+    'gpt-5',
+    'claude-opus-4.7',
+    'gemini-2.5-pro',
+    'gemini-2.0-flash',
+    'llama-4-405b',
+    'mistral-large-3',
+    'qwen-3-72b',
+    'grok-3-mini',
+    'sonar-large',
+    'command-r-plus',
+    'jamba-1.5-large',
+  ];
+
+  // OpenSquilla's tier ids vary by tier_profile. We seed the slot
+  // list from config and register any decision tier we haven't seen
+  // before, so the grid never silently drops an unfamiliar tier.
+  const _ROUTER_FX_DEFAULT_TIERS = ['t0', 't1', 't2', 't3'];
+  let _routerFxSlotList = _ROUTER_FX_DEFAULT_TIERS.slice();
+  const _routerFxModels = {};
+  // Authoritative set of tier ids that exist in the *current* config
+  // snapshot (populated by _loadFeatureToggles). Used to skip history
+  // strips whose routed_tier has been removed from config and to know
+  // whether the slider is allowed to render at all (enabled flag).
+  let _routerFxConfigTiers = null;     // Set<string> | null (unknown)
+  let _routerFeatureEnabled = false;
+
+  function _routerFxSortTiers(list) {
+    return list.slice().sort((a, b) => {
+      const am = /^t(\d+)$/.exec(a);
+      const bm = /^t(\d+)$/.exec(b);
+      if (am && bm) return parseInt(am[1], 10) - parseInt(bm[1], 10);
+      if (am) return -1;
+      if (bm) return 1;
+      return a.localeCompare(b);
+    });
+  }
+
+  function _routerFxRegisterTier(tier) {
+    if (typeof tier !== 'string' || !tier) return;
+    const norm = tier.toLowerCase();
+    if (_routerFxSlotList.indexOf(norm) >= 0) return;
+    _routerFxSlotList = _routerFxSortTiers(_routerFxSlotList.concat([norm]));
+  }
+
+  // "z-ai/glm-5.1" -> "glm-5.1"; "claude-opus-4.7" -> "claude-opus-4.7"
+  function _routerFxStripProvider(name) {
+    if (!name || typeof name !== 'string') return name;
+    const idx = name.lastIndexOf('/');
+    return idx >= 0 ? name.slice(idx + 1) : name;
+  }
+
+  // Promise resolved when _loadFeatureToggles has populated tier
+  // models from config. Any _loadHistory call awaits this gate so the
+  // first history rebuild never renders strips with empty tier names
+  // ("t1", "t2", …) just because config hadn't returned yet.
+  let _routerFxConfigReadyResolve = null;
+  const _routerFxConfigReady = new Promise((resolve) => {
+    _routerFxConfigReadyResolve = resolve;
+  });
+  function _routerFxMarkConfigReady() {
+    if (_routerFxConfigReadyResolve) {
+      _routerFxConfigReadyResolve();
+      _routerFxConfigReadyResolve = null;
+    }
+  }
+  async function _routerFxAwaitConfig(timeoutMs) {
+    if (_routerFxConfigReadyResolve == null) return;
+    await Promise.race([
+      _routerFxConfigReady,
+      new Promise((r) => setTimeout(r, typeof timeoutMs === 'number' ? timeoutMs : 1500)),
+    ]);
+  }
+
+  // Per-turn seed cache backed by localStorage so live and history
+  // rebuilds for the same turn always derive the same shuffle order.
+  // Key includes sessionKey + 1-indexed user-msg position + tier; once
+  // a seed is generated it sticks across every subsequent rebuild,
+  // including F5 page refresh.
+  function _routerFxSeedCacheKey(sessionKey, turnIndex, tier) {
+    return 'osq.routerFx.seed:' + (sessionKey || '') + ':' + (turnIndex | 0) + ':' + tier;
+  }
+  // Soft cap on the in-localStorage seed cache. Seeds are tiny, but
+  // there's no natural eviction event — without a cap the cache
+  // grows unboundedly until the 5 MB domain quota kicks in and
+  // setItem silently fails.
+  const _ROUTER_FX_SEED_CACHE_MAX = 300;
+  const _ROUTER_FX_SEED_CACHE_TRIM = 250;
+  function _routerFxSeedCachePrefix() { return 'osq.routerFx.seed:'; }
+  function _routerFxSeedCacheTrim() {
+    try {
+      const prefix = _routerFxSeedCachePrefix();
+      const entries = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.indexOf(prefix) === 0) {
+          const v = localStorage.getItem(k) || '';
+          // Stored value starts with the millisecond timestamp from
+          // _routerFxResolveSeed. Older seeds → smaller stamp.
+          const stamp = parseInt(v.split(':', 1)[0], 10) || 0;
+          entries.push({ key: k, stamp });
+        }
+      }
+      if (entries.length <= _ROUTER_FX_SEED_CACHE_MAX) return;
+      entries.sort((a, b) => a.stamp - b.stamp);
+      const dropCount = entries.length - _ROUTER_FX_SEED_CACHE_TRIM;
+      for (let i = 0; i < dropCount; i++) {
+        try { localStorage.removeItem(entries[i].key); } catch (_) { /* ignore */ }
+      }
+    } catch (_) { /* localStorage unavailable; nothing to trim */ }
+  }
+  function _routerFxResolveSeed(sessionKey, turnIndex, tier, hintTimestamp) {
+    const key = _routerFxSeedCacheKey(sessionKey, turnIndex, tier);
+    try {
+      const cached = localStorage.getItem(key);
+      if (cached) return cached;
+    } catch (_) { /* localStorage may be unavailable */ }
+    const stamp = hintTimestamp ? String(hintTimestamp) : String(Date.now());
+    const fresh = stamp + ':' + tier + ':i' + (turnIndex | 0);
+    try {
+      localStorage.setItem(key, fresh);
+      _routerFxSeedCacheTrim();
+    } catch (_) { /* ignore */ }
+    return fresh;
+  }
+  function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp) {
+    return _routerFxResolveSeed(sessionKey, 0, 'layout', hintTimestamp);
+  }
+  function _routerFxIdentity(model, tier) {
+    const modelPart = typeof model === 'string' ? model.trim().toLowerCase() : '';
+    const tierPart = typeof tier === 'string' ? tier.trim().toLowerCase() : '';
+    if (!modelPart && !tierPart) return '';
+    return modelPart + '|' + tierPart;
+  }
+  function _routerFxDecisionIdentity(decision) {
+    if (!decision || typeof decision !== 'object') return '';
+    return _routerFxIdentity(decision.model || decision.routed_model || '', decision.tier || decision.routed_tier || '');
+  }
+  function _routerFxUsageIdentity(usage) {
+    if (!usage || typeof usage !== 'object') return '';
+    return _routerFxIdentity(usage.routed_model || usage.model || '', usage.routed_tier || '');
+  }
+  function _routerFxCountUserMessages() {
+    if (!_thread) return 0;
+    return _thread.querySelectorAll(
+      '.msg.user, .msg[data-history-role="user"]'
+    ).length;
+  }
+
+  // Group tiers by their backing model so two tiers that resolve to
+  // the same model don't get two cells.
+  function _routerFxRealEntries(decision) {
+    const winnerTier = decision && typeof decision.tier === 'string' ? decision.tier.toLowerCase() : '';
+    const winnerModel = decision && typeof decision.model === 'string' ? decision.model : '';
+    const slotKeyOf = (tier) => {
+      const m = _routerFxModels[tier];
+      return m ? m : 'tier:' + tier;
+    };
+    const byKey = new Map();
+    _routerFxSlotList.forEach((tier) => {
+      const key = slotKeyOf(tier);
+      let entry = byKey.get(key);
+      if (!entry) {
+        entry = { key, tiers: [], model: _routerFxModels[tier] || '' };
+        byKey.set(key, entry);
+      }
+      entry.tiers.push(tier);
+    });
+    if (winnerTier && winnerModel) {
+      const target = byKey.get(slotKeyOf(winnerTier));
+      if (target && !target.model) target.model = winnerModel;
+    }
+    return Array.from(byKey.values()).map((e) => ({
+      key: e.key,
+      tiers: e.tiers,
+      model: e.model,
+      displayName: e.model ? _routerFxStripProvider(e.model) : e.tiers[0],
+    }));
+  }
+
+  // FNV-1a 32-bit hash of a string — folds the seed key down to a
+  // single integer for mulberry32 to seed off.
+  function _routerFxHashSeed(key) {
+    let h = 0x811c9dc5;
+    const s = String(key == null ? '' : key);
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return h >>> 0;
+  }
+
+  // mulberry32 PRNG — deterministic, well-distributed, ~10 LoC.
+  function _routerFxMulberry32(seed) {
+    let state = seed >>> 0;
+    return function () {
+      state = (state + 0x6D2B79F5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Fisher-Yates in place using the supplied RNG (defaults to
+  // Math.random when no seed key is given — exclusively for code
+  // paths that don't have a stable identifier).
+  function _routerFxShuffle(arr, seedKey) {
+    const rng = seedKey != null
+      ? _routerFxMulberry32(_routerFxHashSeed(seedKey))
+      : Math.random;
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const tmp = arr[i];
+      arr[i] = arr[j];
+      arr[j] = tmp;
+    }
+    return arr;
+  }
+
+  // Assemble the grid (_ROUTER_FX_GRID_CELLS cells): real (deduped) entries + decoys.
+  // Real cells land on distributed anchor slots in a deterministic model order,
+  // so each available model keeps a stable position. The live selector animation
+  // remains random; only the underlying dial layout is fixed.
+  function _routerFxBuildGridCells(realEntries, seedKey) {
+    const cells = Array.from({ length: _ROUTER_FX_GRID_CELLS }, () => null);
+    const realNames = new Set();
+    const orderedRealEntries = realEntries.slice().sort((a, b) => (
+      (a.displayName || a.key || '').localeCompare(b.displayName || b.key || '')
+    ));
+    orderedRealEntries.forEach((entry, i) => {
+      const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];
+      const idx = typeof anchor === 'number' ? anchor : cells.findIndex((cell) => cell == null);
+      if (idx < 0 || idx >= cells.length) return;
+      cells[idx] = { kind: 'real', entry, displayName: entry.displayName };
+      if (entry.displayName) realNames.add(entry.displayName);
+    });
+
+    const decoys = [];
+    for (let i = 0; i < _ROUTER_FX_DECOY_POOL.length && decoys.length < _ROUTER_FX_GRID_CELLS; i++) {
+      const name = _ROUTER_FX_DECOY_POOL[i];
+      if (realNames.has(name)) continue;
+      decoys.push({ kind: 'decoy', displayName: name });
+    }
+    while (decoys.length < _ROUTER_FX_GRID_CELLS) {
+      decoys.push({ kind: 'decoy', displayName: '—' });
+    }
+    const orderedDecoys = _routerFxShuffle(decoys, seedKey ? seedKey + ':decoy' : undefined);
+    let decoyIdx = 0;
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] == null) cells[i] = orderedDecoys[decoyIdx++];
+    }
+    return cells;
+  }
+
+  function _buildRouterFxElement(decision, opts) {
+    opts = opts || {};
+    const wrap = document.createElement('div');
+    wrap.className = 'router-fx';
+    wrap.setAttribute('data-history-role', 'router');
+    wrap.dataset.state = 'idle';
+    wrap.dataset.tier = decision.tier || '';
+    wrap.dataset.source = decision.source || 'none';
+    const identity = _routerFxDecisionIdentity(decision);
+    if (identity) wrap.dataset.routerIdentity = identity;
+    const observeMode = decision && decision.routing_applied === false;
+    if (observeMode) {
+      wrap.dataset.observe = 'true';
+      wrap.dataset.rolloutPhase = typeof decision.rollout_phase === 'string'
+        ? decision.rollout_phase
+        : 'observe';
+    }
+
+    const header = document.createElement('div');
+    header.className = 'router-fx-header';
+    header.innerHTML =
+      '<span class="glyph">←</span>' +
+      '<span class="title">AI model router</span>' +
+      '<span class="glyph">→</span>';
+    wrap.appendChild(header);
+
+    const realEntries = _routerFxRealEntries(decision);
+    // Seed the cell shuffle off the caller-supplied key (turn
+    // timestamp). Same key → same layout on every rebuild, so the
+    // user never sees the order shift after the hammer locked.
+    // Stash the seed on the wrap dataset for forensic reuse.
+    const seedKey = opts && opts.seedKey ? String(opts.seedKey) : '';
+    if (seedKey) wrap.dataset.seed = seedKey;
+    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined);
+
+    const grid = document.createElement('div');
+    grid.className = 'router-fx-grid';
+    gridCells.forEach((cellInfo, i) => {
+      const cell = document.createElement('div');
+      cell.className = 'router-fx-cell';
+      cell.dataset.kind = cellInfo.kind;
+      cell.dataset.cellIdx = String(i);
+      if (cellInfo.kind === 'real') {
+        cell.dataset.tiers = cellInfo.entry.tiers.join(',');
+      }
+      cell.innerHTML = `<span class="nm">${_esc(cellInfo.displayName)}</span>`;
+      grid.appendChild(cell);
+    });
+    const selector = document.createElement('div');
+    selector.className = 'router-fx-selector';
+    grid.appendChild(selector);
+    wrap.appendChild(grid);
+
+    wrap._fxGridCells = gridCells;
+    wrap._fxRealEntries = realEntries;
+
+    if (opts.preSettled) {
+      const winnerIdx = _routerFxWinnerCellIndex(wrap, decision.tier);
+      if (winnerIdx >= 0) _settleRouterFxImmediate(wrap, winnerIdx, { burst: false });
+    }
+    return wrap;
+  }
+
+  function _routerFxWinnerCellIndex(wrap, tier) {
+    if (!wrap || !tier) return -1;
+    const cells = wrap._fxGridCells || [];
+    const norm = String(tier).toLowerCase();
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i].kind === 'real' && cells[i].entry.tiers.indexOf(norm) >= 0) return i;
+    }
+    return -1;
+  }
+
+  // Position the hammer over a specific grid cell. CSS transition
+  // handles the bouncy hop; JS only sets transform + width/height.
+  function _routerFxPositionSelector(selector, cell, opts) {
+    if (!selector || !cell) return;
+    opts = opts || {};
+    const grid = cell.parentElement;
+    const cellRect = cell.getBoundingClientRect();
+    const gridRect = grid.getBoundingClientRect();
+    const padLeft = parseFloat(getComputedStyle(grid).paddingLeft) || 0;
+    const padTop = parseFloat(getComputedStyle(grid).paddingTop) || 0;
+    const x = cellRect.left - gridRect.left - padLeft;
+    const y = cellRect.top - gridRect.top - padTop;
+    selector.style.width = cellRect.width + 'px';
+    selector.style.height = cellRect.height + 'px';
+    // Slight rotation while hopping for "weight"; settle dead level.
+    const rot = opts.lock ? 0 : (((opts.hopIdx | 0) % 2) ? -1.4 : 1.4);
+    selector.style.transform = `translate(${x}px, ${y}px) rotate(${rot}deg)`;
+  }
+
+  function _routerFxPing(cell) {
+    if (!cell) return;
+    cell.classList.remove('pinging');
+    void cell.offsetWidth;
+    cell.classList.add('pinging');
+    setTimeout(() => cell.classList.remove('pinging'), 220);
+  }
+
+  function _settleRouterFxImmediate(wrap, winnerIdx, opts) {
+    opts = opts || {};
+    const grid = wrap.querySelector('.router-fx-grid');
+    const selector = wrap.querySelector('.router-fx-selector');
+    if (!grid || !selector) return;
+    const cells = grid.querySelectorAll('.router-fx-cell');
+    if (!cells[winnerIdx]) return;
+
+    wrap.dataset.state = 'settled';
+    cells.forEach((c, i) => c.classList.toggle('win', i === winnerIdx));
+
+    requestAnimationFrame(() => {
+      _routerFxPositionSelector(selector, cells[winnerIdx], { lock: true });
+      selector.classList.add('visible', 'lock');
+      if (opts.burst) {
+        selector.classList.remove('lock-impact');
+        void selector.offsetWidth;
+        selector.classList.add('lock-impact');
+        setTimeout(() => selector.classList.remove('lock-impact'), 320);
+        _routerFxFireBurst(grid, cells[winnerIdx]);
+      }
+    });
+  }
+
+  function _routerFxFireBurst(grid, cell) {
+    if (!grid || !cell) return;
+    const cellRect = cell.getBoundingClientRect();
+    const gridRect = grid.getBoundingClientRect();
+    const cx = cellRect.left - gridRect.left + cellRect.width / 2;
+    const cy = cellRect.top - gridRect.top + cellRect.height / 2;
+    const burst = document.createElement('div');
+    burst.className = 'router-fx-burst';
+    burst.style.left = cx + 'px';
+    burst.style.top = cy + 'px';
+    burst.innerHTML = '<i></i><i></i><i></i><i></i><i></i><i></i>';
+    grid.appendChild(burst);
+    setTimeout(() => burst.remove(), 700);
+  }
+
+  function _animateRouterFx(wrap, winnerIdx) {
+    const grid = wrap.querySelector('.router-fx-grid');
+    const selector = wrap.querySelector('.router-fx-selector');
+    if (!grid || !selector || winnerIdx < 0) return;
+    const cells = grid.querySelectorAll('.router-fx-cell');
+    if (!cells.length || !cells[winnerIdx]) return;
+
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduced) {
+      _settleRouterFxImmediate(wrap, winnerIdx, { burst: false });
+      return;
+    }
+
+    wrap.dataset.state = 'playing';
+
+    // Build a hop sequence that visits a mix of cells with no
+    // immediate repeats. The final hop always lands on the winner.
+    const hopCount = 9;
+    const sequence = [];
+    let prev = -1;
+    const totalCells = cells.length;
+    for (let i = 0; i < hopCount; i++) {
+      let pick;
+      let guard = 0;
+      do {
+        pick = Math.floor(Math.random() * totalCells);
+        guard++;
+      } while ((pick === prev || pick === winnerIdx) && guard < 12);
+      sequence.push(pick);
+      prev = pick;
+    }
+    sequence.push(winnerIdx);
+
+    // Decelerating dwell times: tight chase → punchy landing. Total
+    // sweep ≈ 1.33 s.
+    const dwellTimes = [50, 55, 65, 75, 90, 110, 140, 180, 240, 330];
+    let scheduled = 0;
+
+    const placeFirst = () => {
+      _routerFxPositionSelector(selector, cells[sequence[0]], { hopIdx: 0 });
+      selector.classList.add('visible');
+      _routerFxPing(cells[sequence[0]]);
+    };
+
+    sequence.forEach((idx, hopIdx) => {
+      if (hopIdx === 0) return;
+      scheduled += dwellTimes[hopIdx - 1] || 200;
+      setTimeout(() => {
+        if (hopIdx < sequence.length - 1) {
+          _routerFxPositionSelector(selector, cells[idx], { hopIdx });
+          _routerFxPing(cells[idx]);
+        } else {
+          _settleRouterFxImmediate(wrap, idx, { burst: true });
+          _routerFxPing(cells[idx]);
+        }
+      }, scheduled);
+    });
+
+    requestAnimationFrame(placeFirst);
+  }
+
+  // Anchor invariant: the strip must always sit immediately below
+  // the user message that triggered this turn — never above it,
+  // never with anything (day separators, tool cards, the assistant
+  // bubble) wedged between the user prompt and the strip. Locate
+  // the most recent user message in the thread and place the strip
+  // as its next sibling. Falls back to streamBubble-relative or
+  // thread-append only when there's literally no user msg in view.
+  function _routerFxLastUserMessage() {
+    if (!_thread) return null;
+    const userMsgs = _thread.querySelectorAll(
+      '.msg.user, .msg[data-history-role="user"]'
+    );
+    return userMsgs.length ? userMsgs[userMsgs.length - 1] : null;
+  }
+
+  // Walk backwards from an assistant bubble until we hit either
+  // (a) the router strip that belongs to this turn, or (b) the user
+  // message that triggered it (no strip in between). Used by the
+  // DoneEvent handler since the strip is anchored to the user msg,
+  // which means it may not be the assistant bubble's immediate
+  // previousElementSibling once tool cards / day-separators arrive.
+  function _routerFxFindAttachedStrip(assistantBubble) {
+    if (!assistantBubble) return null;
+    let prev = assistantBubble.previousElementSibling;
+    while (prev) {
+      if (prev.classList && prev.classList.contains('router-fx')) return prev;
+      if (prev.classList
+          && (prev.classList.contains('user')
+              || prev.getAttribute('data-history-role') === 'user')) {
+        return null;
+      }
+      prev = prev.previousElementSibling;
+    }
+    return null;
+  }
+
+  function _routerFxInsertAnchored(wrap, referenceAssistant) {
+    if (!_thread) return;
+    // Prefer the user msg that immediately precedes the assistant
+    // turn we're about to render (during history rebuild we have a
+    // concrete reference div; live, we don't).
+    let anchor = null;
+    if (referenceAssistant) {
+      let prev = referenceAssistant.previousElementSibling;
+      while (prev) {
+        if (prev.classList && (prev.classList.contains('user')
+            || prev.getAttribute('data-history-role') === 'user')) {
+          anchor = prev;
+          break;
+        }
+        prev = prev.previousElementSibling;
+      }
+    }
+    if (!anchor) anchor = _routerFxLastUserMessage();
+    if (anchor && anchor.parentNode === _thread) {
+      if (anchor.nextSibling) {
+        _thread.insertBefore(wrap, anchor.nextSibling);
+      } else {
+        _thread.appendChild(wrap);
+      }
+      return;
+    }
+    if (referenceAssistant && referenceAssistant.parentNode === _thread) {
+      _thread.insertBefore(wrap, referenceAssistant);
+      return;
+    }
+    if (_isStreaming && _streamBubble) {
+      _thread.insertBefore(wrap, _streamBubble);
+    } else {
+      _thread.appendChild(wrap);
+    }
+  }
+
+  // Live entry point — wired to session.event.router_decision.
+  // Async so we can await the config-ready gate before building the
+  // grid; otherwise a router_decision event arriving in the gap
+  // between WS connect and config.get returning would render the
+  // strip with empty _routerFxModels (tier-id placeholders). The
+  // gate has its own 1.5 s ceiling so the await never hard-blocks.
+  async function _handleRouterDecision(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    const tier = typeof payload.tier === 'string' ? payload.tier : '';
+    if (!tier) return;
+    _routerFxRegisterTier(tier);
+    if (payload.model) {
+      _routerFxModels[tier.toLowerCase()] = String(payload.model);
+    }
+    if (!_thread) return;
+    await _routerFxAwaitConfig();
+    // Re-check the thread reference after the await — the view may
+    // have been torn down while we were waiting.
+    if (!_thread) return;
+    // The router strip MUST anchor below a user message. If no user
+    // message has been rendered yet, this event is almost always a WS
+    // replay arriving before history has loaded — building a strip
+    // would orphan it at the top of the thread with no turn to attach
+    // to. Bail; the post-config history rebuild will create the
+    // correctly-anchored strip for this decision.
+    const anchorUser = _routerFxLastUserMessage();
+    if (!anchorUser) return;
+    // Resolve a seed that's deterministic for this session: the first routed
+    // turn establishes the dial layout and later turns reuse it.
+    const turnIndex = _routerFxCountUserMessages();
+    const liveSeed = _routerFxResolveLayoutSeed(_sessionKey);
+    const wrap = _buildRouterFxElement(payload, { seedKey: liveSeed });
+    const winnerIdx = _routerFxWinnerCellIndex(wrap, tier);
+    if (winnerIdx < 0) return;
+    wrap.dataset.live = 'true';
+    wrap.dataset.sessionKey = _sessionKey || '';
+    wrap.dataset.turnIndex = String(turnIndex);
+    // Observe-mode signalling: when the router classified a tier but
+    // routing_applied is false, the routed model was NOT actually
+    // used for this turn. Mark the strip so CSS can dim it and the
+    // animation skips straight to settled — animating a hop sequence
+    // would imply the router picked a model that drove the response.
+    const observeMode = payload && payload.routing_applied === false;
+    if (observeMode) {
+      wrap.dataset.observe = 'true';
+      wrap.dataset.rolloutPhase = typeof payload.rollout_phase === 'string'
+        ? payload.rollout_phase
+        : 'observe';
+    }
+    // Drop any earlier strip anchored to this user msg, regardless of
+    // its lifecycle flag. A WS replay arriving after F5 will have
+    // built a tier-id strip before config loaded; we replace it with
+    // the now-correct one instead of stacking another on top.
+    const userMsg = _routerFxLastUserMessage();
+    if (userMsg && userMsg.nextSibling
+        && userMsg.nextSibling.classList
+        && userMsg.nextSibling.classList.contains('router-fx')
+        && userMsg.nextSibling !== wrap) {
+      userMsg.nextSibling.remove();
+    }
+    // Drop any earlier live strip from a different turn that hasn't
+    // been promoted yet — protects against rapid back-to-back sends.
+    _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((el) => {
+      if (el !== wrap) el.remove();
+    });
+    _routerFxInsertAnchored(wrap, null);
+    if (observeMode) {
+      // Observe-mode only: settle immediately because the routed model did not
+      // drive the response. Live applied routes keep the random chase animation.
+      requestAnimationFrame(() => _settleRouterFxImmediate(wrap, winnerIdx, { burst: false }));
+    } else {
+      requestAnimationFrame(() => _animateRouterFx(wrap, winnerIdx));
+    }
+    _scrollToBottom();
+  }
+
+  // History-load entry point — settled grid, no animation.
+  // `seedKey` should be a stable per-turn identifier (msg.timestamp
+  // or message id) so the cell shuffle reproduces deterministically
+  // across page refreshes.
+  function _buildRouterFxFromUsage(usage, seedKey) {
+    if (!usage) return null;
+    // If the operator has flipped squilla_router off since this turn
+    // was recorded, drop the historic strip on the next rebuild —
+    // the slider's whole point is conveying live router behaviour.
+    if (_routerFxConfigTiers !== null && !_routerFeatureEnabled) return null;
+    const tier = typeof usage.routed_tier === 'string' ? usage.routed_tier : '';
+    if (!tier) return null;
+    // If the operator has REMOVED this tier from config since the
+    // turn was recorded, skip — rendering the strip would show a
+    // ghost cell ("t2") with no current meaning.
+    if (_routerFxConfigTiers !== null
+        && !_routerFxConfigTiers.has(tier.toLowerCase())) {
+      return null;
+    }
+    _routerFxRegisterTier(tier);
+    const decision = {
+      tier,
+      model: usage.routed_model || usage.model || '',
+      source: usage.routing_source || 'none',
+      confidence: typeof usage.routing_confidence === 'number' ? usage.routing_confidence : 0,
+      fallback: usage.routing_source === 'fallback',
+      routing_applied: usage.routing_applied !== false,
+      rollout_phase: usage.rollout_phase || 'full',
+    };
+    if (decision.model) _routerFxModels[tier.toLowerCase()] = decision.model;
+    // The cached seed from _routerFxResolveSeed already encodes
+    // (stamp, tier, turnIndex) — pass it through verbatim so that
+    // live and history paths derive the SAME shuffle for the same
+    // turn. Earlier revisions concatenated ':' + tier here, which
+    // produced a different hash from the live path's seedKey and
+    // caused a visible cell reorder at the live→history transition.
+    return _buildRouterFxElement(decision, {
+      preSettled: true,
+      seedKey: seedKey != null ? String(seedKey) : ('history:' + tier),
+    });
+  }
+
   /* ── RPC Event Subscriptions ────────────────────────────────────────── */
 
   function _subscribeRpcEvents() {
@@ -2739,6 +3501,8 @@ const ChatView = (() => {
         // replays the terminal done frame.
         const _finishedBubble = _streamBubble;
         const _doneWasAborted = payload?.reason === 'aborted';
+        const settledStrip = _routerFxFindAttachedStrip(_finishedBubble);
+        if (settledStrip) delete settledStrip.dataset.live;
         _endStreaming(_doneWasAborted ? { reason: 'aborted' } : undefined);
 
         // Populate savings indicator if data exists
@@ -2765,6 +3529,8 @@ const ChatView = (() => {
             routed_model: u.routed_model || null,
             routed_tier: u.routed_tier || null,
             routing_source: u.routing_source || 'none',
+            routing_applied: u.routing_applied !== false,
+            rollout_phase: u.rollout_phase || 'full',
             total_savings_pct: u.total_savings_pct || 0,
             __savings_ui_suppressed: !!u.__savings_ui_suppressed,
           });
@@ -2929,6 +3695,10 @@ const ChatView = (() => {
     if (!_sessionKey || !_thread) return;
     try {
       await _rpc.waitForConnection();
+      // Wait until router config (tier → model cache) is populated so
+      // historical strips never render with "t1"/"t2"/"t3" placeholders
+      // just because we raced the config.get response.
+      await _routerFxAwaitConfig();
       const data = await _rpc.call('chat.history', { sessionKey: _sessionKey });
       const messages = data.messages || [];
       if (messages.length === 0) {
@@ -2961,14 +3731,28 @@ const ChatView = (() => {
       const empty = _thread.querySelector('.chat-empty');
       if (empty) empty.remove();
       _thread.querySelectorAll('.chat-day-sep').forEach((el) => el.remove());
+      // Drop every stale router strip that isn't currently being animated or
+      // already anchored for this session/turn. The rebuild loop reuses
+      // settled strips so live → history sync does not replay the animation.
+      _thread.querySelectorAll('.router-fx').forEach((el) => {
+        if (el.dataset.live === 'true') return;
+        if (el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex) return;
+        el.remove();
+      });
       _messages = [];
       _lastHeaderRole = '';
       _lastHeaderDay = '';
       if (window.SavingsFX) window.SavingsFX.resetStreak();
       let historySavingsIdentity = '';
       let _histAsstIdx = 0;
+      // 1-indexed running count of user messages seen so far during
+      // this rebuild. The router strip's localStorage seed cache is
+      // keyed by (sessionKey, userMsgIndex, tier); using this counter
+      // means live + history rebuilds for the same turn reuse the same layout.
+      let _histUserIdx = 0;
       const consumedHistoryElements = new Set();
       messages.forEach((msg) => {
+        if (msg.role === 'user') _histUserIdx++;
         const rawText = msg.text || '';
         const displayText = msg.role === 'user' ? _stripTimePrefix(rawText) : rawText;
         const stableIdentity = _historyStableMessageIdentity(msg);
@@ -3045,6 +3829,24 @@ const ChatView = (() => {
                 if (identityChanged) savedUsage.__savings_ui_suppressed = true;
               }
               if (window.SavingsFX) window.SavingsFX.noteTurn(savedUsage);
+              const userMsg = _routerFxLastUserMessage();
+              const placed = userMsg && userMsg.nextSibling;
+              const existingStrip = (placed && placed.classList
+                  && placed.classList.contains('router-fx')) ? placed : null;
+              const routerIdentity = _routerFxUsageIdentity(savedUsage);
+              const alreadyInPlace = existingStrip
+                && existingStrip.dataset.routerIdentity === routerIdentity;
+              if (!alreadyInPlace) {
+                if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();
+                const hint = msg.timestamp || msg.ts || msg.message_id || '';
+                const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);
+                const routerStrip = _buildRouterFxFromUsage(savedUsage, cachedSeed);
+                if (routerStrip) {
+                  routerStrip.dataset.sessionKey = _sessionKey || '';
+                  routerStrip.dataset.turnIndex = String(_histUserIdx);
+                  _routerFxInsertAnchored(routerStrip, div);
+                }
+              }
             } else if (window.SavingsFX) {
               window.SavingsFX.noteTurn(null);
             }
@@ -3057,6 +3859,12 @@ const ChatView = (() => {
       _thread.querySelectorAll('.msg').forEach((el) => {
         if (_isStreaming && el === _streamBubble) return;
         if (!consumedHistoryElements.has(el)) el.remove();
+      });
+      _thread.querySelectorAll('.router-fx').forEach((el) => {
+        if (el.dataset.live === 'true') return;
+        const turnIndex = el.dataset.turnIndex || '';
+        if (el.dataset.sessionKey === (_sessionKey || '') && turnIndex) return;
+        el.remove();
       });
       _lastSavingsPopupIdentity = historySavingsIdentity;
       _scrollToBottom();

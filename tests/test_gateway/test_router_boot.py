@@ -24,10 +24,13 @@ from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
 from opensquilla.gateway.diagnostics import DiagnosticsState
 from opensquilla.gateway.routing import build_cli_route_envelope, build_cron_route_envelope
 from opensquilla.onboarding.mutations import upsert_channel
+from opensquilla.provider import Message
 from opensquilla.scheduler.types import CronJob, JobStatus
 from opensquilla.session.compaction import CompactionConfig
+from opensquilla.session.manager import SessionManager
+from opensquilla.session.storage import SessionStorage
 from opensquilla.tools.registry import ToolRegistry
-from opensquilla.tools.types import CallerKind, ToolContext
+from opensquilla.tools.types import CallerKind, ToolContext, ToolSpec
 
 
 def test_gateway_boot_bridges_compaction_notifications_to_session_stream() -> None:
@@ -564,6 +567,61 @@ def test_build_flush_service_uses_configured_background_memory_timeout() -> None
 
     assert service is not None
     assert service._default_timeout == 42.0
+
+
+@pytest.mark.asyncio
+async def test_build_flush_service_wires_durable_receipt_writer(tmp_path: Path) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.sqlite"))
+    session_manager = SessionManager(storage)
+    registry = ToolRegistry()
+
+    async def memory_save(path: str, content: str, mode: str) -> str:
+        assert mode == "append"
+        assert content.startswith("# Raw flush")
+        return f"Saved to {path} (0 chunks indexed)."
+
+    registry.register(
+        ToolSpec(
+            name="memory_save",
+            description="Save memory",
+            parameters={
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "mode": {"type": "string"},
+            },
+            required=["path", "content", "mode"],
+        ),
+        memory_save,
+    )
+    try:
+        session_key = "agent:main:webchat:s1"
+        session = await session_manager.create(session_key)
+        service = build_flush_service(
+            tool_registry=registry,
+            provider_selector=SimpleNamespace(resolve=lambda: None),
+            config=GatewayConfig(),
+            session_manager=session_manager,
+        )
+
+        receipt = await service.execute(
+            [Message(role="user", content="temporary transcript")],
+            session_key,
+            agent_id="main",
+        )
+        rows = await storage.list_memory_durable_receipts(session_key=session_key)
+
+        assert receipt.result_status == "ok_archive_only"
+        assert len(rows) == 1
+        assert rows[0].session_id == session.session_id
+        assert rows[0].scope == "repair"
+        assert rows[0].status == "repair_pending"
+        assert rows[0].reason == "ok_archive_only"
+        assert rows[0].target_path == receipt.flushed_paths[0]
+        assert rows[0].idempotency_key.startswith(
+            f"flush-receipt:repair:{session_key}:{session.session_id}:repair_pending:"
+        )
+    finally:
+        await storage.close()
 
 
 @pytest.mark.asyncio

@@ -1173,6 +1173,7 @@ def build_flush_service(
     tool_registry: Any,
     provider_selector: Any,
     config: GatewayConfig | None = None,
+    session_manager: Any | None = None,
 ) -> Any:
     """Construct a :class:`SessionFlushService` gated by flush config.
 
@@ -1195,6 +1196,7 @@ def build_flush_service(
     from opensquilla.tools.dispatch import build_tool_handler
 
     tool_handler = build_tool_handler(tool_registry)
+    session_storage = get_session_storage(session_manager)
 
     def _resolve_provider(_agent_id: str) -> Any:
         if provider_selector is None:
@@ -1207,6 +1209,62 @@ def build_flush_service(
         except Exception:  # noqa: BLE001
             return None
 
+    async def _write_durable_flush_receipt(receipt: Any, **row: Any) -> None:
+        if session_storage is None:
+            return
+        get_session = getattr(session_storage, "get_session", None)
+        upsert_receipt = getattr(session_storage, "upsert_memory_durable_receipt", None)
+        if not callable(get_session) or not callable(upsert_receipt):
+            return
+
+        from opensquilla.session.models import MemoryDurableReceipt
+
+        session_key = str(row.get("session_key") or "")
+        if not session_key:
+            return
+        session = await get_session(session_key)
+        if session is None:
+            log.warning(
+                "session_flush.receipt_write_skipped",
+                reason="session_not_found",
+                session_key=session_key,
+                result_status=getattr(receipt, "result_status", None),
+            )
+            return
+
+        scope = str(row.get("scope") or "")
+        status = str(row.get("status") or "")
+        reason = row.get("reason")
+        target_path = row.get("target_path")
+        target_path = str(target_path) if target_path else None
+        idempotency_key = ":".join(
+            [
+                "flush-receipt",
+                scope,
+                session_key,
+                str(getattr(session, "session_id", "")),
+                status,
+                str(reason or ""),
+                target_path or "",
+                str(getattr(receipt, "result_status", "") or ""),
+                str(getattr(receipt, "input_message_count", 0) or 0),
+                str(getattr(receipt, "first_included_message", "") or ""),
+                str(getattr(receipt, "last_included_message", "") or ""),
+            ]
+        )
+        await upsert_receipt(
+            MemoryDurableReceipt(
+                session_key=session_key,
+                session_id=str(getattr(session, "session_id", "")),
+                scope=scope,
+                target_path=target_path,
+                idempotency_key=idempotency_key,
+                status=status,
+                reason=str(reason) if reason else None,
+                attempt_count=1,
+            )
+        )
+
     service_kwargs: dict[str, Any] = {}
     if memory_cfg is not None:
         service_kwargs["default_timeout"] = getattr(
@@ -1214,6 +1272,8 @@ def build_flush_service(
             "flush_background_timeout_seconds",
             30.0,
         )
+    if session_storage is not None:
+        service_kwargs["receipt_writer"] = _write_durable_flush_receipt
 
     return SessionFlushService(
         provider_selector=_resolve_provider,
@@ -1761,6 +1821,7 @@ async def build_services(
         tool_registry=tool_registry,
         provider_selector=provider_selector,
         config=config,
+        session_manager=session_manager,
     )
     if flush_service is not None:
         log.info("build_services.session_flush_service_ready")

@@ -1989,7 +1989,11 @@ class SessionFlushService:
     ) -> dict[str, str | None] | None:
         result_status = receipt.result_status
         target_path = receipt.flushed_paths[0] if receipt.flushed_paths else None
-        if result_status in {"parse_failed_archived", "provider_failed_archived"}:
+        if result_status in {
+            "ok_archive_only",
+            "parse_failed_archived",
+            "provider_failed_archived",
+        }:
             return {
                 "scope": "repair",
                 "status": "repair_pending",

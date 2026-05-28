@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from opensquilla.agents.registry import AgentRegistry
-from opensquilla.engine.types import DoneEvent
+from opensquilla.engine.types import DoneEvent, ErrorEvent
 from opensquilla.gateway import rpc_sessions
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
 from opensquilla.gateway.attachment_ingest import (
@@ -657,6 +657,38 @@ class TestSessionsSend:
         assert ctx_with_sessions.session_manager.applied_intents == [
             (session.session_key, "continue")
         ]
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_persisted_message_on_context_budget_terminal_error(
+        self, dispatcher, session
+    ):
+        class _BudgetErrorTurnRunner(_RecordingTurnRunner):
+            async def run(self, message: str, session_key: str, **kwargs):
+                self.run_calls.append({"message": message, "session_key": session_key, **kwargs})
+                yield ErrorEvent(
+                    message='{"fallback_reason":"provider_request_budget_exhausted"}',
+                    code="provider_request_budget_exhausted",
+                )
+
+        manager = FakeSessionManager([session])
+        runner = _BudgetErrorTurnRunner()
+        ctx = make_ctx(session_manager=manager, turn_runner=runner)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {"key": session.session_key, "message": "keep this overlong input"},
+            ctx,
+        )
+        task = get_agent_task_registry().get(session.session_key)
+        if task is not None:
+            await task
+
+        assert res.ok is True
+        assert manager.created_messages == [
+            (session.session_key, "user", "keep this overlong input")
+        ]
+        assert manager.removed_messages == []
 
     @pytest.mark.asyncio
     async def test_send_passes_persisted_user_message_id_to_task_runtime(

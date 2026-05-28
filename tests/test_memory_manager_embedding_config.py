@@ -334,6 +334,23 @@ def test_resolver_auto_uses_memory_remote_when_local_unavailable() -> None:
     assert decision.remote_api_key == "mem-key"
 
 
+def test_resolver_explicit_remote_uses_memory_env_key(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_EMBEDDINGS_API_KEY", "mem-env-key")
+    cfg = GatewayConfig(
+        memory={
+            "embedding": {
+                "provider": "openai",
+                "remote": {"api_key_env": "OPENAI_EMBEDDINGS_API_KEY"},
+            }
+        }
+    )
+
+    decision = resolve_memory_embedding(cfg.memory, local_available=lambda *_: False)
+
+    assert decision.effective_provider == "openai"
+    assert decision.remote_api_key == "mem-env-key"
+
+
 def test_resolver_explicit_remote_requires_memory_api_key() -> None:
     cfg = GatewayConfig(memory={"embedding": {"provider": "openai"}})
     with pytest.raises(ValueError, match="memory.embedding.remote.api_key"):

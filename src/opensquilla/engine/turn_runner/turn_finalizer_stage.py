@@ -266,6 +266,8 @@ def _turn_usage_payload(
         "routed_tier": done_event.routed_tier or None,
         "routing_source": done_event.routing_source or "none",
         "routing_confidence": float(done_event.routing_confidence or 0.0),
+        "routing_applied": bool(getattr(done_event, "routing_applied", True)),
+        "rollout_phase": getattr(done_event, "rollout_phase", "full") or "full",
         "baseline_model": done_event.baseline_model or "",
         "savings_pct": float(done_event.savings_pct or 0.0),
         "savings_usd": float(done_event.savings_usd or 0.0),

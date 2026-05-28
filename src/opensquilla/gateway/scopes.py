@@ -97,6 +97,7 @@ METHOD_SCOPES: dict[str, str] = {
     "gateway.identity.get": READ_SCOPE,
     "last-heartbeat": READ_SCOPE,
     "system-presence": READ_SCOPE,
+    "doctor.status": READ_SCOPE,
     "doctor.memory.status": READ_SCOPE,
     "diagnostics.status": READ_SCOPE,
     "logs.status": READ_SCOPE,

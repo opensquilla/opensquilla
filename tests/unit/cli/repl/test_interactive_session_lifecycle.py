@@ -11,11 +11,25 @@ import asyncio
 import pytest
 from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.input.base import DummyInput
 from prompt_toolkit.output import DummyOutput
 
 from opensquilla.cli.repl import prompt as prompt_module
 from opensquilla.cli.repl.app import ChatApplication
 from opensquilla.cli.repl.prompt import interactive_session
+from opensquilla.engine.commands import Surface
+
+
+def _fresh_chat_app(*, pipe_input=None) -> ChatApplication:
+    return ChatApplication(
+        surface=Surface.CLI_GATEWAY,
+        toolbar_context=prompt_module._toolbar_context,
+        bottom_toolbar=prompt_module._bottom_toolbar,
+        style=None,
+        input=pipe_input or DummyInput(),
+        output=DummyOutput(),
+        input_header=prompt_module._input_header_fragments,
+    )
 
 
 @pytest.mark.asyncio
@@ -57,8 +71,7 @@ async def test_set_toolbar_mutates_shared_context() -> None:
                 output=DummyOutput(),
                 model="provider/some-model",
             ) as handle:
-                layout_children = handle.application.application.layout.container.content.children
-                assert len(layout_children) == 3
+                assert not hasattr(handle, "application")
                 handle.set_toolbar("status", "thinking…")
                 # Sanity: shared dict carries the value the handle wrote.
                 assert prompt_module._toolbar_context["status"] == "thinking…"
@@ -73,7 +86,6 @@ async def test_set_toolbar_mutates_shared_context() -> None:
                     fragment[1] for fragment in to_formatted_text(active_header)
                 )
                 assert "◢ squilla" in active_header_text
-                assert len(layout_children) == 3
                 # Clearing the status drops the chip and brings back the
                 # idle dim line carrying the model alias.
                 handle.set_toolbar("status", None)
@@ -81,40 +93,44 @@ async def test_set_toolbar_mutates_shared_context() -> None:
                 idle_header = prompt_module._input_header_fragments()
                 assert "some-model" in idle_html.value
                 assert idle_header.value == ""
-                assert len(layout_children) == 3
     finally:
         prompt_module._toolbar_context["status"] = previous_status
         prompt_module._toolbar_context["model"] = previous_model
         prompt_module._toolbar_context["suppress"] = previous_suppress
 
 
-@pytest.mark.asyncio
-async def test_interactive_session_refreshes_waiting_status() -> None:
+def test_chat_application_refreshes_waiting_status() -> None:
     """The long-lived Application must repaint the live waiting row."""
-    with create_pipe_input() as pipe:
-        async with interactive_session(input=pipe, output=DummyOutput()) as handle:
-            assert handle.application.application.refresh_interval == 0.1
+    chat_app = _fresh_chat_app()
+
+    assert chat_app.application.refresh_interval == 0.1
 
 
 @pytest.mark.asyncio
 async def test_chat_application_submit_iter_round_trips_lines() -> None:
     """`ChatApplication.submit_iter()` yields each submitted line in order."""
     with create_pipe_input() as pipe:
-        async with interactive_session(input=pipe, output=DummyOutput()) as handle:
-            inner: ChatApplication = handle.application
+        chat_app = _fresh_chat_app(pipe_input=pipe)
+        app_task = asyncio.create_task(chat_app.application.run_async())
 
-            async def collect() -> list[str]:
-                collected: list[str] = []
-                async for line in inner.submit_iter():
-                    collected.append(line)
-                    if len(collected) == 2:
-                        return collected
-                return collected
+        async def collect() -> list[str]:
+            collected: list[str] = []
+            async for line in chat_app.submit_iter():
+                collected.append(line)
+                if len(collected) == 2:
+                    return collected
+            return collected
 
-            collector = asyncio.create_task(collect())
-            pipe.send_text("alpha\n")
-            pipe.send_text("beta\n")
-            lines = await asyncio.wait_for(collector, timeout=2.0)
+        collector = asyncio.create_task(collect())
+        await asyncio.sleep(0.05)
+        pipe.send_text("alpha\n")
+        pipe.send_text("beta\n")
+        lines = await asyncio.wait_for(collector, timeout=2.0)
+        chat_app.application.exit()
+        try:
+            await asyncio.wait_for(app_task, timeout=1.0)
+        except (TimeoutError, asyncio.CancelledError):
+            app_task.cancel()
 
     assert lines == ["alpha", "beta"]
 
@@ -122,36 +138,32 @@ async def test_chat_application_submit_iter_round_trips_lines() -> None:
 @pytest.mark.asyncio
 async def test_interactive_session_large_paste_shows_marker_but_submits_original() -> None:
     """Large bracketed paste payloads collapse in the buffer, not on submit."""
-    with create_pipe_input() as pipe:
-        async with interactive_session(input=pipe, output=DummyOutput()) as handle:
-            inner: ChatApplication = handle.application
-            pasted = "x" * 801
+    chat_app = _fresh_chat_app()
+    pasted = "x" * 801
 
-            inner._insert_pasted_content(inner._buffer, pasted)
-            assert inner._buffer.text == "[Pasted Content #1 801 chars]"
+    chat_app._insert_pasted_content(chat_app._buffer, pasted)
+    assert chat_app._buffer.text == "[Pasted Content #1 801 chars]"
 
-            inner._on_accept(inner._buffer)
-            submitted = await asyncio.wait_for(handle.next_line(), timeout=2.0)
+    chat_app._on_accept(chat_app._buffer)
+    submitted = await asyncio.wait_for(chat_app.next_line(), timeout=2.0)
 
     assert submitted == pasted
 
 
 @pytest.mark.asyncio
 async def test_interactive_session_multiple_same_size_pastes_expand_distinctly() -> None:
-    with create_pipe_input() as pipe:
-        async with interactive_session(input=pipe, output=DummyOutput()) as handle:
-            inner: ChatApplication = handle.application
-            first = "a" * 801
-            second = "b" * 801
+    chat_app = _fresh_chat_app()
+    first = "a" * 801
+    second = "b" * 801
 
-            inner._insert_pasted_content(inner._buffer, first)
-            inner._buffer.insert_text(" ")
-            inner._insert_pasted_content(inner._buffer, second)
-            assert "[Pasted Content #1 801 chars]" in inner._buffer.text
-            assert "[Pasted Content #2 801 chars]" in inner._buffer.text
+    chat_app._insert_pasted_content(chat_app._buffer, first)
+    chat_app._buffer.insert_text(" ")
+    chat_app._insert_pasted_content(chat_app._buffer, second)
+    assert "[Pasted Content #1 801 chars]" in chat_app._buffer.text
+    assert "[Pasted Content #2 801 chars]" in chat_app._buffer.text
 
-            inner._on_accept(inner._buffer)
-            submitted = await asyncio.wait_for(handle.next_line(), timeout=2.0)
+    chat_app._on_accept(chat_app._buffer)
+    submitted = await asyncio.wait_for(chat_app.next_line(), timeout=2.0)
 
     assert submitted == f"{first} {second}"
 

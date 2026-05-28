@@ -264,6 +264,9 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
         input_tokens=5,
         output_tokens=3,
         model="synthetic-turn-model-4.5",
+        routed_tier="t2",
+        routing_applied=False,
+        rollout_phase="observe",
     )
     inp = _make_input(final_text_parts=["hi"], done_event=done)
     outcome = await stage.run(inp)
@@ -277,6 +280,9 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
     assert recs["transcript_append"].calls[0]["turn_usage"]["input_tokens"] == 5
     assert recs["transcript_append"].calls[0]["turn_usage"]["output_tokens"] == 3
     assert recs["transcript_append"].calls[0]["turn_usage"]["model"] == "synthetic-turn-model-4.5"
+    assert recs["transcript_append"].calls[0]["turn_usage"]["routed_tier"] == "t2"
+    assert recs["transcript_append"].calls[0]["turn_usage"]["routing_applied"] is False
+    assert recs["transcript_append"].calls[0]["turn_usage"]["rollout_phase"] == "observe"
 
 
 @pytest.mark.asyncio

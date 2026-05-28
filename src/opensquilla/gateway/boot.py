@@ -1818,10 +1818,20 @@ async def build_services(
 
     meta_run_writer = None
     try:
+        from opensquilla.skills.meta.enabled import is_meta_skill_enabled
+
         persistence_cfg = getattr(getattr(config, "meta_skill", None), "persistence", None)
-        if persistence_cfg is not None and getattr(persistence_cfg, "enabled", False):
+        if (
+            is_meta_skill_enabled(config)
+            and persistence_cfg is not None
+            and getattr(persistence_cfg, "enabled", False)
+        ):
             storage = get_session_storage(session_manager)
-            db_path = getattr(storage, "_db_path", None) if storage is not None else None
+            db_path = (
+                getattr(storage, "_db_path", None)
+                if storage is not None
+                else None
+            )
             if db_path and db_path != ":memory:":
                 from opensquilla.persistence.meta_run_writer import open_meta_run_writer
 
@@ -2165,13 +2175,13 @@ async def start_gateway_server(
 
     # Register cron agent_run handler (DI-based, no monkey-patch)
     if svc.cron_scheduler is not None:
-        from opensquilla.memory.dream_factory import build_dream_factory
         from opensquilla.gateway.auto_propose_bridge import (
             AutoProposeRuntime,
             register_runtime,
         )
-        from opensquilla.scheduler.delivery import DeliveryChain
+        from opensquilla.memory.dream_factory import build_dream_factory
         from opensquilla.scheduler.auto_propose_handler import make_auto_propose_handler
+        from opensquilla.scheduler.delivery import DeliveryChain
         from opensquilla.scheduler.dream_handler import make_memory_dream_handler
         from opensquilla.scheduler.handlers import (
             make_agent_run_handler,

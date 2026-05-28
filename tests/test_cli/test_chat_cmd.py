@@ -18,7 +18,9 @@ from opensquilla.cli import chat_cmd
 from opensquilla.cli.main import app
 from opensquilla.cli.repl import commands as repl_commands
 from opensquilla.cli.repl import prompt as repl_prompt
+from opensquilla.cli.repl import slash_bridge
 from opensquilla.cli.repl.session_state import ChatSessionState
+from opensquilla.cli.repl.terminal_surface import TerminalSurface
 from opensquilla.engine.commands import DEFAULT_REGISTRY, Surface
 from opensquilla.engine.types import (
     ArtifactEvent,
@@ -34,14 +36,12 @@ runner = CliRunner()
 
 
 def _install_fake_inputs(monkeypatch, inputs: Iterable[str]) -> None:
-    """Install a fake `interactive_session` that yields lines from *inputs*.
+    """Install a fake terminal TUI surface that yields lines from *inputs*.
 
-    The concurrent REPL refactor switched the REPL drivers (`_standalone_repl`,
-    `_gateway_chat`) from `prompt_user(...)` to the
-    `interactive_session(...)` async context manager. This helper provides a
-    fake context manager whose handle returns the next item from the
-    supplied iterable on each `next_line()` call — the same behavioral
-    surface the legacy `fake_prompt_user` stubs presented.
+    The chat command now reaches the prompt through the TUI chat adapter.
+    Patch that adapter seam instead of the old `chat_cmd.interactive_session`
+    import so these command tests stay behind the same public boundary as
+    production code.
     """
 
     iterator = iter(inputs)
@@ -56,19 +56,29 @@ def _install_fake_inputs(monkeypatch, inputs: Iterable[str]) -> None:
         def set_toolbar(self, key: str, value) -> None:
             return None
 
-        @property
-        def application(self):
-            class _FakeApp:
-                def set_cancel_callback(self, cb) -> None:
-                    return None
+        def set_cancel_callback(self, cb) -> None:
+            return None
 
-            return _FakeApp()
+        def set_shutdown_callback(self, cb) -> None:
+            return None
+
+        def emit_eof(self) -> None:
+            return None
+
+        def invalidate(self) -> None:
+            return None
+
+        async def write_through(self, payload: str) -> None:
+            return None
 
     @asynccontextmanager
     async def _fake_session(**kwargs):
-        yield _FakeHandle()
+        yield TerminalSurface(_FakeHandle())
 
-    monkeypatch.setattr(chat_cmd, "interactive_session", _fake_session)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_chat_adapter.open_terminal_surface",
+        _fake_session,
+    )
 
 
 EXPECTED_GATEWAY_COMMANDS = {
@@ -163,7 +173,7 @@ def test_interactive_chat_clear_screen_only_on_terminal(monkeypatch) -> None:
         def clear(self) -> None:
             calls.append("clear")
 
-    monkeypatch.setattr(chat_cmd, "console", FakeConsole())
+    monkeypatch.setattr(chat_cmd._launch_bridge, "console", FakeConsole())
 
     chat_cmd._clear_screen_for_interactive_chat()
 
@@ -179,7 +189,7 @@ def test_interactive_chat_clear_screen_skips_non_terminal(monkeypatch) -> None:
         def clear(self) -> None:
             calls.append("clear")
 
-    monkeypatch.setattr(chat_cmd, "console", FakeConsole())
+    monkeypatch.setattr(chat_cmd._launch_bridge, "console", FakeConsole())
 
     chat_cmd._clear_screen_for_interactive_chat()
 
@@ -273,13 +283,12 @@ async def test_prompt_approval_does_not_draw_chat_chrome(monkeypatch) -> None:
         def rule(self, label, *args, **kwargs) -> None:
             rule_labels.append(label)
 
-    repl_prompt._toolbar_context.update(
-        {"model": "prior-model", "session_id": "prior-key"}
-    )
+    repl_prompt._toolbar_context.update({"model": "prior-model", "session_id": "prior-key"})
     # Make sure no ChatApplication is cached for this surface so the
     # inline path runs the fresh-session fallback rather than the
     # suspend/resume Application dance.
     from opensquilla.engine.commands import Surface
+
     monkeypatch.setattr(repl_prompt, "_chat_applications", {})
     monkeypatch.setattr(repl_prompt, "PromptSession", FakePromptSession)
     monkeypatch.setattr(repl_prompt, "console", FakeConsole())
@@ -301,9 +310,7 @@ async def test_prompt_approval_does_not_draw_chat_chrome(monkeypatch) -> None:
 def test_bottom_toolbar_returns_empty_when_suppressed() -> None:
     """Suppress flag short-circuits the toolbar regardless of model/session."""
     saved = dict(repl_prompt._toolbar_context)
-    repl_prompt._toolbar_context.update(
-        {"model": "claude", "session_id": "abc", "suppress": "1"}
-    )
+    repl_prompt._toolbar_context.update({"model": "claude", "session_id": "abc", "suppress": "1"})
     try:
         assert repl_prompt._bottom_toolbar().value == ""
     finally:
@@ -312,6 +319,46 @@ def test_bottom_toolbar_returns_empty_when_suppressed() -> None:
 
 
 class TestChatCommand:
+    def test_chat_command_builds_typed_launch_request(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_launch_chat_command(request, *, overrides=None) -> None:
+            captured["request"] = request
+            captured["overrides"] = overrides
+
+        monkeypatch.setattr(
+            chat_cmd,
+            "_launch_chat_command",
+            fake_launch_chat_command,
+            raising=False,
+        )
+
+        chat_cmd.run_chat(
+            model="openrouter/test",
+            session_id="agent:main:existing",
+            standalone=True,
+            workspace="repo",
+            workspace_strict=True,
+            timeout=12.5,
+        )
+
+        request = captured["request"]
+        assert isinstance(request, chat_cmd._ChatCommandRequest)
+        assert request.model == "openrouter/test"
+        assert request.session_id == "agent:main:existing"
+        assert request.standalone is True
+        assert request.workspace == "repo"
+        assert request.workspace_strict is True
+        assert request.timeout == 12.5
+        overrides = captured["overrides"]
+        assert isinstance(overrides, chat_cmd._ChatCommandLaunchOverrides)
+        assert overrides.launch_chat is None
+        assert overrides.standalone_runner is None
+        assert overrides.gateway_runner is None
+
     def test_chat_help(self) -> None:
         result = runner.invoke(
             app,
@@ -410,9 +457,13 @@ class TestChatCommand:
             called["model"] = model
             called["session_id"] = session_id
 
-        monkeypatch.setattr(chat_cmd.sys, "stdin", SimpleNamespace(isatty=lambda: True))
         monkeypatch.setattr(
-            chat_cmd,
+            chat_cmd._launch_bridge.sys,
+            "stdin",
+            SimpleNamespace(isatty=lambda: True),
+        )
+        monkeypatch.setattr(
+            chat_cmd._launch_bridge,
             "console",
             Console(file=buffer, force_terminal=True, color_system=None, no_color=True),
         )
@@ -436,6 +487,66 @@ class TestChatCommand:
         """Extra positional args (like 'send Hello') are rejected."""
         result = runner.invoke(app, ["chat", "send", "Hello"])
         assert result.exit_code != 0
+
+
+@pytest.mark.asyncio
+async def test_standalone_repl_delegates_to_runtime_bridge(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_standalone_chat(**kwargs) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        chat_cmd._runtime_bridge,
+        "run_standalone_chat",
+        fake_run_standalone_chat,
+    )
+
+    await chat_cmd._standalone_repl(
+        model="openrouter/test",
+        session_id="standalone:test",
+        workspace="repo",
+        workspace_strict=True,
+        timeout=7.25,
+    )
+
+    assert captured["model"] == "openrouter/test"
+    assert captured["session_id"] == "standalone:test"
+    assert captured["workspace"] == "repo"
+    assert captured["workspace_strict"] is True
+    assert captured["timeout"] == 7.25
+    assert "stream_response" not in captured
+    assert "image_command_handler" not in captured
+    assert "run_concurrent_repl" not in captured
+    assert "output_console" not in captured
+    assert "error_panel_factory" not in captured
+
+
+@pytest.mark.asyncio
+async def test_gateway_chat_delegates_to_runtime_bridge(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_gateway_chat(**kwargs) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        chat_cmd._runtime_bridge,
+        "run_gateway_chat",
+        fake_run_gateway_chat,
+    )
+
+    await chat_cmd._gateway_chat(
+        model="anthropic/claude-sonnet-4",
+        session_id="agent:main:resumed-key",
+    )
+
+    assert captured["model"] == "anthropic/claude-sonnet-4"
+    assert captured["session_id"] == "agent:main:resumed-key"
+    assert "stream_response" not in captured
+    assert "handle_slash_command" not in captured
+    assert "run_concurrent_repl" not in captured
+    assert "output_console" not in captured
+    assert "error_panel_factory" not in captured
 
 
 class _FakeSessionManager:
@@ -539,6 +650,7 @@ class _RecordingRenderer:
         self.pulses = 0
         self.errors: list[str] = []
         self.finalized = False
+        self.statuses: list[str] = []
         self.tool_starts: list[tuple[str, object, str | None]] = []
         self.tool_finishes: list[tuple[str | None, bool]] = []
         _RecordingRenderer.instances.append(self)
@@ -576,6 +688,9 @@ class _RecordingRenderer:
         error: str | None = None,
     ) -> None:
         self.tool_finishes.append((tool_use_id, success))
+
+    def status(self, message: str, **_kwargs) -> None:
+        self.statuses.append(message)
 
     def error(self, message: str) -> None:
         self.errors.append(message)
@@ -794,7 +909,10 @@ async def test_standalone_turnrunner_stream_uses_heartbeat_wrapper(monkeypatch) 
 
     _RecordingRenderer.instances.clear()
     monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
-    monkeypatch.setattr(chat_cmd, "StreamingRenderer", _RecordingRenderer)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_renderer.StreamingRenderer",
+        _RecordingRenderer,
+    )
     svc = SimpleNamespace(
         config=SimpleNamespace(
             agent_stream_heartbeat_interval_seconds=0.01,
@@ -842,7 +960,10 @@ async def test_standalone_turnrunner_stream_collects_artifacts(monkeypatch) -> N
             yield DoneEvent()
 
     monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
-    monkeypatch.setattr(chat_cmd, "StreamingRenderer", _RecordingRenderer)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_renderer.StreamingRenderer",
+        _RecordingRenderer,
+    )
     svc = SimpleNamespace(
         config=SimpleNamespace(
             agent_stream_heartbeat_interval_seconds=0.0,
@@ -911,7 +1032,10 @@ async def test_standalone_turnrunner_wires_tool_strip(monkeypatch) -> None:
 
     _RecordingRenderer.instances.clear()
     monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
-    monkeypatch.setattr(chat_cmd, "StreamingRenderer", _RecordingRenderer)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_renderer.StreamingRenderer",
+        _RecordingRenderer,
+    )
     svc = SimpleNamespace(
         config=SimpleNamespace(
             agent_stream_heartbeat_interval_seconds=0.0,
@@ -1113,9 +1237,7 @@ class _FakeFlushService:
         self.calls: list[dict[str, object]] = []
 
     async def execute(self, transcript: object, session_key: str, **kwargs) -> object:
-        self.calls.append(
-            {"transcript": transcript, "session_key": session_key, "kwargs": kwargs}
-        )
+        self.calls.append({"transcript": transcript, "session_key": session_key, "kwargs": kwargs})
         if self.error is not None:
             raise self.error
         return self.receipt
@@ -1479,7 +1601,7 @@ async def test_gateway_path_command_remote_rejects_before_send(
     state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
     buffer = io.StringIO()
     monkeypatch.setattr(
-        chat_cmd,
+        slash_bridge,
         "console",
         Console(file=buffer, force_terminal=False, width=100, highlight=False),
     )
@@ -1682,7 +1804,7 @@ async def test_gateway_slash_compact_skipped_uses_context_budget_wording(monkeyp
     state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
     buffer = io.StringIO()
     monkeypatch.setattr(
-        chat_cmd,
+        slash_bridge,
         "console",
         Console(file=buffer, force_terminal=False, width=100, highlight=False),
     )
@@ -1710,7 +1832,7 @@ async def test_gateway_slash_compact_reports_started_and_failure(monkeypatch) ->
     state = ChatSessionState(session_key="agent:main:abc123", model="openai/test")
     buffer = io.StringIO()
     monkeypatch.setattr(
-        chat_cmd,
+        slash_bridge,
         "console",
         Console(file=buffer, force_terminal=False, width=100, highlight=False),
     )
@@ -1734,7 +1856,7 @@ async def test_gateway_slash_delete_resolves_and_reports_errors(monkeypatch) -> 
     state = ChatSessionState(session_key="agent:main:current", model="openai/test")
     buffer = io.StringIO()
     monkeypatch.setattr(
-        chat_cmd,
+        slash_bridge,
         "console",
         Console(file=buffer, force_terminal=False, width=100, highlight=False),
     )
@@ -1933,7 +2055,10 @@ async def test_gateway_stream_renders_task_group_status_without_buffer_pollution
         def finalize(self, *_args, **_kwargs) -> None:
             self.finalized = True
 
-    monkeypatch.setattr(chat_cmd, "StreamingRenderer", RecordingRenderer)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_renderer.StreamingRenderer",
+        RecordingRenderer,
+    )
     fake = StatusGatewayClient()
 
     result = await chat_cmd._stream_response_gateway(
@@ -1975,7 +2100,10 @@ async def test_gateway_stream_collects_artifact_events(monkeypatch) -> None:
             yield {"event": "session.event.text_delta", "text": "answer"}
             yield {"event": "session.event.done"}
 
-    monkeypatch.setattr(chat_cmd, "StreamingRenderer", _RecordingRenderer)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_renderer.StreamingRenderer",
+        _RecordingRenderer,
+    )
     result = await chat_cmd._stream_response_gateway(
         ArtifactGatewayClient(),
         "agent:main:abc123",

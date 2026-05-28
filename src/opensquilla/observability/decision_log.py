@@ -53,8 +53,6 @@ class SavingsTelemetry:
     tool_projection_tokens_before: int = 0
     tool_projection_tokens_after: int = 0
     tool_projection_tokens_saved: int = 0
-    tool_result_store_writes: int = 0
-    tool_result_store_skips: int = 0
 
     # Thinking mode
     thinking_mode: str | None = None

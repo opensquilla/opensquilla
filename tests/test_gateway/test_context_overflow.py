@@ -16,7 +16,7 @@ from opensquilla.gateway.context_overflow import (
     OverflowOutcome,
     apply_context_overflow_policy,
 )
-from opensquilla.gateway.rpc_chat import _enforce_context_overflow
+from opensquilla.gateway.rpc_chat import _enforce_context_overflow, _handle_chat_send
 from opensquilla.session.compaction import CompactionConfig
 from opensquilla.session.compaction_state import (
     StructuredCompactionSummary,
@@ -87,6 +87,35 @@ class _LegacyCompactSessionManager(_FakeSessionManager):
         self.compact_calls.append((session_key, budget, None))
         self._transcript = [_FakeEntry(content="[summary]")]
         return "[summary]"
+
+
+class _CheckpointingSessionManager(_FakeSessionManager):
+    def __init__(self, transcript: list[_FakeEntry]) -> None:
+        super().__init__(transcript)
+        self.calls: list[str] = []
+
+    async def record_memory_checkpoint(
+        self,
+        session_key: str,
+        transcript: list[_FakeEntry],
+        **kwargs,
+    ) -> None:
+        self.calls.append("checkpoint")
+
+    async def compact(self, session_key: str, budget: int, config=None) -> str:
+        self.calls.append("compact")
+        return await super().compact(session_key, budget, config)
+
+
+class _FailingCheckpointSessionManager(_CheckpointingSessionManager):
+    async def record_memory_checkpoint(
+        self,
+        session_key: str,
+        transcript: list[_FakeEntry],
+        **kwargs,
+    ) -> None:
+        self.calls.append("checkpoint")
+        raise RuntimeError("checkpoint write failed")
 
 
 class _SummaryReadFailureSessionManager(_FakeSessionManager):
@@ -350,6 +379,40 @@ async def test_auto_summarize_invokes_compaction_and_retries_once() -> None:
     assert outcome.tokens_after is not None
     assert outcome.remaining_budget_tokens is not None
     assert outcome.tokens_after <= outcome.budget_tokens
+
+
+@pytest.mark.asyncio
+async def test_auto_summarize_checkpoint_runs_before_compact() -> None:
+    sm = _CheckpointingSessionManager(_history(6, 40))
+
+    outcome = await apply_context_overflow_policy(
+        config=_cfg(ContextOverflowPolicy.AUTO_SUMMARIZE, budget=10),
+        message="m",
+        transcript=sm._transcript,
+        session_key="s-checkpoint",
+        session_manager=sm,
+    )
+
+    assert outcome.summarized is True
+    assert sm.calls[0] == "checkpoint"
+    assert "compact" in sm.calls
+
+
+@pytest.mark.asyncio
+async def test_auto_summarize_checkpoint_failure_propagates_without_ephemeral_fallback() -> None:
+    sm = _FailingCheckpointSessionManager(_history(6, 40))
+
+    with pytest.raises(RuntimeError, match="checkpoint write failed"):
+        await apply_context_overflow_policy(
+            config=_cfg(ContextOverflowPolicy.AUTO_SUMMARIZE, budget=10),
+            message="m",
+            transcript=sm._transcript,
+            session_key="s-checkpoint-fails",
+            session_manager=sm,
+        )
+
+    assert sm.calls == ["checkpoint"]
+    assert sm.compact_calls == []
 
 
 @pytest.mark.asyncio
@@ -861,6 +924,50 @@ async def test_auto_summarize_keeps_legacy_compact_manager_compatible() -> None:
 
     assert outcome.summarized is True
     assert sm.compact_calls == [("s-auto", 10, None)]
+
+
+@pytest.mark.asyncio
+async def test_chat_send_accepts_turn_without_synchronous_context_overflow_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(ContextOverflowPolicy.AUTO_SUMMARIZE, budget=10)
+    sm = SimpleNamespace(
+        get_or_create=AsyncMock(return_value=SimpleNamespace(session_key="s-auto")),
+    )
+    ctx = SimpleNamespace(
+        config=cfg,
+        session_manager=sm,
+        principal=SimpleNamespace(role="owner"),
+    )
+    accepted: dict[str, Any] = {}
+
+    async def _unexpected_gate(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("chat.send must not synchronously refuse overflow")
+
+    async def _fake_sessions_send(params: dict[str, Any], _ctx: Any) -> dict[str, Any]:
+        accepted.update(params)
+        return {"status": "accepted", "key": params["key"], "task_id": "task-long-context"}
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_chat._enforce_context_overflow",
+        _unexpected_gate,
+    )
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_sessions._handle_sessions_send",
+        _fake_sessions_send,
+    )
+
+    result = await _handle_chat_send({"message": "m", "sessionKey": "s-auto"}, ctx)
+
+    assert result == {
+        "ok": True,
+        "sessionKey": "s-auto",
+        "status": "accepted",
+        "key": "s-auto",
+        "task_id": "task-long-context",
+    }
+    assert accepted["message"] == "m"
+    assert accepted["key"] == "s-auto"
 
 
 @pytest.mark.asyncio

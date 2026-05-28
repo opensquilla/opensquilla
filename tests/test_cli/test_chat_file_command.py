@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from opensquilla.cli import chat_cmd
 from opensquilla.cli.attachments import (
     CLI_IMAGE_ATTACHMENT_BYTES,
     CLI_INLINE_THRESHOLD_BYTES,
@@ -34,6 +35,7 @@ from opensquilla.cli.chat_cmd import (
     _image_prompt_and_attachments,
     _image_prompt_from_command,
 )
+from opensquilla.cli.repl import input_bridge
 
 
 def _write(tmp_path: Path, name: str, payload: bytes) -> Path:
@@ -92,6 +94,25 @@ def test_image_command_parses_quoted_path_with_spaces(tmp_path: Path) -> None:
     assert attachments[0]["name"] == "screen shot.png"
     assert attachments[0]["type"] == "image/png"
     assert base64.b64decode(attachments[0]["data"]) == png_bytes
+
+
+def test_image_command_reports_attachment_size(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"payload"
+    path = _write(tmp_path, "screen shot.png", png_bytes)
+    prints: list[str] = []
+
+    class FakeConsole:
+        def print(self, message: str) -> None:
+            prints.append(message)
+
+    monkeypatch.setattr(input_bridge, "console", FakeConsole())
+
+    chat_cmd._image_prompt_and_attachments(f'/image "{path}" describe it')
+
+    assert prints == ["[dim]Sending image: screen shot.png (0KB base64)[/dim]"]
 
 
 # ---------------------------------------------------------------------------

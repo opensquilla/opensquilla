@@ -128,6 +128,27 @@ def test_setup_engine_image_generation_can_use_custom_env_reference(
     assert provider["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
 
 
+def test_setup_engine_accepts_short_capability_section_aliases(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    target = tmp_path / "config.toml"
+    engine = SetupEngine(path=target)
+
+    engine.apply("image", {"enabled": False})
+    engine.apply(
+        "memory",
+        {
+            "providerId": "local",
+            "onnxDir": "models/bge",
+        },
+    )
+    engine.persist()
+
+    data = tomllib.loads(target.read_text())
+    assert data["image_generation"]["enabled"] is False
+    assert data["memory"]["embedding"]["provider"] == "local"
+    assert data["memory"]["embedding"]["local"]["onnx_dir"] == "models/bge"
+
+
 def test_setup_engine_catalog_includes_memory_embedding():
     engine = SetupEngine()
 
@@ -135,3 +156,4 @@ def test_setup_engine_catalog_includes_memory_embedding():
 
     provider_ids = {p["providerId"] for p in payload["memoryEmbeddingProviders"]}
     assert {"auto", "local", "openai", "ollama", "none"} <= provider_ids
+    assert all("whatYouNeed" in p for p in payload["memoryEmbeddingProviders"])

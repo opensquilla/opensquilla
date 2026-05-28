@@ -69,15 +69,53 @@ SOFTWARE.
 These bundled skill descriptors are authored and maintained by OpenSquilla and
 are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 
+- `cron`
+- `deep-research`
+- `docx`
 - `git-diff`
+- `github`
 - `history-explorer`
+- `html-to-pdf`
 - `http-fetch`
 - `latex-compile`
 - `memory`
+- `meta-arxiv-daily-digest-deck`
+- `meta-codereview-current-diff`
+- `meta-compliance-audit-bundle`
+- `meta-diagram-triangulation`
+- `meta-github-pr-watch-digest`
+- `meta-issue-to-pr-autopilot`
+- `meta-knowledge-base-bootstrap`
+- `meta-long-running-build-watchdog`
 - `meta-migration-assistant`
+- `meta-multi-format-export-pack`
 - `meta-paper-write`
 - `meta-pdf-intelligence`
+- `meta-pdf-reformat-pipeline`
+- `meta-pre-commit-quality-gate`
+- `meta-scheduled-morning-digest`
+- `meta-security-review-bundle`
 - `meta-skill-creator`
+- `meta-spreadsheet-insight`
+- `meta-stack-trace-investigator`
+- `meta-travel-planner`
+- `meta-web-research-to-report`
+- `meta-web-to-pdf-briefing`
+- `multi-search-engine`
+- `nano-pdf`
+- `paper-abstract-author`
+- `paper-citation-planner`
+- `paper-experiment-stub`
+- `paper-outline-author`
+- `paper-plot-stub`
+- `paper-preference-planner`
+- `paper-refbib-stub`
+- `paper-revision-author`
+- `paper-section-author`
+- `paper-source-curator`
+- `pdf-toolkit`
+- `pptx`
+- `skill-creator`
 - `skill-creator-linter`
 - `skill-creator-proposals`
 - `skill-creator-smoke-test`
@@ -86,17 +124,11 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 - `stack-trace-js-probe`
 - `stack-trace-python-probe`
 - `stack-trace-rust-probe`
-- `meta-stack-trace-investigator`
-- `meta-travel-planner`
-- `meta-web-research-to-report`
-- `paper-abstract-author`
-- `paper-citation-planner`
-- `paper-outline-author`
-- `paper-preference-planner`
-- `paper-refbib-stub`
-- `paper-revision-author`
-- `paper-section-author`
-- `paper-source-curator`
+- `sub-agent`
+- `summarize`
+- `tmux`
+- `weather`
+- `xlsx`
 
 ## tokenjuice adapted reduction rules
 

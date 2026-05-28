@@ -40,7 +40,7 @@
 .sess-stage__title {
   font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
   font-weight: 700;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
   line-height: 1.05;
   position: relative;
 }
@@ -82,6 +82,7 @@
 .sess-search-icon svg { width: 14px; height: 14px; }
 .sess-search-input {
   width: 260px;
+  min-height: 40px;
   padding: 8px 12px 8px 32px;
   font-size: var(--fs-sm);
   background: var(--bg);
@@ -134,7 +135,7 @@
 .sess-list__title {
   font-size: var(--fs-lg);
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -169,6 +170,7 @@
 }
 .sess-page-size select {
   padding: 4px 8px;
+  min-height: 40px;
   font-size: var(--fs-xs);
   background: var(--bg-surface);
   border: 1px solid var(--border);
@@ -409,8 +411,10 @@
   width: 130px;
   height: 130px;
   color: var(--text-muted);
+  line-height: 1;
   margin-bottom: var(--sp-4);
 }
+.sess-empty__art svg { display: block; width: 100%; height: 100%; }
 .sess-empty__pulse {
   animation: sess-empty-blink 2.4s ease-in-out infinite;
   transform-origin: center;
@@ -422,16 +426,19 @@
 .sess-empty__title {
   font-size: 1.5rem;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   color: var(--text);
   margin-bottom: 8px;
 }
 .sess-empty__msg {
+  width: 100%;
+  max-width: 56ch;
+  box-sizing: border-box;
   color: var(--text-muted);
   font-size: var(--fs-sm);
-  max-width: 56ch;
   line-height: 1.55;
   margin-bottom: var(--sp-5);
+  overflow-wrap: anywhere;
 }
 .sess-empty__cta { height: 40px; padding: 0 20px; font-size: var(--fs-sm); }
 
@@ -498,8 +505,17 @@
   margin-top: 2px;
   font-size: var(--fs-xs);
   color: var(--text-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.sess-key__agent { display: inline-flex; align-items: center; gap: 4px; }
+.sess-key__agent {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .sess-key__agent--orphan { color: var(--text); }
 .chip-warn {
   background: color-mix(in srgb, #f0a030 18%, transparent);
@@ -519,4 +535,22 @@
     -webkit-overflow-scrolling: touch;
   }
   .sess-table { min-width: 720px; }
+}
+
+@media (max-width: 480px) {
+  .sess-search-wrap {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .sess-stage__actions > .btn {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 360px) {
+  .sess-stage .stat-row {
+    grid-template-columns: 1fr;
+  }
 }

@@ -318,6 +318,29 @@ async def test_preflight_above_threshold_triggers_compact() -> None:
 
 
 @pytest.mark.asyncio
+async def test_preflight_checkpoint_runs_before_compact() -> None:
+    context_window = 1000
+    entries = [_make_entry("early durable fact " + ("a" * 4000))]
+    calls: list[str] = []
+    mock_sm = MagicMock()
+    mock_sm.get_transcript = AsyncMock(return_value=entries)
+    mock_sm.compact = AsyncMock(
+        side_effect=lambda *args, **kwargs: calls.append("compact") or "summary"
+    )
+    mock_sm.record_memory_checkpoint = AsyncMock(
+        side_effect=lambda *args, **kwargs: calls.append("checkpoint")
+    )
+
+    runner = TurnRunner(provider_selector=MagicMock(), session_manager=mock_sm)
+
+    with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
+        await runner._maybe_preflight_compact("agent:ops:long-session", context_window)
+
+    assert calls[0] == "checkpoint"
+    assert "compact" in calls
+
+
+@pytest.mark.asyncio
 async def test_preflight_completed_event_reports_compaction_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -597,6 +620,66 @@ async def test_preflight_compact_failure_uses_emergency_ephemeral_history_trim()
             )
         ),
     )
+
+    await runner._maybe_preflight_compact(session_key, context_window)
+
+    class _HistoryCapture:
+        provider = SimpleNamespace(provider_name="test")
+
+        def __init__(self) -> None:
+            self.history: list[Any] = []
+
+        def set_history(self, history: list[Any]) -> None:
+            self.history = history
+
+    agent = _HistoryCapture()
+    summary_context = await runner._load_history(agent, session_key, trim_last_user=False)
+
+    assert sm.compact_with_result_calls == [(session_key, context_window, None)]
+    assert len(await sm.get_transcript(session_key)) == len(entries)
+    assert 0 < len(agent.history) < len(entries)
+    assert summary_context is not None
+    assert "emergency request-scoped compaction" in summary_context.lower()
+
+
+@pytest.mark.asyncio
+async def test_preflight_empty_summary_uses_emergency_ephemeral_history_trim() -> None:
+    session_key = "agent:ops:preflight-empty-summary"
+    context_window = 1000
+    entries = [
+        TranscriptEntry(
+            session_id="test-session-id",
+            session_key=session_key,
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"historic message {index} " + ("x" * 500),
+            token_count=300,
+        )
+        for index in range(8)
+    ]
+
+    class _EmptySummarySessionManager(_ResultCompactionSessionManager):
+        async def compact_with_result(
+            self,
+            session_key: str,
+            context_window_tokens: int,
+            config: object | None = None,
+            **kwargs,
+        ) -> SimpleNamespace:
+            self.compact_with_result_calls.append((session_key, context_window_tokens, config))
+            self.compact_with_result_kwargs.append(dict(kwargs))
+            return SimpleNamespace(
+                summary="",
+                kept_entries=entries,
+                removed_count=0,
+                chunks_processed=0,
+                summary_source="skipped",
+                tokens_before=2400,
+                tokens_after=2400,
+                remaining_budget_tokens=0,
+            )
+
+    sm = _EmptySummarySessionManager(entries)
+    runner = TurnRunner(provider_selector=MagicMock(), session_manager=sm)
 
     await runner._maybe_preflight_compact(session_key, context_window)
 
@@ -966,9 +1049,10 @@ async def test_preflight_exactly_at_threshold_does_not_compact() -> None:
 
 
 @pytest.mark.asyncio
-async def test_preflight_integration_with_real_session_manager(session_mgr) -> None:
+async def test_preflight_integration_with_real_session_manager(session_mgr, tmp_path) -> None:
     """Integration: pre-flight with real SessionManager compacts when over threshold."""
     mgr = session_mgr
+    mgr.workspace_dir = tmp_path
     key = "user:preflight-test"
     await mgr.create(key)
 
@@ -1023,6 +1107,16 @@ async def test_preflight_integration_with_real_session_manager(session_mgr) -> N
     assert compact_calls[0]["compaction_id"]
     assert compact_calls[0]["trigger_reason"] == "preflight"
     assert compact_calls[0]["flush_receipt_status"] == "not_required"
+    receipts = await mgr.storage.list_memory_durable_receipts(
+        session_key=key,
+        status="checkpoint_saved",
+        limit=1,
+    )
+    assert receipts
+    assert receipts[0].scope == "checkpoint"
+    assert receipts[0].status == "checkpoint_saved"
+    assert receipts[0].source_path
+    assert (tmp_path / receipts[0].source_path).exists()
 
 
 @pytest.mark.asyncio

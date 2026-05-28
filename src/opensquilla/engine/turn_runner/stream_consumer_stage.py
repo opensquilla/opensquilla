@@ -479,6 +479,10 @@ class _DoneHandler:
         routed_tier = metadata.get("routed_tier")
         routing_source = metadata.get("routing_source", "none")
         routing_confidence = float(metadata.get("routing_confidence") or 0.0)
+        routing_applied = metadata.get("routing_applied")
+        if routing_applied is None:
+            routing_applied = True
+        rollout_phase = str(metadata.get("rollout_phase") or "full")
         baseline_model = metadata.get("baseline_model", "")
         routed_model = metadata.get("routed_model", "") or event.model
         savings_pct = float(metadata.get("savings_pct") or 0.0)
@@ -511,6 +515,8 @@ class _DoneHandler:
             routed_tier=routed_tier,
             routing_source=routing_source or "none",
             routing_confidence=routing_confidence,
+            routing_applied=bool(routing_applied),
+            rollout_phase=rollout_phase,
             baseline_model=baseline_model,
             routed_model=routed_model,
             savings_pct=savings_pct,

@@ -143,6 +143,11 @@ def test_ollama_without_key_is_configured():
     )
     s = get_onboarding_status(cfg)
     assert s.llm_configured is True
+    assert s.memory_embedding_configured is True
+    assert s.memory_embedding_provider == "auto"
+    assert s.sections["memory_embedding"].value == "ok"
+    assert s.section_details["llm"]["required"] is True
+    assert s.section_details["channels"]["optional"] is True
 
 
 def test_zero_channels_means_not_messaging_configured():
@@ -158,3 +163,86 @@ def test_channel_present_marks_configured():
     s = get_onboarding_status(res.config)
     assert s.channel_count == 1
     assert s.channels_configured is True
+
+
+def test_section_details_mark_only_provider_as_first_run_blocking():
+    cfg = GatewayConfig()
+    cfg.llm = LlmProviderConfig(provider="", model="", api_key="")
+    cfg.search_provider = "brave"
+    cfg.search_api_key = ""
+    cfg.search_api_key_env = ""
+
+    s = get_onboarding_status(cfg)
+
+    assert s.section_details["llm"]["blocking"] is True
+    assert s.section_details["search"]["actionRequired"] is True
+    assert s.section_details["search"]["blocking"] is False
+
+
+def test_router_detail_explains_provider_dependency_before_provider_setup():
+    cfg = GatewayConfig()
+    cfg.llm = LlmProviderConfig(provider="", model="", api_key="")
+
+    s = get_onboarding_status(cfg)
+
+    assert (
+        s.section_details["router"]["detail"]
+        == "uses SquillaRouter after provider setup"
+    )
+    assert s.section_details["router"]["actionRequired"] is False
+
+
+def test_optional_search_action_does_not_block_first_run():
+    cfg = GatewayConfig()
+    cfg.llm = LlmProviderConfig(
+        provider="openrouter",
+        model="m",
+        api_key="sk-x",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    cfg.search_provider = "brave"
+    cfg.search_api_key = ""
+    cfg.search_api_key_env = ""
+
+    s = get_onboarding_status(cfg)
+
+    assert s.section_details["search"]["actionRequired"] is True
+    assert s.section_details["search"]["blocking"] is False
+    assert s.needs_onboarding is False
+
+
+def test_optional_image_generation_action_does_not_block_first_run(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = GatewayConfig()
+    cfg.llm = LlmProviderConfig(
+        provider="deepseek",
+        model="m",
+        api_key="sk-x",
+        base_url="https://api.deepseek.com/v1",
+    )
+    cfg.image_generation.enabled = True
+    cfg.image_generation.primary = "openai/gpt-image-1"
+
+    s = get_onboarding_status(cfg)
+
+    assert s.section_details["image_generation"]["actionRequired"] is True
+    assert s.section_details["image_generation"]["blocking"] is False
+    assert s.needs_onboarding is False
+
+
+def test_explicit_remote_memory_embedding_action_blocks_gateway_start():
+    cfg = GatewayConfig()
+    cfg.llm = LlmProviderConfig(
+        provider="openrouter",
+        model="m",
+        api_key="sk-x",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    cfg.memory.embedding.provider = "openai"
+    cfg.memory.embedding.remote.api_key = ""
+
+    s = get_onboarding_status(cfg)
+
+    assert s.section_details["memory_embedding"]["actionRequired"] is True
+    assert s.section_details["memory_embedding"]["blocking"] is True
+    assert s.needs_onboarding is True

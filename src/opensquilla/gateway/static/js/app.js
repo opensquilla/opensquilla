@@ -29,6 +29,7 @@ const App = (() => {
     _bindConnectionState();
 
     Router.register('/overview', (el) => OverviewView.render(el), () => OverviewView.destroy());
+    Router.register('/health', (el) => HealthView.render(el), () => HealthView.destroy());
     Router.register('/chat', (el) => ChatView.render(el), () => ChatView.destroy());
     Router.register('/sessions', (el) => SessionsView.render(el), () => SessionsView.destroy());
     Router.register('/agents', (el) => AgentsView.render(el), () => AgentsView.destroy());
@@ -43,23 +44,31 @@ const App = (() => {
 
     Router.init(_basePath(), document.getElementById('content'));
 
-    if (window.matchMedia('(max-width: 768px)').matches && Router.currentPath() === '/overview') {
-      Router.navigate('/chat');
-    }
-
     _autoConnect();
   }
 
   function _buildLayout() {
     const app = document.getElementById('app');
     const basePath = _basePath();
+    // Strip the build-suffix from the cache-buster version ("0.1.0+1779915602")
+    // so the footer shows a stable semver. Whitelist to safe semver chars
+    // before interpolating — defense in depth against a tampered data attr.
+    // When the version attribute is absent or filtered to empty (no usable
+    // characters), the brand-foot block is suppressed entirely so "v" alone
+    // doesn't render as a broken-looking stub.
+    const rawVersion = document.getElementById('opensquilla-data')?.dataset.version || '';
+    const semver = (rawVersion.split('+')[0] || '').replace(/[^0-9A-Za-z.\-]/g, '').slice(0, 32);
+    const navFootHTML = semver
+      ? `<div class="nav-foot"><span class="nav-foot__dot" aria-hidden="true"></span><span class="nav-foot__ver">v${semver}</span></div>`
+      : '';
     app.innerHTML = `
-      <nav class="sidebar">
+      <nav class="sidebar" id="sidebar-nav" aria-label="Primary">
         <div class="nav-brand"><img class="brand-mark" src="${basePath}/static/img/opensquilla-mark.png" alt="" aria-hidden="true"> OpenSquilla</div>
         <div class="nav-group-label">Chat</div>
         <a class="nav-item" href="#" data-path="/chat">${icons.chat()} Chat</a>
         <div class="nav-group-label">Control</div>
         <a class="nav-item" href="#" data-path="/overview">${icons.home()} Overview</a>
+        <a class="nav-item" href="#" data-path="/health">${icons.logs()} Health</a>
         <a class="nav-item" href="#" data-path="/channels">${icons.channels()} Channels</a>
         <a class="nav-item" href="#" data-path="/skills">${icons.skills()} Skills</a>
         <a class="nav-item" href="#" data-path="/sessions">${icons.sessions()} Sessions</a>
@@ -70,11 +79,12 @@ const App = (() => {
         <a class="nav-item" href="#" data-path="/config">${icons.config()} Config</a>
         <a class="nav-item" href="#" data-path="/logs">${icons.logs()} Logs</a>
         <a class="nav-item" href="#" data-path="/approvals">${icons.approvals()} Approvals <span class="nav-badge hidden" id="approval-count">0</span></a>
+        ${navFootHTML}
       </nav>
       <div class="main">
         <header class="topbar">
           <div class="topbar-left">
-            <button class="btn btn--icon btn--ghost sidebar-toggle" id="sidebar-toggle" title="Toggle menu">${icons.menu()}</button>
+            <button class="btn btn--icon btn--ghost sidebar-toggle" id="sidebar-toggle" title="Toggle menu" aria-controls="sidebar-nav" aria-expanded="false">${icons.menu()}</button>
             <span class="conn-pill err" id="conn-pill">Disconnected</span>
           </div>
           <div class="topbar-right">
@@ -103,12 +113,26 @@ const App = (() => {
     const toggle = document.getElementById('sidebar-toggle');
     const sidebar = document.querySelector('.sidebar');
     if (!toggle || !sidebar) return;
+    const mobileQuery = window.matchMedia('(max-width: 768px)');
+
+    const setSidebarOpen = (open) => {
+      sidebar.classList.toggle('open', open);
+      _syncSidebarAccessibility(sidebar, toggle, mobileQuery);
+    };
+
+    _syncSidebarAccessibility(sidebar, toggle, mobileQuery);
+    if (mobileQuery.addEventListener) {
+      mobileQuery.addEventListener('change', () => _syncSidebarAccessibility(sidebar, toggle, mobileQuery));
+    } else if (mobileQuery.addListener) {
+      mobileQuery.addListener(() => _syncSidebarAccessibility(sidebar, toggle, mobileQuery));
+    }
+
     toggle.addEventListener('click', (e) => {
       e.stopPropagation();
-      sidebar.classList.toggle('open');
+      setSidebarOpen(!sidebar.classList.contains('open'));
     });
     sidebar.addEventListener('click', (e) => {
-      if (e.target.closest('.nav-item')) sidebar.classList.remove('open');
+      if (e.target.closest('.nav-item')) setSidebarOpen(false);
     });
     // Click outside the sidebar (and not on the toggle) closes the drawer.
     // The CSS backdrop is a pseudo-element that can't receive pointer events,
@@ -116,14 +140,27 @@ const App = (() => {
     document.addEventListener('click', (e) => {
       if (!sidebar.classList.contains('open')) return;
       if (sidebar.contains(e.target) || toggle.contains(e.target)) return;
-      sidebar.classList.remove('open');
+      setSidebarOpen(false);
     });
     // Esc closes the drawer for keyboard users.
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && sidebar.classList.contains('open')) {
-        sidebar.classList.remove('open');
+        setSidebarOpen(false);
       }
     });
+  }
+
+  function _syncSidebarAccessibility(sidebar, toggle, mobileQuery) {
+    const isOpen = sidebar.classList.contains('open');
+    const isHiddenDrawer = mobileQuery.matches && !isOpen;
+    toggle.setAttribute('aria-expanded', String(isOpen));
+    if (isHiddenDrawer) {
+      sidebar.setAttribute('aria-hidden', 'true');
+      sidebar.setAttribute('inert', '');
+      return;
+    }
+    sidebar.removeAttribute('aria-hidden');
+    sidebar.removeAttribute('inert');
   }
 
   function _bindConnectionState() {

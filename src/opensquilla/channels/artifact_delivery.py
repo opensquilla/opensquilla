@@ -13,7 +13,7 @@ from typing import Any
 
 import structlog
 
-from opensquilla.artifacts import ArtifactStore
+from opensquilla.artifacts import ArtifactStore, strip_artifact_markers_from_text
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     channel_capability_profile,
@@ -24,10 +24,6 @@ from opensquilla.paths import media_root_from_config
 
 log = structlog.get_logger(__name__)
 
-_ARTIFACT_MARKER_RE = re.compile(
-    r"(?:^|\s*)\[generated artifact omitted:\s*[^\]\n]+?\]\s*",
-    re.IGNORECASE,
-)
 _MARKDOWN_IMAGE_LINE_RE = re.compile(r"^\s*!\[[^\]]*\]\((?P<target>[^)]+)\)\s*$")
 _LOOSE_IMAGE_LINE_RE = re.compile(r"^\s*(?:image|file)\s*:\s*(?P<target>\S+)\s*$", re.I)
 
@@ -86,11 +82,7 @@ def artifact_fallback_lines(artifacts: list[dict[str, Any]]) -> list[str]:
 
 
 def strip_artifact_markers_from_channel_text(text: str) -> str:
-    if "[generated artifact omitted:" not in text:
-        return text
-    cleaned = _ARTIFACT_MARKER_RE.sub("", text.replace("\r\n", "\n"))
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return strip_artifact_markers_from_text(text)
 
 
 def _artifact_reference_names(artifacts: list[dict[str, Any]]) -> set[str]:

@@ -327,8 +327,17 @@ class TestMetaSkillConfig:
         from opensquilla.gateway.config import GatewayConfig
 
         cfg = GatewayConfig()
+        assert cfg.meta_skill.enabled is True
         assert cfg.meta_skill.persistence.enabled is True
         assert cfg.meta_skill.persistence.orphan_cleanup_age_seconds == 3600
+
+    def test_meta_skill_can_be_disabled_globally(self) -> None:
+        from opensquilla.gateway.config import GatewayConfig
+
+        cfg = GatewayConfig(
+            meta_skill={"enabled": False},
+        )
+        assert cfg.meta_skill.enabled is False
 
     def test_meta_skill_persistence_disabled(self) -> None:
         from opensquilla.gateway.config import GatewayConfig
@@ -339,6 +348,13 @@ class TestMetaSkillConfig:
         assert cfg.meta_skill.persistence.enabled is False
 
     def test_meta_skill_env_override(self, monkeypatch) -> None:
+        from opensquilla.gateway.config import MetaSkillConfig
+
+        monkeypatch.setenv("OPENSQUILLA_META_SKILL_ENABLED", "false")
+        cfg = MetaSkillConfig()
+        assert cfg.enabled is False
+
+    def test_meta_skill_persistence_env_override(self, monkeypatch) -> None:
         from opensquilla.gateway.config import MetaSkillPersistenceConfig
 
         monkeypatch.setenv("OPENSQUILLA_META_SKILL_PERSISTENCE_ENABLED", "false")

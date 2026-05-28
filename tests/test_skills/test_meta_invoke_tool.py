@@ -494,6 +494,88 @@ async def test_run_one_streaming_rejects_disabled_meta_skill(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_one_streaming_rejects_meta_invoke_when_meta_skill_config_disabled(
+    tmp_path,
+) -> None:
+    """meta_invoke must not bypass the global meta-skill switch."""
+    from opensquilla.engine.agent import Agent
+    from opensquilla.engine.types import AgentConfig
+    from opensquilla.skills.loader import SkillLoader
+    from opensquilla.tool_boundary import ToolCall, ToolResult
+    from opensquilla.tools.builtin import meta_tools  # noqa: F401
+    from opensquilla.tools.registry import get_default_registry
+    from opensquilla.tools.types import ToolContext
+
+    bundled = tmp_path / "skills" / "bundled"
+    skill_dir = bundled / "meta-visible"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-visible\n"
+        "kind: meta\n"
+        "description: visible meta-skill\n"
+        "triggers: [visible trigger]\n"
+        "composition:\n"
+        "  steps:\n"
+        "    - id: c\n"
+        "      kind: llm_classify\n"
+        "      output_choices: [A, B]\n"
+        "      with: {text: \"x\"}\n"
+        "---\n"
+        "# meta-visible\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    loader.load_all()
+
+    class _NullProvider:
+        provider_name = "null"
+
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("globally disabled meta-skill must not execute")
+
+        async def list_models(self):
+            return []
+
+    agent = Agent(
+        provider=_NullProvider(),  # type: ignore[arg-type]
+        config=AgentConfig(
+            model_id="stub",
+            metadata={
+                "skill_loader": loader,
+                "bootstrap_workspace_dir": str(tmp_path),
+                "meta_skill_enabled": False,
+            },
+        ),
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=get_default_registry(),
+    )
+    tc = ToolCall(
+        tool_use_id="u1",
+        tool_name="meta_invoke",
+        arguments={"name": "meta-visible"},
+    )
+    tool_ctx = ToolContext(
+        workspace_dir=str(tmp_path),
+        is_owner=True,
+        allowed_tools={"meta_invoke"},
+        surfaced_tools={"meta_invoke"},
+    )
+
+    final = None
+    async for ev in agent._run_one_streaming(tc, tool_ctx):
+        if isinstance(ev, ToolResult):
+            final = ev
+
+    assert final is not None
+    assert final.is_error is True
+    assert "meta-skill is disabled" in final.content
+    assert final.terminates_turn is False
+
+
+@pytest.mark.asyncio
 async def test_run_one_streaming_propagates_current_turn_message_to_inputs(
     tmp_path,
 ) -> None:

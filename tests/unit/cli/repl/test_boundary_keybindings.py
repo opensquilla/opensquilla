@@ -29,6 +29,7 @@ from opensquilla.cli.repl.app import (
     ChatApplication,
     _build_key_bindings,
 )
+from opensquilla.cli.repl.terminal_surface import TerminalSurface
 from opensquilla.engine.commands import Surface
 
 # --------------------------------------------------------------------------- #
@@ -56,9 +57,7 @@ def _fresh_chat_app() -> ChatApplication:
 def _ctrl_c_handler():
     """Return the bound Ctrl-C handler from `_build_key_bindings`."""
     bindings = _build_key_bindings()
-    handlers = [
-        binding for binding in bindings.bindings if tuple(binding.keys) == ("c-c",)
-    ]
+    handlers = [binding for binding in bindings.bindings if tuple(binding.keys) == ("c-c",)]
     assert len(handlers) == 1, f"expected one c-c binding, got {len(handlers)}"
     return handlers[0].handler
 
@@ -66,9 +65,7 @@ def _ctrl_c_handler():
 def _ctrl_d_handler():
     """Return the bound Ctrl-D handler from `_build_key_bindings`."""
     bindings = _build_key_bindings()
-    handlers = [
-        binding for binding in bindings.bindings if tuple(binding.keys) == ("c-d",)
-    ]
+    handlers = [binding for binding in bindings.bindings if tuple(binding.keys) == ("c-d",)]
     assert len(handlers) == 1, f"expected one c-d binding, got {len(handlers)}"
     return handlers[0].handler
 
@@ -126,9 +123,7 @@ def test_ctrl_c_double_press_within_1500ms_invokes_shutdown(monkeypatch) -> None
 
     # Freeze the clock: first press at t=0, second press at t=1.0.
     times = iter([0.0, 1.0])
-    monkeypatch.setattr(
-        "opensquilla.cli.repl.app.time.monotonic", lambda: next(times)
-    )
+    monkeypatch.setattr("opensquilla.cli.repl.app.time.monotonic", lambda: next(times))
 
     # First press — records the timestamp, no shutdown yet.
     handler(_FakeEvent(chat_app))
@@ -158,9 +153,7 @@ def test_ctrl_c_double_press_outside_1500ms_does_not_invoke_shutdown(
 
     # 0.0 -> 2.0 (outside window) -> 3.5 (outside) -> 4.0 (inside vs 3.5)
     times = iter([0.0, 2.0, 3.5, 4.0])
-    monkeypatch.setattr(
-        "opensquilla.cli.repl.app.time.monotonic", lambda: next(times)
-    )
+    monkeypatch.setattr("opensquilla.cli.repl.app.time.monotonic", lambda: next(times))
 
     # Press 1 at t=0: record timestamp.
     handler(_FakeEvent(chat_app))
@@ -176,9 +169,7 @@ def test_ctrl_c_double_press_outside_1500ms_does_not_invoke_shutdown(
     # window because the contract uses <=. That fires shutdown and clears
     # the timestamp, then press 4 records a fresh start.
     handler(_FakeEvent(chat_app))
-    assert shutdown_calls == [None], (
-        "press at delta == window must fire shutdown (<= boundary)"
-    )
+    assert shutdown_calls == [None], "press at delta == window must fire shutdown (<= boundary)"
     assert chat_app._last_ctrl_c_at is None
 
     # Press 4 at t=4.0: fresh window starts because the prior pair already
@@ -253,19 +244,20 @@ class _FakeHandle:
     def set_toolbar(self, key, value) -> None:
         return None
 
-    @property
-    def application(self):
-        cancel_sink = self._captured_cancel
-        shutdown_sink = self._captured_shutdown
+    def set_cancel_callback(self, cb) -> None:
+        self._captured_cancel.append(cb)
 
-        class _FakeApp:
-            def set_cancel_callback(self, cb) -> None:
-                cancel_sink.append(cb)
+    def set_shutdown_callback(self, cb) -> None:
+        self._captured_shutdown.append(cb)
 
-            def set_shutdown_callback(self, cb) -> None:
-                shutdown_sink.append(cb)
+    def emit_eof(self) -> None:
+        self._inputs.put_nowait(None)
 
-        return _FakeApp()
+    def invalidate(self) -> None:
+        return None
+
+    async def write_through(self, payload: str) -> None:
+        return None
 
 
 def _install_fake_session(
@@ -274,13 +266,14 @@ def _install_fake_session(
     captured_cancel: list[object],
     captured_shutdown: list[object],
 ) -> None:
-    from opensquilla.cli import chat_cmd
-
     @asynccontextmanager
     async def _fake_session(**kwargs):
-        yield _FakeHandle(inputs, captured_cancel, captured_shutdown)
+        yield TerminalSurface(_FakeHandle(inputs, captured_cancel, captured_shutdown))
 
-    monkeypatch.setattr(chat_cmd, "interactive_session", _fake_session)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_chat_adapter.open_terminal_surface",
+        _fake_session,
+    )
 
 
 @pytest.mark.asyncio
@@ -339,9 +332,7 @@ async def test_ctrl_d_drains_pending_queue_before_exit(monkeypatch) -> None:
     finish_msg1.set()
     await asyncio.wait_for(repl_task, timeout=2.0)
 
-    assert executed == ["msg1-start", "msg1-end", "msg2"], (
-        f"EOF drain order broke: {executed}"
-    )
+    assert executed == ["msg1-start", "msg1-end", "msg2"], f"EOF drain order broke: {executed}"
 
 
 @pytest.mark.asyncio
@@ -435,8 +426,7 @@ async def test_run_concurrent_repl_registers_shutdown_callback(monkeypatch) -> N
     # entry, then clear it back to None in the finally block.
     non_none = [cb for cb in captured_shutdown if cb is not None]
     assert len(non_none) == 1, (
-        f"expected one non-None shutdown callback registration, "
-        f"got {captured_shutdown}"
+        f"expected one non-None shutdown callback registration, got {captured_shutdown}"
     )
     assert captured_shutdown[-1] is None, (
         f"shutdown callback was not cleared on teardown: {captured_shutdown}"

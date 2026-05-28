@@ -15,7 +15,6 @@ from opensquilla.skills.loader import SkillLoader
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
 DEFAULTS = {
-    "sub-agent",
     "cron",
     "deep-research",
     "docx",
@@ -26,18 +25,35 @@ DEFAULTS = {
     "http-fetch",
     "latex-compile",
     "memory",
+    "meta-arxiv-daily-digest-deck",
+    "meta-codereview-current-diff",
+    "meta-compliance-audit-bundle",
+    "meta-diagram-triangulation",
+    "meta-github-pr-watch-digest",
+    "meta-issue-to-pr-autopilot",
+    "meta-knowledge-base-bootstrap",
+    "meta-long-running-build-watchdog",
     "meta-migration-assistant",
+    "meta-multi-format-export-pack",
     "meta-paper-write",
     "meta-pdf-intelligence",
+    "meta-pdf-reformat-pipeline",
+    "meta-pre-commit-quality-gate",
+    "meta-scheduled-morning-digest",
+    "meta-security-review-bundle",
     "meta-skill-creator",
+    "meta-spreadsheet-insight",
     "meta-stack-trace-investigator",
     "meta-travel-planner",
     "meta-web-research-to-report",
+    "meta-web-to-pdf-briefing",
     "multi-search-engine",
     "nano-pdf",
     "paper-abstract-author",
     "paper-citation-planner",
+    "paper-experiment-stub",
     "paper-outline-author",
+    "paper-plot-stub",
     "paper-preference-planner",
     "paper-refbib-stub",
     "paper-revision-author",
@@ -46,6 +62,7 @@ DEFAULTS = {
     "pdf-toolkit",
     "pptx",
     "skill-creator",
+    "sub-agent",
     "summarize",
     "tmux",
     "weather",
@@ -170,6 +187,23 @@ async def test_default_prompt_prefers_matching_meta_skills_over_direct_answers(
     assert "prefer `meta_invoke(name=\"<name>\")` over answering directly" in prompt
     assert "Do not call `skill_view` for kind=\"meta\" entries" in prompt
     assert "multi-skill orchestration" in prompt
+
+
+@pytest.mark.asyncio
+async def test_meta_skill_disabled_hides_meta_prompt_without_hiding_normal_skills(
+    tmp_path: Path,
+) -> None:
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
+    ctx = _ctx(loader)
+    ctx.config.meta_skill = SimpleNamespace(enabled=False)
+
+    ctx = await filter_skills(ctx)
+    prompt = ctx.system_prompt[1]
+
+    assert "When a kind=\"meta\" entry clearly matches" not in prompt
+    assert "prefer `meta_invoke(name=\"<name>\")` over answering directly" not in prompt
+    assert "multi-skill orchestration" not in prompt
+    assert "<available_skills>" in prompt
 
 
 @pytest.mark.asyncio

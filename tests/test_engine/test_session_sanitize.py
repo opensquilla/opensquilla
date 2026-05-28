@@ -355,16 +355,12 @@ def test_historical_replay_projection_compacts_list_tool_results() -> None:
     assert messages[0].content[0].content == large_result
 
 
-def test_agent_aggregate_tool_result_budget_compacts_old_bulky_results(tmp_path) -> None:
+def test_agent_aggregate_tool_result_budget_compacts_old_bulky_results() -> None:
     raw_old_output = "old bulky output\n" + ("x" * 4000)
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=200,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:session-1",
-            tool_result_store_agent_id="main",
         ),
     )
     messages = [
@@ -427,7 +423,7 @@ def test_agent_aggregate_tool_result_budget_compacts_old_bulky_results(tmp_path)
     assert isinstance(err_result, ContentBlockToolResult)
     assert isinstance(new_result, ContentBlockToolResult)
     assert "aggregate_tool_result_compacted" in old_result.content
-    assert "tool_result_handle:" in old_result.content
+    assert "tool_result_handle:" not in old_result.content
     assert len(old_result.content) < 1000
     assert "Traceback" in err_result.content
     assert len(err_result.content) > 4000
@@ -436,19 +432,9 @@ def test_agent_aggregate_tool_result_budget_compacts_old_bulky_results(tmp_path)
     assert agent.config.metadata["tool_aggregate_projection_applied"] is True
     assert agent.config.metadata["tool_projection_applied"] is True
     assert agent.config.metadata["tool_projection_tokens_saved"] > 0
-    from opensquilla.engine.tool_result_store import ToolResultStore
-
-    handle = next(
-        line.split(":", 1)[1].strip()
-        for line in old_result.content.splitlines()
-        if line.startswith("tool_result_handle:")
-    )
-    record = ToolResultStore(tmp_path / "tool-results").read(handle, session_id="session-1")
-    assert record.content == raw_old_output
-    assert record.tool_name == "execute_code"
 
 
-def test_agent_large_context_compacts_old_local_tool_results_for_provider(tmp_path) -> None:
+def test_agent_large_context_compacts_old_local_tool_results_for_provider() -> None:
     def _tool_pair(tool_id: str, body: str, *, is_error: bool = False) -> list[Message]:
         return [
             Message(
@@ -471,10 +457,6 @@ def test_agent_large_context_compacts_old_local_tool_results_for_provider(tmp_pa
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=200_000,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:session-1",
-            tool_result_store_agent_id="main",
         ),
     )
     messages = [
@@ -503,7 +485,7 @@ def test_agent_large_context_compacts_old_local_tool_results_for_provider(tmp_pa
     assert isinstance(middle_result, ContentBlockToolResult)
     assert isinstance(recent_result, ContentBlockToolResult)
     assert "[tool_result_projection]" in old_result.content
-    assert "tool_result_handle:" in old_result.content
+    assert "tool_result_handle:" not in old_result.content
     assert len(old_result.content) < 5_000
     assert "Traceback preserved" in error_result.content
     assert len(error_result.content) > 20_000
@@ -521,15 +503,11 @@ def test_agent_large_context_compacts_old_local_tool_results_for_provider(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_agent_single_tool_result_projection_stores_raw_content(tmp_path) -> None:
+async def test_agent_single_tool_result_projection_does_not_store_raw_content(tmp_path) -> None:
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=200,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:session-1",
-            tool_result_store_agent_id="main",
         ),
     )
     raw_output = "single bulky output\n" + ("x" * 8000)
@@ -550,33 +528,19 @@ async def test_agent_single_tool_result_projection_stores_raw_content(tmp_path) 
     assert isinstance(result, ContentBlockToolResult)
 
     assert "[tool_result_projection]" in result.content
-    assert "tool_result_handle:" in result.content
-    handle = next(
-        line.split(":", 1)[1].strip()
-        for line in result.content.splitlines()
-        if line.startswith("tool_result_handle:")
-    )
-    from opensquilla.engine.tool_result_store import ToolResultStore
-
-    record = ToolResultStore(tmp_path / "tool-results").read(handle, session_id="session-1")
-    assert record.content == raw_output
-    assert record.session_key == "agent:main:webchat:session-1"
-    assert record.agent_id == "main"
+    assert "tool_result_handle:" not in result.content
+    assert raw_output not in result.content
+    assert not (tmp_path / "tool-results").exists()
 
 
 @pytest.mark.asyncio
-async def test_agent_tool_result_projection_skips_raw_handle_when_store_over_budget(
+async def test_agent_tool_result_projection_never_writes_raw_store(
     tmp_path,
 ) -> None:
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=200,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:session-1",
-            tool_result_store_agent_id="main",
-            tool_result_store_max_bytes=16,
         ),
     )
 
@@ -602,7 +566,6 @@ async def test_agent_tool_result_projection_skips_raw_handle_when_store_over_bud
 
     assert "[tool_result_projection]" in result.content
     assert "tool_result_handle:" not in result.content
-    assert agent.config.metadata["tool_result_store_skips"] == 1
     assert not list((tmp_path / "tool-results").rglob("content.txt"))
 
 
@@ -770,10 +733,6 @@ def test_agent_provider_view_keeps_large_tool_use_arguments_by_default(tmp_path)
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
             tool_use_argument_provider_request_max_chars=1200,
         ),
     )
@@ -811,10 +770,6 @@ def test_agent_provider_view_derives_tool_argument_budget_above_legacy_default(
         config=AgentConfig(
             context_window_tokens=200_000,
             max_tokens=8192,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
         ),
     )
     large_code = "print('start')\n" + ("x = 1\n" * 2500) + "print('end')\n"
@@ -852,8 +807,6 @@ def test_agent_provider_view_scrubs_legacy_projected_tool_argument(tmp_path) -> 
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
             tool_use_argument_provider_request_max_chars=1200,
         ),
     )
@@ -887,10 +840,6 @@ def test_agent_provider_view_does_not_project_aggregate_tool_use_arguments(tmp_p
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
             tool_use_argument_provider_request_max_chars=1200,
             tool_use_argument_projection_enabled=True,
         ),
@@ -935,10 +884,6 @@ def test_agent_provider_view_derives_tool_result_budget_above_legacy_default(
         config=AgentConfig(
             context_window_tokens=200_000,
             max_tokens=8192,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
         ),
     )
     messages: list[Message] = []
@@ -982,10 +927,6 @@ def test_agent_provider_view_does_not_project_small_aggregate_tool_use_arguments
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
             tool_use_argument_provider_request_max_chars=1200,
             tool_use_argument_projection_enabled=True,
         ),
@@ -1022,10 +963,6 @@ def test_agent_provider_view_keeps_successful_file_write_argument_executable(tmp
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
             tool_use_argument_provider_request_max_chars=8000,
         ),
     )
@@ -1085,10 +1022,6 @@ def test_agent_provider_view_does_not_store_successful_file_write_snapshot(
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
             tool_use_argument_provider_request_max_chars=8000,
         ),
     )
@@ -1128,7 +1061,6 @@ def test_agent_provider_view_does_not_store_successful_file_write_snapshot(
 
     assert first_block.input["content"] == large_html
     assert second_block.input["content"] == large_html
-    assert agent.config.metadata.get("tool_result_store_writes", 0) == 0
     assert not list((tmp_path / "tool-results" / "s" / "session-1").glob("**/meta.json"))
     assert "tool_argument_projection_applied" not in agent.config.metadata
     assert "tool_argument_projection_calls" not in agent.config.metadata
@@ -1582,9 +1514,7 @@ async def test_agent_request_context_repeats_across_tool_loop_without_persisting
 
 
 @pytest.mark.asyncio
-async def test_agent_preserves_large_tool_result_and_projects_provider_copy(
-    tmp_path,
-) -> None:
+async def test_agent_canonicalizes_large_tool_result_for_event_history_and_provider() -> None:
     provider = ToolLoopCapturingProvider()
     raw_output = "single bulky output\n" + ("x" * 5000)
 
@@ -1600,10 +1530,7 @@ async def test_agent_preserves_large_tool_result_and_projects_provider_copy(
         config=AgentConfig(
             context_window_tokens=200,
             max_iterations=2,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
+            tool_result_projection_max_inline_chars=1000,
         ),
         tool_handler=tool_handler,
     )
@@ -1615,7 +1542,8 @@ async def test_agent_preserves_large_tool_result_and_projects_provider_copy(
         for event in events
         if isinstance(event, ToolResultEvent) and event.tool_use_id == "tool-1"
     )
-    assert result_event.result == raw_output
+    assert result_event.result != raw_output
+    assert "tool_result_handle:" not in result_event.result
     history_result = next(
         block
         for message in agent._history
@@ -1623,7 +1551,8 @@ async def test_agent_preserves_large_tool_result_and_projects_provider_copy(
         for block in message.content
         if isinstance(block, ContentBlockToolResult) and block.tool_use_id == "tool-1"
     )
-    assert history_result.content == raw_output
+    assert history_result.content == result_event.result
+    assert history_result.content != raw_output
 
     assert len(provider.calls) == 2
     replay_result = next(
@@ -1633,34 +1562,18 @@ async def test_agent_preserves_large_tool_result_and_projects_provider_copy(
         for block in message.content
         if isinstance(block, ContentBlockToolResult) and block.tool_use_id == "tool-1"
     )
+    assert replay_result.content == result_event.result
     assert replay_result.content != raw_output
-    assert "[tool_result_projection]" in replay_result.content
-    assert "tool_result_handle:" in replay_result.content
+    assert "tool_result_handle:" not in replay_result.content
     assert "single bulky output" in replay_result.content
     assert len(replay_result.content) < len(raw_output)
 
-    handle = next(
-        line.split(":", 1)[1].strip()
-        for line in replay_result.content.splitlines()
-        if line.startswith("tool_result_handle:")
-    )
-    from opensquilla.engine.tool_result_store import ToolResultStore
 
-    record = ToolResultStore(tmp_path / "tool-results").read(handle, session_id="session-1")
-    assert record.content == raw_output
-
-
-def test_agent_provider_request_messages_project_overflow_retry_tool_results(
-    tmp_path,
-) -> None:
+def test_agent_provider_request_messages_project_overflow_retry_tool_results() -> None:
     agent = Agent(
         provider=CapturingProvider(),
         config=AgentConfig(
             context_window_tokens=200,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
         ),
     )
     raw_output = "overflow retry bulky output\n" + ("x" * 8000)
@@ -1695,7 +1608,7 @@ def test_agent_provider_request_messages_project_overflow_retry_tool_results(
     )
     assert request_result.content != raw_output
     assert "[tool_result_projection]" in request_result.content
-    assert "tool_result_handle:" in request_result.content
+    assert "tool_result_handle:" not in request_result.content
     assert len(request_result.content) < len(raw_output)
 
 
@@ -1771,10 +1684,6 @@ async def test_agent_keeps_large_tool_arguments_during_tool_replay(tmp_path) -> 
         provider=provider,
         config=AgentConfig(
             max_iterations=2,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
             tool_use_argument_provider_request_max_chars=1200,
             tool_use_argument_projection_enabled=True,
         ),
@@ -1829,10 +1738,6 @@ async def test_agent_refuses_copied_tool_argument_projection_without_dispatch(
         provider=provider,
         config=AgentConfig(
             max_iterations=3,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
             tool_use_argument_provider_request_max_chars=1200,
             tool_use_argument_projection_enabled=True,
         ),
@@ -1915,10 +1820,6 @@ async def test_agent_refuses_unrestorable_tool_argument_projection(tmp_path) -> 
         provider=provider,
         config=AgentConfig(
             max_iterations=3,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
             tool_use_argument_provider_request_max_chars=1200,
             tool_use_argument_projection_enabled=True,
         ),
@@ -1982,10 +1883,6 @@ async def test_agent_refuses_copied_provider_compacted_tool_arguments(tmp_path) 
         provider=provider,
         config=AgentConfig(
             max_iterations=2,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
         ),
         tool_handler=tool_handler,
     )
@@ -2047,10 +1944,6 @@ async def test_agent_repair_prompt_keeps_provider_request_from_ending_on_assista
         provider=provider,
         config=AgentConfig(
             max_iterations=2,
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:test",
-            tool_result_store_agent_id="main",
         ),
         tool_handler=tool_handler,
     )

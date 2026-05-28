@@ -2013,6 +2013,7 @@ class TurnRunner:
                     session_id_for_log=session_id_for_log,
                     tool_handler=tool_handler,
                     turn_call_logger=turn_call_logger,
+                    tool_context=tool_context,
                     session_key=session_key,
                     agent_id=agent_id,
                     timeout=timeout,
@@ -2997,6 +2998,7 @@ class TurnRunner:
         """Build tool definitions and handler from registry, filtered by ToolContext."""
         if self._tool_registry is None:
             return [], None
+        from opensquilla.skills.meta.enabled import is_meta_skill_enabled
         from opensquilla.tools.dispatch import build_tool_handler
         from opensquilla.tools.policy import apply_tool_policy_from_config
         from opensquilla.tools.registry import filter_by_profile, resolve_profile
@@ -3007,7 +3009,8 @@ class TurnRunner:
                 loaded_skills = list(self._skill_loader.load_all())
             except Exception:
                 loaded_skills = []
-        if ctx is not None and any(
+        meta_skill_enabled = is_meta_skill_enabled(self._config)
+        if ctx is not None and meta_skill_enabled and any(
             getattr(skill, "kind", "skill") == "meta"
             and not getattr(skill, "disable_model_invocation", False)
             for skill in loaded_skills
@@ -3015,6 +3018,8 @@ class TurnRunner:
             if ctx.surfaced_tools is None:
                 ctx.surfaced_tools = set()
             ctx.surfaced_tools.add("meta_invoke")
+        if metadata is not None:
+            metadata["meta_skill_enabled"] = meta_skill_enabled
 
         if ctx is not None:
             ctx = apply_tool_policy_from_config(
@@ -3059,6 +3064,10 @@ class TurnRunner:
             skill.name
             for skill in loaded_skills
             if not getattr(skill, "disable_model_invocation", False)
+            and (
+                meta_skill_enabled
+                or getattr(skill, "kind", "skill") != "meta"
+            )
         }
         tool_handler = build_tool_handler(
             self._tool_registry,
@@ -3786,6 +3795,32 @@ class TurnRunner:
             "session_flush_fallback_reason": fallback_reason,
         }
 
+    async def _record_checkpoint_before_compaction(
+        self,
+        session_key: str,
+        transcript: Sequence[Any],
+        *,
+        turn_id: str,
+        source: str,
+    ) -> None:
+        if self._session_manager is None:
+            return
+        method = getattr(type(self._session_manager), "record_memory_checkpoint", None)
+        if method is None:
+            method = getattr(
+                getattr(self._session_manager, "__dict__", {}),
+                "get",
+                lambda *_: None,
+            )("record_memory_checkpoint")
+        if not callable(method):
+            return
+        await self._session_manager.record_memory_checkpoint(
+            session_key,
+            list(transcript),
+            turn_id=turn_id,
+            source=source,
+        )
+
     def _emit_decision_entry(
         self,
         *,
@@ -4354,6 +4389,12 @@ class TurnRunner:
             context_window_tokens=context_window_tokens,
             **compaction_lifecycle_payload(compaction_id, COMPACTION_TRIGGERED_EVENT),
         )
+        await self._record_checkpoint_before_compaction(
+            session_key,
+            transcript,
+            turn_id=compaction_id,
+            source="preflight_compaction",
+        )
         flush_receipt_status = "not_required"
         if self._pre_compaction_flush_enabled():
             flush_receipt_status = await self._await_pre_compaction_flush_grace(
@@ -4480,6 +4521,19 @@ class TurnRunner:
                 ),
             )
             return
+        if not result:
+            emergency_applied = await self._record_emergency_ephemeral_compaction(
+                session_key,
+                transcript,
+                context_window_tokens,
+                compaction_id=compaction_id,
+                phase="preflight",
+                reason="empty_summary",
+            )
+            if emergency_applied:
+                self._record_compaction_success(session_key)
+                return
+
         self._record_compaction_success(session_key)
         if result:
             completed_payload = {"tokens_before": total_tokens}

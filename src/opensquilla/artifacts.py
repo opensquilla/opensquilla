@@ -23,6 +23,10 @@ DEFAULT_ARTIFACT_DISK_BUDGET_BYTES = 512 * 1024 * 1024
 _UNSAFE_FILENAME_RE = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]+')
 _SAFE_TOKEN_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_MIME_RE = re.compile(r"^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$")
+_ARTIFACT_MARKER_RE = re.compile(
+    r"(?:^|\s*)\[generated artifact omitted:\s*[^\]\n]+?\]\s*",
+    re.IGNORECASE,
+)
 _PUBLIC_ARTIFACT_FIELDS = (
     "id",
     "kind",
@@ -98,6 +102,14 @@ def artifact_marker(ref: dict[str, Any] | ArtifactRef) -> str:
     name = payload.get("name") if isinstance(payload.get("name"), str) else "artifact"
     mime = payload.get("mime") if isinstance(payload.get("mime"), str) else "artifact"
     return f"[generated artifact omitted: {name} ({mime})]"
+
+
+def strip_artifact_markers_from_text(text: str) -> str:
+    if "[generated artifact omitted:" not in text:
+        return text
+    cleaned = _ARTIFACT_MARKER_RE.sub("", text.replace("\r\n", "\n"))
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
 def artifact_payload(event_or_ref: Any) -> dict[str, Any]:

@@ -162,11 +162,40 @@ class DoneEvent:
     cache_write_tokens: int = 0
     reasoning_content: str | None = None
     session_totals: SessionTotalsSnapshot | None = None
+    routing_applied: bool = True
+    rollout_phase: str = "full"
 
     @property
     def upstream_cost_usd(self) -> float:
         """Backward-compatible alias for earlier OpenRouter cost consumers."""
         return self.billed_cost
+
+
+@dataclass
+class RouterDecisionEvent:
+    """Squilla router's decision for this turn, emitted once after the
+    pre-turn pipeline resolves the tier/model. Frontend uses this to drive
+    the router HUD (tier pill, tier-shift highlight, scanner popover).
+
+    Routing fires exactly once per user-message; the tier sticks across
+    the entire agent loop. Subsequent events in the same turn carry no
+    routing information.
+    """
+
+    kind: Literal["router_decision"] = field(default="router_decision", init=False)
+    tier: str = ""
+    tier_index: int = -1
+    model: str = ""
+    baseline_model: str = ""
+    source: str = "none"
+    confidence: float = 0.0
+    probs: list[float] = field(default_factory=list)
+    savings_pct: float = 0.0
+    fallback: bool = False
+    thinking_mode: str = ""
+    prompt_policy: str = ""
+    routing_applied: bool = True
+    rollout_phase: str = "full"
 
 
 @dataclass
@@ -222,6 +251,7 @@ AgentEvent = (
     | DoneEvent
     | CompactionEvent
     | WarningEvent
+    | RouterDecisionEvent
 )
 
 

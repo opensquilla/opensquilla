@@ -130,6 +130,18 @@ def _is_raw_fallback_save_path(path: str) -> bool:
     )
 
 
+def _is_checkpoint_sidecar_path(path: str) -> bool:
+    """Return True for durable checkpoint sidecar JSONL paths."""
+    rel = Path(path)
+    return (
+        not rel.is_absolute()
+        and not any(part in {"", ".", ".."} for part in rel.parts)
+        and len(rel.parts) >= 4
+        and rel.parts[:2] == ("memory", ".checkpoints")
+        and rel.suffix == ".jsonl"
+    )
+
+
 def _is_memory_save_path(path: str) -> bool:
     """Return True for writable memory files.
 
@@ -479,7 +491,13 @@ def create_memory_tools(
                 )
 
         max_files = getattr(memory_config, "max_files", 0)
-        if max_files > 0 and not mem_path.exists():
+        is_raw_fallback = False
+        try:
+            rel_path = mem_path.resolve().relative_to(workspace_dir.resolve()).as_posix()
+            is_raw_fallback = _is_raw_fallback_save_path(rel_path)
+        except ValueError:
+            is_raw_fallback = False
+        if max_files > 0 and not mem_path.exists() and not is_raw_fallback:
             file_count = len(list(workspace_dir.rglob("*.md")))
             if file_count >= max_files:
                 raise ToolError(f"max file count reached ({max_files}).")
@@ -682,7 +700,9 @@ def create_memory_tools(
         results = [
             result
             for result in await r.retriever.search(query, opts, intent=SearchIntent.TOOL)
-            if is_searchable_source_path(result.source, str(result.path))
+            if (source_filter is None or result.source == source_filter)
+            and is_searchable_source_path(result.source, str(result.path))
+            and not _is_checkpoint_sidecar_path(str(result.path))
         ]
         if not results:
             return "No results found."

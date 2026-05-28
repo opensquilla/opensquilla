@@ -1,18 +1,18 @@
-"""Production stream paths must thread ``chat_app``.
+"""Production stream paths must thread a TUI output handle.
 
 Both ``_stream_response_gateway`` and ``_stream_response_turnrunner`` are the
 real REPL stream renderers. Before this fix, they constructed
-``StreamingRenderer()`` with no ``chat_app`` kwarg and called the sync
+``StreamingRenderer()`` with no ``output_handle`` kwarg and called the sync
 ``renderer.append_text(...)`` which writes straight to ``console.file``. The
-The output lock + ``_approval_in_flight`` suspend gate therefore never fired
+output lock + ``_approval_in_flight`` suspend gate therefore never fired
 in production — only tests that drove ``ChatApplication.write_through``
 directly exercised them.
 
 These tests pin:
-  - ``_stream_response_gateway`` passes ``chat_app=`` to the renderer and
+  - ``_stream_response_gateway`` passes the TUI output into the renderer and
     awaits ``aappend_text`` (not ``append_text``) per text-delta event.
   - ``_stream_response_turnrunner`` does the same.
-  - When ``_approval_in_flight`` is set on the threaded ``chat_app``, bytes
+  - When ``_approval_in_flight`` is set on the threaded output handle, bytes
     do not reach ``console.file`` until the flag clears. This is the
     integration regression that finding #1 enables.
 """
@@ -29,7 +29,9 @@ from prompt_toolkit.input.base import DummyInput
 from prompt_toolkit.output import DummyOutput
 
 from opensquilla.cli import chat_cmd
+from opensquilla.cli.repl import chat_compat
 from opensquilla.cli.repl.app import ChatApplication
+from opensquilla.cli.repl.terminal_surface import TerminalOutputHandle
 from opensquilla.engine.commands import Surface
 
 # --------------------------------------------------------------------------- #
@@ -51,6 +53,10 @@ def _fresh_chat_app(*, surface: Surface = Surface.CLI_GATEWAY) -> ChatApplicatio
         input=DummyInput(),
         output=DummyOutput(),
     )
+
+
+def _output_handle(chat_app: ChatApplication, *, surface: Surface) -> TerminalOutputHandle:
+    return TerminalOutputHandle(chat_app, approval_surface=surface)
 
 
 class _RecordingRenderer:
@@ -107,7 +113,7 @@ class _RecordingRenderer:
 
 
 # --------------------------------------------------------------------------- #
-# Fix 1 — chat_app wiring through _stream_response_gateway                    #
+# Fix 1 - output_handle wiring through _stream_response_gateway                #
 # --------------------------------------------------------------------------- #
 
 
@@ -128,10 +134,11 @@ class _FakeGatewayClient:
         return None
 
 
-def test_stream_response_gateway_threads_chat_app_into_renderer(monkeypatch) -> None:
-    """Constructor receives ``chat_app=...``; text deltas go through ``aappend_text``."""
+def test_stream_response_gateway_threads_tui_output_into_renderer(monkeypatch) -> None:
+    """Constructor receives the TUI output; text deltas go through ``aappend_text``."""
 
     chat_app = _fresh_chat_app(surface=Surface.CLI_GATEWAY)
+    output_handle = _output_handle(chat_app, surface=Surface.CLI_GATEWAY)
 
     events: list[dict[str, Any]] = [
         {"event": "session.event.text_delta", "text": "hello "},
@@ -140,7 +147,10 @@ def test_stream_response_gateway_threads_chat_app_into_renderer(monkeypatch) -> 
     ]
     client = _FakeGatewayClient(events)
 
-    monkeypatch.setattr(chat_cmd, "StreamingRenderer", _RecordingRenderer)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_renderer.StreamingRenderer",
+        _RecordingRenderer,
+    )
 
     async def _drive() -> None:
         await chat_cmd._stream_response_gateway(
@@ -148,13 +158,13 @@ def test_stream_response_gateway_threads_chat_app_into_renderer(monkeypatch) -> 
             "session-key",
             "hello",
             elevated_state=None,
-            chat_app=chat_app,
+            tui_output=output_handle,
         )
 
     asyncio.run(_drive())
 
-    assert _RecordingRenderer.last_init_kwargs.get("chat_app") is chat_app, (
-        "StreamingRenderer must be constructed with chat_app=... so its "
+    assert _RecordingRenderer.last_init_kwargs.get("output_handle") is output_handle, (
+        "StreamingRenderer must be constructed with the TUI output handle so its "
         "aappend_text path can route writes through the output mutex"
     )
     instance = _RecordingRenderer.last_instance
@@ -169,12 +179,13 @@ def test_stream_response_gateway_threads_chat_app_into_renderer(monkeypatch) -> 
     )
 
 
-def test_stream_response_turnrunner_threads_chat_app_into_renderer(monkeypatch) -> None:
+def test_stream_response_turnrunner_threads_tui_output_into_renderer(monkeypatch) -> None:
     """``_stream_response_turnrunner`` mirrors the gateway path."""
     from opensquilla.engine.types import DoneEvent, TextDeltaEvent
     from opensquilla.tools.types import ToolContext
 
     chat_app = _fresh_chat_app(surface=Surface.CLI_STANDALONE)
+    output_handle = _output_handle(chat_app, surface=Surface.CLI_STANDALONE)
 
     # Build a fake TurnRunner that satisfies the isinstance assertion but
     # whose `run` returns a hand-rolled async iterator of engine events.
@@ -204,20 +215,17 @@ def test_stream_response_turnrunner_threads_chat_app_into_renderer(monkeypatch) 
     fake_runner = _FakeTurnRunner()
 
     # Make isinstance(..., TurnRunner) pass for our stand-in.
-    monkeypatch.setattr(
-        chat_cmd, "_wrap_cli_turn_stream", lambda s, _svc: s, raising=False
-    )
-    monkeypatch.setattr(
-        "opensquilla.engine.runtime.TurnRunner", _FakeTurnRunner, raising=True
-    )
+    monkeypatch.setattr(chat_compat, "wrap_cli_turn_stream", lambda s, _svc: s)
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", _FakeTurnRunner, raising=True)
 
     # The internal isinstance check on ToolContext still needs to pass.
     fake_ctx = object.__new__(ToolContext)
-    monkeypatch.setattr(
-        "opensquilla.tools.types.ToolContext", type(fake_ctx)
-    )
+    monkeypatch.setattr("opensquilla.tools.types.ToolContext", type(fake_ctx))
 
-    monkeypatch.setattr(chat_cmd, "StreamingRenderer", _RecordingRenderer)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_renderer.StreamingRenderer",
+        _RecordingRenderer,
+    )
 
     async def _drive() -> None:
         await chat_cmd._stream_response_turnrunner(
@@ -225,25 +233,23 @@ def test_stream_response_turnrunner_threads_chat_app_into_renderer(monkeypatch) 
             "session-key",
             fake_ctx,
             "hello",
-            chat_app=chat_app,
+            tui_output=output_handle,
         )
 
     asyncio.run(_drive())
 
-    assert _RecordingRenderer.last_init_kwargs.get("chat_app") is chat_app, (
+    assert _RecordingRenderer.last_init_kwargs.get("output_handle") is output_handle, (
         "_stream_response_turnrunner must construct StreamingRenderer "
-        "with chat_app=... so production tokens route through the "
+        "with the TUI output handle so production tokens route through the "
         "output mutex"
     )
     instance = _RecordingRenderer.last_instance
     assert instance is not None
     assert instance.a_appended == ["alpha", "beta"], (
-        "production stream turnrunner must use awaited aappend_text "
-        "for each text delta event"
+        "production stream turnrunner must use awaited aappend_text for each text delta event"
     )
     assert instance.appended == [], (
-        "sync append_text must not be called by the production "
-        "turnrunner stream path"
+        "sync append_text must not be called by the production turnrunner stream path"
     )
 
 
@@ -252,7 +258,7 @@ def test_production_stream_blocks_during_approval_in_flight(monkeypatch) -> None
     inline approval suspend-gate clears.
 
     Drives the real ``StreamingRenderer`` (not the recorder) through the
-    real ``ChatApplication.write_through`` path so the output mutex
+    typed ``TerminalOutputHandle`` path so the output mutex
     AND the ``_approval_in_flight`` suspend gate are both wired. With
     approval set the awaited write must park; clearing approval unblocks
     it and the bytes land. Without Fix 1 the production paths bypass
@@ -261,6 +267,7 @@ def test_production_stream_blocks_during_approval_in_flight(monkeypatch) -> None
     from opensquilla.cli import ui as cli_ui
 
     chat_app = _fresh_chat_app(surface=Surface.CLI_GATEWAY)
+    output_handle = _output_handle(chat_app, surface=Surface.CLI_GATEWAY)
     captured = io.StringIO()
     monkeypatch.setattr(cli_ui.console, "file", captured, raising=True)
 
@@ -280,7 +287,7 @@ def test_production_stream_blocks_during_approval_in_flight(monkeypatch) -> None
                 "session-key",
                 "hello",
                 elevated_state=None,
-                chat_app=chat_app,
+                tui_output=output_handle,
             )
         )
         # Yield several times so the renderer attempts its first write
@@ -289,8 +296,7 @@ def test_production_stream_blocks_during_approval_in_flight(monkeypatch) -> None
             await asyncio.sleep(0)
 
         assert "CHUNK" not in captured.getvalue(), (
-            "production stream wrote through during the approval window: "
-            f"{captured.getvalue()!r}"
+            f"production stream wrote through during the approval window: {captured.getvalue()!r}"
         )
 
         chat_app.set_approval_in_flight(False)
@@ -300,11 +306,11 @@ def test_production_stream_blocks_during_approval_in_flight(monkeypatch) -> None
     asyncio.run(_drive())
 
 
-def test_gateway_tool_rows_and_footer_share_chat_app_write_path(monkeypatch) -> None:
+def test_gateway_tool_rows_and_footer_share_output_handle_write_path(monkeypatch) -> None:
     """Tool/status/footer bytes must use the same output path as text deltas.
 
     The interactive REPL has prompt-toolkit redraws running while streamed
-    text arrives. If tool rows or footer lines bypass ``chat_app.write_through``
+    text arrives. If tool rows or footer lines bypass ``output_handle.write_through``
     they can race the prompt redraw and visually overwrite the first visible
     text after a tool call. This regression drives the gateway event order from
     a real chat turn: tool row first, then CJK text chunks.
@@ -312,6 +318,7 @@ def test_gateway_tool_rows_and_footer_share_chat_app_write_path(monkeypatch) -> 
     from opensquilla.cli import ui as cli_ui
 
     chat_app = _fresh_chat_app(surface=Surface.CLI_GATEWAY)
+    output_handle = _output_handle(chat_app, surface=Surface.CLI_GATEWAY)
     direct_output = io.StringIO()
     locked_writes: list[str] = []
 
@@ -358,7 +365,7 @@ def test_gateway_tool_rows_and_footer_share_chat_app_write_path(monkeypatch) -> 
             "session-key",
             "明天天气怎么样",
             elevated_state=None,
-            chat_app=chat_app,
+            tui_output=output_handle,
         )
 
     result = asyncio.run(_drive())
@@ -378,6 +385,7 @@ def test_gateway_stream_region_closes_when_upstream_raises(monkeypatch) -> None:
     from opensquilla.cli import ui as cli_ui
 
     chat_app = _fresh_chat_app(surface=Surface.CLI_GATEWAY)
+    output_handle = _output_handle(chat_app, surface=Surface.CLI_GATEWAY)
     direct_output = io.StringIO()
     locked_writes: list[str] = []
 
@@ -408,7 +416,7 @@ def test_gateway_stream_region_closes_when_upstream_raises(monkeypatch) -> None:
                 "session-key",
                 "hello",
                 elevated_state=None,
-                chat_app=chat_app,
+                tui_output=output_handle,
             )
 
     asyncio.run(_drive())

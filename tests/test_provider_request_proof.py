@@ -767,6 +767,32 @@ def test_provider_request_proof_emergency_compacts_old_user_tail_but_keeps_lates
     assert compacted["messages"][3]["content"] == "hi"
 
 
+def test_provider_request_proof_final_hard_cap_digests_oversized_latest_user() -> None:
+    huge_current_message = "please answer the LONG_CURRENT_INPUT marker\n" + ("x" * 500_000)
+    payload = {
+        "messages": [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": huge_current_message},
+        ]
+    }
+
+    compacted, proof = prove_or_compact_provider_payload(
+        payload,
+        projection_adapter="openrouter",
+        proof_budget=12_000,
+        status_projection_mode="content_envelope",
+    )
+
+    assert proof is not None
+    assert proof["fits"] is True
+    assert proof["final_hard_cap_compacted"] is True
+    assert proof["recent_tail_too_large"] is False
+    latest = compacted["messages"][-1]["content"]
+    assert latest != huge_current_message
+    assert "LONG_CURRENT_INPUT" in latest
+    assert "original_chars=500" in latest
+
+
 def test_provider_request_proof_final_hard_cap_preserves_critical_tool_result() -> None:
     critical_tool_result = json.dumps(
         {

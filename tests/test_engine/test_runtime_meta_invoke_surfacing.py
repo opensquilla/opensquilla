@@ -124,6 +124,30 @@ def test_build_tools_does_not_surface_meta_invoke_for_disabled_meta_skill(
     assert ctx.surfaced_tools is None or "meta_invoke" not in ctx.surfaced_tools
 
 
+def test_build_tools_does_not_surface_meta_invoke_when_meta_skill_disabled_by_config(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    registry = get_default_registry()
+    loader = _make_loader_with_meta(tmp_path)
+    runner = TurnRunner(
+        provider_selector=None,
+        config=SimpleNamespace(meta_skill=SimpleNamespace(enabled=False)),
+    )
+    runner._tool_registry = registry
+    runner._skill_loader = loader
+
+    ctx = ToolContext(is_owner=True, workspace_dir=str(tmp_path))
+    metadata: dict[str, object] = {}
+    tool_defs, _handler = runner._build_tools(ctx, metadata=metadata)
+    names = {getattr(td, "name", "") for td in tool_defs}
+
+    assert "meta_invoke" not in names
+    assert ctx.surfaced_tools is None or "meta_invoke" not in ctx.surfaced_tools
+    assert metadata["meta_skill_enabled"] is False
+
+
 def test_build_tools_preserves_existing_surfaced_tools(tmp_path: Path) -> None:
     """If the caller pre-populates ctx.surfaced_tools (e.g. for a custom
     per-request tool surface), _build_tools must add to it, not overwrite."""

@@ -25,7 +25,10 @@ from typing import Any
 import pytest
 
 from opensquilla.engine.runtime import TurnRunner
-from opensquilla.engine.types import ErrorEvent
+from opensquilla.engine.turn_runner.harness import _TurnRunnerAgentFactoryAdapter
+from opensquilla.engine.types import AgentConfig, ErrorEvent
+from opensquilla.tools.registry import ToolRegistry
+from opensquilla.tools.types import ToolContext
 
 # ---------------------------------------------------------------------------
 # Shared stubs
@@ -639,3 +642,28 @@ async def test_sync_manager_warm_called(monkeypatch: pytest.MonkeyPatch) -> None
     assert sync_manager.warmed_keys == ["agent:main:s1"]
     assert captured is not None
     assert captured["sync_manager_label"] == "syncmgr"
+
+
+def test_agent_factory_forwards_registry_and_tool_context() -> None:
+    """meta_invoke dispatch needs the Agent to retain registry/context wiring."""
+
+    registry = ToolRegistry()
+    tool_context = ToolContext(is_owner=True, workspace_dir="/tmp")
+    runner = TurnRunner(
+        provider_selector=None,
+        tool_registry=registry,
+    )
+
+    agent = _TurnRunnerAgentFactoryAdapter(runner).build(
+        provider=_StubProvider("p"),
+        config=AgentConfig(),
+        tool_definitions=[],
+        tool_handler=None,
+        session_key="agent:main:s1",
+        turn_call_logger=None,
+        memory_sync_manager=None,
+        tool_context=tool_context,
+    )
+
+    assert agent._tool_registry is registry
+    assert agent._tool_context is tool_context

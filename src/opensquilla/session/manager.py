@@ -28,6 +28,7 @@ from opensquilla.session.compaction_state import (
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
 from opensquilla.session.models import (
+    MemoryDurableReceipt,
     SessionContextState,
     SessionIntent,
     SessionNode,
@@ -747,6 +748,85 @@ class SessionManager:
         if node is None:
             raise KeyError(f"Session not found: {session_key}")
         return await self._storage.get_transcript(node.session_id, limit=limit)
+
+    async def record_memory_checkpoint(
+        self,
+        session_key: str,
+        transcript: list[TranscriptEntry] | None = None,
+        *,
+        turn_id: str | None = None,
+        source: str = "session_manager",
+    ) -> MemoryDurableReceipt:
+        """Persist a durable transcript checkpoint receipt before compaction."""
+        from opensquilla.memory.checkpoint import (
+            append_checkpoint_events,
+            build_checkpoint_events,
+            checkpoint_event_hash,
+            checkpoint_turn_id,
+        )
+
+        session_key = canonicalize_session_key(session_key)
+        node = await self._storage.get_session(session_key)
+        if node is None:
+            raise KeyError(f"Session not found: {session_key}")
+        entries = (
+            list(transcript)
+            if transcript is not None
+            else await self._storage.get_transcript(node.session_id)
+        )
+        if not entries:
+            raise ValueError("checkpoint transcript cannot be empty")
+
+        resolved_turn_id = turn_id or checkpoint_turn_id(entries)
+        events = build_checkpoint_events(
+            session_key=session_key,
+            session_id=node.session_id,
+            entries=entries,
+            source=source,
+            turn_id=resolved_turn_id,
+        )
+        workspace = Path(
+            getattr(self, "workspace_dir", None)
+            or (default_opensquilla_home() / "workspace")
+        ).expanduser()
+        failure_key = (
+            f"checkpoint:{session_key}:{resolved_turn_id}:"
+            f"{checkpoint_event_hash(str(len(events)))}"
+        )
+        try:
+            result = append_checkpoint_events(workspace, events)
+        except Exception as exc:
+            receipt = MemoryDurableReceipt(
+                session_key=session_key,
+                session_id=node.session_id,
+                turn_id=resolved_turn_id,
+                scope="checkpoint",
+                content_hash=None,
+                idempotency_key=failure_key,
+                status="checkpoint_failed",
+                reason=str(exc),
+                attempt_count=1,
+            )
+            try:
+                await self._storage.upsert_memory_durable_receipt(receipt)
+            except Exception:
+                pass
+            raise
+
+        receipt = MemoryDurableReceipt(
+            session_key=session_key,
+            session_id=node.session_id,
+            turn_id=resolved_turn_id,
+            scope="checkpoint",
+            source_path=result.relative_path,
+            content_hash=result.content_hash,
+            idempotency_key=(
+                f"checkpoint:{session_key}:{resolved_turn_id}:{result.content_hash}"
+            ),
+            status="checkpoint_saved",
+            attempt_count=1,
+        )
+        return await self._storage.upsert_memory_durable_receipt(receipt)
 
     async def get_canonical_transcript(
         self, session_key: str, limit: int | None = None

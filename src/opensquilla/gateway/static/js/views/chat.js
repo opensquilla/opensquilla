@@ -30,6 +30,7 @@ const ChatView = (() => {
   let _aborted = false;
   let _streamBubble = null;
   let _streamRaw = '';           // full accumulated text (for export)
+  let _streamGeneration = 0;
   let _segments = [];             // [{type:'text', raw:'', el:DOM}, {type:'tool', el:DOM}, ...]
   let _activeTextSeg = null;      // pointer to current text segment's DOM element
   let _activeTextRaw = '';        // raw text for current active segment only
@@ -415,6 +416,14 @@ const ChatView = (() => {
       .replace(/"/g, '&quot;');
   }
 
+  function _displayRoleLabel(role) {
+    return role === 'user' ? 'You'
+      : role === 'assistant' ? 'Squilla'
+      : role === 'subagent' ? 'Sub-agent'
+      : role ? role.charAt(0).toUpperCase() + role.slice(1)
+      : '';
+  }
+
   /* ── Inline SVG icons local to chat.js (icons.js owned by another agent) ── */
 
   // 14px sliders icon — three horizontal rails with knobs at different
@@ -484,7 +493,7 @@ const ChatView = (() => {
     const row = document.createElement('div');
     row.className = 'msg-actions';
     row.setAttribute('role', 'toolbar');
-    row.setAttribute('aria-label', role === 'user' ? 'User message actions' : 'Assistant message actions');
+    row.setAttribute('aria-label', role === 'user' ? 'User message actions' : 'Squilla message actions');
 
     if (role === 'assistant') {
       row.innerHTML =
@@ -964,10 +973,6 @@ const ChatView = (() => {
         <div class="chat-slash hidden" id="chat-slash"></div>
         <div class="chat-composer" id="chat-composer">
           <div class="chat-attachments hidden" id="chat-attach-preview"></div>
-          <div class="chat-bypass-warn hidden" id="chat-bypass-warn" role="status" aria-live="polite">
-            <span class="chat-bypass-warn__glyph" aria-hidden="true">!</span>
-            <span class="chat-bypass-warn__text">Approvals bypassed for this session</span>
-          </div>
           <div class="chat-input-bar">
             <button class="btn btn--icon btn--ghost" id="chat-btn-attach" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON">${icons.paperclip()}</button>
             <div class="chat-toolbar-wrap">
@@ -1048,11 +1053,20 @@ const ChatView = (() => {
     _loadFeatureToggles();
     _loadSlashCommands();
 
-    // Autofocus chat input
-    if (_textarea) _textarea.focus();
+    // Keep desktop keyboard flow quick, but avoid opening the soft keyboard on
+    // mobile/touch devices before the user asks to type.
+    if (_textarea && _shouldAutofocusComposer()) _textarea.focus();
   }
 
   /* ── Toolbar Pills (feature toggles) ────────────────────────────────── */
+
+  function _shouldAutofocusComposer() {
+    try {
+      if (window.matchMedia('(max-width: 768px)').matches) return false;
+      if (window.matchMedia('(pointer: coarse)').matches) return false;
+    } catch {}
+    return true;
+  }
 
   function _bindToolbarPills() {
     if (_elevatedPill) {
@@ -1581,18 +1595,6 @@ const ChatView = (() => {
     const routerOff = _toolbarState.router === false;
     trigger.classList.toggle('has-dot-bypass', bypass);
     trigger.classList.toggle('has-dot-router', routerOff);
-    // Bypass warning chip — only "Approvals bypassed" rises to a visible chip.
-    // Router-off is non-default but not safety-critical.
-    const warn = _el && _el.querySelector('#chat-bypass-warn');
-    if (warn) {
-      const text = warn.querySelector('.chat-bypass-warn__text');
-      if (text) {
-        text.textContent = _elevatedMode
-          ? 'Approvals bypassed for this session'
-          : 'Approvals bypassed by global default';
-      }
-      warn.classList.toggle('hidden', !bypass);
-    }
   }
 
   function _bindToolbarTrigger() {
@@ -2053,8 +2055,14 @@ const ChatView = (() => {
   }
 
   function _autoResizeTextarea() {
+    if (!_textarea) return;
+    if (!_textarea.value) {
+      _textarea.style.height = '';
+      return;
+    }
+    const minHeight = Number.parseFloat(getComputedStyle(_textarea).minHeight) || 40;
     _textarea.style.height = 'auto';
-    _textarea.style.height = Math.min(_textarea.scrollHeight, 160) + 'px';
+    _textarea.style.height = Math.max(minHeight, Math.min(_textarea.scrollHeight, 160)) + 'px';
   }
 
   /* ── Slash Command Menu ─────────────────────────────────────────────── */
@@ -2583,7 +2591,7 @@ const ChatView = (() => {
     // written to the transcript, never fed back to the LLM.
     _unsubs.push(_rpc.on('session.event.warning', (payload) => {
       if (_isStaleEpoch(payload)) return;
-      const msg = (payload && payload.message) || 'Assistant warning';
+      const msg = (payload && payload.message) || 'Squilla warning';
       UI.toast(msg, 'warn', 5000);
     }));
 
@@ -2662,6 +2670,9 @@ const ChatView = (() => {
             run_status: terminalRunStatus,
             last_task: { ...(rawPayload || {}), status: terminalStatus },
           });
+        }
+        if (rawEvent === 'task.succeeded') {
+          _scheduleSucceededTaskTerminalSync(rawPayload);
         }
       }
       const normalized = _taskTerminalAsSessionEvent(rawEvent, rawPayload);
@@ -3350,6 +3361,18 @@ const ChatView = (() => {
       : '';
   }
 
+  function _scheduleSucceededTaskTerminalSync(payload = {}) {
+    const streamGeneration = _streamGeneration;
+    setTimeout(() => {
+      if (!_isCurrentSessionPayload(payload) || _isStaleEpoch(payload)) return;
+      _scheduleHistorySync();
+      if (_isStreaming && _streamGeneration === streamGeneration) {
+        _endStreaming();
+        _schedulePendingDrainAfterTerminal();
+      }
+    }, 75);
+  }
+
   function _taskTerminalAsSessionEvent(event, payload) {
     if (event === 'task.cancelled') {
       return {
@@ -3465,7 +3488,7 @@ const ChatView = (() => {
       header.className = 'msg-header';
       const roleLabel = document.createElement('span');
       roleLabel.className = 'role-label';
-      roleLabel.textContent = 'Assistant';
+      roleLabel.textContent = _displayRoleLabel('assistant');
       header.appendChild(roleLabel);
       _thinkingEl.appendChild(header);
     }
@@ -3530,6 +3553,7 @@ const ChatView = (() => {
 
   function _startStreaming() {
     _isStreaming = true;
+    _streamGeneration += 1;
     _applySessionRunState({ run_status: 'running', active_task: { status: 'running' } });
     _streamRaw = '';
     _segments = []; _activeTextSeg = null; _activeTextRaw = '';
@@ -3570,7 +3594,7 @@ const ChatView = (() => {
       if (!sameGroup) {
         _streamBubble.innerHTML = `
           <div class="msg-header">
-            <span class="role-label">Assistant</span>
+            <span class="role-label">${_esc(_displayRoleLabel('assistant'))}</span>
             <span class="savings-indicator"></span>
             <span class="msg-time"></span>
           </div>
@@ -4661,10 +4685,7 @@ const ChatView = (() => {
     const div = document.createElement('div');
     div.className = 'msg ' + displayRole;
 
-    const roleText = displayRole === 'user' ? 'You'
-      : displayRole === 'assistant' ? 'Assistant'
-      : displayRole === 'subagent' ? 'Sub-agent'
-      : displayRole.charAt(0).toUpperCase() + displayRole.slice(1);
+    const roleText = _displayRoleLabel(displayRole);
 
     // Collapse header for consecutive same-speaker messages within the same day.
     // Always show for system/error/tool roles.
@@ -4678,7 +4699,7 @@ const ChatView = (() => {
       const header = document.createElement('div');
       header.className = 'msg-header';
       if (isoStr) header.title = new Date(isoStr).toLocaleString();
-      header.innerHTML = `<span class="role-label">${roleText}</span>${_renderMessageTags(options)}<span class="msg-time">${_esc(timeStr)}</span>`;
+      header.innerHTML = `<span class="role-label">${_esc(roleText)}</span>${_renderMessageTags(options)}<span class="msg-time">${_esc(timeStr)}</span>`;
       div.appendChild(header);
     } else {
       // No header; attach ISO timestamp as title on the bubble body for hover tooltip
@@ -4914,7 +4935,7 @@ const ChatView = (() => {
     let md = `# Chat Export \u2014 ${_sessionKey}\n\n`;
     md += `Exported: ${new Date().toISOString()}\n\n---\n\n`;
     _messages.forEach((msg) => {
-      const role = msg.role === 'user' ? 'You' : msg.role === 'assistant' ? 'Assistant' : msg.role;
+      const role = _displayRoleLabel(msg.role) || msg.role;
       const time = msg.ts ? ` _(${new Date(msg.ts).toLocaleString()})_` : '';
       md += `### ${role}${time}\n\n${msg.text}${_artifactMarkdownLines(msg.artifacts || [])}\n\n---\n\n`;
     });

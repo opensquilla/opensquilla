@@ -14,6 +14,12 @@ from opensquilla.onboarding.image_generation_specs import (
     image_generation_provider_catalog_payload,
     list_image_generation_provider_setup_specs,
 )
+from opensquilla.onboarding.memory_embedding_specs import (
+    MemoryEmbeddingProviderSetupSpec,
+    get_memory_embedding_provider_setup_spec,
+    list_memory_embedding_provider_setup_specs,
+    memory_embedding_provider_catalog_payload,
+)
 from opensquilla.onboarding.provider_specs import (
     ProviderSetupField,
     ProviderSetupSpec,
@@ -40,6 +46,7 @@ __all__ = [
     "ChannelSetupSpec",
     "ImageGenerationProviderSetupField",
     "ImageGenerationProviderSetupSpec",
+    "MemoryEmbeddingProviderSetupSpec",
     "ProviderSetupField",
     "ProviderSetupSpec",
     "RouterSetupProfile",
@@ -48,12 +55,15 @@ __all__ = [
     "channel_catalog_payload",
     "get_channel_setup_spec",
     "get_image_generation_provider_setup_spec",
+    "get_memory_embedding_provider_setup_spec",
     "get_provider_setup_spec",
     "get_router_setup_profile",
     "get_search_provider_setup_spec",
     "image_generation_provider_catalog_payload",
+    "memory_embedding_provider_catalog_payload",
     "list_channel_setup_specs",
     "list_image_generation_provider_setup_specs",
+    "list_memory_embedding_provider_setup_specs",
     "list_provider_setup_specs",
     "list_router_setup_profiles",
     "list_search_provider_setup_specs",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 import tomllib
 
 import pytest
@@ -9,6 +10,12 @@ import pytest
 import opensquilla.gateway.rpc_onboarding  # noqa: F401  ensures registration
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+
+
+def _env_hint(env_key: str) -> str:
+    if platform.system().lower().startswith("win"):
+        return f'PowerShell: $env:{env_key} = "<your-key>"'
+    return f'export {env_key}="<your-key>"'
 
 
 def _admin_ctx() -> RpcContext:
@@ -42,6 +49,9 @@ async def test_onboarding_status_works_with_read_scope(tmp_path, monkeypatch):
     assert res.error is None, res.error
     assert "needsOnboarding" in res.payload
     assert "configPath" in res.payload
+    assert "sections" in res.payload
+    assert "sectionDetails" in res.payload
+    assert "memory_embedding" in res.payload["sections"]
 
 
 @pytest.mark.asyncio
@@ -71,6 +81,7 @@ async def test_onboarding_catalog_returns_providers_and_channels(tmp_path, monke
         "ollama",
         "none",
     } <= memory_provider_ids
+    assert all("whatYouNeed" in p for p in payload["memoryEmbeddingProviders"])
     router_profile_ids = {p["profileId"] for p in payload["routerProfiles"]["profiles"]}
     assert {"openrouter", "deepseek", "openai"} <= router_profile_ids
 
@@ -322,6 +333,21 @@ async def test_search_configure_redacts_api_key(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_search_configure_accepts_webui_string_max_results(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.search.configure",
+        {"providerId": "duckduckgo", "maxResults": "5"},
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["entry"]["max_results"] == 5
+
+
+@pytest.mark.asyncio
 async def test_image_generation_configure_redacts_api_key(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
@@ -380,6 +406,64 @@ async def test_image_generation_configure_can_use_custom_env_reference(
 
 
 @pytest.mark.asyncio
+async def test_image_generation_configure_can_save_missing_custom_env_reference(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_TEST_IMAGE_KEY", raising=False)
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.imageGeneration.configure",
+        {
+            "providerId": "openrouter",
+            "primary": "openrouter/google/gemini-3.1-flash-image-preview",
+            "apiKeyEnv": "OPENSQUILLA_TEST_IMAGE_KEY",
+        },
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["entry"]["api_key_source"] == "missing_env"
+    assert res.payload["entry"]["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
+    data = tomllib.loads(target.read_text())
+    provider = data["image_generation"]["providers"]["openrouter"]
+    assert provider["api_key"] == ""
+    assert provider["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
+
+
+@pytest.mark.asyncio
+async def test_image_generation_configure_can_disable_without_visible_key(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.imageGeneration.configure",
+        {
+            "providerId": "openrouter",
+            "primary": "openrouter/google/gemini-3.1-flash-image-preview",
+            "enabled": False,
+        },
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["entry"]["enabled"] is False
+    assert res.payload["entry"]["api_key_source"] == "none"
+
+    data = tomllib.loads(target.read_text())
+    assert data["image_generation"]["enabled"] is False
+
+
+@pytest.mark.asyncio
 async def test_onboarding_status_requires_image_generation_enable_for_llm_fallback(
     tmp_path,
     monkeypatch,
@@ -399,6 +483,62 @@ async def test_onboarding_status_requires_image_generation_enable_for_llm_fallba
     assert res.payload["imageGenerationEnabled"] is False
     assert res.payload["imageGenerationSource"] == "none"
     assert res.payload["imageGenerationProvider"] == ""
+
+
+@pytest.mark.asyncio
+async def test_onboarding_status_exposes_missing_env_keys_for_optional_capabilities(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    from opensquilla.gateway.config import GatewayConfig
+
+    ctx = _read_ctx()
+    ctx.config = GatewayConfig()
+    ctx.config.llm.provider = "openrouter"
+    ctx.config.llm.model = "deepseek/deepseek-v4-flash"
+    ctx.config.llm.api_key = "sk-or"
+    ctx.config.search_provider = "brave"
+    ctx.config.search_api_key_env = "BRAVE_SEARCH_API_KEY"
+    ctx.config.image_generation.enabled = True
+    ctx.config.image_generation.primary = "openai/gpt-image-1"
+    ctx.config.image_generation.providers.openai.api_key_env = "OPENAI_IMAGE_KEY"
+    ctx.config.memory.embedding.provider = "openai"
+    ctx.config.memory.embedding.remote.api_key_env = "OPENAI_EMBEDDINGS_API_KEY"
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_IMAGE_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_EMBEDDINGS_API_KEY", raising=False)
+
+    res = await get_dispatcher().dispatch("r1", "onboarding.status", {}, ctx)
+
+    assert res.error is None, res.error
+    assert res.payload["searchProvider"] == "brave"
+    assert res.payload["searchSource"] == "missing_env"
+    assert res.payload["searchEnvKey"] == "BRAVE_SEARCH_API_KEY"
+    assert res.payload["sections"]["image_generation"] == "degraded"
+    assert res.payload["sectionDetails"]["image_generation"]["actionRequired"] is True
+    assert res.payload["imageGenerationSource"] == "missing_env"
+    assert res.payload["imageGenerationProvider"] == "openai"
+    assert res.payload["imageGenerationEnvKey"] == "OPENAI_IMAGE_KEY"
+    assert res.payload["memoryEmbeddingSource"] == "missing_env"
+    assert res.payload["memoryEmbeddingEnvKey"] == "OPENAI_EMBEDDINGS_API_KEY"
+    assert res.payload["envRecoveryCommands"] == [
+        {
+            "section": "memory_embedding",
+            "label": "Set memory key",
+            "command": _env_hint("OPENAI_EMBEDDINGS_API_KEY"),
+        },
+        {
+            "section": "search",
+            "label": "Set search key",
+            "command": _env_hint("BRAVE_SEARCH_API_KEY"),
+        },
+        {
+            "section": "image_generation",
+            "label": "Set image key",
+            "command": _env_hint("OPENAI_IMAGE_KEY"),
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -446,6 +586,33 @@ async def test_memory_embedding_configure_redacts_remote_api_key(tmp_path, monke
     assert res.payload["changed"] is True
     assert res.payload["restartRequired"] is True
     assert res.payload["entry"]["remote"]["api_key"] == "***"
+
+
+@pytest.mark.asyncio
+async def test_memory_embedding_configure_can_use_env_key_reference(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.memory_embedding.configure",
+        {
+            "providerId": "openai",
+            "model": "text-embedding-3-small",
+            "apiKeyEnv": "OPENAI_EMBEDDINGS_API_KEY",
+        },
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["entry"]["remote"]["api_key_env"] == "OPENAI_EMBEDDINGS_API_KEY"
+    data = tomllib.loads(target.read_text())
+    remote = data["memory"]["embedding"]["remote"]
+    assert remote["api_key_env"] == "OPENAI_EMBEDDINGS_API_KEY"
+    assert "api_key" not in remote
 
 
 @pytest.mark.asyncio

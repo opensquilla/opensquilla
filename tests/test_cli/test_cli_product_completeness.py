@@ -162,6 +162,23 @@ def test_config_get_explicit_config_path_wins(tmp_path: Path):
     assert "explicit/model" in result.stdout
 
 
+def test_config_set_explicit_config_path_persists_to_target(tmp_path: Path):
+    target = tmp_path / "explicit.toml"
+    target.write_text("log_file_enabled = false\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["config", "set", "log_file_enabled", "true", "--config", str(target)],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Config:" in result.stdout
+    assert "Restart the gateway" in result.stdout
+    check = runner.invoke(app, ["config", "get", "log_file_enabled", "--config", str(target)])
+    assert check.exit_code == 0, check.stdout
+    assert "True" in check.stdout
+
+
 def test_gateway_json_errors_go_to_stderr(monkeypatch):
     _install_fake_gateway(monkeypatch, FailingConnectGatewayClient)
 
@@ -823,6 +840,63 @@ def test_channels_status_and_logout_use_existing_rpcs(monkeypatch):
     assert ("channels.logout", {"name": "slack"}) in fake.calls
 
 
+def test_runtime_diagnostics_commands_can_target_configured_gateway(
+    tmp_path: Path, monkeypatch
+):
+    fake = _install_fake_gateway(monkeypatch)
+    target = tmp_path / "custom.toml"
+    target.write_text('host = "0.0.0.0"\nport = 19999\n', encoding="utf-8")
+    fake.rpc_payloads = {
+        "channels.status": {
+            "channels": [{"name": "slack", "status": "connected", "connected": True}]
+        },
+        "providers.status": {"activeProvider": "openrouter", "providers": [], "count": 0},
+        "search.status": {
+            "activeProvider": "duckduckgo",
+            "provider": "duckduckgo",
+            "configured": True,
+            "buildable": True,
+        },
+        "diagnostics.status": {"diagnostics_enabled": {"effective": True}},
+        "doctor.memory.status": {"backend": "sqlite", "status": "ok"},
+    }
+
+    channels = runner.invoke(
+        app, ["channels", "status", "slack", "--json", "--config", str(target)]
+    )
+    providers = runner.invoke(app, ["providers", "status", "--json", "--config", str(target)])
+    search = runner.invoke(app, ["search", "status", "--json", "--config", str(target)])
+    diagnostics = runner.invoke(
+        app, ["diagnostics", "status", "--json", "--config", str(target)]
+    )
+    memory = runner.invoke(app, ["memory", "status", "--json", "--config", str(target)])
+
+    assert channels.exit_code == 0, channels.stdout
+    assert providers.exit_code == 0, providers.stdout
+    assert search.exit_code == 0, search.stdout
+    assert diagnostics.exit_code == 0, diagnostics.stdout
+    assert memory.exit_code == 0, memory.stdout
+    connected_urls = [value for method, value in fake.calls if method == "connect"]
+    assert connected_urls == ["ws://127.0.0.1:19999/ws"] * 5
+
+
+def test_runtime_diagnostics_commands_use_gateway_config_env_path(
+    tmp_path: Path, monkeypatch
+):
+    fake = _install_fake_gateway(monkeypatch)
+    target = tmp_path / "env-config.toml"
+    target.write_text('host = "127.0.0.1"\nport = 20001\n', encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    fake.rpc_payloads = {
+        "providers.status": {"activeProvider": "openrouter", "providers": [], "count": 0},
+    }
+
+    result = runner.invoke(app, ["providers", "status", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    assert ("connect", "ws://127.0.0.1:20001/ws") in fake.calls
+
+
 def test_cost_json_returns_gateway_payload(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.cost_payload = {
@@ -895,3 +969,22 @@ def test_search_query_json_exits_nonzero_on_diagnostic_failure(monkeypatch):
 
     assert result.exit_code == 1
     assert json.loads(result.stdout)["error"]["message"] == "network down"
+
+
+def test_doctor_json_uses_gateway_doctor_rpc(monkeypatch):
+    fake = _install_fake_gateway(monkeypatch)
+    fake.rpc_payloads = {
+        "doctor.status": {
+            "status": "ready",
+            "ready": True,
+            "summary": "Ready",
+            "counts": {"error": 0, "warn": 0, "info": 0, "ok": 1},
+            "findings": [],
+        }
+    }
+
+    result = runner.invoke(app, ["doctor", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    assert json.loads(result.stdout)["ready"] is True
+    assert ("doctor.status", {"agentId": "main", "deep": True}) in fake.calls

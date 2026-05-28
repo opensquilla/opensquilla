@@ -552,11 +552,22 @@ def test_warning_handler_forwards_through_transformer() -> None:
 def test_done_handler_normalizes_and_emits_done() -> None:
     state = _make_state()
     handler = _DoneHandler()
-    inp = _make_input(state=state, turn=_make_turn(metadata={"routed_tier": "L1"}))
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(
+            metadata={
+                "routed_tier": "L1",
+                "routing_applied": False,
+                "rollout_phase": "observe",
+            }
+        ),
+    )
     done = DoneEvent(text="result", input_tokens=10, output_tokens=5)
     transformed, extra = handler.handle(done, inp, state)
     assert isinstance(transformed, DoneEvent)
     assert transformed.routed_tier == "L1"
+    assert transformed.routing_applied is False
+    assert transformed.rollout_phase == "observe"
     assert state.done_event is transformed
     assert extra == []
 

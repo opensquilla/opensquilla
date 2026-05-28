@@ -28,6 +28,7 @@ from prompt_toolkit.input.base import DummyInput
 from prompt_toolkit.output import DummyOutput
 
 from opensquilla.cli.repl.app import ChatApplication
+from opensquilla.cli.repl.terminal_surface import TerminalSurface
 from opensquilla.engine.commands import Surface
 
 
@@ -151,10 +152,7 @@ def test_ctrl_c_binding_invokes_cancel_callback_and_clears_buffer() -> None:
     # Find the Ctrl+C binding handler. prompt-toolkit key bindings are stored
     # as a list of Binding objects; locate the one whose key sequence is
     # ("c-c",).
-    ctrl_c_handlers = [
-        binding for binding in bindings.bindings
-        if tuple(binding.keys) == ("c-c",)
-    ]
+    ctrl_c_handlers = [binding for binding in bindings.bindings if tuple(binding.keys) == ("c-c",)]
     assert len(ctrl_c_handlers) == 1, (
         f"expected exactly one c-c binding, found {len(ctrl_c_handlers)}"
     )
@@ -180,8 +178,7 @@ def test_ctrl_c_binding_invokes_cancel_callback_and_clears_buffer() -> None:
         "advertised `cancels the current turn` semantics hold."
     )
     assert chat_app._buffer.text == "", (
-        "Ctrl+C must also clear the input buffer so the advertised "
-        "`clears input` semantics hold."
+        "Ctrl+C must also clear the input buffer so the advertised `clears input` semantics hold."
     )
 
 
@@ -194,9 +191,7 @@ def test_ctrl_c_binding_safe_with_no_callback_registered() -> None:
     from opensquilla.cli.repl.app import _build_key_bindings
 
     bindings = _build_key_bindings()
-    handler = next(
-        b.handler for b in bindings.bindings if tuple(b.keys) == ("c-c",)
-    )
+    handler = next(b.handler for b in bindings.bindings if tuple(b.keys) == ("c-c",))
 
     chat_app = _fresh_chat_app()
     chat_app._buffer.text = "draft"
@@ -251,8 +246,7 @@ async def test_user_can_type_during_stream() -> None:
 
         try:
             assert chat_app._buffer.text == "hello", (
-                f"buffer did not accept keystrokes during streaming: "
-                f"got {chat_app._buffer.text!r}"
+                f"buffer did not accept keystrokes during streaming: got {chat_app._buffer.text!r}"
             )
         finally:
             await turn_task
@@ -303,19 +297,29 @@ async def test_pending_commands_queue_during_turn(monkeypatch) -> None:
         def set_toolbar(self, key, value) -> None:
             return None
 
-        @property
-        def application(self):
-            class _FakeApp:
-                def set_cancel_callback(self, cb) -> None:
-                    return None
+        def set_cancel_callback(self, cb) -> None:
+            return None
 
-            return _FakeApp()
+        def set_shutdown_callback(self, cb) -> None:
+            return None
+
+        def emit_eof(self) -> None:
+            inputs.put_nowait(None)
+
+        def invalidate(self) -> None:
+            return None
+
+        async def write_through(self, payload: str) -> None:
+            return None
 
     @asynccontextmanager
     async def _fake_session(**kwargs):
-        yield _FakeHandle()
+        yield TerminalSurface(_FakeHandle())
 
-    monkeypatch.setattr(chat_cmd, "interactive_session", _fake_session)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_chat_adapter.open_terminal_surface",
+        _fake_session,
+    )
 
     repl_task = asyncio.create_task(
         chat_cmd._run_concurrent_repl(
@@ -371,33 +375,36 @@ async def test_queued_turn_announces_when_promoted(monkeypatch) -> None:
 
     inputs: asyncio.Queue[str | None] = asyncio.Queue()
 
-    class _FakePTApp:
-        def invalidate(self) -> None:
-            return None
-
-    class _FakeChatApp:
-        application = _FakePTApp()
-
-        def set_cancel_callback(self, cb) -> None:
-            return None
-
-        async def write_through(self, payload: str) -> None:
-            events.append(("write", payload))
-
     class _FakeHandle:
-        application = _FakeChatApp()
-
         async def next_line(self) -> str | None:
             return await inputs.get()
 
         def set_toolbar(self, key, value) -> None:
             return None
 
+        def set_cancel_callback(self, cb) -> None:
+            return None
+
+        def set_shutdown_callback(self, cb) -> None:
+            return None
+
+        def emit_eof(self) -> None:
+            inputs.put_nowait(None)
+
+        def invalidate(self) -> None:
+            return None
+
+        async def write_through(self, payload: str) -> None:
+            events.append(("write", payload))
+
     @asynccontextmanager
     async def _fake_session(**kwargs):
-        yield _FakeHandle()
+        yield TerminalSurface(_FakeHandle())
 
-    monkeypatch.setattr(chat_cmd, "interactive_session", _fake_session)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_chat_adapter.open_terminal_surface",
+        _fake_session,
+    )
 
     repl_task = asyncio.create_task(
         chat_cmd._run_concurrent_repl(
@@ -445,19 +452,29 @@ async def test_loop_exits_cleanly_on_eof(monkeypatch) -> None:
         def set_toolbar(self, key, value) -> None:
             return None
 
-        @property
-        def application(self):
-            class _FakeApp:
-                def set_cancel_callback(self, cb) -> None:
-                    return None
+        def set_cancel_callback(self, cb) -> None:
+            return None
 
-            return _FakeApp()
+        def set_shutdown_callback(self, cb) -> None:
+            return None
+
+        def emit_eof(self) -> None:
+            return None
+
+        def invalidate(self) -> None:
+            return None
+
+        async def write_through(self, payload: str) -> None:
+            return None
 
     @asynccontextmanager
     async def _fake_session(**kwargs):
-        yield _FakeHandle()
+        yield TerminalSurface(_FakeHandle())
 
-    monkeypatch.setattr(chat_cmd, "interactive_session", _fake_session)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_chat_adapter.open_terminal_surface",
+        _fake_session,
+    )
 
     async def _dispatch(user_input: str) -> bool:
         # Should never be reached — the handle returns None immediately.
@@ -510,19 +527,29 @@ async def test_ctrl_g_cancels_inflight_turn_through_helper(monkeypatch) -> None:
         def set_toolbar(self, key, value) -> None:
             return None
 
-        @property
-        def application(self):
-            class _FakeApp:
-                def set_cancel_callback(self, cb) -> None:  # noqa: N805
-                    captured_cb.append(cb)
+        def set_cancel_callback(self, cb) -> None:
+            captured_cb.append(cb)
 
-            return _FakeApp()
+        def set_shutdown_callback(self, cb) -> None:
+            return None
+
+        def emit_eof(self) -> None:
+            inputs.put_nowait(None)
+
+        def invalidate(self) -> None:
+            return None
+
+        async def write_through(self, payload: str) -> None:
+            return None
 
     @asynccontextmanager
     async def _fake_session(**kwargs):
-        yield _FakeHandle()
+        yield TerminalSurface(_FakeHandle())
 
-    monkeypatch.setattr(chat_cmd, "interactive_session", _fake_session)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_chat_adapter.open_terminal_surface",
+        _fake_session,
+    )
 
     async def _slow_dispatch(user_input: str) -> bool:
         dispatch_started.set()
@@ -570,10 +597,6 @@ async def test_ctrl_g_gateway_turn_schedules_remote_abort(monkeypatch) -> None:
     dispatch_started = asyncio.Event()
     abort_calls: list[str] = []
 
-    class _FakeClient:
-        async def abort_session(self, session_key: str) -> None:
-            abort_calls.append(session_key)
-
     class _FakeHandle:
         async def next_line(self) -> str | None:
             return await inputs.get()
@@ -581,24 +604,37 @@ async def test_ctrl_g_gateway_turn_schedules_remote_abort(monkeypatch) -> None:
         def set_toolbar(self, key, value) -> None:
             return None
 
-        @property
-        def application(self):
-            class _FakeApp:
-                def set_cancel_callback(self, cb) -> None:  # noqa: N805
-                    captured_cb.append(cb)
+        def set_cancel_callback(self, cb) -> None:
+            captured_cb.append(cb)
 
-            return _FakeApp()
+        def set_shutdown_callback(self, cb) -> None:
+            return None
+
+        def emit_eof(self) -> None:
+            inputs.put_nowait(None)
+
+        def invalidate(self) -> None:
+            return None
+
+        async def write_through(self, payload: str) -> None:
+            return None
 
     @asynccontextmanager
     async def _fake_session(**kwargs):
-        yield _FakeHandle()
+        yield TerminalSurface(_FakeHandle())
 
-    monkeypatch.setattr(chat_cmd, "interactive_session", _fake_session)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_chat_adapter.open_terminal_surface",
+        _fake_session,
+    )
 
     async def _slow_dispatch(_user_input: str) -> bool:
         dispatch_started.set()
         await asyncio.sleep(5)
         return True
+
+    async def _abort_active_turn() -> None:
+        abort_calls.append("agent:main:cli-test")
 
     repl_task = asyncio.create_task(
         chat_cmd._run_concurrent_repl(
@@ -606,9 +642,9 @@ async def test_ctrl_g_gateway_turn_schedules_remote_abort(monkeypatch) -> None:
             scope={
                 "model": None,
                 "session_key": "agent:main:cli-test",
-                "client": _FakeClient(),
             },
             dispatch=_slow_dispatch,
+            abort_active_turn=_abort_active_turn,
         )
     )
 
@@ -651,25 +687,31 @@ class _FakeHandle:
     def set_toolbar(self, key, value) -> None:
         return None
 
-    @property
-    def application(self):
-        captured = self._captured_cb
+    def set_cancel_callback(self, cb) -> None:
+        self._captured_cb.append(cb)
 
-        class _FakeApp:
-            def set_cancel_callback(self, cb) -> None:
-                captured.append(cb)
+    def set_shutdown_callback(self, cb) -> None:
+        return None
 
-        return _FakeApp()
+    def emit_eof(self) -> None:
+        self._inputs.put_nowait(None)
+
+    def invalidate(self) -> None:
+        return None
+
+    async def write_through(self, payload: str) -> None:
+        return None
 
 
 def _install_fake_session(monkeypatch, inputs, captured_cb) -> None:
-    from opensquilla.cli import chat_cmd
-
     @asynccontextmanager
     async def _fake_session(**kwargs):
-        yield _FakeHandle(inputs, captured_cb)
+        yield TerminalSurface(_FakeHandle(inputs, captured_cb))
 
-    monkeypatch.setattr(chat_cmd, "interactive_session", _fake_session)
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_chat_adapter.open_terminal_surface",
+        _fake_session,
+    )
 
 
 @pytest.mark.asyncio
@@ -735,9 +777,7 @@ async def test_clear_cancels_inflight_turn(monkeypatch) -> None:
     await asyncio.wait_for(repl_task, timeout=2.0)
 
     assert "hello-start" in executed
-    assert "hello-end" not in executed, (
-        "hello turn must have been cancelled before completing"
-    )
+    assert "hello-end" not in executed, "hello turn must have been cancelled before completing"
     assert "/clear" in executed
 
 
@@ -810,9 +850,7 @@ async def test_clear_purges_pending_queue(monkeypatch) -> None:
     assert "A-end" not in executed
     assert "/clear" in executed
     # None of the queued commands were dispatched.
-    assert "/new" not in executed, (
-        f"/new should have been purged; executed={executed}"
-    )
+    assert "/new" not in executed, f"/new should have been purged; executed={executed}"
     assert "/model gpt-5" not in executed
     assert "hello world" not in executed
 
@@ -931,9 +969,7 @@ async def test_help_during_turn_is_queued_not_immediate(monkeypatch) -> None:
         await asyncio.sleep(0)
 
     # /help MUST NOT have run yet; the slash policy always enqueues.
-    assert "/help" not in executed, (
-        "/help must enqueue, not run immediately"
-    )
+    assert "/help" not in executed, "/help must enqueue, not run immediately"
 
     # Release A; /help must now run from the drained deque.
     finish_a.set()
@@ -1018,8 +1054,9 @@ async def test_exit_drains_queue_then_terminates(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_pending_queue_caps_at_max_size(monkeypatch) -> None:
-    """The pending deque is capped at
-    `_PENDING_QUEUE_MAX_SIZE` items. Once full, further inputs are
+    """The pending deque is capped at runtime_bridge.PENDING_QUEUE_MAX_SIZE.
+
+    Once full, further inputs are
     rejected with a console toast and the rejected input is dropped.
 
     The drained queue MUST contain exactly the first cap-worth of
@@ -1027,10 +1064,12 @@ async def test_pending_queue_caps_at_max_size(monkeypatch) -> None:
     not silently-evict-oldest.
     """
     from opensquilla.cli import chat_cmd
+    from opensquilla.cli import ui as cli_ui
+    from opensquilla.cli.repl import runtime_bridge
 
     # Tighten the cap for a tractable test. The contract under test is
     # the policy itself, not the specific cap of 8.
-    monkeypatch.setattr(chat_cmd, "_PENDING_QUEUE_MAX_SIZE", 3)
+    monkeypatch.setattr(runtime_bridge, "PENDING_QUEUE_MAX_SIZE", 3)
 
     captured_prints: list[str] = []
 
@@ -1046,7 +1085,10 @@ async def test_pending_queue_caps_at_max_size(monkeypatch) -> None:
                 captured_prints.append(str(a))
             return None
 
-    monkeypatch.setattr(chat_cmd, "console", _FakeConsole(chat_cmd.console))
+    monkeypatch.setattr(
+        "opensquilla.cli.repl.terminal_chat_adapter.console",
+        _FakeConsole(cli_ui.console),
+    )
 
     executed: list[str] = []
     finish_a = asyncio.Event()
@@ -1097,9 +1139,7 @@ async def test_pending_queue_caps_at_max_size(monkeypatch) -> None:
     assert "F" not in executed
     # The reject toast fired exactly twice (one per dropped input).
     rejects = [p for p in captured_prints if "Queue full" in p]
-    assert len(rejects) == 2, (
-        f"expected 2 queue-full toasts, got {len(rejects)}: {captured_prints}"
-    )
+    assert len(rejects) == 2, f"expected 2 queue-full toasts, got {len(rejects)}: {captured_prints}"
 
 
 # --------------------------------------------------------------------------- #
@@ -1176,9 +1216,7 @@ async def test_clear_cancels_queued_turn_during_drain(monkeypatch) -> None:
     # Yield enough times so the loop reads B into pending_commands.
     for _ in range(20):
         await asyncio.sleep(0)
-    assert "B-start" not in executed, (
-        "B must remain queued until A finishes"
-    )
+    assert "B-start" not in executed, "B must remain queued until A finishes"
 
     # Release A; B is promoted as the new turn_task.
     finish_a.set()
@@ -1196,9 +1234,7 @@ async def test_clear_cancels_queued_turn_during_drain(monkeypatch) -> None:
     await inputs.put(None)
     await asyncio.wait_for(repl_task, timeout=2.0)
 
-    assert "B-end" not in executed, (
-        "promoted B turn must have been cancelled by destructive /clear"
-    )
+    assert "B-end" not in executed, "promoted B turn must have been cancelled by destructive /clear"
     assert "/clear" in executed
 
 
@@ -1213,16 +1249,18 @@ def test_drain_pending_helper_removed() -> None:
     """
     import inspect as _inspect
 
-    from opensquilla.cli import chat_cmd
+    from opensquilla.cli.tui.runtime import run_tui_runtime
 
-    source = _inspect.getsource(chat_cmd._run_concurrent_repl)
+    source = _inspect.getsource(run_tui_runtime)
     assert "_drain_pending" not in source, (
         "_drain_pending must remain deleted — its presence indicates "
         "the un-preemptible drain regressed"
     )
-    # Two intentional inline shutdown drains remain (EOF + EXIT).
-    assert source.count("while pending_commands:") == 2, (
-        "expected exactly two inline shutdown drains "
-        "(EOF + EXIT) — the steady-state path must promote-and-race "
-        "instead of looping over the deque"
+    assert source.count("await _run_shutdown_drain()") == 2, (
+        "expected exactly two shutdown drains (EOF + EXIT)"
+    )
+    assert "queued = runtime_state.promote_next()" in source
+    assert "turn_task = asyncio.create_task(_run_dispatch(queued), name=task_name)" in source, (
+        "steady-state queued work must promote into a new raced turn task "
+        "instead of looping over the queue inline"
     )

@@ -552,6 +552,7 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
         session_key: str,
         turn_call_logger: TurnCallLogger | None,
         memory_sync_manager: Any | None,
+        tool_context: ToolContext | None,
     ) -> Agent:
         from opensquilla.engine.agent import Agent
 
@@ -566,6 +567,7 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
             memory_sync_manager=memory_sync_manager,
             session_flush_service=self._runner._session_flush_service,
             tool_registry=self._runner._tool_registry,
+            tool_context=tool_context,
         )
 
 

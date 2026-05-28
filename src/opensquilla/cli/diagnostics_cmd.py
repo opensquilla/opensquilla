@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 import typer
@@ -39,13 +40,14 @@ def _print_status(payload: dict[str, Any]) -> None:
 @diagnostics_app.command("status")
 def diagnostics_status(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Show effective diagnostics and raw-capture state."""
 
     async def _run(client) -> dict[str, Any]:
         return cast(dict[str, Any], await client.call("diagnostics.status", {}))
 
-    payload = run_gateway_sync(_run, json_output=json_output)
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if json_output:
         print_json(payload)
         return

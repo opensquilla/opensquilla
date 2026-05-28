@@ -1372,6 +1372,7 @@ class MetaSkillConfig(BaseSettings):
         env_nested_delimiter="__",
         extra="forbid",
     )
+    enabled: bool = True
     persistence: MetaSkillPersistenceConfig = Field(
         default_factory=MetaSkillPersistenceConfig,
     )

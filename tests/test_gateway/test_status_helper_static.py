@@ -3,6 +3,7 @@ from pathlib import Path
 COMPONENTS_JS = Path("src/opensquilla/gateway/static/js/components.js")
 SESSIONS_JS = Path("src/opensquilla/gateway/static/js/views/sessions.js")
 OVERVIEW_JS = Path("src/opensquilla/gateway/static/js/views/overview.js")
+OVERVIEW_CSS = Path("src/opensquilla/gateway/static/css/views/overview.css")
 SESSIONS_CSS = Path("src/opensquilla/gateway/static/css/views/sessions.css")
 
 
@@ -136,3 +137,61 @@ def test_overview_view_uses_status_helper() -> None:
 
     # Legacy 3-bucket ternary fragment must be gone.
     assert "? 'is-on'" not in source
+
+
+def test_overview_ignores_stale_load_after_view_destroy() -> None:
+    source = OVERVIEW_JS.read_text(encoding="utf-8")
+    render_start = source.index("function render(el)")
+    render_end = source.index("  function destroy()", render_start)
+    render_body = source[render_start:render_end]
+    destroy_start = source.index("function destroy()")
+    destroy_end = source.index("  function _updateConnectionPill", destroy_start)
+    destroy_body = source[destroy_start:destroy_end]
+    start = source.index("async function _loadData()")
+    end = source.index("  function _pushEvent", start)
+    body = source[start:end]
+
+    assert "let _viewGeneration = 0;" in source
+    assert "_viewGeneration += 1;" in render_body
+    assert "_viewGeneration += 1;" in destroy_body
+    assert "const root = _el;" in body
+    assert "const generation = _viewGeneration;" in body
+    assert "const rpc = _rpc;" in body
+    assert "if (!rpc) return;" in body
+    assert "function _isCurrentView(root, rpc, generation)" in body
+    assert "return _el === root && _rpc === rpc && _viewGeneration === generation;" in body
+    assert body.count("if (!_isCurrentView(root, rpc, generation)) return;") >= 8
+    assert "root.querySelector('#' + id)" in body
+    assert "root.querySelector('#ov-cost-line')" in body
+    assert "root.querySelector('#ov-recent-sessions')" in body
+    assert "rpc.call('status')" in body
+    assert "rpc.call('doctor.status'" in body
+
+
+def test_overview_text_links_have_touch_friendly_hit_area() -> None:
+    css = OVERVIEW_CSS.read_text(encoding="utf-8")
+    start = css.index(".ov-link {")
+    rule = css[start : css.index("}", start)]
+
+    assert "display: inline-flex" in rule
+    assert "min-height: 40px" in rule
+    assert "padding: 0 var(--sp-1)" in rule
+
+
+def test_overview_mobile_recent_session_keys_wrap_inside_rows() -> None:
+    css = OVERVIEW_CSS.read_text(encoding="utf-8")
+    mobile = css.split("@media (max-width: 720px)", 1)[1]
+    key_rule = mobile.split(".ov-recent__key {", 1)[1].split("}", 1)[0]
+
+    assert "max-width: 100%" in key_rule
+    assert "white-space: normal" in key_rule
+    assert "overflow-wrap: anywhere" in key_rule
+    assert "text-overflow: clip" in key_rule
+
+
+def test_overview_mobile_recent_session_arrow_does_not_create_ghost_row() -> None:
+    css = OVERVIEW_CSS.read_text(encoding="utf-8")
+    mobile = css.split("@media (max-width: 720px)", 1)[1]
+    arrow_rule = mobile.split(".ov-recent__arrow {", 1)[1].split("}", 1)[0]
+
+    assert "display: none" in arrow_rule

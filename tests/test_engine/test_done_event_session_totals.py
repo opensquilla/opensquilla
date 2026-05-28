@@ -82,7 +82,7 @@ def test_positional_construction_through_reasoning_content_leaves_session_totals
     # runtime_context_hash, runtime_context_chars, routed_tier, routing_source,
     # routing_confidence, baseline_model, routed_model, savings_pct, savings_usd,
     # cache_hit_active, total_savings_pct, total_savings_usd, cache_write_tokens,
-    # reasoning_content
+    # reasoning_content. Newer fields must remain after session_totals.
     done = DoneEvent(
         "hello", 1, 2, 0, 0, 1, 0.0, 0.0, "none", "gpt-test",
         None, 0, None, "none", 0.0, "", "", 0.0, 0.0,

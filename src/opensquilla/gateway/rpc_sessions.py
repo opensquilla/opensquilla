@@ -1079,18 +1079,6 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 event_dict = asdict(event)
                 event_kind = event_dict.pop("kind", event.__class__.__name__)
                 if event_kind in ("done", "error"):
-                    if (
-                        event_kind == "error"
-                        and event_dict.get("code")
-                        in {
-                            "provider_request_budget_exhausted",
-                            "provider_request_too_large",
-                            "current_turn_context_exhausted",
-                        }
-                    ):
-                        await _rollback_persisted_user_message(
-                            str(event_dict.get("code") or "provider_request_too_large")
-                        )
                     await _emit_terminal_once(f"session.event.{event_kind}", event_dict)
                 else:
                     await _emit_to_subscribers(ctx, key, f"session.event.{event_kind}", event_dict)

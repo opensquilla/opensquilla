@@ -1,6 +1,7 @@
 from pathlib import Path
 
 CRON_JS = Path("src/opensquilla/gateway/static/js/views/cron.js")
+CRON_CSS = Path("src/opensquilla/gateway/static/css/views/cron.css")
 
 
 def test_new_cron_jobs_default_to_static_reminders() -> None:
@@ -105,3 +106,126 @@ def test_cron_finished_event_refreshes_after_scheduler_state_persists() -> None:
 
     assert "_scheduleCronReload()" in source
     assert "setTimeout(_loadData, 750)" in source
+
+
+def test_cron_view_toggle_keeps_touch_friendly_hit_area() -> None:
+    css = CRON_CSS.read_text(encoding="utf-8")
+    start = css.index(".cron-view-toggle__btn {")
+    rule = css[start : css.index("}", start)]
+
+    assert "min-height: 40px" in rule
+
+
+def test_cron_active_view_toggle_uses_theme_contrast_token() -> None:
+    css = CRON_CSS.read_text(encoding="utf-8")
+    start = css.index(".cron-view-toggle__btn.is-active {")
+    rule = css[start : css.index("}", start)]
+
+    assert "color: var(--accent-foreground)" in rule
+
+
+def test_cron_search_keeps_touch_friendly_hit_area() -> None:
+    css = CRON_CSS.read_text(encoding="utf-8")
+    start = css.index(".cron-search-input {")
+    rule = css[start : css.index("}", start)]
+
+    assert "min-height: 40px" in rule
+
+
+def test_cron_cards_wrap_long_names_and_runtime_metadata() -> None:
+    css = CRON_CSS.read_text(encoding="utf-8")
+    name_start = css.index(".cron-card__name {")
+    name_rule = css[name_start : css.index("}", name_start)]
+    meta_start = css.index(".cron-card__meta {")
+    meta_rule = css[meta_start : css.index("}", meta_start)]
+    value_start = css.index(".cron-card__meta dd {")
+    value_rule = css[value_start : css.index("}", value_start)]
+
+    assert "white-space: normal" in name_rule
+    assert "overflow-wrap: anywhere" in name_rule
+    assert "text-overflow: clip" in name_rule
+    assert "repeat(auto-fit, minmax(140px, 1fr))" in meta_rule
+    assert "max-width: 100%" in value_rule
+    assert "min-width: 0" in value_rule
+    assert "white-space: normal" in value_rule
+    assert "overflow-wrap: anywhere" in value_rule
+    assert "text-overflow: clip" in value_rule
+
+
+def test_cron_mobile_actions_keep_search_usable() -> None:
+    css = CRON_CSS.read_text(encoding="utf-8")
+    mobile_start = css.index("@media (max-width: 480px)")
+    mobile_rule = css[mobile_start:]
+
+    assert ".cron-stage__actions" in mobile_rule
+    assert "display: grid" in mobile_rule
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in mobile_rule
+    assert ".cron-search-wrap" in mobile_rule
+    assert "grid-column: 1 / -1" in mobile_rule
+    assert ".cron-stage__actions .btn" in mobile_rule
+    assert "width: 100%" in mobile_rule
+    assert "justify-content: center" in mobile_rule
+
+
+def test_cron_empty_hints_keep_mobile_touch_targets() -> None:
+    css = CRON_CSS.read_text(encoding="utf-8")
+    mobile_start = css.index("@media (max-width: 480px)")
+    mobile_rule = css[mobile_start:]
+    code_start = css.index(".cron-empty-hint code {")
+    code_rule = css[code_start : css.index("}", code_start)]
+    assert ".cron-empty-hint {" in mobile_rule
+    hint_rule = mobile_rule[
+        mobile_rule.index(".cron-empty-hint {") : mobile_rule.index(
+            "}", mobile_rule.index(".cron-empty-hint {")
+        )
+    ]
+
+    assert "min-height: 40px" in hint_rule
+    assert "padding: 9px 14px" in hint_rule
+    assert "white-space: nowrap" in code_rule
+
+
+def test_cron_empty_hints_keep_desktop_hit_area() -> None:
+    css = CRON_CSS.read_text(encoding="utf-8")
+    start = css.index(".cron-empty-hint {")
+    rule = css[start : css.index("}", start)]
+
+    assert "min-height: 40px" in rule
+
+
+def test_cron_empty_hints_wrap_long_labels_inside_mobile_viewport() -> None:
+    css = CRON_CSS.read_text(encoding="utf-8")
+    hints_start = css.index(".cron-empty__hints {")
+    hints_rule = css[hints_start : css.index("}", hints_start)]
+    hint_start = css.index(".cron-empty-hint {")
+    hint_rule = css[hint_start : css.index("}", hint_start)]
+    assert ".cron-empty-hint span {" in css
+    label_start = css.index(".cron-empty-hint span {")
+    label_rule = css[label_start : css.index("}", label_start)]
+
+    assert "width: 100%" in hints_rule
+    assert "max-width: 720px" in hints_rule
+    assert "box-sizing: border-box" in hints_rule
+    assert "max-width: 100%" in hint_rule
+    assert "min-width: 0" in hint_rule
+    assert "flex-wrap: wrap" in hint_rule
+    assert "min-width: 0" in label_rule
+    assert "overflow-wrap: anywhere" in label_rule
+
+
+def test_cron_panel_actions_stay_reachable_on_mobile() -> None:
+    css = CRON_CSS.read_text(encoding="utf-8")
+
+    actions_start = css.index(".cron-panel__actions {")
+    actions_rule = css[actions_start : css.index("}", actions_start)]
+    assert "position: sticky" in actions_rule
+    assert "bottom: calc(-1 * var(--sp-5))" in actions_rule
+    assert "border-top: 1px solid var(--border)" in actions_rule
+
+    mobile_start = css.index("@media (max-width: 480px)")
+    mobile_rule = css[mobile_start:]
+    assert ".cron-panel" in mobile_rule
+    assert "width: 100vw" in mobile_rule
+    assert "max-width: 100vw" in mobile_rule
+    assert ".cron-panel__actions .btn" in mobile_rule
+    assert "flex: 1 1 0" in mobile_rule

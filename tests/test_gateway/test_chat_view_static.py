@@ -397,6 +397,26 @@ def test_chat_maps_task_terminal_events_during_migration() -> None:
     assert "_sessionErrorMessage(payload)" in error_handler
 
 
+def test_chat_succeeded_task_without_done_falls_back_to_history_sync() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    wildcard_start = source.index("const terminalStatus = _taskTerminalStatus(rawEvent);")
+    wildcard_end = source.index("const normalized = _taskTerminalAsSessionEvent(rawEvent, rawPayload);")
+    terminal_handler = source[wildcard_start:wildcard_end]
+    fallback_start = source.index("function _scheduleSucceededTaskTerminalSync(payload = {})")
+    fallback_end = source.index("  function _taskTerminalAsSessionEvent", fallback_start)
+    fallback = source[fallback_start:fallback_end]
+
+    assert "rawEvent === 'task.succeeded'" in terminal_handler
+    assert "_scheduleSucceededTaskTerminalSync(rawPayload);" in terminal_handler
+    assert "let _streamGeneration = 0;" in source
+    assert "_streamGeneration += 1;" in source
+    assert "const streamGeneration = _streamGeneration;" in fallback
+    assert "_scheduleHistorySync();" in fallback
+    assert "if (_isStreaming && _streamGeneration === streamGeneration)" in fallback
+    assert "_endStreaming();" in fallback
+
+
 def test_chat_reconciles_terminal_session_changed_events() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 

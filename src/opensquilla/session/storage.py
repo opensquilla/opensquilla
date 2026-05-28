@@ -12,6 +12,7 @@ from opensquilla.session.keys import canonicalize_session_key, normalize_agent_i
 from opensquilla.session.models import (
     AgentTaskRecord,
     AgentTaskStatus,
+    MemoryDurableReceipt,
     SessionContextState,
     SessionNode,
     SessionSummary,
@@ -282,6 +283,32 @@ CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_updated
 ON agent_tasks(status, updated_at)
 """
 
+_CREATE_MEMORY_DURABLE_RECEIPTS = """
+CREATE TABLE IF NOT EXISTS memory_durable_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    session_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    turn_id TEXT,
+    scope TEXT NOT NULL,
+    source_path TEXT,
+    target_path TEXT,
+    content_hash TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    reason TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at_ms INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1
+)
+"""
+
+_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_SESSION = (
+    "CREATE INDEX IF NOT EXISTS idx_memory_durable_receipts_session "
+    "ON memory_durable_receipts(session_key, status, created_at)"
+)
+
 _CREATE_EPOCH_ROLLBACK_TRIGGER = """
 CREATE TRIGGER IF NOT EXISTS prevent_epoch_rollback
 BEFORE UPDATE OF epoch ON sessions
@@ -362,6 +389,12 @@ class SessionStorage:
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._initialize_schema()
 
+    @classmethod
+    async def open(cls, db_path: str) -> SessionStorage:
+        storage = cls(str(db_path))
+        await storage.connect()
+        return storage
+
     async def close(self) -> None:
         if self._conn:
             await self._conn.close()
@@ -384,6 +417,8 @@ class SessionStorage:
         await self._conn.execute(_CREATE_AGENT_TASKS)
         await self._conn.execute(_CREATE_IDX_AGENT_TASKS_SESSION_STATUS)
         await self._conn.execute(_CREATE_IDX_AGENT_TASKS_STATUS_UPDATED)
+        await self._conn.execute(_CREATE_MEMORY_DURABLE_RECEIPTS)
+        await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_SESSION)
         # FTS5 full-text search index + auto-sync triggers
         await self._conn.execute(_CREATE_TRANSCRIPT_FTS)
         await self._conn.execute(_CREATE_FTS_TRIGGER_INSERT)
@@ -719,6 +754,100 @@ class SessionStorage:
         async with self.conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
         return [AgentTaskRecord(**_deserialize_row(dict(row))) for row in rows]
+
+    async def upsert_memory_durable_receipt(
+        self,
+        receipt: MemoryDurableReceipt,
+    ) -> MemoryDurableReceipt:
+        receipt.session_key = canonicalize_session_key(receipt.session_key)
+        receipt.updated_at = _now_ms()
+        data = receipt.model_dump()
+        cols = list(data.keys())
+        placeholders = ", ".join("?" for _ in cols)
+        updates = ", ".join(
+            f"{col}=excluded.{col}"
+            for col in cols
+            if col not in {"receipt_id", "idempotency_key", "created_at"}
+        )
+        values = [_serialize(data[col]) for col in cols]
+        await self.conn.execute(
+            f"""
+            INSERT INTO memory_durable_receipts ({", ".join(cols)})
+            VALUES ({placeholders})
+            ON CONFLICT(idempotency_key) DO UPDATE SET {updates}
+            """,
+            values,
+        )
+        await self.conn.commit()
+        rows = await self.list_memory_durable_receipts(
+            session_key=receipt.session_key,
+            idempotency_key=receipt.idempotency_key,
+            limit=1,
+        )
+        return rows[0]
+
+    async def list_memory_durable_receipts(
+        self,
+        session_key: str | None = None,
+        status: str | None = None,
+        idempotency_key: str | None = None,
+        limit: int = 100,
+    ) -> list[MemoryDurableReceipt]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if session_key is not None:
+            clauses.append("session_key = ?")
+            params.append(canonicalize_session_key(session_key))
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if idempotency_key is not None:
+            clauses.append("idempotency_key = ?")
+            params.append(idempotency_key)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        async with self.conn.execute(
+            f"""
+            SELECT * FROM memory_durable_receipts
+            {where}
+            ORDER BY created_at ASC, rowid ASC
+            LIMIT ?
+            """,
+            params,
+        ) as cur:
+            rows = await cur.fetchall()
+        return [MemoryDurableReceipt(**_deserialize_row(dict(row))) for row in rows]
+
+    async def update_memory_durable_receipt(
+        self,
+        receipt_id: str,
+        **fields: Any,
+    ) -> MemoryDurableReceipt:
+        allowed = set(MemoryDurableReceipt.model_fields) - {"receipt_id", "created_at"}
+        unknown = sorted(set(fields) - allowed)
+        if unknown:
+            raise ValueError(
+                f"Unknown memory durable receipt fields: {', '.join(unknown)}"
+            )
+        if "session_key" in fields:
+            fields["session_key"] = canonicalize_session_key(fields["session_key"])
+        fields.setdefault("updated_at", _now_ms())
+        assignments = ", ".join(f"{name} = ?" for name in fields)
+        values = [_serialize(value) for value in fields.values()]
+        values.append(receipt_id)
+        await self.conn.execute(
+            f"UPDATE memory_durable_receipts SET {assignments} WHERE receipt_id = ?",
+            values,
+        )
+        await self.conn.commit()
+        async with self.conn.execute(
+            "SELECT * FROM memory_durable_receipts WHERE receipt_id = ?",
+            (receipt_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise KeyError(f"Memory durable receipt not found: {receipt_id}")
+        return MemoryDurableReceipt(**_deserialize_row(dict(row)))
 
     async def list_agent_tasks_for_sessions(
         self,

@@ -299,6 +299,13 @@ default_mode = "bypass"                 # off | on | bypass | full
 # Meta-Skill subsystem
 # ─────────────────────────────────────────────────────────────────────────────
 
+[meta_skill]
+# Global runtime gate for model-visible meta-skill behavior. When false,
+# meta-skills stay installed for inventory/history tooling, but are not injected
+# into prompts, `meta_invoke` is not surfaced, and explicit `meta_invoke` calls
+# are rejected. Default: true.
+# enabled = true
+
 [meta_skill.persistence]
 # Whether to write meta-skill execution traces to SQLite (G4 traceable audit).
 # Disabling drops the writer to no-op; the CLI `skills meta runs ...` will

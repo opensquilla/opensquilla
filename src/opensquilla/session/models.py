@@ -246,6 +246,29 @@ class SessionContextState(SQLModel, table=True):
     schema_version: int = 1
 
 
+class MemoryDurableReceipt(SQLModel, table=True):
+    """Durable ledger row for memory checkpoint and flush outcomes."""
+
+    __tablename__ = "memory_durable_receipts"
+
+    receipt_id: str = Field(default_factory=_new_uuid, primary_key=True)
+    session_key: str = Field(index=True, max_length=512)
+    session_id: str = Field(index=True)
+    turn_id: str | None = Field(default=None, index=True)
+    scope: str = Field(index=True)
+    source_path: str | None = None
+    target_path: str | None = None
+    content_hash: str | None = None
+    idempotency_key: str = Field(index=True, unique=True)
+    status: str = Field(index=True)
+    reason: str | None = None
+    attempt_count: int = 0
+    next_retry_at_ms: int | None = None
+    created_at: int = Field(default_factory=_now_ms)
+    updated_at: int = Field(default_factory=_now_ms)
+    schema_version: int = 1
+
+
 class AgentTaskRecord(SQLModel, table=True):
     """Persisted task-runtime ledger row."""
 

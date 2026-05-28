@@ -99,7 +99,7 @@ async def test_agent_projects_tokenjuice_without_context_window_gate(
         content="pytest output\n" + ("x" * 1000),
     )
 
-    projected = await agent._project_tool_result_for_llm(
+    projected = await agent._canonicalize_tool_result(
         result,
         tool_call=ToolCall(
             tool_use_id="tool-1",
@@ -135,7 +135,7 @@ async def test_tokenjuice_noop_preserves_tool_result(
         content="short output",
     )
 
-    projected = await agent._project_tool_result_for_llm(result)
+    projected = await agent._canonicalize_tool_result(result)
 
     assert projected is result
     assert projected.content == "short output"
@@ -145,7 +145,7 @@ async def test_tokenjuice_noop_preserves_tool_result(
 
 
 @pytest.mark.asyncio
-async def test_tokenjuice_projection_stores_raw_content(
+async def test_tokenjuice_projection_does_not_store_raw_content(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -161,16 +161,11 @@ async def test_tokenjuice_projection_stores_raw_content(
     monkeypatch.setattr(agent_mod, "reduce_tool_result_with_tokenjuice", fake_reduce, raising=False)
     agent = Agent(
         provider=_Provider(),
-        config=AgentConfig(
-            tool_result_store_dir=str(tmp_path / "tool-results"),
-            tool_result_store_session_id="session-1",
-            tool_result_store_session_key="agent:main:webchat:session-1",
-            tool_result_store_agent_id="main",
-        ),
+        config=AgentConfig(),
     )
     raw_output = "raw output\n" + ("x" * 8000)
 
-    projected = await agent._project_tool_result_for_llm(
+    projected = await agent._canonicalize_tool_result(
         ToolResult(
             tool_use_id="tool-1",
             tool_name="exec_command",
@@ -179,21 +174,10 @@ async def test_tokenjuice_projection_stores_raw_content(
         )
     )
 
-    assert projected.content.startswith("[tool_result_projection]\n")
-    assert "tool_result_handle:" in projected.content
-    assert "[tokenjuice]\nimportant failure" in projected.content
-
-    from opensquilla.engine.tool_result_store import ToolResultStore
-
-    handle = next(
-        line.split(":", 1)[1].strip()
-        for line in projected.content.splitlines()
-        if line.startswith("tool_result_handle:")
-    )
-    record = ToolResultStore(tmp_path / "tool-results").read(handle, session_id="session-1")
-    assert record.content == raw_output
-    assert record.session_key == "agent:main:webchat:session-1"
-    assert record.agent_id == "main"
+    assert projected.content == "[tokenjuice]\nimportant failure"
+    assert "tool_result_handle:" not in projected.content
+    assert raw_output not in projected.content
+    assert not (tmp_path / "tool-results").exists()
 
 
 def test_tokenjuice_adapter_calls_python_backend(
@@ -387,8 +371,10 @@ async def test_run_turn_feeds_tokenjuice_reduced_tool_result_to_next_provider_ca
     assert "AssertionError" in second_call_tool_result
     assert "rootdir:" not in second_call_tool_result
     assert agent.config.metadata["tool_projection_backend"] == "tokenjuice"
-    raw_event = next(event for event in events if isinstance(event, ToolResultEvent))
-    assert raw_event.result == output
+    projected_event = next(event for event in events if isinstance(event, ToolResultEvent))
+    assert projected_event.result == second_call_tool_result
+    assert projected_event.result != output
+    assert "rootdir:" not in projected_event.result
 
 
 def test_python_backend_reduces_docker_build_output() -> None:

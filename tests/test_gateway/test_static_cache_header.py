@@ -36,6 +36,35 @@ def test_static_asset_carries_long_cache_control(_app: Starlette) -> None:
     assert "public" in cache, cache
 
 
+def test_control_ui_bootstrap_includes_config_path(tmp_path) -> None:
+    config = GatewayConfig()
+    config.config_path = str(tmp_path / "OpenSquilla Config.toml")
+    config.control_ui.enabled = True
+    app = Starlette(routes=create_control_ui_routes(config))
+    client = TestClient(app)
+
+    response = client.get("/control/")
+
+    assert response.status_code == 200
+    assert 'data-config-path="' in response.text
+    assert str(config.config_path) in response.text
+
+
+def test_control_ui_bootstrap_ws_url_uses_client_reachable_wildcard_host() -> None:
+    config = GatewayConfig()
+    config.host = "0.0.0.0"
+    config.port = 20002
+    config.control_ui.enabled = True
+    app = Starlette(routes=create_control_ui_routes(config))
+    client = TestClient(app)
+
+    response = client.get("/control/")
+
+    assert response.status_code == 200
+    assert 'data-ws-url="ws://127.0.0.1:20002/ws"' in response.text
+    assert 'data-ws-url="ws://0.0.0.0:20002/ws"' not in response.text
+
+
 def test_env_rollback_disables_cache_control(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

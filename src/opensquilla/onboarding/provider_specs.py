@@ -9,6 +9,7 @@ from opensquilla.gateway.config import ROUTER_TIER_PROFILE_IDS, _router_tier_pro
 from opensquilla.provider.registry import ProviderSpec, list_provider_specs
 
 FieldType = Literal["text", "password", "select", "bool"]
+Deployment = Literal["cloud", "local", "custom", "oauth"]
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,11 @@ class ProviderSetupSpec:
     requires_api_key: bool
     requires_base_url: bool
     router_supported: bool
+    deployment: Deployment
+    blocking: bool
+    can_probe: bool
+    readme_scenarios: tuple[str, ...]
+    what_you_need: tuple[str, ...]
     default_direct_model: str
     capabilities: tuple[str, ...]
     fields: tuple[ProviderSetupField, ...]
@@ -87,6 +93,42 @@ _ONBOARDING_VERIFIED_PROVIDER_IDS = frozenset(
     }
 )
 
+_LOCAL_PROVIDER_IDS = frozenset({"ollama", "vllm", "lm_studio", "ovms"})
+_OAUTH_PROVIDER_IDS = frozenset({"openai_codex", "github_copilot"})
+
+
+def _deployment_for(spec: ProviderSpec) -> Deployment:
+    if spec.provider_id in _LOCAL_PROVIDER_IDS:
+        return "local"
+    if spec.provider_id in _OAUTH_PROVIDER_IDS:
+        return "oauth"
+    if spec.requires_base_url():
+        return "custom"
+    return "cloud"
+
+
+def _what_you_need(spec: ProviderSpec) -> tuple[str, ...]:
+    needs: list[str] = []
+    if spec.provider_id not in ROUTER_TIER_PROFILE_IDS:
+        needs.append(
+            "A local model name available from your model server."
+            if spec.provider_id in _LOCAL_PROVIDER_IDS
+            else "A provider model id."
+        )
+    if spec.requires_api_key():
+        needs.append(
+            f"API key via {spec.env_key} or a one-time paste."
+            if spec.env_key
+            else "Provider API key."
+        )
+    if spec.requires_base_url():
+        needs.append("Provider base URL.")
+    if spec.provider_id in _LOCAL_PROVIDER_IDS:
+        needs.append("A reachable local model server.")
+    if not needs:
+        needs.append("No API key required for the default local path.")
+    return tuple(needs)
+
 
 def _default_direct_model(provider_id: str) -> str:
     if provider_id in ROUTER_TIER_PROFILE_IDS:
@@ -94,6 +136,17 @@ def _default_direct_model(provider_id: str) -> str:
         tier = tiers.get("t1") or tiers.get("t0") or {}
         return str(tier.get("model") or "")
     return ""
+
+
+def _model_description(spec: ProviderSpec, *, router_supported: bool) -> str:
+    if router_supported:
+        return (
+            "Optional direct fallback model. Leave blank to use the selected "
+            "SquillaRouter default tier."
+        )
+    if spec.provider_id in _LOCAL_PROVIDER_IDS:
+        return "Required local model id. Use a model available from your local model server."
+    return "Required model id for this provider."
 
 
 def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
@@ -105,10 +158,7 @@ def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
             field_type="text",
             required=not router_supported,
             default=_default_direct_model(spec.provider_id),
-            description=(
-                "Direct fallback model. Router-supported providers can leave this "
-                "blank to use the selected router default tier."
-            ),
+            description=_model_description(spec, router_supported=router_supported),
         ),
         ProviderSetupField(
             name="api_key",
@@ -120,6 +170,20 @@ def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
                 f"Stored under env key {spec.env_key}." if spec.env_key else ""
             ),
             secret=True,
+        ),
+        *(
+            (
+                ProviderSetupField(
+                    name="api_key_env",
+                    label="API key env",
+                    field_type="text",
+                    required=False,
+                    default=spec.env_key,
+                    description="Environment variable name the gateway reads for this key.",
+                ),
+            )
+            if spec.requires_api_key()
+            else ()
         ),
         ProviderSetupField(
             name="base_url",
@@ -159,6 +223,11 @@ def _to_setup_spec(spec: ProviderSpec) -> ProviderSetupSpec:
         requires_api_key=spec.requires_api_key(),
         requires_base_url=spec.requires_base_url(),
         router_supported=spec.provider_id in ROUTER_TIER_PROFILE_IDS,
+        deployment=_deployment_for(spec),
+        blocking=True,
+        can_probe=False,
+        readme_scenarios=("first-run setup", "quick terminal install"),
+        what_you_need=_what_you_need(spec),
         default_direct_model=_default_direct_model(spec.provider_id),
         capabilities=tuple(sorted(spec.capabilities)),
         fields=_fields_for(spec),
@@ -197,6 +266,11 @@ def provider_catalog_payload() -> list[dict[str, Any]]:
             "requiresApiKey": s.requires_api_key,
             "requiresBaseUrl": s.requires_base_url,
             "routerSupported": s.router_supported,
+            "deployment": s.deployment,
+            "blocking": s.blocking,
+            "canProbe": s.can_probe,
+            "readmeScenarios": list(s.readme_scenarios),
+            "whatYouNeed": list(s.what_you_need),
             "defaultDirectModel": s.default_direct_model,
             "capabilities": list(s.capabilities),
             "fields": [

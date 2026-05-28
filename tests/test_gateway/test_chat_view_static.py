@@ -830,6 +830,25 @@ def test_chat_compaction_token_details_are_success_only() -> None:
     )
 
 
+def test_chat_semantic_memory_degraded_is_non_blocking_and_path_safe() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _showCompactionToast(payload, meta = {})")
+    end = source.index("  /* ── RPC Event Subscriptions", start)
+    body = source[start:end]
+
+    assert "function _compactSemanticMemoryNotice(payload)" in source
+    assert "payload.semanticMemory || payload.semantic_memory" in source
+    assert "Memory saved; organizing" in source
+    assert "UI.toast(semanticNotice, 'info', 3500);" in body
+    assert body.index("const semanticNotice = _compactSemanticMemoryNotice") < body.index(
+        "if (status === 'failed' || status === 'error')"
+    )
+    assert "function _compactSafeMessageDetail(payload)" in source
+    assert "[memory checkpoint]" in source
+    assert "const detail = _compactSafeMessageDetail(payload || {});" in body
+    assert "payload.message ? ': ' + payload.message" not in body
+
+
 def test_chat_compact_inflight_uses_pending_queue_and_safe_terminal_drain() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     send_start = source.index("async function _onSend()")

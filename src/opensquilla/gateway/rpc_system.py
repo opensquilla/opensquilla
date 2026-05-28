@@ -7,6 +7,7 @@ from typing import Any, NoReturn
 
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, RpcUnavailableError, get_dispatcher
+from opensquilla.gateway.rpc_memory import memory_health_from_durable_ledger
 from opensquilla.session.keys import normalize_agent_id
 
 _d = get_dispatcher()
@@ -315,6 +316,12 @@ async def _handle_doctor_memory_status(params: dict | None, ctx: RpcContext) -> 
         "sourceCounts": manager_status.get("source_counts", {}),
         "degraded": degraded_rows,
     }
+    payload.update(
+        await memory_health_from_durable_ledger(
+            getattr(ctx, "session_manager", None),
+            agent_id=agent_id,
+        )
+    )
     if deep:
         repair_rows: list[Any] = []
         repair_failures: list[dict[str, Any]] = []

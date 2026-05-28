@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -454,6 +455,11 @@ async def test_doctor_memory_status_deep_redacts_paths_and_raw_errors(tmp_path):
     assert "exploded" not in rendered
     assert res.payload["vecAvailable"] is False
     assert res.payload["ftsAvailable"] is True
+    assert res.payload["memorySafety"] == {"status": "ok"}
+    assert res.payload["semanticMemory"] == {
+        "status": "healthy",
+        "repairBacklogCount": 0,
+    }
     assert res.payload["degraded"][0] == {
         "component": "store",
         "operation": "probe",
@@ -488,6 +494,97 @@ async def test_doctor_memory_status_accepts_memory_backend_protocol_health(tmp_p
     assert res.payload["status"] == "ok"
     assert res.payload["entryCount"] == 4
     assert res.payload["sizeBytes"] == 5
+
+
+@pytest.mark.asyncio
+async def test_doctor_memory_status_splits_safety_from_semantic_repair_health(tmp_path):
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    try:
+        await storage.upsert_memory_durable_receipt(
+            MemoryDurableReceipt(
+                session_key="agent:main:webchat:s1",
+                session_id="session-1",
+                scope="checkpoint",
+                source_path="memory/checkpoints/s1.md",
+                idempotency_key="checkpoint:s1",
+                status="checkpoint_saved",
+                reason="hash mismatch",
+                created_at=now_ms,
+            )
+        )
+        await storage.upsert_memory_durable_receipt(
+            MemoryDurableReceipt(
+                session_key="agent:main:webchat:s1",
+                session_id="session-1",
+                scope="repair",
+                source_path="memory/.raw_fallbacks/raw.md",
+                idempotency_key="repair:raw.md",
+                status="repair_pending",
+                reason="parse_failed_archived",
+                created_at=now_ms,
+            )
+        )
+        session_manager = FakeStorageRepairSessionManager(storage)
+
+        res = await get_dispatcher().dispatch(
+            "memory-health-split",
+            "doctor.memory.status",
+            {"agentId": "main"},
+            _ctx(
+                memory_managers={"main": FakeMemoryManager(workspace_dir=tmp_path)},
+                session_manager=session_manager,
+            ),
+        )
+
+        assert res.error is None, res.error
+        assert res.payload["memorySafety"]["status"] == "error"
+        assert res.payload["semanticMemory"] == {
+            "status": "degraded",
+            "repairBacklogCount": 1,
+        }
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_doctor_memory_status_warns_for_large_semantic_repair_backlog(tmp_path):
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    try:
+        for idx in range(11):
+            await storage.upsert_memory_durable_receipt(
+                MemoryDurableReceipt(
+                    session_key="agent:main:webchat:s1",
+                    session_id="session-1",
+                    scope="repair",
+                    source_path=f"memory/.raw_fallbacks/raw-{idx}.md",
+                    idempotency_key=f"repair:raw-{idx}.md",
+                    status="repair_pending",
+                    reason="parse_failed_archived",
+                    created_at=now_ms,
+                )
+            )
+        session_manager = FakeStorageRepairSessionManager(storage)
+
+        res = await get_dispatcher().dispatch(
+            "memory-health-warning",
+            "doctor.memory.status",
+            {"agentId": "main"},
+            _ctx(
+                memory_managers={"main": FakeMemoryManager(workspace_dir=tmp_path)},
+                session_manager=session_manager,
+            ),
+        )
+
+        assert res.error is None, res.error
+        assert res.payload["memorySafety"]["status"] == "ok"
+        assert res.payload["semanticMemory"] == {
+            "status": "warning",
+            "repairBacklogCount": 11,
+        }
+    finally:
+        await storage.close()
 
 
 @pytest.mark.asyncio

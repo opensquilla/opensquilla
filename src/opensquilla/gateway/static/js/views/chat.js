@@ -2499,6 +2499,26 @@ const ChatView = (() => {
     ].includes(reason);
   }
 
+  function _compactSemanticMemoryNotice(payload) {
+    const semantic = payload && (payload.semanticMemory || payload.semantic_memory) || null;
+    const safety = payload && (payload.memorySafety || payload.memory_safety) || null;
+    const semanticStatus = String(semantic && semantic.status || '').toLowerCase();
+    const safetyStatus = String(safety && safety.status || '').toLowerCase();
+    if (semanticStatus === 'degraded' && safetyStatus !== 'error') {
+      return 'Memory saved; organizing';
+    }
+    return '';
+  }
+
+  function _compactSafeMessageDetail(payload) {
+    const message = payload && payload.message ? String(payload.message) : '';
+    if (!message) return '';
+    return message.replace(
+      /(?:[A-Za-z]:[\\/][^\s'"<>]*checkpoint[^\s'"<>]*|\/[^\s'"<>]*checkpoint[^\s'"<>]*|memory\/\.raw_fallbacks\/[^\s'"<>]+|[^\s'"<>]*checkpoint[^\s'"<>]*)/gi,
+      '[memory checkpoint]',
+    );
+  }
+
   function _showCompactionToast(payload, meta = {}) {
     if (meta && meta.replayed) return;
     let status = String(payload && payload.status || '').toLowerCase();
@@ -2524,13 +2544,26 @@ const ChatView = (() => {
       UI.toast('Already within context budget; no compact was applied.', 'info', 3500);
       return;
     }
+    const semanticNotice = _compactSemanticMemoryNotice(payload || {});
+    if (semanticNotice) {
+      _settleCompactInFlight(payload || {});
+      if (source === 'manual') {
+        _setCompactStatus('completed', semanticNotice, {
+          tone: 'ok',
+          dismissMs: 5000,
+        });
+      }
+      UI.toast(semanticNotice, 'info', 3500);
+      return;
+    }
     if (status === 'failed' || status === 'error') {
       const preservePending = _compactFailureBlocksPending(payload || {});
       const recovered = _settleCompactInFlight(payload || {}, {
         recoverPending: true,
         preservePending,
       });
-      const msg = payload && payload.message ? ': ' + payload.message : '';
+      const detail = _compactSafeMessageDetail(payload || {});
+      const msg = detail ? ': ' + detail : '';
       const pendingSuffix = preservePending
         ? '; pending message preserved'
         : (recovered ? '; pending message recovered to input' : '');

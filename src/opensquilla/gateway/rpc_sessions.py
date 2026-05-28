@@ -1491,6 +1491,7 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
                 timeout=30.0,
                 message_window=0,
                 segment_mode="auto",
+                raw_capture_policy="required",
             )
         except Exception as exc:  # noqa: BLE001 — both LLM and raw-dump failed
             receipt = FlushReceipt(
@@ -1780,6 +1781,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                             timeout=flush_timeout,
                             message_window=0,
                             segment_mode="auto",
+                            raw_capture_policy="required",
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.warning(
@@ -2079,6 +2081,7 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
                         timeout=30.0,
                         message_window=0,
                         segment_mode="auto",
+                        raw_capture_policy="required",
                     )
                 except Exception as exc:  # noqa: BLE001 — both LLM and raw-dump failed
                     receipt = FlushReceipt(

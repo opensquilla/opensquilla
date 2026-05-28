@@ -9,6 +9,7 @@ from typing import Any, cast
 import pytest
 
 from opensquilla.engine import Agent, AgentConfig
+from opensquilla.memory.archive import write_raw_fallback_archive
 from opensquilla.memory.embedding import NullEmbeddingProvider
 from opensquilla.memory.flush import resolve_flush_plan
 from opensquilla.memory.protocols import MemoryToolHandler
@@ -581,16 +582,18 @@ async def test_session_flush_invalid_json_records_parse_failed_archive_status(tm
     assert receipt.mode == "raw"
     assert receipt.raw_reason == "llm_error"
     assert receipt.result_status == "parse_failed_archived"
-    assert len(receipt_rows) == 1
+    assert len(receipt_rows) == 2
     assert {"content_hash", "source_path", "turn_id", "session_id"} <= set(
-        receipt_rows[0]
+        receipt_rows[1]
     )
-    assert receipt_rows[0]["scope"] == "repair"
-    assert receipt_rows[0]["status"] == "repair_pending"
-    assert receipt_rows[0]["reason"] == "parse_failed_archived"
-    assert receipt_rows[0]["target_path"] == receipt.flushed_paths[0]
-    assert receipt_rows[0]["turn_id"] == "flush:1-1"
-    assert receipt_rows[0]["content_hash"] == receipt.content_hash
+    assert receipt_rows[0]["scope"] == "preimage"
+    assert receipt_rows[0]["status"] == "preimage_saved"
+    assert receipt_rows[1]["scope"] == "repair"
+    assert receipt_rows[1]["status"] == "repair_pending"
+    assert receipt_rows[1]["reason"] == "parse_failed_archived"
+    assert receipt_rows[1]["target_path"] == receipt.flushed_paths[0]
+    assert receipt_rows[1]["turn_id"] == "flush:1-1"
+    assert receipt_rows[1]["content_hash"] == receipt.content_hash
 
 
 @pytest.mark.asyncio
@@ -632,12 +635,228 @@ async def test_session_flush_provider_exception_records_provider_failed_archive_
     assert receipt.mode == "raw"
     assert receipt.raw_reason == "llm_error"
     assert receipt.result_status == "provider_failed_archived"
-    assert len(receipt_rows) == 1
-    assert receipt_rows[0]["scope"] == "repair"
-    assert receipt_rows[0]["status"] == "repair_pending"
-    assert receipt_rows[0]["reason"] == "provider_failed_archived"
-    assert receipt_rows[0]["target_path"] == receipt.flushed_paths[0]
-    assert receipt_rows[0]["content_hash"] == receipt.content_hash
+    assert len(receipt_rows) == 2
+    assert receipt_rows[0]["scope"] == "preimage"
+    assert receipt_rows[0]["status"] == "preimage_saved"
+    assert receipt_rows[1]["scope"] == "repair"
+    assert receipt_rows[1]["status"] == "repair_pending"
+    assert receipt_rows[1]["reason"] == "provider_failed_archived"
+    assert receipt_rows[1]["target_path"] == receipt.flushed_paths[0]
+    assert receipt_rows[1]["content_hash"] == receipt.content_hash
+
+
+@pytest.mark.asyncio
+async def test_session_flush_required_raw_capture_happens_before_provider(
+    tmp_path,
+) -> None:
+    events: list[str] = []
+
+    class ValidProvider:
+        async def complete(self, **_kwargs: Any) -> SimpleNamespace:
+            events.append("provider")
+            return SimpleNamespace(
+                content=(
+                    '{"slug":"durable-fact","candidates":[{'
+                    '"kind":"decision",'
+                    '"render_text":"User decided to drink tea daily yesterday.",'
+                    '"source_message":1,"source_date":"2026-05-29",'
+                    '"confidence":0.9,"date":"2026-05-28",'
+                    '"date_basis":"relative:yesterday","granularity":"day"}]}'
+                )
+            )
+
+    def archive_writer(*args: Any, **kwargs: Any):
+        events.append(f"archive:{kwargs.get('reason')}")
+        return write_raw_fallback_archive(*args, **kwargs)
+
+    async def handler(call: ToolCall) -> ToolResult:
+        events.append("memory_save")
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="Saved to memory/durable-fact.md (1 chunks indexed; integrity=ok).",
+        )
+
+    receipt_rows: list[dict[str, Any]] = []
+
+    async def receipt_writer(_receipt: FlushReceipt, **row: Any) -> None:
+        receipt_rows.append(row)
+
+    service = SessionFlushService(
+        provider_selector=lambda _agent_id: ValidProvider(),
+        tool_registry=SimpleNamespace(
+            to_tool_definitions=lambda: [SimpleNamespace(name="memory_save")]
+        ),
+        tool_handler=handler,
+        receipt_writer=receipt_writer,
+        archive_workspace_resolver=lambda _agent_id: tmp_path,
+        archive_writer=archive_writer,
+    )
+
+    receipt = await service.execute(
+        [Message(role="user", content="Yesterday I decided to drink tea daily.")],
+        "agent:main:webchat:s1",
+        agent_id="main",
+        raw_capture_policy="required",
+    )
+
+    assert receipt.mode == "llm"
+    assert receipt.result_status == "ok_candidates_written"
+    assert events == ["archive:preimage", "provider", "memory_save"]
+    assert [row["status"] for row in receipt_rows] == [
+        "preimage_saved",
+        "flush_appended",
+    ]
+    assert receipt_rows[0]["scope"] == "preimage"
+    assert receipt_rows[0]["target_path"].startswith("memory/.raw_fallbacks/")
+    assert receipt_rows[1]["scope"] == "flush"
+
+
+@pytest.mark.asyncio
+async def test_session_flush_required_raw_capture_failure_blocks_provider(
+    tmp_path,
+) -> None:
+    provider_calls = 0
+
+    class Provider:
+        async def complete(self, **_kwargs: Any) -> SimpleNamespace:
+            nonlocal provider_calls
+            provider_calls += 1
+            return SimpleNamespace(content='{"noop_reason":"nothing durable"}')
+
+    def failing_archive_writer(*_args: Any, **_kwargs: Any):
+        raise OSError("disk full")
+
+    async def handler(call: ToolCall) -> ToolResult:
+        raise AssertionError(f"provider must not reach {call.tool_name}")
+
+    service = SessionFlushService(
+        provider_selector=lambda _agent_id: Provider(),
+        tool_registry=SimpleNamespace(
+            to_tool_definitions=lambda: [SimpleNamespace(name="memory_save")]
+        ),
+        tool_handler=handler,
+        archive_workspace_resolver=lambda _agent_id: tmp_path,
+        archive_writer=failing_archive_writer,
+    )
+
+    receipt = await service.execute(
+        [Message(role="user", content="Remember this before compacting.")],
+        "agent:main:webchat:s1",
+        agent_id="main",
+        raw_capture_policy="required",
+    )
+
+    assert provider_calls == 0
+    assert receipt.mode == "error"
+    assert receipt.result_status == "archive_failed"
+    assert "raw fallback archive write failed" in str(receipt.error)
+
+
+@pytest.mark.asyncio
+async def test_session_flush_repairs_invalid_json_before_raw_degrade(
+    tmp_path,
+) -> None:
+    provider_prompts: list[str] = []
+
+    class RepairingProvider:
+        async def complete(self, **kwargs: Any) -> SimpleNamespace:
+            provider_prompts.append(kwargs["messages"][0].content)
+            if len(provider_prompts) == 1:
+                return SimpleNamespace(content='{"candidates": [')
+            return SimpleNamespace(
+                content='{"slug":"durable-fact","markdown":"## Facts\\n- User prefers green tea."}'
+            )
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="Saved to memory/durable-fact.md (1 chunks indexed; integrity=ok).",
+        )
+
+    service = SessionFlushService(
+        provider_selector=lambda _agent_id: RepairingProvider(),
+        tool_registry=SimpleNamespace(
+            to_tool_definitions=lambda: [SimpleNamespace(name="memory_save")]
+        ),
+        tool_handler=handler,
+        archive_workspace_resolver=lambda _agent_id: tmp_path,
+    )
+
+    receipt = await service.execute(
+        [Message(role="user", content="Remember that I prefer green tea.")],
+        "agent:main:webchat:s1",
+        agent_id="main",
+        raw_capture_policy="required",
+    )
+
+    assert len(provider_prompts) == 2
+    assert "repair" in provider_prompts[1].lower()
+    assert receipt.mode == "llm"
+    assert receipt.result_status == "ok_candidates_written"
+    assert receipt.flushed_paths == ["memory/durable-fact.md"]
+
+
+@pytest.mark.asyncio
+async def test_session_flush_memory_save_error_reuses_preimage_archive(
+    tmp_path,
+) -> None:
+    class ValidProvider:
+        async def complete(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                content='{"slug":"durable-fact","markdown":"## Facts\\n- Durable fact."}'
+            )
+
+    archive_calls = 0
+
+    def archive_writer(*args: Any, **kwargs: Any):
+        nonlocal archive_calls
+        archive_calls += 1
+        return write_raw_fallback_archive(*args, **kwargs)
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="scanner blocked memory_save",
+            is_error=True,
+        )
+
+    receipt_rows: list[dict[str, Any]] = []
+
+    async def receipt_writer(_receipt: FlushReceipt, **row: Any) -> None:
+        receipt_rows.append(row)
+
+    service = SessionFlushService(
+        provider_selector=lambda _agent_id: ValidProvider(),
+        tool_registry=SimpleNamespace(
+            to_tool_definitions=lambda: [SimpleNamespace(name="memory_save")]
+        ),
+        tool_handler=handler,
+        receipt_writer=receipt_writer,
+        archive_workspace_resolver=lambda _agent_id: tmp_path,
+        archive_writer=archive_writer,
+    )
+
+    receipt = await service.execute(
+        [Message(role="user", content="Remember this durable fact.")],
+        "agent:main:webchat:s1",
+        agent_id="main",
+        raw_capture_policy="required",
+    )
+
+    assert archive_calls == 1
+    assert receipt.mode == "raw"
+    assert receipt.result_status == "apply_failed_archived"
+    assert receipt.raw_reason == "llm_error"
+    assert receipt.flushed_paths[0].startswith("memory/.raw_fallbacks/")
+    assert [row["status"] for row in receipt_rows] == [
+        "preimage_saved",
+        "repair_pending",
+    ]
+    assert receipt_rows[1]["reason"] == "apply_failed_archived"
+    assert receipt_rows[1]["target_path"] == receipt.flushed_paths[0]
 
 
 @pytest.mark.asyncio

@@ -609,6 +609,7 @@ async def repair_compaction_source(
             agent_id=agent_id,
             message_window=0,
             segment_mode="auto",
+            raw_capture_policy="off",
         )
     except Exception as exc:  # noqa: BLE001
         await mark_status(summary, "failed_retryable")
@@ -648,6 +649,7 @@ async def repair_raw_fallback_source(
             agent_id=agent_id,
             message_window=0,
             segment_mode="auto",
+            raw_capture_policy="off",
         )
     except Exception as exc:  # noqa: BLE001
         _write_raw_repair_status(raw_path, status="failed_retryable", reason=type(exc).__name__)

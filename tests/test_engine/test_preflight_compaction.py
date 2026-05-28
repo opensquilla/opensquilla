@@ -572,6 +572,7 @@ async def test_preflight_flushes_full_transcript_before_compact() -> None:
         message_window=0,
         segment_mode="auto",
         timeout=120.0,
+        raw_capture_policy="required",
     )
     mock_sm.compact.assert_awaited_once_with("agent:ops:long-session", context_window)
 

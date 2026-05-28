@@ -241,6 +241,7 @@ async def _await_auto_summarize_flush_grace(
             timeout=background_timeout,
             message_window=0,
             segment_mode="auto",
+            raw_capture_policy="required",
         )
     )
 

@@ -233,3 +233,37 @@ def test_archive_failed_without_deterministic_evidence_is_unsafe() -> None:
     assert status.safety_status == "unsafe"
     assert status.semantic_status == "failed"
     assert status.allows_destructive_compaction is False
+
+
+def test_durable_preimage_receipt_allows_destructive_compaction() -> None:
+    receipt = _receipt(
+        scope="preimage",
+        status="preimage_saved",
+        target_path="memory/.raw_fallbacks/raw.md",
+        content_hash="h1",
+    )
+
+    assert durable_receipt_allows_destructive_compaction(receipt) is True
+
+
+def test_durable_repair_pending_archive_receipt_allows_destructive_compaction() -> None:
+    receipt = _receipt(
+        scope="repair",
+        status="repair_pending",
+        reason="apply_failed_archived",
+        target_path="memory/.raw_fallbacks/raw.md",
+        content_hash="h1",
+    )
+
+    assert durable_receipt_allows_destructive_compaction(receipt) is True
+
+
+def test_durable_preimage_receipt_without_archive_hash_is_unsafe() -> None:
+    receipt = _receipt(
+        scope="preimage",
+        status="preimage_saved",
+        target_path="memory/.raw_fallbacks/raw.md",
+        content_hash="",
+    )
+
+    assert durable_receipt_allows_destructive_compaction(receipt) is False

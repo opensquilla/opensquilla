@@ -32,7 +32,7 @@ ARCHIVE_ONLY_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset(
     {"ok_archive_only"}
 )
 ARCHIVED_DEGRADED_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset(
-    {"parse_failed_archived", "provider_failed_archived"}
+    {"parse_failed_archived", "provider_failed_archived", "apply_failed_archived"}
 )
 FAILED_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset({"archive_failed"})
 
@@ -273,6 +273,11 @@ def flush_receipt_allows_destructive_compaction(receipt: Any) -> bool:
         return False
     if _receipt_value(receipt, "candidate_missing_ids", []):
         return False
+    if (
+        _receipt_int(_receipt_value(receipt, "obligation_count", 0)) <= 0
+        and not _receipt_value(receipt, "obligation_missing_ids", [])
+    ):
+        return True
     obligation_status = str(
         _receipt_value(receipt, "obligation_status", "unverified") or "unverified"
     )
@@ -291,6 +296,27 @@ def durable_receipt_allows_destructive_compaction(receipt: Any) -> bool:
     if scope == "flush":
         target_path = str(_receipt_value(receipt, "target_path", "") or "")
         return status == "flush_appended" and bool(target_path)
+    if scope == "preimage":
+        target_path = str(_receipt_value(receipt, "target_path", "") or "")
+        content_hash = str(_receipt_value(receipt, "content_hash", "") or "")
+        return (
+            status == "preimage_saved"
+            and target_path.startswith("memory/.raw_fallbacks/")
+            and bool(content_hash)
+        )
+    if scope == "repair":
+        target_path = str(_receipt_value(receipt, "target_path", "") or "")
+        content_hash = str(_receipt_value(receipt, "content_hash", "") or "")
+        reason = str(_receipt_value(receipt, "reason", "") or "")
+        archived_reasons = (
+            ARCHIVE_ONLY_FLUSH_RESULT_STATUSES | ARCHIVED_DEGRADED_FLUSH_RESULT_STATUSES
+        )
+        return (
+            status == "repair_pending"
+            and reason in archived_reasons
+            and target_path.startswith("memory/.raw_fallbacks/")
+            and bool(content_hash)
+        )
     return flush_receipt_allows_destructive_compaction(receipt)
 
 

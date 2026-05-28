@@ -1367,6 +1367,11 @@ def build_flush_service(
             "flush_background_timeout_seconds",
             30.0,
         )
+        service_kwargs["raw_archive_max_chars"] = getattr(
+            memory_cfg,
+            "flush_archive_max_bytes",
+            800_000,
+        )
     if session_storage is not None:
         service_kwargs["receipt_writer"] = _write_durable_flush_receipt
         service_kwargs["session_identity_resolver"] = _resolve_flush_session_id

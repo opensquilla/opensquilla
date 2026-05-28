@@ -4690,6 +4690,7 @@ class TurnRunner:
                 message_window=0,
                 segment_mode="auto",
                 timeout=background_timeout,
+                raw_capture_policy="required",
             )
         )
         self._active_pre_compaction_flush_tasks[session_key] = task

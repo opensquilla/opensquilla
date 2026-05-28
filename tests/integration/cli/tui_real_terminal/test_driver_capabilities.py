@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+HARNESS_PARENT = Path(__file__).resolve().parents[1]
+if str(HARNESS_PARENT) not in sys.path:
+    sys.path.insert(0, str(HARNESS_PARENT))
 
-from tests.integration.cli.tui_real_terminal import driver  # noqa: E402
-from tests.integration.cli.tui_real_terminal.driver import (  # noqa: E402
+from tui_real_terminal import driver  # noqa: E402
+from tui_real_terminal.driver import (  # noqa: E402
     PtyTerminalSession,
     TerminalFrame,
     TerminalSize,

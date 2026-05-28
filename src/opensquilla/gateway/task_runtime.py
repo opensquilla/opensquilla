@@ -29,6 +29,7 @@ from typing import Any, cast
 
 import structlog
 
+from opensquilla.engine.outcome import completed_outcome, outcome_from_error
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
 from opensquilla.gateway.session_lifecycle import TaskLifecycleEvent, TaskLifecycleListener
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
@@ -1181,7 +1182,13 @@ class TaskRuntime:
             terminal_reason=terminal_reason,
             error_class=error_class,
             error_message=error_message,
-            **await self._terminal_details_update(task),
+            **await self._terminal_details_update(
+                task,
+                status=status,
+                terminal_reason=terminal_reason,
+                error_class=error_class,
+                error_message=error_message,
+            ),
         )
         payload: dict[str, Any] = {
             "task_id": task.task_id,
@@ -1285,19 +1292,34 @@ class TaskRuntime:
         except Exception:
             return
 
-    async def _terminal_details_update(self, task: _RuntimeTask) -> dict[str, Any]:
+    async def _terminal_details_update(
+        self,
+        task: _RuntimeTask,
+        *,
+        status: AgentTaskStatus,
+        terminal_reason: str,
+        error_class: str | None,
+        error_message: str | None,
+    ) -> dict[str, Any]:
         outcome = _subagent_group_outcome_from_provenance(task.envelope.input_provenance)
-        if outcome is None:
-            return {}
         existing = await self._storage.get_agent_task(task.task_id)
         current_details = getattr(existing, "details", None)
         details = dict(current_details) if isinstance(current_details, dict) else {}
-        details["subagent_group_outcome"] = outcome
-        disclosure_required = task.envelope.input_provenance.get(
-            "runtime_partial_failure_disclosure_required"
-        )
-        if disclosure_required is True:
-            details["runtime_partial_failure_disclosure_required"] = True
+        if status == AgentTaskStatus.SUCCEEDED:
+            details["turn_outcome"] = completed_outcome().to_dict()
+        else:
+            details["turn_outcome"] = outcome_from_error(
+                code=terminal_reason if terminal_reason != "error" else error_class,
+                message=error_message,
+                error_class=error_class,
+            ).to_dict()
+        if outcome is not None:
+            details["subagent_group_outcome"] = outcome
+            disclosure_required = task.envelope.input_provenance.get(
+                "runtime_partial_failure_disclosure_required"
+            )
+            if disclosure_required is True:
+                details["runtime_partial_failure_disclosure_required"] = True
         return {"details": details}
 
 

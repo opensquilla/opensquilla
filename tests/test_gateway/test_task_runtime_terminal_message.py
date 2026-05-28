@@ -100,6 +100,9 @@ async def test_mark_terminal_emits_additive_terminal_message_for_timeout_payload
     assert record.terminal_reason == "timeout"
     assert record.error_class == "TimeoutError"
     assert record.error_message == "The task timed out before it could finish."
+    assert record.details is not None
+    assert record.details["turn_outcome"]["kind"] == "interrupted"
+    assert record.details["turn_outcome"]["error_class"] == "TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -137,6 +140,9 @@ async def test_context_overflow_failure_is_sanitized_in_record_and_subagent_even
     assert "too large" in record.error_message.lower()
     assert raw_error not in record.error_message
     assert "history compaction cannot reduce it" not in record.error_message
+    assert record.details is not None
+    assert record.details["turn_outcome"]["kind"] == "budgetLimited"
+    assert record.details["turn_outcome"]["reason"] == "provider_request_too_large"
     assert terminal_events
     event_payload = terminal_events[-1].to_payload()
     assert event_payload["error_class"] == "provider_request_too_large"
@@ -191,6 +197,7 @@ async def test_successful_parent_task_persists_subagent_group_outcome_details() 
     assert record.details["metadata"] == {"existing": "metadata"}
     assert record.details["input_provenance"]["source_tool"] == "subagent_completion"
     assert record.details["subagent_group_outcome"] == outcome
+    assert record.details["turn_outcome"]["kind"] == "completed"
 
 
 def test_subagent_completion_payload_adds_terminal_message_for_non_success() -> None:

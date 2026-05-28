@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -90,13 +91,14 @@ async def test_provider_output_truncation_error_persistence_uses_message_fallbac
         config=SimpleNamespace(context_window_tokens=100_000),
     )
 
-    await runner._persist_turn_error(
-        "agent:main:webchat:test",
-        ErrorEvent(
-            message="Provider output limit reached before completion",
-            code="agent_error",
-        ),
-    )
+    with patch("opensquilla.engine.runtime.log") as log:
+        await runner._persist_turn_error(
+            "agent:main:webchat:test",
+            ErrorEvent(
+                message="Provider output limit reached before completion",
+                code="agent_error",
+            ),
+        )
 
     assert manager.messages == [
         (
@@ -105,3 +107,6 @@ async def test_provider_output_truncation_error_persistence_uses_message_fallbac
             "The provider stopped because the output limit was reached before the task finished.",
         )
     ]
+    log.info.assert_called_once()
+    assert log.info.call_args.kwargs["code"] == "provider_output_truncated"
+    assert log.info.call_args.kwargs["turn_outcome"]["kind"] == "partial"

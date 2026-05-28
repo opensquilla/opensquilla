@@ -51,6 +51,7 @@ from opensquilla.engine.hooks import (
     TurnHook,
     TurnHookContext,
 )
+from opensquilla.engine.outcome import outcome_from_error, turn_outcome_details
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.pricing import PriceEntry, lookup_price
 from opensquilla.engine.turn_runner import (
@@ -2561,6 +2562,13 @@ class TurnRunner:
             if error_code in {"provider_request_too_large", "provider_output_truncated"}
             else event.code
         )
+        outcome_details = turn_outcome_details(
+            outcome_from_error(
+                code=event_code,
+                message=message,
+                error_class=event_code,
+            )
+        )
         if event_code == "provider_output_truncated":
             transcript_message = build_terminal_reply(
                 {
@@ -2597,11 +2605,18 @@ class TurnRunner:
                 role="system",
                 content=transcript_message,
             )
+            log.info(
+                "turn_runner.error_persisted",
+                session_key=session_key,
+                code=event_code,
+                **outcome_details,
+            )
         except Exception as exc:  # noqa: BLE001 - persistence must not mask the original error
             log.warning(
                 "turn_runner.error_persist_failed",
                 session_key=session_key,
                 code=event_code,
+                **outcome_details,
                 error=str(exc),
             )
 

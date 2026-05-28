@@ -56,6 +56,28 @@ def test_orphaned_checkpoint_receipt_is_not_destructive_safe() -> None:
     assert durable_receipt_allows_destructive_compaction(receipt) is False
 
 
+def test_checkpoint_failed_receipt_is_not_destructive_safe() -> None:
+    receipt = {
+        "scope": "checkpoint",
+        "status": "checkpoint_failed",
+        "source_path": "memory/.checkpoints/agent-main-webchat-abc/turn-1.jsonl",
+        "content_hash": "h1",
+    }
+
+    assert durable_receipt_allows_destructive_compaction(receipt) is False
+
+
+def test_checkpoint_receipt_without_evidence_is_not_destructive_safe() -> None:
+    receipt = {
+        "scope": "checkpoint",
+        "status": "checkpoint_saved",
+        "source_path": "memory/.checkpoints/agent-main-webchat-abc/turn-1.jsonl",
+        "content_hash": "",
+    }
+
+    assert durable_receipt_allows_destructive_compaction(receipt) is False
+
+
 def test_missing_or_raw_receipt_enters_degraded_forensic_in_protect_mode() -> None:
     assert flush_compaction_decision(None, safety_mode="protect") == "degraded_forensic"
     assert (

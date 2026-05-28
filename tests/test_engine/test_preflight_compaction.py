@@ -341,6 +341,81 @@ async def test_preflight_checkpoint_runs_before_compact() -> None:
 
 
 @pytest.mark.asyncio
+async def test_preflight_compacts_when_distill_fails_after_checkpoint() -> None:
+    context_window = 1000
+    entries = [_make_entry("early durable fact " + ("a" * 4000))]
+    calls: list[str] = []
+    mock_sm = MagicMock()
+    mock_sm.get_transcript = AsyncMock(return_value=entries)
+    mock_sm.record_memory_checkpoint = AsyncMock(
+        side_effect=lambda *args, **kwargs: calls.append("checkpoint")
+    )
+    mock_sm.compact = AsyncMock(
+        side_effect=lambda *args, **kwargs: calls.append("compact") or "summary text"
+    )
+
+    async def _flush_fails(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        calls.append("flush")
+        raise RuntimeError("bad json")
+
+    flush_service = MagicMock()
+    flush_service.execute = AsyncMock(side_effect=_flush_fails)
+    runner = TurnRunner(
+        provider_selector=MagicMock(),
+        session_manager=mock_sm,
+        session_flush_service=flush_service,
+        config=SimpleNamespace(
+            memory=SimpleNamespace(
+                flush_enabled=True,
+                flush_timeout_seconds=0.25,
+                flush_background_timeout_seconds=42.0,
+            )
+        ),
+    )
+
+    with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
+        await runner._maybe_preflight_compact("agent:ops:long-session", context_window)
+
+    assert calls == ["checkpoint", "flush", "compact"]
+    mock_sm.compact.assert_awaited_once_with("agent:ops:long-session", context_window)
+
+
+@pytest.mark.asyncio
+async def test_preflight_checkpoint_failure_prevents_destructive_compaction() -> None:
+    context_window = 1000
+    entries = [_make_entry("early durable fact " + ("a" * 4000))]
+    mock_sm = MagicMock()
+    mock_sm.get_transcript = AsyncMock(return_value=entries)
+    mock_sm.record_memory_checkpoint = AsyncMock(
+        side_effect=RuntimeError("checkpoint write failed")
+    )
+    mock_sm.compact = AsyncMock(return_value="summary text")
+    flush_service = MagicMock()
+    flush_service.execute = AsyncMock(return_value=_flush_receipt())
+    runner = TurnRunner(
+        provider_selector=MagicMock(),
+        session_manager=mock_sm,
+        session_flush_service=flush_service,
+        config=SimpleNamespace(
+            memory=SimpleNamespace(
+                flush_enabled=True,
+                flush_timeout_seconds=0.25,
+                flush_background_timeout_seconds=42.0,
+            )
+        ),
+    )
+
+    with (
+        patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000),
+        pytest.raises(RuntimeError, match="checkpoint write failed"),
+    ):
+        await runner._maybe_preflight_compact("agent:ops:long-session", context_window)
+
+    flush_service.execute.assert_not_called()
+    mock_sm.compact.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_preflight_completed_event_reports_compaction_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

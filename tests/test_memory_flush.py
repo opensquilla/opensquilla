@@ -571,7 +571,7 @@ async def test_session_flush_successful_llm_flush_records_flush_appended() -> No
 
 
 @pytest.mark.asyncio
-async def test_session_flush_raw_fallback_tool_error_returns_error_receipt() -> None:
+async def test_session_flush_raw_fallback_tool_error_returns_error_receipt(caplog) -> None:
     calls: list[ToolCall] = []
 
     async def handler(call: ToolCall) -> ToolResult:
@@ -595,6 +595,7 @@ async def test_session_flush_raw_fallback_tool_error_returns_error_receipt() -> 
         receipt_writer=receipt_writer,
     )
     messages = [Message(role="user", content="same transcript")]
+    caplog.set_level(logging.INFO, logger="opensquilla.memory.session_flush")
 
     first = await service._raw_dump_fallback(
         messages,
@@ -618,6 +619,16 @@ async def test_session_flush_raw_fallback_tool_error_returns_error_receipt() -> 
     assert second.mode == "error"
     assert [row["scope"] for row in receipt_rows] == ["repair", "repair"]
     assert [row["status"] for row in receipt_rows] == ["repair_failed", "repair_failed"]
+    raw_records = [
+        record
+        for record in caplog.records
+        if record.name == "opensquilla.memory.session_flush"
+        and "raw_fallback" in record.getMessage()
+    ]
+    assert "session_flush.raw_fallback_save_failed" in [
+        record.getMessage() for record in raw_records
+    ]
+    assert any(record.levelname == "ERROR" for record in raw_records)
 
 
 @pytest.mark.asyncio
@@ -682,6 +693,20 @@ async def test_session_flush_execute_logs_done_receipt_for_raw_fallback(caplog) 
 
     assert receipt.mode == "raw"
     assert receipt.result_status == "ok_archive_only"
+    raw_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "opensquilla.memory.session_flush"
+        and "raw_fallback" in record.getMessage()
+    ]
+    assert "session_flush.raw_fallback_save_failed" not in raw_messages
+    assert any(message == "session_flush.raw_fallback" for message in raw_messages)
+    assert all(
+        record.levelname != "ERROR"
+        for record in caplog.records
+        if record.name == "opensquilla.memory.session_flush"
+        and "raw_fallback" in record.getMessage()
+    )
     records = [
         record
         for record in caplog.records

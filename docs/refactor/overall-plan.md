@@ -1,0 +1,259 @@
+# OpenSquilla Refactor Control Plan
+
+> For agentic workers: this plan is the durable control surface for the long-running
+> architecture refactor. Before starting any implementation slice, use
+> `superpowers:using-git-worktrees`, `superpowers:writing-plans`,
+> `superpowers:test-driven-development`,
+> `superpowers:dispatching-parallel-agents` when a slice has independent
+> subdomains, and
+> `superpowers:verification-before-completion`.
+
+## Goal
+
+Progressively refactor OpenSquilla with isolated worktrees, narrow integration
+module-batch slices, complete quality gates, and user-facing compatibility
+preserved at every stage.
+
+The active integration branch is `codex/refactor-architecture`. Keep the
+integration worktree separate from the main checkout. The main checkout is
+observe-only for this refactor line.
+
+## Refactor Cadence
+
+- Default to coarser, systemic module or module-family slices instead of
+  helper-sized moves. Good slices should cover a cohesive boundary batch such as
+  provider runtime/materialization/status, channel transport/dispatch/reply,
+  tools policy/execution/security, session runtime/persistence/queues, or Web UI
+  RPC/view-state contracts.
+- Prefer one larger plan/test cycle for a related component family over repeated
+  micro-plans for individual helper functions or isolated small defects. If a
+  common coupling pattern appears in multiple files or sibling modules, group it
+  into one coherent substage with shared acceptance criteria and one final
+  comprehensive verification pass.
+- Use Superpowers planning to group related architecture work, identify shared
+  ownership boundaries up front, and run one unified focused verification set
+  plus the full refactor gate for the batch.
+- Avoid spending refactor time repeatedly planning and testing the same class of
+  issue at tiny granularity. Local RED/GREEN checks still happen before code
+  changes, but the stage should optimize for unified architecture movement and a
+  complete end-of-substage gate rather than many redundant stop-start cycles.
+  In short: avoid repeated micro-planning/micro-testing for tiny points inside
+  the same component family or coupling class.
+- Keep every batch behavior-compatible. Larger refactors must add or update tests
+  so CLI text, RPC payloads, WebSocket events, provider defaults, channel
+  replies, public imports, and release hygiene remain at least as complete as the
+  original main branch.
+- Do not reduce scope by simplifying implementations, dropping compatibility
+  shims, or leaving feature gaps just to make a larger refactor pass.
+- Use the fixed sibling child path `../opensquilla-refactor-active` for the
+  active slice, merge back to the sibling integration worktree
+  `../opensquilla-refactor-integration`, then remove the active worktree and
+  prune git metadata before starting the next batch.
+
+## Operating Rules
+
+1. Inspect current state before trusting prior context: `git status --short --branch`,
+   `git rev-parse --short HEAD`, `git log --oneline -8`, and
+   `find . -name AGENTS.md -print`.
+2. Use the fixed active child worktree path for one independently mergeable
+   module-batch slice at a time.
+3. Keep slices behavior-compatible and independently mergeable, but avoid
+   creating many tiny slices for closely related module boundaries.
+4. Prefer explicit boundaries already used in this repo:
+   `*_workflows.py`, `*_presenters.py`, `*_gateway_queries.py`,
+   `*_config_mutations.py`, `*_rpc_payload.py`, and focused runtime/operation
+   modules.
+5. Start each implementation slice with a stage plan derived from
+   `docs/refactor/stage-template.md`.
+6. Split independent subdomains across multiple agents when it will speed up
+   refactoring without shared-file conflicts. The main thread owns the overall
+   architecture boundary, worktree/branch coordination, integration, conflict
+   review, and final gate.
+7. Write a failing test before implementation when the slice changes code or
+   executable behavior.
+8. Commit child work only after local verification passes.
+9. Merge child work into integration with `git merge --no-ff`.
+10. Rerun the integration gate after each merge.
+11. Do not mark the long-running goal complete until a requirement-by-requirement
+    completion audit proves the full objective is satisfied.
+
+## Parallel Agent Policy
+
+- Use multi-agent parallelism for slices with 2+ independent problem domains,
+  such as separate CLI commands, unrelated gateway RPC surfaces, separate
+  provider adapters, or independent test failures.
+- Assign one agent per domain with narrow scope, explicit file/module ownership,
+  constraints, and an expected summary of current-state findings and changes.
+- Do not parallelize related failures, shared-state refactors, or changes likely
+  to edit the same files unless the main thread first splits ownership cleanly.
+- Agents produce evidence and focused changes; the main thread reviews summaries,
+  checks for conflicts, merges work, and runs the complete refactor gate.
+- If same-thread `spawn_agent` reaches a runtime limit, switch to external Codex
+  CLI workers before falling back to sequential work:
+  `scripts/refactor_external_agent.sh --slot <domain> --branch codex/refactor-<domain> --prompt <file>`.
+  Launch several workers as long-running foreground exec sessions and poll them
+  periodically; reserve `--background` for a persistent human shell. Use a small
+  fixed set of sibling worktree slots, keep ownership disjoint, and remove/prune
+  each worktree after its branch is merged.
+
+## Current Architecture Map
+
+- CLI: Typer commands in `src/opensquilla/cli`, progressively split into command
+  entrypoints, presenters, gateway queries, config mutations, and workflows.
+- Gateway/RPC/WebSocket: Starlette gateway surfaces in `src/opensquilla/gateway`
+  with RPC tests under `tests/test_gateway`.
+- Session/runtime: session management, task runtime, terminal replies, compaction,
+  spawn groups, and persistence live under `src/opensquilla/session` and
+  `src/opensquilla/gateway`.
+- Provider/model routing: provider adapters, model catalog, pricing, router
+  behavior, and runtime status live under `src/opensquilla/provider*` and
+  `src/opensquilla/squilla_router`.
+- Channels: adapter entries, webhook/websocket transports, dispatch, and inbound
+  normalization live under `src/opensquilla/channels`.
+- Tools/sandbox/MCP: builtin tools, shell/filesystem/network policy, MCP discovery,
+  and safety contracts live under `src/opensquilla/tools`, `src/opensquilla/sandbox`,
+  and related tests.
+- Skills/memory/search/scheduler: skills loader/hub/runtime, memory sources,
+  search runtime, and scheduler workflows live under `src/opensquilla/skills`,
+  `src/opensquilla/memory`, `src/opensquilla/search`, and
+  `src/opensquilla/scheduler`.
+- Web UI static assets: gateway static views and browser-facing contracts live
+  under `src/opensquilla/gateway/static` and `tests/test_gateway/*static*`.
+
+## Risk Map
+
+- User-facing behavior: CLI text, RPC payloads, WebSocket events, Web UI behavior,
+  provider routing defaults, and channel replies must remain compatible.
+- Public imports: do not remove compatibility imports until every reference and
+  public contract has been audited.
+- Concurrency: session lifecycle, task runtime, queue/admission, terminal cleanup,
+  and WebSocket writers require focused tests before changes.
+- Security: shell/filesystem/network tools, sandbox policy, uploads, SSRF checks,
+  credentials, and MCP visibility require conservative changes and regression
+  coverage.
+- Test fragility: keep default tests offline, deterministic, credential-free, and
+  safe for forks.
+
+## Phase Roadmap
+
+### Phase 1: CLI Boundary Thinning
+
+- Target: continue reducing command files by moving display, gateway query,
+  mutation, and workflow logic into focused modules.
+- Candidate slices: remaining `chat_cmd.py` slash workflows, `gateway_cmd.py`
+  lifecycle presentation, `cron_cmd.py` workflows, and any command file still
+  mixing RPC, formatting, and command parsing.
+- Do not change: command names, flags, JSON output shape, terminal text unless a
+  test is intentionally updated.
+- Gate: focused CLI tests, full ruff/mypy/pytest, gateway smoke.
+
+### Phase 2: Gateway RPC Payload Boundaries
+
+- Target: explicit request/response payload boundaries for sessions, tools, skills,
+  config, usage, logs, approvals, and agent RPC surfaces.
+- Do not change: public RPC method names or payload keys without compatibility
+  coverage.
+- Gate: RPC payload tests, public surface baseline tests, full quality gate.
+
+### Phase 3: Session and Runtime Services
+
+- Target: isolate task runtime, terminal lifecycle, spawn groups, queues,
+  compaction, and persistence into service boundaries.
+- Do not change: task completion ordering, cancellation semantics, terminal
+  cleanup, or session key contracts.
+- Gate: runtime/session concurrency tests plus full quality gate.
+
+### Phase 4: Provider and Model Routing
+
+- Target: decouple provider registry/factory/runtime support/model catalog/pricing
+  from concrete provider classes.
+- Do not change: default model selection, provider attribution, usage accounting,
+  or compatibility payloads.
+- Gate: provider factory, catalog, routing, pricing, and usage tests.
+
+### Phase 5: Channels
+
+- Target: separate webhook/websocket transports, message normalization, dispatch,
+  and reply contracts.
+- Do not change: adapter configuration fields, dedupe behavior, or inbound reply
+  semantics.
+- Gate: channel contract tests, adapter tests, gateway dispatch tests.
+
+### Phase 6: Tools, Sandbox, and Security
+
+- Target: make permissions and policy boundaries explicit for shell, filesystem,
+  network, patch, uploads, web fetch, MCP, and skills hub operations.
+- Do not change: safe default policy or approval behavior without regression
+  tests.
+- Gate: security, sandbox, tool policy, and public tool surface tests.
+
+### Phase 7: Web UI Contracts
+
+- Target: isolate browser-side RPC client/view state/payload assumptions.
+- Do not change: visible Web UI workflows without browser/static tests.
+- Gate: static view tests and browser smoke when applicable.
+
+### Phase 8: Release and Documentation Convergence
+
+- Target: update architecture maps, refactor reports, contribution guidance, and
+  release checklists after implementation evidence exists.
+- Gate: README/link/release hygiene tests plus `uv build --wheel` when preparing a PR.
+
+
+## 2026-05-19 Ultragoal Execution Summary
+
+The continuation run for component/plugin decoupling completed the implementation stories G001-G005 and reached G006 final release/docs verification. The coarse-batch sequence was:
+
+1. G001 global component/plugin decoupling audit: classified major architecture families, selected execution batches, and recorded Superpowers/Serena evidence.
+2. G002 extension services boundary batch: grouped skills/plugins, memory, search, and scheduler extension-service seams; completed child/integration gates and cleanup.
+3. G003 channels and external ingress batch: moved channel runtime assembly and ingress ownership behind explicit boundaries; completed child/integration gates and cleanup.
+4. G004 provider/router integration batch: moved router tier/profile policy into provider ownership while preserving gateway compatibility wrappers; completed child/integration gates and cleanup.
+5. G005 contracts adoption/backplane batch: added `opensquilla.application.ContractBackplane` as an application-facing contract-port composition seam across tools, session, provider, channel, and memory ports; runtime consumer migration remains deferred to future slices so public behavior stays unchanged; completed child/integration gates and cleanup.
+6. G006 release/docs final quality gate: records the final anti-slop pass, code review, full refactor gate, wheel build, and completion audit before closing the aggregate goal.
+
+Final verification evidence is recorded in `docs/refactor/stages/2026-05-19-release-docs-final-quality-gate.md`: release hygiene/link consistency tests, `scripts/refactor_gate.sh`, `uv build --wheel`, and the final architecture CLEAR rerun passed after the review-cleanup merge. The remaining lifecycle items after the committed evidence tree are quality-gate JSON, `update_goal`, and the Ultragoal checkpoint.
+
+## Standard Slice Lifecycle
+
+1. Run `scripts/refactor_preflight.sh --expect-branch codex/refactor-architecture`
+   in the integration worktree.
+2. Create a child branch and worktree:
+   `git worktree add ../opensquilla-refactor-active -b codex/refactor-<slice>`.
+3. Generate or copy a stage plan from `docs/refactor/stage-template.md`.
+4. Use `superpowers:writing-plans` to turn the module-batch stage into concrete
+   tasks and focused verification groups.
+5. Identify independent subdomains and dispatch parallel agents where useful.
+   Prefer same-thread `spawn_agent` when available; if it is blocked by runtime
+   limits, use `scripts/refactor_external_agent.sh` with fixed sibling slots
+   instead of shrinking immediately to sequential execution.
+6. Use `superpowers:test-driven-development` for code or executable behavior.
+7. Run focused tests, then `scripts/refactor_gate.sh`.
+8. Commit with the required co-author trailer.
+9. Merge into integration with `git merge --no-ff`.
+10. Run `scripts/refactor_gate.sh` again from integration.
+11. Record child hash, integration hash, verification output, and next slice.
+12. Remove `../opensquilla-refactor-active`, run
+    `git worktree prune`, and verify no extra `opensquilla-refactor-*`
+    directories were left behind except the integration worktree.
+
+## Standard Gate
+
+Use `scripts/refactor_gate.sh` for the complete gate. It includes:
+
+- `uv run --extra dev ruff check src tests`
+- `uv run --extra dev mypy src/opensquilla --show-error-codes`
+- `git diff --check`
+- `uv run --extra dev pytest`
+- gateway start/status/stop/status smoke with isolated state and workspace dirs
+
+When preparing a public PR, also run `uv build --wheel`.
+
+## Context Recovery
+
+If context was compacted, interrupted, or resumed:
+
+1. Run `scripts/refactor_preflight.sh --allow-dirty` in the current worktree.
+2. Read this file and the active stage plan.
+3. Re-check actual git state before continuing.
+4. Treat old chat summaries as hints only.
+5. Resume the smallest unfinished step; do not restart broad refactors from memory.

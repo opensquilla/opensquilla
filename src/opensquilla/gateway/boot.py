@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     from opensquilla.engine.usage import UsageTracker
@@ -53,6 +53,14 @@ from opensquilla.permissions import configured_default_elevated
 from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
 
 log = structlog.get_logger(__name__)
+
+
+class _FlushReceiptSessionStorage(Protocol):
+    async def get_session(self, session_key: str) -> Any | None: ...
+
+    async def list_memory_durable_receipts(self, **kwargs: Any) -> list[Any]: ...
+
+    async def upsert_memory_durable_receipt(self, receipt: Any) -> Any: ...
 
 _AUTO_PROPOSE_TOOL_ALLOWLIST = frozenset(
     {
@@ -1196,7 +1204,15 @@ def build_flush_service(
     from opensquilla.tools.dispatch import build_tool_handler
 
     tool_handler = build_tool_handler(tool_registry)
-    session_storage = get_session_storage(session_manager)
+    raw_session_storage = get_session_storage(session_manager)
+    session_storage: _FlushReceiptSessionStorage | None = None
+    if (
+        raw_session_storage is not None
+        and callable(getattr(raw_session_storage, "get_session", None))
+        and callable(getattr(raw_session_storage, "list_memory_durable_receipts", None))
+        and callable(getattr(raw_session_storage, "upsert_memory_durable_receipt", None))
+    ):
+        session_storage = cast(_FlushReceiptSessionStorage, raw_session_storage)
 
     def _resolve_provider(_agent_id: str) -> Any:
         if provider_selector is None:
@@ -1209,12 +1225,31 @@ def build_flush_service(
         except Exception:  # noqa: BLE001
             return None
 
+    async def _resolve_flush_session_id(session_key: str) -> str | None:
+        if session_storage is None:
+            return None
+        session = await session_storage.get_session(session_key)
+        if session is None:
+            return None
+        return str(getattr(session, "session_id", "") or "") or None
+
+    async def _resolve_flush_checkpoint_exists(
+        session_key: str,
+        session_id: str | None,
+    ) -> bool:
+        if session_storage is None or not session_id:
+            return False
+        rows = await session_storage.list_memory_durable_receipts(
+            session_key=session_key,
+            session_id=session_id,
+            scope="checkpoint",
+            status="checkpoint_saved",
+            limit=1,
+        )
+        return bool(rows)
+
     async def _write_durable_flush_receipt(receipt: Any, **row: Any) -> None:
         if session_storage is None:
-            return
-        get_session = getattr(session_storage, "get_session", None)
-        upsert_receipt = getattr(session_storage, "upsert_memory_durable_receipt", None)
-        if not callable(get_session) or not callable(upsert_receipt):
             return
 
         from opensquilla.session.models import MemoryDurableReceipt
@@ -1222,42 +1257,67 @@ def build_flush_service(
         session_key = str(row.get("session_key") or "")
         if not session_key:
             return
-        session = await get_session(session_key)
-        if session is None:
+        captured_session_id = str(row.get("session_id") or "")
+        if not captured_session_id:
             log.warning(
                 "session_flush.receipt_write_skipped",
-                reason="session_not_found",
+                reason="session_id_missing",
                 session_key=session_key,
                 result_status=getattr(receipt, "result_status", None),
             )
             return
+        current_session = await session_storage.get_session(session_key)
+        current_session_id = (
+            str(getattr(current_session, "session_id", "") or "")
+            if current_session is not None
+            else ""
+        )
+        if current_session_id and current_session_id != captured_session_id:
+            log.warning(
+                "session_flush.receipt_session_mismatch",
+                session_key=session_key,
+                captured_session_id=captured_session_id,
+                current_session_id=current_session_id,
+                result_status=getattr(receipt, "result_status", None),
+            )
 
         scope = str(row.get("scope") or "")
         status = str(row.get("status") or "")
         reason = row.get("reason")
         target_path = row.get("target_path")
         target_path = str(target_path) if target_path else None
+        source_path = row.get("source_path")
+        source_path = str(source_path) if source_path else None
+        turn_id = row.get("turn_id")
+        turn_id = str(turn_id) if turn_id else None
+        content_hash = row.get("content_hash")
+        content_hash = str(content_hash) if content_hash else None
         idempotency_key = ":".join(
             [
                 "flush-receipt",
                 scope,
                 session_key,
-                str(getattr(session, "session_id", "")),
+                captured_session_id,
+                turn_id or "",
                 status,
                 str(reason or ""),
+                source_path or "",
                 target_path or "",
-                str(getattr(receipt, "result_status", "") or ""),
+                content_hash or "",
                 str(getattr(receipt, "input_message_count", 0) or 0),
                 str(getattr(receipt, "first_included_message", "") or ""),
                 str(getattr(receipt, "last_included_message", "") or ""),
             ]
         )
-        await upsert_receipt(
+        await session_storage.upsert_memory_durable_receipt(
             MemoryDurableReceipt(
                 session_key=session_key,
-                session_id=str(getattr(session, "session_id", "")),
+                session_id=captured_session_id,
+                turn_id=turn_id,
                 scope=scope,
+                source_path=source_path,
                 target_path=target_path,
+                content_hash=content_hash,
                 idempotency_key=idempotency_key,
                 status=status,
                 reason=str(reason) if reason else None,
@@ -1274,6 +1334,8 @@ def build_flush_service(
         )
     if session_storage is not None:
         service_kwargs["receipt_writer"] = _write_durable_flush_receipt
+        service_kwargs["session_identity_resolver"] = _resolve_flush_session_id
+        service_kwargs["checkpoint_exists_resolver"] = _resolve_flush_checkpoint_exists
 
     return SessionFlushService(
         provider_selector=_resolve_provider,

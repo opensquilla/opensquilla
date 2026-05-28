@@ -1248,6 +1248,10 @@ class FlushReceipt:
     obligation_backfilled_count: int = 0
     obligation_status: ObligationStatus = "unverifiable"
     obligation_policy_version: str = FLUSH_OBLIGATION_POLICY_VERSION
+    session_id: str | None = None
+    turn_id: str | None = None
+    source_path: str | None = None
+    content_hash: str | None = None
 
     def __post_init__(self) -> None:
         if (self.raw_reason is not None) != (self.mode == "raw"):
@@ -1933,6 +1937,8 @@ class SessionFlushService:
         default_message_window: int = 30,
         default_timeout: float = 30.0,
         receipt_writer: Callable[..., Any] | None = None,
+        session_identity_resolver: Callable[[str], Any] | None = None,
+        checkpoint_exists_resolver: Callable[[str, str | None], Any] | None = None,
     ) -> None:
         self._provider_selector = provider_selector
         self._tool_registry = tool_registry
@@ -1940,6 +1946,8 @@ class SessionFlushService:
         self._default_message_window = default_message_window
         self._default_timeout = default_timeout
         self._receipt_writer = receipt_writer
+        self._session_identity_resolver = session_identity_resolver
+        self._checkpoint_exists_resolver = checkpoint_exists_resolver
         self._extraction_stats_by_session: dict[tuple[str, str], dict[str, Any]] = {}
         self._last_extraction_stats: dict[str, Any] = {}
         self._raw_fallback_receipts: dict[tuple[str, str, str, str], FlushReceipt] = {}
@@ -1981,6 +1989,53 @@ class SessionFlushService:
             },
         )
 
+    async def _resolve_session_id(self, session_key: str) -> str | None:
+        if self._session_identity_resolver is None:
+            return None
+        result = self._session_identity_resolver(session_key)
+        if inspect.isawaitable(result):
+            result = await result
+        return str(result) if result else None
+
+    async def _resolve_checkpoint_exists(
+        self,
+        session_key: str,
+        session_id: str | None,
+    ) -> bool | None:
+        if self._checkpoint_exists_resolver is None:
+            return None
+        result = self._checkpoint_exists_resolver(session_key, session_id)
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+
+    def _with_receipt_identity(
+        self,
+        receipt: FlushReceipt,
+        *,
+        session_id: str | None,
+        turn_id: str,
+        source_path: str,
+    ) -> FlushReceipt:
+        content_hash = receipt.content_hash
+        if content_hash is None and receipt.mode == "llm" and receipt.flushed_paths:
+            fallback = "|".join(
+                [
+                    receipt.result_status,
+                    *receipt.flushed_paths,
+                    str(receipt.indexed_chunk_count),
+                    turn_id,
+                ]
+            )
+            content_hash = hashlib.sha256(fallback.encode("utf-8")).hexdigest()
+        return replace(
+            receipt,
+            session_id=receipt.session_id or session_id,
+            turn_id=receipt.turn_id or turn_id,
+            source_path=receipt.source_path or source_path,
+            content_hash=content_hash,
+        )
+
     def _ledger_receipt_fields(
         self,
         receipt: FlushReceipt,
@@ -1999,6 +2054,10 @@ class SessionFlushService:
                 "status": "repair_pending",
                 "reason": result_status,
                 "target_path": target_path,
+                "session_id": receipt.session_id,
+                "turn_id": receipt.turn_id,
+                "source_path": receipt.source_path,
+                "content_hash": receipt.content_hash,
             }
         if result_status == "archive_failed":
             if checkpoint_exists is False:
@@ -2007,12 +2066,20 @@ class SessionFlushService:
                     "status": "checkpoint_failed",
                     "reason": "archive_failed",
                     "target_path": target_path,
+                    "session_id": receipt.session_id,
+                    "turn_id": receipt.turn_id,
+                    "source_path": receipt.source_path,
+                    "content_hash": receipt.content_hash,
                 }
             return {
                 "scope": "repair",
                 "status": "repair_failed",
                 "reason": "archive_failed",
                 "target_path": target_path,
+                "session_id": receipt.session_id,
+                "turn_id": receipt.turn_id,
+                "source_path": receipt.source_path,
+                "content_hash": receipt.content_hash,
             }
         if not _receipt_allows_destructive_flush_ledger(receipt):
             return None
@@ -2021,6 +2088,10 @@ class SessionFlushService:
             "status": "flush_appended",
             "reason": None,
             "target_path": target_path,
+            "session_id": receipt.session_id,
+            "turn_id": receipt.turn_id,
+            "source_path": receipt.source_path,
+            "content_hash": receipt.content_hash,
         }
 
     async def _write_receipt_ledger(
@@ -2072,8 +2143,15 @@ class SessionFlushService:
         segment_max_chars: int | None = None,
         segment_overlap_messages: int = 0,
         checkpoint_exists: bool | None = None,
+        turn_id: str | None = None,
     ) -> FlushReceipt:
         async def _done(receipt: FlushReceipt) -> FlushReceipt:
+            receipt = self._with_receipt_identity(
+                receipt,
+                session_id=captured_session_id,
+                turn_id=resolved_turn_id,
+                source_path=source_path,
+            )
             self._record_flush_done(
                 receipt,
                 agent_id=agent_id,
@@ -2083,9 +2161,14 @@ class SessionFlushService:
                 receipt,
                 agent_id=agent_id,
                 session_key=session_key,
-                checkpoint_exists=checkpoint_exists,
+                checkpoint_exists=resolved_checkpoint_exists,
             )
             return receipt
+
+        captured_session_id: str | None = None
+        resolved_turn_id = turn_id or "flush:0-0"
+        source_path = f"session:{session_key}:{resolved_turn_id}"
+        resolved_checkpoint_exists = checkpoint_exists
 
         if not transcript:
             return await _done(
@@ -2119,6 +2202,16 @@ class SessionFlushService:
         messages = normalized if window == 0 else normalized[-window:]
         input_message_count = len(normalized)
         selected_start_index = input_message_count - len(messages) + 1 if messages else None
+        captured_session_id = await self._resolve_session_id(session_key)
+        resolved_turn_id = turn_id or (
+            f"flush:{selected_start_index or 1}-{input_message_count}"
+        )
+        source_path = f"session:{session_key}:{resolved_turn_id}"
+        resolved_checkpoint_exists = (
+            checkpoint_exists
+            if checkpoint_exists is not None
+            else await self._resolve_checkpoint_exists(session_key, captured_session_id)
+        )
 
         try:
             provider = self._provider_selector(agent_id)
@@ -2437,6 +2530,7 @@ class SessionFlushService:
                     "integrity_status": segment_receipt.integrity_status,
                     "indexed_chunk_count": segment_receipt.indexed_chunk_count,
                     "result_status": segment_receipt.result_status,
+                    "content_hash": segment_receipt.content_hash,
                     "candidate_count": segment_receipt.candidate_count,
                     "candidate_covered_count": segment_receipt.candidate_covered_count,
                     "candidate_missing_ids": segment_receipt.candidate_missing_ids,
@@ -2582,6 +2676,14 @@ class SessionFlushService:
             ),
             obligation_status=_merge_obligation_status(segment_payloads),
             obligation_policy_version=FLUSH_OBLIGATION_POLICY_VERSION,
+            content_hash=hashlib.sha256(
+                "|".join(
+                    str(payload.get("content_hash") or "")
+                    for payload in segment_payloads
+                ).encode("utf-8")
+            ).hexdigest()
+            if any(payload.get("content_hash") for payload in segment_payloads)
+            else None,
         )
 
     async def _apply_flush_proposal(
@@ -2695,6 +2797,7 @@ class SessionFlushService:
                 output_coverage_status,
             ),
             indexed_chunk_count=save_result.chunk_count,
+            content_hash=hashlib.sha256(rendered_content.encode("utf-8")).hexdigest(),
             prompt_message_source_coverage=_prompt_message_source_coverage(messages),
             **coverage,
             **obligation_coverage,
@@ -3123,6 +3226,7 @@ class SessionFlushService:
                 raw_reason=None,
                 error=f"raw fallback memory_save failed: {result_text}",
                 result_status="archive_failed",
+                content_hash=fingerprint,
                 **error_payload,
                 **_receipt_audit_kwargs(
                     excerpt,
@@ -3148,6 +3252,7 @@ class SessionFlushService:
             raw_reason=reason,
             error=None,
             result_status=archive_status,
+            content_hash=fingerprint,
             **error_payload,
             **_receipt_audit_kwargs(
                 excerpt,

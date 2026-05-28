@@ -454,16 +454,16 @@ async def test_session_flush_invalid_json_records_parse_failed_archive_status() 
     assert receipt.mode == "raw"
     assert receipt.raw_reason == "llm_error"
     assert receipt.result_status == "parse_failed_archived"
-    assert receipt_rows == [
-        {
-            "agent_id": "main",
-            "session_key": "agent:main:webchat:s1",
-            "scope": "repair",
-            "status": "repair_pending",
-            "reason": "parse_failed_archived",
-            "target_path": receipt.flushed_paths[0],
-        }
-    ]
+    assert len(receipt_rows) == 1
+    assert {"content_hash", "source_path", "turn_id", "session_id"} <= set(
+        receipt_rows[0]
+    )
+    assert receipt_rows[0]["scope"] == "repair"
+    assert receipt_rows[0]["status"] == "repair_pending"
+    assert receipt_rows[0]["reason"] == "parse_failed_archived"
+    assert receipt_rows[0]["target_path"] == receipt.flushed_paths[0]
+    assert receipt_rows[0]["turn_id"] == "flush:1-1"
+    assert receipt_rows[0]["content_hash"] == receipt.content_hash
 
 
 @pytest.mark.asyncio
@@ -502,16 +502,12 @@ async def test_session_flush_provider_exception_records_provider_failed_archive_
     assert receipt.mode == "raw"
     assert receipt.raw_reason == "llm_error"
     assert receipt.result_status == "provider_failed_archived"
-    assert receipt_rows == [
-        {
-            "agent_id": "main",
-            "session_key": "agent:main:webchat:s1",
-            "scope": "repair",
-            "status": "repair_pending",
-            "reason": "provider_failed_archived",
-            "target_path": receipt.flushed_paths[0],
-        }
-    ]
+    assert len(receipt_rows) == 1
+    assert receipt_rows[0]["scope"] == "repair"
+    assert receipt_rows[0]["status"] == "repair_pending"
+    assert receipt_rows[0]["reason"] == "provider_failed_archived"
+    assert receipt_rows[0]["target_path"] == receipt.flushed_paths[0]
+    assert receipt_rows[0]["content_hash"] == receipt.content_hash
 
 
 @pytest.mark.asyncio
@@ -565,16 +561,13 @@ async def test_session_flush_successful_llm_flush_records_flush_appended() -> No
     )
 
     assert receipt.result_status == "ok_candidates_written"
-    assert receipt_rows == [
-        {
-            "agent_id": "main",
-            "session_key": "agent:main:webchat:s1",
-            "scope": "flush",
-            "status": "flush_appended",
-            "reason": None,
-            "target_path": "memory/session.md",
-        }
-    ]
+    assert len(receipt_rows) == 1
+    assert receipt_rows[0]["scope"] == "flush"
+    assert receipt_rows[0]["status"] == "flush_appended"
+    assert receipt_rows[0]["reason"] is None
+    assert receipt_rows[0]["target_path"] == "memory/session.md"
+    assert receipt_rows[0]["turn_id"] == "flush:1-1"
+    assert receipt_rows[0]["content_hash"] == receipt.content_hash
 
 
 @pytest.mark.asyncio
@@ -657,16 +650,12 @@ async def test_session_flush_archive_failed_without_checkpoint_records_checkpoin
     )
 
     assert receipt.result_status == "archive_failed"
-    assert receipt_rows == [
-        {
-            "agent_id": "main",
-            "session_key": "agent:main:webchat:s1",
-            "scope": "checkpoint",
-            "status": "checkpoint_failed",
-            "reason": "archive_failed",
-            "target_path": None,
-        }
-    ]
+    assert len(receipt_rows) == 1
+    assert receipt_rows[0]["scope"] == "checkpoint"
+    assert receipt_rows[0]["status"] == "checkpoint_failed"
+    assert receipt_rows[0]["reason"] == "archive_failed"
+    assert receipt_rows[0]["target_path"] is None
+    assert receipt_rows[0]["content_hash"] == receipt.content_hash
 
 
 @pytest.mark.asyncio

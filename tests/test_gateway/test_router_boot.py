@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import builtins
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +29,7 @@ from opensquilla.provider import Message
 from opensquilla.scheduler.types import CronJob, JobStatus
 from opensquilla.session.compaction import CompactionConfig
 from opensquilla.session.manager import SessionManager
+from opensquilla.session.models import SessionIntent
 from opensquilla.session.storage import SessionStorage
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import CallerKind, ToolContext, ToolSpec
@@ -617,9 +619,182 @@ async def test_build_flush_service_wires_durable_receipt_writer(tmp_path: Path) 
         assert rows[0].status == "repair_pending"
         assert rows[0].reason == "ok_archive_only"
         assert rows[0].target_path == receipt.flushed_paths[0]
+        assert rows[0].source_path == f"session:{session_key}:flush:1-1"
+        assert rows[0].content_hash == receipt.content_hash
+        assert rows[0].turn_id == "flush:1-1"
         assert rows[0].idempotency_key.startswith(
-            f"flush-receipt:repair:{session_key}:{session.session_id}:repair_pending:"
+            f"flush-receipt:repair:{session_key}:{session.session_id}:flush:1-1:"
         )
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_build_flush_service_receipt_uses_session_id_captured_before_rotation(
+    tmp_path: Path,
+) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.sqlite"))
+    session_manager = SessionManager(storage)
+    registry = ToolRegistry()
+    save_started = asyncio.Event()
+    allow_save = asyncio.Event()
+
+    async def memory_save(path: str, content: str, mode: str) -> str:
+        save_started.set()
+        await allow_save.wait()
+        return f"Saved to {path} (0 chunks indexed)."
+
+    registry.register(
+        ToolSpec(
+            name="memory_save",
+            description="Save memory",
+            parameters={
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "mode": {"type": "string"},
+            },
+            required=["path", "content", "mode"],
+        ),
+        memory_save,
+    )
+    try:
+        session_key = "agent:main:webchat:s1"
+        original = await session_manager.create(session_key)
+        service = build_flush_service(
+            tool_registry=registry,
+            provider_selector=SimpleNamespace(resolve=lambda: None),
+            config=GatewayConfig(),
+            session_manager=session_manager,
+        )
+
+        task = asyncio.create_task(
+            service.execute(
+                [Message(role="user", content="temporary transcript")],
+                session_key,
+                agent_id="main",
+            )
+        )
+        await asyncio.wait_for(save_started.wait(), timeout=2.0)
+        rotated, did_rotate = await session_manager.apply_intent(
+            session_key,
+            SessionIntent.RESET_SAME_KEY,
+        )
+        allow_save.set()
+        receipt = await task
+        rows = await storage.list_memory_durable_receipts(session_key=session_key)
+
+        assert did_rotate
+        assert rotated.session_id != original.session_id
+        assert receipt.session_id == original.session_id
+        assert len(rows) == 1
+        assert rows[0].session_id == original.session_id
+        assert rows[0].session_id != rotated.session_id
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_build_flush_service_receipts_distinguish_same_window_different_content(
+    tmp_path: Path,
+) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.sqlite"))
+    session_manager = SessionManager(storage)
+    registry = ToolRegistry()
+
+    async def memory_save(path: str, content: str, mode: str) -> str:
+        return f"Saved to {path} (0 chunks indexed)."
+
+    registry.register(
+        ToolSpec(
+            name="memory_save",
+            description="Save memory",
+            parameters={
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "mode": {"type": "string"},
+            },
+            required=["path", "content", "mode"],
+        ),
+        memory_save,
+    )
+    try:
+        session_key = "agent:main:webchat:s1"
+        await session_manager.create(session_key)
+        service = build_flush_service(
+            tool_registry=registry,
+            provider_selector=SimpleNamespace(resolve=lambda: None),
+            config=GatewayConfig(),
+            session_manager=session_manager,
+        )
+
+        first = await service.execute(
+            [Message(role="user", content="first content")],
+            session_key,
+            agent_id="main",
+        )
+        second = await service.execute(
+            [Message(role="user", content="second content")],
+            session_key,
+            agent_id="main",
+        )
+        rows = await storage.list_memory_durable_receipts(session_key=session_key)
+
+        assert first.content_hash != second.content_hash
+        assert len(rows) == 2
+        assert len({row.content_hash for row in rows}) == 2
+        assert len({row.idempotency_key for row in rows}) == 2
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_build_flush_service_archive_failed_without_checkpoint_is_checkpoint_failed(
+    tmp_path: Path,
+) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.sqlite"))
+    session_manager = SessionManager(storage)
+    registry = ToolRegistry()
+
+    async def memory_save(path: str, content: str, mode: str) -> str:
+        raise RuntimeError("disk full")
+
+    registry.register(
+        ToolSpec(
+            name="memory_save",
+            description="Save memory",
+            parameters={
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "mode": {"type": "string"},
+            },
+            required=["path", "content", "mode"],
+        ),
+        memory_save,
+    )
+    try:
+        session_key = "agent:main:webchat:s1"
+        session = await session_manager.create(session_key)
+        service = build_flush_service(
+            tool_registry=registry,
+            provider_selector=SimpleNamespace(resolve=lambda: None),
+            config=GatewayConfig(),
+            session_manager=session_manager,
+        )
+
+        receipt = await service.execute(
+            [Message(role="user", content="temporary transcript")],
+            session_key,
+            agent_id="main",
+        )
+        rows = await storage.list_memory_durable_receipts(session_key=session_key)
+
+        assert receipt.result_status == "archive_failed"
+        assert len(rows) == 1
+        assert rows[0].session_id == session.session_id
+        assert rows[0].scope == "checkpoint"
+        assert rows[0].status == "checkpoint_failed"
+        assert rows[0].reason == "archive_failed"
+        assert rows[0].content_hash == receipt.content_hash
     finally:
         await storage.close()
 

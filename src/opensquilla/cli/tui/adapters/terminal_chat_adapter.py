@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, MutableMapping
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,7 +17,9 @@ from opensquilla.cli.tui.backend.contracts import (
     TuiSurface,
 )
 from opensquilla.cli.tui.backend.output_binding import TuiOutputBinding
+from opensquilla.cli.tui.backend.plugins import TuiPluginManager
 from opensquilla.cli.tui.backend.runtime import run_tui_runtime
+from opensquilla.cli.tui.plugins.router_hud import RouterHudPlugin
 from opensquilla.cli.tui.terminal.prompt import (
     queued_input_start_payload,
     user_input_echo_payload,
@@ -30,6 +33,43 @@ ChatRuntimeScope = MutableMapping[str, Any]
 ChatAbortTurn = Callable[[], Awaitable[None]]
 
 
+class TuiPluginOutputHandle:
+    """Output handle wrapper that exposes the launch-scoped plugin manager."""
+
+    def __init__(
+        self,
+        output_handle: TuiOutputHandle,
+        *,
+        plugin_manager: TuiPluginManager,
+    ) -> None:
+        self._output_handle = output_handle
+        self.plugin_manager = plugin_manager
+
+    @property
+    def approval_surface(self) -> object:
+        return self._output_handle.approval_surface
+
+    async def write_through(self, payload: str) -> None:
+        await self._output_handle.write_through(payload)
+
+    def stream_output(self) -> AbstractAsyncContextManager[Callable[[str], None]]:
+        return self._output_handle.stream_output()
+
+    def set_toolbar(self, key: str, value: object | None) -> None:
+        setter = getattr(self._output_handle, "set_toolbar", None)
+        if callable(setter):
+            setter(key, value)
+
+    def invalidate(self) -> None:
+        invalidate = getattr(self._output_handle, "invalidate", None)
+        if callable(invalidate):
+            invalidate()
+
+
+def default_tui_plugin_manager() -> TuiPluginManager:
+    return TuiPluginManager([RouterHudPlugin()])
+
+
 async def _noop_abort_turn() -> None:
     return None
 
@@ -40,6 +80,7 @@ class TerminalChatRuntimeContext:
 
     surface: Surface
     scope: ChatRuntimeScope
+    plugin_manager: TuiPluginManager
     abort_active_turn: ChatAbortTurn | None = None
 
     @property
@@ -61,7 +102,14 @@ class TerminalChatRuntimeContext:
         return TuiOutputBinding(self.scope).get()
 
     def expose_surface(self, tui_surface: TuiSurface) -> None:
-        TuiOutputBinding(self.scope).expose_from_surface(tui_surface)
+        output_handle = getattr(tui_surface, "output_handle", None)
+        if isinstance(output_handle, TuiOutputHandle):
+            TuiOutputBinding(self.scope).expose(
+                TuiPluginOutputHandle(
+                    output_handle,
+                    plugin_manager=self.plugin_manager,
+                )
+            )
 
     def clear_output(self) -> None:
         TuiOutputBinding(self.scope).clear()
@@ -140,6 +188,7 @@ async def run_terminal_chat_runtime(
     context = TerminalChatRuntimeContext(
         surface=surface,
         scope=scope,
+        plugin_manager=default_tui_plugin_manager(),
         abort_active_turn=abort_active_turn,
     )
 

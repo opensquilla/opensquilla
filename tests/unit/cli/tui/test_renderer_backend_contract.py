@@ -13,9 +13,12 @@ from opensquilla.cli.tui.backend.transcript import (
 )
 from opensquilla.cli.tui.plugins.router_hud import RouterHudSnapshot
 from opensquilla.cli.tui.renderers.selection import (
+    OPENSQUILLA_TUI_BACKEND_ENV,
+    RendererBackendSelectionError,
     RendererBackendUnavailableError,
     get_renderer_backend,
     select_renderer_backend,
+    select_renderer_backend_from_env,
 )
 from opensquilla.cli.tui.renderers.textual_backend import (
     TextualRendererBackend,
@@ -34,14 +37,42 @@ def test_terminal_backend_is_default_and_preserves_fast_streaming_path() -> None
 
 
 def test_renderer_backend_lookup_rejects_unknown_ids() -> None:
-    with pytest.raises(KeyError):
+    with pytest.raises(RendererBackendSelectionError, match="Unknown TUI backend"):
         get_renderer_backend("unknown")
+
+
+def test_backend_selection_reads_env_and_preserves_terminal_default() -> None:
+    assert select_renderer_backend_from_env({}).backend_id == "terminal"
+    assert (
+        select_renderer_backend_from_env({OPENSQUILLA_TUI_BACKEND_ENV: " terminal "})
+        .backend_id
+        == "terminal"
+    )
+
+
+def test_backend_selection_rejects_unknown_env_values_clearly() -> None:
+    with pytest.raises(RendererBackendSelectionError) as exc_info:
+        select_renderer_backend_from_env({OPENSQUILLA_TUI_BACKEND_ENV: "bogus"})
+
+    assert "Unknown TUI backend 'bogus'" in str(exc_info.value)
+    assert "terminal" in str(exc_info.value)
+    assert "textual" in str(exc_info.value)
+
+
+def test_backend_selection_reports_unavailable_explicit_backend() -> None:
+    backend = TextualRendererBackend()
+    if backend.is_available().available:
+        assert select_renderer_backend("textual").backend_id == "textual"
+    else:
+        with pytest.raises(RendererBackendUnavailableError) as exc_info:
+            select_renderer_backend("textual")
+        assert "TUI backend 'textual' is unavailable" in str(exc_info.value)
 
 
 def test_textual_backend_imports_textual_only_when_selected() -> None:
     sys.modules.pop("textual.app", None)
 
-    backend = select_renderer_backend("textual")
+    backend = get_renderer_backend("textual")
 
     assert backend.backend_id == "textual"
     assert "textual.app" not in sys.modules

@@ -863,6 +863,15 @@ async def stream_response_gateway(
                 stream_deps.cancel_clearer()
                 await client.abort_session(session_key)
                 cancelled = True
+            except Exception:
+                await _finish_text_delta_stream(
+                    renderer,
+                    stream_deps,
+                    streaming_plane,
+                    source="gateway",
+                    turn_id=session_key,
+                )
+                raise
             await _finish_text_delta_stream(
                 renderer,
                 stream_deps,
@@ -1149,6 +1158,15 @@ async def stream_response_turnrunner(
                 )
                 await renderer_error(renderer, message_text)
                 return TurnResult(text=renderer.buffer, error=message_text)
+            except Exception:
+                await _finish_text_delta_stream(
+                    renderer,
+                    stream_deps,
+                    streaming_plane,
+                    source="turn_runner",
+                    turn_id=session_key,
+                )
+                raise
             await _finish_text_delta_stream(
                 renderer,
                 stream_deps,

@@ -414,6 +414,22 @@ class TestChatCommand:
             timeout=None,
         )
 
+    def test_chat_rejects_unknown_tui_backend_before_launch(self) -> None:
+        result = runner.invoke(
+            app,
+            ["chat"],
+            env={
+                "OPENSQUILLA_TUI_BACKEND": "bogus",
+                "COLUMNS": "120",
+                "NO_COLOR": "1",
+                "TERM": "dumb",
+            },
+        )
+
+        assert result.exit_code == 2
+        assert "Unknown TUI backend 'bogus'" in result.output
+        assert "Expected one of:" in result.output
+
     def test_chat_timeout_option_forwarded(self) -> None:
         """--timeout option is forwarded to run_chat."""
         mock_run = MagicMock()

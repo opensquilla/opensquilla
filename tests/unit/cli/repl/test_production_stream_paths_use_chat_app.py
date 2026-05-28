@@ -10,7 +10,7 @@ directly exercised them.
 
 These tests pin:
   - ``_stream_response_gateway`` passes the TUI output into the renderer and
-    awaits ``aappend_text`` (not ``append_text``) per text-delta event.
+    awaits ``aappend_text`` through the streaming plane, not ``append_text``.
   - ``_stream_response_turnrunner`` does the same.
   - When ``_approval_in_flight`` is set on the threaded output handle, bytes
     do not reach ``console.file`` until the flag clears. This is the
@@ -169,9 +169,9 @@ def test_stream_response_gateway_threads_tui_output_into_renderer(monkeypatch) -
     )
     instance = _RecordingRenderer.last_instance
     assert instance is not None
-    assert instance.a_appended == ["hello ", "world"], (
+    assert instance.a_appended == ["hello world"], (
         "production stream gateway must use awaited aappend_text "
-        "(not sync append_text) for each text delta"
+        "for coalesced streaming-plane flushes"
     )
     assert instance.appended == [], (
         "sync append_text must not be called by the production gateway "
@@ -245,8 +245,9 @@ def test_stream_response_turnrunner_threads_tui_output_into_renderer(monkeypatch
     )
     instance = _RecordingRenderer.last_instance
     assert instance is not None
-    assert instance.a_appended == ["alpha", "beta"], (
-        "production stream turnrunner must use awaited aappend_text for each text delta event"
+    assert instance.a_appended == ["alphabeta"], (
+        "production stream turnrunner must use awaited aappend_text "
+        "for coalesced streaming-plane flushes"
     )
     assert instance.appended == [], (
         "sync append_text must not be called by the production turnrunner stream path"

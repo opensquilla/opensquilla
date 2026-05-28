@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -26,6 +28,53 @@ async def _fake_standalone_stream(*args: Any, **kwargs: Any) -> TurnResult:
 
 def _fake_error_panel(message: str, *, title: str = "Error") -> Panel:
     return Panel(message, title=title)
+
+
+class _FakeStreamOutput:
+    async def __aenter__(self):
+        return lambda _payload: None
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+class _FakeOutputHandle:
+    approval_surface = Surface.CLI_GATEWAY
+
+    async def write_through(self, payload: str) -> None:
+        return None
+
+    def stream_output(self) -> _FakeStreamOutput:
+        return _FakeStreamOutput()
+
+    def set_toolbar(self, key: str, value: object | None) -> None:
+        return None
+
+    def invalidate(self) -> None:
+        return None
+
+
+class _FakeTuiSurface:
+    output_handle = _FakeOutputHandle()
+
+    async def next_line(self) -> str | None:
+        return None
+
+    def set_cancel_callback(self, cb) -> None:
+        return None
+
+    def set_shutdown_callback(self, cb) -> None:
+        return None
+
+    def emit_eof(self) -> None:
+        return None
+
+    async def write_through(self, payload: str) -> None:
+        return None
+
+    @property
+    def redraw_callback(self):
+        return lambda: None
 
 
 class _RecordingConsole:
@@ -182,6 +231,55 @@ async def test_gateway_runtime_bridge_owns_default_turn_callbacks(
     deps = cast(gateway_runtime.GatewayRuntimeDependencies, captured["deps"])
     assert deps.stream_response is runtime_bridge.stream_response_gateway
     assert deps.handle_slash_command is runtime_bridge.handle_gateway_slash_command
+
+
+@pytest.mark.asyncio
+async def test_terminal_chat_runtime_exposes_launch_scoped_plugin_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import terminal_chat_adapter
+    from opensquilla.cli.tui.backend.plugins import TuiPluginManager
+    from opensquilla.cli.tui.plugins.router_hud import RouterHudPlugin
+
+    scope: dict[str, object] = {}
+    captured: dict[str, object] = {}
+    fake_surface = _FakeTuiSurface()
+
+    @asynccontextmanager
+    async def fake_open_terminal_surface(**_kwargs: object):
+        yield fake_surface
+
+    async def fake_run_tui_runtime(**kwargs: object):
+        hooks = kwargs["hooks"]
+        assert not terminal_chat_adapter.get_tui_output(scope)
+        hooks.expose_surface(fake_surface)
+        output = terminal_chat_adapter.get_tui_output(scope)
+        captured["output"] = output
+        captured["manager"] = getattr(output, "plugin_manager", None)
+        hooks.clear_exposed_surface()
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        terminal_chat_adapter,
+        "open_terminal_surface",
+        fake_open_terminal_surface,
+    )
+    monkeypatch.setattr(terminal_chat_adapter, "run_tui_runtime", fake_run_tui_runtime)
+
+    async def fake_dispatch(_value: str) -> bool:
+        return True
+
+    await terminal_chat_adapter.run_terminal_chat_runtime(
+        surface=Surface.CLI_GATEWAY,
+        scope=scope,
+        dispatch=fake_dispatch,
+        queue_max_size=8,
+    )
+
+    assert terminal_chat_adapter.get_tui_output(scope) is None
+    manager = captured["manager"]
+    assert isinstance(manager, TuiPluginManager)
+    assert any(isinstance(plugin, RouterHudPlugin) for plugin in manager.plugins)
 
 
 @pytest.mark.asyncio

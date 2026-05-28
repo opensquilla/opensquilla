@@ -20,6 +20,8 @@ root release README with task-oriented guides.
 
 - [`features.md`](features.md) - capability catalog.
 - [`features/squilla-router.md`](features/squilla-router.md) - model routing.
+- [`features/tui-frontend.md`](features/tui-frontend.md) - terminal streaming,
+  plugin slots, Router HUD, and TUI backend evaluation.
 - [`features/tool-compression.md`](features/tool-compression.md) - compact tool
   results and handles.
 - [`features/meta-skills.md`](features/meta-skills.md) - reusable workflow skills.

@@ -8,7 +8,7 @@ or standalone runtime dependencies.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from typing import Any, Protocol
 
 from rich.panel import Panel
@@ -32,6 +32,14 @@ PENDING_QUEUE_MAX_SIZE = 8
 GatewayRuntimeDependencies = _gateway_runtime.GatewayRuntimeDependencies
 GatewayClientLike = _gateway_runtime.GatewayClientLike
 StandaloneRuntimeDependencies = _standalone_runtime.StandaloneRuntimeDependencies
+
+
+def validate_tui_backend_selection(env: Mapping[str, str] | None = None) -> str:
+    from opensquilla.cli.tui.renderers.selection import (  # noqa: PLC0415
+        select_renderer_backend_from_env,
+    )
+
+    return select_renderer_backend_from_env(env).backend_id
 
 
 class GatewayTerminalReplRunner(Protocol):

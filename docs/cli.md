@@ -58,7 +58,14 @@ opensquilla chat
 opensquilla chat --model gpt-5.4-mini
 opensquilla chat --session <session-key>
 opensquilla chat --standalone --workspace /path/to/project
+OPENSQUILLA_TUI_BACKEND=terminal opensquilla chat
 ```
+
+Terminal chat uses the prompt-toolkit/Rich backend by default. The internal
+`OPENSQUILLA_TUI_BACKEND` selector exists for renderer evaluation; unknown
+values are rejected before launch. Read
+[`features/tui-frontend.md`](features/tui-frontend.md) for the streaming plane,
+plugin slots, Router HUD, and replay benchmark workflow.
 
 One-shot automation:
 

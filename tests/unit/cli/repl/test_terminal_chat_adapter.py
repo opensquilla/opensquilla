@@ -162,7 +162,9 @@ async def test_terminal_chat_runtime_exposes_tui_output_handle_not_raw_chat_app(
             "session_id": "session-a",
         }
     ]
-    assert exposed == [output_handle, output_handle]
+    assert len(exposed) == 2
+    assert all(getattr(handle, "_output_handle", None) is output_handle for handle in exposed)
+    assert all(getattr(handle, "plugin_manager", None) is not None for handle in exposed)
     assert legacy_exposed == [None, None]
     assert "chat_app" not in scope
     assert "tui_output" not in scope

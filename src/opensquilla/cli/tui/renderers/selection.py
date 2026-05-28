@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from opensquilla.cli.tui.terminal.renderer import TerminalRenderer
+
+OPENSQUILLA_TUI_BACKEND_ENV = "OPENSQUILLA_TUI_BACKEND"
 
 
 @dataclass(frozen=True)
 class RendererBackendAvailability:
     available: bool
     reason: str | None = None
+
+
+class RendererBackendSelectionError(ValueError):
+    """Raised when a selected renderer backend id is invalid."""
 
 
 class RendererBackendUnavailableError(RuntimeError):
@@ -56,9 +64,37 @@ def renderer_backends() -> dict[str, TuiRendererBackend]:
     return {backend.backend_id: backend for backend in backends}
 
 
+def _backend_choices(backends: Mapping[str, TuiRendererBackend]) -> str:
+    return ", ".join(sorted(backends))
+
+
 def get_renderer_backend(backend_id: str) -> TuiRendererBackend:
-    return renderer_backends()[backend_id]
+    backends = renderer_backends()
+    try:
+        return backends[backend_id]
+    except KeyError as exc:
+        raise RendererBackendSelectionError(
+            f"Unknown TUI backend '{backend_id}'. "
+            f"Expected one of: {_backend_choices(backends)}."
+        ) from exc
 
 
 def select_renderer_backend(backend_id: str | None = None) -> TuiRendererBackend:
-    return get_renderer_backend("terminal" if backend_id is None else backend_id)
+    selected_id = "terminal" if backend_id is None else backend_id.strip()
+    if not selected_id:
+        selected_id = "terminal"
+    backend = get_renderer_backend(selected_id)
+    availability = backend.is_available()
+    if not availability.available:
+        raise RendererBackendUnavailableError(
+            f"TUI backend '{backend.backend_id}' is unavailable: "
+            f"{availability.reason or 'no reason provided'}."
+        )
+    return backend
+
+
+def select_renderer_backend_from_env(
+    env: Mapping[str, str] | None = None,
+) -> TuiRendererBackend:
+    source = os.environ if env is None else env
+    return select_renderer_backend(source.get(OPENSQUILLA_TUI_BACKEND_ENV))

@@ -25,6 +25,10 @@ from opensquilla.engine.commands import Surface
 TurnStreamDependencies = _turn_stream.TurnStreamDependencies
 
 
+def default_tui_plugin_manager() -> TuiPluginManager:
+    return TuiPluginManager([RouterHudPlugin()])
+
+
 def approval_surface_for_tui_output(
     tui_output: TuiOutputHandle | None,
     default: Surface,
@@ -51,7 +55,7 @@ def image_prompt_and_attachments(command: str) -> tuple[str, list[dict[str, str]
 def router_hud_event_sink_factory(
     tui_output: TuiOutputHandle | None,
 ) -> Callable[[TuiDomainEvent], None]:
-    manager = TuiPluginManager([RouterHudPlugin()])
+    manager = _plugin_manager_for_output(tui_output)
 
     def _sink(event: TuiDomainEvent) -> None:
         if event.kind != KIND_ROUTER_DECISION:
@@ -66,6 +70,13 @@ def router_hud_event_sink_factory(
         _invalidate_output(tui_output)
 
     return _sink
+
+
+def _plugin_manager_for_output(tui_output: TuiOutputHandle | None) -> TuiPluginManager:
+    manager = getattr(tui_output, "plugin_manager", None)
+    if isinstance(manager, TuiPluginManager):
+        return manager
+    return default_tui_plugin_manager()
 
 
 def _set_toolbar_value(

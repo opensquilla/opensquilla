@@ -18,6 +18,7 @@ from opensquilla.cli.tui.backend.domain_events import (
     TuiDomainEvent,
     now_ms,
 )
+from opensquilla.cli.tui.backend.plugins import TuiPluginManager
 from opensquilla.cli.tui.plugins.router_hud import (
     ROUTER_HUD_SLOT,
     RouterHudPlugin,
@@ -262,3 +263,27 @@ def test_terminal_router_sink_updates_toolbar_only_for_router_events() -> None:
     assert ("router_hud_style", "normal") in after_router
     assert output.updates == after_router
     assert output.invalidations == 1
+
+
+def test_terminal_router_sink_reuses_launch_scoped_plugin_manager() -> None:
+    class _Output:
+        def __init__(self, plugin_manager: TuiPluginManager) -> None:
+            self.plugin_manager = plugin_manager
+            self.updates: list[tuple[str, object | None]] = []
+
+        def set_toolbar(self, key: str, value: object | None) -> None:
+            self.updates.append((key, value))
+
+        def invalidate(self) -> None:
+            return None
+
+    manager = TuiPluginManager([RouterHudPlugin()])
+    output = _Output(manager)
+    sink = router_hud_event_sink_factory(output)
+
+    sink(_router_event(ROUTER_PAYLOAD))
+
+    snapshot = manager.snapshot(ROUTER_HUD_SLOT)
+    assert isinstance(snapshot, RouterHudSnapshot)
+    assert snapshot.label == "route t2 -> claude-sonnet-4.6 71% save 64%"
+    assert ("router_hud", snapshot.label) in output.updates

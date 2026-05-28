@@ -21,6 +21,20 @@ from opensquilla.cli.ui import ACCENT, console
 ChatRunner = Callable[..., Coroutine[Any, Any, None]]
 
 
+def validate_tui_backend_or_exit() -> str:
+    from opensquilla.cli.tui.adapters import runtime_bridge  # noqa: PLC0415
+    from opensquilla.cli.tui.renderers.selection import (  # noqa: PLC0415
+        RendererBackendSelectionError,
+        RendererBackendUnavailableError,
+    )
+
+    try:
+        return runtime_bridge.validate_tui_backend_selection()
+    except (RendererBackendSelectionError, RendererBackendUnavailableError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+
 def quiet_logs_for_interactive_chat() -> None:
     """Filter chat-process log output to WARNING+ during the interactive REPL."""
     import logging  # noqa: PLC0415 - keep launch imports light until chat starts
@@ -86,6 +100,7 @@ def launch_chat(
     input_stream: Any | None = None,
 ) -> None:
     active_console = console if output_console is None else output_console
+    validate_tui_backend_or_exit()
     prepare_interactive_chat(
         input_stream=input_stream,
         output_console=active_console,

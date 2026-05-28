@@ -767,6 +767,7 @@ class SessionManager:
         from opensquilla.memory.checkpoint import (
             append_checkpoint_events,
             build_checkpoint_events,
+            checkpoint_coverage_hash,
             checkpoint_event_hash,
             checkpoint_turn_id,
             serialize_checkpoint_event,
@@ -785,6 +786,9 @@ class SessionManager:
             raise ValueError("checkpoint transcript cannot be empty")
 
         resolved_turn_id = turn_id or checkpoint_turn_id(entries)
+        coverage_turn_id = checkpoint_turn_id(entries)
+        coverage_hash = checkpoint_coverage_hash(entries)
+        coverage_entry_count = len(entries)
         events = build_checkpoint_events(
             session_key=session_key,
             session_id=node.session_id,
@@ -814,6 +818,9 @@ class SessionManager:
                 turn_id=resolved_turn_id,
                 scope="checkpoint",
                 content_hash=None,
+                coverage_turn_id=coverage_turn_id,
+                coverage_hash=coverage_hash,
+                coverage_entry_count=coverage_entry_count,
                 idempotency_key=failure_key,
                 status="checkpoint_failed",
                 reason=str(exc),
@@ -832,6 +839,9 @@ class SessionManager:
             scope="checkpoint",
             source_path=result.relative_path,
             content_hash=result.content_hash,
+            coverage_turn_id=coverage_turn_id,
+            coverage_hash=coverage_hash,
+            coverage_entry_count=coverage_entry_count,
             idempotency_key=(
                 f"checkpoint:{session_key}:{resolved_turn_id}:{result.content_hash}"
             ),

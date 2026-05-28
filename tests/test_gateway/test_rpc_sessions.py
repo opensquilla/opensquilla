@@ -116,15 +116,42 @@ class FakeStorage:
     async def list_memory_durable_receipts(
         self,
         session_key: str | None = None,
+        session_id: str | None = None,
+        scope: str | None = None,
         status: str | None = None,
+        coverage_turn_id: str | None = None,
+        coverage_hash: str | None = None,
+        coverage_entry_count: int | None = None,
         idempotency_key: str | None = None,
         limit: int = 100,
     ) -> list[Any]:
         rows = list(self.memory_durable_receipts)
         if session_key is not None:
             rows = [row for row in rows if getattr(row, "session_key", None) == session_key]
+        if session_id is not None:
+            rows = [row for row in rows if getattr(row, "session_id", None) == session_id]
+        if scope is not None:
+            rows = [row for row in rows if getattr(row, "scope", None) == scope]
         if status is not None:
             rows = [row for row in rows if getattr(row, "status", None) == status]
+        if coverage_turn_id is not None:
+            rows = [
+                row
+                for row in rows
+                if getattr(row, "coverage_turn_id", None) == coverage_turn_id
+            ]
+        if coverage_hash is not None:
+            rows = [
+                row
+                for row in rows
+                if getattr(row, "coverage_hash", None) == coverage_hash
+            ]
+        if coverage_entry_count is not None:
+            rows = [
+                row
+                for row in rows
+                if getattr(row, "coverage_entry_count", None) == coverage_entry_count
+            ]
         if idempotency_key is not None:
             rows = [
                 row
@@ -271,8 +298,11 @@ def _checkpoint_receipt(
     session: FakeSession,
     *,
     turn_id: str,
+    entries: list[Any],
     status: str = "checkpoint_saved",
 ) -> SimpleNamespace:
+    from opensquilla.memory.checkpoint import checkpoint_coverage_hash, checkpoint_turn_id
+
     return SimpleNamespace(
         session_key=session.session_key,
         session_id=session.session_id,
@@ -281,6 +311,9 @@ def _checkpoint_receipt(
         status=status,
         source_path="memory/.checkpoints/agent-main-webchat-abc/turn-1.jsonl",
         content_hash="h1",
+        coverage_turn_id=checkpoint_turn_id(entries),
+        coverage_hash=checkpoint_coverage_hash(entries),
+        coverage_entry_count=len(entries),
     )
 
 
@@ -1215,7 +1248,7 @@ class TestSessionsReset:
         manager = FakeSessionManager([session])
         manager.transcript = [SimpleNamespace(id=1, content="message to preserve")]
         manager._storage.memory_durable_receipts.append(
-            _checkpoint_receipt(session, turn_id="through-1")
+            _checkpoint_receipt(session, turn_id="cmp-reset", entries=manager.transcript)
         )
         flush_service = SimpleNamespace(
             execute=AsyncMock(
@@ -1249,7 +1282,11 @@ class TestSessionsReset:
             SimpleNamespace(id=2, content="not checkpointed"),
         ]
         manager._storage.memory_durable_receipts.append(
-            _checkpoint_receipt(session, turn_id="through-1")
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-reset-old",
+                entries=manager.transcript[:1],
+            )
         )
         flush_service = SimpleNamespace(
             execute=AsyncMock(
@@ -1281,7 +1318,7 @@ class TestSessionsReset:
         manager = FakeSessionManager([session])
         manager.transcript = [SimpleNamespace(id=1, content="message to preserve")]
         manager._storage.memory_durable_receipts.append(
-            _checkpoint_receipt(session, turn_id="through-1")
+            _checkpoint_receipt(session, turn_id="cmp-reset", entries=manager.transcript)
         )
         ctx = make_ctx(session_manager=manager, flush_service=None)
 
@@ -1299,7 +1336,7 @@ class TestSessionsReset:
         manager = FakeSessionManager([session])
         manager.transcript = [SimpleNamespace(id=1, content="message to preserve")]
         manager._storage.memory_durable_receipts.append(
-            _checkpoint_receipt(session, turn_id="through-1")
+            _checkpoint_receipt(session, turn_id="cmp-reset", entries=manager.transcript)
         )
         turn_runner = _RecordingTurnRunner()
         lock = turn_runner._get_session_lock(session.session_key)
@@ -1448,7 +1485,11 @@ class TestSessionsTruncate:
             SimpleNamespace(id=2, content="message to keep"),
         ]
         manager._storage.memory_durable_receipts.append(
-            _checkpoint_receipt(session, turn_id="through-1")
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-truncate",
+                entries=manager.transcript[:1],
+            )
         )
         flush_service = SimpleNamespace(
             execute=AsyncMock(
@@ -1484,7 +1525,11 @@ class TestSessionsTruncate:
             SimpleNamespace(id=2, content="not checkpointed"),
         ]
         manager._storage.memory_durable_receipts.append(
-            _checkpoint_receipt(session, turn_id="through-1")
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-truncate-old",
+                entries=manager.transcript[:1],
+            )
         )
         flush_service = SimpleNamespace(
             execute=AsyncMock(
@@ -1521,7 +1566,11 @@ class TestSessionsTruncate:
             SimpleNamespace(id=2, content="message to keep"),
         ]
         manager._storage.memory_durable_receipts.append(
-            _checkpoint_receipt(session, turn_id="through-1")
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-truncate",
+                entries=manager.transcript[:1],
+            )
         )
         ctx = make_ctx(session_manager=manager, flush_service=None)
 
@@ -1542,7 +1591,12 @@ class TestSessionsTruncate:
         manager = FakeSessionManager([session])
         manager.transcript = [SimpleNamespace(content="message to preserve")]
         manager._storage.memory_durable_receipts.append(
-            _checkpoint_receipt(session, turn_id="turn-old", status="receipt_orphaned")
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-orphaned",
+                entries=manager.transcript,
+                status="receipt_orphaned",
+            )
         )
         flush_service = SimpleNamespace(
             execute=AsyncMock(
@@ -1845,7 +1899,7 @@ class TestSessionsContextCompact:
         manager = FakeSessionManager([session])
         manager.transcript = [SimpleNamespace(id=1, content="message to preserve")]
         manager._storage.memory_durable_receipts.append(
-            _checkpoint_receipt(session, turn_id="through-1")
+            _checkpoint_receipt(session, turn_id="cmp-compact", entries=manager.transcript)
         )
         flush_service = SimpleNamespace(
             execute=AsyncMock(
@@ -1887,7 +1941,11 @@ class TestSessionsContextCompact:
             SimpleNamespace(id=2, content="not checkpointed"),
         ]
         manager._storage.memory_durable_receipts.append(
-            _checkpoint_receipt(session, turn_id="through-1")
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-compact-old",
+                entries=manager.transcript[:1],
+            )
         )
         flush_service = SimpleNamespace(
             execute=AsyncMock(

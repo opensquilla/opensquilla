@@ -293,6 +293,9 @@ CREATE TABLE IF NOT EXISTS memory_durable_receipts (
     source_path TEXT,
     target_path TEXT,
     content_hash TEXT,
+    coverage_turn_id TEXT,
+    coverage_hash TEXT,
+    coverage_entry_count INTEGER,
     idempotency_key TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL,
     reason TEXT,
@@ -307,6 +310,14 @@ CREATE TABLE IF NOT EXISTS memory_durable_receipts (
 _CREATE_IDX_MEMORY_DURABLE_RECEIPTS_SESSION = (
     "CREATE INDEX IF NOT EXISTS idx_memory_durable_receipts_session "
     "ON memory_durable_receipts(session_key, status, created_at)"
+)
+
+_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_COVERAGE = (
+    "CREATE INDEX IF NOT EXISTS idx_memory_durable_receipts_coverage "
+    "ON memory_durable_receipts("
+    "session_key, session_id, scope, status, coverage_turn_id, coverage_hash, "
+    "coverage_entry_count"
+    ")"
 )
 
 _CREATE_EPOCH_ROLLBACK_TRIGGER = """
@@ -432,6 +443,9 @@ class SessionStorage:
         await self._migrate_transcript_reasoning_content_column()
         await self._migrate_transcript_turn_usage_column()
         await self._migrate_summary_metadata_columns()
+        await self._migrate_memory_durable_receipt_coverage_columns()
+        await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_COVERAGE)
+        await self._conn.commit()
         await self.mark_abandoned_agent_tasks()
 
     async def _migrate_epoch_column(self) -> None:
@@ -525,6 +539,30 @@ class SessionStorage:
             "flush_receipt_status": (
                 "ALTER TABLE session_summaries ADD COLUMN "
                 "flush_receipt_status TEXT NOT NULL DEFAULT 'unknown'"
+            ),
+        }
+        changed = False
+        for column, sql in additions.items():
+            if column not in columns:
+                await self._conn.execute(sql)
+                changed = True
+        if changed:
+            await self._conn.commit()
+
+    async def _migrate_memory_durable_receipt_coverage_columns(self) -> None:
+        """Idempotently add deterministic checkpoint coverage metadata columns."""
+        assert self._conn is not None
+        async with self._conn.execute("PRAGMA table_info(memory_durable_receipts)") as cur:
+            columns = {row[1] for row in await cur.fetchall()}
+        additions = {
+            "coverage_turn_id": (
+                "ALTER TABLE memory_durable_receipts ADD COLUMN coverage_turn_id TEXT"
+            ),
+            "coverage_hash": (
+                "ALTER TABLE memory_durable_receipts ADD COLUMN coverage_hash TEXT"
+            ),
+            "coverage_entry_count": (
+                "ALTER TABLE memory_durable_receipts ADD COLUMN coverage_entry_count INTEGER"
             ),
         }
         changed = False
@@ -789,7 +827,12 @@ class SessionStorage:
     async def list_memory_durable_receipts(
         self,
         session_key: str | None = None,
+        session_id: str | None = None,
+        scope: str | None = None,
         status: str | None = None,
+        coverage_turn_id: str | None = None,
+        coverage_hash: str | None = None,
+        coverage_entry_count: int | None = None,
         idempotency_key: str | None = None,
         limit: int = 100,
     ) -> list[MemoryDurableReceipt]:
@@ -798,9 +841,24 @@ class SessionStorage:
         if session_key is not None:
             clauses.append("session_key = ?")
             params.append(canonicalize_session_key(session_key))
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if scope is not None:
+            clauses.append("scope = ?")
+            params.append(scope)
         if status is not None:
             clauses.append("status = ?")
             params.append(status)
+        if coverage_turn_id is not None:
+            clauses.append("coverage_turn_id = ?")
+            params.append(coverage_turn_id)
+        if coverage_hash is not None:
+            clauses.append("coverage_hash = ?")
+            params.append(coverage_hash)
+        if coverage_entry_count is not None:
+            clauses.append("coverage_entry_count = ?")
+            params.append(coverage_entry_count)
         if idempotency_key is not None:
             clauses.append("idempotency_key = ?")
             params.append(idempotency_key)

@@ -2,6 +2,7 @@ import threading
 
 import pytest
 
+from opensquilla.memory.checkpoint import checkpoint_coverage_hash, checkpoint_turn_id
 from opensquilla.session.manager import SessionManager
 from opensquilla.session.models import MemoryDurableReceipt
 from opensquilla.session.storage import SessionStorage
@@ -178,6 +179,90 @@ async def test_memory_durable_receipt_conflict_updates_mutable_fields(tmp_path):
         assert rows[0].attempt_count == 2
         assert rows[0].next_retry_at_ms == 200
         assert rows[0].updated_at >= first.updated_at
+    finally:
+        await storage.close()
+
+
+async def test_record_memory_checkpoint_preserves_operation_and_coverage_ids(tmp_path):
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    manager = SessionManager(storage, checkpoint_workspace_dir=tmp_path / "workspace")
+    try:
+        key = "agent:main:webchat:abc"
+        session = await manager.create(key)
+        await manager.append_message(key, role="user", content="checkpoint body")
+        entries = await storage.get_transcript(session.session_id)
+
+        receipt = await manager.record_memory_checkpoint(key, turn_id="cmp_123")
+
+        assert receipt.turn_id == "cmp_123"
+        assert receipt.coverage_turn_id == checkpoint_turn_id(entries)
+        assert receipt.coverage_hash == checkpoint_coverage_hash(entries)
+        assert receipt.coverage_entry_count == len(entries)
+
+        rows = await storage.list_memory_durable_receipts(
+            session_key=key,
+            session_id=session.session_id,
+            scope="checkpoint",
+            status="checkpoint_saved",
+            coverage_turn_id=checkpoint_turn_id(entries),
+            coverage_hash=checkpoint_coverage_hash(entries),
+            coverage_entry_count=len(entries),
+            limit=1,
+        )
+        assert [row.receipt_id for row in rows] == [receipt.receipt_id]
+    finally:
+        await storage.close()
+
+
+async def test_memory_durable_receipt_coverage_lookup_is_targeted(tmp_path):
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    try:
+        for idx in range(105):
+            await storage.upsert_memory_durable_receipt(
+                MemoryDurableReceipt(
+                    receipt_id=f"old-{idx}",
+                    session_key="agent:main:webchat:abc",
+                    session_id="session-1",
+                    turn_id=f"cmp-old-{idx}",
+                    scope="checkpoint",
+                    source_path=f"memory/.checkpoints/old-{idx}.jsonl",
+                    content_hash=f"h-old-{idx}",
+                    coverage_turn_id=f"through-{idx}",
+                    coverage_hash=f"coverage-old-{idx}",
+                    coverage_entry_count=1,
+                    idempotency_key=f"checkpoint:old:{idx}",
+                    status="checkpoint_saved",
+                )
+            )
+        target = await storage.upsert_memory_durable_receipt(
+            MemoryDurableReceipt(
+                receipt_id="target",
+                session_key="agent:main:webchat:abc",
+                session_id="session-1",
+                turn_id="cmp-target",
+                scope="checkpoint",
+                source_path="memory/.checkpoints/target.jsonl",
+                content_hash="h-target",
+                coverage_turn_id="through-999",
+                coverage_hash="coverage-target",
+                coverage_entry_count=2,
+                idempotency_key="checkpoint:target",
+                status="checkpoint_saved",
+            )
+        )
+
+        rows = await storage.list_memory_durable_receipts(
+            session_key="agent:main:webchat:abc",
+            session_id="session-1",
+            scope="checkpoint",
+            status="checkpoint_saved",
+            coverage_turn_id="through-999",
+            coverage_hash="coverage-target",
+            coverage_entry_count=2,
+            limit=1,
+        )
+
+        assert [row.receipt_id for row in rows] == [target.receipt_id]
     finally:
         await storage.close()
 

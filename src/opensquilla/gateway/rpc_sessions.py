@@ -6,7 +6,6 @@ import asyncio
 import inspect
 import time
 import uuid
-from collections.abc import Mapping
 from dataclasses import asdict, replace
 from typing import Any, cast
 
@@ -71,57 +70,33 @@ def _accepts_keyword_arg(func: Any, name: str) -> bool:
     )
 
 
-def _receipt_field(receipt: Any, name: str) -> Any:
-    if isinstance(receipt, Mapping):
-        return receipt.get(name)
-    return getattr(receipt, name, None)
-
-
-async def _latest_session_checkpoint_receipt(
-    storage: Any,
-    session_key: str,
-    session_id: str | None,
-    expected_turn_id: str,
-) -> Any | None:
-    list_receipts = getattr(storage, "list_memory_durable_receipts", None)
-    if not callable(list_receipts):
-        return None
-    receipts = await list_receipts(session_key=session_key, limit=100)
-    for receipt in reversed(receipts):
-        if _receipt_field(receipt, "scope") != "checkpoint":
-            continue
-        if session_id is not None and _receipt_field(receipt, "session_id") != session_id:
-            continue
-        if _receipt_field(receipt, "turn_id") != expected_turn_id:
-            continue
-        return receipt
-    return None
-
-
-def _checkpoint_turn_id_for_entries(entries: list[Any]) -> str | None:
-    if not entries:
-        return None
-    from opensquilla.memory.checkpoint import checkpoint_turn_id
-
-    return checkpoint_turn_id(entries)
-
-
 async def _durable_receipt_allows_covered_destructive_compaction(
     storage: Any,
     session_key: str,
     session_id: str | None,
     entries: list[Any],
 ) -> bool:
-    expected_turn_id = _checkpoint_turn_id_for_entries(entries)
-    if expected_turn_id is None:
+    if not entries:
         return True
-    receipt = await _latest_session_checkpoint_receipt(
-        storage,
-        session_key,
-        session_id,
-        expected_turn_id,
+    from opensquilla.memory.checkpoint import (
+        checkpoint_coverage_hash,
+        checkpoint_turn_id,
     )
-    return durable_receipt_allows_destructive_compaction(receipt)
+
+    list_receipts = getattr(storage, "list_memory_durable_receipts", None)
+    if not callable(list_receipts):
+        return False
+    receipts = await list_receipts(
+        session_key=session_key,
+        session_id=session_id,
+        scope="checkpoint",
+        status="checkpoint_saved",
+        coverage_turn_id=checkpoint_turn_id(entries),
+        coverage_hash=checkpoint_coverage_hash(entries),
+        coverage_entry_count=len(entries),
+        limit=1,
+    )
+    return any(durable_receipt_allows_destructive_compaction(receipt) for receipt in receipts)
 
 
 def _truncate_removed_entries(transcript: list[Any], max_messages: int) -> list[Any]:

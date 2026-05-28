@@ -123,6 +123,26 @@ def checkpoint_turn_id(entries: list[Any]) -> str:
     return f"turn-{checkpoint_event_hash(seed)[:16]}"
 
 
+def checkpoint_coverage_hash(entries: list[Any]) -> str:
+    seed = json.dumps(
+        [
+            {
+                "id": getattr(entry, "id", None),
+                "role": getattr(entry, "role", ""),
+                "content": getattr(entry, "content", "") or "",
+                "tool_call_id": getattr(entry, "tool_call_id", None),
+                "tool_calls": getattr(entry, "tool_calls", None),
+                "reasoning_content": getattr(entry, "reasoning_content", None),
+            }
+            for entry in entries
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return checkpoint_event_hash(seed)
+
+
 def _content_type_for(content: str) -> CheckpointContentType:
     stripped = str(content or "").strip()
     if stripped.startswith(("{", "[")):

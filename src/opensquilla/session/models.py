@@ -259,6 +259,9 @@ class MemoryDurableReceipt(SQLModel, table=True):
     source_path: str | None = None
     target_path: str | None = None
     content_hash: str | None = None
+    coverage_turn_id: str | None = Field(default=None, index=True)
+    coverage_hash: str | None = Field(default=None, index=True)
+    coverage_entry_count: int | None = None
     idempotency_key: str = Field(index=True, unique=True)
     status: str = Field(index=True)
     reason: str | None = None

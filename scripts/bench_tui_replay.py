@@ -11,10 +11,23 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.cli.tui.backend.streaming import StreamingPlane
+from opensquilla.cli.tui.backend.transcript import (
+    MessageItem,
+    RouterDecisionItem,
+    ToolItem,
+    ToolPreviewPolicy,
+    TranscriptStore,
+    ViewportRequest,
+    build_args_preview,
+    build_output_preview,
+    project_viewport,
+)
 from opensquilla.cli.tui.terminal.renderer import TerminalRenderer
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PATH = PROJECT_ROOT / "tests" / "unit" / "cli" / "tui" / "replay_fixtures.py"
+DENSE_HISTORY_VIEWPORT = ViewportRequest(scroll_offset=200, viewport_height=24, overscan=3)
+DENSE_HISTORY_PREVIEW_POLICY = ToolPreviewPolicy()
 
 
 @dataclass(frozen=True)
@@ -29,6 +42,10 @@ class ReplaySummary:
     flush_count: int
     max_buffer_chars: int
     coalescing_ratio: float
+    transcript_items: int
+    visible_items: int
+    expanded_tools: int
+    projection_wall_ms: float
     errors: list[str]
 
 
@@ -87,6 +104,75 @@ def _text_chars_for(event: Any) -> int:
     if event.kind == "tool_card":
         return len(str(payload.get("summary", "")))
     return 0
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _int_or_default(value: object, default: int) -> int:
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _append_transcript_event(store: TranscriptStore, event: Any) -> None:
+    payload = event.payload
+    if event.kind == "router_decision":
+        store.append(
+            RouterDecisionItem(
+                tier=str(payload.get("tier", "")),
+                model=str(payload.get("model", "")),
+                baseline_model=_optional_str(payload.get("baseline_model")),
+                confidence=_optional_float(payload.get("confidence")),
+                rollout_phase=_optional_str(payload.get("rollout_phase")),
+                timestamp_ms=event.timestamp_ms,
+            )
+        )
+    elif event.kind == "history_message":
+        store.append(
+            MessageItem(
+                role=str(payload.get("role", "")),
+                text=str(payload.get("content", "")),
+                run_id=None,
+                timestamp_ms=event.timestamp_ms,
+            )
+        )
+    elif event.kind == "tool_card":
+        args_preview = build_args_preview(
+            {
+                "line_count": payload.get("line_count"),
+                "rendered_bytes": payload.get("rendered_bytes"),
+            },
+            DENSE_HISTORY_PREVIEW_POLICY,
+        )
+        output_preview = build_output_preview(
+            str(payload.get("summary", "")),
+            DENSE_HISTORY_PREVIEW_POLICY,
+        )
+        store.append(
+            ToolItem(
+                tool_id=str(payload.get("tool_use_id", "")),
+                name=str(payload.get("name", "tool")),
+                status="done",
+                args_preview=args_preview.text,
+                output_preview=output_preview.text,
+                expanded=bool(payload.get("expanded_candidate", False)),
+                timestamp_ms=event.timestamp_ms,
+                detail_line_count=_int_or_default(payload.get("line_count"), 1),
+            )
+        )
 
 
 async def _flush_streaming_plane(
@@ -165,13 +251,24 @@ async def run_replay(renderer: str, fixture: str, *, repeat: int = 1) -> ReplayS
     streaming_flush_count = 0
     flush_count = 0
     max_buffer_chars = 0
+    transcript_items = 0
+    visible_items = 0
+    expanded_tools = 0
+    projection_wall_ms = 0.0
     started_at = time.perf_counter()
 
     for _ in range(repeat):
         events = _build_events(fixture)
-        output_handle = _ReplayOutputHandle()
-        terminal_renderer = TerminalRenderer(title="tui-replay", output_handle=output_handle)
+        output_handle = (
+            _ReplayOutputHandle() if fixture == "long-stream" else None
+        )
+        terminal_renderer = (
+            TerminalRenderer(title="tui-replay", output_handle=output_handle)
+            if output_handle is not None
+            else None
+        )
         streaming_plane = StreamingPlane()
+        transcript_store = TranscriptStore() if fixture == "dense-history" else None
         for event in events:
             event_count += 1
             text_chars += _text_chars_for(event)
@@ -182,16 +279,33 @@ async def run_replay(renderer: str, fixture: str, *, repeat: int = 1) -> ReplayS
             if event.kind == "router_decision":
                 router_decision_count += 1
             try:
-                await _render_event(terminal_renderer, streaming_plane, event)
+                if transcript_store is not None:
+                    _append_transcript_event(transcript_store, event)
+                elif terminal_renderer is not None:
+                    await _render_event(terminal_renderer, streaming_plane, event)
             except Exception as exc:  # pragma: no cover - summarized for CLI evidence.
                 errors.append(f"{event.kind}: {exc}")
             max_buffer_chars = max(
                 max_buffer_chars,
                 streaming_plane.max_buffer_chars,
             )
-        await terminal_renderer.aclose()
+        if terminal_renderer is not None:
+            await terminal_renderer.aclose()
+        if transcript_store is not None:
+            snapshot = transcript_store.snapshot()
+            projection_started_at = time.perf_counter()
+            projection = project_viewport(snapshot, DENSE_HISTORY_VIEWPORT)
+            projection_wall_ms += (
+                time.perf_counter() - projection_started_at
+            ) * 1_000
+            transcript_items += len(snapshot)
+            visible_items += len(projection.items)
+            expanded_tools += sum(
+                1 for item in snapshot if isinstance(item, ToolItem) and item.expanded
+            )
         streaming_flush_count += streaming_plane.flush_count
-        flush_count += output_handle.flush_count
+        if output_handle is not None:
+            flush_count += output_handle.flush_count
 
     wall_ms = (time.perf_counter() - started_at) * 1_000
     coalescing_ratio = (
@@ -210,6 +324,10 @@ async def run_replay(renderer: str, fixture: str, *, repeat: int = 1) -> ReplayS
         flush_count=flush_count,
         max_buffer_chars=max_buffer_chars,
         coalescing_ratio=coalescing_ratio,
+        transcript_items=transcript_items,
+        visible_items=visible_items,
+        expanded_tools=expanded_tools,
+        projection_wall_ms=round(projection_wall_ms, 3),
         errors=errors,
     )
 

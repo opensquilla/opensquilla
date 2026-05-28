@@ -91,4 +91,25 @@ def test_terminal_replay_summary_can_be_written(tmp_path) -> None:
     assert 0 < data["flush_count"] < 4_000
     assert 0 < data["coalescing_ratio"] < 1
     assert data["max_buffer_chars"] <= 2_048
+    assert data["transcript_items"] == 0
+    assert data["visible_items"] == 0
+    assert data["expanded_tools"] == 0
+    assert data["projection_wall_ms"] == 0
     assert data["errors"] == []
+
+
+def test_dense_history_replay_uses_bounded_transcript_projection() -> None:
+    bench = _load_module("bench_tui_replay", BENCH_SCRIPT)
+    summary = asyncio.run(bench.run_replay("terminal", "dense-history", repeat=1))
+
+    assert summary.event_count == 624
+    assert summary.text_chars >= 24 * 80 * 30
+    assert summary.tool_count == 120
+    assert summary.router_decision_count == 4
+    assert summary.flush_count == 0
+    assert summary.coalescing_ratio == 0
+    assert summary.transcript_items == 624
+    assert 0 < summary.visible_items <= 30
+    assert summary.expanded_tools == 20
+    assert summary.projection_wall_ms >= 0
+    assert summary.errors == []

@@ -11,4 +11,5 @@ __all__ = [
     "runtime",
     "state",
     "streaming",
+    "transcript",
 ]

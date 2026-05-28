@@ -39,6 +39,7 @@ TUI_BACKEND_PACKAGE_MODULES = {
     "runtime.py",
     "state.py",
     "streaming.py",
+    "transcript.py",
 }
 TUI_TERMINAL_ADAPTER_MODULES = {
     "approval_adapter.py",
@@ -252,6 +253,7 @@ def test_tui_domain_event_and_plugin_modules_are_renderer_independent() -> None:
             backend_dir / "domain_events.py",
             backend_dir / "plugins.py",
             backend_dir / "streaming.py",
+            backend_dir / "transcript.py",
         )
         if _imports_tui_presentation_dependency(path)
     )

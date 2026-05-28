@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from opensquilla.gateway_client import GatewayRPCClient
+from opensquilla.gateway_client import GatewayRPCClient, normalize_gateway_url
 
 
 class _SilentWebSocket:
@@ -19,6 +19,17 @@ class _SilentWebSocket:
 
     async def close(self) -> None:
         self.closed = True
+
+
+def test_normalize_gateway_url_preserves_query_and_fragment() -> None:
+    assert (
+        normalize_gateway_url("https://gateway.example.com/ws?token=abc#trace")
+        == "wss://gateway.example.com/ws?token=abc#trace"
+    )
+
+
+def test_normalize_gateway_url_adds_ws_path_without_dropping_query() -> None:
+    assert normalize_gateway_url("gateway.example.com?token=abc") == "ws://gateway.example.com/ws?token=abc"
 
 
 @pytest.mark.asyncio

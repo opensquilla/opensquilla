@@ -27,6 +27,9 @@ def normalize_gateway_url(url: str) -> str:
         scheme = "ws"
         netloc = parsed.netloc
         path = parsed.path
+    params = parsed.params
+    query = parsed.query
+    fragment = parsed.fragment
 
     if scheme not in {"http", "https", "ws", "wss"}:
         raise ValueError(f"Unsupported gateway URL scheme: {scheme!r}")
@@ -34,4 +37,4 @@ def normalize_gateway_url(url: str) -> str:
     websocket_scheme = "wss" if scheme in {"https", "wss"} else "ws"
     websocket_path = "/ws" if path in ("", "/") else path
 
-    return urlunparse((websocket_scheme, netloc, websocket_path, "", "", ""))
+    return urlunparse((websocket_scheme, netloc, websocket_path, params, query, fragment))

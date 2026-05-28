@@ -497,6 +497,25 @@ async def test_doctor_memory_status_accepts_memory_backend_protocol_health(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_doctor_memory_status_unavailable_includes_split_health_fields():
+    res = await get_dispatcher().dispatch(
+        "memory-health-unavailable",
+        "doctor.memory.status",
+        {"agentId": "main"},
+        _ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["backend"] == "none"
+    assert res.payload["status"] == "unavailable"
+    assert res.payload["memorySafety"] == {"status": "ok"}
+    assert res.payload["semanticMemory"] == {
+        "status": "healthy",
+        "repairBacklogCount": 0,
+    }
+
+
+@pytest.mark.asyncio
 async def test_doctor_memory_status_splits_safety_from_semantic_repair_health(tmp_path):
     storage = await SessionStorage.open(tmp_path / "sessions.db")
     now_ms = int(datetime.now(UTC).timestamp() * 1000)

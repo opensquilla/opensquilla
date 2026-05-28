@@ -248,13 +248,20 @@ async def _handle_doctor_memory_status(params: dict | None, ctx: RpcContext) -> 
     memory_backend = getattr(ctx, "memory_backend", None)
     manager = (getattr(ctx, "memory_managers", None) or {}).get(agent_id)
     if memory_backend is None and manager is None:
-        return {
+        unavailable_payload: dict[str, Any] = {
             "backend": "none",
             "status": "unavailable",
             "entryCount": None,
             "sizeBytes": None,
             "error": "No memory backend configured",
         }
+        unavailable_payload.update(
+            await memory_health_from_durable_ledger(
+                getattr(ctx, "session_manager", None),
+                agent_id=agent_id,
+            )
+        )
+        return unavailable_payload
     health: dict[str, Any] = {}
     try:
         if memory_backend is not None:

@@ -195,7 +195,10 @@ def test_chat_tool_result_can_retitle_coerced_tool_cards() -> None:
     history_body = source[history_start:history_end]
 
     assert "function _retitleToolCallDOM(details, name, input)" in source
-    assert "_retitleToolCallDOM(details, toolName, payload.arguments || payload.input || '')" in live_body
+    assert (
+        "_retitleToolCallDOM(details, toolName, payload.arguments || payload.input || '')"
+        in live_body
+    )
     assert "const resultToolName = seg.name || _toolNameById[toolId] || '';" in history_body
     assert "_retitleToolCallDOM(details, resultToolName, seg.input || '')" in history_body
 
@@ -803,7 +806,9 @@ def test_router_fx_live_routes_keep_random_chase_animation() -> None:
     handler_end = source.index("  // History-load entry point", handler_start)
     handler_body = source[handler_start:handler_end]
     subscription_start = source.index("function _subscribeRpcEvents() {")
-    subscription_end = source.index("    // Text delta: accumulate into streaming bubble", subscription_start)
+    subscription_end = source.index(
+        "    // Text delta: accumulate into streaming bubble", subscription_start
+    )
     subscription_body = source[subscription_start:subscription_end]
 
     assert "function _routerFxShouldAnimateIdentity" not in source
@@ -829,7 +834,10 @@ def test_router_fx_history_reuses_settled_strip_for_same_turn_identity() -> None
     assert "el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex" in source
     assert "const routerIdentity = _routerFxUsageIdentity(savedUsage);" in source
     assert "existingStrip.dataset.routerIdentity === routerIdentity" in source
-    assert "if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();" in source
+    assert (
+        "if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();"
+        in source
+    )
     assert "routerStrip.dataset.turnIndex = String(_histUserIdx);" in source
 
 
@@ -1222,92 +1230,6 @@ def test_chat_usage_status_applies_current_session_context_status() -> None:
 
     assert "_applyContextStatus(current.contextStatus || current.context_status || null);" in body
     assert "_clearContextStatus();" in body
-
-
-def test_router_fx_header_names_ai_model_router() -> None:
-    source = CHAT_JS.read_text(encoding="utf-8")
-
-    assert '<span class="title">AI model router</span>' in source
-    assert '<span class="title">model router</span>' not in source
-
-
-def test_router_fx_live_routes_keep_random_chase_animation() -> None:
-    source = CHAT_JS.read_text(encoding="utf-8")
-    handler_start = source.index("async function _handleRouterDecision(payload) {")
-    handler_end = source.index("  // History-load entry point", handler_start)
-    handler_body = source[handler_start:handler_end]
-
-    assert "function _routerFxShouldAnimateIdentity" not in source
-    assert "shouldAnimate" not in handler_body
-    assert "if (observeMode)" in handler_body
-    assert "_animateRouterFx(wrap, winnerIdx)" in handler_body
-    assert handler_body.index("if (observeMode)") < handler_body.index(
-        "_animateRouterFx(wrap, winnerIdx)"
-    )
-
-
-def test_router_fx_history_reuses_settled_strip_for_same_turn_identity() -> None:
-    source = CHAT_JS.read_text(encoding="utf-8")
-
-    assert "el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex" in source
-    assert "const routerIdentity = _routerFxUsageIdentity(savedUsage);" in source
-    assert "existingStrip.dataset.routerIdentity === routerIdentity" in source
-    assert "if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();" in source
-    assert "routerStrip.dataset.turnIndex = String(_histUserIdx);" in source
-
-
-def test_router_fx_uses_fixed_model_slots_and_keeps_decoy_seed() -> None:
-    source = CHAT_JS.read_text(encoding="utf-8")
-    builder_start = source.index("function _routerFxBuildGridCells(realEntries, seedKey) {")
-    builder_end = source.index("  function _buildRouterFxElement", builder_start)
-    builder_body = source[builder_start:builder_end]
-    live_start = source.index("async function _handleRouterDecision(payload) {")
-    live_end = source.index("  // History-load entry point", live_start)
-    live_body = source[live_start:live_end]
-
-    assert "const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11" in source
-    assert "function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp)" in source
-    assert "const liveSeed = _routerFxResolveLayoutSeed(_sessionKey);" in live_body
-    assert "const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);" in source
-    assert "const orderedRealEntries = realEntries.slice().sort" in builder_body
-    assert "const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];" in builder_body
-    assert "const orderedDecoys = _routerFxShuffle(decoys," in builder_body
-    assert "return _routerFxShuffle(cells, seedKey);" not in builder_body
-
-
-def test_router_fx_history_and_turn_meta_preserve_observe_rollout_state() -> None:
-    source = CHAT_JS.read_text(encoding="utf-8")
-    history_start = source.index("function _buildRouterFxFromUsage(usage, seedKey) {")
-    history_end = source.index("  /* ── RPC Event Subscriptions", history_start)
-    history_body = source[history_start:history_end]
-    store_start = source.index("_storeTurnMeta(_sessionKey, _metaIdx")
-    store_end = source.index("          });", store_start)
-    store_body = source[store_start:store_end]
-
-    assert "routing_applied: usage.routing_applied !== false," in history_body
-    assert "rollout_phase: usage.rollout_phase || 'full'," in history_body
-    assert "const observeMode = decision && decision.routing_applied === false;" in source
-    assert "routing_applied: u.routing_applied !== false," in store_body
-    assert "rollout_phase: u.rollout_phase || 'full'," in store_body
-
-
-def test_router_fx_mobile_grid_matches_explicit_cell_count() -> None:
-    """Mobile router-fx grid rows×cols stays in lockstep with the JS cell count.
-
-    The JS constant ``_ROUTER_FX_GRID_CELLS`` is 15 (5 cols × 3 rows on desktop);
-    mobile and tiny breakpoints collapse to 3×5 so no row ends short.
-    """
-    css = CHAT_CSS.read_text(encoding="utf-8")
-    mobile_start = css.index("@media (max-width: 640px)")
-    tiny_start = css.index("@media (max-width: 380px)")
-    mobile_body = css[mobile_start:tiny_start]
-    tiny_body = css[tiny_start:]
-
-    assert "grid-template-columns: repeat(3, 1fr);" in mobile_body
-    assert "grid-template-rows: repeat(5, 28px);" in mobile_body
-    assert "grid-template-columns: repeat(3, 1fr);" in tiny_body
-    assert "grid-template-rows: repeat(5, 26px);" in tiny_body
-
 
 
 def test_combo_display_requires_current_saved_turn_but_suppressed_savings_can_count() -> None:

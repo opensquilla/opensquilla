@@ -3290,6 +3290,16 @@ const ChatView = (() => {
     window.addEventListener('opensquilla:approvals-pending', approvalsPendingListener);
     _unsubs.push(() => window.removeEventListener('opensquilla:approvals-pending', approvalsPendingListener));
 
+    // Router decision: fires once per user message, right after the
+    // pre-turn pipeline picks a tier and before the first text_delta.
+    // Drops a per-turn inline slider above where the assistant bubble
+    // will appear and sweeps the selector onto the routed tier.
+    _unsubs.push(_rpc.on('session.event.router_decision', (payload) => {
+      if (_isStaleEpoch(payload)) return;
+      if (!_acceptStreamSeq(payload)) return;
+      _handleRouterDecision(payload);
+    }));
+
     // Text delta: accumulate into streaming bubble
     _unsubs.push(_rpc.on('session.event.text_delta', (payload) => {
       if (_isStaleEpoch(payload)) return;

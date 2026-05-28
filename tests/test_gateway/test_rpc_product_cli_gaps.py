@@ -607,6 +607,96 @@ async def test_doctor_memory_status_warns_for_large_semantic_repair_backlog(tmp_
 
 
 @pytest.mark.asyncio
+async def test_doctor_memory_status_health_is_agent_scoped(tmp_path):
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    try:
+        await storage.upsert_memory_durable_receipt(
+            MemoryDurableReceipt(
+                session_key="agent:main:webchat:s1",
+                session_id="session-main",
+                scope="checkpoint",
+                source_path="memory/checkpoints/main.md",
+                idempotency_key="checkpoint:main",
+                status="checkpoint_failed",
+                reason="archive_failed",
+                created_at=now_ms,
+            )
+        )
+        await storage.upsert_memory_durable_receipt(
+            MemoryDurableReceipt(
+                session_key="agent:main:webchat:s1",
+                session_id="session-main",
+                scope="repair",
+                source_path="memory/.raw_fallbacks/main.md",
+                idempotency_key="repair:main.md",
+                status="repair_pending",
+                reason="parse_failed_archived",
+                created_at=now_ms,
+            )
+        )
+        session_manager = FakeStorageRepairSessionManager(storage)
+
+        res = await get_dispatcher().dispatch(
+            "memory-health-agent-scope",
+            "doctor.memory.status",
+            {"agentId": "ops"},
+            _ctx(
+                memory_managers={"ops": FakeMemoryManager(workspace_dir=tmp_path)},
+                session_manager=session_manager,
+            ),
+        )
+
+        assert res.error is None, res.error
+        assert res.payload["memorySafety"]["status"] == "ok"
+        assert res.payload["semanticMemory"] == {
+            "status": "healthy",
+            "repairBacklogCount": 0,
+        }
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_doctor_memory_status_warns_for_oldest_pending_repair_age(tmp_path):
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    old_ms = int(datetime.now(UTC).timestamp() * 1000) - (25 * 60 * 60 * 1000)
+    try:
+        await storage.upsert_memory_durable_receipt(
+            MemoryDurableReceipt(
+                session_key="agent:main:webchat:s1",
+                session_id="session-1",
+                scope="repair",
+                source_path="memory/.raw_fallbacks/old.md",
+                idempotency_key="repair:old.md",
+                status="repair_pending",
+                reason="parse_failed_archived",
+                created_at=old_ms,
+            )
+        )
+        session_manager = FakeStorageRepairSessionManager(storage)
+
+        res = await get_dispatcher().dispatch(
+            "memory-health-oldest-warning",
+            "doctor.memory.status",
+            {"agentId": "main"},
+            _ctx(
+                memory_managers={"main": FakeMemoryManager(workspace_dir=tmp_path)},
+                session_manager=session_manager,
+            ),
+        )
+
+        assert res.error is None, res.error
+        assert res.payload["memorySafety"]["status"] == "ok"
+        assert res.payload["semanticMemory"] == {
+            "status": "warning",
+            "repairBacklogCount": 1,
+        }
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_memory_index_force_rebuilds_then_force_syncs(tmp_path):
     store = FakeStore()
     manager = FakeMemoryManager(workspace_dir=tmp_path, store=store)

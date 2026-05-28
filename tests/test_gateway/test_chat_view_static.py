@@ -590,7 +590,9 @@ def test_chat_succeeded_task_without_done_falls_back_to_history_sync() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
     wildcard_start = source.index("const terminalStatus = _taskTerminalStatus(rawEvent);")
-    wildcard_end = source.index("const normalized = _taskTerminalAsSessionEvent(rawEvent, rawPayload);")
+    wildcard_end = source.index(
+        "const normalized = _taskTerminalAsSessionEvent(rawEvent, rawPayload);"
+    )
     terminal_handler = source[wildcard_start:wildcard_end]
     fallback_start = source.index("function _scheduleSucceededTaskTerminalSync(payload = {})")
     fallback_end = source.index("  function _taskTerminalAsSessionEvent", fallback_start)

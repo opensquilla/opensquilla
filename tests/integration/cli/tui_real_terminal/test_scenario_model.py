@@ -27,6 +27,7 @@ from tui_real_terminal.scenarios import (  # noqa: E402
     all_scenarios,
     scenario_by_id,
 )
+from tui_real_terminal.visual import build_visual_verdict  # noqa: E402
 
 
 def test_all_abcd_scenarios_are_declared() -> None:
@@ -118,3 +119,21 @@ def test_evidence_bundle_writes_required_artifacts(tmp_path: Path) -> None:
     assert (bundle.run_dir / "screenshots").is_dir()
     assert (bundle.run_dir / "visual-verdict.json").exists()
     assert (bundle.run_dir / "result.json").exists()
+
+
+def test_visual_verdict_contract_defaults_to_inspect_without_screenshot() -> None:
+    verdict = build_visual_verdict(
+        scenario_id="launch_input_loop",
+        checkpoint="after-response",
+        backend_id="terminal",
+        terminal_size={"cols": 100, "rows": 30},
+        screenshot_path=None,
+        frame_path="frames/003-after-response.txt",
+        expected_visible_regions=("prompt", "assistant stream"),
+    )
+
+    assert verdict["status"] == "inspect"
+    assert verdict["severity"] == "inspect-only"
+    assert verdict["affected_region"] == "terminal"
+    assert verdict["recommended_next_action"]
+    assert verdict["input"]["failure_modes"]

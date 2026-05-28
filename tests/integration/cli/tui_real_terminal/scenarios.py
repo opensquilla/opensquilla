@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from tui_real_terminal import assertions
@@ -15,6 +16,7 @@ from tui_real_terminal.evidence import (
     ScenarioFailure,
     ScenarioResult,
 )
+from tui_real_terminal.visual import blocking, build_visual_verdict
 
 ScenarioFamily = Literal[
     "launch_and_input_loop",
@@ -166,15 +168,16 @@ def run_scenario(
     started_at = time.monotonic()
     evidence.write_scenario(scenario.to_json_dict())
     last_frame = TerminalFrame("not-started", "", 0, scenario.initial_size)
+    last_frame_path = evidence.frames_dir / "not-started.txt"
     current_step = "start"
     session.start()
     try:
         last_frame = session.capture_text("started")
-        evidence.record_frame(last_frame)
+        last_frame_path = evidence.record_frame(last_frame)
         for step in scenario.steps:
             current_step = step.step_id
             last_frame = _run_step(session, step)
-            evidence.record_frame(last_frame)
+            last_frame_path = evidence.record_frame(last_frame)
             assertions.assert_no_traceback(last_frame)
             assertions.assert_no_raw_ansi_leakage(last_frame)
             if not session.is_alive() and step.action != "key":
@@ -187,6 +190,13 @@ def run_scenario(
             backend_id=backend_id,
             status="pass",
             run_dir=evidence.run_dir,
+        )
+        _write_visual_verdict(
+            scenario=scenario,
+            backend_id=backend_id,
+            evidence=evidence,
+            frame=last_frame,
+            frame_path=last_frame_path,
         )
         evidence.write_result(result)
         return result
@@ -204,6 +214,13 @@ def run_scenario(
             status="fail",
             run_dir=evidence.run_dir,
             failure=failure,
+        )
+        _write_visual_verdict(
+            scenario=scenario,
+            backend_id=backend_id,
+            evidence=evidence,
+            frame=last_frame,
+            frame_path=last_frame_path,
         )
         evidence.write_result(result)
         raise
@@ -235,3 +252,25 @@ def _run_step(session: RealTerminalSession, step: ScenarioStep) -> TerminalFrame
     if step.action == "capture":
         return session.capture_text(checkpoint)
     raise ValueError(f"unknown scenario step action: {step.action}")
+
+
+def _write_visual_verdict(
+    *,
+    scenario: TuiScenario,
+    backend_id: str,
+    evidence: EvidenceBundle,
+    frame: TerminalFrame,
+    frame_path: Path,
+) -> None:
+    verdict = build_visual_verdict(
+        scenario_id=scenario.scenario_id,
+        checkpoint=frame.checkpoint,
+        backend_id=backend_id,
+        terminal_size={"cols": frame.size.cols, "rows": frame.size.rows},
+        screenshot_path=None,
+        frame_path=str(frame_path),
+        expected_visible_regions=("prompt", "assistant stream", scenario.family),
+    )
+    verdict_path = evidence.write_visual_verdict(verdict)
+    if blocking(verdict):
+        raise AssertionError(f"blocking visual verdict: {verdict_path}")

@@ -826,8 +826,11 @@ class MemoryRepairService:
     ) -> None:
         self._session_manager = session_manager
         self._flush_service = flush_service
-        self._memory_roots = {agent_id: Path(root) for agent_id, root in memory_roots.items()}
-        self._agent_ids = tuple(agent_ids)
+        self._memory_roots = {
+            normalize_agent_id(agent_id): Path(root)
+            for agent_id, root in memory_roots.items()
+        }
+        self._agent_ids = tuple(normalize_agent_id(agent_id) for agent_id in agent_ids)
         self._interval_seconds = max(float(interval_seconds), 0.01)
         self._max_items_per_tick = max(int(max_items_per_tick), 1)
         self._enabled = enabled

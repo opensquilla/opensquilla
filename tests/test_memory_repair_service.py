@@ -284,6 +284,46 @@ async def test_memory_repair_service_run_once_repairs_preimage_and_raw_fallback(
 
 
 @pytest.mark.asyncio
+async def test_memory_repair_service_canonicalizes_configured_agent_inputs(tmp_path):
+    from opensquilla.gateway.memory_repair_service import MemoryRepairService
+
+    op_root = tmp_path / "op-root"
+    raw_dir = op_root / "memory" / ".raw_fallbacks"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "raw.md").write_text(
+        "# Raw flush (timeout)\n\nuser: service op percent marker\n",
+        encoding="utf-8",
+    )
+    storage = await SessionStorage.open(tmp_path / "sessions.db")
+    flush_service = _FlushService()
+
+    class _SessionManager:
+        def __init__(self) -> None:
+            self.storage = storage
+
+    try:
+        service = MemoryRepairService(
+            session_manager=_SessionManager(),
+            flush_service=flush_service,
+            memory_roots={"op%": op_root},
+            agent_ids=("op%",),
+            interval_seconds=60.0,
+            max_items_per_tick=5,
+        )
+
+        results = await service.run_once()
+        rows = await storage.list_memory_durable_receipts(limit=10)
+
+        assert [result["status"] for result in results] == ["repaired"]
+        assert len(flush_service.calls) == 1
+        assert flush_service.calls[0][0][0].content == "service op percent marker"
+        assert rows[0].session_key == "agent:op:memory-repair:legacy-raw"
+        assert rows[0].status == "repair_done"
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_memory_repair_run_imports_legacy_raw_fallback_to_ledger(tmp_path):
     from opensquilla.gateway.memory_repair_service import run_memory_repair_once
 

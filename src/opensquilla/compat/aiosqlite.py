@@ -243,7 +243,7 @@ class _AsyncConnection:
     async def cursor(self) -> _AsyncCursor:
         async with self._locked:
             cur = await asyncio.to_thread(self._conn.cursor)
-        return _AsyncCursor(cur)
+        return _AsyncCursor(cur, self._locked)
 
     async def enable_load_extension(self, enabled: bool) -> None:
         async with self._locked:

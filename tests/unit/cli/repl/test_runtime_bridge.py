@@ -234,6 +234,89 @@ async def test_gateway_runtime_bridge_owns_default_turn_callbacks(
 
 
 @pytest.mark.asyncio
+async def test_run_concurrent_repl_defaults_to_terminal_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import runtime_bridge
+
+    monkeypatch.delenv("OPENSQUILLA_TUI_BACKEND", raising=False)
+    calls: list[dict[str, Any]] = []
+
+    async def fake_terminal_repl(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    async def fail_textual_repl(**_kwargs: Any) -> None:
+        raise AssertionError("terminal must remain the default TUI runtime")
+
+    async def fake_dispatch(_value: str) -> bool:
+        return True
+
+    scope: dict[str, Any] = {}
+    monkeypatch.setattr(runtime_bridge._terminal_bridge, "run_concurrent_repl", fake_terminal_repl)
+    monkeypatch.setattr(runtime_bridge._textual_bridge, "run_concurrent_repl", fail_textual_repl)
+
+    await runtime_bridge.run_concurrent_repl(
+        surface=Surface.CLI_GATEWAY,
+        scope=scope,
+        dispatch=fake_dispatch,
+    )
+
+    assert calls == [
+        {
+            "surface": Surface.CLI_GATEWAY,
+            "scope": scope,
+            "dispatch": fake_dispatch,
+            "queue_max_size": runtime_bridge.PENDING_QUEUE_MAX_SIZE,
+            "abort_active_turn": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_concurrent_repl_uses_textual_bridge_when_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import runtime_bridge
+
+    monkeypatch.setenv("OPENSQUILLA_TUI_BACKEND", "textual")
+    calls: list[dict[str, Any]] = []
+
+    async def fail_terminal_repl(**_kwargs: Any) -> None:
+        raise AssertionError("explicit textual backend must not run terminal bridge")
+
+    async def fake_textual_repl(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    async def fake_dispatch(_value: str) -> bool:
+        return True
+
+    async def fake_abort() -> None:
+        return None
+
+    scope: dict[str, Any] = {}
+    monkeypatch.setattr(runtime_bridge._terminal_bridge, "run_concurrent_repl", fail_terminal_repl)
+    monkeypatch.setattr(runtime_bridge._textual_bridge, "run_concurrent_repl", fake_textual_repl)
+
+    await runtime_bridge.run_concurrent_repl(
+        surface=Surface.CLI_GATEWAY,
+        scope=scope,
+        dispatch=fake_dispatch,
+        abort_active_turn=fake_abort,
+        queue_max_size=3,
+    )
+
+    assert calls == [
+        {
+            "surface": Surface.CLI_GATEWAY,
+            "scope": scope,
+            "dispatch": fake_dispatch,
+            "queue_max_size": 3,
+            "abort_active_turn": fake_abort,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_terminal_chat_runtime_exposes_launch_scoped_plugin_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from rich.panel import Panel
 
 import opensquilla.cli.tui.adapters.terminal_bridge as _terminal_bridge
+import opensquilla.cli.tui.adapters.textual_bridge as _textual_bridge
 from opensquilla.cli.chat import gateway_runtime as _gateway_runtime
 from opensquilla.cli.chat.session_context import (
     GatewayRuntimeScope,
@@ -42,6 +43,13 @@ def validate_tui_backend_selection(env: Mapping[str, str] | None = None) -> str:
     return select_renderer_backend_from_env(env).backend_id
 
 
+def _runtime_bridge_for_selected_backend() -> Any:
+    backend_id = validate_tui_backend_selection()
+    if backend_id == "textual":
+        return _textual_bridge
+    return _terminal_bridge
+
+
 class GatewayTerminalReplRunner(Protocol):
     async def __call__(
         self,
@@ -63,7 +71,7 @@ async def run_concurrent_repl(
     abort_active_turn: Callable[[], Awaitable[None]] | None = None,
     queue_max_size: int | None = None,
 ) -> None:
-    await _terminal_bridge.run_concurrent_repl(
+    await _runtime_bridge_for_selected_backend().run_concurrent_repl(
         surface=surface,
         scope=scope,
         dispatch=dispatch,

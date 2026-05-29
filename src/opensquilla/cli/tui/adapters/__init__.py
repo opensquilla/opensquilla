@@ -13,5 +13,6 @@ __all__ = [
     "slash_standalone",
     "terminal_bridge",
     "terminal_chat_adapter",
+    "textual_bridge",
     "turn_stream_defaults",
 ]

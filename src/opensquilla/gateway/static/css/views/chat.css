@@ -1954,6 +1954,9 @@
   border-top: 1px solid var(--border);
   background: var(--bg);
   flex-shrink: 0;
+  max-width: 768px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 @media (max-width: 480px) {
@@ -2577,11 +2580,6 @@
   0%, 100% { opacity: 0.9; box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent); }
   50%      { opacity: 1;   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 85%, transparent); }
 }
-@media (prefers-reduced-motion: reduce) {
-  .router-fx-cell.win::before { animation: none; opacity: 0; }
-  .router-fx-cell.win::after { animation: none; }
-}
-
 /* Fallback variant — chosen tier was the safe net, not the routed pick.
    Mirrors the locked-winner treatment but in the danger palette so the
    shape is the same and the colour change carries the signal. */
@@ -2720,16 +2718,9 @@
   background: var(--text-muted);
 }
 
-/* Reduced motion: kill the chase, render the settled board only. */
-@media (prefers-reduced-motion: reduce) {
-  .router-fx-cell, .router-fx-selector { transition: none !important; }
-  .router-fx-cell.pinging,
-  .router-fx-selector.lock-impact,
-  .router-fx-burst i,
-  .router-fx[data-state="playing"] .router-fx-header .glyph {
-    animation: none !important;
-  }
-}
+/* NOTE: the router grid deliberately does NOT honour prefers-reduced-motion
+ * either — same rationale as the cloud: the "Router animation" switch is the
+ * explicit opt-in, so OS reduce-motion does not suppress the chase. */
 
 /* Mobile: collapse to 3 columns × 5 rows + smaller type. The hammer
  * still hops; the grid just gets denser. JS still renders 15 cells —
@@ -2768,8 +2759,212 @@
  * prefers-reduced-motion guard and the 640px/380px grid-collapse rules above,
  * and keep the JS grid-cell count in sync.
  *
- * Keep variants PALETTE-ONLY where possible: the data-source="fallback" and
+ * Keep palette-only variants PALETTE-ONLY: the data-source="fallback" and
  * data-observe="true" rules are semantic overlays at depth (0,1,2,0); a
  * token-only variant layers cleanly under them instead of fighting specificity.
- * No variant block ships yet — the seam is the data-variant stamp + this note. */
+ * The "cloud" variant below is a STRUCTURAL one (its own layout + motion). */
+
+/* ── Cloud variant: "model nebula" / rack-focus ──────────────────────────
+ * An optical instrument focusing, not a marketing tag-cloud. ~36 model names
+ * hang in an organic, edge-dissolved field at seeded focal DEPTHS where blur,
+ * scale and opacity move together (near = sharp/large/bright; far =
+ * soft/small/dim). Two layers per name keep motion from fighting: the OUTER
+ * owns position + a perpetual parallax drift (the field stays alive even once
+ * settled) and the winner's glide to focus; the INNER owns the rack-focus
+ * (scale/blur/opacity/glow). Routing: idle -> playing (the whole field
+ * defocuses, ease-IN) -> settled (the winner glides to the focal point and
+ * resolves sharp with an accent bloom; the rest sink to bokeh). */
+.router-fx[data-variant="cloud"] .router-fx-cloud {
+  position: relative;
+  width: 100%;
+  height: 268px;
+  margin-top: 2px;
+  overflow: visible;
+  /* no border, no box — a faint accent core; the radial mask dissolves the
+   * edges so the nebula has no rigid rectangular boundary. */
+  background:
+    radial-gradient(58% 64% at 50% 47%,
+      color-mix(in srgb, var(--accent) 7%, transparent) 0%,
+      transparent 72%);
+  -webkit-mask-image: radial-gradient(74% 76% at 50% 49%, #000 50%, transparent 100%);
+  mask-image: radial-gradient(74% 76% at 50% 49%, #000 50%, transparent 100%);
+}
+
+/* OUTER: position + (winner only) the glide to focus. NO perpetual motion —
+ * the panel must be perfectly still once settled / while output renders. */
+.router-fx[data-variant="cloud"] .router-fx-mote {
+  position: absolute;
+  left: var(--x, 50%);
+  top: var(--y, 50%);
+  z-index: var(--z, 1);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  transition:
+    left 360ms cubic-bezier(.2,.85,.25,1),
+    top 360ms cubic-bezier(.2,.85,.25,1);
+}
+
+/* INNER: the focal optics (scale / blur / opacity / colour / glow). */
+.router-fx[data-variant="cloud"] .router-fx-mote-i {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--text);
+  opacity: var(--op, 0.6);
+  filter: blur(var(--blur, 0));
+  transform: scale(var(--sc, 1));
+  transform-origin: center;
+  transition:
+    transform 360ms cubic-bezier(.2,.85,.25,1),
+    filter 340ms cubic-bezier(.2,.85,.25,1),
+    opacity 300ms ease,
+    color 280ms ease,
+    letter-spacing 360ms cubic-bezier(.2,.85,.25,1),
+    text-shadow 360ms ease;
+}
+
+/* Scanning — the live "search" before the decision arrives. JS toggles
+ * .is-scan across motes (~170ms) so a candidate roams into sharp accent
+ * focus while the rest sit softly defocused. Discrete class swaps, so the
+ * motion shows even where CSS keyframes are suppressed. */
+.router-fx[data-variant="cloud"][data-state="scanning"] .router-fx-mote-i {
+  filter: blur(calc(var(--blur, 0) + 1.6px));
+  opacity: calc(var(--op, 0.6) * 0.7);
+  transition:
+    transform 200ms cubic-bezier(.2,.85,.25,1),
+    filter 200ms ease,
+    opacity 200ms ease,
+    color 200ms ease,
+    text-shadow 200ms ease;
+}
+.router-fx[data-variant="cloud"][data-state="scanning"] .router-fx-mote.is-scan {
+  z-index: 250;
+}
+.router-fx[data-variant="cloud"][data-state="scanning"] .router-fx-mote.is-scan .router-fx-mote-i {
+  filter: blur(0);
+  opacity: 1;
+  transform: scale(1.4);
+  color: var(--accent);
+  text-shadow:
+    0 0 8px color-mix(in srgb, var(--accent) 60%, transparent),
+    0 0 20px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+/* Playing — the lens leaves focus: the whole field defocuses (ease-IN).
+ * Only the INNER changes; the outer keeps drifting underneath. */
+.router-fx[data-variant="cloud"][data-state="playing"] .router-fx-mote-i {
+  filter: blur(calc(var(--blur, 0) + 3.6px));
+  opacity: calc(var(--op, 0.6) * 0.4);
+  transform: scale(calc(var(--sc, 1) * 0.86));
+  transition:
+    transform 360ms ease-in,
+    filter 340ms ease-in,
+    opacity 340ms ease-in;
+}
+
+/* Settled — the field sinks to soft bokeh (the outer keeps drifting, so it is
+ * never frozen). */
+.router-fx[data-variant="cloud"][data-state="settled"] .router-fx-mote-i {
+  filter: blur(calc(var(--blur, 0) + 2.6px));
+  opacity: 0.16;
+  transform: scale(calc(var(--sc, 1) * 0.9));
+}
+
+/* ...except the winner: the OUTER glides to the focal point (left/top eased)
+ * while the INNER resolves sharp with a layered accent bloom. STATIC once
+ * settled — no breathe — so the panel is still while output renders.
+ * The --winner class outranks the generic settled rule above on specificity. */
+.router-fx[data-variant="cloud"][data-state="settled"] .router-fx-mote--winner {
+  left: 50%;
+  top: 47%;
+  z-index: 300;
+}
+.router-fx[data-variant="cloud"][data-state="settled"] .router-fx-mote--winner .router-fx-mote-i {
+  filter: blur(0);
+  opacity: 1;
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  transform: scale(1.9);
+  text-shadow:
+    0 0 8px color-mix(in srgb, var(--accent) 70%, transparent),
+    0 0 22px color-mix(in srgb, var(--accent) 46%, transparent),
+    0 0 48px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+/* RED LINE: a frozen strip (set the instant output begins) is perfectly
+ * static — no transitions, no animations, anywhere in the panel. */
+.router-fx[data-frozen="true"],
+.router-fx[data-frozen="true"] * {
+  animation: none !important;
+  transition: none !important;
+}
+/* Once settled, the chase hammer is gone — the .win cell is the marker. */
+.router-fx[data-state="settled"] .router-fx-selector { opacity: 0 !important; }
+
+/* Focal reticle: two corner ticks that close on the winner as it locks. */
+.router-fx[data-variant="cloud"] .router-fx-reticle {
+  position: absolute;
+  left: 50%;
+  top: 47%;
+  width: 168px;
+  height: 58px;
+  transform: translate(-50%, -50%) scale(0.82);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 460ms ease 220ms,
+    transform 600ms cubic-bezier(.2,.85,.25,1) 220ms;
+}
+.router-fx[data-variant="cloud"] .router-fx-reticle::before,
+.router-fx[data-variant="cloud"] .router-fx-reticle::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.router-fx[data-variant="cloud"] .router-fx-reticle::before { left: 0; top: 0; border-right: none; border-bottom: none; }
+.router-fx[data-variant="cloud"] .router-fx-reticle::after  { right: 0; bottom: 0; border-left: none; border-top: none; }
+.router-fx[data-variant="cloud"][data-state="settled"] .router-fx-reticle {
+  opacity: 0.9;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* Observe mode: routed model did not drive the turn — dim the whole field. */
+.router-fx[data-variant="cloud"][data-observe="true"] .router-fx-cloud { opacity: 0.6; }
+
+/* Fallback: the chosen tier was the safety net — carry the signal in danger
+ * (static glow, no breathe). */
+.router-fx[data-variant="cloud"][data-source="fallback"][data-state="settled"] .router-fx-mote--winner .router-fx-mote-i {
+  color: var(--danger);
+  text-shadow:
+    0 0 7px color-mix(in srgb, var(--danger) 68%, transparent),
+    0 0 20px color-mix(in srgb, var(--danger) 45%, transparent),
+    0 0 46px color-mix(in srgb, var(--danger) 24%, transparent);
+  animation: none;
+}
+.router-fx[data-variant="cloud"][data-source="fallback"] .router-fx-reticle::before,
+.router-fx[data-variant="cloud"][data-source="fallback"] .router-fx-reticle::after {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+/* NOTE: the cloud deliberately does NOT honour prefers-reduced-motion — the
+ * panel is an explicitly toggled decorative effect (the "Router animation" /
+ * "Cloud view" switches are the opt-in), so OS reduce-motion does not
+ * blanket-suppress it. Turn the switch off to stop the motion. */
+
+/* Mobile: a shorter field + smaller type so the nebula still breathes. */
+@media (max-width: 640px) {
+  .router-fx[data-variant="cloud"] .router-fx-cloud {
+    height: 200px;
+  }
+  .router-fx[data-variant="cloud"] .router-fx-mote-i { font-size: 10px; }
+  .router-fx[data-variant="cloud"][data-state="settled"] .router-fx-mote--winner .router-fx-mote-i {
+    transform: scale(1.6);
+  }
+}
 

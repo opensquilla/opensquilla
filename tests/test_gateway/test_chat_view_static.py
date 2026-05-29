@@ -921,6 +921,261 @@ def test_router_fx_decoy_pool_doubled_with_current_models() -> None:
         assert name in names
 
 
+def test_router_fx_cloud_variant_renders_seeded_depth_field() -> None:
+    # The cloud variant builds a focal-depth nebula: each mote gets a seeded
+    # depth driving blur/scale/opacity TOGETHER (coherent optical depth, not a
+    # random tag cloud), deterministic per layout seed for history rebuilds.
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _routerFxBuildCloud(wrap, decision, seedKey) {" in source
+    build_start = source.index("function _routerFxBuildCloud(wrap, decision, seedKey) {")
+    build_end = source.index("function _settleRouterFxCloud(wrap) {", build_start)
+    body = source[build_start:build_end]
+    # Seeded RNG keyed off the layout seed → reproducible nebula.
+    assert "_routerFxMulberry32(_routerFxHashSeed((seedKey || '') + ':cloud'))" in body
+    # blur, scale, opacity all derive from the same depth d.
+    assert "const d = rng();" in body
+    assert "const blur = (d * 3.4).toFixed(2);" in body
+    assert "const scale = (1.22 - d * 0.62).toFixed(3);" in body
+    assert "const op = (0.92 - d * 0.64).toFixed(3);" in body
+    # Organic elliptical scatter (area-uniform radius at a random angle).
+    assert "const rad = Math.sqrt(rng());" in body
+    assert "Math.cos(ang)" in body and "Math.sin(ang)" in body
+    # Two layers so drift (outer) and rack-focus (inner) never fight.
+    assert "inner.className = 'router-fx-mote-i';" in body
+    assert "mote.appendChild(inner);" in body
+    assert "mote.classList.add('router-fx-mote--winner');" in body
+    assert "wrap._fxCloud = true;" in body
+    assert "wrap._fxWinnerEl = winnerEl;" in body
+    # Builder branches to the cloud and returns before the grid build.
+    assert "if (variant === 'cloud') {" in source
+    assert "_routerFxBuildCloud(wrap, decision, seedKey);" in source
+
+
+def test_router_fx_cloud_shows_pool_plus_winner_not_roster() -> None:
+    # Privacy: the cloud field is the public decoy pool + the (already-public)
+    # routed winner only — it must NOT render the operator's configured roster.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    build_start = source.index("function _routerFxBuildCloud(wrap, decision, seedKey) {")
+    build_end = source.index("function _settleRouterFxCloud(wrap) {", build_start)
+    body = source[build_start:build_end]
+
+    assert "_ROUTER_FX_DECOY_POOL.forEach(" in body
+    assert "const winnerName = _routerFxWinnerName(decision);" in body
+    # The roster builder is never consulted inside the cloud build.
+    assert "_routerFxRealEntries" not in body
+    assert "function _routerFxWinnerName(decision) {" in source
+
+
+def test_router_fx_cloud_rack_focus_dispatch_is_motion_opt_in() -> None:
+    # Live + history dispatch branch on wrap._fxCloud; the rack-focus is a
+    # defocus(playing) -> snap(settled) phase flip. The animation is an
+    # explicit opt-in (the toggle), so it does NOT gate on OS reduce-motion;
+    # it only settles directly when there is no winner to focus.
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _animateRouterFxCloud(wrap) {" in source
+    assert "function _settleRouterFxCloud(wrap) {" in source
+    anim_start = source.index("function _animateRouterFxCloud(wrap) {")
+    anim_end = source.index("// Anchor invariant", anim_start)
+    anim = source[anim_start:anim_end]
+    assert "if (!wrap._fxWinnerEl) { _settleRouterFxCloud(wrap); return; }" in anim
+    assert "prefers-reduced-motion" not in anim   # decoupled from OS reduce-motion
+    assert "wrap.dataset.state = 'playing';" in anim
+    assert "wrap.dataset.state = 'settled';" in anim
+    assert anim.index("'playing'") < anim.index("'settled'")
+    # Live path dispatches to the cloud animator when the strip is a cloud.
+    assert "wrap._fxCloud" in source
+    assert "? _animateRouterFxCloud(wrap)" in source
+    assert "? _settleRouterFxCloud(wrap)" in source
+
+
+def test_router_fx_cloud_css_rack_focus_states() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    # Borderless/organic: no rigid box — a radial mask dissolves the edges,
+    # and content-visibility keeps off-screen history strips cheap.
+    cloud_start = css.index('.router-fx[data-variant="cloud"] .router-fx-cloud {')
+    cloud_block = css[cloud_start:css.index("}", cloud_start)]
+    assert "border:" not in cloud_block          # no rigid rectangular boundary
+    assert "mask-image: radial-gradient(" in cloud_block
+    # content-visibility was removed — it paused animation on auto-scroll.
+    assert "content-visibility" not in cloud_block
+    # Two layers: OUTER owns position + (winner) glide; INNER owns the optics.
+    # NO perpetual motion — the panel must be still once settled / when output
+    # renders (the absolute red line), so there is no drift/breathe loop.
+    mote_start = css.index('.router-fx[data-variant="cloud"] .router-fx-mote {')
+    mote_block = css[mote_start:css.index("}", mote_start)]
+    assert "animation:" not in mote_block               # no perpetual drift
+    assert "will-change" not in mote_block              # not pinned permanently (perf)
+    assert "@keyframes router-fx-drift" not in css      # drift loop removed
+    assert "router-fx-winner-breathe" not in css        # breathe loop removed
+    assert '.router-fx[data-variant="cloud"] .router-fx-mote-i {' in css
+    # Defocus (ease-IN) and the winner resolve target the INNER; the winner's
+    # glide to focus is on the OUTER (left/top), so it travels, never teleports.
+    assert '.router-fx[data-variant="cloud"][data-state="playing"] .router-fx-mote-i {' in css
+    assert ('.router-fx[data-variant="cloud"][data-state="settled"] '
+            '.router-fx-mote--winner .router-fx-mote-i {') in css
+    assert '.router-fx[data-variant="cloud"] .router-fx-reticle {' in css
+    # RED LINE: a frozen strip kills ALL transitions/animations (set the moment
+    # output begins), and the settled grid hides the chase hammer.
+    assert '.router-fx[data-frozen="true"]' in css
+    selector_hide = (".router-fx[data-state=\"settled\"] .router-fx-selector"
+                     " { opacity: 0 !important; }")
+    assert selector_hide in css
+    # Motion is opt-in via the toggle, so the cloud does NOT honour OS
+    # reduce-motion (no @media block suppressing the cloud motes).
+    assert "deliberately does NOT honour prefers-reduced-motion" in css
+
+
+def test_router_fx_cloud_view_toggle_selects_variant() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    popover_start = source.index('id="chat-toolbar-popover"')
+    popover_end = source.index("chat-input-wrap", popover_start)
+    popover = source[popover_start:popover_end]
+
+    assert 'id="toggle-router-cloud"' in popover
+    assert "Cloud view" in popover
+    # Handler flips the persisted variant client-side and re-renders.
+    assert "_routerFx.variant = routerCloudToggle.checked ? 'cloud' : 'default';" in source
+    assert "routerCloudToggle.checked = _routerFx.variant === 'cloud';" in source
+
+
+def test_router_fx_grid_labels_shrink_to_fit() -> None:
+    # Long model names (e.g. "gemini-3.1-flash-lite") must show in full, not
+    # clip at the cell edges: a post-insert measure shrinks the label font to
+    # fit its cell. Runs for every inserted strip via _routerFxInsertAnchored.
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _routerFxFitLabels(wrap) {" in source
+    fit_start = source.index("function _routerFxFitLabels(wrap) {")
+    fit_end = source.index("function _routerFxInsertAnchored(", fit_start)
+    fit = source[fit_start:fit_end]
+    assert "wrap.querySelectorAll('.router-fx-cell')" in fit
+    assert "const w = nm.scrollWidth;" in fit
+    assert "nm.style.fontSize = Math.max(7, base * (avail / w)).toFixed(1) + 'px';" in fit
+    # Invoked from the shared insert path so both live and history strips fit.
+    insert_start = source.index("function _routerFxInsertAnchored(")
+    insert_end = source.index("}", source.index("_thread.appendChild(wrap);", insert_start))
+    assert "_routerFxFitLabels(wrap);" in source[insert_start:insert_end]
+
+
+def test_router_fx_watching_indicator_deferred_until_panel_settles() -> None:
+    # The "squilla · Watching · N.Ns" indicator is RETAINED, but DEFERRED until
+    # the router panel has settled — so routing animates first and "Watching…"
+    # only shows afterwards (while the model is still generating). The timer
+    # starts at send so it reads total elapsed.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    # No longer suppressed.
+    assert "if (_routerFx.enabled && _routerFeatureEnabled) return;" not in source
+    # _showThinkingIndicatorNow defers while the panel is still scanning.
+    now_start = source.index("function _showThinkingIndicatorNow() {")
+    now_end = source.index("function _hideThinkingIndicator", now_start)
+    body = source[now_start:now_end]
+    assert "_thread.querySelector('.router-fx[data-scanning=\"true\"]')" in body
+    assert "_thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, 150);" in body
+    # The verb list (incl. "Watching") is unchanged.
+    assert "const SQUILLA_VERBS = ['Watching'," in source
+
+
+def test_router_fx_scan_to_lock_fills_the_wait() -> None:
+    # The routing visualisation renders on SEND and animates continuously
+    # (JS-driven, ~170ms class/position swaps) until the decision locks it onto
+    # the winner — so the routing animation leads instead of trailing, and it
+    # shows regardless of CSS-animation suppression in the environment.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    for fn in ("_routerFxBeginScan", "_routerFxScanRoam", "_routerFxStopScan",
+               "_routerFxLock", "_routerFxLockCloud", "_routerFxLockGrid"):
+        assert f"function {fn}(" in source
+    # Scan is gated on BOTH the viz pref and routing actually being on.
+    begin_start = source.index("function _routerFxBeginScan(")
+    begin_end = source.index("function _routerFxScanRoam(", begin_start)
+    begin = source[begin_start:begin_end]
+    assert "if (!_thread || !_routerFx.enabled || !_routerFeatureEnabled) return false;" in begin
+    # Started from the send path.
+    assert "_routerFxBeginScan(userDiv, _routerFxResolveLayoutSeed(_sessionKey));" in source
+    # The scan runs for a FIXED, hard-capped window (≤1s), then locks — not
+    # "roam until the decision WS event lands".
+    assert "const _ROUTER_FX_SCAN_MS = 600;" in source
+    cap = "wrap._fxScanCap = setTimeout(() => _routerFxFinishScan(wrap), _ROUTER_FX_SCAN_MS);"
+    assert cap in source
+    assert "function _routerFxFinishScan(wrap) {" in source
+    # The decision is CACHED on the in-flight strip; the cap (or output) locks it.
+    assert "liveStrip._fxDecision = payload;" in source
+    assert "if (liveStrip._fxFinished) {" in source
+    assert "_routerFxLock(wrap, wrap._fxDecision);" in source  # finish locks the cached winner
+    # Roam is JS-driven discrete swaps (cloud: .is-scan; grid: hammer hop).
+    roam_start = source.index("function _routerFxScanRoam(")
+    roam_end = source.index("function _routerFxStopScan(", roam_start)
+    roam = source[roam_start:roam_end]
+    assert "m.classList.toggle('is-scan', idx === i)" in roam
+    assert "wrap._fxScanTimer = setTimeout(step, isCloud ? 170 : 190);" in roam
+    # CSS gives the roaming focus a sharp accent pop.
+    scan_css = ('.router-fx[data-variant="cloud"][data-state="scanning"] '
+                '.router-fx-mote.is-scan .router-fx-mote-i {')
+    assert scan_css in css
+
+
+def test_router_fx_strip_survives_multistep_turn() -> None:
+    # A multi-step (tool-using) turn emits intermediate *.done events. The done
+    # handler must NOT force-clear the strip's data-live (which let the
+    # _loadHistory orphan-backstop remove the still-in-flight, positionally
+    # stranded strip — the panel vanishing mid-turn), and the backstop must
+    # spare data-live strips. The consolidation clears data-live when it
+    # re-anchors the now-persisted turn.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "delete settledStrip.dataset.live;" not in source
+    assert "_routerFxFindAttachedStrip" not in source
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("  /* ── Send Message", history_start)
+    history_body = source[history_start:history_end]
+    # The orphan backstop spares the in-flight live strip before the positional
+    # anchored check that would otherwise remove it.
+    bk_anchor = history_body.index("if (!anchored) el.remove();")
+    bk_start = history_body.rindex(
+        "_thread.querySelectorAll('.router-fx').forEach", 0, bk_anchor)
+    backstop = history_body[bk_start:bk_anchor]
+    assert "if (el.dataset.live === 'true') return;" in backstop
+    # And the in-flight live strip is re-anchored under the latest user message
+    # every rebuild, so a long multi-step turn's reorder can't strand it.
+    live_q = "const liveStrip = _thread.querySelector('.router-fx[data-live=\"true\"]');"
+    assert live_q in history_body
+    assert "const lastUser = _routerFxLastUserMessage();" in history_body
+    assert "_thread.insertBefore(liveStrip, lastUser.nextSibling);" in history_body
+    # The per-turn consolidation must keep the in-flight live strip (never drop
+    # it on an identity mismatch), only promote it to settled once NOT streaming,
+    # and never rebuild over it.
+    assert "ownStrips.find((el) => el.dataset.live === 'true')" in history_body
+    assert "if (!_isStreaming) delete keep.dataset.live;" in history_body
+    assert "existingStrip.dataset.live === 'true'" in history_body
+
+
+def test_router_fx_freezes_static_when_output_begins() -> None:
+    # Absolute red line: the moment output renders, the panel must not still be
+    # animating. _ensureStreamBubble (the common chokepoint for text AND tool
+    # cards) freezes any in-flight strip to a static settled state.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert "function _routerFxFreezeForOutput() {" in source
+    # Freeze: stop the scan, settle, mark frozen (so CSS kills all motion).
+    fz_start = source.index("function _routerFxFreezeForOutput() {")
+    fz = source[fz_start:source.index("// Lock an in-flight scanning strip", fz_start)]
+    assert "_routerFxStopScan(wrap);" in fz
+    assert "wrap.dataset.state = 'settled';" in fz
+    assert "wrap.dataset.frozen = 'true';" in fz
+    # It is invoked at the top of the stream-bubble (output) path.
+    esb = source[source.index("function _ensureStreamBubble() {"):]
+    esb = esb[:esb.index("function _newTextSegment")]
+    assert "_routerFxFreezeForOutput();" in esb
+    # CSS: a frozen strip has no transitions or animations anywhere.
+    fr = css[css.index('.router-fx[data-frozen="true"]'):][:220]
+    assert "animation: none !important;" in fr
+    assert "transition: none !important;" in fr
+
+
 def test_router_fx_history_and_turn_meta_preserve_observe_rollout_state() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     history_start = source.index("function _buildRouterFxFromUsage(usage, seedKey) {")

@@ -1010,6 +1010,15 @@ const ChatView = (() => {
                       </label>
                     </div>
                   </div>
+                  <div class="chat-toolbar-row">
+                    <span class="chat-toolbar-row-label">Cloud view</span>
+                    <div class="toggle-switch-wrap" id="pill-router-cloud-group" title="Render the router as a focal-depth model nebula instead of the grid">
+                      <label class="toggle-switch" aria-label="Cloud view">
+                        <input type="checkbox" id="toggle-router-cloud" />
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1168,6 +1177,23 @@ const ChatView = (() => {
       });
     }
 
+    // Router-fx style variant: grid (default) vs the focal-depth cloud.
+    // Purely client-side, persisted with the on/off pref.
+    const routerCloudToggle = _el.querySelector('#toggle-router-cloud');
+    if (routerCloudToggle) {
+      routerCloudToggle.addEventListener('change', () => {
+        _routerFx.variant = routerCloudToggle.checked ? 'cloud' : 'default';
+        _routerFxSavePref();
+        // Re-render settled strips in the chosen variant; leave any in-flight
+        // live strip alone (same safety as the on/off toggle above).
+        if (_thread) {
+          _thread.querySelectorAll('.router-fx:not([data-live="true"])').forEach((n) => n.remove());
+        }
+        _scheduleHistorySync();
+        UI.toast('Router view: ' + (_routerFx.variant === 'cloud' ? 'cloud' : 'grid'), 'info');
+      });
+    }
+
   }
 
   // Re-pull router config (and rebuild history strips) when the chat
@@ -1220,6 +1246,8 @@ const ChatView = (() => {
       _routerFxLoadPref();
       const routerFxToggle = _el?.querySelector('#toggle-router-fx');
       if (routerFxToggle) routerFxToggle.checked = _routerFx.enabled;
+      const routerCloudToggle = _el?.querySelector('#toggle-router-cloud');
+      if (routerCloudToggle) routerCloudToggle.checked = _routerFx.variant === 'cloud';
       _globalElevatedMode = _normalizeElevatedMode(cfg?.permissions?.default_mode);
       _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
       _updateElevatedPill();
@@ -2743,6 +2771,9 @@ const ChatView = (() => {
   // base, unstamped look). This is a cosmetic, client-side choice — it never
   // touches gateway config — so it lives in localStorage like the theme pref.
   const _ROUTER_FX_PREF_KEY = 'opensquilla-router-fx';
+  // Fixed scan-animation window. The panel locks + settles by this point, so
+  // the whole animation (scan + ~360ms settle transition) stays under ~1s.
+  const _ROUTER_FX_SCAN_MS = 600;
   const _routerFx = { enabled: true, variant: 'default' };
   function _routerFxLoadPref() {
     // Defaults stand (enabled ON, default variant) unless a stored pref
@@ -3027,13 +3058,21 @@ const ChatView = (() => {
       '<span class="glyph">→</span>';
     wrap.appendChild(header);
 
-    const realEntries = _routerFxRealEntries(decision);
-    // Seed the cell shuffle off the caller-supplied key (turn
-    // timestamp). Same key → same layout on every rebuild, so the
-    // user never sees the order shift after the hammer locked.
-    // Stash the seed on the wrap dataset for forensic reuse.
+    // Seed off the caller-supplied key (turn timestamp). Same key → same
+    // layout on every rebuild, so the field never reshuffles after lock.
     const seedKey = opts && opts.seedKey ? String(opts.seedKey) : '';
     if (seedKey) wrap.dataset.seed = seedKey;
+
+    // Cloud variant: a focal-depth nebula of pool models + the routed winner.
+    // No configured roster is rendered. Returns early; the grid build below
+    // is the default look.
+    if (variant === 'cloud') {
+      _routerFxBuildCloud(wrap, decision, seedKey);
+      if (opts.preSettled) _settleRouterFxCloud(wrap);
+      return wrap;
+    }
+
+    const realEntries = _routerFxRealEntries(decision);
     const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined);
 
     const grid = document.createElement('div');
@@ -3113,17 +3152,14 @@ const ChatView = (() => {
     wrap.dataset.state = 'settled';
     cells.forEach((c, i) => c.classList.toggle('win', i === winnerIdx));
 
-    requestAnimationFrame(() => {
-      _routerFxPositionSelector(selector, cells[winnerIdx], { lock: true });
-      selector.classList.add('visible', 'lock');
-      if (opts.burst) {
-        selector.classList.remove('lock-impact');
-        void selector.offsetWidth;
-        selector.classList.add('lock-impact');
-        setTimeout(() => selector.classList.remove('lock-impact'), 320);
-        _routerFxFireBurst(grid, cells[winnerIdx]);
-      }
-    });
+    // Hide the chase hammer once settled — the .win cell IS the winner marker.
+    // Leaving the selector visible risks it stranding mid-hop (e.g. straddling
+    // two cells, the observed visual failure), since its position is measured
+    // and can race a layout change.
+    if (selector) selector.classList.remove('visible', 'lock', 'lock-impact');
+    if (opts.burst) {
+      requestAnimationFrame(() => _routerFxFireBurst(grid, cells[winnerIdx]));
+    }
   }
 
   function _routerFxFireBurst(grid, cell) {
@@ -3148,11 +3184,11 @@ const ChatView = (() => {
     const cells = grid.querySelectorAll('.router-fx-cell');
     if (!cells.length || !cells[winnerIdx]) return;
 
-    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduced) {
-      _settleRouterFxImmediate(wrap, winnerIdx, { burst: false });
-      return;
-    }
+    // The router panel is an explicitly toggled decorative effect — the in-app
+    // "Router animation" switch IS the motion opt-in — so it plays regardless
+    // of the OS prefers-reduced-motion setting, which otherwise blanket-
+    // suppresses it in environments that force reduce-motion (some remote
+    // desktops / VMs do). Turn the switch off to stop it.
 
     wrap.dataset.state = 'playing';
 
@@ -3202,6 +3238,266 @@ const ChatView = (() => {
     requestAnimationFrame(placeFirst);
   }
 
+  // ── Cloud variant ("model nebula" / rack-focus) ─────────────────────
+  // A focal-depth field of ~36 pool models + the routed winner, scattered
+  // at seeded positions/depths. Routing reads as a camera rack-focus pull:
+  // the whole field defocuses, then the winner snaps sharp and blooms an
+  // accent glow at the focal point while the rest recede to bokeh. The field
+  // is pool + winner ONLY (never the configured roster), so it exposes
+  // nothing beyond the already-public routed model.
+  function _routerFxWinnerName(decision) {
+    const model = decision && (decision.model || decision.routed_model);
+    if (model) return _routerFxStripProvider(String(model));
+    const tier = decision && decision.tier ? String(decision.tier).toLowerCase() : '';
+    if (tier && _routerFxModels[tier]) return _routerFxStripProvider(_routerFxModels[tier]);
+    return tier || '';
+  }
+
+  function _routerFxBuildCloud(wrap, decision, seedKey) {
+    const cloud = document.createElement('div');
+    cloud.className = 'router-fx-cloud';
+    const winnerName = _routerFxWinnerName(decision);
+    // Field = the public decoy pool + the routed winner (deduped). No
+    // configured-roster names beyond the winner are ever rendered.
+    const seen = new Set();
+    const names = [];
+    if (winnerName) { names.push(winnerName); seen.add(winnerName.toLowerCase()); }
+    _ROUTER_FX_DECOY_POOL.forEach((n) => {
+      const k = n.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); names.push(n); }
+    });
+    // Deterministic per seed so a history rebuild reproduces the same nebula.
+    const rng = _routerFxMulberry32(_routerFxHashSeed((seedKey || '') + ':cloud'));
+    const wkey = winnerName ? winnerName.toLowerCase() : '';
+    let winnerEl = null;
+    names.forEach((name) => {
+      // Two layers, so motion never fights: the OUTER mote owns position +
+      // a perpetual parallax drift (transform) + the winner's travel-to-
+      // focus (left/top), while the INNER owns the rack-focus (scale, blur,
+      // opacity, glow). Splitting them means the field keeps breathing even
+      // once settled, and the winner glides to the focal point instead of
+      // teleporting.
+      const mote = document.createElement('span');
+      mote.className = 'router-fx-mote';
+      // Organic elliptical scatter: area-uniform radius (sqrt) at a random
+      // angle clusters names toward the core and thins to the edges — a soft
+      // nebula, no rigid rows. Focal depth d∈[0,1] drives blur, scale and
+      // opacity TOGETHER so it reads as coherent optical depth, not a tag cloud.
+      const d = rng();
+      const ang = rng() * Math.PI * 2;
+      const rad = Math.sqrt(rng());
+      const x = (50 + Math.cos(ang) * rad * 47).toFixed(2);
+      const y = (50 + Math.sin(ang) * rad * 41).toFixed(2);
+      const blur = (d * 3.4).toFixed(2);
+      const scale = (1.22 - d * 0.62).toFixed(3);
+      const op = (0.92 - d * 0.64).toFixed(3);
+      const z = Math.round((1 - d) * 100);
+      const driftDur = (11 + rng() * 9).toFixed(2);
+      const driftDelay = (-(rng() * 20)).toFixed(2);
+      const dx = (rng() * 2 - 1).toFixed(2);
+      const dy = (rng() * 2 - 1).toFixed(2);
+      mote.style.cssText =
+        `--x:${x}%;--y:${y}%;--z:${z};--drift:${driftDur}s;`
+        + `--ddelay:${driftDelay}s;--dx:${dx};--dy:${dy};`;
+      const inner = document.createElement('span');
+      inner.className = 'router-fx-mote-i';
+      inner.style.cssText = `--blur:${blur}px;--sc:${scale};--op:${op};`;
+      inner.textContent = name;
+      mote.appendChild(inner);
+      if (!winnerEl && wkey && name.toLowerCase() === wkey) {
+        mote.classList.add('router-fx-mote--winner');
+        winnerEl = mote;
+      }
+      cloud.appendChild(mote);
+    });
+    const reticle = document.createElement('div');
+    reticle.className = 'router-fx-reticle';
+    reticle.setAttribute('aria-hidden', 'true');
+    cloud.appendChild(reticle);
+    wrap.appendChild(cloud);
+    wrap._fxCloud = true;
+    wrap._fxWinnerEl = winnerEl;
+  }
+
+  // Settle with no animation (history rebuild, observe mode, reduced motion):
+  // winner in focus, the rest already receded — the CSS settled state does it.
+  function _settleRouterFxCloud(wrap) {
+    if (!wrap) return;
+    wrap.dataset.state = 'settled';
+  }
+
+  // Live rack-focus: brief beat on the full field, defocus the whole field
+  // (ease-in, lens leaving focus), then snap the winner sharp (decelerate).
+  // The optical pull is CSS (mote transitions keyed off data-state); JS only
+  // flips the phase with the right timing.
+  function _animateRouterFxCloud(wrap) {
+    if (!wrap) return;
+    // Opt-in via the toggle, independent of OS reduce-motion (see
+    // _animateRouterFx). Settle directly only if there is no winner to focus.
+    if (!wrap._fxWinnerEl) { _settleRouterFxCloud(wrap); return; }
+    // Hold the in-focus field a beat so the defocus reads as intentional.
+    setTimeout(() => { if (wrap.isConnected) wrap.dataset.state = 'playing'; }, 260);
+    setTimeout(() => { if (wrap.isConnected) wrap.dataset.state = 'settled'; }, 680);
+  }
+
+  // ── Scan → lock ─────────────────────────────────────────────────────────
+  // Render the routing visualisation the MOMENT the user sends, animating
+  // CONTINUOUSLY until the router_decision arrives and locks it onto the
+  // winner. The scan is JS-driven (discrete class/position changes every
+  // ~170ms), so it renders regardless of any CSS-animation quirk — and it
+  // fills the wait instead of trailing it, replacing the "Watching" placeholder.
+  function _routerFxBeginScan(anchorDiv, seedKey) {
+    // Only scan when the router is actually going to route (else no decision
+    // arrives to lock it). Both flags: user wants the viz AND routing is on.
+    if (!_thread || !_routerFx.enabled || !_routerFeatureEnabled) return false;
+    _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((el) => {
+      _routerFxStopScan(el);
+      el.remove();
+    });
+    const wrap = _buildRouterFxElement({ source: 'none' }, { seedKey });
+    wrap.dataset.live = 'true';
+    wrap.dataset.scanning = 'true';
+    wrap.dataset.state = 'scanning';
+    wrap.dataset.sessionKey = _sessionKey || '';
+    wrap.dataset.turnIndex = String(_routerFxCountUserMessages());
+    if (anchorDiv && anchorDiv.parentNode === _thread) {
+      _thread.insertBefore(wrap, anchorDiv.nextSibling);
+    } else {
+      _routerFxInsertAnchored(wrap, null);
+    }
+    _routerFxScanRoam(wrap);
+    // HARD CAP: the scan animation lasts a fixed, short window (≤1s total incl.
+    // the settle transition), independent of when the decision WS event lands.
+    // The router decides up-front, so the decision is normally cached within
+    // tens of ms; at the cap we lock onto it and settle. This is what makes the
+    // panel "end quickly within one second" rather than roam until the event.
+    wrap._fxScanCap = setTimeout(() => _routerFxFinishScan(wrap), _ROUTER_FX_SCAN_MS);
+    _scrollToBottom();
+    return true;
+  }
+
+  // Finish the scan exactly once: lock onto the cached decision (the winner)
+  // and settle. If — vanishingly rarely — no decision has arrived yet, settle
+  // to a neutral final state; a late decision still locks via the data-live
+  // lookup in _handleRouterDecision.
+  function _routerFxFinishScan(wrap) {
+    if (!wrap || wrap._fxFinished) return;
+    wrap._fxFinished = true;
+    if (wrap._fxScanCap) { clearTimeout(wrap._fxScanCap); wrap._fxScanCap = null; }
+    if (wrap._fxDecision) {
+      _routerFxLock(wrap, wrap._fxDecision);
+    } else {
+      _routerFxStopScan(wrap);
+      wrap.dataset.state = 'settled';
+    }
+  }
+
+  // JS-driven roaming "search": every ~170ms a different candidate is brought
+  // into focus (cloud: a mote sharpens via .is-scan; grid: the hammer hops).
+  function _routerFxScanRoam(wrap) {
+    const isCloud = !!wrap._fxCloud;
+    const container = wrap.querySelector(isCloud ? '.router-fx-cloud' : '.router-fx-grid');
+    if (!container) return;
+    const targets = container.querySelectorAll(isCloud ? '.router-fx-mote' : '.router-fx-cell');
+    if (!targets.length) return;
+    const selector = isCloud ? null : container.querySelector('.router-fx-selector');
+    if (selector) selector.classList.add('visible');
+    let prev = -1;
+    const step = () => {
+      if (!wrap.isConnected || wrap.dataset.scanning !== 'true') return;
+      let i;
+      let g = 0;
+      do { i = Math.floor(Math.random() * targets.length); g++; } while (i === prev && g < 8);
+      prev = i;
+      if (isCloud) {
+        targets.forEach((m, idx) => m.classList.toggle('is-scan', idx === i));
+      } else if (selector) {
+        _routerFxPositionSelector(selector, targets[i], { hopIdx: i });
+        _routerFxPing(targets[i]);
+      }
+      wrap._fxScanTimer = setTimeout(step, isCloud ? 170 : 190);
+    };
+    step();
+  }
+
+  function _routerFxStopScan(wrap) {
+    if (!wrap) return;
+    if (wrap._fxScanTimer) { clearTimeout(wrap._fxScanTimer); wrap._fxScanTimer = null; }
+    if (wrap._fxScanCap) { clearTimeout(wrap._fxScanCap); wrap._fxScanCap = null; }
+    delete wrap.dataset.scanning;
+    wrap.querySelectorAll('.router-fx-mote.is-scan').forEach((m) => m.classList.remove('is-scan'));
+  }
+
+  // RED LINE enforcement: when output begins, finalise every in-flight strip
+  // to a STATIC settled state. data-frozen kills all CSS transitions/animations
+  // so nothing is moving while the response renders. Keeps data-live so the
+  // history consolidation still owns its promotion to settled.
+  function _routerFxFreezeForOutput() {
+    if (!_thread) return;
+    _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((wrap) => {
+      if (wrap.dataset.frozen === 'true') return;
+      // Output already complete/arriving → finish the scan immediately, locking
+      // onto the cached winner (no half-scan left hanging), then freeze static.
+      _routerFxFinishScan(wrap);
+      _routerFxStopScan(wrap);
+      wrap.dataset.state = 'settled';
+      wrap.dataset.frozen = 'true';
+    });
+  }
+
+  // Lock an in-flight scanning strip onto the routed winner.
+  function _routerFxLock(wrap, decision) {
+    if (!wrap) return;
+    decision = decision || {};
+    _routerFxStopScan(wrap);
+    wrap.dataset.tier = decision.tier || '';
+    wrap.dataset.source = decision.source || 'none';
+    const identity = _routerFxDecisionIdentity(decision);
+    if (identity) wrap.dataset.routerIdentity = identity;
+    if (decision.routing_applied === false) {
+      wrap.dataset.observe = 'true';
+      wrap.dataset.rolloutPhase = typeof decision.rollout_phase === 'string'
+        ? decision.rollout_phase : 'observe';
+    }
+    if (wrap._fxCloud) _routerFxLockCloud(wrap, decision);
+    else _routerFxLockGrid(wrap, decision);
+  }
+
+  function _routerFxLockCloud(wrap, decision) {
+    const winnerName = _routerFxWinnerName(decision);
+    const wkey = winnerName ? winnerName.toLowerCase() : '';
+    let winnerEl = null;
+    const motes = wrap.querySelectorAll('.router-fx-mote');
+    if (wkey) {
+      motes.forEach((m) => {
+        const inner = m.querySelector('.router-fx-mote-i');
+        if (!winnerEl && inner && (inner.textContent || '').trim().toLowerCase() === wkey) winnerEl = m;
+      });
+      if (!winnerEl && motes.length) {
+        // Routed model isn't in the field — relabel the first mote to it.
+        winnerEl = motes[0];
+        const inner = winnerEl.querySelector('.router-fx-mote-i');
+        if (inner) inner.textContent = winnerName;
+      }
+    }
+    if (winnerEl) { winnerEl.classList.add('router-fx-mote--winner'); wrap._fxWinnerEl = winnerEl; }
+    requestAnimationFrame(() => { if (wrap.isConnected) wrap.dataset.state = 'settled'; });
+  }
+
+  function _routerFxLockGrid(wrap, decision) {
+    const tier = decision.tier ? String(decision.tier) : '';
+    if (tier) {
+      _routerFxRegisterTier(tier);
+      if (decision.model) _routerFxModels[tier.toLowerCase()] = String(decision.model);
+    }
+    const winnerIdx = _routerFxWinnerCellIndex(wrap, tier);
+    if (winnerIdx >= 0) {
+      requestAnimationFrame(() => { if (wrap.isConnected) _settleRouterFxImmediate(wrap, winnerIdx, { burst: true }); });
+    } else {
+      wrap.dataset.state = 'settled';
+    }
+  }
+
   // Anchor invariant: the strip must always sit immediately below
   // the user message that triggered this turn — never above it,
   // never with anything (day separators, tool cards, the assistant
@@ -3223,21 +3519,6 @@ const ChatView = (() => {
   // DoneEvent handler since the strip is anchored to the user msg,
   // which means it may not be the assistant bubble's immediate
   // previousElementSibling once tool cards / day-separators arrive.
-  function _routerFxFindAttachedStrip(assistantBubble) {
-    if (!assistantBubble) return null;
-    let prev = assistantBubble.previousElementSibling;
-    while (prev) {
-      if (prev.classList && prev.classList.contains('router-fx')) return prev;
-      if (prev.classList
-          && (prev.classList.contains('user')
-              || prev.getAttribute('data-history-role') === 'user')) {
-        return null;
-      }
-      prev = prev.previousElementSibling;
-    }
-    return null;
-  }
-
   function _routerFxUserMessageForAssistant(referenceAssistant) {
     if (!referenceAssistant) return null;
     let prev = referenceAssistant.previousElementSibling;
@@ -3251,8 +3532,32 @@ const ChatView = (() => {
     return null;
   }
 
+  // Shrink any grid cell label that overflows its cell so long model names
+  // (e.g. "gemini-3.1-flash-lite") show in full instead of clipping at the
+  // edges. Measured after insertion (rAF) because it needs the rendered cell
+  // width. No-op for the cloud variant (no .router-fx-cell). Idempotent.
+  function _routerFxFitLabels(wrap) {
+    if (!wrap) return;
+    requestAnimationFrame(() => {
+      wrap.querySelectorAll('.router-fx-cell').forEach((cell) => {
+        const nm = cell.querySelector('.nm');
+        if (!nm) return;
+        nm.style.fontSize = '';
+        const avail = cell.clientWidth - 12;
+        const w = nm.scrollWidth;
+        if (avail > 0 && w > avail) {
+          const base = parseFloat(getComputedStyle(nm).fontSize) || 10.5;
+          nm.style.fontSize = Math.max(7, base * (avail / w)).toFixed(1) + 'px';
+        }
+      });
+    });
+  }
+
   function _routerFxInsertAnchored(wrap, referenceAssistant) {
     if (!_thread) return;
+    // Fit long labels once the strip is in the DOM (rAF runs after the
+    // synchronous insertion below, regardless of which branch placed it).
+    _routerFxFitLabels(wrap);
     // Prefer the user msg that immediately precedes the assistant
     // turn we're about to render (during history rebuild we have a
     // concrete reference div; live, we don't).
@@ -3298,6 +3603,23 @@ const ChatView = (() => {
     // history-rebuild strip lifecycle.)
     if (!_routerFx.enabled) return;
     if (!_thread) return;
+    // A strip for this turn was rendered the moment the user sent. CACHE the
+    // decision on it; the fixed-window scan (_routerFxFinishScan) locks onto it
+    // when the window closes — so the animation runs for a consistent ≤1s
+    // rather than however long the WS event took. If the window has ALREADY
+    // closed (late decision), lock immediately. Match by data-live so we find
+    // it whether it's still scanning or already settled-awaiting-winner.
+    const liveStrip = _thread.querySelector('.router-fx[data-live="true"]');
+    if (liveStrip
+        && liveStrip.dataset.turnIndex === String(_routerFxCountUserMessages())) {
+      liveStrip.dataset.sessionKey = _sessionKey || '';
+      liveStrip._fxDecision = payload;
+      if (liveStrip._fxFinished) {
+        _routerFxLock(liveStrip, payload);
+        _scrollToBottom();
+      }
+      return;
+    }
     await _routerFxAwaitConfig();
     // Re-check the thread reference after the await — the view may
     // have been torn down while we were waiting.
@@ -3320,8 +3642,10 @@ const ChatView = (() => {
     const turnIndex = _routerFxCountUserMessages();
     const liveSeed = _routerFxResolveLayoutSeed(_sessionKey);
     const wrap = _buildRouterFxElement(payload, { seedKey: liveSeed });
-    const winnerIdx = _routerFxWinnerCellIndex(wrap, tier);
-    if (winnerIdx < 0) return;
+    // Cloud flags its winner mote at build time; the grid resolves a winning
+    // cell index. Either way, bail if there is no winner to focus.
+    const winnerIdx = wrap._fxCloud ? -1 : _routerFxWinnerCellIndex(wrap, tier);
+    if (wrap._fxCloud ? !wrap._fxWinnerEl : winnerIdx < 0) return;
     wrap.dataset.live = 'true';
     wrap.dataset.sessionKey = _sessionKey || '';
     wrap.dataset.turnIndex = String(turnIndex);
@@ -3358,9 +3682,13 @@ const ChatView = (() => {
     if (observeMode) {
       // Observe-mode only: settle immediately because the routed model did not
       // drive the response. Live applied routes keep the random chase animation.
-      requestAnimationFrame(() => _settleRouterFxImmediate(wrap, winnerIdx, { burst: false }));
+      requestAnimationFrame(() => wrap._fxCloud
+        ? _settleRouterFxCloud(wrap)
+        : _settleRouterFxImmediate(wrap, winnerIdx, { burst: false }));
     } else {
-      requestAnimationFrame(() => _animateRouterFx(wrap, winnerIdx));
+      requestAnimationFrame(() => wrap._fxCloud
+        ? _animateRouterFxCloud(wrap)
+        : _animateRouterFx(wrap, winnerIdx));
     }
     _scrollToBottom();
   }
@@ -3691,16 +4019,13 @@ const ChatView = (() => {
         // replays the terminal done frame.
         const _finishedBubble = _streamBubble;
         const _doneWasAborted = payload?.reason === 'aborted';
-        // Promote any live router strip to a persisted strip: data-live
-        // is cleared so the next live decision's cleanup doesn't see
-        // it as a stale in-progress strip. The strip stays in DOM
-        // until the next history sync, which will replace it with a
-        // freshly built strip carrying the SAME seed (resolved from
-        // localStorage), so the swap is visually invisible.
-        const settledStrip = _routerFxFindAttachedStrip(_finishedBubble);
-        if (settledStrip) {
-          delete settledStrip.dataset.live;
-        }
+        // Do NOT clear the router strip's data-live here. A multi-step
+        // (tool-using) turn emits intermediate *.done events; clearing data-live
+        // on one of those — then _endStreaming() flipping _isStreaming false —
+        // lets the _loadHistory orphan-backstop remove the still-in-flight strip
+        // (the message reorder positionally strands it), so the panel vanishes
+        // mid-turn until the final response. The history consolidation clears
+        // data-live when it re-anchors the strip for the now-persisted turn.
         _endStreaming(_doneWasAborted ? { reason: 'aborted' } : undefined);
 
         // Populate savings indicator if data exists
@@ -4069,24 +4394,34 @@ const ChatView = (() => {
                   (el) => el.dataset.sessionKey === (_sessionKey || '')
                     && el.dataset.turnIndex === String(_histUserIdx),
                 );
-                const keep = ownStrips.find(
-                  (el) => el.dataset.routerIdentity === routerIdentity,
-                ) || null;
+                // The in-flight strip (data-live) is owned by the scan→lock
+                // flow — ALWAYS keep + re-anchor it, never rebuild over it.
+                // This is the fix for the panel vanishing mid-turn: a mid-stream
+                // _loadHistory used to drop the live strip whenever its routing
+                // identity didn't match the (partial) saved usage. Otherwise
+                // keep the strip whose routing identity matches.
+                const keep = ownStrips.find((el) => el.dataset.live === 'true')
+                  || ownStrips.find((el) => el.dataset.routerIdentity === routerIdentity)
+                  || null;
                 ownStrips.forEach((el) => { if (el !== keep) el.remove(); });
                 if (keep) {
                   if (userMsg.nextSibling !== keep) {
                     _thread.insertBefore(keep, userMsg.nextSibling);
                   }
-                  // Persisted now — drop the live flag (mirrors the done
-                  // handler) so later syncs never re-treat it as in-flight.
-                  delete keep.dataset.live;
+                  // Promote live→settled ONLY once the turn is no longer
+                  // streaming. While streaming, the strip stays data-live so
+                  // every mid-turn rebuild keeps protecting + re-anchoring it.
+                  if (!_isStreaming) delete keep.dataset.live;
                 }
               }
               const placed = userMsg && userMsg.nextSibling;
               const existingStrip = (placed && placed.classList
                   && placed.classList.contains('router-fx')) ? placed : null;
+              // Never rebuild over an in-flight live strip — treat it (or any
+              // identity-matching strip) as already in place.
               const alreadyInPlace = existingStrip
-                && existingStrip.dataset.routerIdentity === routerIdentity;
+                && (existingStrip.dataset.live === 'true'
+                  || existingStrip.dataset.routerIdentity === routerIdentity);
               if (!alreadyInPlace) {
                 if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();
                 const hint = msg.timestamp || msg.ts || msg.message_id || '';
@@ -4132,6 +4467,11 @@ const ChatView = (() => {
       // removed mid-turn.
       if (!_isStreaming) {
         _thread.querySelectorAll('.router-fx').forEach((el) => {
+          // Spare the in-flight strip: it's still data-live (the done handler no
+          // longer clears it prematurely) and the consolidation hasn't
+          // re-anchored it yet because its turn isn't persisted. It's
+          // positionally stranded by the reorder but must survive the turn.
+          if (el.dataset.live === 'true') return;
           const prev = el.previousElementSibling;
           const anchored = !!prev && !!prev.classList && prev.classList.contains('msg')
             && (prev.classList.contains('user')
@@ -4150,6 +4490,21 @@ const ChatView = (() => {
           if (_isStreaming && el.dataset.live === 'true') return;
           el.remove();
         });
+      }
+      // Re-anchor the in-flight live strip under the latest user message. The
+      // reorder above re-appends only .msg nodes, so during a long multi-step
+      // turn (many tool-call cards added mid-stream) the non-.msg strip gets
+      // stranded far from its turn and appears to vanish. Pin it back so it
+      // sits right below the user prompt for the whole turn, until the
+      // consolidation takes over once the turn is persisted.
+      if (_routerFx.enabled) {
+        const liveStrip = _thread.querySelector('.router-fx[data-live="true"]');
+        if (liveStrip) {
+          const lastUser = _routerFxLastUserMessage();
+          if (lastUser && lastUser.parentNode === _thread && lastUser.nextSibling !== liveStrip) {
+            _thread.insertBefore(liveStrip, lastUser.nextSibling);
+          }
+        }
       }
       _lastSavingsPopupIdentity = historySavingsIdentity;
       _scrollToBottom();
@@ -4394,8 +4749,11 @@ const ChatView = (() => {
     _pendingAttachments = [];
     _renderAttachmentPreview();
 
-    // Start streaming UI
+    // Start streaming UI. Begin the routing scan immediately so the routing
+    // animation fills the wait (and stands in for the thinking placeholder);
+    // it locks onto the winner when the router_decision arrives.
     _startStreaming();
+    _routerFxBeginScan(userDiv, _routerFxResolveLayoutSeed(_sessionKey));
     _showThinkingIndicator();
 
     // Send
@@ -4543,6 +4901,10 @@ const ChatView = (() => {
     // Already scheduled or visible — keep the original timer/element to avoid
     // hide-then-rebuild flicker when send + state_change both fire.
     if (_thinkingEl || _thinkingDelayTimer) return;
+    // Timer starts at send so "Watching · N.Ns" reads total wait. The indicator
+    // is RETAINED — but _showThinkingIndicatorNow defers it until the router
+    // panel has settled, so routing animates first and "Watching…" only appears
+    // afterwards (while the model is still generating), not before it.
     _thinkingStartTime = Date.now();
 
     // Delay showing the indicator — fast responses won't flash it. When the
@@ -4557,6 +4919,14 @@ const ChatView = (() => {
   function _showThinkingIndicatorNow() {
     _thinkingDelayTimer = null;
     if (_streamBubble) return; // content already arrived, skip
+    // Defer while the router panel is still animating to its final state — the
+    // "Watching…" indicator belongs AFTER routing settles, not during the scan.
+    // Re-check shortly; the panel locks within ~1s, then this shows (with the
+    // elapsed counted from send).
+    if (_thread && _thread.querySelector('.router-fx[data-scanning="true"]')) {
+      _thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, 150);
+      return;
+    }
 
     const empty = _thread.querySelector('.chat-empty');
     if (empty) empty.remove();
@@ -4704,6 +5074,12 @@ const ChatView = (() => {
 
   function _ensureStreamBubble() {
     _hideThinkingIndicator();
+    // RED LINE: output is about to render — the router panel must NOT still be
+    // animating. Freeze any in-flight strip to its final static settled state
+    // (stop the scan, snap to settled, kill all transitions/animations). The
+    // router decides before the model emits output, so by now the strip is
+    // normally locked onto its winner.
+    _routerFxFreezeForOutput();
     if (!_streamBubble) {
       // Remove "No messages yet." placeholder
       const empty = _thread.querySelector('.chat-empty');

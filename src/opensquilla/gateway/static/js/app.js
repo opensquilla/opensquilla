@@ -74,7 +74,8 @@ const App = (() => {
       <div class="main">
         <header class="topbar">
           <div class="topbar-left">
-            <button class="btn btn--icon btn--ghost sidebar-toggle" id="sidebar-toggle" title="Toggle menu">${icons.menu()}</button>
+            <button class="btn btn--icon btn--ghost sidebar-toggle" id="sidebar-toggle" title="Toggle menu" aria-controls="sidebar-nav" aria-expanded="false">${icons.menu()}</button>
+            <h1 class="topbar-title" id="topbar-title">Chat</h1>
             <span class="conn-pill err" id="conn-pill">Disconnected</span>
           </div>
           <div class="topbar-right">
@@ -131,7 +132,8 @@ const App = (() => {
     rpc.on('_state', (state) => {
       const pill = document.getElementById('conn-pill');
       if (!pill) return;
-      pill.className = `conn-pill ${VARIANT[state] || 'err'}`;
+      const variant = VARIANT[state] || 'err';
+      pill.className = `conn-pill ${variant}${variant === 'ok' ? ' compact' : ''}`;
       pill.textContent = state.charAt(0).toUpperCase() + state.slice(1);
     });
   }

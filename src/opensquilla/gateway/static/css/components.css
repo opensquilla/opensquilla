@@ -203,6 +203,21 @@
   background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated));
 }
 
+/* Connected state: demote pill to a quiet dot when healthy */
+.conn-pill.ok.compact {
+  padding: 3px;
+  width: 12px;
+  height: 12px;
+  font-size: 0;
+  gap: 0;
+  border-radius: 50%;
+  overflow: hidden;
+}
+.conn-pill.ok.compact::before {
+  margin: 0;
+  animation: conn-pill-heartbeat 2.4s ease-in-out infinite;
+}
+
 /* Tier badge — compact monospaced t0/t1/t2/t3 indicator for router decisions. */
 .tier {
   display: inline-flex;

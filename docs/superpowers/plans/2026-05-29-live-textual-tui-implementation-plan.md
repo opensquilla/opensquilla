@@ -938,7 +938,8 @@ Run:
 uv run pytest tests/integration/cli/tui_real_terminal/test_targets.py -q
 ```
 
-Expected: fail because the Textual target is still unavailable and has `command=[]`.
+Expected: fail because the test now expects a populated live Textual target before
+the implementation exists.
 
 - [ ] **Step 3: Implement the Textual target command**
 

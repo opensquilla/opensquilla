@@ -455,7 +455,7 @@ def test_terminal_target_builds_fake_app_command(tmp_path: Path) -> None:
     assert target.readiness_markers == ("OPEN_SQUILLA_TUI_READY",)
 
 
-def test_textual_target_is_explicitly_unavailable(tmp_path: Path) -> None:
+def test_textual_target_builds_fake_live_app_command(tmp_path: Path) -> None:
     context = TargetContext(
         project_root=Path.cwd(),
         artifact_dir=tmp_path,
@@ -466,8 +466,10 @@ def test_textual_target_is_explicitly_unavailable(tmp_path: Path) -> None:
     target = build_tui_target("textual", context)
 
     assert target.backend_id == "textual"
-    assert target.available is False
-    assert target.skip_reason == "live Textual TUI target is not implemented"
+    assert target.available is True
+    assert target.skip_reason is None
+    assert target.command
+    assert "live-textual-app" in target.capability_requirements
 ```
 
 - [ ] **Step 2: Run target tests to verify RED**
@@ -549,16 +551,25 @@ def _terminal_target(context: TargetContext) -> TuiTarget:
 
 
 def _textual_target(context: TargetContext) -> TuiTarget:
+    app_path = Path(__file__).with_name("fake_textual_app.py")
+    app_log = context.artifact_dir / "textual-app.log"
+    env = _base_env(context)
+    env.update(
+        {
+            "OPENSQUILLA_TUI_FAKE_SCENARIO": context.scenario_id,
+            "OPENSQUILLA_TUI_FAKE_APP_LOG": str(app_log),
+            "OPENSQUILLA_TUI_READY_MARKER": "OPEN_SQUILLA_TUI_READY",
+            "OPENSQUILLA_TUI_BACKEND": "textual",
+        }
+    )
     return TuiTarget(
         backend_id="textual",
-        command=[],
-        env=_base_env(context),
+        command=[sys.executable, "-u", str(app_path)],
+        env=env,
         initial_size=context.size,
-        readiness_markers=(),
-        log_paths=(),
+        readiness_markers=("OPEN_SQUILLA_TUI_READY",),
+        log_paths=(app_log,),
         capability_requirements=("live-textual-app",),
-        available=False,
-        skip_reason="live Textual TUI target is not implemented",
     )
 
 

@@ -29,7 +29,7 @@ composition:
   steps:
 {%- for b in branches %}
     - id: {{ b.id }}
-{%- set branch_kind = creator_step_kind(b.skill) %}
+{%- set branch_kind = creator_step_kind(b.skill) if creator_step_kind is defined else "agent" %}
 {%- if branch_kind == "skill_exec" %}
       kind: skill_exec
 {%- endif %}
@@ -54,7 +54,7 @@ composition:
 {%- endif %}
 {%- endfor %}
     - id: {{ merge.id }}
-{%- set merge_kind = creator_step_kind(merge.skill) %}
+{%- set merge_kind = creator_step_kind(merge.skill) if creator_step_kind is defined else "agent" %}
 {%- if merge_kind == "skill_exec" %}
       kind: skill_exec
 {%- endif %}
@@ -83,7 +83,7 @@ composition:
 {%- endif %}
 {%- if tail %}
     - id: {{ tail.id }}
-{%- set tail_kind = creator_step_kind(tail.skill) %}
+{%- set tail_kind = creator_step_kind(tail.skill) if creator_step_kind is defined else "agent" %}
 {%- if tail_kind == "skill_exec" %}
       kind: skill_exec
 {%- endif %}

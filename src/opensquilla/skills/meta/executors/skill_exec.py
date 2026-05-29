@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json as _json
+import os
 import shlex
 import sys
 from pathlib import Path as _Path
@@ -209,7 +210,7 @@ async def run_skill_exec_step(
             bytes=len(template_body),
         )
 
-    argv = shlex.split(command_str) + rendered_args
+    argv = shlex.split(command_str, posix=os.name != "nt") + rendered_args
     if not argv:
         raise RuntimeError(f"step {step.id!r}: empty argv after rendering")
 

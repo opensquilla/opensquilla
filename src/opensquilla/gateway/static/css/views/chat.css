@@ -1991,7 +1991,7 @@
   font-size: var(--fs-sm);
   line-height: 22px;
   height: 44px;
-  min-height: 44px;
+  min-height: 40px;
   max-height: 150px;
   overflow-y: auto;
   outline: none;

@@ -410,10 +410,11 @@ async def test_session_flush_repair_receipt_writer_records_raw_fallback_in_ledge
         rows = await storage.list_memory_durable_receipts(session_key=session_key)
 
         assert receipt.result_status == "parse_failed_archived"
-        assert len(rows) == 1
-        assert rows[0].scope == "repair"
-        assert rows[0].status == "repair_pending"
-        assert rows[0].reason == "parse_failed_archived"
-        assert rows[0].target_path == receipt.flushed_paths[0]
+        assert len(rows) == 2
+        assert rows[0].scope == "preimage"
+        assert rows[1].scope == "repair"
+        assert rows[1].status == "repair_pending"
+        assert rows[1].reason == "parse_failed_archived"
+        assert rows[1].target_path == receipt.flushed_paths[0]
     finally:
         await storage.close()

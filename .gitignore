@@ -26,6 +26,7 @@ benchmarks/
 specs/
 # Local agent/editor instructions and runtime state.
 AGENTS.md
+!docs/agents.md
 !src/opensquilla/identity/templates/bootstrap/AGENTS.md
 CLAUDE.md
 GEMINI.md

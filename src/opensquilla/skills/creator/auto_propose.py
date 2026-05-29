@@ -436,7 +436,6 @@ def _evaluate_auto_enable_risk(
         for route in step.route:
             referenced_skills.add(route.to)
         if step.kind == "skill_exec":
-            raise_risk("medium", "direct_skill_exec")
             spec = skill_loader.get_by_name(step.skill)
             if spec is not None and not getattr(spec, "entrypoint", None):
                 raise_risk("high", f"skill_exec_without_entrypoint:{step.skill}")

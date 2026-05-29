@@ -411,7 +411,7 @@ pre {
   font-weight: 600;
   color: var(--text);
   margin: 0;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 @media (min-width: 769px) and (max-height: 640px) {

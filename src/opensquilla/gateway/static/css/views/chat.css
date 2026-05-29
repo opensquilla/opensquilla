@@ -2407,7 +2407,9 @@
   user-select: none;
   align-self: center;
   width: 100%;
-  max-width: 560px;
+  /* Wider envelope so the 5-col grid keeps cells readable without
+     forcing model names to ellipsis at common breakpoints. */
+  max-width: 680px;
 }
 
 .router-fx-header {
@@ -2452,7 +2454,9 @@
 .router-fx-grid {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* 5 × 3 cells. JS pulls from _ROUTER_FX_GRID_COLS / _ROUTER_FX_GRID_ROWS;
+     keep these in sync with that constant when changing dimensions. */
+  grid-template-columns: repeat(5, 1fr);
   grid-template-rows: repeat(3, 30px);
   gap: 4px;
   padding: 8px;
@@ -2677,12 +2681,14 @@
   }
 }
 
-/* Mobile: collapse to 3 columns x 4 rows + smaller type. The hammer
- * still hops; the grid just gets denser. */
+/* Mobile: collapse to 3 columns × 5 rows + smaller type. The hammer
+ * still hops; the grid just gets denser. JS still renders 15 cells —
+ * keep the cell count divisible across the active grid template so no
+ * row ends short. */
 @media (max-width: 640px) {
   .router-fx-grid {
     grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: repeat(4, 28px);
+    grid-template-rows: repeat(5, 28px);
     padding: 6px;
     gap: 3px;
   }
@@ -2691,8 +2697,8 @@
 }
 @media (max-width: 380px) {
   .router-fx-grid {
-    grid-template-columns: repeat(2, 1fr);
-    grid-template-rows: repeat(6, 26px);
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(5, 26px);
   }
-  .router-fx-cell { font-size: 9.5px; }
+  .router-fx-cell { font-size: 9.5px; padding: 0 4px; }
 }

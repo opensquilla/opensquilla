@@ -2621,7 +2621,11 @@ const ChatView = (() => {
    * burst. The strip is non-blocking — assistant text streams below
    * the grid while the chase plays above. */
 
-  const _ROUTER_FX_GRID_COLS = 4;
+  // 5 cols × 3 rows = 15 cells. The wider grid gives the hammer more
+  // hops to play and shows the model space as a proper "dial" rather
+  // than a tight 4-cell strip. Mobile breakpoints collapse this down
+  // (see chat.css @media rules).
+  const _ROUTER_FX_GRID_COLS = 5;
   const _ROUTER_FX_GRID_ROWS = 3;
   const _ROUTER_FX_GRID_CELLS = _ROUTER_FX_GRID_COLS * _ROUTER_FX_GRID_ROWS;
 
@@ -2840,7 +2844,7 @@ const ChatView = (() => {
     return arr;
   }
 
-  // Assemble the 12-cell grid: real (deduped) entries + decoys
+  // Assemble the grid (_ROUTER_FX_GRID_CELLS cells): real (deduped) entries + decoys
   // filtered to avoid collisions with real model names, then shuffled
   // with a SEEDED RNG so the same turn always produces the same
   // layout across re-renders (live → DoneEvent → history-sync, plus

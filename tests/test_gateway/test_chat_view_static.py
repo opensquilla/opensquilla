@@ -741,7 +741,12 @@ def test_router_fx_history_and_turn_meta_preserve_observe_rollout_state() -> Non
     assert "rollout_phase: u.rollout_phase || 'full'," in store_body
 
 
-def test_router_fx_mobile_grid_keeps_twelve_explicit_cells() -> None:
+def test_router_fx_mobile_grid_matches_explicit_cell_count() -> None:
+    """Mobile router-fx grid rows×cols stays in lockstep with the JS cell count.
+
+    The JS constant ``_ROUTER_FX_GRID_CELLS`` is 15 (5 cols × 3 rows on desktop);
+    mobile and tiny breakpoints collapse to 3×5 so no row ends short.
+    """
     css = CHAT_CSS.read_text(encoding="utf-8")
     mobile_start = css.index("@media (max-width: 640px)")
     tiny_start = css.index("@media (max-width: 380px)")
@@ -749,9 +754,9 @@ def test_router_fx_mobile_grid_keeps_twelve_explicit_cells() -> None:
     tiny_body = css[tiny_start:]
 
     assert "grid-template-columns: repeat(3, 1fr);" in mobile_body
-    assert "grid-template-rows: repeat(4, 28px);" in mobile_body
-    assert "grid-template-columns: repeat(2, 1fr);" in tiny_body
-    assert "grid-template-rows: repeat(6, 26px);" in tiny_body
+    assert "grid-template-rows: repeat(5, 28px);" in mobile_body
+    assert "grid-template-columns: repeat(3, 1fr);" in tiny_body
+    assert "grid-template-rows: repeat(5, 26px);" in tiny_body
 
 
 def test_chat_history_replays_turn_meta_to_restore_combo_streak() -> None:

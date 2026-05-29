@@ -40,6 +40,10 @@ const ChatView = (() => {
   let _historySyncTimer = null;
   const _DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000; // server should emit terminal first
   let _streamIdleTimeoutMs = _DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+  const _ROUTER_FX_ASSISTANT_HOLD_MS = 1000;
+  let _routerFxAssistantHoldUntil = 0;
+  let _routerFxPendingText = '';
+  let _routerFxPendingTextTimer = null;
   let _lastStreamSeq = 0;
   let _activeTaskGroups = new Set();
   // Session epoch counter. Frames carrying an older epoch are stale
@@ -3350,6 +3354,7 @@ const ChatView = (() => {
       if (el !== wrap) el.remove();
     });
     _routerFxInsertAnchored(wrap, null);
+    _routerFxBeginAssistantHold();
     if (observeMode) {
       // Observe-mode only: settle immediately because the routed model did not
       // drive the response. Live applied routes keep the random chase animation.
@@ -4540,8 +4545,13 @@ const ChatView = (() => {
     if (_thinkingEl || _thinkingDelayTimer) return;
     _thinkingStartTime = Date.now();
 
-    // Delay showing the indicator — fast responses won't flash it
-    _thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, _THINKING_DELAY_MS);
+    // Delay showing the indicator — fast responses won't flash it. When the
+    // router panel just landed, keep the assistant animation behind the same
+    // one-second reveal window as the first text delta.
+    _thinkingDelayTimer = setTimeout(
+      _showThinkingIndicatorNow,
+      Math.max(_THINKING_DELAY_MS, _routerFxAssistantHoldRemaining()),
+    );
   }
 
   function _showThinkingIndicatorNow() {
@@ -4627,6 +4637,58 @@ const ChatView = (() => {
     }
   }
 
+  function _routerFxAssistantHoldRemaining() {
+    if (!_routerFxAssistantHoldUntil) return 0;
+    const remaining = _routerFxAssistantHoldUntil - Date.now();
+    return remaining > 0 ? remaining : 0;
+  }
+
+  function _routerFxBeginAssistantHold() {
+    _routerFxAssistantHoldUntil = Date.now() + _ROUTER_FX_ASSISTANT_HOLD_MS;
+    if (_routerFxPendingTextTimer) {
+      clearTimeout(_routerFxPendingTextTimer);
+      _routerFxPendingTextTimer = null;
+    }
+    if (_thinkingDelayTimer) {
+      clearTimeout(_thinkingDelayTimer);
+      _thinkingDelayTimer = null;
+      _showThinkingIndicator();
+    }
+  }
+
+  function _scheduleRouterFxPendingTextFlush() {
+    if (_routerFxPendingTextTimer) return;
+    const delay = _routerFxAssistantHoldRemaining();
+    if (delay <= 0) {
+      _flushRouterFxPendingText();
+      return;
+    }
+    _routerFxPendingTextTimer = setTimeout(() => {
+      _routerFxPendingTextTimer = null;
+      _flushRouterFxPendingText();
+    }, delay);
+  }
+
+  function _flushRouterFxPendingText() {
+    if (_routerFxPendingTextTimer) {
+      clearTimeout(_routerFxPendingTextTimer);
+      _routerFxPendingTextTimer = null;
+    }
+    const pending = _routerFxPendingText;
+    _routerFxPendingText = '';
+    _routerFxAssistantHoldUntil = 0;
+    if (pending) _appendDelta(pending);
+  }
+
+  function _clearRouterFxPendingText() {
+    if (_routerFxPendingTextTimer) {
+      clearTimeout(_routerFxPendingTextTimer);
+      _routerFxPendingTextTimer = null;
+    }
+    _routerFxPendingText = '';
+    _routerFxAssistantHoldUntil = 0;
+  }
+
   function _startStreaming() {
     _isStreaming = true;
     _applySessionRunState({ run_status: 'running', active_task: { status: 'running' } });
@@ -4702,6 +4764,20 @@ const ChatView = (() => {
 
   function _appendDelta(text) {
     if (_aborted) return;
+    if (text && _routerFxAssistantHoldRemaining() > 0) {
+      _routerFxPendingText += text;
+      _scheduleRouterFxPendingTextFlush();
+      return;
+    }
+    if (_routerFxPendingText) {
+      text = _routerFxPendingText + text;
+      _routerFxPendingText = '';
+      _routerFxAssistantHoldUntil = 0;
+      if (_routerFxPendingTextTimer) {
+        clearTimeout(_routerFxPendingTextTimer);
+        _routerFxPendingTextTimer = null;
+      }
+    }
     if (!_isStreaming) _startStreaming();
     _ensureStreamBubble();
     _streamRaw += text;
@@ -4745,6 +4821,8 @@ const ChatView = (() => {
   function _endStreaming(opts) {
     const reason = opts && opts.reason;
     const wasAborted = reason === 'aborted';
+    if (wasAborted) _clearRouterFxPendingText();
+    else _flushRouterFxPendingText();
     _hideThinkingIndicator();
     if (_historySyncTimer) { clearTimeout(_historySyncTimer); _historySyncTimer = null; }
     if (_renderRafId) { cancelAnimationFrame(_renderRafId); _renderRafId = null; }

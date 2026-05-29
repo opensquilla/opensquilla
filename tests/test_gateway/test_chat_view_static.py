@@ -755,6 +755,48 @@ def test_router_fx_live_routes_keep_random_chase_animation() -> None:
     )
 
 
+def test_router_fx_holds_first_assistant_text_after_live_panel() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    handler_start = source.index("async function _handleRouterDecision(payload) {")
+    handler_end = source.index("  // History-load entry point", handler_start)
+    handler_body = source[handler_start:handler_end]
+    append_start = source.index("function _appendDelta(text) {")
+    append_end = source.index("  function _flushPendingTextSegment()", append_start)
+    append_body = source[append_start:append_end]
+    thinking_start = source.index("function _showThinkingIndicator() {")
+    thinking_end = source.index("  function _showThinkingIndicatorNow()", thinking_start)
+    thinking_body = source[thinking_start:thinking_end]
+    hold_start = source.index("function _routerFxBeginAssistantHold() {")
+    hold_end = source.index("  function _scheduleRouterFxPendingTextFlush()", hold_start)
+    hold_body = source[hold_start:hold_end]
+    end_start = source.index("function _endStreaming(opts)")
+    end_end = source.index("  function _renderStreamArtifacts()", end_start)
+    end_body = source[end_start:end_end]
+
+    assert "const _ROUTER_FX_ASSISTANT_HOLD_MS = 1000;" in source
+    assert "let _routerFxPendingText = '';" in source
+    assert "_routerFxInsertAnchored(wrap, null);" in handler_body
+    assert "_routerFxBeginAssistantHold();" in handler_body
+    assert handler_body.index("_routerFxInsertAnchored(wrap, null);") < handler_body.index(
+        "_routerFxBeginAssistantHold();"
+    )
+    assert "if (text && _routerFxAssistantHoldRemaining() > 0)" in append_body
+    assert "_routerFxPendingText += text;" in append_body
+    assert "_scheduleRouterFxPendingTextFlush();" in append_body
+    assert "Math.max(_THINKING_DELAY_MS, _routerFxAssistantHoldRemaining())" in thinking_body
+    assert "clearTimeout(_thinkingDelayTimer);" in hold_body
+    assert "_showThinkingIndicator();" in hold_body
+    assert "return;" in append_body[
+        append_body.index("if (text && _routerFxAssistantHoldRemaining() > 0)") :
+    ]
+    assert "if (!_isStreaming) _startStreaming();" in append_body
+    assert append_body.index("_scheduleRouterFxPendingTextFlush();") < append_body.index(
+        "if (!_isStreaming) _startStreaming();"
+    )
+    assert "else _flushRouterFxPendingText();" in end_body
+    assert "if (wasAborted) _clearRouterFxPendingText();" in end_body
+
+
 def test_router_fx_history_reuses_settled_strip_for_same_turn_identity() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     history_start = source.index("async function _loadHistory() {")

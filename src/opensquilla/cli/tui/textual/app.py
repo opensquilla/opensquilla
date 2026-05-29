@@ -12,6 +12,7 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.events import Paste
+from textual.geometry import Region
 from textual.widgets import Input, RichLog, Static
 
 CHAT_INPUT_PLACEHOLDER = "输入消息 / Type a message"
@@ -177,6 +178,11 @@ class ChatInput(Input):
         pasted = normalize_pasted_chat_text(event.text)
         if pasted:
             self.insert_text_at_cursor(pasted)
+            self.scroll_to_region(
+                Region(self._cursor_offset, 0, width=1, height=1),
+                force=True,
+                animate=False,
+            )
         event.prevent_default()
         event.stop()
 
@@ -250,7 +256,7 @@ class TextualChatApp(App[None]):
     }
 
     #input-label {
-        width: 10;
+        width: 9;
         content-align: left middle;
         color: #ff8a4c;
         text-style: bold;
@@ -259,7 +265,7 @@ class TextualChatApp(App[None]):
     #input {
         width: 1fr;
         height: 1;
-        margin: 1 0;
+        margin: 0;
         border: none;
         background: #10161d;
         color: #f4f7fb;
@@ -271,7 +277,7 @@ class TextualChatApp(App[None]):
     }
 
     #router-hud {
-        width: 44;
+        width: 43;
         height: 3;
         margin-left: 1;
         padding: 0 1;

@@ -34,6 +34,9 @@ def test_textual_cjk_paste_is_visible_and_submitted(
     assert router_lines
     assert all(line.count("│") >= 4 for line in router_lines)
 
+    after_paste = result.run_dir / "frames" / "003-after-paste.txt"
+    assert "CJK混合ASCII" in after_paste.read_text()
+
     after_response = result.run_dir / "frames" / "005-after-response.txt"
     assert "CJK混合ASCII" in after_response.read_text()
     app_log = result.run_dir / "textual-app.log"

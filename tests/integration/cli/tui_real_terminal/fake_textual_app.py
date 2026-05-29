@@ -47,10 +47,10 @@ async def _render_response(
             if index % 20 == 0:
                 await asyncio.sleep(0)
     elif scenario_id == "complex_ui_state":
-        _set_toolbar(output, "router_hud", "route standard -> fake-textual 99% save 42%")
+        _set_toolbar(output, "router_hud", "route standard -> fake-terminal 99% save 42%")
         _set_toolbar(output, "router_hud_style", "normal")
         _invalidate(output)
-        await renderer.astatus("router route standard -> fake-textual 99% save 42%")
+        await renderer.astatus("router route standard -> fake-terminal 99% save 42%")
         await renderer.atool_start("fake_tool", {"path": "fixture.txt"}, "tool-1")
         await renderer.atool_finished("tool-1", success=True, elapsed=0.01)
         await renderer.astatus("approval requested: allow fake_tool fixture.txt")
@@ -63,7 +63,7 @@ async def _render_response(
     else:
         await renderer.aappend_text(f"fake-response:{user_input}")
     await renderer.afinalize(
-        UsageSummary(model="fake-textual", input_tokens=1, output_tokens=2)
+        UsageSummary(model="fake-terminal", input_tokens=1, output_tokens=2)
     )
     _write_log("turn_complete", {"input": user_input})
     return True
@@ -84,7 +84,7 @@ def _invalidate(output: Any) -> None:
 async def _run() -> None:
     scenario_id = os.environ.get("OPENSQUILLA_TUI_FAKE_SCENARIO", "launch_input_loop")
     scope: dict[str, Any] = {
-        "model": "fake-textual",
+        "model": "fake-terminal",
         "session_key": f"fake:{scenario_id}",
     }
     _write_log("ready", {"scenario_id": scenario_id})

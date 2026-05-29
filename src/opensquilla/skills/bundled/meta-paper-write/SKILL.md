@@ -1413,9 +1413,32 @@ composition:
         env:
           MANIFEST: "{{ outputs.get('consistency_pass') or outputs.get('assemble_manuscript_tex') or outputs.get('final_manuscript_package', '') }}"
           REFBIB: "{{ outputs.refbib }}"
+    - id: paper_length_gate
+      kind: llm_chat
+      depends_on: [final_manuscript_package, consistency_pass, assemble_manuscript_tex]
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract or 'PAPER_MODE: REPAIR_EXISTING' in outputs.paper_contract"
+      with:
+        system: "You verify manuscript length requirements before final packaging."
+        task: |
+          Check whether the manuscript package satisfies the requested paper
+          length, section coverage, and compact/skeleton mode constraints.
+
+          Paper preferences:
+          {{ outputs.paper_preferences | truncate(4000) }}
+
+          Manuscript package:
+          {{ outputs.get('consistency_pass') or outputs.get('assemble_manuscript_tex') or outputs.get('final_manuscript_package', '') | truncate(8000) }}
+
+          Reply with:
+          LENGTH_GATE: <pass|warn|block>
+          ESTIMATED_WORDS: <int or unknown>
+          BLOCKERS:
+            - <blocker or none>
+          WARNINGS:
+            - <warning or none>
     - id: citation_integrity_gate
       kind: llm_chat
-      depends_on: [final_manuscript_package, consistency_pass, assemble_manuscript_tex, citation_plan, refbib, citation_map]
+      depends_on: [final_manuscript_package, consistency_pass, assemble_manuscript_tex, citation_plan, refbib, citation_map, paper_length_gate]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract or 'PAPER_MODE: REPAIR_EXISTING' in outputs.paper_contract"
       with:
         system: "You verify LaTeX/BibTeX citation integrity."

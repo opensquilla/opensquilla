@@ -39,12 +39,16 @@ input is absolute. Relative paths are left for the caller's existing
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePath
 
 _WORKSPACE_SEGMENT = "workspace"
 
 
-def resolve_workspace_alias(raw_path: Path, workspace_root: Path | None) -> Path | None:
+def _is_rooted_path(raw_path: PurePath) -> bool:
+    return raw_path.is_absolute() or bool(raw_path.root)
+
+
+def resolve_workspace_alias(raw_path: PurePath, workspace_root: Path | None) -> Path | None:
     """Translate an LLM-supplied absolute path to the real workspace.
 
     Returns ``None`` when:
@@ -58,7 +62,7 @@ def resolve_workspace_alias(raw_path: Path, workspace_root: Path | None) -> Path
     rooted at ``workspace_root``.
     """
 
-    if workspace_root is None or not raw_path.is_absolute():
+    if workspace_root is None or not _is_rooted_path(raw_path):
         return None
 
     parts = raw_path.parts

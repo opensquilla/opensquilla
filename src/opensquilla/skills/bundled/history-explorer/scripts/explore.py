@@ -33,6 +33,16 @@ from opensquilla.observability.decision_log_aggregate import (  # noqa: E402
 )
 
 
+def _expand_user_path(raw_path: str) -> Path:
+    """Expand home-relative paths using testable env overrides on every OS."""
+    if raw_path == "~" or raw_path.startswith(("~/", "~\\")):
+        home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
+        if home:
+            suffix = raw_path[1:].lstrip("/\\")
+            return Path(home, suffix) if suffix else Path(home)
+    return Path(raw_path).expanduser()
+
+
 def _resolve_log_dir(cli_arg: str | None) -> Path:
     """Resolve --log-dir to an absolute Path with env-aware fallback.
 
@@ -47,13 +57,13 @@ def _resolve_log_dir(cli_arg: str | None) -> Path:
     supplied (or omitted entirely).
     """
     if cli_arg:
-        return Path(cli_arg).expanduser().resolve()
+        return _expand_user_path(cli_arg).resolve()
     env_log = os.environ.get("OPENSQUILLA_LOG_DIR")
     if env_log:
-        return Path(env_log).expanduser().resolve()
+        return _expand_user_path(env_log).resolve()
     env_state = os.environ.get("OPENSQUILLA_STATE_DIR")
     if env_state:
-        return (Path(env_state).expanduser() / "logs").resolve()
+        return (_expand_user_path(env_state) / "logs").resolve()
     return (Path.home() / ".opensquilla" / "logs").resolve()
 
 

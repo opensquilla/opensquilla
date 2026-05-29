@@ -11,7 +11,7 @@ TUI_TERMINAL_CHAT_ADAPTER = "opensquilla.cli.tui.adapters.terminal_chat_adapter"
 
 
 def _imports_terminal_chat_adapter(path: Path) -> bool:
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             if any(alias.name == TERMINAL_CHAT_ADAPTER for alias in node.names):
@@ -57,7 +57,7 @@ def test_tui_terminal_bridge_imports_tui_terminal_chat_adapter() -> None:
 
 
 def _imports_from_module(path: Path, module_name: str) -> bool:
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             if any(alias.name == module_name for alias in node.names):

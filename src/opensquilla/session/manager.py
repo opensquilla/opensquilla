@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -378,6 +379,9 @@ class SessionManager:
                         source="parent_session_kill",
                         reason="parent_session_kill",
                     )
+                except TypeError:
+                    with contextlib.suppress(Exception):
+                        await self._task_runtime.cancel(session_key=child_key)
                 except Exception:
                     pass
             try:

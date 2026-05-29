@@ -23,6 +23,17 @@ result to the user. The model chooses the workflow, but the runtime enforces
 the declared graph, dependency order, template safety, risk metadata, recursion
 guards, and tool gates.
 
+Operators can disable model-visible meta-skill behavior globally:
+
+```toml
+[meta_skill]
+enabled = false
+```
+
+When disabled, meta-skills remain installed for inventory and historical run
+inspection, but they are not injected into prompts, `meta_invoke` is not
+surfaced to the model, and explicit `meta_invoke` calls are rejected.
+
 ## When to Use a Meta-Skill
 
 Use a meta-skill when a task is repeatable and naturally decomposes into a

@@ -86,6 +86,7 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="docker not on PATH")
+@pytest.mark.skipif(os.name == "nt", reason="docker smoke uses Linux container images")
 @pytest.mark.skipif(
     os.environ.get("OPENSQUILLA_SKIP_DOCKER_SMOKE") == "1",
     reason="docker smoke disabled via env",

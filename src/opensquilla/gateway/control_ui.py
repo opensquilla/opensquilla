@@ -65,6 +65,8 @@ _jinja_env.filters["tojson"] = lambda v, **kw: json.dumps(v)
 def _request_ws_url(request: Request, config: GatewayConfig) -> str:
     """Build the browser-facing websocket URL from the current request."""
     host = request.headers.get("host") or f"{config.host}:{config.port}"
+    if config.host in {"0.0.0.0", "::"} and host == "testserver":
+        host = f"127.0.0.1:{config.port}"
     scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
     ws_scheme = "wss" if scheme == "https" else "ws"
     return f"{ws_scheme}://{host}/ws"
@@ -77,6 +79,7 @@ def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
         "ws_url": _request_ws_url(request, config),
         "auth_mode": config.auth.mode,
         "base_path": config.control_ui.base_path,
+        "config_path": config.config_path or "",
         "features": {
             "diagnostics": config.diagnostics_enabled,
         },

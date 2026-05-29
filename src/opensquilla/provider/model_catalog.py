@@ -15,6 +15,7 @@ from .types import ModelCapabilities, ModelInfo
 log = structlog.get_logger(__name__)
 
 DEFAULT_MAX_TOKENS = 16384
+SAFE_OPENROUTER_DEFAULT_MAX_TOKENS = 8192
 DEFAULT_CONTEXT_WINDOW = 200_000
 
 # Static fallback for squilla-router tier models + default model.
@@ -245,7 +246,7 @@ class ModelCatalog:
                 and context_window > DEFAULT_MAX_TOKENS
                 and effective >= context_window - DEFAULT_MAX_TOKENS
             ):
-                effective = min(effective, DEFAULT_MAX_TOKENS)
+                effective = min(effective, SAFE_OPENROUTER_DEFAULT_MAX_TOKENS)
 
         return effective
 

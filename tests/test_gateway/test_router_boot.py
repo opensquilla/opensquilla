@@ -834,16 +834,18 @@ async def test_build_flush_service_wires_durable_receipt_writer(tmp_path: Path) 
         rows = await storage.list_memory_durable_receipts(session_key=session_key)
 
         assert receipt.result_status == "ok_archive_only"
-        assert len(rows) == 1
-        assert rows[0].session_id == session.session_id
-        assert rows[0].scope == "repair"
-        assert rows[0].status == "repair_pending"
-        assert rows[0].reason == "ok_archive_only"
-        assert rows[0].target_path == receipt.flushed_paths[0]
-        assert rows[0].source_path == f"session:{session_key}:flush:1-1"
-        assert rows[0].content_hash == receipt.content_hash
-        assert rows[0].turn_id == "flush:1-1"
-        assert rows[0].idempotency_key.startswith(
+        assert len(rows) == 2
+        assert rows[0].scope == "preimage"
+        repair_row = rows[1]
+        assert repair_row.session_id == session.session_id
+        assert repair_row.scope == "repair"
+        assert repair_row.status == "repair_pending"
+        assert repair_row.reason == "ok_archive_only"
+        assert repair_row.target_path == receipt.flushed_paths[0]
+        assert repair_row.source_path == f"session:{session_key}:flush:1-1"
+        assert repair_row.content_hash == receipt.content_hash
+        assert repair_row.turn_id == "flush:1-1"
+        assert repair_row.idempotency_key.startswith(
             f"flush-receipt:repair:{session_key}:{session.session_id}:flush:1-1:"
         )
     finally:
@@ -905,9 +907,11 @@ async def test_build_flush_service_receipt_uses_session_id_captured_before_rotat
         assert did_rotate
         assert rotated.session_id != original.session_id
         assert receipt.session_id == original.session_id
-        assert len(rows) == 1
-        assert rows[0].session_id == original.session_id
-        assert rows[0].session_id != rotated.session_id
+        assert len(rows) == 2
+        assert {row.scope for row in rows} == {"preimage", "repair"}
+        for row in rows:
+            assert row.session_id == original.session_id
+            assert row.session_id != rotated.session_id
     finally:
         await storage.close()
 
@@ -960,9 +964,10 @@ async def test_build_flush_service_receipts_distinguish_same_window_different_co
         rows = await storage.list_memory_durable_receipts(session_key=session_key)
 
         assert first.content_hash != second.content_hash
-        assert len(rows) == 2
-        assert len({row.content_hash for row in rows}) == 2
-        assert len({row.idempotency_key for row in rows}) == 2
+        repair_rows = [row for row in rows if row.scope == "repair"]
+        assert len(repair_rows) == 2
+        assert len({row.content_hash for row in repair_rows}) == 2
+        assert len({row.idempotency_key for row in repair_rows}) == 2
     finally:
         await storage.close()
 

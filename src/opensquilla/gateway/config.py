@@ -410,6 +410,7 @@ class MemoryEmbeddingRemoteConfig(BaseModel):
     """OpenAI-compatible remote memory embedding settings."""
 
     api_key: str | None = None
+    api_key_env: str | None = None
     base_url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
     model: str | None = None

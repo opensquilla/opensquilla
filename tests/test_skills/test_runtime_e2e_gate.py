@@ -8,7 +8,6 @@ from opensquilla.skills.creator.runtime_e2e import (
     run_runtime_e2e_gate,
 )
 
-
 SKILL_MD = """---
 name: synth-test-pipeline
 description: "Sample synthetic pipeline for runtime E2E tests"

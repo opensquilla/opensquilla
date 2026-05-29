@@ -489,7 +489,11 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
         if "sanitize LaTeX" in system_prompt:
             return "PASS: no markdown fences, process text, or debug logs detected"
         if "compile handoff" in system_prompt:
-            return "COMPILE_READY: yes\nNEXT_STEP: run latex-compile explicitly when the user asks for a PDF\nBLOCKERS:\n  - none"
+            return (
+                "COMPILE_READY: yes\n"
+                "NEXT_STEP: run latex-compile explicitly when the user asks for a PDF\n"
+                "BLOCKERS:\n  - none"
+            )
         if "E2E compile PDF fixture" in system_prompt:
             return "PDF_PATH: /tmp/e2e-paper.pdf\nPDF_PAGES: 10\nPDF_BYTES: 12345"
         if "E2E publish PDF fixture" in system_prompt:

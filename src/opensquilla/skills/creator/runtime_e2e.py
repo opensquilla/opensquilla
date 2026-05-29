@@ -11,8 +11,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-RuntimeRunner = Callable[..., Awaitable[dict[str, Any]]]
-RuntimeJudge = Callable[..., Awaitable[dict[str, Any]]]
+RuntimeResult = dict[str, Any] | Awaitable[dict[str, Any]]
+RuntimeRunner = Callable[..., RuntimeResult]
+RuntimeJudge = Callable[..., RuntimeResult]
 
 
 def _normalise_prompts(eval_prompts: object, skill_md: str) -> list[str]:
@@ -156,7 +157,7 @@ def make_runtime_e2e_context(
     provider: Any,
     base_config: Any,
     skill_loader: Any,
-    tool_definitions: list[dict[str, Any]] | None,
+    tool_definitions: list[Any] | None,
     tool_handler: Any,
     agent_factory: Any,
     llm_chat: Any,
@@ -265,7 +266,7 @@ def make_runtime_e2e_context(
             runtime_runner = make_agent_runner_from_parent(
                 provider=provider,
                 base_config=base_config,
-                tool_definitions=tool_definitions,
+                tool_definitions=tool_definitions or [],
                 tool_handler=tool_handler,
                 agent_factory=agent_factory,
                 workspace_dir=workspace_dir,

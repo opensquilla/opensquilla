@@ -2,17 +2,17 @@ from scripts.compare_meta_skill_openclaw import (
     COMPARISON_CASES,
     EndpointResult,
     JudgeResult,
+    _discover_openclaw_session_file,
+    _openclaw_session_file_events,
+    _resolve_openclaw_session_path,
     apply_judge_result,
     build_judge_prompt,
     compare_results,
     extract_text_from_events,
     parse_judge_response,
-    score_response,
     render_markdown,
     render_prompts_markdown,
-    _discover_openclaw_session_file,
-    _openclaw_session_file_events,
-    _resolve_openclaw_session_path,
+    score_response,
 )
 
 
@@ -69,7 +69,10 @@ def test_score_response_rewards_structured_evidence_and_artifacts() -> None:
     assert strong_score.total > weak_score.total
     assert strong_score.dimensions["structure"] > weak_score.dimensions["structure"]
     assert strong_score.dimensions["evidence"] > weak_score.dimensions["evidence"]
-    assert strong_score.dimensions["artifact_readiness"] > weak_score.dimensions["artifact_readiness"]
+    assert (
+        strong_score.dimensions["artifact_readiness"]
+        > weak_score.dimensions["artifact_readiness"]
+    )
 
 
 def test_extract_text_prefers_terminal_done_over_long_intermediate() -> None:
@@ -143,7 +146,11 @@ def test_openclaw_session_file_fallback_discovers_and_extracts_final_text(tmp_pa
                 '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"'
                 + prompt.replace("\n", "\\n")
                 + '"}]}}',
-                '{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"draft"},{"type":"text","text":"final memo answer"}]}}',
+                (
+                    '{"type":"message","message":{"role":"assistant","content":'
+                    '[{"type":"thinking","thinking":"draft"},'
+                    '{"type":"text","text":"final memo answer"}]}}'
+                ),
             ]
         ),
         encoding="utf-8",

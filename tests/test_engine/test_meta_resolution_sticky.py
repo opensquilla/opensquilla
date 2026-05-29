@@ -8,16 +8,16 @@ reasoning).
 
 from __future__ import annotations
 
+import importlib
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-import importlib
+from opensquilla.skills.meta.types import MetaPlan, MetaStep
 
 mr = importlib.import_module("opensquilla.engine.steps.meta_resolution")
 meta_resolution = mr.meta_resolution
-from opensquilla.skills.meta.types import MetaPlan, MetaStep
 
 
 def _meta_spec(*, name: str, triggers: tuple[str, ...]):

@@ -488,7 +488,7 @@ class MetaOrchestrator:
                 inputs=inputs,
                 outputs=outputs,
                 run_id=run_id,
-                session_id=self._session_key,
+                session_id=self._session_key or "",
                 dao=self._dao,
                 now=time.time,
             )

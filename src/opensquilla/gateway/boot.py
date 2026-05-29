@@ -1974,18 +1974,18 @@ async def build_services(
             and persistence_cfg is not None
             and getattr(persistence_cfg, "enabled", False)
         ):
-            storage = get_session_storage(session_manager)
+            meta_storage = get_session_storage(session_manager)
             db_path = (
-                getattr(storage, "_db_path", None)
-                if storage is not None
+                getattr(meta_storage, "_db_path", None)
+                if meta_storage is not None
                 else None
             )
             if db_path and db_path != ":memory:":
                 from opensquilla.persistence.meta_run_writer import open_meta_run_writer
 
                 meta_run_writer = open_meta_run_writer(db_path)
-                if hasattr(storage, "_meta_run_writer"):
-                    storage._meta_run_writer = meta_run_writer
+                if meta_storage is not None and hasattr(meta_storage, "_meta_run_writer"):
+                    meta_storage._meta_run_writer = meta_run_writer
                 meta_run_writer.mark_orphans_failed(
                     age_ms=int(
                         getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)
@@ -2508,6 +2508,10 @@ async def start_gateway_server(
                 agent_id=agent_id,
                 workspace_dir=workspace_str,
             )
+            if svc.tool_registry is None:
+                raise RuntimeError("auto_propose tool registry not configured")
+            if svc.skill_loader is None:
+                raise RuntimeError("auto_propose skill loader not configured")
             tool_handler = build_tool_handler(svc.tool_registry, ctx)
             from opensquilla.engine.agent import Agent
             from opensquilla.engine.types import AgentConfig
@@ -2619,7 +2623,7 @@ async def start_gateway_server(
                     agent_id,
                     triggered_by="auto_dream",
                 ),
-                skill_loader=svc.skill_loader,
+                skill_loader=cast("SkillLoader", svc.skill_loader),
                 log_dir=auto_log_dir,
                 window_days=auto_cfg.window_days,
                 min_freq=auto_cfg.min_freq,
@@ -2665,7 +2669,7 @@ async def start_gateway_server(
                 agent_id,
                 triggered_by="auto_cron",
             ),
-            skill_loader=svc.skill_loader,
+            skill_loader=cast("SkillLoader", svc.skill_loader),
             log_dir=auto_log_dir,
             proposals_dir=auto_proposals_dir,
             config=auto_cfg,

@@ -5,7 +5,6 @@ from pathlib import Path
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.trigger_accuracy import TriggerCase, evaluate_trigger_cases
 
-
 BUNDLED = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "bundled"
 
 

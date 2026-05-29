@@ -125,19 +125,30 @@ def test_language_probe_routes_to_language_specific_skills(tmp_path: Path) -> No
     assert probe.depends_on == ("parse_trace",)
     assert [(case.when, case.to) for case in probe.route] == [
         (
-            "'\"language\":\"python\"' in outputs.parse_trace or '\"language\": \"python\"' in outputs.parse_trace or 'LANGUAGE: python' in outputs.trace_collect",
+            "'\"language\":\"python\"' in outputs.parse_trace or "
+            "'\"language\": \"python\"' in outputs.parse_trace or "
+            "'LANGUAGE: python' in outputs.trace_collect",
             "stack-trace-python-probe",
         ),
         (
-            "'\"language\":\"javascript\"' in outputs.parse_trace or '\"language\": \"javascript\"' in outputs.parse_trace or '\"language\":\"typescript\"' in outputs.parse_trace or '\"language\": \"typescript\"' in outputs.parse_trace or 'LANGUAGE: javascript' in outputs.trace_collect or 'LANGUAGE: typescript' in outputs.trace_collect",
+            "'\"language\":\"javascript\"' in outputs.parse_trace or "
+            "'\"language\": \"javascript\"' in outputs.parse_trace or "
+            "'\"language\":\"typescript\"' in outputs.parse_trace or "
+            "'\"language\": \"typescript\"' in outputs.parse_trace or "
+            "'LANGUAGE: javascript' in outputs.trace_collect or "
+            "'LANGUAGE: typescript' in outputs.trace_collect",
             "stack-trace-js-probe",
         ),
         (
-            "'\"language\":\"go\"' in outputs.parse_trace or '\"language\": \"go\"' in outputs.parse_trace or 'LANGUAGE: go' in outputs.trace_collect",
+            "'\"language\":\"go\"' in outputs.parse_trace or "
+            "'\"language\": \"go\"' in outputs.parse_trace or "
+            "'LANGUAGE: go' in outputs.trace_collect",
             "stack-trace-go-probe",
         ),
         (
-            "'\"language\":\"rust\"' in outputs.parse_trace or '\"language\": \"rust\"' in outputs.parse_trace or 'LANGUAGE: rust' in outputs.trace_collect",
+            "'\"language\":\"rust\"' in outputs.parse_trace or "
+            "'\"language\": \"rust\"' in outputs.parse_trace or "
+            "'LANGUAGE: rust' in outputs.trace_collect",
             "stack-trace-rust-probe",
         ),
     ]

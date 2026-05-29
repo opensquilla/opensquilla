@@ -86,7 +86,7 @@ def test_brave_accepts_current_search_env_key(monkeypatch: pytest.MonkeyPatch) -
             }
 
     class _Client:
-        def __enter__(self) -> "_Client":
+        def __enter__(self) -> _Client:
             return self
 
         def __exit__(self, *args: object) -> None:

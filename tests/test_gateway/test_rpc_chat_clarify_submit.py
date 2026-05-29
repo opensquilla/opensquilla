@@ -23,7 +23,6 @@ from opensquilla.gateway.rpc_chat import (
 from opensquilla.skills.meta.clarify_text import parse_clarify_reply
 from opensquilla.skills.meta.types import ClarifyField, ClarifyStepConfig
 
-
 # ── pure helper ──
 
 def test_clarify_fields_to_text_basic():

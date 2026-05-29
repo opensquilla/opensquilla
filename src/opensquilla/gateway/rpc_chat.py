@@ -41,7 +41,12 @@ def _require_chat_session_manager(ctx: RpcContext):
 
 def _normalize_chat_history_limit(value: object) -> int:
     try:
-        limit = int(value) if value is not None else _CHAT_HISTORY_DEFAULT_LIMIT
+        if isinstance(value, int):
+            limit = value
+        elif isinstance(value, str):
+            limit = int(value)
+        else:
+            limit = _CHAT_HISTORY_DEFAULT_LIMIT
     except (TypeError, ValueError):
         limit = _CHAT_HISTORY_DEFAULT_LIMIT
     return max(1, min(limit, _CHAT_HISTORY_MAX_LIMIT))
@@ -131,7 +136,10 @@ async def _chat_history_transcript(
                 return list(await getter(session_key)), True
             except Exception:  # noqa: BLE001 - fall back to active transcript
                 pass
-    transcript = await mgr.get_transcript(session_key)
+    transcript_getter = getattr(mgr, "get_transcript", None)
+    if not callable(transcript_getter):
+        return [], False
+    transcript = await transcript_getter(session_key)
     return list(transcript or []), False
 
 

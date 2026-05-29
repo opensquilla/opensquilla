@@ -26,6 +26,7 @@ __all__ = [
     "terminal_chat_adapter",
     "terminal_renderer",
     "terminal_surface",
+    "textual",
     "turn_bridge",
     "turn_stream_defaults",
 ]

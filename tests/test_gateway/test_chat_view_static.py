@@ -858,6 +858,142 @@ def test_router_fx_mobile_grid_matches_explicit_cell_count() -> None:
     assert "grid-template-rows: repeat(5, 26px);" in tiny_body
 
 
+def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
+    # The router-fx ON/OFF state is a per-browser preference (theme.js style),
+    # NOT a gateway config write — distinct from the operator squilla_router
+    # toggle. Persisted under an opensquilla-* localStorage key, default ON.
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "const _ROUTER_FX_PREF_KEY = 'opensquilla-router-fx';" in source
+    assert "const _routerFx = { enabled: true, variant: 'default' };" in source
+    assert "function _routerFxLoadPref() {" in source
+    assert "function _routerFxSavePref() {" in source
+    assert "localStorage.getItem(_ROUTER_FX_PREF_KEY)" in source
+    assert "localStorage.setItem(_ROUTER_FX_PREF_KEY" in source
+    # Hydrated + switch synced on every render (inherits visibility/focus refresh).
+    assert "_routerFxLoadPref();" in source
+    assert "if (routerFxToggle) routerFxToggle.checked = _routerFx.enabled;" in source
+
+    # Load path: a stored pref must actually be PARSED and APPLIED back onto
+    # _routerFx (a no-op loader would silently reset a saved OFF to default-ON),
+    # validating types, and must swallow localStorage/JSON throws (private mode).
+    load_start = source.index("function _routerFxLoadPref() {")
+    load_end = source.index("function _routerFxSavePref() {", load_start)
+    load_body = source[load_start:load_end]
+    assert "const saved = JSON.parse(raw);" in load_body
+    assert "if (typeof saved.enabled === 'boolean') _routerFx.enabled = saved.enabled;" in load_body
+    variant_apply = (
+        "if (typeof saved.variant === 'string' && saved.variant) "
+        "_routerFx.variant = saved.variant;"
+    )
+    assert variant_apply in load_body
+    assert "} catch { /* keep defaults */ }" in load_body
+
+    # Save path: serialize the live pref and swallow quota/availability throws.
+    save_start = load_end
+    save_end = source.index("function _routerFxSortTiers(", save_start)
+    save_body = source[save_start:save_end]
+    assert "localStorage.setItem(_ROUTER_FX_PREF_KEY, JSON.stringify({" in save_body
+    assert "enabled: _routerFx.enabled," in save_body
+    assert "variant: _routerFx.variant," in save_body
+    assert "} catch { /* preference is best-effort */ }" in save_body
+
+    # The toggle handler is client-side: it saves the pref and does NOT write
+    # gateway config (no config.patch.safe in the router-fx handler). ON re-renders
+    # historical strips via the rebuild; both branches give toast feedback.
+    fx_start = source.index("const routerFxToggle = _el.querySelector('#toggle-router-fx');")
+    fx_end = source.index("// Re-pull router config", fx_start)
+    fx_body = source[fx_start:fx_end]
+    assert "_routerFx.enabled = routerFxToggle.checked;" in fx_body
+    assert "_routerFxSavePref();" in fx_body
+    assert "config.patch.safe" not in fx_body
+    assert "_scheduleHistorySync();" in fx_body
+    assert "UI.toast('Router animation: '" in fx_body
+
+
+def test_router_fx_render_gated_in_both_live_and_history_paths() -> None:
+    # The visualisation pref gates RENDER in both the live (router_decision) and
+    # history (rebuild) paths, ahead of all test-pinned lines. Tier/model
+    # bookkeeping stays warm in the live path; the gate sits after it and before
+    # the config await so a disabled panel short-circuits the 1.5s wait too.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    handler_start = source.index("async function _handleRouterDecision(payload) {")
+    handler_end = source.index("  // History-load entry point", handler_start)
+    handler_body = source[handler_start:handler_end]
+
+    assert "if (!_routerFx.enabled) return;" in handler_body
+    assert handler_body.index("_routerFxModels[tier.toLowerCase()] = String(payload.model);") < \
+        handler_body.index("if (!_routerFx.enabled) return;")
+    assert handler_body.index("if (!_routerFx.enabled) return;") < \
+        handler_body.index("await _routerFxAwaitConfig();")
+    # Re-checked AFTER the await as well — the user may flip OFF during the
+    # cold-start config wait, so the gate is symmetric on both sides.
+    assert handler_body.count("if (!_routerFx.enabled) return;") >= 2
+    assert handler_body.rindex("if (!_routerFx.enabled) return;") > \
+        handler_body.index("await _routerFxAwaitConfig();")
+    # History path gate returns null ahead of the operator gate (caller null-checks).
+    assert "if (!_routerFx.enabled) return null;" in source
+    assert source.index("if (!_routerFx.enabled) return null;") < \
+        source.index("if (_routerFxConfigTiers !== null && !_routerFeatureEnabled) return null;")
+
+
+def test_router_fx_disable_spares_in_flight_live_strips() -> None:
+    # Hiding the panel must not yank an in-flight live strip mid-stream (that
+    # would race the streaming done-handler / orphan backstop from the
+    # duplicate-strip fix). The toggle removes only settled strips; the
+    # _loadHistory disabled-sweep spares live strips while streaming.
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert ("_thread.querySelectorAll('.router-fx:not([data-live=\"true\"])')"
+            ".forEach((n) => n.remove());") in source
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("  /* ── Send Message", history_start)
+    history_body = source[history_start:history_end]
+    assert "if (!_routerFx.enabled) {" in history_body
+    assert "if (_isStreaming && el.dataset.live === 'true') return;" in history_body
+    # The live-spare guard must sit INSIDE the disabled-sweep block and BEFORE
+    # the removal — not merely somewhere nearby. Otherwise a refactor that moved
+    # the guard elsewhere and left an unguarded el.remove() in the sweep would
+    # still pass, reintroducing the mid-stream yank the duplicate-strip fix closed.
+    sweep = history_body[history_body.index("if (!_routerFx.enabled) {"):]
+    sweep = sweep[: sweep.index("el.remove();") + len("el.remove();")]
+    assert "if (_isStreaming && el.dataset.live === 'true') return;" in sweep
+    assert sweep.index("if (_isStreaming && el.dataset.live === 'true') return;") < \
+        sweep.index("el.remove();")
+
+
+def test_router_fx_variant_seam_stamps_data_variant() -> None:
+    # data-variant on the .router-fx root is the style-variant seam (same idiom
+    # as data-state/source/observe). Only non-'default' is stamped, leaving the
+    # base look attribute-free. A documented CSS scaffold marks the extension
+    # point; no variant block ships yet.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    builder_start = source.index("function _buildRouterFxElement(decision, opts) {")
+    builder_end = source.index("  function ", builder_start + 1)
+    builder_body = source[builder_start:builder_end]
+
+    assert ("const variant = (opts.variant != null ? opts.variant : _routerFx.variant)"
+            " || 'default';") in builder_body
+    assert "if (variant && variant !== 'default') wrap.dataset.variant = variant;" in builder_body
+    assert "Router-fx style variants" in css
+    assert '.router-fx[data-variant="<name>"]' in css
+
+
+def test_router_fx_visualisation_toggle_markup_reuses_switch() -> None:
+    # The user-facing switch lives in the composer 'Composer settings' popover,
+    # reusing the existing .toggle-switch recipe verbatim (no fifth toggle CSS).
+    source = CHAT_JS.read_text(encoding="utf-8")
+    popover_start = source.index('id="chat-toolbar-popover"')
+    popover_end = source.index('chat-input-wrap', popover_start)
+    popover = source[popover_start:popover_end]
+
+    assert 'id="toggle-router-fx"' in popover
+    assert "Router animation" in popover
+    assert 'class="toggle-switch"' in popover
+    assert popover.count('class="toggle-track"') >= 2
+
+
 def test_chat_history_replays_turn_meta_to_restore_combo_streak() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("async function _loadHistory() {")

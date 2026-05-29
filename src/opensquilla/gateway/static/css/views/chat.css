@@ -2778,3 +2778,24 @@
   }
   .router-fx-cell { font-size: 9.5px; padding: 0 4px; }
 }
+
+/* ── Router-fx style variants ────────────────────────────────────────────
+ * Groundwork for future frontend experiments. The visible style today is the
+ * BASE look above, rendered when no data-variant attribute is present. JS
+ * (_buildRouterFxElement) stamps data-variant="<name>" on the .router-fx root
+ * only for non-'default' variants, so adding a skin is purely additive here.
+ *
+ * To add a variant:
+ *   .router-fx[data-variant="<name>"] { --accent: …; --danger: …; }
+ * Prefer redefining the custom properties the strip already consumes (--accent,
+ * --danger, --text*, --bg*, --hairline, --radius-*) — they inherit down the
+ * subtree and stay light/dark-correct for free. Add structural/keyframe rules
+ * ONLY when a variant changes shape or motion, and if so mirror the
+ * prefers-reduced-motion guard and the 640px/380px grid-collapse rules above,
+ * and keep the JS grid-cell count in sync.
+ *
+ * Keep variants PALETTE-ONLY where possible: the data-source="fallback" and
+ * data-observe="true" rules are semantic overlays at depth (0,1,2,0); a
+ * token-only variant layers cleanly under them instead of fighting specificity.
+ * No variant block ships yet — the seam is the data-variant stamp + this note. */
+

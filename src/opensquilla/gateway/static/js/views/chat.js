@@ -997,6 +997,15 @@ const ChatView = (() => {
                       </label>
                     </div>
                   </div>
+                  <div class="chat-toolbar-row">
+                    <span class="chat-toolbar-row-label">Router animation</span>
+                    <div class="toggle-switch-wrap" id="pill-router-fx-group" title="Show the AI model router animation">
+                      <label class="toggle-switch" aria-label="Router animation">
+                        <input type="checkbox" id="toggle-router-fx" />
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1133,6 +1142,28 @@ const ChatView = (() => {
       });
     }
 
+    // Router-fx visualisation toggle — purely client-side (no config write):
+    // it only controls whether THIS browser draws the animated grid.
+    const routerFxToggle = _el.querySelector('#toggle-router-fx');
+    if (routerFxToggle) {
+      routerFxToggle.addEventListener('change', () => {
+        _routerFx.enabled = routerFxToggle.checked;
+        _routerFxSavePref();
+        if (_routerFx.enabled) {
+          // Re-render via the normal history rebuild — the render gates now
+          // allow strips, so historical turns get their grid back.
+          _scheduleHistorySync();
+        } else if (_thread) {
+          // Hide now. Remove only SETTLED strips; never an in-flight live
+          // strip (data-live) — that would race the streaming done-handler /
+          // orphan backstop. The render gates prevent recreation; a settled
+          // mid-stream live strip is swept by _loadHistory on the next sync.
+          _thread.querySelectorAll('.router-fx:not([data-live="true"])').forEach((n) => n.remove());
+        }
+        UI.toast('Router animation: ' + (_routerFx.enabled ? 'ON' : 'OFF'), 'info');
+      });
+    }
+
   }
 
   // Re-pull router config (and rebuild history strips) when the chat
@@ -1178,6 +1209,13 @@ const ChatView = (() => {
       if (routerToggle) routerToggle.checked = routerEnabled;
       _toolbarState.router = routerEnabled;
       _routerFeatureEnabled = !!(cfg?.squilla_router?.enabled);
+      // Hydrate the client-side router-fx visualisation preference and sync
+      // its switch. Independent of the operator routing state above; persisted
+      // per browser, so it survives view re-render / navigation. Inherits the
+      // visibility/focus refresh that re-runs this function for free.
+      _routerFxLoadPref();
+      const routerFxToggle = _el?.querySelector('#toggle-router-fx');
+      if (routerFxToggle) routerFxToggle.checked = _routerFx.enabled;
       _globalElevatedMode = _normalizeElevatedMode(cfg?.permissions?.default_mode);
       _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
       _updateElevatedPill();
@@ -2669,6 +2707,36 @@ const ChatView = (() => {
   let _routerFxConfigTiers = null;     // Set<string> | null (unknown)
   let _routerFeatureEnabled = false;
 
+  // Per-browser preference for the router-fx VISUALISATION (distinct from
+  // _routerFeatureEnabled, which mirrors the operator's squilla_router.enabled
+  // routing state). `enabled` is "show the animated grid"; `variant` selects a
+  // style skin stamped as data-variant on the .router-fx root ('default' = the
+  // base, unstamped look). This is a cosmetic, client-side choice — it never
+  // touches gateway config — so it lives in localStorage like the theme pref.
+  const _ROUTER_FX_PREF_KEY = 'opensquilla-router-fx';
+  const _routerFx = { enabled: true, variant: 'default' };
+  function _routerFxLoadPref() {
+    // Defaults stand (enabled ON, default variant) unless a stored pref
+    // overrides them. localStorage may throw (private mode / quota) — swallow.
+    try {
+      const raw = localStorage.getItem(_ROUTER_FX_PREF_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (saved && typeof saved === 'object') {
+        if (typeof saved.enabled === 'boolean') _routerFx.enabled = saved.enabled;
+        if (typeof saved.variant === 'string' && saved.variant) _routerFx.variant = saved.variant;
+      }
+    } catch { /* keep defaults */ }
+  }
+  function _routerFxSavePref() {
+    try {
+      localStorage.setItem(_ROUTER_FX_PREF_KEY, JSON.stringify({
+        enabled: _routerFx.enabled,
+        variant: _routerFx.variant,
+      }));
+    } catch { /* preference is best-effort */ }
+  }
+
   function _routerFxSortTiers(list) {
     return list.slice().sort((a, b) => {
       const am = /^t(\d+)$/.exec(a);
@@ -2914,6 +2982,13 @@ const ChatView = (() => {
         ? decision.rollout_phase
         : 'observe';
     }
+    // Style-variant seam: stamp data-variant on the root so a future skin can
+    // hook [data-variant="..."] selectors (the same idiom as data-state /
+    // data-source / data-observe). Only stamp non-default values, leaving the
+    // base look as the attribute-free fallback. opts.variant overrides the
+    // global preference for callers that want a per-render skin.
+    const variant = (opts.variant != null ? opts.variant : _routerFx.variant) || 'default';
+    if (variant && variant !== 'default') wrap.dataset.variant = variant;
 
     const header = document.createElement('div');
     header.className = 'router-fx-header';
@@ -3186,11 +3261,22 @@ const ChatView = (() => {
     if (payload.model) {
       _routerFxModels[tier.toLowerCase()] = String(payload.model);
     }
+    // User-pref gate: visualisation hidden. Tier/model bookkeeping above is
+    // kept warm so re-enabling shows correct names without a config round-trip;
+    // skip the config await and all DOM work below. (Render-only gate — never
+    // purge already-rendered strips here, to stay clear of the streaming /
+    // history-rebuild strip lifecycle.)
+    if (!_routerFx.enabled) return;
     if (!_thread) return;
     await _routerFxAwaitConfig();
     // Re-check the thread reference after the await — the view may
     // have been torn down while we were waiting.
     if (!_thread) return;
+    // Re-check the visualisation pref too: the user may have flipped it OFF
+    // during the (up to 1.5s cold-start) config await. Symmetric with the
+    // pre-await gate — without this a strip the user just hid would still
+    // flash in before the disabled-sweep removes it on the next sync.
+    if (!_routerFx.enabled) return;
     // The router strip MUST anchor below a user message. If no user
     // message has been rendered yet, this event is almost always a WS
     // replay arriving before history has loaded — building a strip
@@ -3254,6 +3340,11 @@ const ChatView = (() => {
   // across page refreshes.
   function _buildRouterFxFromUsage(usage, seedKey) {
     if (!usage) return null;
+    // User-pref gate: the viewer has hidden the router-fx visualisation, so
+    // no history strip is built. Distinct from the operator routing flag below
+    // (_routerFeatureEnabled): this one is "do I want to see it", that one is
+    // "is routing on". Caller null-checks, so suppression needs no other edit.
+    if (!_routerFx.enabled) return null;
     // If the operator has flipped squilla_router off since this turn
     // was recorded, drop the historic strip on the next rebuild —
     // the slider's whole point is conveying live router behaviour.
@@ -4015,6 +4106,18 @@ const ChatView = (() => {
             && (prev.classList.contains('user')
               || prev.getAttribute('data-history-role') === 'user');
           if (!anchored) el.remove();
+        });
+      }
+      // User-pref disabled-sweep: the viewer has hidden the router-fx
+      // visualisation. New strips are already gated off above; this drops any
+      // strip left from before the toggle flipped (incl. a former live strip
+      // the consolidation re-anchored a moment ago). A still-live strip mid-
+      // stream is spared — same _isStreaming guard as the orphan backstop — and
+      // removed on the next sync once it has settled.
+      if (!_routerFx.enabled) {
+        _thread.querySelectorAll('.router-fx').forEach((el) => {
+          if (_isStreaming && el.dataset.live === 'true') return;
+          el.remove();
         });
       }
       _lastSavingsPopupIdentity = historySavingsIdentity;

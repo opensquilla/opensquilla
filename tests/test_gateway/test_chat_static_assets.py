@@ -76,7 +76,9 @@ def test_chat_permission_pill_distinguishes_global_and_session_modes() -> None:
     assert "cfg?.permissions?.default_mode" in source
     assert "Global ${_globalElevatedMode.toUpperCase()}" in source
     assert "Session ${_elevatedMode.toUpperCase()}" in source
-    assert "Approvals bypassed by global default" in source
+    assert "chat-bypass-warn" not in source
+    assert "Approvals bypassed by global default" not in source
+    assert "Approvals bypassed for this session" not in source
     assert "opensquilla sandbox on|bypass|full|reset" in source
 
     # The legacy image-only `accept="image/*" multiple` literal must be gone:
@@ -295,6 +297,19 @@ def test_chat_tool_rendering_is_idempotent_by_tool_use_id() -> None:
     assert "return;" in source
     assert "data-tool-result-for" in source
     assert "_findToolResultById" in source
+
+
+def test_chat_router_control_cards_dedupe_by_target_within_turn() -> None:
+    source = _read_chat_js()
+
+    assert "function _routerControlDisplayKey(name, payloadOrInput)" in source
+    assert "function _findRouterControlDetailsByKey(root, key)" in source
+    assert "function _findRouterControlResultByKey(root, key)" in source
+    assert "data-router-control-key" in source
+    assert "data-router-control-result-key" in source
+    assert "const existingRouterControl = routerControlKey" in source
+    assert "_findRouterControlDetailsByKey(body, routerControlKey)" in source
+    assert "_routerControlKeyById[seg.tool_use_id] = routerControlKey;" in source
 
 
 # ---------------------------------------------------------------------------

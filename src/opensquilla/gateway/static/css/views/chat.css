@@ -1611,60 +1611,6 @@
   background: color-mix(in srgb, currentColor 30%, transparent);
 }
 
-/* ─── Bypass warning chip ──────────────────────────────────────────────
-   Surfaces ONLY when Approvals = bypassed. Sits inside the composer above
-   the input bar so it can't be missed before Send. Costs zero rows in the
-   default (non-bypassed) case. */
-.chat-bypass-warn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 var(--sp-3) var(--sp-2);
-  padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--border));
-  border-left: 3px solid var(--danger);
-  border-radius: var(--radius-sm);
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--danger) 14%, transparent), transparent 60%),
-    var(--bg-surface);
-  color: var(--danger);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  animation: chat-bypass-warn-in 220ms cubic-bezier(.2,.7,.2,1);
-}
-.chat-bypass-warn.hidden { display: none !important; }
-.chat-bypass-warn__glyph {
-  display: inline-grid;
-  place-items: center;
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: var(--danger);
-  color: #fff;
-  font-family: var(--font-display, var(--font-sans));
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0;
-  flex-shrink: 0;
-}
-.chat-bypass-warn__text {
-  letter-spacing: 0.08em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-@keyframes chat-bypass-warn-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chat-bypass-warn { animation: none; }
-}
-
 .chat-toolbar-popover {
   position: absolute;
   bottom: calc(100% + 10px);
@@ -2967,4 +2913,3 @@
     transform: scale(1.6);
   }
 }
-

@@ -967,10 +967,6 @@ const ChatView = (() => {
         <div class="chat-slash hidden" id="chat-slash"></div>
         <div class="chat-composer" id="chat-composer">
           <div class="chat-attachments hidden" id="chat-attach-preview"></div>
-          <div class="chat-bypass-warn hidden" id="chat-bypass-warn" role="status" aria-live="polite">
-            <span class="chat-bypass-warn__glyph" aria-hidden="true">!</span>
-            <span class="chat-bypass-warn__text">Approvals bypassed for this session</span>
-          </div>
           <div class="chat-input-bar">
             <button class="btn btn--icon btn--ghost" id="chat-btn-attach" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON">${icons.paperclip()}</button>
             <div class="chat-toolbar-wrap">
@@ -1794,18 +1790,6 @@ const ChatView = (() => {
     trigger.classList.toggle('has-dot-bypass', bypass);
     trigger.classList.toggle('has-dot-compress', compress);
     trigger.classList.toggle('has-dot-router', routerOff);
-    // Bypass warning chip — only "Approvals bypassed" rises to a visible chip.
-    // Tool compress and router-off are non-default but not safety-critical.
-    const warn = _el && _el.querySelector('#chat-bypass-warn');
-    if (warn) {
-      const text = warn.querySelector('.chat-bypass-warn__text');
-      if (text) {
-        text.textContent = _elevatedMode
-          ? 'Approvals bypassed for this session'
-          : 'Approvals bypassed by global default';
-      }
-      warn.classList.toggle('hidden', !bypass);
-    }
   }
 
   function _bindToolbarTrigger() {
@@ -5324,6 +5308,28 @@ const ChatView = (() => {
     }
   }
 
+  function _routerControlPayloadObject(payloadOrInput) {
+    if (!payloadOrInput) return null;
+    if (typeof payloadOrInput === 'object') {
+      const nested = payloadOrInput.input ?? payloadOrInput.arguments ?? payloadOrInput.args;
+      return _toolInputObject(nested ?? payloadOrInput);
+    }
+    return _toolInputObject(payloadOrInput);
+  }
+
+  function _routerControlDisplayKey(name, payloadOrInput) {
+    const input = _routerControlPayloadObject(payloadOrInput);
+    if (!input) return '';
+    if (name !== 'router_control' && input.status !== 'router_control') return '';
+
+    const action = String(input.action || '').trim();
+    const target = String(input.target_id || input.target_model || input.model || '').trim();
+    const provider = String(input.target_provider || input.provider || '').trim();
+    const tier = String(input.target_tier || input.tier || '').trim();
+    if (!action && !target && !provider && !tier) return '';
+    return [action, target, provider, tier].join('|');
+  }
+
   function _basename(path) {
     const raw = String(path || '').trim();
     if (!raw) return '';
@@ -5397,6 +5403,20 @@ const ChatView = (() => {
     if (!root || !toolId) return null;
     return Array.from(root.querySelectorAll('[data-tool-result-for]')).find(
       (el) => el.getAttribute('data-tool-result-for') === toolId
+    ) || null;
+  }
+
+  function _findRouterControlDetailsByKey(root, key) {
+    if (!root || !key) return null;
+    return Array.from(root.querySelectorAll('[data-router-control-key]')).find(
+      (el) => el.getAttribute('data-router-control-key') === key
+    ) || null;
+  }
+
+  function _findRouterControlResultByKey(root, key) {
+    if (!root || !key) return null;
+    return Array.from(root.querySelectorAll('[data-router-control-result-key]')).find(
+      (el) => el.getAttribute('data-router-control-result-key') === key
     ) || null;
   }
 
@@ -5511,7 +5531,11 @@ const ChatView = (() => {
 
     const bubble = _ensureStreamBubble();
     const body = bubble.querySelector('.msg-body');
+    const routerControlKey = _routerControlDisplayKey(name, input);
     const existing = _findToolDetailsById(body, toolId);
+    const existingRouterControl = routerControlKey
+      ? _findRouterControlDetailsByKey(body, routerControlKey)
+      : null;
     if (existing) {
       if (name === 'web_search' && _searchProvider) {
         _injectProviderBadge(existing.querySelector('.chat-tools-summary'), _searchProvider);
@@ -5519,8 +5543,16 @@ const ChatView = (() => {
       if (_autoScroll) _scrollToBottom();
       return;
     }
+    if (existingRouterControl) {
+      if (toolId && !existingRouterControl.getAttribute('data-tool-id')) {
+        existingRouterControl.setAttribute('data-tool-id', toolId);
+      }
+      if (_autoScroll) _scrollToBottom();
+      return;
+    }
 
     const details = _buildToolCallDOM(name, toolId, input, true);
+    if (routerControlKey) details.setAttribute('data-router-control-key', routerControlKey);
     if (name === 'web_search' && _searchProvider) {
       _injectProviderBadge(details.querySelector('.chat-tools-summary'), _searchProvider);
     }
@@ -5547,10 +5579,13 @@ const ChatView = (() => {
 
     // Transition tool container from running → success/error and find target container
     let resultTarget = body; // default: append to msg-body
+    let routerControlKey = _routerControlDisplayKey(toolName, content);
     if (toolId) {
       const details = _findToolDetailsById(body, toolId);
       if (details) {
         toolName = toolName || details.getAttribute('data-tool-name') || '';
+        routerControlKey = routerControlKey || _routerControlDisplayKey(toolName, content)
+          || details.getAttribute('data-router-control-key') || '';
         details.classList.remove('chat-tools-collapse--running');
         details.classList.add(_toolResultStateClass(payload));
         const summary = details.querySelector('.chat-tools-summary');
@@ -5568,7 +5603,23 @@ const ChatView = (() => {
         }
       }
     }
+    if (routerControlKey && resultTarget === body) {
+      const details = _findRouterControlDetailsByKey(body, routerControlKey);
+      if (details) {
+        toolName = toolName || details.getAttribute('data-tool-name') || 'router_control';
+        details.classList.remove('chat-tools-collapse--running');
+        details.classList.add(_toolResultStateClass(payload));
+        const summary = details.querySelector('.chat-tools-summary');
+        if (summary) summary.removeAttribute('aria-disabled');
+        const toolsBody = details.querySelector('.chat-tools-body');
+        if (toolsBody) resultTarget = toolsBody;
+      }
+    }
     if (toolId && _findToolResultById(resultTarget, toolId)) {
+      if (_autoScroll) _scrollToBottom();
+      return;
+    }
+    if (routerControlKey && _findRouterControlResultByKey(resultTarget, routerControlKey)) {
       if (_autoScroll) _scrollToBottom();
       return;
     }
@@ -5586,6 +5637,7 @@ const ChatView = (() => {
     }
 
     if (toolId) resultDiv.setAttribute('data-tool-result-for', toolId);
+    if (routerControlKey) resultDiv.setAttribute('data-router-control-result-key', routerControlKey);
     resultTarget.appendChild(resultDiv);
     if (_autoScroll) _scrollToBottom();
   }
@@ -5788,9 +5840,12 @@ const ChatView = (() => {
 
       // Build tool_use_id → tool name map so tool_result segments can look up the name
       const _toolNameById = {};
+      const _routerControlKeyById = {};
       for (const seg of segments) {
         if (seg.type === 'tool_use' && seg.tool_use_id) {
           _toolNameById[seg.tool_use_id] = seg.name || 'tool';
+          const routerControlKey = _routerControlDisplayKey(seg.name || 'tool', seg.input || '');
+          if (routerControlKey) _routerControlKeyById[seg.tool_use_id] = routerControlKey;
         }
       }
 
@@ -5806,29 +5861,40 @@ const ChatView = (() => {
           body.appendChild(textDiv);
         } else if (seg.type === 'tool_use') {
           if (_findToolDetailsById(body, seg.tool_use_id || '')) continue;
+          const routerControlKey = _routerControlDisplayKey(seg.name || 'tool', seg.input || '');
+          if (routerControlKey && _findRouterControlDetailsByKey(body, routerControlKey)) continue;
           const details = _buildToolCallDOM(seg.name || 'tool', seg.tool_use_id || '', seg.input || '', false);
+          if (routerControlKey) details.setAttribute('data-router-control-key', routerControlKey);
           body.appendChild(details);
         } else if (seg.type === 'tool_result') {
           const toolId = seg.tool_use_id || '';
           const isError = _toolResultIsError(seg);
           const content = seg.result || '';
+          const toolName = _toolNameById[toolId] || '';
+          const routerControlKey = _routerControlKeyById[toolId]
+            || _routerControlDisplayKey(toolName, content);
 
           if (toolId) {
-            const details = _findToolDetailsById(body, toolId);
+            const details = _findToolDetailsById(body, toolId)
+              || _findRouterControlDetailsByKey(body, routerControlKey);
             if (details) {
               details.classList.remove('chat-tools-collapse--running');
               details.classList.add(_toolResultStateClass(seg));
               const toolsBody = details.querySelector('.chat-tools-body');
               const resultTarget = toolsBody || details;
               if (_findToolResultById(resultTarget, toolId)) continue;
+              if (routerControlKey && _findRouterControlResultByKey(resultTarget, routerControlKey)) continue;
               const resultDiv = _buildToolResultDOM(
                 content,
                 isError,
                 _toolResultIsTruncated(seg),
-                _toolNameById[toolId] || ''
+                toolName
               );
               if (resultDiv) {
                 resultDiv.setAttribute('data-tool-result-for', toolId);
+                if (routerControlKey) {
+                  resultDiv.setAttribute('data-router-control-result-key', routerControlKey);
+                }
                 resultTarget.appendChild(resultDiv);
               }
 

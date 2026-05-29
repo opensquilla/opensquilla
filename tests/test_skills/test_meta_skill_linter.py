@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +18,11 @@ LINT = _LINTER_DIR / "scripts" / "lint.py"
 def _run_lint(skill_md: str, gates: str = "G1,G2") -> dict:
     proc = subprocess.run(
         [sys.executable, str(LINT), "--gates", gates, "--skill-md-stdin"],
-        input=skill_md, capture_output=True, text=True, encoding="utf-8",
+        input=skill_md,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
     return json.loads(proc.stdout)
 

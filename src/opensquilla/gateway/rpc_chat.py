@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 import structlog
 
@@ -19,6 +19,8 @@ _d = get_dispatcher()
 log = structlog.get_logger(__name__)
 
 _WEBCHAT_SESSION_KEY = build_webchat_key()
+_CHAT_HISTORY_DEFAULT_LIMIT = 50
+_CHAT_HISTORY_MAX_LIMIT = 200
 
 
 def _canonical_webchat_session_key(value: object = None) -> str:
@@ -35,6 +37,120 @@ def _require_chat_session_manager(ctx: RpcContext):
     if ctx.session_manager is None:
         raise RpcUnavailableError("Chat session manager not available")
     return ctx.session_manager
+
+
+def _normalize_chat_history_limit(value: object) -> int:
+    try:
+        limit = int(value) if value is not None else _CHAT_HISTORY_DEFAULT_LIMIT
+    except (TypeError, ValueError):
+        limit = _CHAT_HISTORY_DEFAULT_LIMIT
+    return max(1, min(limit, _CHAT_HISTORY_MAX_LIMIT))
+
+
+def _chat_history_bool(value: object, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
+def _chat_history_cursor(entry: object | None) -> str | None:
+    if entry is None:
+        return None
+    created_at = getattr(entry, "created_at", "")
+    stable_id = getattr(entry, "id", None) or getattr(entry, "message_id", "")
+    if created_at in {None, ""} or stable_id in {None, ""}:
+        return None
+    return f"{created_at}|{stable_id}"
+
+
+def _chat_history_cursor_index(entries: list[object], cursor: object) -> int | None:
+    raw = str(cursor or "").strip()
+    if not raw:
+        return None
+    for idx, entry in enumerate(entries):
+        if _chat_history_cursor(entry) == raw:
+            return idx
+    return None
+
+
+def _chat_history_page(
+    entries: list[object],
+    *,
+    limit: int,
+    before: object = None,
+    after: object = None,
+) -> tuple[list[object], bool]:
+    if not entries:
+        return [], False
+    before_idx = _chat_history_cursor_index(entries, before)
+    if before_idx is not None:
+        end = before_idx
+        start = max(0, end - limit)
+        return entries[start:end], start > 0
+
+    after_idx = _chat_history_cursor_index(entries, after)
+    if after_idx is not None:
+        start = min(len(entries), after_idx + 1)
+        end = min(len(entries), start + limit)
+        return entries[start:end], end < len(entries)
+
+    if len(entries) <= limit:
+        return entries, False
+    return entries[-limit:], True
+
+
+def _session_summary_to_chat_payload(summary: object) -> dict[str, Any]:
+    return {
+        "id": getattr(summary, "id", None),
+        "compaction_id": getattr(summary, "compaction_id", None),
+        "compaction_index": getattr(summary, "compaction_index", None),
+        "trigger_reason": getattr(summary, "trigger_reason", None),
+        "summary_text": getattr(summary, "summary_text", "") or "",
+        "summary_format": getattr(summary, "summary_format", "") or "",
+        "coverage_status": getattr(summary, "coverage_status", "") or "",
+        "removed_count": getattr(summary, "removed_count", None),
+        "kept_count": getattr(summary, "kept_count", None),
+        "created_at": getattr(summary, "created_at", None),
+    }
+
+
+async def _chat_history_transcript(
+    mgr: object,
+    session_key: str,
+    *,
+    include_canonical: bool,
+) -> tuple[list[object], bool]:
+    if include_canonical:
+        getter = getattr(mgr, "get_canonical_transcript", None)
+        if callable(getter):
+            try:
+                return list(await getter(session_key)), True
+            except Exception:  # noqa: BLE001 - fall back to active transcript
+                pass
+    transcript = await mgr.get_transcript(session_key)
+    return list(transcript or []), False
+
+
+async def _chat_history_summaries(
+    mgr: object,
+    session_key: str,
+    *,
+    include_summaries: bool,
+) -> list[dict[str, Any]]:
+    if not include_summaries:
+        return []
+    getter = getattr(mgr, "get_summaries", None)
+    if not callable(getter):
+        return []
+    try:
+        summaries = await getter(session_key)
+    except Exception:  # noqa: BLE001 - summaries are optional display metadata
+        return []
+    return [_session_summary_to_chat_payload(summary) for summary in summaries or []]
 
 
 def _effective_compaction_model(session: object | None) -> str | None:
@@ -270,16 +386,56 @@ async def _handle_chat_abort(params: dict | None, ctx: RpcContext) -> dict:
 
 @_d.method("chat.history", scope="operator.read")
 async def _handle_chat_history(params: dict | None, ctx: RpcContext) -> dict:
-    session_key = _canonical_webchat_session_key((params or {}).get("sessionKey"))
-    limit = (params or {}).get("limit", 50)
+    raw_params = params or {}
+    session_key = _canonical_webchat_session_key(raw_params.get("sessionKey"))
+    limit = _normalize_chat_history_limit(raw_params.get("limit"))
+    before = raw_params.get("before")
+    after = raw_params.get("after")
+    include_canonical = _chat_history_bool(
+        raw_params.get("includeCanonical"),
+        default=True,
+    )
+    include_summaries = _chat_history_bool(
+        raw_params.get("includeSummaries"),
+        default=True,
+    )
 
     mgr = _require_chat_session_manager(ctx)
 
-    transcript = await mgr.get_transcript(session_key)
-    if not transcript:
-        return {"messages": []}
+    transcript, canonical_available = await _chat_history_transcript(
+        mgr,
+        session_key,
+        include_canonical=include_canonical,
+    )
+    page_entries, has_more = _chat_history_page(
+        transcript,
+        limit=limit,
+        before=before,
+        after=after,
+    )
+    summaries = await _chat_history_summaries(
+        mgr,
+        session_key,
+        include_summaries=include_summaries,
+    )
+    if summaries:
+        history_scope = "compacted"
+    elif has_more:
+        history_scope = "latest_window"
+    else:
+        history_scope = "complete"
 
-    return {"messages": transcript_entries_to_chat_messages(transcript, limit=limit)}
+    return {
+        "messages": transcript_entries_to_chat_messages(page_entries, limit=None),
+        "has_more": has_more,
+        "oldest_cursor": _chat_history_cursor(page_entries[0]) if page_entries else None,
+        "newest_cursor": _chat_history_cursor(page_entries[-1]) if page_entries else None,
+        "history_scope": history_scope,
+        "loaded_count": len(page_entries),
+        "page_size": limit,
+        "canonical_available": canonical_available,
+        "compaction_summaries": summaries,
+    }
 
 
 def _clarify_fields_to_text(fields: dict[str, object]) -> str:

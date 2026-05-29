@@ -238,6 +238,29 @@ def test_chat_subscribe_does_not_advance_cursor_before_replayed_events() -> None
     assert "replayed_count" in body
 
 
+def test_chat_stream_seq_drops_only_seen_duplicates_not_late_unique_events() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "const _streamSeqSeenBySession = new Map();" in source
+    assert "const _STREAM_SEQ_SEEN_WINDOW = 800;" in source
+    assert "function _markSessionStreamSeqSeen(key, seq)" in source
+
+    start = source.index("function _acceptStreamSeq(payload)")
+    end = source.index("function _eventHasSpecificSessionHandler(event)", start)
+    body = source[start:end]
+
+    assert "return _markSessionStreamSeqSeen(key, seq);" in body
+    assert "seq <= lastSeq" not in body
+
+    marker_start = source.index("function _markSessionStreamSeqSeen(key, seq)")
+    marker_end = source.index("function _syncLastStreamSeqFromSession(key)", marker_start)
+    marker_body = source[marker_start:marker_end]
+    assert "if (seen.has(seq)) return false;" in marker_body
+    assert "seen.add(seq);" in marker_body
+    assert "_setSessionStreamSeq(key, seq);" in marker_body
+    assert "value < pruneBefore" in marker_body
+
+
 def test_chat_new_session_uses_current_agent_namespace() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
@@ -483,7 +506,9 @@ def test_chat_subscribe_uses_stream_replay_cursor() -> None:
     body = source[start:end]
 
     assert "let _lastStreamSeq = 0;" in source
-    assert "params.since_stream_seq = _lastStreamSeq;" in source
+    assert "const _streamSeqBySession = new Map();" in source
+    assert "params.since_stream_seq = _sessionStreamSeq(subscribeKey);" in source
+    assert "params.since_stream_seq = _lastStreamSeq;" not in source
     assert "if (_lastStreamSeq > 0) params.since_stream_seq = _lastStreamSeq;" not in body
     assert "function _acceptStreamSeq(payload)" in source
     assert "Session stream gap detected; reloading transcript." in source
@@ -498,6 +523,22 @@ def test_chat_stream_handlers_drop_replayed_duplicate_frames() -> None:
     assert "function _acceptStreamSeq(payload)" in source
     assert "if (!_acceptStreamSeq(payload)) return;" in body
     assert "_noteStreamSeq(payload);" not in body
+
+
+def test_chat_stream_seq_cursor_is_scoped_per_session() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _acceptStreamSeq(payload)")
+    end = source.index("  function _showThinkingIndicator()", start)
+    body = source[start:end]
+
+    assert "function _sessionStreamSeq(key)" in source
+    assert "function _setSessionStreamSeq(key, seq)" in source
+    assert "function _syncLastStreamSeqFromSession(key)" in source
+    assert "function _markSessionStreamSeqSeen(key, seq)" in source
+    assert "const key = _sessionKeyFromPayload(payload) || _sessionKey || '';" in body
+    assert "return _markSessionStreamSeqSeen(key, seq);" in body
+    assert "seq <= lastSeq" not in body
+    assert "_syncLastStreamSeqFromSession(canonicalKey);" in source
 
 
 def test_chat_surfaces_persisted_run_state_in_header_and_session_picker() -> None:
@@ -523,23 +564,165 @@ def test_chat_resets_replay_cursor_after_stream_gap() -> None:
     body = source[start:end]
 
     assert "if (res && res.replay_complete === false)" in body
-    assert "_lastStreamSeq = typeof res.current_stream_seq === 'number'" in body
-    assert "? Math.max(_lastStreamSeq, res.current_stream_seq)" in body
-    assert ": _lastStreamSeq;" in body
-    assert body.index("_lastStreamSeq = typeof res.current_stream_seq") < body.index(
+    assert "_setSessionStreamSeq(subscribeKey, res.current_stream_seq);" in body
+    assert body.index("_setSessionStreamSeq(subscribeKey, res.current_stream_seq);") < body.index(
         "_loadHistory();"
     )
 
 
 def test_chat_empty_history_preserves_live_stream_bubble() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    start = source.index("async function _loadHistory() {")
-    end = source.index("      const existingByStableIdentity = new Map();", start)
+    start = source.index("function _renderHistoryMessages(messages")
+    end = source.index("    const existingByStableIdentity = new Map();", start)
     body = source[start:end]
 
-    assert "if (_isStreaming && _streamBubble)" in body
+    assert "const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');" in body
+    assert "if (_isStreaming && (_isCurrentSessionStreamBubble(_streamBubble) || liveRouterStrips.length > 0 || liveUserAnchor))" in body
+    assert "if (liveUserAnchor && !liveUserAnchor.isConnected) _thread.appendChild(liveUserAnchor);" in body
     assert "_thread.appendChild(_streamBubble);" in body
-    assert "return;" in body[body.index("if (_isStreaming && _streamBubble)") :]
+    assert "return;" in body[body.index("if (_isStreaming && (_isCurrentSessionStreamBubble(_streamBubble) || liveRouterStrips.length > 0 || liveUserAnchor))") :]
+
+
+def test_chat_live_stream_bubble_is_session_scoped() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "let _streamSessionKey = '';" in source
+    assert "function _isCurrentSessionStreamBubble(el)" in source
+    assert "streamKey === currentKey" in source
+    assert "_streamBubble.dataset.streamSessionKey = _streamSessionKey || _sessionKey || '';" in source
+    assert "if (_isStreaming && el === _streamBubble) return;" not in source
+
+
+def test_chat_session_switch_parks_and_restores_live_stream_state() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _switchToSession(key)")
+    end = source.index("  function _bindSessionChip()", start)
+    body = source[start:end]
+
+    assert "const _liveStreamStateBySession = new Map();" in source
+    assert "_parkCurrentSessionStreamState('session_switch');" in body
+    assert "_restoreLiveStreamStateForSession(_sessionKey);" in body
+    assert body.index("_parkCurrentSessionStreamState('session_switch');") < body.index(
+        "_persistSession(key);"
+    )
+    assert body.index("_restoreLiveStreamStateForSession(_sessionKey);") < body.index(
+        "_subscribeSession();"
+    )
+    assert "function _parkCurrentSessionStreamState(reason)" in source
+    assert "function _restoreLiveStreamStateForSession(key)" in source
+    assert "function _clearViewLocalStreamState(reason)" in source
+    assert "function _currentSessionLiveRouterStrips(key = _sessionKey || '')" in source
+    assert "function _currentSessionLiveUserAnchor(key = _sessionKey || '')" in source
+    assert "routerStrips," in source
+    assert "liveUserAnchor," in source
+    assert "_routerFxPauseScanTimers(el);" in source
+    assert "_routerFxResumeLiveStrip(el);" in source
+
+
+def test_chat_session_switch_preserves_live_router_strip_without_stream_bubble() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    has_start = source.index("function _hasViewLocalStreamState()")
+    has_end = source.index("function _parkCurrentSessionStreamState(reason)", has_start)
+    has_body = source[has_start:has_end]
+    assert "_currentSessionLiveRouterStrips(_streamSessionKey || _sessionKey || '').length" in has_body
+    assert "_thinkingEl" in has_body
+    assert "_thinkingDelayTimer" in has_body
+
+    restore_start = source.index("function _restoreLiveStreamStateForSession(key)")
+    restore_end = source.index("function _clearViewLocalStreamState(reason)", restore_start)
+    restore_body = source[restore_start:restore_end]
+    assert "const routerStrips = Array.isArray(state.routerStrips) ? state.routerStrips : [];" in restore_body
+    assert "const liveUserAnchor = state.liveUserAnchor || null;" in restore_body
+    assert "if (_thread && liveUserAnchor && !liveUserAnchor.isConnected)" in restore_body
+    assert "_insertLiveRouterStripForAnchor(el, liveUserAnchor, _streamBubble);" in restore_body
+    assert "_routerFxResumeLiveStrip(el);" in restore_body
+
+
+def test_chat_empty_history_keeps_live_router_only_running_view() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("function _renderHistoryMessages(messages")
+    history_end = source.index("const existingByStableIdentity = new Map();", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "const liveRouterStrips = _currentSessionLiveRouterStrips(_sessionKey || '');" in history_body
+    assert "const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');" in history_body
+    assert "_isCurrentSessionStreamBubble(_streamBubble) || liveRouterStrips.length > 0 || liveUserAnchor" in history_body
+    assert "_chatDiag('history.empty.keep_live_stream_view'" in history_body
+
+
+def test_chat_session_switch_preserves_live_user_anchor_for_router_restore() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    helper_start = source.index("function _currentSessionLiveUserAnchor(")
+    helper_end = source.index("function _insertLiveRouterStripForAnchor(", helper_start)
+    helper_body = source[helper_start:helper_end]
+    assert "const routerStrips = _currentSessionLiveRouterStrips(key);" in helper_body
+    assert "if (_isUserMessageElement(prev)) return prev;" in helper_body
+    assert "const streamAnchor = _routerFxUserMessageForAssistant(_streamBubble);" in helper_body
+    assert "return _isStreaming ? _routerFxLastUserMessage() : null;" in helper_body
+
+    park_start = source.index("function _parkCurrentSessionStreamState(reason)")
+    park_end = source.index("function _restoreLiveStreamStateForSession(key)", park_start)
+    park_body = source[park_start:park_end]
+    assert "const liveUserAnchor = _currentSessionLiveUserAnchor(key);" in park_body
+    assert "liveUserAnchor," in park_body
+    assert "if (liveUserAnchor && liveUserAnchor.parentNode) liveUserAnchor.remove();" in park_body
+
+    restore_start = source.index("function _restoreLiveStreamStateForSession(key)")
+    restore_end = source.index("function _clearViewLocalStreamState(reason)", restore_start)
+    restore_body = source[restore_start:restore_end]
+    assert "const liveUserAnchor = state.liveUserAnchor || null;" in restore_body
+    assert "_thread.appendChild(liveUserAnchor);" in restore_body
+    assert "_insertLiveRouterStripForAnchor(el, liveUserAnchor, _streamBubble);" in restore_body
+
+
+def test_chat_history_cleanup_keeps_live_user_anchor_during_streaming() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("function _renderHistoryMessages(messages")
+    history_end = source.index("function _appendHistoryDaySeparator", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');" in history_body
+    assert "if (_isStreaming && el === liveUserAnchor) return;" in history_body
+
+
+def test_chat_router_restore_does_not_auto_settle_without_cached_decision() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    resume_start = source.index("function _routerFxResumeLiveStrip(wrap)")
+    resume_end = source.index("  // When output begins", resume_start)
+    resume_body = source[resume_start:resume_end]
+    assert "if (wrap._fxDecision) {" in resume_body
+    assert "wrap._fxScanCap = setTimeout(() => _routerFxFinishScan(wrap), _ROUTER_FX_SCAN_MS);" in resume_body
+    assert "_chatDiag('router_scan.resume_without_decision'" in resume_body
+    assert resume_body.index("if (wrap._fxDecision) {") < resume_body.index("wrap._fxScanCap = setTimeout")
+
+    settle_start = source.index("function _routerFxSettleForOutput()")
+    settle_end = source.index("  // Lock an in-flight scanning strip", settle_start)
+    settle_body = source[settle_start:settle_end]
+    assert "if (wrap._fxDecision) {" in settle_body
+    assert "_routerFxFinishScan(wrap);" in settle_body
+    assert "_chatDiag('router_scan.keep_scanning_without_decision_on_output'" in settle_body
+
+
+def test_chat_session_events_drop_foreign_session_before_stream_seq_acceptance() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _dropForeignSessionPayload(event, payload)" in source
+    for event_name in (
+        "session.event.router_decision",
+        "session.event.text_delta",
+        "session.event.tool_use_start",
+        "session.event.tool_result",
+        "session.event.state_change",
+        "session.event.run_heartbeat",
+    ):
+        start = source.index(f"_rpc.on('{event_name}'")
+        end = source.index("    }));", start)
+        body = source[start:end]
+        assert "_dropForeignSessionPayload(" in body
+        assert body.index("_dropForeignSessionPayload(") < body.index("_acceptStreamSeq(payload)")
 
 
 def test_chat_task_succeeded_clears_run_state_without_session_done() -> None:
@@ -823,6 +1006,119 @@ def test_router_fx_live_routes_keep_random_chase_animation() -> None:
     )
 
 
+def test_chat_diag_captures_stream_router_and_history_state() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "const _CHAT_DIAG_KEY = 'opensquilla.chat.debugLog';" in source
+    assert "window.OpenSquillaChatDiag" in source
+    assert "function _chatDiagDomSnapshot() {" in source
+    for marker in [
+        "send.start",
+        "event.router_decision",
+        "event.text_delta",
+        "router_scan.started",
+        "router_decision.cached_on_live_strip",
+        "stream.bubble.created",
+        "stream.flush.done",
+        "stream.end.start",
+        "history.loaded",
+        "history.done",
+    ]:
+        assert marker in source
+
+
+def test_chat_diag_is_opt_in_by_default() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _chatDiagEnabled() {")
+    end = source.index("function _chatDiagShortText", start)
+    body = source[start:end]
+
+    assert "window.localStorage.getItem(_CHAT_DIAG_ENABLED_KEY) === '1';" in body
+    assert "window.localStorage.getItem(_CHAT_DIAG_ENABLED_KEY) !== '0';" not in body
+    assert "return false;" in body
+    assert "window.localStorage.setItem(_CHAT_DIAG_ENABLED_KEY, '1');" in source
+
+
+def test_chat_history_requests_canonical_paginated_metadata() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("async function _loadEarlierHistory()", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "const CHAT_HISTORY_PAGE_SIZE = 50;" in source
+    assert "const requestSessionKey = _sessionKey;" in history_body
+    assert "const requestSeq = ++_historyRequestSeq;" in history_body
+    assert "sessionKey: requestSessionKey" in history_body
+    assert "limit: CHAT_HISTORY_PAGE_SIZE" in history_body
+    assert "includeCanonical: true" in history_body
+    assert "includeSummaries: true" in history_body
+    assert "requestSessionKey !== _sessionKey || requestSeq !== _historyRequestSeq" in history_body
+    assert "_chatDiag('history.stale_response.drop'" in history_body
+
+
+def test_chat_history_load_earlier_uses_cursor_and_preserves_scroll() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("async function _loadEarlierHistory() {")
+    end = source.index("function _renderHistoryMessages(", start)
+    body = source[start:end]
+
+    assert "!_historyOldestCursor || _historyLoadingEarlier" in body
+    assert "const previousScrollHeight = _thread.scrollHeight;" in body
+    assert "const previousScrollTop = _thread.scrollTop;" in body
+    assert "before: _historyOldestCursor" in body
+    assert "_mergeHistoryMessagePages(olderMessages, _historyLoadedMessages)" in body
+    assert "preserveScroll: true" in body
+    assert "_chatDiag('history.load_earlier.stale_response.drop'" in body
+
+
+def test_chat_history_scope_row_surfaces_partial_compacted_and_error_states() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    start = source.index("function _renderHistoryScopeRow() {")
+    end = source.index("async function _loadHistory()", start)
+    body = source[start:end]
+
+    assert "chat-history-scope" in body
+    assert "Showing latest ${_historyLoadedMessages.length} messages." in body
+    assert "Older history is available." in body
+    assert "Older context was compacted for the model." in body
+    assert "Export the session for exact text." in body
+    assert "Load earlier" in body
+    assert "Retry history" in body
+    assert "btn.addEventListener('click', () => _loadEarlierHistory());" in body
+    assert ".chat-history-scope--partial" in css
+    assert ".chat-history-scope--compacted" in css
+    assert ".chat-history-scope--error" in css
+
+
+def test_chat_history_render_preserves_visible_messages_on_errors() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    initial_start = source.index("async function _loadHistory() {")
+    initial_end = source.index("async function _loadEarlierHistory()", initial_start)
+    initial_body = source[initial_start:initial_end]
+    earlier_start = source.index("async function _loadEarlierHistory() {")
+    earlier_end = source.index("function _renderHistoryMessages(", earlier_start)
+    earlier_body = source[earlier_start:earlier_end]
+
+    assert "_historyError = 'Could not load chat history.'" in initial_body
+    assert "_renderHistoryScopeRow();" in initial_body
+    assert "_thread.innerHTML = ''" not in initial_body
+    assert "_historyError = 'Could not load earlier history.'" in earlier_body
+    assert "_renderHistoryScopeRow();" in earlier_body
+    assert "_thread.innerHTML = ''" not in earlier_body
+
+
+def test_chat_history_scope_row_is_not_a_message_node() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _renderHistoryScopeRow() {")
+    end = source.index("async function _loadHistory()", start)
+    body = source[start:end]
+
+    assert "row.className = `chat-history-scope chat-history-scope--${tone}`;" in body
+    assert "row.className = `msg" not in body
+    assert "_thread.querySelectorAll('.chat-history-scope').forEach((el) => el.remove());" in source
+
+
 def test_router_fx_history_reuses_settled_strip_for_same_turn_identity() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     history_start = source.index("async function _loadHistory() {")
@@ -835,21 +1131,17 @@ def test_router_fx_history_reuses_settled_strip_for_same_turn_identity() -> None
     assert "el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex" in source
     assert "const routerIdentity = _routerFxUsageIdentity(savedUsage);" in source
     assert "existingStrip.dataset.routerIdentity === routerIdentity" in source
-    assert (
-        "if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();"
-        in source
-    )
+    assert "if (existingStrip) existingStrip.remove();" in source
+    assert "existingStrip.dataset.live" not in history_body
     assert "routerStrip.dataset.turnIndex = String(_histUserIdx);" in source
 
 
 def test_router_fx_history_reanchors_stranded_strip() -> None:
     # _appendHistoryElementInOrder re-appends only .msg elements, stranding any
-    # strip already rendered for a turn — including the just-streamed grid,
-    # which the done handler promotes from live to settled (clearing data-live)
-    # BEFORE the history sync runs. So the rebuild must match this turn's
-    # strip(s) by (session, turn index) — NOT by the live flag — keep the one
-    # whose identity matches, drop extras, and re-anchor the survivor beneath
-    # its user message, so the first chat never shows two router grids.
+    # strip already rendered for a turn. The rebuild must match this turn's
+    # strip(s) by (session, turn index) and router identity — NOT by the live
+    # flag — keep the one whose identity matches, drop extras, and re-anchor the
+    # survivor beneath its user message, so the first chat never shows two grids.
     source = CHAT_JS.read_text(encoding="utf-8")
     history_start = source.index("async function _loadHistory() {")
     history_end = source.index("  /* ── Send Message", history_start)
@@ -1043,9 +1335,9 @@ def test_router_fx_cloud_css_rack_focus_states() -> None:
     assert ('.router-fx[data-variant="cloud"][data-state="settled"] '
             '.router-fx-mote--winner .router-fx-mote-i {') in css
     assert '.router-fx[data-variant="cloud"] .router-fx-reticle {' in css
-    # RED LINE: a frozen strip kills ALL transitions/animations (set the moment
-    # output begins), and the settled grid hides the chase hammer.
-    assert '.router-fx[data-frozen="true"]' in css
+    # Output start no longer freezes the winner-lock animation; once settled,
+    # the grid hides only the chase hammer.
+    assert '.router-fx[data-frozen="true"]' not in css
     selector_hide = (".router-fx[data-state=\"settled\"] .router-fx-selector"
                      " { opacity: 0 !important; }")
     assert selector_hide in css
@@ -1119,9 +1411,11 @@ def test_router_fx_scan_to_lock_fills_the_wait() -> None:
     begin_start = source.index("function _routerFxBeginScan(")
     begin_end = source.index("function _routerFxScanRoam(", begin_start)
     begin = source[begin_start:begin_end]
-    assert "if (!_thread || !_routerFx.enabled || !_routerFeatureEnabled) return false;" in begin
+    assert "if (!_thread || !_routerFx.enabled || !_routerFeatureEnabled) {" in begin
+    assert "_chatDiag('router_scan.skip'" in begin
+    assert "return false;" in begin
     # Started from the send path.
-    assert "_routerFxBeginScan(userDiv, _routerFxResolveLayoutSeed(_sessionKey));" in source
+    assert "const routerScanStarted = _routerFxBeginScan(userDiv, _routerFxResolveLayoutSeed(_sessionKey));" in source
     # The scan runs for a FIXED, hard-capped window (≤1s), then locks — not
     # "roam until the decision WS event lands".
     assert "const _ROUTER_FX_SCAN_MS = 600;" in source
@@ -1145,61 +1439,115 @@ def test_router_fx_scan_to_lock_fills_the_wait() -> None:
 
 
 def test_router_fx_strip_survives_multistep_turn() -> None:
-    # A multi-step (tool-using) turn emits intermediate *.done events. The done
-    # handler must NOT force-clear the strip's data-live (which let the
-    # _loadHistory orphan-backstop remove the still-in-flight, positionally
-    # stranded strip — the panel vanishing mid-turn), and the backstop must
-    # spare data-live strips. The consolidation clears data-live when it
-    # re-anchors the now-persisted turn.
+    # History reorder moves .msg nodes. The router strip is a sibling, so the
+    # root fix is to move an attached strip together with its user message
+    # instead of preserving a separate live-strip path inside _loadHistory().
     source = CHAT_JS.read_text(encoding="utf-8")
     assert "delete settledStrip.dataset.live;" not in source
     assert "_routerFxFindAttachedStrip" not in source
     history_start = source.index("async function _loadHistory() {")
     history_end = source.index("  /* ── Send Message", history_start)
     history_body = source[history_start:history_end]
-    # The orphan backstop spares the in-flight live strip before the positional
-    # anchored check that would otherwise remove it.
-    bk_anchor = history_body.index("if (!anchored) el.remove();")
-    bk_start = history_body.rindex(
-        "_thread.querySelectorAll('.router-fx').forEach", 0, bk_anchor)
-    backstop = history_body[bk_start:bk_anchor]
-    assert "if (el.dataset.live === 'true') return;" in backstop
-    # And the in-flight live strip is re-anchored under the latest user message
-    # every rebuild, so a long multi-step turn's reorder can't strand it.
-    live_q = "const liveStrip = _thread.querySelector('.router-fx[data-live=\"true\"]');"
-    assert live_q in history_body
-    assert "const lastUser = _routerFxLastUserMessage();" in history_body
-    assert "_thread.insertBefore(liveStrip, lastUser.nextSibling);" in history_body
-    # The per-turn consolidation must keep the in-flight live strip (never drop
-    # it on an identity mismatch), only promote it to settled once NOT streaming,
-    # and never rebuild over it.
-    assert "ownStrips.find((el) => el.dataset.live === 'true')" in history_body
-    assert "if (!_isStreaming) delete keep.dataset.live;" in history_body
-    assert "existingStrip.dataset.live === 'true'" in history_body
+    assert "ownStrips.find((el) => el.dataset.live === 'true')" not in history_body
+    assert "if (_isStreaming && el.dataset.live === 'true') return;" not in history_body
+    assert "if (el.dataset.live === 'true') return;" not in history_body
+    # The reorder path moves a user message's attached router strip with that
+    # user message, so a long multi-step turn can't swap their positions.
+    append_start = source.index("function _appendHistoryElementInOrder(div)")
+    append_end = source.index("function _historyStableMessageIdentity", append_start)
+    append_body = source[append_start:append_end]
+    assert "const attachedRouterStrip = _routerFxStripImmediatelyAfterUser(div);" in append_body
+    assert "_restoreRouterFxAfterHistoryUser(div, attachedRouterStrip);" in append_body
+    assert "_thread.insertBefore(routerStrip, div.nextSibling);" in append_body
+    assert "const keep = ownStrips.find((el) => el.dataset.routerIdentity === routerIdentity)" in history_body
+    assert "delete keep.dataset.live;" in history_body
 
 
-def test_router_fx_freezes_static_when_output_begins() -> None:
-    # Absolute red line: the moment output renders, the panel must not still be
-    # animating. _ensureStreamBubble (the common chokepoint for text AND tool
-    # cards) freezes any in-flight strip to a static settled state.
+def test_router_decision_without_anchor_is_cached_for_history_replay() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "const _pendingRouterDecisions = new Map();" in source
+    assert "function _cachePendingRouterDecision(payload)" in source
+    assert "function _flushPendingRouterDecisions()" in source
+
+    handler_start = source.index("async function _handleRouterDecision(payload)")
+    handler_end = source.index("    // Resolve a seed that's deterministic", handler_start)
+    handler_body = source[handler_start:handler_end]
+    assert "_cachePendingRouterDecision(payload);" in handler_body
+    assert "_chatDiag('router_decision.cached_pending_anchor'" in source
+    assert "_chatDiag('router_decision.skip.no_anchor_user'" not in handler_body
+
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("function _appendHistoryDaySeparator", history_start)
+    history_body = source[history_start:history_end]
+    assert "_flushPendingRouterDecisions();" in history_body
+
+
+def test_done_stream_bubble_survives_until_history_persists_assistant() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "let _pendingFinalizedAssistantBubble = null;" in source
+    assert "function _markPendingFinalizedAssistantBubble(bubble, text)" in source
+    assert "function _isPendingFinalizedAssistantBubble(el)" in source
+    assert "function _historyStillWaitingForAssistant(messages)" in source
+
+    end_start = source.index("function _endStreaming(opts)")
+    end_end = source.index("_attachHoverActions(_streamBubble, 'assistant');", end_start)
+    end_body = source[end_start:end_end]
+    assert "_markPendingFinalizedAssistantBubble(_streamBubble, cleanedText);" in end_body
+    assert end_body.index("_stampHistoryElement(_streamBubble, '', 'assistant', cleanedText);") < end_body.index(
+        "_markPendingFinalizedAssistantBubble(_streamBubble, cleanedText);"
+    )
+
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("function _appendHistoryDaySeparator", history_start)
+    history_body = source[history_start:history_end]
+    assert "_chatDiag('history.empty.keep_pending_finalized_assistant'" in history_body
+    assert "if (_isPendingFinalizedAssistantBubble(el) && _historyStillWaitingForAssistant(messages)) return;" in history_body
+    assert "_clearPendingFinalizedAssistantBubble();" in history_body
+
+
+def test_generic_duplicate_stream_seq_is_classified_as_exact_handler_replay() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "function _eventHasSpecificSessionHandler(event)" in source
+    wildcard_start = source.index("_unsubs.push(_rpc.on('*', (rawEvent, rawPayload) => {")
+    wildcard_end = source.index("      if (event.startsWith('session.event.task_group.')) return;", wildcard_start)
+    wildcard_body = source[wildcard_start:wildcard_end]
+    assert "_eventHasSpecificSessionHandler(event)" in wildcard_body
+    assert "_chatDiag('event.generic.skip.specific_handler_stream_seq'" in wildcard_body
+    assert "_chatDiag('event.generic.drop.stream_seq'" in wildcard_body
+
+
+def test_tool_summary_exposes_visible_running_status() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "function _setToolSummaryStatus(details, status)" in source
+    build_start = source.index("function _buildToolCallDOM(")
+    build_end = source.index("function _retitleToolCallDOM", build_start)
+    build_body = source[build_start:build_end]
+    assert "statusSpan.className = 'chat-tools-status';" in build_body
+    assert "statusSpan.textContent = isRunning ? 'running' : 'ready';" in build_body
+    result_start = source.index("function _appendToolResult(payload)")
+    result_end = source.index("  // \u2500\u2500 PR5: meta-skill user_input form rendering", result_start)
+    result_body = source[result_start:result_end]
+    assert "_setToolSummaryStatus(details, isError ? 'error' : 'done');" in result_body
+
+
+def test_router_fx_settles_but_preserves_winner_animation_when_output_begins() -> None:
+    # The moment output renders, the panel should stop roaming, but the winner
+    # lock/settle animation must remain visible instead of becoming a static
+    # empty frame.
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")
 
-    assert "function _routerFxFreezeForOutput() {" in source
-    # Freeze: stop the scan, settle, mark frozen (so CSS kills all motion).
-    fz_start = source.index("function _routerFxFreezeForOutput() {")
+    assert "function _routerFxSettleForOutput() {" in source
+    fz_start = source.index("function _routerFxSettleForOutput() {")
     fz = source[fz_start:source.index("// Lock an in-flight scanning strip", fz_start)]
-    assert "_routerFxStopScan(wrap);" in fz
-    assert "wrap.dataset.state = 'settled';" in fz
-    assert "wrap.dataset.frozen = 'true';" in fz
+    assert "_routerFxFinishScan(wrap);" in fz
+    assert "_routerFxStopScan(wrap);" not in fz
+    assert "wrap.dataset.frozen = 'true';" not in fz
     # It is invoked at the top of the stream-bubble (output) path.
     esb = source[source.index("function _ensureStreamBubble() {"):]
     esb = esb[:esb.index("function _newTextSegment")]
-    assert "_routerFxFreezeForOutput();" in esb
-    # CSS: a frozen strip has no transitions or animations anywhere.
-    fr = css[css.index('.router-fx[data-frozen="true"]'):][:220]
-    assert "animation: none !important;" in fr
-    assert "transition: none !important;" in fr
+    assert "_routerFxSettleForOutput();" in esb
+    assert '.router-fx[data-frozen="true"]' not in css
 
 
 def test_router_fx_history_and_turn_meta_preserve_observe_rollout_state() -> None:
@@ -1299,15 +1647,18 @@ def test_router_fx_render_gated_in_both_live_and_history_paths() -> None:
     handler_end = source.index("  // History-load entry point", handler_start)
     handler_body = source[handler_start:handler_end]
 
-    assert "if (!_routerFx.enabled) return;" in handler_body
+    pre_gate = "if (!_routerFx.enabled) {\n      _chatDiag('router_decision.skip.disabled_pre_config'"
+    post_gate = "if (!_routerFx.enabled) {\n      _chatDiag('router_decision.skip.disabled_post_config'"
+    assert pre_gate in handler_body
+    assert post_gate in handler_body
     assert handler_body.index("_routerFxModels[tier.toLowerCase()] = String(payload.model);") < \
-        handler_body.index("if (!_routerFx.enabled) return;")
-    assert handler_body.index("if (!_routerFx.enabled) return;") < \
+        handler_body.index(pre_gate)
+    assert handler_body.index(pre_gate) < \
         handler_body.index("await _routerFxAwaitConfig();")
     # Re-checked AFTER the await as well — the user may flip OFF during the
     # cold-start config wait, so the gate is symmetric on both sides.
-    assert handler_body.count("if (!_routerFx.enabled) return;") >= 2
-    assert handler_body.rindex("if (!_routerFx.enabled) return;") > \
+    assert handler_body.count("if (!_routerFx.enabled) {") >= 2
+    assert handler_body.index(post_gate) > \
         handler_body.index("await _routerFxAwaitConfig();")
     # History path gate returns null ahead of the operator gate (caller null-checks).
     assert "if (!_routerFx.enabled) return null;" in source
@@ -1315,29 +1666,22 @@ def test_router_fx_render_gated_in_both_live_and_history_paths() -> None:
         source.index("if (_routerFxConfigTiers !== null && !_routerFeatureEnabled) return null;")
 
 
-def test_router_fx_disable_spares_in_flight_live_strips() -> None:
-    # Hiding the panel must not yank an in-flight live strip mid-stream (that
-    # would race the streaming done-handler / orphan backstop from the
-    # duplicate-strip fix). The toggle removes only settled strips; the
-    # _loadHistory disabled-sweep spares live strips while streaming.
+def test_router_fx_disable_removes_all_strips_without_live_spare_path() -> None:
+    # Hiding the panel is a user-visible preference. The disabled path should
+    # remove router visuals directly instead of preserving a separate live-strip
+    # path that competes with history reorder repair.
     source = CHAT_JS.read_text(encoding="utf-8")
 
-    assert ("_thread.querySelectorAll('.router-fx:not([data-live=\"true\"])')"
-            ".forEach((n) => n.remove());") in source
+    assert "_thread.querySelectorAll('.router-fx').forEach((n) => n.remove());" in source
+    assert ".router-fx:not([data-live=\"true\"])" not in source
     history_start = source.index("async function _loadHistory() {")
     history_end = source.index("  /* ── Send Message", history_start)
     history_body = source[history_start:history_end]
     assert "if (!_routerFx.enabled) {" in history_body
-    assert "if (_isStreaming && el.dataset.live === 'true') return;" in history_body
-    # The live-spare guard must sit INSIDE the disabled-sweep block and BEFORE
-    # the removal — not merely somewhere nearby. Otherwise a refactor that moved
-    # the guard elsewhere and left an unguarded el.remove() in the sweep would
-    # still pass, reintroducing the mid-stream yank the duplicate-strip fix closed.
     sweep = history_body[history_body.index("if (!_routerFx.enabled) {"):]
-    sweep = sweep[: sweep.index("el.remove();") + len("el.remove();")]
-    assert "if (_isStreaming && el.dataset.live === 'true') return;" in sweep
-    assert sweep.index("if (_isStreaming && el.dataset.live === 'true') return;") < \
-        sweep.index("el.remove();")
+    sweep = sweep[: sweep.index("_lastSavingsPopupIdentity")]
+    assert "_thread.querySelectorAll('.router-fx').forEach((el) => el.remove());" in sweep
+    assert "dataset.live" not in sweep
 
 
 def test_router_fx_variant_seam_stamps_data_variant() -> None:
@@ -1512,7 +1856,7 @@ def test_chat_history_reconciles_by_message_identity_without_clear_replace() -> 
         "const existingByStableIdentity = new Map();"
     )
     assert "      _thread.innerHTML = '';" not in body[: body.index("if (messages.length === 0)")]
-    assert "if (_isStreaming && el === _streamBubble) return;" in body
+    assert "if (_isStreaming && _isCurrentSessionStreamBubble(el)) return;" in body
     assert "if (!consumedHistoryElements.has(el)) el.remove();" in body
 
 
@@ -1524,7 +1868,7 @@ def test_chat_history_reorders_reused_nodes_to_match_transcript_order() -> None:
 
     assert "_thread.querySelectorAll('.chat-day-sep').forEach((el) => el.remove());" in body
     assert "function _appendHistoryElementInOrder(div)" in source
-    assert "if (_isStreaming && _streamBubble && div !== _streamBubble)" in source
+    assert "if (_isStreaming && _isCurrentSessionStreamBubble(_streamBubble) && div !== _streamBubble)" in source
     assert "_thread.insertBefore(div, _streamBubble);" in source
     assert "_thread.appendChild(div);" in source
     stamp_idx = body.index("_stampHistoryElement(div, stableIdentity, msg.role, displayText);")

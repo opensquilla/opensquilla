@@ -9,11 +9,120 @@ from opensquilla.session.models import TranscriptEntry
 
 
 class _FakeSessionManager:
-    def __init__(self, entries):
+    def __init__(self, entries, *, canonical_entries=None, summaries=None):
         self._entries = entries
+        self._canonical_entries = canonical_entries
+        self._summaries = summaries or []
+        self.used_canonical = False
 
     async def get_transcript(self, session_key):
         return self._entries
+
+    async def get_canonical_transcript(self, session_key):
+        self.used_canonical = True
+        if self._canonical_entries is None:
+            raise RuntimeError("canonical unavailable")
+        return self._canonical_entries
+
+    async def get_summaries(self, session_key):
+        return self._summaries
+
+
+def _entry(idx: int, role: str = "user") -> TranscriptEntry:
+    return TranscriptEntry(
+        id=idx,
+        session_id="parent",
+        session_key="agent:main:webchat:test",
+        role=role,
+        content=f"message {idx}",
+        created_at=idx,
+        message_id=f"msg-{idx}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_history_returns_pagination_metadata_with_legacy_messages() -> None:
+    entries = [_entry(idx) for idx in range(1, 4)]
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:test", "limit": 2},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=_FakeSessionManager(entries, canonical_entries=entries),
+        ),
+    )
+
+    assert [msg["text"] for msg in result["messages"]] == ["message 2", "message 3"]
+    assert result["has_more"] is True
+    assert result["oldest_cursor"] == "2|2"
+    assert result["newest_cursor"] == "3|3"
+    assert result["history_scope"] == "latest_window"
+    assert result["loaded_count"] == 2
+    assert result["page_size"] == 2
+    assert result["canonical_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_chat_history_before_cursor_returns_older_page() -> None:
+    entries = [_entry(idx) for idx in range(1, 6)]
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:test", "limit": 2, "before": "4|4"},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=_FakeSessionManager(entries, canonical_entries=entries),
+        ),
+    )
+
+    assert [msg["text"] for msg in result["messages"]] == ["message 2", "message 3"]
+    assert result["has_more"] is True
+    assert result["oldest_cursor"] == "2|2"
+    assert result["newest_cursor"] == "3|3"
+
+
+@pytest.mark.asyncio
+async def test_chat_history_uses_canonical_transcript_when_available() -> None:
+    active_entries = [_entry(3)]
+    canonical_entries = [_entry(1), _entry(2), _entry(3)]
+    mgr = _FakeSessionManager(active_entries, canonical_entries=canonical_entries)
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:test", "limit": 10},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=mgr,
+        ),
+    )
+
+    assert mgr.used_canonical is True
+    assert [msg["text"] for msg in result["messages"]] == [
+        "message 1",
+        "message 2",
+        "message 3",
+    ]
+    assert result["canonical_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_chat_history_falls_back_when_canonical_unavailable() -> None:
+    entries = [_entry(1)]
+    mgr = _FakeSessionManager(entries)
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:test", "limit": 10},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=mgr,
+        ),
+    )
+
+    assert mgr.used_canonical is True
+    assert [msg["text"] for msg in result["messages"]] == ["message 1"]
+    assert result["canonical_available"] is False
 
 
 @pytest.mark.asyncio

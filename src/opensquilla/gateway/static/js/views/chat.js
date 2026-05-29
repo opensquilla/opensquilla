@@ -29,6 +29,7 @@ const ChatView = (() => {
   let _isStreaming = false;
   let _aborted = false;
   let _streamBubble = null;
+  let _streamSessionKey = '';
   let _streamRaw = '';           // full accumulated text (for export)
   let _streamGeneration = 0;
   let _segments = [];             // [{type:'text', raw:'', el:DOM}, {type:'tool', el:DOM}, ...]
@@ -42,10 +43,194 @@ const ChatView = (() => {
   const _DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000; // server should emit terminal first
   let _streamIdleTimeoutMs = _DEFAULT_STREAM_IDLE_TIMEOUT_MS;
   let _lastStreamSeq = 0;
+  const _streamSeqBySession = new Map();
+  const _streamSeqSeenBySession = new Map();
+  const _STREAM_SEQ_SEEN_WINDOW = 800;
+  const _liveStreamStateBySession = new Map();
   let _activeTaskGroups = new Set();
+  let _pendingFinalizedAssistantBubble = null;
+  let _pendingFinalizedAssistantFallbackId = '';
+  const _pendingRouterDecisions = new Map();
+  const _CHAT_DIAG_KEY = 'opensquilla.chat.debugLog';
+  const _CHAT_DIAG_ENABLED_KEY = 'opensquilla.chat.debug.enabled';
+  const _CHAT_DIAG_MAX = 300;
   // Session epoch counter. Frames carrying an older epoch are stale
   // (arrived from a turn that predates the last reset) and must be discarded.
   let _currentEpoch = 0;
+
+  function _chatDiagEnabled() {
+    try {
+      return window.localStorage.getItem(_CHAT_DIAG_ENABLED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function _chatDiagShortText(value, maxLen = 120) {
+    if (value == null) return '';
+    return String(value).replace(/\s+/g, ' ').trim().slice(0, maxLen);
+  }
+
+  function _chatDiagClassName(el) {
+    if (!el) return '';
+    if (typeof el.className === 'string') return el.className;
+    return String(el.className || '');
+  }
+
+  function _chatDiagDescribeElement(el) {
+    if (!el) return null;
+    const dataset = el.dataset || {};
+    return {
+      tag: el.tagName || '',
+      cls: _chatDiagClassName(el),
+      role: el.getAttribute ? (el.getAttribute('data-history-role') || '') : '',
+      live: dataset.live || '',
+      state: dataset.state || '',
+      scanning: dataset.scanning || '',
+      sessionKey: dataset.sessionKey || '',
+      turnIndex: dataset.turnIndex || '',
+      routerIdentity: dataset.routerIdentity || '',
+      text: _chatDiagShortText(el.textContent || '', 90),
+      connected: !!el.isConnected,
+    };
+  }
+
+  function _chatDiagDomSnapshot() {
+    const thread = (typeof _thread !== 'undefined') ? _thread : null;
+    const streamBubble = (typeof _streamBubble !== 'undefined') ? _streamBubble : null;
+    const thinkingEl = (typeof _thinkingEl !== 'undefined') ? _thinkingEl : null;
+    const snapshot = {
+      sessionKey: (typeof _sessionKey !== 'undefined') ? _sessionKey : '',
+      isStreaming: !!((typeof _isStreaming !== 'undefined') && _isStreaming),
+      aborted: !!((typeof _aborted !== 'undefined') && _aborted),
+      streamGeneration: (typeof _streamGeneration !== 'undefined') ? _streamGeneration : null,
+      lastStreamSeq: (typeof _lastStreamSeq !== 'undefined') ? _lastStreamSeq : null,
+      streamRawLen: (typeof _streamRaw === 'string') ? _streamRaw.length : 0,
+      activeTextRawLen: (typeof _activeTextRaw === 'string') ? _activeTextRaw.length : 0,
+      streamBubble: _chatDiagDescribeElement(streamBubble),
+      thinkingEl: _chatDiagDescribeElement(thinkingEl),
+      threadReady: !!thread,
+    };
+    if (!thread) return snapshot;
+    const children = Array.from(thread.children || []);
+    snapshot.childCount = children.length;
+    snapshot.msgCount = thread.querySelectorAll('.msg').length;
+    snapshot.userMsgCount = thread.querySelectorAll('.msg.user').length;
+    snapshot.assistantMsgCount = thread.querySelectorAll('.msg.assistant').length;
+    snapshot.streamingMsgCount = thread.querySelectorAll('.msg.streaming').length;
+    snapshot.thinkingMsgCount = thread.querySelectorAll('.msg.thinking').length;
+    snapshot.routerCount = thread.querySelectorAll('.router-fx').length;
+    snapshot.liveRouterCount = thread.querySelectorAll('.router-fx[data-live="true"]').length;
+    snapshot.scanningRouterCount = thread.querySelectorAll('.router-fx[data-scanning="true"]').length;
+    snapshot.tail = children.slice(Math.max(0, children.length - 14)).map(_chatDiagDescribeElement);
+    return snapshot;
+  }
+
+  function _chatDiagSummarizePayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return { value: _chatDiagShortText(payload, 160) };
+    }
+    const out = {};
+    [
+      'event', 'stream_seq', 'epoch', 'from_state', 'to_state', 'toState',
+      'tier', 'model', 'routed_tier', 'routed_model', 'routing_source',
+      'routing_applied', 'rollout_phase', 'reason', 'tool_name', 'name',
+      'tool_use_id', 'message_id', 'sessionKey', 'session_key',
+      'input_tokens', 'output_tokens',
+    ].forEach((key) => {
+      if (payload[key] != null) out[key] = payload[key];
+    });
+    if (typeof payload.text === 'string') {
+      out.textLen = payload.text.length;
+      out.textHead = _chatDiagShortText(payload.text, 100);
+    }
+    const raw = payload.result || payload.content || payload.output;
+    if (typeof raw === 'string') {
+      out.resultLen = raw.length;
+      out.resultHead = _chatDiagShortText(raw, 100);
+    }
+    if (payload.usage && typeof payload.usage === 'object') {
+      out.usage = _chatDiagSummarizePayload(payload.usage);
+    }
+    if (payload.arguments && typeof payload.arguments === 'object') {
+      out.arguments = {
+        kind: payload.arguments.kind || '',
+        paused: payload.arguments.paused,
+        hasClarifySchema: !!payload.arguments.clarify_schema,
+      };
+    }
+    return out;
+  }
+
+  function _chatDiagReadLog() {
+    try {
+      return JSON.parse(window.localStorage.getItem(_CHAT_DIAG_KEY) || '[]');
+    } catch {
+      return [];
+    }
+  }
+
+  function _chatDiagWriteLog(entries) {
+    try {
+      window.localStorage.setItem(_CHAT_DIAG_KEY, JSON.stringify(entries.slice(-_CHAT_DIAG_MAX)));
+    } catch {
+      // Ignore quota/storage failures. Console logging below still helps.
+    }
+  }
+
+  function _chatDiag(label, data) {
+    if (!_chatDiagEnabled()) return;
+    const entry = {
+      t: Date.now(),
+      iso: new Date().toISOString(),
+      label,
+      data: data || {},
+      dom: _chatDiagDomSnapshot(),
+    };
+    try {
+      const entries = _chatDiagReadLog();
+      entries.push(entry);
+      _chatDiagWriteLog(entries);
+    } catch {
+      // Keep diagnostics best-effort only.
+    }
+    try {
+      console.debug('[chat-diag]', label, entry);
+    } catch {}
+  }
+
+  function _installChatDiagConsole() {
+    if (typeof window === 'undefined') return;
+    window.OpenSquillaChatDiag = {
+      key: _CHAT_DIAG_KEY,
+      dump() {
+        const entries = _chatDiagReadLog();
+        try { console.log('[chat-diag dump]', entries); } catch {}
+        return entries;
+      },
+      clear() {
+        try { window.localStorage.removeItem(_CHAT_DIAG_KEY); } catch {}
+        return [];
+      },
+      disable() {
+        try { window.localStorage.setItem(_CHAT_DIAG_ENABLED_KEY, '0'); } catch {}
+        return false;
+      },
+      enable() {
+        try { window.localStorage.setItem(_CHAT_DIAG_ENABLED_KEY, '1'); } catch {}
+        return true;
+      },
+      snapshot: _chatDiagDomSnapshot,
+      copy() {
+        const text = JSON.stringify(_chatDiagReadLog(), null, 2);
+        if (window.navigator && window.navigator.clipboard) {
+          window.navigator.clipboard.writeText(text).catch(() => {});
+        }
+        return text;
+      },
+    };
+  }
+  _installChatDiagConsole();
 
   // Attachments
   // Two-mode attachment buffer: each entry is either
@@ -134,6 +319,16 @@ const ChatView = (() => {
   let _pendingArea = null;
   let _stopBtn = null;
   let _runStatusEl = null;
+  const CHAT_HISTORY_PAGE_SIZE = 50;
+  let _historyLoadedMessages = [];
+  let _historyOldestCursor = null;
+  let _historyNewestCursor = null;
+  let _historyHasMore = false;
+  let _historyScope = 'complete';
+  let _historyLoadingEarlier = false;
+  let _historyRequestSeq = 0;
+  let _historyError = '';
+  let _historyCompactionSummaries = [];
 
   // Sent-message history navigation (↑/↓ on empty textarea).
   // History is derived from _messages (role==='user') so there is a single
@@ -898,6 +1093,7 @@ const ChatView = (() => {
     const canonicalKey = _canonicalSessionKey(key);
     if (canonicalKey !== _sessionKey) _clearActiveTaskGroups();
     _sessionKey = canonicalKey;
+    _syncLastStreamSeqFromSession(canonicalKey);
     if (_sessionInput && _sessionInput.value !== canonicalKey) _sessionInput.value = canonicalKey;
     try { localStorage.setItem('opensquilla_active_session', canonicalKey); } catch {}
     try {
@@ -1053,6 +1249,7 @@ const ChatView = (() => {
 
     _messages = [];
     _clearContextStatus();
+    _resetHistoryPagingState();
     _lastHeaderRole = '';
     _lastHeaderDay = '';
     _applySessionRunState({ run_status: 'idle' });
@@ -1154,11 +1351,9 @@ const ChatView = (() => {
           // allow strips, so historical turns get their grid back.
           _scheduleHistorySync();
         } else if (_thread) {
-          // Hide now. Remove only SETTLED strips; never an in-flight live
-          // strip (data-live) — that would race the streaming done-handler /
-          // orphan backstop. The render gates prevent recreation; a settled
-          // mid-stream live strip is swept by _loadHistory on the next sync.
-          _thread.querySelectorAll('.router-fx:not([data-live="true"])').forEach((n) => n.remove());
+          // Hide now. This is a user-visible preference, so remove the visual
+          // immediately instead of preserving a separate live-strip path.
+          _thread.querySelectorAll('.router-fx').forEach((n) => n.remove());
         }
         UI.toast('Router animation: ' + (_routerFx.enabled ? 'ON' : 'OFF'), 'info');
       });
@@ -1171,10 +1366,9 @@ const ChatView = (() => {
       routerCloudToggle.addEventListener('change', () => {
         _routerFx.variant = routerCloudToggle.checked ? 'cloud' : 'default';
         _routerFxSavePref();
-        // Re-render settled strips in the chosen variant; leave any in-flight
-        // live strip alone (same safety as the on/off toggle above).
+        // Re-render strips in the chosen variant through the normal rebuild path.
         if (_thread) {
-          _thread.querySelectorAll('.router-fx:not([data-live="true"])').forEach((n) => n.remove());
+          _thread.querySelectorAll('.router-fx').forEach((n) => n.remove());
         }
         _scheduleHistorySync();
         UI.toast('Router view: ' + (_routerFx.variant === 'cloud' ? 'cloud' : 'grid'), 'info');
@@ -1366,6 +1560,59 @@ const ChatView = (() => {
     return !key || !_sessionKey || key === _sessionKey;
   }
 
+  function _sessionKeyFromPayload(payload) {
+    return payload?.key || payload?.session_key || payload?.sessionKey || '';
+  }
+
+  function _sessionStreamSeq(key) {
+    const stored = _streamSeqBySession.get(key || '');
+    return (typeof stored === 'number' && Number.isFinite(stored)) ? stored : 0;
+  }
+
+  function _setSessionStreamSeq(key, seq) {
+    if (!key || typeof seq !== 'number' || !Number.isFinite(seq)) return;
+    const next = Math.max(_sessionStreamSeq(key), seq);
+    _streamSeqBySession.set(key, next);
+    if (key === _sessionKey) _lastStreamSeq = next;
+  }
+
+  function _sessionStreamSeqSeen(key) {
+    const canonicalKey = key || '';
+    let seen = _streamSeqSeenBySession.get(canonicalKey);
+    if (!seen) {
+      seen = new Set();
+      _streamSeqSeenBySession.set(canonicalKey, seen);
+    }
+    return seen;
+  }
+
+  function _markSessionStreamSeqSeen(key, seq) {
+    if (!key || typeof seq !== 'number' || !Number.isFinite(seq)) return true;
+    const seen = _sessionStreamSeqSeen(key);
+    if (seen.has(seq)) return false;
+    seen.add(seq);
+    _setSessionStreamSeq(key, seq);
+
+    const highWater = _sessionStreamSeq(key);
+    const pruneBefore = highWater - _STREAM_SEQ_SEEN_WINDOW;
+    if (seen.size > _STREAM_SEQ_SEEN_WINDOW) {
+      seen.forEach((value) => {
+        if (value < pruneBefore) seen.delete(value);
+      });
+    }
+    return true;
+  }
+
+  function _syncLastStreamSeqFromSession(key) {
+    _lastStreamSeq = _sessionStreamSeq(key || _sessionKey || '');
+  }
+
+  function _dropForeignSessionPayload(event, payload) {
+    if (_isCurrentSessionPayload(payload)) return false;
+    _chatDiag(`${event}.drop.foreign_session`, _chatDiagSummarizePayload(payload));
+    return true;
+  }
+
   function _sessionChangeIsTerminal(payload) {
     const reason = String(payload?.reason || '').toLowerCase();
     if (reason === 'turn_complete' || reason === 'task_terminal') return true;
@@ -1464,6 +1711,7 @@ const ChatView = (() => {
   function _switchToSession(key) {
     if (!key || key === _sessionKey) return;
     _unsubscribeSession();
+    _parkCurrentSessionStreamState('session_switch');
     _updateSessionChip(key);
     _persistSession(key);
     _messages = [];
@@ -1481,6 +1729,7 @@ const ChatView = (() => {
     _viz.reset(); _resetSavingsPopupCooldown();
     _restoreWidgetState();
     _loadCurrentSessionUsage();
+    _restoreLiveStreamStateForSession(_sessionKey);
     _subscribeSession();
     _loadHistory();
   }
@@ -1994,6 +2243,7 @@ const ChatView = (() => {
     // New session button
     newBtn.addEventListener('click', () => {
       _unsubscribeSession();
+      _parkCurrentSessionStreamState('new_chat');
       const key = _genKey();
       _updateSessionChip(key);
       _persistSession(key);
@@ -2003,6 +2253,7 @@ const ChatView = (() => {
       _pendingSessionIntent = 'new_chat'; _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
       _messages = [];
       _clearContextStatus();
+      _resetHistoryPagingState();
       _lastHeaderRole = '';
       _lastHeaderDay = '';
       _usageAccum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null, routedTurns: 0, sessionSaved: 0 };
@@ -2317,6 +2568,7 @@ const ChatView = (() => {
       case 'new_chat':
       case '/new': {
         _unsubscribeSession();
+        _parkCurrentSessionStreamState('new_chat');
         const key = _genKey();
         _updateSessionChip(key);
         _persistSession(key);
@@ -2326,6 +2578,7 @@ const ChatView = (() => {
         _pendingSessionIntent = 'new_chat'; _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
         _messages = [];
         _clearContextStatus();
+        _resetHistoryPagingState();
         _lastHeaderRole = '';
         _lastHeaderDay = '';
         _usageAccum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null, routedTurns: 0, sessionSaved: 0 };
@@ -2426,17 +2679,20 @@ const ChatView = (() => {
 
   async function _subscribeSession() {
     if (!_rpc || !_sessionKey) return;
+    const subscribeKey = _sessionKey;
     try {
       await _rpc.waitForConnection();
-      const params = { key: _sessionKey };
-      params.since_stream_seq = _lastStreamSeq;
+      if (subscribeKey !== _sessionKey) return;
+      const params = { key: subscribeKey };
+      params.since_stream_seq = _sessionStreamSeq(subscribeKey);
       const res = await _rpc.call('sessions.messages.subscribe', params);
+      if (subscribeKey !== _sessionKey) return;
       if (res && res.subscribed === false) throw new Error('No subscription manager available');
       _applySessionRunState(res);
       if (res && res.replay_complete === false) {
-        _lastStreamSeq = typeof res.current_stream_seq === 'number'
-          ? Math.max(_lastStreamSeq, res.current_stream_seq)
-          : _lastStreamSeq;
+        if (typeof res.current_stream_seq === 'number') {
+          _setSessionStreamSeq(subscribeKey, res.current_stream_seq);
+        }
         UI.toast('Session stream gap detected; reloading transcript.', 'warn', 5000);
         _loadHistory();
       } else if (
@@ -2444,7 +2700,7 @@ const ChatView = (() => {
         && typeof res.current_stream_seq === 'number'
         && Number(res.replayed_count || 0) <= 0
       ) {
-        _lastStreamSeq = Math.max(_lastStreamSeq, res.current_stream_seq);
+        _setSessionStreamSeq(subscribeKey, res.current_stream_seq);
       }
       if (_isStreaming) _resetStreamIdleTimer();
     } catch (err) {
@@ -2902,6 +3158,41 @@ const ChatView = (() => {
     ).length;
   }
 
+  function _pendingRouterDecisionKey(turnIndex) {
+    return `${_sessionKey || ''}:${turnIndex || 'latest'}`;
+  }
+
+  function _cachePendingRouterDecision(payload) {
+    const turnIndex = _routerFxCountUserMessages();
+    const key = _pendingRouterDecisionKey(turnIndex > 0 ? turnIndex : 'latest');
+    _pendingRouterDecisions.set(key, payload);
+    _chatDiag('router_decision.cached_pending_anchor', {
+      key,
+      payload: _chatDiagSummarizePayload(payload),
+    });
+  }
+
+  function _flushPendingRouterDecisions() {
+    if (!_thread || !_routerFx.enabled) return;
+    if (!_routerFxLastUserMessage()) return;
+    const turnIndex = _routerFxCountUserMessages();
+    const keys = [
+      _pendingRouterDecisionKey(turnIndex),
+      _pendingRouterDecisionKey('latest'),
+    ];
+    for (const key of keys) {
+      if (!_pendingRouterDecisions.has(key)) continue;
+      const payload = _pendingRouterDecisions.get(key);
+      _pendingRouterDecisions.delete(key);
+      _chatDiag('router_decision.flush_pending_anchor', {
+        key,
+        payload: _chatDiagSummarizePayload(payload),
+      });
+      _handleRouterDecision(payload);
+      return;
+    }
+  }
+
   // Group tiers by their backing model so two tiers that resolve to
   // the same model don't get two cells.
   function _routerFxRealEntries(decision) {
@@ -3332,7 +3623,14 @@ const ChatView = (() => {
   function _routerFxBeginScan(anchorDiv, seedKey) {
     // Only scan when the router is actually going to route (else no decision
     // arrives to lock it). Both flags: user wants the viz AND routing is on.
-    if (!_thread || !_routerFx.enabled || !_routerFeatureEnabled) return false;
+    if (!_thread || !_routerFx.enabled || !_routerFeatureEnabled) {
+      _chatDiag('router_scan.skip', {
+        hasThread: !!_thread,
+        routerFxEnabled: !!_routerFx.enabled,
+        routerFeatureEnabled: !!_routerFeatureEnabled,
+      });
+      return false;
+    }
     _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((el) => {
       _routerFxStopScan(el);
       el.remove();
@@ -3349,6 +3647,11 @@ const ChatView = (() => {
       _routerFxInsertAnchored(wrap, null);
     }
     _routerFxScanRoam(wrap);
+    _chatDiag('router_scan.started', {
+      seedKey,
+      anchor: _chatDiagDescribeElement(anchorDiv),
+      strip: _chatDiagDescribeElement(wrap),
+    });
     // HARD CAP: the scan animation lasts a fixed, short window (≤1s total incl.
     // the settle transition), independent of when the decision WS event lands.
     // The router decides up-front, so the decision is normally cached within
@@ -3368,10 +3671,17 @@ const ChatView = (() => {
     wrap._fxFinished = true;
     if (wrap._fxScanCap) { clearTimeout(wrap._fxScanCap); wrap._fxScanCap = null; }
     if (wrap._fxDecision) {
+      _chatDiag('router_scan.finish.with_decision', {
+        strip: _chatDiagDescribeElement(wrap),
+        payload: _chatDiagSummarizePayload(wrap._fxDecision),
+      });
       _routerFxLock(wrap, wrap._fxDecision);
     } else {
       _routerFxStopScan(wrap);
       wrap.dataset.state = 'settled';
+      _chatDiag('router_scan.finish.no_decision', {
+        strip: _chatDiagDescribeElement(wrap),
+      });
     }
   }
 
@@ -3411,20 +3721,48 @@ const ChatView = (() => {
     wrap.querySelectorAll('.router-fx-mote.is-scan').forEach((m) => m.classList.remove('is-scan'));
   }
 
-  // RED LINE enforcement: when output begins, finalise every in-flight strip
-  // to a STATIC settled state. data-frozen kills all CSS transitions/animations
-  // so nothing is moving while the response renders. Keeps data-live so the
-  // history consolidation still owns its promotion to settled.
-  function _routerFxFreezeForOutput() {
+  function _routerFxPauseScanTimers(wrap) {
+    if (!wrap) return;
+    if (wrap._fxScanTimer) { clearTimeout(wrap._fxScanTimer); wrap._fxScanTimer = null; }
+    if (wrap._fxScanCap) { clearTimeout(wrap._fxScanCap); wrap._fxScanCap = null; }
+  }
+
+  function _routerFxResumeLiveStrip(wrap) {
+    if (!wrap || wrap.dataset.live !== 'true') return;
+    _routerFxPauseScanTimers(wrap);
+    if (wrap.dataset.scanning === 'true' && !wrap._fxFinished) {
+      _routerFxScanRoam(wrap);
+      if (wrap._fxDecision) {
+        wrap._fxScanCap = setTimeout(() => _routerFxFinishScan(wrap), _ROUTER_FX_SCAN_MS);
+      } else {
+        _chatDiag('router_scan.resume_without_decision', {
+          strip: _chatDiagDescribeElement(wrap),
+        });
+      }
+      return;
+    }
+    if (wrap._fxFinished && wrap._fxDecision && !wrap.dataset.routerIdentity) {
+      _routerFxLock(wrap, wrap._fxDecision);
+    }
+  }
+
+  // When output begins, finish the in-flight selection scan without freezing
+  // the strip. The text/tool stream can render immediately, while the router
+  // still gets its visible winner-lock animation instead of becoming a static
+  // empty frame.
+  function _routerFxSettleForOutput() {
     if (!_thread) return;
     _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((wrap) => {
-      if (wrap.dataset.frozen === 'true') return;
       // Output already complete/arriving → finish the scan immediately, locking
-      // onto the cached winner (no half-scan left hanging), then freeze static.
-      _routerFxFinishScan(wrap);
-      _routerFxStopScan(wrap);
-      wrap.dataset.state = 'settled';
-      wrap.dataset.frozen = 'true';
+      // onto the cached winner (no half-scan left hanging). Do not mark frozen:
+      // _routerFxLockGrid/_routerFxLockCloud own the visible selection motion.
+      if (wrap._fxDecision) {
+        _routerFxFinishScan(wrap);
+      } else {
+        _chatDiag('router_scan.keep_scanning_without_decision_on_output', {
+          strip: _chatDiagDescribeElement(wrap),
+        });
+      }
     });
   }
 
@@ -3572,9 +3910,16 @@ const ChatView = (() => {
   // strip with empty _routerFxModels (tier-id placeholders). The
   // gate has its own 1.5 s ceiling so the await never hard-blocks.
   async function _handleRouterDecision(payload) {
-    if (!payload || typeof payload !== 'object') return;
+    _chatDiag('router_decision.handle.start', _chatDiagSummarizePayload(payload));
+    if (!payload || typeof payload !== 'object') {
+      _chatDiag('router_decision.skip.invalid_payload', {});
+      return;
+    }
     const tier = typeof payload.tier === 'string' ? payload.tier : '';
-    if (!tier) return;
+    if (!tier) {
+      _chatDiag('router_decision.skip.no_tier', _chatDiagSummarizePayload(payload));
+      return;
+    }
     _routerFxRegisterTier(tier);
     if (payload.model) {
       _routerFxModels[tier.toLowerCase()] = String(payload.model);
@@ -3584,8 +3929,14 @@ const ChatView = (() => {
     // skip the config await and all DOM work below. (Render-only gate — never
     // purge already-rendered strips here, to stay clear of the streaming /
     // history-rebuild strip lifecycle.)
-    if (!_routerFx.enabled) return;
-    if (!_thread) return;
+    if (!_routerFx.enabled) {
+      _chatDiag('router_decision.skip.disabled_pre_config', _chatDiagSummarizePayload(payload));
+      return;
+    }
+    if (!_thread) {
+      _chatDiag('router_decision.skip.no_thread_pre_config', _chatDiagSummarizePayload(payload));
+      return;
+    }
     // A strip for this turn was rendered the moment the user sent. CACHE the
     // decision on it; the fixed-window scan (_routerFxFinishScan) locks onto it
     // when the window closes — so the animation runs for a consistent ≤1s
@@ -3597,6 +3948,11 @@ const ChatView = (() => {
         && liveStrip.dataset.turnIndex === String(_routerFxCountUserMessages())) {
       liveStrip.dataset.sessionKey = _sessionKey || '';
       liveStrip._fxDecision = payload;
+      _chatDiag('router_decision.cached_on_live_strip', {
+        payload: _chatDiagSummarizePayload(payload),
+        liveStrip: _chatDiagDescribeElement(liveStrip),
+        finished: !!liveStrip._fxFinished,
+      });
       if (liveStrip._fxFinished) {
         _routerFxLock(liveStrip, payload);
         _scrollToBottom();
@@ -3606,20 +3962,26 @@ const ChatView = (() => {
     await _routerFxAwaitConfig();
     // Re-check the thread reference after the await — the view may
     // have been torn down while we were waiting.
-    if (!_thread) return;
+    if (!_thread) {
+      _chatDiag('router_decision.skip.no_thread_post_config', _chatDiagSummarizePayload(payload));
+      return;
+    }
     // Re-check the visualisation pref too: the user may have flipped it OFF
     // during the (up to 1.5s cold-start) config await. Symmetric with the
     // pre-await gate — without this a strip the user just hid would still
     // flash in before the disabled-sweep removes it on the next sync.
-    if (!_routerFx.enabled) return;
-    // The router strip MUST anchor below a user message. If no user
-    // message has been rendered yet, this event is almost always a WS
-    // replay arriving before history has loaded — building a strip
-    // would orphan it at the top of the thread with no turn to attach
-    // to. Bail; the post-config history rebuild will create the
-    // correctly-anchored strip for this decision.
+    if (!_routerFx.enabled) {
+      _chatDiag('router_decision.skip.disabled_post_config', _chatDiagSummarizePayload(payload));
+      return;
+    }
+    // The router strip MUST anchor below a user message. If a WS replay
+    // arrives before history has rendered the user turn, cache the decision
+    // and replay it after _loadHistory() has an anchor.
     const anchorUser = _routerFxLastUserMessage();
-    if (!anchorUser) return;
+    if (!anchorUser) {
+      _cachePendingRouterDecision(payload);
+      return;
+    }
     // Resolve a seed that's deterministic for this session: the first routed
     // turn establishes the dial layout and later turns reuse it.
     const turnIndex = _routerFxCountUserMessages();
@@ -3628,7 +3990,14 @@ const ChatView = (() => {
     // Cloud flags its winner mote at build time; the grid resolves a winning
     // cell index. Either way, bail if there is no winner to focus.
     const winnerIdx = wrap._fxCloud ? -1 : _routerFxWinnerCellIndex(wrap, tier);
-    if (wrap._fxCloud ? !wrap._fxWinnerEl : winnerIdx < 0) return;
+    if (wrap._fxCloud ? !wrap._fxWinnerEl : winnerIdx < 0) {
+      _chatDiag('router_decision.skip.no_winner', {
+        payload: _chatDiagSummarizePayload(payload),
+        cloud: !!wrap._fxCloud,
+        winnerIdx,
+      });
+      return;
+    }
     wrap.dataset.live = 'true';
     wrap.dataset.sessionKey = _sessionKey || '';
     wrap.dataset.turnIndex = String(turnIndex);
@@ -3661,6 +4030,12 @@ const ChatView = (() => {
       if (el !== wrap) el.remove();
     });
     _routerFxInsertAnchored(wrap, null);
+    _chatDiag('router_decision.inserted_strip', {
+      payload: _chatDiagSummarizePayload(payload),
+      strip: _chatDiagDescribeElement(wrap),
+      observeMode,
+      winnerIdx,
+    });
     if (observeMode) {
       // Observe-mode only: settle immediately because the routed model did not
       // drive the response. Live applied routes keep the random chase animation.
@@ -3740,57 +4115,128 @@ const ChatView = (() => {
     // Drops a per-turn inline slider above where the assistant bubble
     // will appear and sweeps the selector onto the routed tier.
     _unsubs.push(_rpc.on('session.event.router_decision', (payload) => {
-      if (_isStaleEpoch(payload)) return;
-      if (!_acceptStreamSeq(payload)) return;
+      if (_dropForeignSessionPayload('event.router_decision', payload)) return;
+      if (_isStaleEpoch(payload)) {
+        _chatDiag('event.router_decision.drop.stale_epoch', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (!_acceptStreamSeq(payload)) {
+        _chatDiag('event.router_decision.drop.stream_seq', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      _chatDiag('event.router_decision', _chatDiagSummarizePayload(payload));
       _handleRouterDecision(payload);
     }));
 
     // Text delta: accumulate into streaming bubble
     _unsubs.push(_rpc.on('session.event.text_delta', (payload) => {
-      if (_isStaleEpoch(payload)) return;
-      if (!_acceptStreamSeq(payload)) return;
+      if (_dropForeignSessionPayload('event.text_delta', payload)) return;
+      if (_isStaleEpoch(payload)) {
+        _chatDiag('event.text_delta.drop.stale_epoch', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (!_acceptStreamSeq(payload)) {
+        _chatDiag('event.text_delta.drop.stream_seq', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      _chatDiag('event.text_delta', _chatDiagSummarizePayload(payload));
       _resetStreamIdleTimer();
       _appendDelta(payload.text || '');
     }));
 
     // Tool call events (engine emits tool_use_start)
     _unsubs.push(_rpc.on('session.event.tool_use_start', (payload) => {
-      if (_isStaleEpoch(payload)) return;
-      if (_aborted) return;
-      if (!_acceptStreamSeq(payload)) return;
+      if (_dropForeignSessionPayload('event.tool_use_start', payload)) return;
+      if (_isStaleEpoch(payload)) {
+        _chatDiag('event.tool_use_start.drop.stale_epoch', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (_aborted) {
+        _chatDiag('event.tool_use_start.drop.aborted', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (!_acceptStreamSeq(payload)) {
+        _chatDiag('event.tool_use_start.drop.stream_seq', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      _chatDiag('event.tool_use_start', _chatDiagSummarizePayload(payload));
       _resetStreamIdleTimer();
       _appendToolCall(payload);
     }));
 
     // Tool result events
     _unsubs.push(_rpc.on('session.event.tool_result', (payload) => {
-      if (_isStaleEpoch(payload)) return;
-      if (_aborted) return;
-      if (!_acceptStreamSeq(payload)) return;
+      if (_dropForeignSessionPayload('event.tool_result', payload)) return;
+      if (_isStaleEpoch(payload)) {
+        _chatDiag('event.tool_result.drop.stale_epoch', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (_aborted) {
+        _chatDiag('event.tool_result.drop.aborted', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (!_acceptStreamSeq(payload)) {
+        _chatDiag('event.tool_result.drop.stream_seq', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      _chatDiag('event.tool_result', _chatDiagSummarizePayload(payload));
       _resetStreamIdleTimer();
       _appendToolResult(payload);
     }));
 
     _unsubs.push(_rpc.on('session.event.artifact', (payload) => {
-      if (_isStaleEpoch(payload)) return;
-      if (_aborted) return;
-      if (!_acceptStreamSeq(payload)) return;
+      if (_dropForeignSessionPayload('event.artifact', payload)) return;
+      if (_isStaleEpoch(payload)) {
+        _chatDiag('event.artifact.drop.stale_epoch', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (_aborted) {
+        _chatDiag('event.artifact.drop.aborted', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (!_acceptStreamSeq(payload)) {
+        _chatDiag('event.artifact.drop.stream_seq', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      _chatDiag('event.artifact', _chatDiagSummarizePayload(payload));
       _resetStreamIdleTimer();
       _appendArtifact(payload);
     }));
 
     _unsubs.push(_rpc.on('session.event.subagent_completion', (payload) => {
-      if (_isStaleEpoch(payload)) return;
-      if (_aborted) return;
-      if (!_acceptStreamSeq(payload)) return;
+      if (_dropForeignSessionPayload('event.subagent_completion', payload)) return;
+      if (_isStaleEpoch(payload)) {
+        _chatDiag('event.subagent_completion.drop.stale_epoch', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (_aborted) {
+        _chatDiag('event.subagent_completion.drop.aborted', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (!_acceptStreamSeq(payload)) {
+        _chatDiag('event.subagent_completion.drop.stream_seq', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      _chatDiag('event.subagent_completion', _chatDiagSummarizePayload(payload));
       _appendSubagentCompletion(payload);
     }));
 
     // Agent state transitions (thinking → streaming → tool_calling → done)
     _unsubs.push(_rpc.on('session.event.state_change', (payload) => {
-      if (_isStaleEpoch(payload)) return;
-      if (!payload || _aborted) return;
-      if (!_acceptStreamSeq(payload)) return;
+      if (_dropForeignSessionPayload('event.state_change', payload)) return;
+      if (_isStaleEpoch(payload)) {
+        _chatDiag('event.state_change.drop.stale_epoch', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (!payload || _aborted) {
+        _chatDiag('event.state_change.drop.empty_or_aborted', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (!_acceptStreamSeq(payload)) {
+        _chatDiag('event.state_change.drop.stream_seq', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      _chatDiag('event.state_change', _chatDiagSummarizePayload(payload));
       _resetStreamIdleTimer();
       const to = payload.to_state || payload.toState || '';
       // Only use state_change to SHOW thinking indicator (on thinking/tool_calling
@@ -3804,15 +4250,27 @@ const ChatView = (() => {
     }));
 
     _unsubs.push(_rpc.on('session.event.run_heartbeat', (payload) => {
-      if (_isStaleEpoch(payload)) return;
-      if (_aborted) return;
-      if (!_acceptStreamSeq(payload)) return;
+      if (_dropForeignSessionPayload('event.run_heartbeat', payload)) return;
+      if (_isStaleEpoch(payload)) {
+        _chatDiag('event.run_heartbeat.drop.stale_epoch', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (_aborted) {
+        _chatDiag('event.run_heartbeat.drop.aborted', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (!_acceptStreamSeq(payload)) {
+        _chatDiag('event.run_heartbeat.drop.stream_seq', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      _chatDiag('event.run_heartbeat', _chatDiagSummarizePayload(payload));
       if (!_isStreaming) _startStreaming();
       _resetStreamIdleTimer();
       if (!_streamBubble) _showThinkingIndicator();
     }));
 
     _unsubs.push(_rpc.on('session.event.cron_result', (payload) => {
+      if (_dropForeignSessionPayload('event.cron_result', payload)) return;
       if (_isStaleEpoch(payload)) return;
       if (!_acceptStreamSeq(payload)) return;
       const msg = payload?.message || payload || {};
@@ -3833,6 +4291,7 @@ const ChatView = (() => {
     }));
 
     _unsubs.push(_rpc.on('session.event.compaction', (payload, meta) => {
+      if (_dropForeignSessionPayload('event.compaction', payload)) return;
       if (_isStaleEpoch(payload)) return;
       if (!_acceptStreamSeq(payload)) return;
       _showCompactionToast(payload || {}, meta || {});
@@ -3842,6 +4301,7 @@ const ChatView = (() => {
     // to generate an image but never called the tool). Toast only — never
     // written to the transcript, never fed back to the LLM.
     _unsubs.push(_rpc.on('session.event.warning', (payload) => {
+      if (_dropForeignSessionPayload('event.warning', payload)) return;
       if (_isStaleEpoch(payload)) return;
       const msg = (payload && payload.message) || 'Squilla warning';
       UI.toast(msg, 'warn', 5000);
@@ -3849,6 +4309,7 @@ const ChatView = (() => {
 
     // Track session epoch to discard stale frames from pre-reset turns.
     _unsubs.push(_rpc.on('session.epoch_changed', (payload) => {
+      if (_dropForeignSessionPayload('session.epoch_changed', payload)) return;
       const ep = payload && payload.epoch;
       if (typeof ep === 'number' && Number.isFinite(ep) && ep > _currentEpoch) {
         _clearActiveTaskGroups();
@@ -3884,24 +4345,28 @@ const ChatView = (() => {
     }));
 
     _unsubs.push(_rpc.on('session.event.task_group.waiting', (payload) => {
+      if (_dropForeignSessionPayload('event.task_group.waiting', payload)) return;
       if (_isStaleEpoch(payload)) return;
       if (!_acceptStreamSeq(payload)) return;
       _noteTaskGroupActive(payload);
     }));
 
     _unsubs.push(_rpc.on('session.event.task_group.synthesizing', (payload) => {
+      if (_dropForeignSessionPayload('event.task_group.synthesizing', payload)) return;
       if (_isStaleEpoch(payload)) return;
       if (!_acceptStreamSeq(payload)) return;
       _noteTaskGroupActive(payload);
     }));
 
     _unsubs.push(_rpc.on('session.event.task_group.done', (payload) => {
+      if (_dropForeignSessionPayload('event.task_group.done', payload)) return;
       if (_isStaleEpoch(payload)) return;
       if (!_acceptStreamSeq(payload)) return;
       _noteTaskGroupTerminal(payload, 'succeeded');
     }));
 
     _unsubs.push(_rpc.on('session.event.task_group.failed', (payload) => {
+      if (_dropForeignSessionPayload('event.task_group.failed', payload)) return;
       if (_isStaleEpoch(payload)) return;
       if (!_acceptStreamSeq(payload)) return;
       _noteTaskGroupTerminal(payload, 'failed');
@@ -3932,14 +4397,40 @@ const ChatView = (() => {
       // (stale residue) and from turns we've already locally finalized
       // (_onStop synchronously calls _endStreaming, so _isStreaming is false
       // by the time the matching task.cancelled arrives).
-      if (normalized && _isStaleEpoch(rawPayload)) return;
-      if (normalized && !_isStreaming) return;
+      if (normalized && _isStaleEpoch(rawPayload)) {
+        _chatDiag('event.normalized.drop.stale_epoch', _chatDiagSummarizePayload(rawPayload));
+        return;
+      }
+      if (normalized && !_isStreaming) {
+        _chatDiag('event.normalized.drop.not_streaming', _chatDiagSummarizePayload(rawPayload));
+        return;
+      }
       const event = normalized ? normalized.event : rawEvent;
       const payload = normalized ? normalized.payload : rawPayload;
       if (typeof event !== 'string') return;
+      if (event.startsWith('session.event.') && _dropForeignSessionPayload('event.generic', payload)) return;
       // Discard done/error frames that pre-date the current epoch.
-      if (event.startsWith('session.event.') && _isStaleEpoch(payload)) return;
-      if (!_acceptStreamSeq(payload)) return;
+      if (event.startsWith('session.event.') && _isStaleEpoch(payload)) {
+        _chatDiag('event.generic.drop.stale_epoch', {
+          event,
+          payload: _chatDiagSummarizePayload(payload),
+        });
+        return;
+      }
+      if (!_acceptStreamSeq(payload)) {
+        if (_eventHasSpecificSessionHandler(event)) {
+          _chatDiag('event.generic.skip.specific_handler_stream_seq', {
+            event,
+            payload: _chatDiagSummarizePayload(payload),
+          });
+          return;
+        }
+        _chatDiag('event.generic.drop.stream_seq', {
+          event,
+          payload: _chatDiagSummarizePayload(payload),
+        });
+        return;
+      }
       if (event.startsWith('session.event.task_group.')) return;
 
       if (event === 'sessions.changed') {
@@ -3947,6 +4438,10 @@ const ChatView = (() => {
       }
 
       if (event.endsWith('.done') || event === 'chat.done') {
+        _chatDiag('event.done', {
+          event,
+          payload: _chatDiagSummarizePayload(payload),
+        });
         // Done event payload is flat: { text, input_tokens, output_tokens, iterations,
         // routed_tier, routing_source, ... }
         // Also support nested { usage: { ... } } for future compat
@@ -3991,13 +4486,9 @@ const ChatView = (() => {
         // replays the terminal done frame.
         const _finishedBubble = _streamBubble;
         const _doneWasAborted = payload?.reason === 'aborted';
-        // Do NOT clear the router strip's data-live here. A multi-step
-        // (tool-using) turn emits intermediate *.done events; clearing data-live
-        // on one of those — then _endStreaming() flipping _isStreaming false —
-        // lets the _loadHistory orphan-backstop remove the still-in-flight strip
-        // (the message reorder positionally strands it), so the panel vanishes
-        // mid-turn until the final response. The history consolidation clears
-        // data-live when it re-anchors the strip for the now-persisted turn.
+        // Keep the router strip lifecycle owned by the scan/history paths.
+        // _loadHistory no longer preserves strips just because they are live;
+        // it only matches persisted strips by turn identity.
         _endStreaming(_doneWasAborted ? { reason: 'aborted' } : undefined);
 
         // Populate savings indicator if data exists
@@ -4186,67 +4677,306 @@ const ChatView = (() => {
     }, 50);
   }
 
+  function _resetHistoryPagingState() {
+    _historyLoadedMessages = [];
+    _historyOldestCursor = null;
+    _historyNewestCursor = null;
+    _historyHasMore = false;
+    _historyScope = 'complete';
+    _historyLoadingEarlier = false;
+    _historyError = '';
+    _historyCompactionSummaries = [];
+    _historyRequestSeq++;
+    _removeHistoryScopeRows();
+  }
+
+  function _historyResponseMetadata(data) {
+    return {
+      hasMore: !!(data && data.has_more),
+      oldestCursor: data ? (data.oldest_cursor || null) : null,
+      newestCursor: data ? (data.newest_cursor || null) : null,
+      scope: data ? (data.history_scope || 'complete') : 'complete',
+      summaries: Array.isArray(data && data.compaction_summaries)
+        ? data.compaction_summaries
+        : [],
+    };
+  }
+
+  function _applyHistoryMetadata(data) {
+    const meta = _historyResponseMetadata(data);
+    _historyOldestCursor = meta.oldestCursor;
+    _historyNewestCursor = meta.newestCursor;
+    _historyHasMore = meta.hasMore;
+    _historyScope = meta.scope;
+    _historyCompactionSummaries = meta.summaries;
+  }
+
+  function _messagePageIdentity(msg) {
+    if (!msg) return '';
+    const stable = msg.message_id || msg.id || '';
+    if (stable) return `stable:${stable}`;
+    return `fallback:${_historyFallbackMessageIdentity(msg.role, msg.text || '')}`;
+  }
+
+  function _mergeHistoryMessagePages(olderMessages, currentMessages) {
+    const seen = new Set();
+    const merged = [];
+    (olderMessages || []).concat(currentMessages || []).forEach((msg) => {
+      const identity = _messagePageIdentity(msg);
+      if (identity && seen.has(identity)) return;
+      if (identity) seen.add(identity);
+      merged.push(msg);
+    });
+    return merged;
+  }
+
+  function _removeHistoryScopeRows() {
+    if (!_thread) return;
+    _thread.querySelectorAll('.chat-history-scope').forEach((el) => el.remove());
+  }
+
+  function _renderHistoryScopeRow() {
+    if (!_thread) return;
+    _removeHistoryScopeRows();
+    if (_messages.length === 0 && !_historyError) return;
+
+    let tone = '';
+    let message = '';
+    let detail = '';
+    let showLoadEarlier = false;
+    let showRetry = false;
+
+    if (_historyLoadingEarlier) {
+      tone = 'loading';
+      message = 'Loading earlier messages...';
+    } else if (_historyError) {
+      tone = 'error';
+      message = _historyError;
+      showRetry = true;
+    } else if (_historyHasMore || _historyScope === 'latest_window') {
+      tone = 'partial';
+      message = `Showing latest ${_historyLoadedMessages.length} messages.`;
+      detail = 'Older history is available.';
+      showLoadEarlier = !!_historyOldestCursor;
+    } else if (_historyScope === 'compacted' || _historyCompactionSummaries.length > 0) {
+      tone = 'compacted';
+      message = 'Older context was compacted for the model.';
+      detail = 'Export the session for exact text.';
+    } else {
+      return;
+    }
+
+    const row = document.createElement('div');
+    row.className = `chat-history-scope chat-history-scope--${tone}`;
+    row.setAttribute('role', tone === 'loading' ? 'status' : 'note');
+    if (tone === 'loading') row.setAttribute('aria-busy', 'true');
+    row.innerHTML = ''
+      + `<span class="chat-history-scope__text">${_esc(message)}</span>`
+      + (detail ? `<span class="chat-history-scope__detail">${_esc(detail)}</span>` : '')
+      + '<span class="chat-history-scope__actions"></span>';
+    const actions = row.querySelector('.chat-history-scope__actions');
+    if (actions && showLoadEarlier) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn--sm btn--ghost';
+      btn.textContent = 'Load earlier';
+      btn.disabled = _historyLoadingEarlier;
+      btn.addEventListener('click', () => _loadEarlierHistory());
+      actions.appendChild(btn);
+    }
+    if (actions && showRetry) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn--sm btn--ghost';
+      btn.textContent = _historyHasMore && _historyOldestCursor ? 'Retry' : 'Retry history';
+      btn.addEventListener('click', () => {
+        if (_historyHasMore && _historyOldestCursor) {
+          _loadEarlierHistory();
+        } else {
+          _loadHistory();
+        }
+      });
+      actions.appendChild(btn);
+    }
+    _thread.insertBefore(row, _thread.firstChild || null);
+  }
+
   async function _loadHistory() {
     if (!_sessionKey || !_thread) return;
+    const requestSessionKey = _sessionKey;
+    const requestSeq = ++_historyRequestSeq;
+    _historyError = '';
+    _chatDiag('history.start', {
+      sessionKey: requestSessionKey,
+      streaming: _isStreaming,
+      hasStreamBubble: !!_streamBubble,
+    });
     try {
       await _rpc.waitForConnection();
       // Wait until router config (tier → model cache) is populated so
       // historical strips never render with "t1"/"t2"/"t3" placeholders
       // just because we raced the config.get response.
       await _routerFxAwaitConfig();
-      const data = await _rpc.call('chat.history', { sessionKey: _sessionKey });
-      const messages = data.messages || [];
-      if (messages.length === 0) {
-        if (_isStreaming && _streamBubble) {
-          _thread.querySelectorAll('.msg').forEach((el) => {
-            if (el !== _streamBubble) el.remove();
-          });
-          _thread.querySelectorAll('.chat-day-sep, .chat-empty').forEach((el) => el.remove());
-          if (!_streamBubble.isConnected) _thread.appendChild(_streamBubble);
-          _scrollToBottom();
-          return;
-        }
-        _thread.innerHTML = '';
-        _messages = [];
-        _lastHeaderRole = '';
-        _lastHeaderDay = '';
-        if (window.SavingsFX) window.SavingsFX.resetStreak();
-        _lastSavingsPopupIdentity = '';
-        _thread.innerHTML = _emptyStateHTML();
+      const data = await _rpc.call('chat.history', {
+        sessionKey: requestSessionKey,
+        limit: CHAT_HISTORY_PAGE_SIZE,
+        includeCanonical: true,
+        includeSummaries: true,
+      });
+      if (requestSessionKey !== _sessionKey || requestSeq !== _historyRequestSeq) {
+        _chatDiag('history.stale_response.drop', { requestSessionKey, requestSeq });
         return;
       }
-      const existingByStableIdentity = new Map();
-      const existingByFallbackIdentity = new Map();
-      _thread.querySelectorAll('.msg').forEach((el) => {
-        const stable = el.getAttribute('data-message-id') || '';
-        if (stable) existingByStableIdentity.set(stable, el);
-        const fallback = el.getAttribute('data-history-fallback-id') || _historyElementFallbackIdentity(el);
-        if (fallback) _pushIdentityElement(existingByFallbackIdentity, fallback, el);
+      const messages = data.messages || [];
+      _historyLoadedMessages = messages.slice();
+      _applyHistoryMetadata(data || {});
+      _chatDiag('history.loaded', {
+        count: messages.length,
+        rolesTail: messages.slice(-8).map((msg) => msg && msg.role).filter(Boolean),
+        streaming: _isStreaming,
+        hasStreamBubble: !!_streamBubble,
+        hasMore: _historyHasMore,
+        historyScope: _historyScope,
       });
-      const empty = _thread.querySelector('.chat-empty');
-      if (empty) empty.remove();
-      _thread.querySelectorAll('.chat-day-sep').forEach((el) => el.remove());
-      // Drop every stale router strip that isn't currently being animated or
-      // already anchored for this session/turn. The rebuild loop reuses
-      // settled strips so live → history sync does not replay the animation.
-      _thread.querySelectorAll('.router-fx').forEach((el) => {
-        if (el.dataset.live === 'true') return;
-        if (el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex) return;
-        el.remove();
+      _renderHistoryMessages(messages);
+    } catch (err) {
+      _historyError = 'Could not load chat history.';
+      _chatDiag('history.error', {
+        message: err && err.message ? err.message : String(err),
       });
+      _renderHistoryScopeRow();
+    }
+  }
+
+  async function _loadEarlierHistory() {
+    if (!_sessionKey || !_thread || !_historyOldestCursor || _historyLoadingEarlier) return;
+    const requestSessionKey = _sessionKey;
+    const requestSeq = ++_historyRequestSeq;
+    const previousScrollHeight = _thread.scrollHeight;
+    const previousScrollTop = _thread.scrollTop;
+    _historyLoadingEarlier = true;
+    _historyError = '';
+    _renderHistoryScopeRow();
+    _chatDiag('history.load_earlier.start', {
+      sessionKey: requestSessionKey,
+      before: _historyOldestCursor,
+    });
+    try {
+      await _rpc.waitForConnection();
+      const data = await _rpc.call('chat.history', {
+        sessionKey: requestSessionKey,
+        limit: CHAT_HISTORY_PAGE_SIZE,
+        before: _historyOldestCursor,
+        includeCanonical: true,
+        includeSummaries: true,
+      });
+      if (requestSessionKey !== _sessionKey || requestSeq !== _historyRequestSeq) {
+        _chatDiag('history.load_earlier.stale_response.drop', { requestSessionKey, requestSeq });
+        if (requestSessionKey === _sessionKey) {
+          _historyLoadingEarlier = false;
+          _renderHistoryScopeRow();
+        }
+        return;
+      }
+      const olderMessages = data.messages || [];
+      _historyLoadedMessages = _mergeHistoryMessagePages(olderMessages, _historyLoadedMessages);
+      _applyHistoryMetadata({
+        ...(data || {}),
+        messages: _historyLoadedMessages,
+        newest_cursor: _historyNewestCursor || (data && data.newest_cursor),
+      });
+      _historyLoadingEarlier = false;
+      _chatDiag('history.load_earlier.loaded', {
+        count: olderMessages.length,
+        totalLoaded: _historyLoadedMessages.length,
+        hasMore: _historyHasMore,
+      });
+      _renderHistoryMessages(_historyLoadedMessages, {
+        preserveScroll: true,
+        previousScrollHeight,
+        previousScrollTop,
+      });
+    } catch (err) {
+      _historyLoadingEarlier = false;
+      _historyError = 'Could not load earlier history.';
+      _chatDiag('history.load_earlier.error', {
+        message: err && err.message ? err.message : String(err),
+      });
+      _renderHistoryScopeRow();
+    }
+  }
+
+  function _renderHistoryMessages(messages, opts = {}) {
+    if (!_thread) return;
+    _removeHistoryScopeRows();
+    if (messages.length === 0) {
+      const liveRouterStrips = _currentSessionLiveRouterStrips(_sessionKey || '');
+      const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');
+      if (_isStreaming && (_isCurrentSessionStreamBubble(_streamBubble) || liveRouterStrips.length > 0 || liveUserAnchor)) {
+        _thread.querySelectorAll('.msg').forEach((el) => {
+          if (el !== _streamBubble && el !== liveUserAnchor) el.remove();
+        });
+        _thread.querySelectorAll('.chat-day-sep, .chat-empty').forEach((el) => el.remove());
+        if (liveUserAnchor && !liveUserAnchor.isConnected) _thread.appendChild(liveUserAnchor);
+        if (_streamBubble && !_streamBubble.isConnected) _thread.appendChild(_streamBubble);
+        liveRouterStrips.forEach((el) => {
+          if (!el.isConnected) _insertLiveRouterStripForAnchor(el, liveUserAnchor, _streamBubble);
+        });
+        _scrollToBottom();
+        _chatDiag('history.empty.keep_live_stream_view', {
+          hasStreamBubble: !!_streamBubble,
+          hasLiveUserAnchor: !!liveUserAnchor,
+          liveRouterCount: liveRouterStrips.length,
+        });
+        return;
+      }
+      if (_pendingFinalizedAssistantBubble && _pendingFinalizedAssistantBubble.isConnected) {
+        _scrollToBottom();
+        _chatDiag('history.empty.keep_pending_finalized_assistant', {
+          bubble: _chatDiagDescribeElement(_pendingFinalizedAssistantBubble),
+        });
+        return;
+      }
+      _thread.innerHTML = '';
       _messages = [];
       _lastHeaderRole = '';
       _lastHeaderDay = '';
       if (window.SavingsFX) window.SavingsFX.resetStreak();
-      let historySavingsIdentity = '';
-      let _histAsstIdx = 0;
-      // 1-indexed running count of user messages seen so far during
-      // this rebuild. The router strip's localStorage seed cache is
-      // keyed by (sessionKey, userMsgIndex, tier); using this counter
-      // means live + history rebuilds for the same turn reuse the same layout.
-      let _histUserIdx = 0;
-      const consumedHistoryElements = new Set();
-      messages.forEach((msg) => {
+      _lastSavingsPopupIdentity = '';
+      _thread.innerHTML = _emptyStateHTML();
+      _chatDiag('history.empty.rendered_empty_state', {});
+      return;
+    }
+    const existingByStableIdentity = new Map();
+    const existingByFallbackIdentity = new Map();
+    _thread.querySelectorAll('.msg').forEach((el) => {
+      const stable = el.getAttribute('data-message-id') || '';
+      if (stable) existingByStableIdentity.set(stable, el);
+      const fallback = el.getAttribute('data-history-fallback-id') || _historyElementFallbackIdentity(el);
+      if (fallback) _pushIdentityElement(existingByFallbackIdentity, fallback, el);
+    });
+    const empty = _thread.querySelector('.chat-empty');
+    if (empty) empty.remove();
+    _thread.querySelectorAll('.chat-day-sep').forEach((el) => el.remove());
+    // Drop every stale router strip that is not already associated with this
+    // session/turn. Reorder repair below keeps attached strips in place.
+    _thread.querySelectorAll('.router-fx').forEach((el) => {
+      if (el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex) return;
+      el.remove();
+    });
+    _messages = [];
+    _lastHeaderRole = '';
+    _lastHeaderDay = '';
+    if (window.SavingsFX) window.SavingsFX.resetStreak();
+    let historySavingsIdentity = '';
+    let _histAsstIdx = 0;
+    // 1-indexed running count of user messages seen so far during
+    // this rebuild. The router strip's localStorage seed cache is
+    // keyed by (sessionKey, userMsgIndex, tier); using this counter
+    // means live + history rebuilds for the same turn reuse the same layout.
+    let _histUserIdx = 0;
+    const consumedHistoryElements = new Set();
+    messages.forEach((msg) => {
         if (msg.role === 'user') _histUserIdx++;
         const rawText = msg.text || '';
         const displayText = msg.role === 'user' ? _stripTimePrefix(rawText) : rawText;
@@ -4328,69 +5058,49 @@ const ChatView = (() => {
               // user message that triggered this turn — never above
               // it, never with anything wedged in between.
               //
-              // Reuse a persisted/live strip already sitting in that
-              // slot (the just-settled live grid from this session)
-              // instead of rebuilding, so the user doesn't see the
-              // cell order shift after the hammer locked.
+              // Reuse a persisted strip already sitting in that slot instead of
+              // rebuilding, so the user doesn't see the cell order shift after
+              // the hammer locked.
               //
               // Otherwise build a fresh one, seeded off the
               // assistant message's stable timestamp so the layout
               // reproduces deterministically across page refreshes.
-              // Only an in-flight live strip is allowed to short-
-              // circuit rebuild; everything else was already wiped
-              // by the cleanup above and needs to be re-inserted
-              // with the seed-cached layout.
               const userMsg = _routerFxUserMessageForAssistant(div);
               const routerIdentity = _routerFxUsageIdentity(savedUsage);
               // The message-reorder pass above (_appendHistoryElementInOrder)
-              // moves only .msg elements, so any strip already rendered for
-              // this turn is left stranded — usually at the top of the thread.
-              // This includes the just-streamed grid: the done handler promotes
-              // it from live to settled (clearing data-live) BEFORE this sync
-              // runs, so it can no longer be found by a data-live probe and the
-              // old nextSibling check missed it, building a duplicate while the
-              // orphan survived cleanup — the two grids seen in the first chat.
-              // Match this turn's strip(s) by (session, turn index) instead:
+              // moves user .msg elements together with their attached router
+              // strip. Match this turn's remaining strip(s) by (session, turn
+              // index) instead of using a separate live-strip preservation path:
               // keep the one whose routing identity matches, drop any extras
-              // (duplicates accumulated across earlier syncs), and re-anchor the
-              // survivor beneath its user message so the reuse check below sees
-              // it. A turn-index skew that matches nothing here is caught by the
-              // positional backstop near the end of the rebuild.
+              // accumulated across earlier syncs, and let the positional
+              // backstop catch anything that is still detached.
               if (userMsg && userMsg.parentNode === _thread) {
                 const ownStrips = Array.from(_thread.querySelectorAll('.router-fx')).filter(
                   (el) => el.dataset.sessionKey === (_sessionKey || '')
                     && el.dataset.turnIndex === String(_histUserIdx),
                 );
-                // The in-flight strip (data-live) is owned by the scan→lock
-                // flow — ALWAYS keep + re-anchor it, never rebuild over it.
-                // This is the fix for the panel vanishing mid-turn: a mid-stream
-                // _loadHistory used to drop the live strip whenever its routing
-                // identity didn't match the (partial) saved usage. Otherwise
-                // keep the strip whose routing identity matches.
-                const keep = ownStrips.find((el) => el.dataset.live === 'true')
-                  || ownStrips.find((el) => el.dataset.routerIdentity === routerIdentity)
+                const keep = ownStrips.find((el) => el.dataset.routerIdentity === routerIdentity)
                   || null;
                 ownStrips.forEach((el) => { if (el !== keep) el.remove(); });
                 if (keep) {
                   if (userMsg.nextSibling !== keep) {
                     _thread.insertBefore(keep, userMsg.nextSibling);
+                    _chatDiag('history.reanchor_identity_strip', {
+                      user: _chatDiagDescribeElement(userMsg),
+                      strip: _chatDiagDescribeElement(keep),
+                      routerIdentity,
+                    });
                   }
-                  // Promote live→settled ONLY once the turn is no longer
-                  // streaming. While streaming, the strip stays data-live so
-                  // every mid-turn rebuild keeps protecting + re-anchoring it.
-                  if (!_isStreaming) delete keep.dataset.live;
+                  delete keep.dataset.live;
                 }
               }
               const placed = userMsg && userMsg.nextSibling;
               const existingStrip = (placed && placed.classList
                   && placed.classList.contains('router-fx')) ? placed : null;
-              // Never rebuild over an in-flight live strip — treat it (or any
-              // identity-matching strip) as already in place.
               const alreadyInPlace = existingStrip
-                && (existingStrip.dataset.live === 'true'
-                  || existingStrip.dataset.routerIdentity === routerIdentity);
+                && existingStrip.dataset.routerIdentity === routerIdentity;
               if (!alreadyInPlace) {
-                if (existingStrip && existingStrip.dataset.live !== 'true') existingStrip.remove();
+                if (existingStrip) existingStrip.remove();
                 const hint = msg.timestamp || msg.ts || msg.message_id || '';
                 const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);
                 const routerStrip = _buildRouterFxFromUsage(savedUsage, cachedSeed);
@@ -4409,31 +5119,24 @@ const ChatView = (() => {
           }
         }
       });
+      _flushPendingRouterDecisions();
+      const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');
       _thread.querySelectorAll('.msg').forEach((el) => {
-        if (_isStreaming && el === _streamBubble) return;
+        if (_isStreaming && _isCurrentSessionStreamBubble(el)) return;
+        if (_isStreaming && el === liveUserAnchor) return;
+        if (_isPendingFinalizedAssistantBubble(el) && _historyStillWaitingForAssistant(messages)) return;
         if (!consumedHistoryElements.has(el)) el.remove();
       });
       _thread.querySelectorAll('.router-fx').forEach((el) => {
-        if (el.dataset.live === 'true') return;
         const turnIndex = el.dataset.turnIndex || '';
         if (el.dataset.sessionKey === (_sessionKey || '') && turnIndex) return;
         el.remove();
       });
-      // Orphan backstop: the reorder can strand a strip that the per-turn
-      // re-anchor above did not match (e.g. a turn-index skew between the live
-      // DOM user-count and the transcript ordinal). Outside an active stream
-      // every kept strip must sit immediately beneath its user message; drop
-      // any that do not so a stranded grid can never linger at the top of the
-      // thread. Guarded by _isStreaming so an in-flight strip — which the
-      // reorder also strands but whose turn is not yet persisted — is never
-      // removed mid-turn.
+      // Orphan backstop: outside an active stream every kept strip must sit
+      // immediately beneath its user message; drop any that do not so a stranded
+      // grid can never linger at the top of the thread.
       if (!_isStreaming) {
         _thread.querySelectorAll('.router-fx').forEach((el) => {
-          // Spare the in-flight strip: it's still data-live (the done handler no
-          // longer clears it prematurely) and the consolidation hasn't
-          // re-anchored it yet because its turn isn't persisted. It's
-          // positionally stranded by the reorder but must survive the turn.
-          if (el.dataset.live === 'true') return;
           const prev = el.previousElementSibling;
           const anchored = !!prev && !!prev.classList && prev.classList.contains('msg')
             && (prev.classList.contains('user')
@@ -4443,37 +5146,34 @@ const ChatView = (() => {
       }
       // User-pref disabled-sweep: the viewer has hidden the router-fx
       // visualisation. New strips are already gated off above; this drops any
-      // strip left from before the toggle flipped (incl. a former live strip
-      // the consolidation re-anchored a moment ago). A still-live strip mid-
-      // stream is spared — same _isStreaming guard as the orphan backstop — and
-      // removed on the next sync once it has settled.
+      // strip left from before the toggle flipped.
       if (!_routerFx.enabled) {
-        _thread.querySelectorAll('.router-fx').forEach((el) => {
-          if (_isStreaming && el.dataset.live === 'true') return;
-          el.remove();
-        });
+        _thread.querySelectorAll('.router-fx').forEach((el) => el.remove());
       }
-      // Re-anchor the in-flight live strip under the latest user message. The
-      // reorder above re-appends only .msg nodes, so during a long multi-step
-      // turn (many tool-call cards added mid-stream) the non-.msg strip gets
-      // stranded far from its turn and appears to vanish. Pin it back so it
-      // sits right below the user prompt for the whole turn, until the
-      // consolidation takes over once the turn is persisted.
-      if (_routerFx.enabled) {
-        const liveStrip = _thread.querySelector('.router-fx[data-live="true"]');
-        if (liveStrip) {
-          const lastUser = _routerFxLastUserMessage();
-          if (lastUser && lastUser.parentNode === _thread && lastUser.nextSibling !== liveStrip) {
-            _thread.insertBefore(liveStrip, lastUser.nextSibling);
-          }
-        }
+      if (_pendingFinalizedAssistantBubble
+          && (consumedHistoryElements.has(_pendingFinalizedAssistantBubble)
+            || !_pendingFinalizedAssistantBubble.isConnected
+            || !_historyStillWaitingForAssistant(messages))) {
+        _clearPendingFinalizedAssistantBubble();
       }
-      _lastSavingsPopupIdentity = historySavingsIdentity;
-      _scrollToBottom();
-    } catch {
-      // History endpoint may not exist yet; silently keep the view empty
-    }
-  }
+	      _lastSavingsPopupIdentity = historySavingsIdentity;
+	      _renderHistoryScopeRow();
+	      if (opts.preserveScroll) {
+	        const oldHeight = Number(opts.previousScrollHeight || 0);
+	        const oldTop = Number(opts.previousScrollTop || 0);
+	        _thread.scrollTop = Math.max(0, _thread.scrollHeight - oldHeight + oldTop);
+	      } else {
+	        _scrollToBottom();
+	      }
+	      _chatDiag('history.done', {
+	        count: messages.length,
+	        consumed: consumedHistoryElements.size,
+	        streaming: _isStreaming,
+	        hasStreamBubble: !!_streamBubble,
+	        hasMore: _historyHasMore,
+	        historyScope: _historyScope,
+	      });
+	  }
 
   function _appendHistoryDaySeparator(timestamp) {
     const day = _dayKey(timestamp);
@@ -4481,7 +5181,7 @@ const ChatView = (() => {
     const sep = document.createElement('div');
     sep.className = 'chat-day-sep';
     sep.innerHTML = `<span>${_dayLabel(day)}</span>`;
-    if (_isStreaming && _streamBubble) {
+    if (_isStreaming && _isCurrentSessionStreamBubble(_streamBubble)) {
       _thread.insertBefore(sep, _streamBubble);
     } else {
       _thread.appendChild(sep);
@@ -4492,11 +5192,37 @@ const ChatView = (() => {
 
   function _appendHistoryElementInOrder(div) {
     if (!div) return;
-    if (_isStreaming && _streamBubble && div !== _streamBubble) {
+    // History rebuilds reuse and move .msg nodes. If the user message already
+    // owns a live router strip, move that strip with the user message as one
+    // turn unit; otherwise the DOM reorder can strand the strip above the user
+    // while output is streaming.
+    const attachedRouterStrip = _routerFxStripImmediatelyAfterUser(div);
+    if (_isStreaming && _isCurrentSessionStreamBubble(_streamBubble) && div !== _streamBubble) {
       _thread.insertBefore(div, _streamBubble);
+      _restoreRouterFxAfterHistoryUser(div, attachedRouterStrip);
       return;
     }
     _thread.appendChild(div);
+    _restoreRouterFxAfterHistoryUser(div, attachedRouterStrip);
+  }
+
+  function _routerFxStripImmediatelyAfterUser(div) {
+    if (!div || !div.classList) return null;
+    const isUser = div.classList.contains('user')
+      || div.getAttribute('data-history-role') === 'user';
+    if (!isUser) return null;
+    const next = div.nextElementSibling;
+    return (next && next.classList && next.classList.contains('router-fx')) ? next : null;
+  }
+
+  function _restoreRouterFxAfterHistoryUser(div, routerStrip) {
+    if (!div || !routerStrip || routerStrip.parentNode !== _thread) return;
+    if (routerStrip.previousElementSibling === div) return;
+    _thread.insertBefore(routerStrip, div.nextSibling);
+    _chatDiag('history.move_attached_router_strip', {
+      user: _chatDiagDescribeElement(div),
+      strip: _chatDiagDescribeElement(routerStrip),
+    });
   }
 
   function _historyStableMessageIdentity(msg) {
@@ -4552,6 +5278,93 @@ const ChatView = (() => {
     const role = _historyElementRole(el);
     const text = _historyElementText(el);
     return role || text ? _historyFallbackMessageIdentity(role, text) : '';
+  }
+
+  function _markPendingFinalizedAssistantBubble(bubble, text) {
+    if (!bubble || !text) return;
+    _pendingFinalizedAssistantBubble = bubble;
+    _pendingFinalizedAssistantFallbackId = _historyFallbackMessageIdentity('assistant', text);
+    bubble.dataset.pendingFinalizedAssistant = 'true';
+    bubble.dataset.pendingFinalizedSessionKey = _sessionKey || '';
+    bubble.dataset.pendingFinalizedFallbackId = _pendingFinalizedAssistantFallbackId;
+    _chatDiag('stream.end.pending_finalized_assistant', {
+      fallbackId: _pendingFinalizedAssistantFallbackId,
+      bubble: _chatDiagDescribeElement(bubble),
+    });
+  }
+
+  function _clearPendingFinalizedAssistantBubble() {
+    if (_pendingFinalizedAssistantBubble) {
+      delete _pendingFinalizedAssistantBubble.dataset.pendingFinalizedAssistant;
+      delete _pendingFinalizedAssistantBubble.dataset.pendingFinalizedSessionKey;
+      delete _pendingFinalizedAssistantBubble.dataset.pendingFinalizedFallbackId;
+    }
+    _pendingFinalizedAssistantBubble = null;
+    _pendingFinalizedAssistantFallbackId = '';
+  }
+
+  function _isPendingFinalizedAssistantBubble(el) {
+    return !!el
+      && el === _pendingFinalizedAssistantBubble
+      && el.dataset.pendingFinalizedAssistant === 'true'
+      && el.dataset.pendingFinalizedSessionKey === (_sessionKey || '');
+  }
+
+  function _isCurrentSessionStreamBubble(el) {
+    if (!el || el !== _streamBubble) return false;
+    const currentKey = _sessionKey || '';
+    const streamKey = _streamSessionKey || el.dataset.streamSessionKey || '';
+    return !!currentKey
+      && streamKey === currentKey
+      && (!el.dataset.streamSessionKey || el.dataset.streamSessionKey === currentKey);
+  }
+
+  function _historyStillWaitingForAssistant(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return true;
+    const last = messages[messages.length - 1] || {};
+    return last.role !== 'assistant';
+  }
+
+  function _currentSessionLiveRouterStrips(key = _sessionKey || '') {
+    if (!_thread || !key) return [];
+    return Array.from(_thread.querySelectorAll('.router-fx')).filter((el) => (
+      el.dataset.sessionKey === key
+      && (el.dataset.live === 'true' || el.dataset.scanning === 'true')
+    ));
+  }
+
+  function _isUserMessageElement(el) {
+    return !!el && !!el.classList && (
+      el.classList.contains('user')
+      || el.getAttribute('data-history-role') === 'user'
+    );
+  }
+
+  function _currentSessionLiveUserAnchor(key = _sessionKey || '') {
+    if (!_thread || !key) return null;
+    const routerStrips = _currentSessionLiveRouterStrips(key);
+    for (const strip of routerStrips) {
+      const prev = strip.previousElementSibling;
+      if (_isUserMessageElement(prev)) return prev;
+    }
+    if (_isCurrentSessionStreamBubble(_streamBubble)) {
+      const streamAnchor = _routerFxUserMessageForAssistant(_streamBubble);
+      if (streamAnchor) return streamAnchor;
+    }
+    return _isStreaming ? _routerFxLastUserMessage() : null;
+  }
+
+  function _insertLiveRouterStripForAnchor(strip, userAnchor, streamBubble) {
+    if (!_thread || !strip) return;
+    if (userAnchor && userAnchor.parentNode === _thread) {
+      _thread.insertBefore(strip, userAnchor.nextSibling);
+      return;
+    }
+    if (streamBubble && streamBubble.parentNode === _thread) {
+      _thread.insertBefore(strip, streamBubble);
+      return;
+    }
+    _thread.appendChild(strip);
   }
 
   function _stampHistoryElement(div, stableIdentity, role, text) {
@@ -4715,13 +5528,27 @@ const ChatView = (() => {
     // animation fills the wait (and stands in for the thinking placeholder);
     // it locks onto the winner when the router_decision arrives.
     _startStreaming();
-    _routerFxBeginScan(userDiv, _routerFxResolveLayoutSeed(_sessionKey));
+    const routerScanStarted = _routerFxBeginScan(userDiv, _routerFxResolveLayoutSeed(_sessionKey));
+    _chatDiag('send.start', {
+      textLen: providerText.length,
+      attachments: params.attachments ? params.attachments.length : 0,
+      routerScanStarted,
+      routerFxEnabled: !!_routerFx.enabled,
+      routerFeatureEnabled: !!_routerFeatureEnabled,
+      user: _chatDiagDescribeElement(userDiv),
+    });
     _showThinkingIndicator();
 
     // Send
     _rpc.call('chat.send', params).then((res) => {
+      _chatDiag('send.rpc.resolved', {
+        responseSessionKey: res && res.sessionKey ? res.sessionKey : '',
+      });
       if (res && res.sessionKey && res.sessionKey !== _sessionKey) _persistSession(res.sessionKey);
     }).catch((err) => {
+      _chatDiag('send.rpc.error', {
+        message: err && err.message ? err.message : String(err),
+      });
       _endStreaming();
       _addMessage('error', 'Send failed: ' + err.message);
     });
@@ -4858,9 +5685,26 @@ const ChatView = (() => {
   function _acceptStreamSeq(payload) {
     const seq = payload && payload.stream_seq;
     if (typeof seq !== 'number' || !Number.isFinite(seq)) return true;
-    if (seq <= _lastStreamSeq) return false;
-    _lastStreamSeq = seq;
-    return true;
+    const key = _sessionKeyFromPayload(payload) || _sessionKey || '';
+    return _markSessionStreamSeqSeen(key, seq);
+  }
+
+  function _eventHasSpecificSessionHandler(event) {
+    return [
+      'session.event.state_change',
+      'session.event.text_delta',
+      'session.event.router_decision',
+      'session.event.tool_use_start',
+      'session.event.tool_result',
+      'session.event.artifact',
+      'session.event.subagent_start',
+      'session.event.subagent_progress',
+      'session.event.subagent_result',
+      'session.event.task_group.started',
+      'session.event.task_group.update',
+      'session.event.task_group.completed',
+      'session.event.task_group.failed',
+    ].includes(event);
   }
 
   // Returns true when a session event payload carries an epoch that
@@ -4887,12 +5731,16 @@ const ChatView = (() => {
 
   function _showThinkingIndicatorNow() {
     _thinkingDelayTimer = null;
-    if (_streamBubble) return; // content already arrived, skip
+    if (_streamBubble) {
+      _chatDiag('thinking.skip.stream_bubble', {});
+      return; // content already arrived, skip
+    }
     // Defer while the router panel is still animating to its final state — the
     // "Watching…" indicator belongs AFTER routing settles, not during the scan.
     // Re-check shortly; the panel locks within ~1s, then this shows (with the
     // elapsed counted from send).
     if (_thread && _thread.querySelector('.router-fx[data-scanning="true"]')) {
+      _chatDiag('thinking.defer.router_scan', {});
       _thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, 150);
       return;
     }
@@ -4944,6 +5792,9 @@ const ChatView = (() => {
     body.appendChild(status);
     _thinkingEl.appendChild(body);
     _thread.appendChild(_thinkingEl);
+    _chatDiag('thinking.show', {
+      thinking: _chatDiagDescribeElement(_thinkingEl),
+    });
     if (_autoScroll) _scrollToBottom();
 
     _thinkingTimerInterval = setInterval(() => {
@@ -4962,6 +5813,7 @@ const ChatView = (() => {
   }
 
   function _hideThinkingIndicator() {
+    const hadThinking = !!_thinkingEl || !!_thinkingDelayTimer || !!_thinkingTimerInterval;
     if (_thinkingDelayTimer) {
       clearTimeout(_thinkingDelayTimer);
       _thinkingDelayTimer = null;
@@ -4974,10 +5826,18 @@ const ChatView = (() => {
       _thinkingEl.remove();
       _thinkingEl = null;
     }
+    if (hadThinking) _chatDiag('thinking.hide', {});
   }
 
   function _startStreaming() {
+    _chatDiag('stream.start.before', {
+      wasStreaming: _isStreaming,
+      hadStreamBubble: !!_streamBubble,
+      streamRawLen: _streamRaw.length,
+    });
     _isStreaming = true;
+    _streamSessionKey = _sessionKey || '';
+    if (_streamSessionKey) _liveStreamStateBySession.delete(_streamSessionKey);
     _streamGeneration += 1;
     _applySessionRunState({ run_status: 'running', active_task: { status: 'running' } });
     _streamRaw = '';
@@ -4988,16 +5848,19 @@ const ChatView = (() => {
     if (_thread) _thread.setAttribute('aria-busy', 'true');
     _updateSendButton();
     _resetStreamIdleTimer();
+    _chatDiag('stream.start.after', {});
   }
 
   function _ensureStreamBubble() {
+    _chatDiag('stream.ensure.start', {
+      hadStreamBubble: !!_streamBubble,
+      streamRawLen: _streamRaw.length,
+      activeTextRawLen: _activeTextRaw.length,
+    });
     _hideThinkingIndicator();
-    // RED LINE: output is about to render — the router panel must NOT still be
-    // animating. Freeze any in-flight strip to its final static settled state
-    // (stop the scan, snap to settled, kill all transitions/animations). The
-    // router decides before the model emits output, so by now the strip is
-    // normally locked onto its winner.
-    _routerFxFreezeForOutput();
+    // Output is about to render. Finish any in-flight scan so the router does
+    // not keep roaming, but allow the winner-lock animation to play.
+    _routerFxSettleForOutput();
     if (!_streamBubble) {
       // Remove "No messages yet." placeholder
       const empty = _thread.querySelector('.chat-empty');
@@ -5007,6 +5870,8 @@ const ChatView = (() => {
       _streamBubble.className = 'msg assistant streaming';
       _streamBubble.setAttribute('data-history-role', 'assistant');
       _streamBubble.setAttribute('aria-live', 'polite');
+      _streamBubble.dataset.sessionKey = _streamSessionKey || _sessionKey || '';
+      _streamBubble.dataset.streamSessionKey = _streamSessionKey || _sessionKey || '';
 
       // Day separator for streaming bubbles (use current time as timestamp)
       const now = new Date().toISOString();
@@ -5039,6 +5904,9 @@ const ChatView = (() => {
 
       // Create the first text segment
       _newTextSegment();
+      _chatDiag('stream.bubble.created', {
+        streamBubble: _chatDiagDescribeElement(_streamBubble),
+      });
     }
     return _streamBubble;
   }
@@ -5058,6 +5926,12 @@ const ChatView = (() => {
 
   function _appendDelta(text) {
     if (_aborted) return;
+    _chatDiag('stream.delta.start', {
+      len: text ? text.length : 0,
+      head: _chatDiagShortText(text, 100),
+      wasStreaming: _isStreaming,
+      hasStreamBubble: !!_streamBubble,
+    });
     if (!_isStreaming) _startStreaming();
     _ensureStreamBubble();
     _streamRaw += text;
@@ -5076,6 +5950,10 @@ const ChatView = (() => {
         _renderRafId = requestAnimationFrame(_flushRender);
       }
     }
+    _chatDiag('stream.delta.queued', {
+      streamRawLen: _streamRaw.length,
+      activeTextRawLen: _activeTextRaw.length,
+    });
   }
 
   function _flushPendingTextSegment() {
@@ -5089,18 +5967,36 @@ const ChatView = (() => {
 
   function _flushRender() {
     _renderRafId = null;
-    if (!_renderDirty || !_streamBubble) { _renderDirty = false; return; }
+    if (!_renderDirty || !_streamBubble) {
+      _chatDiag('stream.flush.skip', {
+        renderDirty: !!_renderDirty,
+        hasStreamBubble: !!_streamBubble,
+      });
+      _renderDirty = false;
+      return;
+    }
     if (_activeTextSeg && _activeTextRaw) {
       _activeTextSeg.innerHTML = Markdown.render(_stripProtocolTextLeak(_stripDirectiveTags(_stripGeneratedArtifactMarkers(_activeTextRaw))));  // eslint-disable-line no-unsanitized/property
       Markdown.bindCopy(_activeTextSeg);
     }
     _renderDirty = false;
     if (_autoScroll) _scrollToBottom();
+    _chatDiag('stream.flush.done', {
+      streamRawLen: _streamRaw.length,
+      activeTextRawLen: _activeTextRaw.length,
+      activeSeg: _chatDiagDescribeElement(_activeTextSeg),
+    });
   }
 
   function _endStreaming(opts) {
     const reason = opts && opts.reason;
     const wasAborted = reason === 'aborted';
+    _chatDiag('stream.end.start', {
+      reason: reason || '',
+      wasAborted,
+      hasStreamBubble: !!_streamBubble,
+      streamRawLen: _streamRaw.length,
+    });
     _hideThinkingIndicator();
     if (_historySyncTimer) { clearTimeout(_historySyncTimer); _historySyncTimer = null; }
     if (_renderRafId) { cancelAnimationFrame(_renderRafId); _renderRafId = null; }
@@ -5116,9 +6012,14 @@ const ChatView = (() => {
       // even if the partial happens to match a sentinel string.
       const _SENTINELS = ['NO_REPLY', 'HEARTBEAT_OK'];
       if (!wasAborted && _SENTINELS.includes(cleanedText)) {
+        _chatDiag('stream.end.remove.sentinel', {
+          cleanedText,
+        });
         _streamBubble.remove();
         _streamBubble = null;
         _isStreaming = false;
+        if (_streamSessionKey) _liveStreamStateBySession.delete(_streamSessionKey);
+        _streamSessionKey = '';
         _streamRaw = '';
         _segments = []; _activeTextSeg = null; _activeTextRaw = '';
         _streamArtifacts = [];
@@ -5129,9 +6030,12 @@ const ChatView = (() => {
       // Aborted with no partial output: drop the empty bubble entirely so
       // the transcript doesn't grow stub assistant messages every ESC.
       if (wasAborted && !cleanedText) {
+        _chatDiag('stream.end.remove.aborted_empty', {});
         _streamBubble.remove();
         _streamBubble = null;
         _isStreaming = false;
+        if (_streamSessionKey) _liveStreamStateBySession.delete(_streamSessionKey);
+        _streamSessionKey = '';
         _streamRaw = '';
         _segments = []; _activeTextSeg = null; _activeTextRaw = '';
         _streamArtifacts = [];
@@ -5140,6 +6044,7 @@ const ChatView = (() => {
         return;
       }
       _stampHistoryElement(_streamBubble, '', 'assistant', cleanedText);
+      _markPendingFinalizedAssistantBubble(_streamBubble, cleanedText);
 
       // Final render: render each text segment with its own content
       for (const seg of _segments) {
@@ -5184,12 +6089,175 @@ const ChatView = (() => {
       _attachHoverActions(_streamBubble, 'assistant');
     }
     _isStreaming = false;
+    if (_streamSessionKey) _liveStreamStateBySession.delete(_streamSessionKey);
     _streamBubble = null;
+    _streamSessionKey = '';
     _streamRaw = '';
     _segments = []; _activeTextSeg = null; _activeTextRaw = '';
     _streamArtifacts = [];
     if (_thread) _thread.setAttribute('aria-busy', 'false');
     _updateSendButton();
+    _chatDiag('stream.end.done', {
+      reason: reason || '',
+      wasAborted,
+    });
+  }
+
+  function _hasViewLocalStreamState() {
+    return !!(
+      _isStreaming
+      || _streamBubble
+      || _streamRaw
+      || _segments.length
+      || _activeTextRaw
+      || _streamArtifacts.length
+      || _currentSessionLiveRouterStrips(_streamSessionKey || _sessionKey || '').length
+      || _thinkingEl
+      || _thinkingDelayTimer
+    );
+  }
+
+  function _parkCurrentSessionStreamState(reason) {
+    const key = _streamSessionKey || _sessionKey || '';
+    const routerStrips = _currentSessionLiveRouterStrips(key);
+    const liveUserAnchor = _currentSessionLiveUserAnchor(key);
+    if (!key || !_hasViewLocalStreamState()) {
+      _clearViewLocalStreamState(reason);
+      return false;
+    }
+    _flushPendingTextSegment();
+    const state = {
+      isStreaming: _isStreaming,
+      streamBubble: _streamBubble,
+      streamSessionKey: key,
+      streamRaw: _streamRaw,
+      liveUserAnchor,
+      segments: _segments,
+      activeTextSeg: _activeTextSeg,
+      activeTextRaw: _activeTextRaw,
+      streamArtifacts: _streamArtifacts.slice(),
+      routerStrips,
+      streamGeneration: _streamGeneration,
+      autoScroll: _autoScroll,
+      pendingFinalizedAssistantBubble: _pendingFinalizedAssistantBubble,
+      pendingFinalizedAssistantFallbackId: _pendingFinalizedAssistantFallbackId,
+    };
+    _liveStreamStateBySession.set(key, state);
+    _hideThinkingIndicator();
+    if (_historySyncTimer) { clearTimeout(_historySyncTimer); _historySyncTimer = null; }
+    if (_renderRafId) { cancelAnimationFrame(_renderRafId); _renderRafId = null; }
+    _renderDirty = false;
+    _clearStreamIdleTimer();
+    _streamIdlePausedForApproval = false;
+    if (_streamBubble) _streamBubble.remove();
+    routerStrips.forEach((el) => {
+      _routerFxPauseScanTimers(el);
+      if (el.parentNode) el.remove();
+    });
+    if (liveUserAnchor && liveUserAnchor.parentNode) liveUserAnchor.remove();
+    _isStreaming = false;
+    _streamBubble = null;
+    _streamSessionKey = '';
+    _streamRaw = '';
+    _segments = []; _activeTextSeg = null; _activeTextRaw = '';
+    _streamArtifacts = [];
+    if (_thread) _thread.setAttribute('aria-busy', 'false');
+    _updateSendButton();
+    _chatDiag('stream.view_state_parked', {
+      reason: reason || '',
+      sessionKey: key,
+      streamRawLen: state.streamRaw.length,
+      hasStreamBubble: !!state.streamBubble,
+      hasLiveUserAnchor: !!state.liveUserAnchor,
+      routerStripCount: routerStrips.length,
+    });
+    return true;
+  }
+
+  function _restoreLiveStreamStateForSession(key) {
+    const sessionKey = key || _sessionKey || '';
+    const state = _liveStreamStateBySession.get(sessionKey);
+    if (!state || state.streamSessionKey !== sessionKey) return false;
+    _liveStreamStateBySession.delete(sessionKey);
+    _isStreaming = !!state.isStreaming;
+    _streamBubble = state.streamBubble || null;
+    _streamSessionKey = state.streamSessionKey || sessionKey;
+    _streamRaw = state.streamRaw || '';
+    _segments = Array.isArray(state.segments) ? state.segments : [];
+    _activeTextSeg = state.activeTextSeg || null;
+    _activeTextRaw = state.activeTextRaw || '';
+    _streamArtifacts = Array.isArray(state.streamArtifacts) ? state.streamArtifacts.slice() : [];
+    _streamGeneration = Math.max(_streamGeneration, state.streamGeneration || 0);
+    _autoScroll = state.autoScroll !== false;
+    _pendingFinalizedAssistantBubble = state.pendingFinalizedAssistantBubble || null;
+    _pendingFinalizedAssistantFallbackId = state.pendingFinalizedAssistantFallbackId || '';
+    const liveUserAnchor = state.liveUserAnchor || null;
+    const routerStrips = Array.isArray(state.routerStrips) ? state.routerStrips : [];
+    if (_thread && liveUserAnchor && !liveUserAnchor.isConnected) {
+      _thread.appendChild(liveUserAnchor);
+    }
+    if (_streamBubble) {
+      _streamBubble.dataset.sessionKey = sessionKey;
+      _streamBubble.dataset.streamSessionKey = sessionKey;
+      if (_thread && !_streamBubble.isConnected) _thread.appendChild(_streamBubble);
+    }
+    if (_thread) {
+      routerStrips.forEach((el) => {
+        el.dataset.sessionKey = sessionKey;
+        if (!el.isConnected) {
+          _insertLiveRouterStripForAnchor(el, liveUserAnchor, _streamBubble);
+        }
+        _routerFxResumeLiveStrip(el);
+      });
+    }
+    if (_thread) _thread.setAttribute('aria-busy', _isStreaming ? 'true' : 'false');
+    if (_isStreaming) {
+      _applySessionRunState({ run_status: 'running', active_task: { status: 'running' } });
+      _resetStreamIdleTimer();
+    }
+    _updateSendButton();
+    _chatDiag('stream.view_state_restored', {
+      sessionKey,
+      streamRawLen: _streamRaw.length,
+      hasStreamBubble: !!_streamBubble,
+      hasLiveUserAnchor: !!liveUserAnchor,
+      routerStripCount: routerStrips.length,
+    });
+    return true;
+  }
+
+  function _clearViewLocalStreamState(reason) {
+    const hadStreamBubble = !!_streamBubble;
+    const hadPendingFinalized = !!_pendingFinalizedAssistantBubble;
+    const routerStrips = _currentSessionLiveRouterStrips(_streamSessionKey || _sessionKey || '');
+    _hideThinkingIndicator();
+    if (_historySyncTimer) { clearTimeout(_historySyncTimer); _historySyncTimer = null; }
+    if (_renderRafId) { cancelAnimationFrame(_renderRafId); _renderRafId = null; }
+    _renderDirty = false;
+    _clearStreamIdleTimer();
+    _streamIdlePausedForApproval = false;
+    if (_streamBubble) _streamBubble.remove();
+    routerStrips.forEach((el) => {
+      _routerFxPauseScanTimers(el);
+      if (el.parentNode) el.remove();
+    });
+    _clearPendingFinalizedAssistantBubble();
+    if (_streamSessionKey) _liveStreamStateBySession.delete(_streamSessionKey);
+    _isStreaming = false;
+    _streamBubble = null;
+    _streamSessionKey = '';
+    _streamRaw = '';
+    _segments = []; _activeTextSeg = null; _activeTextRaw = '';
+    _streamArtifacts = [];
+    _streamGeneration += 1;
+    if (_thread) _thread.setAttribute('aria-busy', 'false');
+    _updateSendButton();
+    _chatDiag('stream.view_state_cleared', {
+      reason: reason || '',
+      hadStreamBubble,
+      hadPendingFinalized,
+      routerStripCount: routerStrips.length,
+    });
   }
 
   function _updateSendButton() {
@@ -5281,6 +6349,10 @@ const ChatView = (() => {
     iconSpan.textContent = _toolEmoji(name);
     summary.appendChild(iconSpan);
     summary.appendChild(document.createTextNode(' ' + displayName));
+    const statusSpan = document.createElement('span');
+    statusSpan.className = 'chat-tools-status';
+    statusSpan.textContent = isRunning ? 'running' : 'ready';
+    summary.appendChild(statusSpan);
 
     const toolsBody = document.createElement('div');
     toolsBody.className = 'chat-tools-body';
@@ -5298,6 +6370,19 @@ const ChatView = (() => {
     return details;
   }
 
+  function _setToolSummaryStatus(details, status) {
+    if (!details) return;
+    const summary = details.querySelector('.chat-tools-summary');
+    if (!summary) return;
+    let statusSpan = summary.querySelector('.chat-tools-status');
+    if (!statusSpan) {
+      statusSpan = document.createElement('span');
+      statusSpan.className = 'chat-tools-status';
+      summary.appendChild(statusSpan);
+    }
+    statusSpan.textContent = status || '';
+  }
+
   function _retitleToolCallDOM(details, name, input) {
     if (!details || !name) return;
     const current = details.getAttribute('data-tool-name') || '';
@@ -5307,12 +6392,17 @@ const ChatView = (() => {
     if (!summary) return;
     const providerBadge = summary.querySelector('.chat-tool-provider');
     if (providerBadge) providerBadge.remove();
+    const statusText = summary.querySelector('.chat-tools-status')?.textContent || '';
     summary.textContent = '';
     const iconSpan = document.createElement('span');
     iconSpan.className = 'chat-tools-icon';
     iconSpan.textContent = _toolEmoji(name);
     summary.appendChild(iconSpan);
     summary.appendChild(document.createTextNode(' ' + _toolDisplayName(name, input)));
+    const statusSpan = document.createElement('span');
+    statusSpan.className = 'chat-tools-status';
+    statusSpan.textContent = statusText;
+    summary.appendChild(statusSpan);
     if (providerBadge) summary.appendChild(providerBadge);
   }
 
@@ -5433,6 +6523,7 @@ const ChatView = (() => {
 
   function _appendToolCall(payload) {
     if (!payload) return;
+    _chatDiag('tool_call.append.start', _chatDiagSummarizePayload(payload));
     const name = payload.name || payload.tool_name || 'tool';
     try { if (name && name.startsWith('meta-step:')) console.log('[meta-step] start', name); } catch (e) {}
     const input = typeof payload.input === 'string'
@@ -5444,6 +6535,10 @@ const ChatView = (() => {
     const body = bubble.querySelector('.msg-body');
     const existing = _findToolDetailsById(body, toolId);
     if (existing) {
+      _chatDiag('tool_call.append.reuse_existing', {
+        toolId,
+        name,
+      });
       if (name === 'web_search' && _searchProvider) {
         _injectProviderBadge(existing.querySelector('.chat-tools-summary'), _searchProvider);
       }
@@ -5463,10 +6558,16 @@ const ChatView = (() => {
     _newTextSegment();
 
     if (_autoScroll) _scrollToBottom();
+    _chatDiag('tool_call.append.done', {
+      toolId,
+      name,
+      details: _chatDiagDescribeElement(details),
+    });
   }
 
   function _appendToolResult(payload) {
     if (!payload) return;
+    _chatDiag('tool_result.append.start', _chatDiagSummarizePayload(payload));
 
     // PR5: meta-skill user_input paused signal — render a clickable form
     // instead of a plain tool-result card. The scheduler emits this with
@@ -5492,6 +6593,7 @@ const ChatView = (() => {
     ) {
       try { console.log('[clarify-debug] firing _appendClarifyForm'); } catch (e) {}
       _appendClarifyForm(payload, _args);
+      _chatDiag('tool_result.append.clarify_form', _chatDiagSummarizePayload(payload));
       return;
     }
 
@@ -5513,6 +6615,7 @@ const ChatView = (() => {
         toolName = toolName || details.getAttribute('data-tool-name') || '';
         details.classList.remove('chat-tools-collapse--running');
         details.classList.add(_toolResultStateClass(payload));
+        _setToolSummaryStatus(details, isError ? 'error' : 'done');
         const summary = details.querySelector('.chat-tools-summary');
         if (summary) summary.removeAttribute('aria-disabled');
         const toolsBody = details.querySelector('.chat-tools-body');
@@ -5530,6 +6633,10 @@ const ChatView = (() => {
     }
     if (toolId && _findToolResultById(resultTarget, toolId)) {
       if (_autoScroll) _scrollToBottom();
+      _chatDiag('tool_result.append.skip_duplicate', {
+        toolId,
+        toolName,
+      });
       return;
     }
 
@@ -5542,12 +6649,21 @@ const ChatView = (() => {
     );
     if (!resultDiv) {
       if (_autoScroll) _scrollToBottom();
+      _chatDiag('tool_result.append.skip_empty_result', {
+        toolId,
+        toolName,
+      });
       return;
     }
 
     if (toolId) resultDiv.setAttribute('data-tool-result-for', toolId);
     resultTarget.appendChild(resultDiv);
     if (_autoScroll) _scrollToBottom();
+    _chatDiag('tool_result.append.done', {
+      toolId,
+      toolName,
+      result: _chatDiagDescribeElement(resultDiv),
+    });
   }
 
   // ── PR5: meta-skill user_input form rendering ──
@@ -5743,11 +6859,13 @@ const ChatView = (() => {
 
   function _appendArtifact(payload) {
     if (!payload) return;
+    _chatDiag('artifact.append.start', _chatDiagSummarizePayload(payload));
     _streamArtifacts.push(payload);
     const bubble = _ensureStreamBubble();
     const body = bubble.querySelector('.msg-body');
     body.insertAdjacentHTML('beforeend', _renderArtifacts([payload]));
     if (_autoScroll) _scrollToBottom();
+    _chatDiag('artifact.append.done', _chatDiagSummarizePayload(payload));
   }
 
   function _renderStreamArtifacts() {
@@ -6756,9 +7874,13 @@ const ChatView = (() => {
     _elevatedPill = null;
     _composer = null;
     _streamBubble = null;
+    _streamSessionKey = '';
     _streamRaw = '';
     _segments = []; _activeTextSeg = null; _activeTextRaw = '';
     _streamArtifacts = [];
+    _liveStreamStateBySession.clear();
+    _streamSeqBySession.clear();
+    _lastStreamSeq = 0;
     _el = null;
     _rpc = null;
   }

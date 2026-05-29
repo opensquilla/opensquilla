@@ -1402,6 +1402,75 @@
   white-space: nowrap;
 }
 
+.chat-history-scope {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  margin: 0 0 var(--sp-2);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface));
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.chat-history-scope--loading {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+
+.chat-history-scope--partial {
+  border-color: color-mix(in srgb, var(--warn) 28%, var(--border));
+  background: color-mix(in srgb, var(--warn) 7%, var(--bg-surface));
+}
+
+.chat-history-scope--compacted {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+}
+
+.chat-history-scope--error {
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
+  background: color-mix(in srgb, var(--danger) 7%, var(--bg-surface));
+}
+
+.chat-history-scope__text {
+  min-width: 0;
+  font-weight: 600;
+}
+
+.chat-history-scope__detail {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.chat-history-scope__actions {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+@media (max-width: 720px) {
+  .chat-history-scope {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .chat-history-scope__actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .chat-history-scope__actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 @keyframes chat-compact-spin {
   to { transform: rotate(360deg); }
 }
@@ -2980,13 +3049,6 @@ select.clarify-form-input {
     0 0 48px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
-/* RED LINE: a frozen strip (set the instant output begins) is perfectly
- * static — no transitions, no animations, anywhere in the panel. */
-.router-fx[data-frozen="true"],
-.router-fx[data-frozen="true"] * {
-  animation: none !important;
-  transition: none !important;
-}
 /* Once settled, the chase hammer is gone — the .win cell is the marker. */
 .router-fx[data-state="settled"] .router-fx-selector { opacity: 0 !important; }
 
@@ -3052,4 +3114,3 @@ select.clarify-form-input {
     transform: scale(1.6);
   }
 }
-

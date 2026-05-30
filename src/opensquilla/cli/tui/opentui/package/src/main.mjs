@@ -49,11 +49,12 @@ const STATUS_PULSE_FRAMES = Object.freeze({
 });
 
 let renderer;
-let root;
-let Box;
-let Text;
+let BoxRenderable;
 let TextRenderable;
+let ScrollBoxRenderable;
 let createCliRenderer;
+let conversationBox;
+let inputBox;
 let inputText = "";
 let pulseFrame = 0;
 let pulseTimer;
@@ -66,7 +67,6 @@ let draftBeforeHistory = "";
 // Cursor blink state for the composer.
 let cursorVisible = true;
 let cursorTimer;
-const currentTurn = { id: null, sawAnswer: false };
 
 const composer = {
   placeholder: "send a message",
@@ -118,7 +118,7 @@ function startCursorBlink() {
   if (cursorTimer) return;
   cursorTimer = setInterval(() => {
     cursorVisible = !cursorVisible;
-    rerenderFooter();
+    rerenderInputRegion();
   }, 530);
   cursorTimer.unref?.();
 }
@@ -133,7 +133,7 @@ function syncPulseTimer() {
   if (turnStatus.active && !pulseTimer) {
     pulseTimer = setInterval(() => {
       pulseFrame += 1;
-      rerenderFooter();
+      rerenderInputRegion();
     }, 180);
     pulseTimer.unref?.();
     return;
@@ -160,251 +160,92 @@ function fixedRouterRow(label, value) {
   return `${label.padEnd(5)} ${clipped}${padding}`;
 }
 
-function renderFooterTree() {
-  const composerLine = inputText || composer.text;
+function buildLayout() {
+  const height = renderer.terminalHeight ?? 24;
+  conversationBox = new ScrollBoxRenderable(renderer, {
+    id: "conversation",
+    position: "absolute",
+    left: 0,
+    top: 0,
+    right: 0,
+    height: Math.max(1, height - FOOTER_HEIGHT),
+    stickyScroll: true,
+    stickyStart: "bottom",
+    scrollY: true,
+    scrollX: false,
+    viewportCulling: true,
+  });
+  renderer.root.add(conversationBox);
+
+  inputBox = new BoxRenderable(renderer, {
+    id: "input-region",
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: FOOTER_HEIGHT,
+  });
+  renderer.root.add(inputBox);
+
+  rerenderInputRegion();
+}
+
+function rerenderInputRegion() {
+  if (!inputBox) return;
+  for (const child of inputBox.getChildren?.() ?? []) inputBox.remove?.(child.id);
   const cursor = !composer.disabled && cursorVisible ? "▏" : " ";
-  // Always show the cursor (even when empty); on an empty line it sits before
-  // the dimmed placeholder so the composer always looks alive.
-  const visibleComposer = composerLine
-    ? `${composerLine}${cursor}`
-    : `${cursor}${composer.placeholder}`;
-  const composerColor = composerLine ? OPENTUI_DAILY_THEME.text : OPENTUI_DAILY_THEME.muted;
+  const composerLine = inputText || composer.text;
+  const text = composerLine ? `${composerLine}${cursor}` : `${cursor}${composer.placeholder}`;
+  const composerNode = new BoxRenderable(renderer, {
+    id: "composer-box",
+    position: "absolute",
+    left: 1,
+    right: 34,
+    bottom: 1,
+    height: 4,
+    borderStyle: "rounded",
+    borderColor: composer.disabled ? OPENTUI_DAILY_THEME.composerDisabledBorder : OPENTUI_DAILY_THEME.composerBorder,
+    bottomTitle: `${statusIcon()} ${turnStatus.label}`,
+    bottomTitleAlignment: "left",
+    paddingLeft: 1,
+    paddingRight: 1,
+    flexDirection: "column",
+    justifyContent: "center",
+  });
+  composerNode.add(new TextRenderable(renderer, {
+    id: "composer-text",
+    content: text,
+    fg: composerLine ? OPENTUI_DAILY_THEME.text : OPENTUI_DAILY_THEME.muted,
+  }));
+  inputBox.add(composerNode);
 
-  return Box(
-    {
-      id: "opentui-footer-root",
-      width: "100%",
-      height: "100%",
-      position: "relative",
-      shouldFill: false,
-    },
-    Box(
-      {
-        id: "composer-box",
-        position: "absolute",
-        left: 1,
-        right: 34,
-        bottom: 1,
-        height: 4,
-        borderStyle: "rounded",
-        borderColor: composer.disabled
-          ? OPENTUI_DAILY_THEME.composerDisabledBorder
-          : OPENTUI_DAILY_THEME.composerBorder,
-        bottomTitle: `${statusIcon()} ${turnStatus.label}`,
-        bottomTitleAlignment: "left",
-        paddingLeft: 1,
-        paddingRight: 1,
-        flexDirection: "column",
-        justifyContent: "center",
-        shouldFill: false,
-      },
-      Text({
-        id: "composer-text",
-        content: visibleComposer,
-        fg: composerColor,
-      }),
-    ),
-    Box(
-      {
-        id: "router-plugin",
-        position: "absolute",
-        right: 1,
-        bottom: 0,
-        width: 31,
-        height: FOOTER_HEIGHT,
-        borderStyle: "rounded",
-        borderColor: colorForStyle(routerState.style),
-        title: " router ",
-        titleAlignment: "left",
-        paddingLeft: 1,
-        paddingRight: 1,
-        flexDirection: "column",
-        shouldFill: true,
-      },
-      Text({ id: "router-model", content: fixedRouterRow("model", routerState.model), fg: OPENTUI_DAILY_THEME.text }),
-      Text({ id: "router-route", content: fixedRouterRow("route", routerState.route), fg: OPENTUI_DAILY_THEME.routeText }),
-      Text({ id: "router-saving", content: fixedRouterRow("save", routerState.saving), fg: OPENTUI_DAILY_THEME.savingText }),
-      Text({ id: "router-context", content: fixedRouterRow("ctx", routerState.context), fg: OPENTUI_DAILY_THEME.routerWarning }),
-    ),
-  );
-}
-
-function rerenderFooter() {
-  if (!renderer) return;
-  if (root) {
-    renderer.root.remove("opentui-footer-root");
-  }
-  root = renderFooterTree();
-  renderer.root.add(root);
+  const routerNode = new BoxRenderable(renderer, {
+    id: "router-plugin",
+    position: "absolute",
+    right: 1,
+    bottom: 0,
+    width: 31,
+    height: FOOTER_HEIGHT,
+    borderStyle: "rounded",
+    borderColor: colorForStyle(routerState.style),
+    title: " router ",
+    titleAlignment: "left",
+    paddingLeft: 1,
+    paddingRight: 1,
+    flexDirection: "column",
+  });
+  routerNode.add(new TextRenderable(renderer, { id: "router-model", content: fixedRouterRow("model", routerState.model), fg: OPENTUI_DAILY_THEME.text }));
+  routerNode.add(new TextRenderable(renderer, { id: "router-route", content: fixedRouterRow("route", routerState.route), fg: OPENTUI_DAILY_THEME.routeText }));
+  routerNode.add(new TextRenderable(renderer, { id: "router-saving", content: fixedRouterRow("save", routerState.saving), fg: OPENTUI_DAILY_THEME.savingText }));
+  routerNode.add(new TextRenderable(renderer, { id: "router-context", content: fixedRouterRow("ctx", routerState.context), fg: OPENTUI_DAILY_THEME.routerWarning }));
+  inputBox.add(routerNode);
   renderer.requestRender?.();
-}
-
-function writeScrollbackBlock(lines, fg, { startOnNewLine = true, topTitle, bottomRule } = {}) {
-  if (!renderer) return;
-  renderer.writeToScrollback((ctx) => {
-    const width = Math.max(1, ctx.width - 1);
-    const ruleWidth = Math.max(1, width - 1);
-    const framed = [];
-    if (topTitle !== undefined) framed.push(cardTopRule(topTitle));
-    for (const line of lines) framed.push(line);
-    if (bottomRule) framed.push(cardBottomRule());
-    const plain = framed.map((line) => stripTerminalControls(line)).join("\n");
-    const wrapped = padLinesForScrollback(wrapText(plain, ruleWidth));
-    const height = Math.max(1, wrapped.split("\n").length);
-    const node = new TextRenderable(ctx.renderContext, {
-      id: `scrollback-${scrollbackSeq++}`,
-      position: "absolute",
-      left: 0,
-      top: 0,
-      width,
-      height,
-      content: wrapped,
-      fg,
-    });
-    return { root: node, width, height, startOnNewLine, trailingNewline: true };
-  });
-}
-
-// Left-only card frame: terminal width and content length keep changing, so a
-// right border / corner would misalign and wrap. Keep just the left rail with
-// a short title rule on top and a short closing rule on the bottom.
-function cardTopRule(title) {
-  return title ? `╭─ ${title} ─────` : "╭───────";
-}
-
-function cardBottomRule() {
-  return "╰───────";
-}
-
-function renderPromptBlock(text) {
-  const lines = String(text).split("\n").map((line) => `│ ${line}`);
-  writeScrollbackBlock(lines, OPENTUI_DAILY_THEME.promptAccent, {
-    topTitle: "prompt",
-    bottomRule: true,
-  });
-}
-
-function renderModelText(text) {
-  writeScrollbackBlock([String(text)], OPENTUI_DAILY_THEME.answerAccent);
-}
-
-function renderToolCall(name, summary, status) {
-  const glyph = status === "error" ? "✗" : status === "ok" ? "✓" : "•";
-  const fg = status === "error" ? OPENTUI_DAILY_THEME.routerError : OPENTUI_DAILY_THEME.toolAccent;
-  const tail = summary ? ` ${summary}` : "";
-  writeScrollbackBlock([`  ${glyph} ${name}${tail}`], fg);
-}
-
-function renderToolDetail(text) {
-  const all = String(text).split("\n");
-  const max = 3;
-  const shown = all.slice(0, max).map((line) => `    │ ${line}`);
-  if (all.length > max) shown.push(`    │ … ${all.length - max} more lines`);
-  writeScrollbackBlock(shown, OPENTUI_DAILY_THEME.detailText);
-}
-
-function renderAnswerText(text) {
-  const firstChunk = !currentTurn.sawAnswer;
-  const lines = String(text).split("\n").map((line) => `│ ${line}`);
-  if (firstChunk) {
-    currentTurn.sawAnswer = true;
-    writeScrollbackBlock(lines, OPENTUI_DAILY_THEME.text, { topTitle: "answer ─ squilla" });
-    return;
-  }
-  writeScrollbackBlock(lines, OPENTUI_DAILY_THEME.text);
-}
-
-function renderAnswerClose(cancelled) {
-  if (cancelled) {
-    writeScrollbackBlock(["│ turn cancelled"], OPENTUI_DAILY_THEME.muted, { bottomRule: true });
-    return;
-  }
-  if (currentTurn.sawAnswer) {
-    writeScrollbackBlock([], OPENTUI_DAILY_THEME.text, { bottomRule: true });
-  }
-}
-
-function renderUsage(text) {
-  writeScrollbackBlock([`  · ${text}`], OPENTUI_DAILY_THEME.muted);
 }
 
 function stripTerminalControls(text) {
   return text
     .replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\|[@-Z\\-_])/g, "")
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
-}
-
-function padLinesForScrollback(text) {
-  return text
-    .split("\n")
-    .map((line) => ` ${line}`)
-    .join("\n");
-}
-
-// When a content line wraps, continuation rows keep the same left gutter
-// (e.g. "│ " or "    │ ") so the rail stays aligned down the left edge.
-function continuationPrefixForLine(line) {
-  const match = line.match(/^(\s*│\s+)/u);
-  return match ? match[1] : "";
-}
-
-function wrapText(text, width) {
-  const rows = [];
-  for (const line of text.split("\n")) {
-    const continuationPrefix = continuationPrefixForLine(line);
-    let current = "";
-    let cells = 0;
-    for (const token of line.split(/(\s+)/u)) {
-      if (!token) continue;
-      const tokenCells = textWidth(token);
-      if (/^\s+$/u.test(token)) {
-        if (current && cells + tokenCells <= width) {
-          current += token;
-          cells += tokenCells;
-        }
-        continue;
-      }
-      if (tokenCells > width) {
-        const result = appendHardWrappedToken(
-          rows,
-          current,
-          cells,
-          token,
-          width,
-          continuationPrefix,
-        );
-        current = result.current;
-        cells = result.cells;
-        continue;
-      }
-      if (current && cells + tokenCells > width) {
-        rows.push(current.trimEnd());
-        current = `${continuationPrefix}${token}`;
-        cells = textWidth(continuationPrefix) + tokenCells;
-        continue;
-      }
-      current += token;
-      cells += tokenCells;
-    }
-    rows.push(current);
-  }
-  return rows.join("\n");
-}
-
-function appendHardWrappedToken(rows, current, cells, token, width, continuationPrefix = "") {
-  const continuationCells = textWidth(continuationPrefix);
-  for (const char of Array.from(token)) {
-    const charCells = cellWidth(char);
-    if (current && cells + charCells > width) {
-      rows.push(current.trimEnd());
-      current = `${continuationPrefix}${char}`;
-      cells = continuationCells + charCells;
-    } else {
-      current += char;
-      cells += charCells;
-    }
-  }
-  return { current, cells };
 }
 
 function textWidth(text) {
@@ -429,7 +270,7 @@ function handlePythonMessage(message) {
         context: String(message.context ?? routerState.context),
         style: String(message.style ?? routerState.style),
       });
-      rerenderFooter();
+      rerenderInputRegion();
       return;
     case "composer.set":
       Object.assign(composer, {
@@ -438,7 +279,7 @@ function handlePythonMessage(message) {
         disabled: Boolean(message.disabled ?? composer.disabled),
       });
       inputText = composer.text;
-      rerenderFooter();
+      rerenderInputRegion();
       return;
     case "turn.status":
       Object.assign(turnStatus, {
@@ -447,43 +288,70 @@ function handlePythonMessage(message) {
         active: Boolean(message.active ?? turnStatus.active),
       });
       syncPulseTimer();
-      rerenderFooter();
+      rerenderInputRegion();
       return;
     case "turn.begin":
-      currentTurn.id = String(message.id ?? "");
-      currentTurn.sawAnswer = false;
       return;
     case "prompt.echo":
-      renderPromptBlock(String(message.text ?? ""));
+      conversationBox.add(new TextRenderable(renderer, {
+        id: `tmp-${scrollbackSeq++}`,
+        content: `prompt: ${stripTerminalControls(String(message.text ?? ""))}`,
+        fg: OPENTUI_DAILY_THEME.text,
+      }));
+      renderer.requestRender?.();
       return;
     case "model.text":
-      renderModelText(String(message.text ?? ""));
+      conversationBox.add(new TextRenderable(renderer, {
+        id: `tmp-${scrollbackSeq++}`,
+        content: stripTerminalControls(String(message.text ?? "")),
+        fg: OPENTUI_DAILY_THEME.text,
+      }));
+      renderer.requestRender?.();
       return;
     case "tool.call":
-      renderToolCall(
-        String(message.name ?? ""),
-        String(message.summary ?? ""),
-        String(message.status ?? "running"),
-      );
+      conversationBox.add(new TextRenderable(renderer, {
+        id: `tmp-${scrollbackSeq++}`,
+        content: `tool: ${stripTerminalControls(String(message.name ?? ""))} ${stripTerminalControls(String(message.summary ?? ""))}`,
+        fg: OPENTUI_DAILY_THEME.text,
+      }));
+      renderer.requestRender?.();
       return;
     case "tool.detail":
-      renderToolDetail(String(message.text ?? ""));
+      conversationBox.add(new TextRenderable(renderer, {
+        id: `tmp-${scrollbackSeq++}`,
+        content: `detail: ${stripTerminalControls(String(message.text ?? ""))}`,
+        fg: OPENTUI_DAILY_THEME.text,
+      }));
+      renderer.requestRender?.();
       return;
     case "answer.text":
-      renderAnswerText(String(message.text ?? ""));
+      conversationBox.add(new TextRenderable(renderer, {
+        id: `tmp-${scrollbackSeq++}`,
+        content: stripTerminalControls(String(message.text ?? "")),
+        fg: OPENTUI_DAILY_THEME.text,
+      }));
+      renderer.requestRender?.();
       return;
     case "turn.end":
-      renderAnswerClose(Boolean(message.cancelled ?? false));
-      currentTurn.id = null;
-      currentTurn.sawAnswer = false;
       return;
     case "usage":
-      renderUsage(String(message.text ?? ""));
+      conversationBox.add(new TextRenderable(renderer, {
+        id: `tmp-${scrollbackSeq++}`,
+        content: `usage: ${stripTerminalControls(String(message.text ?? ""))}`,
+        fg: OPENTUI_DAILY_THEME.text,
+      }));
+      renderer.requestRender?.();
       return;
     case "scrollback.write":
-      writeScrollbackBlock([String(message.text ?? "")], OPENTUI_DAILY_THEME.text, {
-        startOnNewLine: false,
-      });
+      {
+        const node = new TextRenderable(renderer, {
+          id: `sb-${scrollbackSeq++}`,
+          content: stripTerminalControls(String(message.text ?? "")),
+          fg: OPENTUI_DAILY_THEME.muted,
+        });
+        conversationBox.add(node);
+        renderer.requestRender?.();
+      }
       return;
     case "shutdown":
       if (pulseTimer) clearInterval(pulseTimer);
@@ -506,7 +374,7 @@ function submitInput() {
   inputText = "";
   composer.text = "";
   sendHostMessage({ type: "input.submit", text });
-  rerenderFooter();
+  rerenderInputRegion();
 }
 
 // Up/Down arrows walk the input history. The slot past the end (index ===
@@ -522,7 +390,7 @@ function recallHistory(direction) {
   inputText = next === inputHistory.length ? draftBeforeHistory : inputHistory[next];
   composer.text = inputText;
   wakeCursor();
-  rerenderFooter();
+  rerenderInputRegion();
 }
 
 function installKeyboardHandlers() {
@@ -550,7 +418,7 @@ function installKeyboardHandlers() {
     if (key.name === "backspace") {
       inputText = Array.from(inputText).slice(0, -1).join("");
       wakeCursor();
-      rerenderFooter();
+      rerenderInputRegion();
       return;
     }
     const printable = key.sequence ?? key.name ?? "";
@@ -558,12 +426,12 @@ function installKeyboardHandlers() {
       inputText += printable;
       historyIndex = inputHistory.length;
       wakeCursor();
-      rerenderFooter();
+      rerenderInputRegion();
     } else if (key.name === "space") {
       inputText += " ";
       historyIndex = inputHistory.length;
       wakeCursor();
-      rerenderFooter();
+      rerenderInputRegion();
     }
   });
 
@@ -572,38 +440,28 @@ function installKeyboardHandlers() {
     inputText += decoder.decode(event.bytes);
     historyIndex = inputHistory.length;
     wakeCursor();
-    rerenderFooter();
+    rerenderInputRegion();
   });
 }
 
 async function main() {
-  ({ Box, Text, TextRenderable, createCliRenderer } = await import("@opentui/core"));
+  ({ BoxRenderable, TextRenderable, ScrollBoxRenderable, createCliRenderer } = await import("@opentui/core"));
 
   renderer = await createCliRenderer({
-    screenMode: "split-footer",
-    footerHeight: FOOTER_HEIGHT,
-    externalOutputMode: "capture-stdout",
-    // Leave mouse tracking off so the terminal emulator keeps native
-    // scrollback control (wheel / Cmd+Up-Down) instead of OpenTUI eating
-    // the scroll events and pinning the view to the bottom.
-    useMouse: false,
+    screenMode: "alternate-screen",
     exitOnCtrlC: false,
   });
 
-  rerenderFooter();
+  buildLayout();
   installKeyboardHandlers();
   startCursorBlink();
 
-  // Redraw the footer on terminal resize so the absolutely-positioned composer
-  // and router boxes re-flow to the new size instead of leaving a gap between
-  // the footer and the scrollback above it.
   renderer.on?.("resize", () => {
-    rerenderFooter();
+    const h = renderer.terminalHeight ?? 24;
+    if (conversationBox) conversationBox.height = Math.max(1, h - FOOTER_HEIGHT);
+    rerenderInputRegion();
     const width = renderer.terminalWidth ?? 0;
-    const height = renderer.terminalHeight ?? 0;
-    if (width && height) {
-      sendHostMessage({ type: "resize", width, height });
-    }
+    if (width && h) sendHostMessage({ type: "resize", width, height: h });
   });
 
   sendHostMessage({ type: "ready" });

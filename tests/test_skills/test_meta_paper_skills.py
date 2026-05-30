@@ -118,7 +118,8 @@ def test_meta_paper_write_declares_quality_pipeline_stages() -> None:
     assert "CITATION_TARGET" in meta
     assert "LENGTH_STRATEGY" in meta
     assert "do not enforce a fixed count" in meta
-    assert "default FULL_MANUSCRIPT" in meta
+    assert "default path is COMPACT_SKELETON" in meta
+    assert "Explicit full/PDF/long-form requests use" in meta
     assert "compiled PDF" in meta
     assert "refuses to create degraded PDF" in meta
 

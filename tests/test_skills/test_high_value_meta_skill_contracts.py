@@ -212,7 +212,7 @@ def test_paper_meta_skill_has_pre_compile_quality_gates(tmp_path: Path) -> None:
     } <= ids
 
 
-def test_paper_meta_skill_uses_full_pdf_default_with_clarification(
+def test_paper_meta_skill_uses_compact_default_with_clarification(
     tmp_path: Path,
 ) -> None:
     loader = _loader(tmp_path)
@@ -230,10 +230,22 @@ def test_paper_meta_skill_uses_full_pdf_default_with_clarification(
     assert steps["paper_contract"].depends_on == ("paper_collect", "paper_clarify")
     paper_collect_prompt = str(steps["paper_collect"].with_args)
     assert "NEEDS_CLARIFICATION" in paper_collect_prompt
-    assert "FULL_MANUSCRIPT by default" in paper_collect_prompt
+    assert "COMPACT_SKELETON by default" in paper_collect_prompt
+    assert "Use FULL_MANUSCRIPT only when the user explicitly asks" in paper_collect_prompt
+    assert "Do not set NEEDS_CLARIFICATION: yes for missing paper_mode" in paper_collect_prompt
+    assert "write CLARIFY_QUESTION in the same" in paper_collect_prompt
     assert "TARGET_PAGES" in paper_collect_prompt
     assert "CITATION_TARGET" in paper_collect_prompt
     assert "MISSING_FIELDS" in paper_collect_prompt
+    clarify = steps["paper_clarify"].clarify_config
+    assert clarify is not None
+    assert "Some paper details are missing" in clarify.intro
+    assert "论文信息还不完整" in clarify.intro
+    assert "user_language" in clarify.intro
+    assert "contains_cjk" in clarify.intro
+    assert clarify.fields[1].default == "COMPACT_SKELETON"
+    assert "Mode (default COMPACT_SKELETON" in clarify.fields[1].prompt
+    assert "类型（默认 COMPACT_SKELETON" in clarify.fields[1].prompt
     raw = str(loader.get_by_name("meta-paper-write").composition_raw)
     assert "inputs.collected.paper_collect" not in raw
     # Pipeline rewrite: experiment/plot (skill_exec stubs producing fake

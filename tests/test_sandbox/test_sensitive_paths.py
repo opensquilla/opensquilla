@@ -74,3 +74,32 @@ def test_sensitive_command_targets_honor_active_workspace_exception() -> None:
         )
         in {"/.env", "/.env*"}
     )
+
+
+def test_windows_rooted_workspace_targets_keep_leaf_secret_blocks() -> None:
+    workspace = Path("/root/.opensquilla/workspace")
+
+    assert (
+        sensitive_target_in_command(
+            r"rm \root\.opensquilla\workspace\scratch.txt",
+            workspace=workspace,
+        )
+        is None
+    )
+    assert (
+        sensitive_target_in_command(
+            r"rm \root\.opensquilla\workspace\.env",
+            workspace=workspace,
+        )
+        in {"/.env", "/.env*"}
+    )
+
+
+def test_posix_sensitive_paths_stay_blocked_on_windows_runners() -> None:
+    workspace = Path("/root/.opensquilla/workspace")
+
+    assert sensitive_path_in_text("cat /dev/sda 2>/dev/null") == "/dev"
+    assert (
+        sensitive_path_in_text("cat /root/.ssh/id_rsa", workspace=workspace)
+        == "~/.ssh"
+    )

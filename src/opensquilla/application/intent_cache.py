@@ -15,6 +15,7 @@ network egress) need intent-level memory.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import threading
@@ -79,12 +80,26 @@ def _extract_rm_targets(command: str) -> list[str]:
     if not tail:
         return []
 
+    token_sets: list[list[str]] = []
     try:
-        tokens = shlex.split(tail)
+        token_sets.append(shlex.split(tail))
     except ValueError:
-        tokens = tail.split()
+        token_sets.append(tail.split())
+    if "\\" in tail and (os.name == "nt" or re.search(r"(?:^|\s)\\[^\s]", tail)):
+        try:
+            token_sets.append(shlex.split(tail, posix=False))
+        except ValueError:
+            token_sets.append(tail.split())
 
-    return [t for t in tokens if t and not t.startswith("-")]
+    targets: list[str] = []
+    seen: set[str] = set()
+    for tokens in token_sets:
+        for token in tokens:
+            if not token or token.startswith("-") or token in seen:
+                continue
+            seen.add(token)
+            targets.append(token)
+    return targets
 
 
 def _extract_intents(

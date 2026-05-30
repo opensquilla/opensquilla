@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # Operator escape hatch — set OPENSQUILLA_SENSITIVE_PATHS_DISABLED=1 to no-op
 # the entire sensitive-path block layer. ONLY for trusted single-operator
@@ -96,6 +96,37 @@ def _comparison_path(path: str) -> str:
     return normalized.casefold() if os.name == "nt" else normalized
 
 
+def _comparison_path_candidates(path: str) -> list[str]:
+    candidates = [_comparison_path(path)]
+    raw = str(path).strip().replace("\\", "/")
+    if raw:
+        candidates.append(raw.casefold() if os.name == "nt" else raw)
+    if raw.startswith("~/"):
+        expanded_home = str(Path.home()).replace("\\", "/") + raw[1:]
+        candidates.append(expanded_home.casefold() if os.name == "nt" else expanded_home)
+    return list(dict.fromkeys(candidates))
+
+
+def _looks_like_rooted_path_text(path: str) -> bool:
+    normalized = str(path).strip().replace("\\", "/")
+    return normalized.startswith(("/", "~/")) and not normalized.startswith("//")
+
+
+def _path_name(path: str) -> str:
+    normalized = str(path).strip().replace("\\", "/").rstrip("/")
+    return PurePosixPath(normalized).name.lower()
+
+
+def _path_contains(path: str, root: str) -> bool:
+    if not path or not root:
+        return False
+    normalized_path = path.rstrip("/")
+    normalized_root = root.rstrip("/")
+    return normalized_path == normalized_root or normalized_path.startswith(
+        normalized_root + "/"
+    )
+
+
 def is_sensitive_path(path: str) -> str | None:
     """Return the matched sensitive marker, or None.
 
@@ -108,25 +139,27 @@ def is_sensitive_path(path: str) -> str | None:
         return None
     if not path:
         return None
-    expanded = _comparison_path(path)
-    if (
-        expanded == "/root/.ssh"
-        or expanded.startswith("/root/.ssh/")
-        or expanded.endswith("/root/.ssh")
-        or "/root/.ssh/" in expanded
-    ):
-        return "~/.ssh"
+    candidates = _comparison_path_candidates(path)
+    for expanded in candidates:
+        if (
+            expanded == "/root/.ssh"
+            or expanded.startswith("/root/.ssh/")
+            or expanded.endswith("/root/.ssh")
+            or "/root/.ssh/" in expanded
+        ):
+            return "~/.ssh"
     for prefix in _SENSITIVE_PREFIXES:
-        normalized = _comparison_path(prefix)
-        if expanded == normalized or expanded.startswith(normalized + "/"):
-            return prefix
+        for expanded in candidates:
+            for normalized in _comparison_path_candidates(prefix):
+                if expanded == normalized or expanded.startswith(normalized + "/"):
+                    return prefix
     for suffix in _SENSITIVE_SUFFIXES:
         normalized_suffix = suffix.replace("\\", "/")
         if os.name == "nt":
             normalized_suffix = normalized_suffix.casefold()
-        if expanded.endswith(normalized_suffix):
+        if any(expanded.endswith(normalized_suffix) for expanded in candidates):
             return suffix
-    name = Path(expanded).name.lower()
+    name = _path_name(path)
     if name == ".env" or name.startswith(".env."):
         return "/.env*"
     return None
@@ -141,7 +174,14 @@ def _workspace_contains(path: str, workspace: str | Path | None) -> bool:
         candidate.relative_to(root)
         return True
     except (OSError, RuntimeError, ValueError):
-        return False
+        pass
+    candidate_paths = _comparison_path_candidates(str(path))
+    workspace_paths = _comparison_path_candidates(str(workspace))
+    return any(
+        _path_contains(candidate, root)
+        for candidate in candidate_paths
+        for root in workspace_paths
+    )
 
 
 def _workspace_nested_under_marker(workspace: str | Path | None, marker: str) -> bool:
@@ -155,18 +195,25 @@ def _workspace_nested_under_marker(workspace: str | Path | None, marker: str) ->
         root.relative_to(marker_root)
         return True
     except (OSError, RuntimeError, ValueError):
-        return False
+        pass
+    for workspace_text in _comparison_path_candidates(str(workspace)):
+        for marker_text in _comparison_path_candidates(marker):
+            if workspace_text != marker_text and _path_contains(
+                workspace_text, marker_text
+            ):
+                return True
+    return False
 
 
 def _sensitive_leaf_marker(path: str) -> str | None:
-    expanded = _comparison_path(path)
+    candidates = _comparison_path_candidates(path)
     for suffix in _SENSITIVE_SUFFIXES:
         normalized_suffix = suffix.replace("\\", "/")
         if os.name == "nt":
             normalized_suffix = normalized_suffix.casefold()
-        if expanded.endswith(normalized_suffix):
+        if any(expanded.endswith(normalized_suffix) for expanded in candidates):
             return suffix
-    name = Path(expanded).name.lower()
+    name = _path_name(path)
     if name == ".env" or name.startswith(".env."):
         return "/.env*"
     return None
@@ -187,7 +234,12 @@ def sensitive_path_marker(
 
     text = str(path).strip()
     raw = Path(text).expanduser()
-    if text and not text.startswith("~") and not raw.is_absolute():
+    if (
+        text
+        and not text.startswith("~")
+        and not raw.is_absolute()
+        and not _looks_like_rooted_path_text(text)
+    ):
         return _sensitive_leaf_marker(text)
 
     marker = is_sensitive_path(path)

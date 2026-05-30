@@ -56,9 +56,15 @@ def test_sensitive_shell_allows_configured_workspace_under_sensitive_prefix() ->
     workspace = Path("/root/.opensquilla/workspace")
     token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
     try:
+        script = (
+            "python3 - <<'PY'\n"
+            "from pathlib import Path\n"
+            f"print(Path({str(workspace / 'notes.txt')!r}))\n"
+            "PY"
+        )
         payload = shell._sensitive_shell_block(
             "exec_command",
-            f"python3 - <<'PY'\nfrom pathlib import Path\nprint(Path({str(workspace / 'notes.txt')!r}))\nPY",
+            script,
             workdir=str(workspace),
         )
     finally:

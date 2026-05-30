@@ -300,22 +300,26 @@ def _workspace_strict_candidate_marker(
 
 def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) -> dict | None:
     """Return a hard-block envelope for sensitive host paths, unless fully elevated."""
-    from opensquilla.sandbox.sensitive_paths import build_block_envelope, is_sensitive_path
+    from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
     from opensquilla.tools.builtin.shell import _context_elevated_mode
 
     if _context_elevated_mode() == "full":
         return None
-    sensitive = is_sensitive_path(str(resolved))
+    sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
     if sensitive is None:
         return None
     return build_block_envelope(f"{tool_name} {original_path}", sensitive, tool_name=tool_name)
 
 
-def _is_sensitive_access_path(resolved: Path) -> bool:
-    from opensquilla.sandbox.sensitive_paths import is_sensitive_path
+def _is_sensitive_access_path(resolved: Path, workspace: Path | None = None) -> bool:
+    from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
     from opensquilla.tools.builtin.shell import _context_elevated_mode
 
-    return _context_elevated_mode() != "full" and is_sensitive_path(str(resolved)) is not None
+    root = workspace if workspace is not None else _workspace_root()
+    return (
+        _context_elevated_mode() != "full"
+        and sensitive_path_marker(str(resolved), workspace=root) is not None
+    )
 
 
 def _workspace_lockdown_roots() -> list[Path]:
@@ -367,12 +371,12 @@ async def _gate_out_of_workspace_write(
     of approval.
     """
     # Sensitive-path hard block — takes precedence over approval flow.
-    from opensquilla.sandbox.sensitive_paths import build_block_envelope, is_sensitive_path
+    from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
     from opensquilla.tools.builtin.shell import _context_elevated_mode
 
     elevated_full = _context_elevated_mode() == "full"
     if not elevated_full:
-        sensitive = is_sensitive_path(str(resolved))
+        sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
         if sensitive is not None:
             return build_block_envelope(
                 f"{tool_name} {original_path}", sensitive, tool_name=tool_name
@@ -795,6 +799,7 @@ async def list_dir(path: str) -> str:
 
     loop = asyncio.get_event_loop()
     strict_root = _strict_read_workspace_root()
+    workspace_root = _workspace_root()
 
     def _list() -> list[str]:
         dirs: list[str] = []
@@ -805,7 +810,7 @@ async def list_dir(path: str) -> str:
             if marker is not None:
                 blocked_entries.append(marker)
                 continue
-            if _is_sensitive_access_path(entry.resolve(strict=False)):
+            if _is_sensitive_access_path(entry.resolve(strict=False), workspace=workspace_root):
                 continue
             if entry.is_dir():
                 dirs.append(f"[dir]  {entry.name}/")
@@ -838,6 +843,7 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
 
     loop = asyncio.get_event_loop()
     strict_root = _strict_read_workspace_root()
+    workspace_root = _workspace_root()
 
     def _glob() -> list[str]:
         matches: list[str] = []
@@ -850,7 +856,7 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
             if marker is not None:
                 matches.append(marker)
                 continue
-            if _is_sensitive_access_path(candidate.resolve(strict=False)):
+            if _is_sensitive_access_path(candidate.resolve(strict=False), workspace=workspace_root):
                 continue
             matches.append(str(candidate))
         return matches
@@ -889,6 +895,7 @@ async def grep_search(
 
     loop = asyncio.get_event_loop()
     strict_root = _strict_read_workspace_root()
+    workspace_root = _workspace_root()
 
     def _search() -> list[str]:
         try:
@@ -899,7 +906,7 @@ async def grep_search(
         results: list[str] = []
 
         def search_file(fp: Path) -> None:
-            if _is_sensitive_access_path(fp.resolve(strict=False)):
+            if _is_sensitive_access_path(fp.resolve(strict=False), workspace=workspace_root):
                 return
             try:
                 text = fp.read_text(encoding="utf-8", errors="replace")

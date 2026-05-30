@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from opensquilla.engine.types import ToolCall
+from opensquilla.sandbox import sensitive_paths
 from opensquilla.tools.builtin import filesystem as fs
 from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import get_default_registry
@@ -92,6 +93,70 @@ async def test_workspace_strict_allows_inside_workspace(tmp_path: Path) -> None:
         assert "inside.txt" in await fs.list_dir(str(tmp_path))
         assert "inside.txt" in await fs.glob_search("*.txt", path=str(tmp_path))
         assert "needle" in await fs.grep_search("needle", path=str(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_workspace_inside_sensitive_parent_allows_normal_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(sensitive_paths, "_SENSITIVE_PREFIXES", (str(tmp_path),))
+    monkeypatch.setattr(
+        sensitive_paths,
+        "_WORKSPACE_PARENT_EXCEPTION_MARKERS",
+        (str(tmp_path),),
+    )
+    target = workspace / "notes" / "plan.md"
+    target.parent.mkdir()
+    target.write_text("hello\n", encoding="utf-8")
+
+    with tool_context(workspace):
+        write_gate = await fs._gate_out_of_workspace_write(
+            "write_file",
+            target.resolve(),
+            "notes/plan.md",
+            None,
+        )
+        read_result = await fs.read_file("notes/plan.md")
+        listed = await fs.list_dir("notes")
+        globbed = await fs.glob_search("*.md", path="notes")
+        grepped = await fs.grep_search("hello", path="notes")
+
+    assert write_gate is None
+    assert "1\thello" in read_result
+    assert "plan.md" in listed
+    assert "plan.md" in globbed
+    assert "plan.md:1: hello" in grepped
+
+
+@pytest.mark.asyncio
+async def test_workspace_inside_sensitive_parent_keeps_leaf_secret_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(sensitive_paths, "_SENSITIVE_PREFIXES", (str(tmp_path),))
+    monkeypatch.setattr(
+        sensitive_paths,
+        "_WORKSPACE_PARENT_EXCEPTION_MARKERS",
+        (str(tmp_path),),
+    )
+
+    with tool_context(workspace):
+        payload = await fs._gate_out_of_workspace_write(
+            "write_file",
+            (workspace / ".env").resolve(),
+            ".env",
+            None,
+        )
+
+    assert payload is not None
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "sensitive_path"
+    assert not (workspace / ".env").exists()
 
 
 def test_resolve_path_rejects_foreign_posix_absolute_path_on_windows(

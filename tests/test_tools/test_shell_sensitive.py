@@ -58,7 +58,7 @@ def test_sensitive_shell_allows_configured_workspace_under_sensitive_prefix() ->
     try:
         payload = shell._sensitive_shell_block(
             "exec_command",
-            "python3 - <<'PY'\nprint('ok')\nPY",
+            f"python3 - <<'PY'\nfrom pathlib import Path\nprint(Path({str(workspace / 'notes.txt')!r}))\nPY",
             workdir=str(workspace),
         )
     finally:
@@ -81,6 +81,22 @@ def test_sensitive_shell_still_blocks_sensitive_command_inside_workspace() -> No
 
     assert payload is not None
     assert json.loads(payload)["sensitive_path"] == "~/.ssh"
+
+
+def test_sensitive_shell_workspace_exception_keeps_leaf_secret_blocks() -> None:
+    workspace = Path("/root/.opensquilla/workspace")
+    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
+    try:
+        payload = shell._sensitive_shell_block(
+            "exec_command",
+            f"cat {workspace / '.env'}",
+            workdir=str(workspace),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload is not None
+    assert json.loads(payload)["reason"] == "sensitive_path"
 
 
 @pytest.mark.asyncio

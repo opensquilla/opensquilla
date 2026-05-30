@@ -25,7 +25,7 @@ _DEFAULT_TTL_SECONDS = 30 * 60
 _ALWAYS_TTL_SECONDS = 365 * 24 * 3600  # effectively never expires within a session
 
 
-def _norm_path(raw: str) -> str:
+def _norm_path(raw: str, *, base_dir: str | Path | None = None) -> str:
     """Best-effort absolute-path normalization.
 
     Leaves non-path tokens alone (so ``*`` or variable references don't get
@@ -34,7 +34,10 @@ def _norm_path(raw: str) -> str:
     if not raw or raw.startswith(("$", "`")) or raw in {"*", "-"}:
         return raw
     try:
-        return str(Path(raw).expanduser().resolve(strict=False))
+        path = Path(raw).expanduser()
+        if base_dir is not None and not path.is_absolute():
+            path = Path(base_dir).expanduser() / path
+        return str(path.resolve(strict=False))
     except (OSError, ValueError):
         return raw
 
@@ -84,7 +87,11 @@ def _extract_rm_targets(command: str) -> list[str]:
     return [t for t in tokens if t and not t.startswith("-")]
 
 
-def _extract_intents(command: str) -> list[tuple[str, str]]:
+def _extract_intents(
+    command: str,
+    *,
+    base_dir: str | Path | None = None,
+) -> list[tuple[str, str]]:
     """Return every recognized destructive intent, deduped and normalized.
 
     ``rm /a /b /c`` -> three tuples; ``shutil.rmtree('a'); os.remove('b')`` ->
@@ -100,7 +107,7 @@ def _extract_intents(command: str) -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for raw in paths:
-        intent = ("delete", _norm_path(raw))
+        intent = ("delete", _norm_path(raw, base_dir=base_dir))
         if intent in seen:
             continue
         seen.add(intent)

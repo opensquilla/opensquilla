@@ -211,7 +211,9 @@ def _sensitive_shell_block(
     checked_command = _without_shell_null_redirections(command)
     include_workdir = bool(workdir) and not _workdir_is_configured_workspace(workdir)
     checked_text = f"{workdir} {checked_command}" if include_workdir else checked_command
-    marker = sensitive_path_in_text(checked_text)
+    ctx = current_tool_context.get()
+    workspace = ctx.workspace_dir if ctx is not None else None
+    marker = sensitive_path_in_text(checked_text, workspace=workspace)
     if marker is not None:
         return json.dumps(
             build_block_envelope(checked_text, marker, tool_name=tool_name),
@@ -1284,7 +1286,11 @@ async def _check_exec_approval(
             sensitive_target_in_command,
         )
 
-        sensitive = sensitive_target_in_command(command)
+        sensitive = sensitive_target_in_command(
+            command,
+            workspace=ctx.workspace_dir if ctx is not None else None,
+            cwd=workdir,
+        )
         if sensitive is not None:
             log.warning(
                 "shell_sensitive_path_blocked",

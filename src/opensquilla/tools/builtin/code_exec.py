@@ -109,10 +109,16 @@ def _check_code_sensitive_access(code: str) -> tuple[str, str] | None:
     lowered = code.lower()
     has_read_or_shell = any(token in lowered for token in _CODE_SENSITIVE_READ_TOKENS)
 
-    from opensquilla.sandbox.sensitive_paths import is_sensitive_path, sensitive_path_in_text
+    ctx = current_tool_context.get()
+    workspace = ctx.workspace_dir if ctx is not None else None
+
+    from opensquilla.sandbox.sensitive_paths import sensitive_path_in_text, sensitive_path_marker
 
     for literal in _iter_code_string_literals(code):
-        marker = is_sensitive_path(literal) or sensitive_path_in_text(literal)
+        marker = sensitive_path_marker(literal, workspace=workspace) or sensitive_path_in_text(
+            literal,
+            workspace=workspace,
+        )
         path_like_literal = literal.strip().startswith(("/", "~", "."))
         if marker is not None and (has_read_or_shell or path_like_literal):
             return "sensitive_path", marker

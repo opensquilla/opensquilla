@@ -43,9 +43,7 @@
          data-config-path="{{ config_path }}"
          style="display:none"></div>
 
-    <!-- Vendor libs (marked, DOMPurify, Prism — still used by ChatView) -->
-    <script src="{{ base_path }}/static/vendor/marked.min.js"></script>
-    <script src="{{ base_path }}/static/vendor/purify.min.js"></script>
+    <!-- Prism syntax highlighting (used by ChatView for code blocks) -->
     <script src="{{ base_path }}/static/vendor/prism-core.min.js"></script>
     <script src="{{ base_path }}/static/vendor/prism-autoloader.min.js"></script>
     <script>if(window.Prism&&Prism.plugins.autoloader){Prism.plugins.autoloader.languages_path='{{ base_path }}/static/vendor/prism-langs/';}</script>

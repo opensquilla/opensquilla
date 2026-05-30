@@ -52,17 +52,20 @@
       </div>
     </header>
     <main class="content" id="content">
-      <router-view />
+      <ErrorBoundary>
+        <router-view />
+      </ErrorBoundary>
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from './stores/app'
 import { useRpcStore } from './stores/rpc'
 import Icon from './components/Icon.vue'
+import ErrorBoundary from './components/ErrorBoundary.vue'
 
 const appStore = useAppStore()
 const rpcStore = useRpcStore()
@@ -135,12 +138,20 @@ function handleClickOutside(e: MouseEvent) {
   appStore.setSidebarOpen(false)
 }
 
-document.addEventListener('click', handleClickOutside)
-
 // Close sidebar on Escape key
-document.addEventListener('keydown', (e: KeyboardEvent) => {
+function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && appStore.sidebarOpen) {
     appStore.setSidebarOpen(false)
   }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside)
+  document.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+  document.removeEventListener('keydown', handleKeydown)
 })
 </script>

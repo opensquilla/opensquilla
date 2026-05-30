@@ -20,14 +20,21 @@ _STATIC_CACHE_CONTROL = "public, max-age=2592000"
 
 
 class _CachedStaticFiles(StaticFiles):
-    """StaticFiles subclass that attaches Cache-Control to 200 responses."""
+    """StaticFiles subclass that attaches Cache-Control to 200 responses.
+
+    Source maps (.map) are excluded from long-term caching since they are
+    only used for debugging and should not be aggressively cached.
+    """
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
         response = await super().get_response(path, scope)
         if response.status_code == 200 and not os.environ.get(
             "OPENSQUILLA_STATIC_NO_CACHE"
         ):
-            response.headers.setdefault("Cache-Control", _STATIC_CACHE_CONTROL)
+            # Skip cache-control for source maps — debug files should not be
+            # cached aggressively (or served in production at all).
+            if not path.endswith(".map"):
+                response.headers.setdefault("Cache-Control", _STATIC_CACHE_CONTROL)
         return response
 
 

@@ -448,6 +448,8 @@ import { useRoute } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useAppStore } from '@/stores/app'
 import Icon from '@/components/Icon.vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -852,10 +854,6 @@ const renderedMessages = computed((): RenderedMessage[] => {
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
-function esc(s: string): string {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-}
-
 function relTime(ts: string | number | null): string {
   if (!ts) return ''
   const d = typeof ts === 'number' ? new Date(ts) : new Date(ts)
@@ -1045,35 +1043,19 @@ function stripTimePrefix(text: string): string {
 }
 
 function renderMarkdown(text: string): string {
-  // Simple markdown renderer - preserves the pattern from the original
-  // which used Markdown.render(). For now, do basic formatting.
   text = stripProtocolTextLeak(stripDirectiveTags(stripGeneratedArtifactMarkers(text)))
   if (!text) return ''
 
-  // Escape HTML
-  let html = esc(text)
-
-  // Code blocks
-  html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
-    return `<pre class="code-block"><code class="language-${lang || 'text'}">${code}</code></pre>`
+  const rawHtml = marked.parse(text, { async: false, breaks: true }) as string
+  return DOMPurify.sanitize(rawHtml, {
+    ALLOWED_TAGS: [
+      'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+      'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
+      'strong', 'em', 'del', 'a', 'img', 'table', 'thead',
+      'tbody', 'tr', 'th', 'td', 'div', 'span', 'sup',
+    ],
+    ALLOWED_ATTR: ['href', 'title', 'src', 'alt', 'class', 'target', 'rel'],
   })
-
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>')
-
-  // Bold
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-
-  // Italic
-  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-
-  // Links
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-
-  // Line breaks
-  html = html.replace(/\n/g, '<br>')
-
-  return html
 }
 
 /* ── Subagent ──────────────────────────────────────────────────────── */

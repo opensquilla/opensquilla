@@ -1123,7 +1123,8 @@ async def test_orchestrator_skill_exec_invokes_subprocess(tmp_path: Path) -> Non
     script = skill_dir / "echo.sh"
     script.write_text(
         "#!/bin/sh\n"
-        "printf '{\"argv\":[\"%s\",\"%s\",\"%s\",\"%s\"],\"ok\":true}\\n' \"$1\" \"$2\" \"$3\" \"$4\"\n",
+        "printf '{\"argv\":[\"%s\",\"%s\",\"%s\",\"%s\"],\"ok\":true}\\n' "
+        '"$1" "$2" "$3" "$4"\n',
     )
     script.chmod(0o755)
 

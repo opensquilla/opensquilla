@@ -15,7 +15,6 @@ from openpyxl import Workbook
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-
 ROOT = Path(__file__).resolve().parent
 
 
@@ -112,10 +111,34 @@ def make_finance_xlsx() -> None:
     ws.title = "Watchlist"
     rows = [
         ("Ticker", "Asset", "Why watching", "Risk to monitor", "My note"),
-        ("NVDA", "NVIDIA", "AI data-center demand", "Valuation and export controls", "Do not chase only price action"),
-        ("TSLA", "Tesla", "Delivery and autonomy narrative", "Margin pressure and execution", "High volatility"),
-        ("AAPL", "Apple", "Services and device cycle", "China demand and regulation", "Quality defensive name"),
-        ("BTC", "Bitcoin", "Macro liquidity and ETF flows", "Drawdown risk and leverage", "Position sizing matters"),
+        (
+            "NVDA",
+            "NVIDIA",
+            "AI data-center demand",
+            "Valuation and export controls",
+            "Do not chase only price action",
+        ),
+        (
+            "TSLA",
+            "Tesla",
+            "Delivery and autonomy narrative",
+            "Margin pressure and execution",
+            "High volatility",
+        ),
+        (
+            "AAPL",
+            "Apple",
+            "Services and device cycle",
+            "China demand and regulation",
+            "Quality defensive name",
+        ),
+        (
+            "BTC",
+            "Bitcoin",
+            "Macro liquidity and ETF flows",
+            "Drawdown risk and leverage",
+            "Position sizing matters",
+        ),
     ]
     for row in rows:
         ws.append(row)

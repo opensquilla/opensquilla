@@ -1,26 +1,25 @@
 import asyncio
 import json
-from scripts.compare_meta_skill_openclaw_lifestyle import (
-    OPENCLAW_T3_MODEL,
-    LIFESTYLE_COMPARISON_CASES,
-    _lifestyle_judge_result_is_complete,
-    _compare_results,
-    _apply_lifestyle_judge_result,
-    _judge_lifestyle_with_retries,
-    judge_existing,
-    load_openclaw_baseline,
-    build_lifestyle_rows,
-    render_lifestyle_markdown,
-    render_lifestyle_prompts_markdown,
-    score_response,
-)
-from scripts.compare_meta_skill_openclaw import EndpointResult, JudgeResult, OpenSquillaRunner
 from pathlib import Path
 
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.templating import evaluate_when
-
+from scripts.compare_meta_skill_openclaw import EndpointResult, JudgeResult, OpenSquillaRunner
+from scripts.compare_meta_skill_openclaw_lifestyle import (
+    LIFESTYLE_COMPARISON_CASES,
+    OPENCLAW_T3_MODEL,
+    _apply_lifestyle_judge_result,
+    _compare_results,
+    _judge_lifestyle_with_retries,
+    _lifestyle_judge_result_is_complete,
+    build_lifestyle_rows,
+    judge_existing,
+    load_openclaw_baseline,
+    render_lifestyle_markdown,
+    render_lifestyle_prompts_markdown,
+    score_response,
+)
 
 SELECTED_SKILLS = [
     "meta-document-to-decision",
@@ -442,7 +441,10 @@ def test_document_decision_never_derives_cancel_window_from_payment_deadline() -
         "src/opensquilla/skills/bundled/meta-document-to-decision/SKILL.md"
     ).read_text(encoding="utf-8")
 
-    assert "Do not derive cancellation deadlines by subtracting days from invoice or payment due dates" in raw
+    assert (
+        "Do not derive cancellation deadlines by subtracting days from invoice or payment due dates"
+        in raw
+    )
     assert "If the contract end date or renewal effective date is missing" in raw
     assert "cancellation deadline unknown" in raw
     assert "avoid saying the notice window has passed" in raw
@@ -486,7 +488,11 @@ def test_daily_operator_brief_hides_runtime_failures_and_clears_small_debts() ->
     assert 'final_text_mode: "step:final_brief_audit"' in raw
     assert "final_brief_audit" in raw
     assert "Never expose raw tool/runtime failure details" in raw
-    assert "Never mention workflow, meta-skill, tool names, connector failures, workspace paths, or runtime details" in raw
+    assert (
+        "Never mention workflow, meta-skill, tool names, connector failures, "
+        "workspace paths, or runtime details"
+        in raw
+    )
     assert "If the user asks for a morning brief, produce a morning-first plan" in raw
     assert "Do not turn it into an afternoon-only" in raw
     assert "Top 3 / 前三优先级" in raw
@@ -508,17 +514,29 @@ def test_daily_operator_brief_hides_runtime_failures_and_clears_small_debts() ->
     assert "Do not invent weekdays, month-day" in raw
     assert "remove absolute dates, month-day dates" in raw
     assert "[日期1] [时间1] 或 [日期2] [时间2]" in raw
-    assert "Do not mention HTTP status codes, API failures, connector stack traces, or search errors" in raw
+    assert (
+        "Do not mention HTTP status codes, API failures, connector stack traces, "
+        "or search errors"
+        in raw
+    )
     assert "When live data is unavailable, summarize only the user-facing limit" in raw
     assert "Clear one-minute social debts before deep work when they unblock other people" in raw
     assert "include ready-to-send message drafts" in raw
     assert "overdue school, caregiver, vendor, HR, finance, or customer replies" in raw
     assert "clear them in the first 15 minutes" in raw
-    assert "teacher / 老师 replies that were sent yesterday must be cleared in the first 15 minutes" not in raw
+    assert (
+        "teacher / 老师 replies that were sent yesterday must be cleared in the "
+        "first 15 minutes"
+        not in raw
+    )
     assert "Do not rely on remembered or previous-day weather" in raw
     assert "live weather not verified" in raw
     assert "ready-to-send drafts for named recipients or roles" in raw
-    assert "examples include school, caregiver, HR, finance, customer, vendor, and quote replies" in raw
+    assert (
+        "examples include school, caregiver, HR, finance, customer, vendor, and "
+        "quote replies"
+        in raw
+    )
     assert "drafts for teacher, HR, finance, customer, and quote replies" not in raw
 
 
@@ -536,8 +554,16 @@ def test_safe_skill_installer_uses_valid_isolated_audit_commands() -> None:
     assert "do not run bash install.sh until static review passes" in raw
     assert "Do not say the domain is unreachable" in raw
     assert "Keep the final answer concise enough to finish in one turn" in raw
-    assert "Do not include a long incident-response runbook unless the user says it was already installed" in raw
-    assert "For not-yet-installed tools, keep rollback to pre-install backup and what to rotate if accidentally run" in raw
+    assert (
+        "Do not include a long incident-response runbook unless the user says it "
+        "was already installed"
+        in raw
+    )
+    assert (
+        "For not-yet-installed tools, keep rollback to pre-install backup and what "
+        "to rotate if accidentally run"
+        in raw
+    )
 
 
 def test_safe_skill_installer_keeps_source_evidence_boundaries_upstream() -> None:
@@ -548,14 +574,34 @@ def test_safe_skill_installer_keeps_source_evidence_boundaries_upstream() -> Non
     assert "Treat the pasted evidence ledger as the primary source of truth" in raw
     assert "Do not audit the meta-skill's own \"sub-agent\" machinery" in raw
     assert "Apply this evidence boundary in every step, not only the final answer" in raw
-    assert "Search failure, missing lookup output, or absent public reputation is not proof of NXDOMAIN" in raw
+    assert (
+        "Search failure, missing lookup output, or absent public reputation is "
+        "not proof of NXDOMAIN"
+        in raw
+    )
     assert "Do not call a domain dead, unreachable, unresolvable, NXDOMAIN, or verified-bad" in raw
     assert "Source inspection must pass through only visible evidence and unknowns" in raw
     assert "Vetting and backup steps must not add new reputation or DNS claims" in raw
-    assert "Download commands are for isolated audit only and must not be run on the real machine" in raw
-    assert "Do not expose tool parameter errors, fetch failures, connector wording, or internal audit mechanics" in raw
-    assert "Do not claim zero public footprint, no GitHub record, or no security-community record" in raw
-    assert "unless the output cites the checked sources or says these checks were not verified" in raw
+    assert (
+        "Download commands are for isolated audit only and must not be run on the "
+        "real machine"
+        in raw
+    )
+    assert (
+        "Do not expose tool parameter errors, fetch failures, connector wording, "
+        "or internal audit mechanics"
+        in raw
+    )
+    assert (
+        "Do not claim zero public footprint, no GitHub record, or no "
+        "security-community record"
+        in raw
+    )
+    assert (
+        "unless the output cites the checked sources or says these checks were "
+        "not verified"
+        in raw
+    )
 
 
 def test_lifestyle_meta_skills_have_natural_language_activation_cues() -> None:
@@ -827,7 +873,9 @@ def test_lifestyle_score_rewards_strong_answers_over_t3_generic_answers() -> Non
     }
 
     for case in LIFESTYLE_COMPARISON_CASES:
-        assert score_response(strong_by_case[case.case_id], case).total > score_response(weak, case).total
+        assert score_response(
+            strong_by_case[case.case_id], case
+        ).total > score_response(weak, case).total
 
 
 def test_lifestyle_report_labels_openclaw_t3_opus_baseline() -> None:
@@ -1264,7 +1312,11 @@ def test_load_openclaw_baseline_refreshes_final_text_from_state(
                 '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"'
                 + case.prompt
                 + '"}]}}',
-                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"final openclaw baseline answer with 风险 证据表 24 小时"}]}}',
+                (
+                    '{"type":"message","message":{"role":"assistant","content":'
+                    '[{"type":"text","text":"final openclaw baseline answer with '
+                    '风险 证据表 24 小时"}]}}'
+                ),
             ]
         ),
         encoding="utf-8",

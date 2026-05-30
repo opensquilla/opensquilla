@@ -62,6 +62,10 @@ def _filter_extract_path(value: object, suffix: str = "") -> str:
     return ""
 
 
+def _filter_contains_cjk(value: object) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff\uf900-\ufaff]", str(value or "")))
+
+
 def _build_jinja_env() -> jinja2.Environment:
     env = jinja2.Environment(
         undefined=jinja2.StrictUndefined,
@@ -81,6 +85,7 @@ def _build_jinja_env() -> jinja2.Environment:
         "join": jinja2.filters.do_join,
         "lower": lambda value: str(value).lower(),
         "extract_path": _filter_extract_path,
+        "contains_cjk": _filter_contains_cjk,
     }
     return env
 

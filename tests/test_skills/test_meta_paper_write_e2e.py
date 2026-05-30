@@ -18,6 +18,7 @@ from opensquilla.engine.types import AgentEvent, DoneEvent, TextDeltaEvent
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.events import _StepDone
 from opensquilla.skills.meta.executors.agent import run_step_with_skill_stream
+from opensquilla.skills.meta.executors.user_input import _render_clarify_config
 from opensquilla.skills.meta.orchestrator import MetaOrchestrator
 from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.types import MetaMatch, MetaResult, MetaStep
@@ -616,6 +617,63 @@ async def test_meta_paper_write_runs_end_to_end(tmp_path: Path) -> None:
     assert "STRONG" in final.step_outputs["citation_map"]
     # No more results.csv / figure_1.pdf artefacts — the placeholder
     # pipeline is purely LaTeX.
+
+
+def test_meta_paper_clarify_copy_prefers_user_language_hint(tmp_path: Path) -> None:
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    specs = {s.name: s for s in loader.load_all()}
+    plan_spec = specs.get("meta-paper-write")
+    assert plan_spec is not None
+    plan = parse_meta_plan(plan_spec)
+    assert plan is not None
+    steps = {step.id: step for step in plan.steps}
+    clarify_cfg = steps["paper_clarify"].clarify_config
+    assert clarify_cfg is not None
+
+    rendered_en = _render_clarify_config(
+        clarify_cfg,
+        inputs={
+            "user_message": "Write a paper. Please ask me for the topic first.",
+            "user_language": "en",
+            "collected": {},
+        },
+        outputs={"paper_collect": "LANGUAGE: zh\nNEEDS_CLARIFICATION: yes"},
+    )
+    assert "Some paper details are missing" in rendered_en.intro
+    assert rendered_en.fields[0].prompt == "Paper topic"
+
+    rendered_zh = _render_clarify_config(
+        clarify_cfg,
+        inputs={
+            "user_message": "帮我写一篇论文，先问我主题",
+            "user_language": "zh",
+            "collected": {},
+        },
+        outputs={"paper_collect": "LANGUAGE: en\nNEEDS_CLARIFICATION: yes"},
+    )
+    assert "论文信息还不完整" in rendered_zh.intro
+    assert rendered_zh.fields[0].prompt == "论文主题"
+
+
+def test_meta_paper_delivery_prompt_is_language_gated(tmp_path: Path) -> None:
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    specs = {s.name: s for s in loader.load_all()}
+    plan_spec = specs.get("meta-paper-write")
+    assert plan_spec is not None
+    plan = parse_meta_plan(plan_spec)
+    assert plan is not None
+    steps = {step.id: step for step in plan.steps}
+    deliver = steps["deliver_paper"]
+    prompt_text = "\n".join(
+        str(value) for value in (deliver.with_args or {}).values()
+    )
+    assert "USER_LANGUAGE:" in prompt_text
+    assert "en means English only" in prompt_text
+    assert "zh means Chinese only" in prompt_text
+    assert "📄 论文已生成 / Paper compiled" not in prompt_text
+    assert "⚠️ 注意 / Warning" not in prompt_text
 
 
 @pytest.mark.asyncio

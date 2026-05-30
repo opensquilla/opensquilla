@@ -1,13 +1,13 @@
 ---
 name: meta-paper-write
-description: "Use this meta-skill instead of answering directly when the user needs a research paper, academic paper, or long-form LaTeX manuscript that benefits from multi-skill orchestration across source search, citation planning, experiment design, placeholder figures/tables, section drafting, length checks, citation integrity, and LaTeX compilation."
+description: "Use this meta-skill instead of answering directly when the current user asks to draft, repair, compile, or produce an academic/research paper or LaTeX manuscript. It uses multi-skill orchestration for manuscript workflows that need source search, citation planning, experiment or figure/table placeholders, drafting, length checks, citation integrity, and LaTeX/PDF compilation. Ordinary paper requests use a compact draft path; explicit full/PDF/long-form requests use the full manuscript path. Do not use it for web research reports, slide decks, document decisions, or generic plotting."
 kind: meta
 meta_priority: 50
 always: false
 final_text_mode: "step:deliver_paper"
 triggers:
   - "draft a paper"
-  - "write paper"
+  - "write a research paper"
   - "academic manuscript"
   - "research manuscript"
   - "latex manuscript"
@@ -37,17 +37,36 @@ composition:
           ask the user for missing information.
 
           Mode defaults:
-          - Use FULL_MANUSCRIPT by default. Quality is preferred over the
-            compact fast path.
-          - Use COMPACT_SKELETON only when the user explicitly asks for a
-            short skeleton, outline, or compact draft.
+          - Use COMPACT_SKELETON by default for ordinary "write/draft a
+            paper" requests. This is the fast path and still produces a
+            coherent LaTeX-ready draft with citations and a compiled PDF.
+          - Use FULL_MANUSCRIPT only when the user explicitly asks for a full
+            manuscript, long-form paper, publication-ready paper, PDF, LaTeX
+            manuscript, section-by-section drafting, or gives a target of 8+
+            pages.
+          - Use COMPACT_SKELETON when the user explicitly asks for a short
+            skeleton, outline, compact draft, or does not specify length.
           - Use REPAIR_EXISTING only when the user provides or references an
             existing manuscript to fix.
           - Use COMPILE_ONLY only when the user explicitly asks only to compile
             an existing LaTeX manuscript.
 
-          Required fields for a complete paper contract:
-          topic, paper_mode, language, target_pages, audience.
+          Clarification policy:
+          - Required field: topic.
+          - Infer language from the user request whenever possible. For an
+            English request, set LANGUAGE: en. For a Chinese request, set
+            LANGUAGE: zh.
+          - If target pages are missing, use TARGET_PAGES: 4 for
+            COMPACT_SKELETON and 10 for FULL_MANUSCRIPT.
+          - If audience is missing, use AUDIENCE: academic.
+          - Set NEEDS_CLARIFICATION: yes only when the topic is missing or
+            the request explicitly asks to be interviewed before drafting.
+          - Do not set NEEDS_CLARIFICATION: yes for missing paper_mode,
+            language, target_pages, citation_target, or audience; apply the
+            defaults above instead.
+          - If clarification is required, write CLARIFY_QUESTION in the same
+            language as the original request. For English requests, the
+            question must be English.
 
           Original user request:
           {{ inputs.user_message | xml_escape | truncate(1400) }}
@@ -62,7 +81,7 @@ composition:
           NEEDS_CLARIFICATION: <yes|no>
           MISSING_FIELDS:
             - <field name, or none>
-          CLARIFY_QUESTION: <single concise question if NEEDS_CLARIFICATION is yes, otherwise none>
+          CLARIFY_QUESTION: <single concise question in the same language as the original request if NEEDS_CLARIFICATION is yes, otherwise none>
           ASSUMPTIONS:
             - <assumption or none>
     - id: paper_clarify
@@ -72,13 +91,17 @@ composition:
       clarify:
         mode: form
         intro: |
-          论文信息还不完整。请补齐下面字段，我会优先生成完整论文并输出 PDF。
+          {% if inputs.get('user_language') == 'zh' or (inputs.user_message | contains_cjk) %}
+          论文信息还不完整。请补齐下面字段；除非你选择完整论文，我会优先使用更快的草稿模式。
+          {% else %}
+          Some paper details are missing. Please fill in the fields below; I will draft with the fastest suitable mode unless you choose a full manuscript.
+          {% endif %}
         nl_extract: true
         fields:
           - name: topic
             type: string
             required: true
-            prompt: "论文主题 / Paper topic"
+            prompt: "{% if inputs.get('user_language') == 'zh' or (inputs.user_message | contains_cjk) %}论文主题{% else %}Paper topic{% endif %}"
             max_chars: 200
           - name: paper_mode
             type: enum
@@ -87,24 +110,24 @@ composition:
               - COMPACT_SKELETON
               - REPAIR_EXISTING
               - COMPILE_ONLY
-            default: FULL_MANUSCRIPT
-            prompt: "类型 / Mode (默认 FULL_MANUSCRIPT=完整论文+PDF)"
+            default: COMPACT_SKELETON
+            prompt: "{% if inputs.get('user_language') == 'zh' or (inputs.user_message | contains_cjk) %}类型（默认 COMPACT_SKELETON = 更快草稿；选择 FULL_MANUSCRIPT 生成完整论文 + PDF）{% else %}Mode (default COMPACT_SKELETON = faster draft; choose FULL_MANUSCRIPT for full paper + PDF){% endif %}"
           - name: language
             type: enum
             required: true
             choices: [en, zh, ja, other]
-            prompt: "语言 / Language"
+            prompt: "{% if inputs.get('user_language') == 'zh' or (inputs.user_message | contains_cjk) %}语言{% else %}Language{% endif %}"
           - name: target_length_pages
             type: int
             min: 1
             max: 50
-            default: 10
-            prompt: "目标页数 / Target pages (1-50)"
+            default: 4
+            prompt: "{% if inputs.get('user_language') == 'zh' or (inputs.user_message | contains_cjk) %}目标页数（1-50）{% else %}Target pages (1-50){% endif %}"
           - name: audience
             type: enum
             choices: [academic, technical, business, general]
             default: academic
-            prompt: "受众 / Audience"
+            prompt: "{% if inputs.get('user_language') == 'zh' or (inputs.user_message | contains_cjk) %}受众{% else %}Audience{% endif %}"
         cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
         timeout_hours: 24
     - id: paper_contract
@@ -526,8 +549,8 @@ composition:
           Paper preferences (authoritative for length/citation targets):
           {{ outputs.paper_preferences | truncate(2000) }}
     # ─── Plan→Write→Unify (FULL_MANUSCRIPT mode only) ──────────────────
-    # The default path is FULL_MANUSCRIPT: write section-by-section, unify the
-    # manuscript, run quality gates, compile a PDF, and deliver the artifact.
+    # The explicit full path writes section-by-section, unifies the manuscript,
+    # runs quality gates, compiles a PDF, and delivers the artifact.
     - id: writing_plan
       kind: llm_chat
       depends_on: [paper_preferences, outline, citation_plan, experiment_design, figure_placeholders, table_placeholders, analysis_outline, refbib]
@@ -1557,8 +1580,9 @@ composition:
         system: "You prepare compile-only handoff notes without invoking LaTeX in this step."
         task: |
           Produce a concise compile handoff note. COMPILE_ONLY is for
-          assessing an existing LaTeX manuscript. The default FULL_MANUSCRIPT
-          path compiles a PDF via compile_pdf after quality gates pass.
+          assessing an existing LaTeX manuscript. The full manuscript and
+          compact skeleton paths compile a PDF via compile_pdf after quality
+          gates pass.
 
           Sanitizer result:
           {{ outputs.latex_sanitizer | truncate(2000) }}
@@ -1744,13 +1768,22 @@ composition:
       depends_on: [final_manuscript_package, compile_pdf, publish_pdf, citation_map]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract or 'PAPER_MODE: REPAIR_EXISTING' in outputs.paper_contract"
       with:
-        system: "You write a one-paragraph delivery note for a compiled academic paper. Output is concise — no LaTeX source, no markdown fences."
+        system: "You write a one-paragraph delivery note for a compiled academic paper. Output is concise — no LaTeX source, no markdown fences. Obey USER_LANGUAGE strictly: en means English only; zh means Chinese only."
         task: |
           Produce the user-facing delivery message. Confirm the PDF
           is ready, name its location, page count, citation summary,
           and list any open warnings from the citation audit. Keep
-          the message under 200 words. Reply in the same language as
-          the user's original request.
+          the message under 200 words.
+
+          USER_LANGUAGE: {{ inputs.get('user_language', 'zh' if (inputs.user_message | contains_cjk) else 'en') }}
+
+          Language rules:
+          - If USER_LANGUAGE is en, write English only. Do not include Chinese
+            headings, labels, warnings, or bilingual labels.
+          - If USER_LANGUAGE is zh, write Chinese only. Do not include English
+            headings except literal file paths, artifact IDs, and citation keys.
+          - Do not copy warning prose from intermediate audit text; translate
+            any warning into the selected USER_LANGUAGE.
 
           Original request:
           {{ inputs.user_message | xml_escape | truncate(400) }}
@@ -1764,17 +1797,31 @@ composition:
           Citation audit summary tail:
           {{ outputs.citation_map | truncate(2000) }}
 
+          {% if inputs.get('user_language') == 'zh' or (inputs.user_message | contains_cjk) %}
           Format:
-          📄 论文已生成 / Paper compiled
+          📄 论文已生成
 
           - PDF: <absolute path or artifact id>
-          - 页数 / Pages: <N>
-          - 引用 / Citations: <total / strong / weak / invalid>
-          - 备注 / Notes: <one line about figures, tables, analysis dimensions>
+          - 页数: <N>
+          - 引用: <total / strong / weak / invalid / unused>
+          - 备注: <one line about figures, tables, analysis dimensions>
 
           If the audit shows INVALID > 0, prefix the message with
-          "⚠️ 注意 / Warning: <N> 处引用未在 bib 中，建议重新生成" and list
-          the offending cite keys.
+          "⚠️ 注意: <N> 处引用未在 bib 中，建议重新生成" and list the offending
+          cite keys.
+          {% else %}
+          Format:
+          📄 Paper compiled
+
+          - PDF: <absolute path or artifact id>
+          - Pages: <N>
+          - Citations: <total / strong / weak / invalid / unused>
+          - Notes: <one line about figures, tables, analysis dimensions>
+
+          If the audit shows INVALID > 0, prefix the message with
+          "⚠️ Warning: <N> citation keys are missing from references.bib; regenerate
+          or repair the bibliography" and list the offending cite keys.
+          {% endif %}
 ---
 
 # meta-paper-write (Meta-Skill)
@@ -1816,7 +1863,7 @@ DAG (in order):
     and Results to the figure/table plan.
 11. **`citation_plan`** — assigns concrete cite keys from `refbib` to
     claims; cannot invent keys.
-12. **`writing_plan` + section authors** — the default FULL_MANUSCRIPT path
+12. **`writing_plan` + section authors** — the explicit FULL_MANUSCRIPT path
     converts the user's page target into section-level `target_words` and
     citation budgets before prose is written; section authors obey that plan.
 13. **`final_manuscript_package`** — compact / repair modes produce
@@ -1847,7 +1894,8 @@ Removed from the previous version:
   superseded by `figure_placeholders` (zero-dependency LaTeX). The
   bundled `paper-plot-stub` skill was deleted with this rewrite.
 
-The default path is FULL_MANUSCRIPT and ends with a compiled PDF. If required
-paper details are missing, `paper_clarify` pauses and asks the user before
-generation continues. The compiler refuses to synthesize a degraded PDF when
-the manuscript contract is missing.
+The default path is COMPACT_SKELETON and ends with a compiled PDF without
+section-by-section drafting. Explicit full/PDF/long-form requests use
+FULL_MANUSCRIPT. If the topic is missing, `paper_clarify` pauses and asks the
+user before generation continues. The compiler refuses to synthesize a degraded
+PDF when the manuscript contract is missing.

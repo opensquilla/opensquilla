@@ -34,8 +34,13 @@ async def test_renderer_emits_turn_lifecycle_and_blocks() -> None:
     assert "answer.text" in types
     assert "usage" in types
     assert "turn.end" in types
-    statuses = [p.get("status") for t, p in handle.sent if t == "tool.call"]
-    assert "running" in statuses and "ok" in statuses
+    # Only one tool.call line per tool: the finished state. "running" is shown
+    # by the footer status pulse (turn.status), not a separate scrollback line.
+    tool_calls = [p for t, p in handle.sent if t == "tool.call"]
+    assert [p.get("status") for p in tool_calls] == ["ok"]
+    assert tool_calls[0]["name"] == "read_file"
+    assert tool_calls[0]["summary"]  # arg summary is preserved on the finish line
+    assert any(t == "turn.status" and p.get("phase") == "tool" for t, p in handle.sent)
     assert any(t == "turn.status" and p.get("phase") == "output" for t, p in handle.sent)
     # composer is disabled when the turn begins and re-enabled when it ends
     composer_disabled = [p.get("disabled") for t, p in handle.sent if t == "composer.set"]

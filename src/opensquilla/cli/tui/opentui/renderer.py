@@ -37,7 +37,7 @@ class OpenTuiStreamRenderer:
         self._turn_id = ""
         self._began = False
         self._saw_output = False
-        self._tool_names: dict[str, str] = {}
+        self._tool_calls: dict[str, tuple[str, str]] = {}
         self._answer_buf = ""
 
     async def _emit(self, message_type: str, payload: Any) -> None:
@@ -112,19 +112,14 @@ class OpenTuiStreamRenderer:
         tool_use_id: str | None = None,
     ) -> None:
         await self._ensure_begin()
+        # Remember name + arg summary; the single scrollback line is written on
+        # finish. The "running" state is shown by the footer status pulse, so we
+        # do NOT write a separate running line here (append-only can't collapse
+        # the start/finish pair into one line afterwards).
         if tool_use_id:
-            self._tool_names[tool_use_id] = name
+            self._tool_calls[tool_use_id] = (name, _summarize_args(name, args))
         await self._emit(
             "turn.status", TurnStatusState(phase="tool", label=name, active=True)
-        )
-        await self._emit(
-            "tool.call",
-            ToolCall(
-                name=name,
-                summary=_summarize_args(name, args),
-                status="running",
-                id=tool_use_id,
-            ),
         )
 
     async def atool_finished(
@@ -136,12 +131,12 @@ class OpenTuiStreamRenderer:
         error: str | None = None,
         result: object | None = None,
     ) -> None:
-        name = self._tool_names.get(tool_use_id or "", "")
+        name, summary = self._tool_calls.get(tool_use_id or "", ("", ""))
         await self._emit(
             "tool.call",
             ToolCall(
                 name=name,
-                summary="",
+                summary=summary,
                 status="ok" if success else "error",
                 id=tool_use_id,
             ),

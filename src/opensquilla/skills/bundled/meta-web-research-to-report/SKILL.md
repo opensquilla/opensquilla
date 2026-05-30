@@ -1,6 +1,6 @@
 ---
 name: meta-web-research-to-report
-description: "Use this meta-skill instead of answering directly when the user needs a cited research report, market/technical briefing, or source-backed writeup that benefits from multi-skill orchestration across preference inference, web research, drafting, quality review, and export."
+description: "Use this meta-skill instead of answering directly when the current user asks for a source-backed web research deliverable: cited research report, market or technical briefing, decision memo with sources, or a researched writeup after web lookup. It uses multi-skill orchestration for preference inference, search/research, drafting, review, and optional export. Do not use it for generic summarization, academic manuscript writing, document-decision analysis, or isolated fact lookup that does not require a report."
 kind: meta
 meta_priority: 80
 always: false
@@ -11,13 +11,12 @@ triggers:
   - "decision memo"
   - "decision memo with sources"
   - "short decision memo"
-  - "key findings"
-  - "tradeoffs and risks"
-  - "travel esim"
-  - "carrier roaming"
-  - "local sim"
-  - "mobile data plan"
-  - "what i should order"
+  - "source-backed key findings"
+  - "research tradeoffs and risks"
+  - "travel esim research report"
+  - "carrier roaming vs local sim report"
+  - "mobile data plan decision memo"
+  - "research what i should order"
   - "写一份报告"
   - "write up the findings"
   - "source-backed writeup"

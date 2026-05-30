@@ -1,25 +1,24 @@
 ---
 name: meta-safe-skill-installer
-description: "Use this meta-skill instead of answering directly when the user wants to evaluate, install, update, compare, or trust a ClawHub/GitHub/local skill and the task needs multi-skill orchestration across source inspection, risk review, backup planning, and install guidance."
+description: "Use this meta-skill instead of answering directly only when the current user intent is to vet, compare, install, update, or trust a ClawHub/GitHub/local skill or plugin. It is for skill/plugin supply-chain review: source lookup, permission and shell-command inspection, risk summary, backup planning, and install/no-install guidance. Do not use it for generic software installs, generic security audits, pasted shell snippets without a skill/plugin context, or ordinary code review."
 kind: meta
 meta_priority: 70
 always: false
 final_text_mode: "step:safety_decision_audit"
 triggers:
   - "install this skill safely"
-  - "skill vetting"
+  - "vet this skill before installing"
+  - "audit this skill before installing"
   - "安全安装 skill"
   - "审计这个 skill"
   - "ClawHub skill 安全"
   - "这个 skill 能装吗"
-  - "vet skill"
-  - "能不能装"
+  - "这个 skill 安全吗"
   - "这个插件能不能装"
-  - "只做审计"
-  - "权限清单"
-  - "读取 `~/.ssh`"
-  - "curl -fsSL"
-  - "install.sh | bash"
+  - "审计这个插件再安装"
+  - "skill 权限清单"
+  - "skill installer reads ~/.ssh"
+  - "skill install.sh | bash"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

@@ -1,6 +1,6 @@
 ---
 name: meta-skill-creator
-description: "Use this meta-skill instead of answering directly when the user explicitly asks to create, compose, or synthesize a new meta-skill that benefits from multi-skill orchestration across intent clarification, history mining, collision checks, linting, smoke tests, and proposal persistence."
+description: "Use this meta-skill instead of answering directly only when the current user explicitly asks to create, compose, synthesize, or propose a new meta-skill that orchestrates multiple existing skills. It uses multi-skill orchestration for intent clarification, optional history mining, trigger-collision checks, linting, smoke/runtime gates, preview, and optional proposal persistence. Do not use it for creating a normal standalone skill, asking how meta-skills work, analyzing pasted skill lists, or discussing existing meta-skills."
 kind: meta
 meta_priority: 90
 always: false
@@ -10,9 +10,9 @@ triggers:
   - "组合现有 skill 成 meta-skill"
   - "create a meta-skill"
   - "new meta-skill"
-  - "orchestrates existing skills"
-  - "orchestrates search"
-  - "compose existing skills"
+  - "propose a meta-skill"
+  - "create a meta-skill that orchestrates existing skills"
+  - "compose existing skills into a meta-skill"
   - "synthesize meta-skill"
   - "compose meta-skill"
 provenance:

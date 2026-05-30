@@ -9,6 +9,12 @@ def test_make_meta_inputs_includes_empty_collected_namespace():
     inputs = make_meta_inputs(user_message="hello", system_prompt="sp")
     assert "collected" in inputs
     assert inputs["collected"] == {}
+    assert inputs["user_language"] == "en"
+
+
+def test_make_meta_inputs_detects_chinese_user_language():
+    inputs = make_meta_inputs(user_message="帮我写一篇论文")
+    assert inputs["user_language"] == "zh"
 
 
 def test_make_meta_inputs_collected_is_mutable_dict_not_shared():

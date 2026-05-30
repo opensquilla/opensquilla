@@ -58,7 +58,7 @@ def _filter_extract_path(value: object, suffix: str = "") -> str:
         if not token:
             continue
         if not wanted or token.lower().endswith(f".{wanted}"):
-            return token
+            return str(token)
     return ""
 
 

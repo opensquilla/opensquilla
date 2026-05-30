@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 RuntimeResult = dict[str, Any] | Awaitable[dict[str, Any]]
 RuntimeRunner = Callable[..., RuntimeResult]
@@ -273,7 +273,7 @@ def make_runtime_e2e_context(
                         ),
                         is_error=False,
                         execution_status=runtime_execution_status(
-                            "ok",
+                            "success",
                             reason="not_available_in_baseline",
                         ),
                     )
@@ -288,7 +288,7 @@ def make_runtime_e2e_context(
                             reason="runtime_error",
                         ),
                     )
-                return await tool_handler(tc)
+                return cast(ToolResult, await tool_handler(tc))
 
             baseline_agent = agent_factory(
                 provider=provider,

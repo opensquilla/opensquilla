@@ -141,7 +141,7 @@ def _evaluate_acceptance_compare(
     quality_score: float | None = None
     if quality_score_raw not in (None, ""):
         try:
-            quality_score = float(quality_score_raw)
+            quality_score = float(str(quality_score_raw))
         except (TypeError, ValueError):
             quality_score = None
     quality_passed = quality_score is None or quality_score >= 0.80

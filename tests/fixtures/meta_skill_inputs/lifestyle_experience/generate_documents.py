@@ -60,19 +60,6 @@ def make_vendor_docs() -> None:
     doc.save(target / "contract_excerpt.docx")
 
 
-def make_family_doc() -> None:
-    target = ROOT / "family_school_errand_day"
-    target.mkdir(parents=True, exist_ok=True)
-
-    doc = Document()
-    doc.add_heading("Kindergarten Notice", level=1)
-    doc.add_paragraph("Class: Sunflower Class")
-    doc.add_paragraph("Tomorrow each child should bring a raincoat and one family photo.")
-    doc.add_paragraph("Dropoff should be completed before 08:15. Pickup is at 17:00.")
-    doc.add_paragraph("Food safety note: one child in the class is allergic to peanuts.")
-    doc.save(target / "kindergarten_notice.docx")
-
-
 def make_travel_pdf() -> None:
     target = ROOT / "travel_admin_pack"
     target.mkdir(parents=True, exist_ok=True)
@@ -149,7 +136,6 @@ def make_finance_xlsx() -> None:
 
 def main() -> None:
     make_vendor_docs()
-    make_family_doc()
     make_travel_pdf()
     make_finance_xlsx()
 

@@ -40,11 +40,9 @@ def test_list_meta_specs_includes_known_meta_bundles(loader: SkillLoader) -> Non
         "meta-account-watch",
         "meta-daily-operator-brief",
         "meta-document-to-decision",
-        "meta-family-day-coordinator",
         "meta-job-search-pipeline",
         "meta-kid-project-planner",
         "meta-paper-write",
-        "meta-safe-skill-installer",
         "meta-skill-creator",
         "meta-web-research-to-report",
     }

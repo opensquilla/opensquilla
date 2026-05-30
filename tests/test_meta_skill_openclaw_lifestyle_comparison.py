@@ -27,8 +27,6 @@ SELECTED_SKILLS = [
     "meta-document-to-decision",
     "meta-web-research-to-report",
     "meta-daily-operator-brief",
-    "meta-safe-skill-installer",
-    "meta-family-day-coordinator",
     "meta-account-watch",
     "meta-job-search-pipeline",
     "meta-kid-project-planner",
@@ -41,8 +39,6 @@ def test_lifestyle_catalog_covers_selected_meta_skills_without_exclusions() -> N
         "document_vendor_decision",
         "web_research_parent_esim",
         "daily_operator_morning_plan",
-        "safe_skill_install_audit",
-        "family_school_errand_day",
         "account_watch_competitor_week",
         "job_search_tailor_pack",
         "kid_project_balcony_plants",
@@ -57,8 +53,6 @@ def test_selected_meta_skills_are_grounded_in_clawhub_top100_components() -> Non
         "meta-document-to-decision": ["Word / DOCX", "Excel / XLSX", "Pdf"],
         "meta-web-research-to-report": ["Multi Search Engine", "Word / DOCX"],
         "meta-daily-operator-brief": ["Weather", "Multi Search Engine", "Elite Longterm Memory"],
-        "meta-safe-skill-installer": ["Skill Vetter", "Find Skills Skill", "Multi Search Engine"],
-        "meta-family-day-coordinator": ["Weather", "Elite Longterm Memory", "Caldav Calendar"],
         "meta-account-watch": ["Multi Search Engine", "Excel / XLSX", "Word / DOCX"],
         "meta-job-search-pipeline": ["Multi Search Engine", "Excel / XLSX", "Word / DOCX"],
         "meta-kid-project-planner": ["Multi Search Engine", "Weather", "PowerPoint / PPTX"],
@@ -126,15 +120,6 @@ NEEDS_CLARIFICATION: yes
 MISSING_FIELDS:
   - none
 """,
-        "meta-family-day-coordinator": """
-DATE_SCOPE: tomorrow
-LOCATION: Hangzhou
-FIXED_EVENTS:
-  - pickup at 17:00
-NEEDS_CLARIFICATION: yes
-MISSING_FIELDS:
-  - none
-""",
     }
 
     for skill_name, intake in examples.items():
@@ -182,7 +167,6 @@ def test_lifestyle_meta_skills_handle_missing_memory_skill_with_failover(
 ) -> None:
     expectations = {
         "meta-daily-operator-brief": ("memory_recall", "memory_recall_fallback"),
-        "meta-family-day-coordinator": ("family_memory", "family_memory_fallback"),
     }
 
     for skill_name, (step_id, fallback_id) in expectations.items():
@@ -242,18 +226,6 @@ def test_new_lifestyle_meta_skills_hide_runtime_failures_and_reply_inline(
                 "risks/tradeoffs",
                 "evidence limits",
                 "next steps for tonight",
-            ],
-        },
-        "meta-family-day-coordinator": {
-            "final": "family_plan_audit",
-            "fallbacks": {
-                "family_memory": "family_memory_fallback",
-                "weather": "weather_fallback",
-            },
-            "required": [
-                "Pickup, Dropoff & Errands / 接送和跑腿",
-                "Meals, Health & Sleep / 吃饭健康睡眠",
-                "Data limits / 数据限制",
             ],
         },
     }
@@ -558,70 +530,6 @@ def test_daily_operator_brief_hides_runtime_failures_and_clears_small_debts() ->
     assert "drafts for teacher, HR, finance, customer, and quote replies" not in raw
 
 
-def test_safe_skill_installer_uses_valid_isolated_audit_commands() -> None:
-    raw = Path(
-        "src/opensquilla/skills/bundled/meta-safe-skill-installer/SKILL.md"
-    ).read_text(encoding="utf-8")
-
-    assert 'final_text_mode: "step:safety_decision_audit"' in raw
-    assert "pasted_evidence" in raw
-    assert "Build a source-of-truth evidence ledger" in raw
-    assert "Never show invalid container flags such as --network=host=NO" in raw
-    assert "Use --network=none for offline container inspection" in raw
-    assert "download without executing" in raw
-    assert "do not run bash install.sh until static review passes" in raw
-    assert "Do not say the domain is unreachable" in raw
-    assert "Keep the final answer concise enough to finish in one turn" in raw
-    assert (
-        "Do not include a long incident-response runbook unless the user says it "
-        "was already installed"
-        in raw
-    )
-    assert (
-        "For not-yet-installed tools, keep rollback to pre-install backup and what "
-        "to rotate if accidentally run"
-        in raw
-    )
-
-
-def test_safe_skill_installer_keeps_source_evidence_boundaries_upstream() -> None:
-    raw = Path(
-        "src/opensquilla/skills/bundled/meta-safe-skill-installer/SKILL.md"
-    ).read_text(encoding="utf-8")
-
-    assert "Treat the pasted evidence ledger as the primary source of truth" in raw
-    assert "Do not audit the meta-skill's own \"sub-agent\" machinery" in raw
-    assert "Apply this evidence boundary in every step, not only the final answer" in raw
-    assert (
-        "Search failure, missing lookup output, or absent public reputation is "
-        "not proof of NXDOMAIN"
-        in raw
-    )
-    assert "Do not call a domain dead, unreachable, unresolvable, NXDOMAIN, or verified-bad" in raw
-    assert "Source inspection must pass through only visible evidence and unknowns" in raw
-    assert "Vetting and backup steps must not add new reputation or DNS claims" in raw
-    assert (
-        "Download commands are for isolated audit only and must not be run on the "
-        "real machine"
-        in raw
-    )
-    assert (
-        "Do not expose tool parameter errors, fetch failures, connector wording, "
-        "or internal audit mechanics"
-        in raw
-    )
-    assert (
-        "Do not claim zero public footprint, no GitHub record, or no "
-        "security-community record"
-        in raw
-    )
-    assert (
-        "unless the output cites the checked sources or says these checks were "
-        "not verified"
-        in raw
-    )
-
-
 def test_lifestyle_meta_skills_have_natural_language_activation_cues() -> None:
     expectations = {
         "meta-document-to-decision": [
@@ -640,7 +548,6 @@ def test_lifestyle_meta_skills_have_natural_language_activation_cues() -> None:
             "research what i should order",
         ],
         "meta-daily-operator-brief": ["今天先帮我排一下", "今天前三优先级"],
-        "meta-safe-skill-installer": ["这个插件能不能装", "skill install.sh | bash"],
         "meta-account-watch": ["盯一下这两个对手", "竞品销售群简报", "对手动态和基线相比"],
     }
 
@@ -719,33 +626,6 @@ def test_account_watch_prompt_resolves_ahead_of_daily_brief(tmp_path: Path) -> N
 
     assert matches
     assert matches[0][1] == "meta-account-watch"
-
-
-def test_family_day_coordinator_prioritizes_realistic_parent_schedule() -> None:
-    raw = Path(
-        "src/opensquilla/skills/bundled/meta-family-day-coordinator/SKILL.md"
-    ).read_text(encoding="utf-8")
-
-    assert "tonight / before-bed prep pass" in raw
-    assert 'final_text_mode: "step:family_plan_audit"' in raw
-    assert "family_plan_audit" in raw
-    assert "Return the complete final plan inline in chat" in raw
-    assert "Do not create, save, export, attach" in raw
-    assert "Never mention workflow, meta-skill, tool names" in raw
-    assert "path/workspace/meta-skill/weather problem" in raw
-    assert "Never compress errands into the" in raw
-    assert "pre-dropoff window" in raw
-    assert "dropoff first" in raw
-    assert "live weather was not verified" in raw
-    assert "without runtime/tool chatter" in raw
-    assert "Allergy guidance should be operational" in raw
-    assert "without inventing prescriptions, medicine names, dosage, or allergy severity" in raw
-    assert "Do not upgrade \"peanut allergy / 花生过敏\" into \"severe allergy" in raw
-    assert "Do not name allergy medicines, emergency injectors, drug classes" in raw
-    assert "按医生/家庭既有方案准备已开具的过敏药物或应急用品" in raw
-    assert "Pickup, Dropoff & Errands / 接送和跑腿" in raw
-    assert "Reminders / 要提醒谁" in raw
-    assert "only pasted / 仅根据" in raw
 
 
 def test_kid_project_preferences_do_not_block_on_optional_context() -> None:
@@ -1116,31 +996,6 @@ def test_kid_project_planner_printable_defaults_to_inline_markdown() -> None:
     assert "cover/front image" in raw
 
 
-def test_safe_skill_installer_avoids_unverified_external_lookup_claims() -> None:
-    raw = Path(
-        "src/opensquilla/skills/bundled/meta-safe-skill-installer/SKILL.md"
-    ).read_text(encoding="utf-8")
-
-    assert "safety_decision_audit" in raw
-    assert "If both remote shell installer and secret/account-directory access" in raw
-    assert "Never say \"none described\", \"not applicable\", or \"no installer\"" in raw
-    assert "source_lookup_fallback" in raw
-    assert "external source not verified / 外部来源未验证" in raw
-    assert "Do not claim that" in raw
-    assert "Never say the domain is unreachable" in raw
-    assert "one-line threat model" in raw
-    assert "immediate action plan" in raw
-    assert "isolated audit recipe" in raw
-    assert "English-only prose and headings" in raw
-    assert "Remove leading process commentary" in raw
-    assert "what evidence would change the verdict" in raw
-    assert "short message the user can send back" in raw
-    assert "credential/key rotation" in raw
-    assert "safer alternatives" in raw
-    assert "infer that a project is not well-known" in raw
-    assert "default to reject" in raw
-
-
 def test_lifestyle_prompts_have_english_equivalents_without_benchmark_jargon() -> None:
     rows = build_lifestyle_rows("en")
     prompts = [row["case"]["prompt"] for row in rows]
@@ -1150,7 +1005,6 @@ def test_lifestyle_prompts_have_english_equivalents_without_benchmark_jargon() -
     assert all("meta-skill" not in prompt.lower() for prompt in prompts)
     assert all("OpenSquilla" not in prompt and "OpenClaw" not in prompt for prompt in prompts)
     assert any("My parents are going to Japan" in prompt for prompt in prompts)
-    assert any("daily report helper" in prompt for prompt in prompts)
     assert any("messaged yesterday at 16:20" in prompt for prompt in prompts)
     assert any("Xiaohongshu and Dewu" in prompt for prompt in prompts)
     assert any("product operations role" in prompt for prompt in prompts)
@@ -1188,17 +1042,6 @@ def test_lifestyle_score_rewards_strong_answers_over_t3_generic_answers() -> Non
         Top 3 priorities. Calendar/task risks. Weather/commute implications.
         Follow up with Li and finance. Time blocks 09:00, 11:00, 15:00.
         Missing connector/data limits. Optional reminders.
-        """,
-        "safe_skill_install_audit": """
-        VERDICT: audit only.
-        Risk table: file access, shell, network, secrets, persistence.
-        Suspicious patterns: curl installer, reads ~/.ssh, postinstall.
-        Required manual checks. Backup/rollback plan. Unknowns that block trust.
-        """,
-        "family_school_errand_day": """
-        Time-blocked family plan. Pickup/dropoff/errand checklist.
-        Weather adjustments. Meal/health/sleep/hydration notes.
-        Remind teacher and dad. Optional reminder schedule. Missing data limits.
         """,
         "account_watch_competitor_week": """
         Account scope: Xiaohongshu and Dewu. Signal table by account and dimension:

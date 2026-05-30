@@ -81,12 +81,12 @@ def test_meta_usage_counts_meta_skill_invocations(tmp_path: Path) -> None:
     log.write_text("\n".join([
         _make_log_line(["meta-paper-write", "paper-section-author"], "t1"),
         _make_log_line(["meta-paper-write"], "t2"),
-        _make_log_line(["meta-safe-skill-installer", "sub-agent"], "t3"),
+        _make_log_line(["meta-account-watch", "sub-agent"], "t3"),
     ]) + "\n", encoding="utf-8")
     out = _run_explore(tmp_path, "anything", window_days=30)
     usage = {row["meta_skill_id"]: row["invocation_count"] for row in out["meta_usage"]}
     assert usage["meta-paper-write"] == 2
-    assert usage["meta-safe-skill-installer"] == 1
+    assert usage["meta-account-watch"] == 1
 
 
 def test_co_occurrence_uses_redacted_intent_summary(tmp_path: Path) -> None:

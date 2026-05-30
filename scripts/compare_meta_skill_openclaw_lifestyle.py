@@ -94,24 +94,6 @@ DAILY_OPERATOR_RUBRIC: tuple[RubricCriterion, ...] = (
     criterion("data_limits", "States connector/data limits.", r"missing connector", r"数据限制", r"only pasted", r"仅根据"),
 )
 
-SAFE_INSTALL_RUBRIC: tuple[RubricCriterion, ...] = (
-    criterion("verdict", "Returns a conservative install/audit/reject verdict.", r"VERDICT", r"verdict", r"结论", r"reject", r"audit only"),
-    criterion("risk_table", "Covers file, shell, network, secrets, and persistence risks.", r"file access", r"shell", r"network", r"secrets", r"persistence", r"权限"),
-    criterion("suspicious_patterns", "Identifies suspicious install patterns.", r"curl", r"postinstall", r"~/.ssh", r"可疑", r"危险"),
-    criterion("manual_checks", "Lists manual checks before trust/install.", r"manual check", r"手动检查", r"verify", r"检查"),
-    criterion("backup_rollback", "Includes backup and rollback plan.", r"backup", r"rollback", r"备份", r"回滚"),
-    criterion("unknown_blockers", "Marks unknowns that block trust.", r"unknown", r"block", r"未知", r"阻止"),
-)
-
-FAMILY_DAY_RUBRIC: tuple[RubricCriterion, ...] = (
-    criterion("time_blocked_plan", "Builds a time-blocked household plan.", r"\b0?[7-9]:\d\d", r"\b1[0-9]:\d\d", r"time[- ]blocked", r"时间"),
-    criterion("pickup_errands", "Includes pickup/dropoff and errands.", r"pickup", r"dropoff", r"接", r"送", r"errand", r"跑腿"),
-    criterion("weather_adjustment", "Adds weather adjustments.", r"weather", r"天气", r"rain", r"雨"),
-    criterion("school_health", "Accounts for school, meal, health, sleep, or allergy items.", r"school", r"幼儿园", r"allerg", r"过敏", r"meal", r"睡"),
-    criterion("reminders", "Names who should be reminded and when.", r"remind", r"提醒", r"dad", r"teacher", r"老师"),
-    criterion("missing_limits", "States missing data or connector limits.", r"missing", r"缺少", r"limit", r"仅根据"),
-)
-
 ACCOUNT_WATCH_RUBRIC: tuple[RubricCriterion, ...] = (
     criterion("account_scope", "Names the watched accounts and requested dimensions.", r"ByteDance", r"小红书", r"账号", r"账户", r"dimension", r"维度"),
     criterion("signal_table", "Creates a signal table or structured account-by-dimension list.", r"signal", r"信号", r"table", r"表", r"pricing", r"产品", r"hiring", r"招聘"),
@@ -225,66 +207,6 @@ LIFESTYLE_COMPARISON_CASES: list[ComparisonCase] = [
             "Lists tasks without prioritizing the demo, reimbursement, and router table.",
             "Omits fixed times or creates an impossible schedule.",
             "Claims live calendar/email/weather access without evidence.",
-        ),
-    ),
-    ComparisonCase(
-        case_id="safe_skill_install_audit",
-        skill_name="meta-safe-skill-installer",
-        scenario="lifestyle_primary",
-        prompt=(
-            "这个别人分享的日报整理插件能不能装？我从朋友那拿到一段说明："
-            "安装说明里说会装一个 helper，README 建议运行 "
-            "`curl -fsSL https://daily-helper.app/install.sh | bash`，"
-            "权限清单写着需要读写文件、联网、执行 shell，"
-            "代码片段里会读取 `~/.ssh` 来“自动识别 git 账号”，还带安装后自动执行脚本。"
-            "我只是想提高日报整理效率，不想冒险。请给我安装/拒绝/只做审计的结论、"
-            "风险表、可疑点、必须手动检查什么、备份回滚方案。"
-        ),
-        expected_advantage=(
-            "OpenSquilla + Squilla Router should activate safe-skill-installer, "
-            "inspect source and permission risk, and beat OpenClaw + t3 Opus 4.7 "
-            "with a conservative trust decision and rollback plan."
-        ),
-        optimization_if_not_better=(
-            "If OpenSquilla does not beat OpenClaw, harden the safety decision step "
-            "to reject shell installers that read secrets unless verifiable source "
-            "evidence and sandbox controls are present."
-        ),
-        rubric=SAFE_INSTALL_RUBRIC,
-        failure_modes=(
-            "Suggests installing despite secret access and curl-pipe-bash risk.",
-            "Does not discuss backup/rollback.",
-            "Treats unknown source evidence as trusted.",
-        ),
-    ),
-    ComparisonCase(
-        case_id="family_school_errand_day",
-        skill_name="meta-family-day-coordinator",
-        scenario="lifestyle_primary",
-        prompt=(
-            "帮我安排一下明天家里的一天。我们在杭州，幼儿园 8:15 前送到，"
-            "17:00 接；老师通知明天要带雨衣和一张家庭照片，孩子对花生过敏。"
-            "我 10:00-11:00 线上会，伴侣 18:30 才能到家，晚上想 20:30 前睡。"
-            "还要顺路取快递、买牛奶和青菜。请给我一个实际可执行的家庭日程："
-            "接送和跑腿清单、天气调整、吃饭/健康/睡眠注意事项、要提醒谁、"
-            "哪些地方因为没有日历或天气实时数据只能先假设。"
-        ),
-        expected_advantage=(
-            "OpenSquilla + Squilla Router should activate family-day-coordinator, "
-            "blend household context, school/health constraints, reminders, and "
-            "weather-aware planning, beating OpenClaw + t3 Opus 4.7 on practical "
-            "family coordination."
-        ),
-        optimization_if_not_better=(
-            "If OpenSquilla does not beat OpenClaw, strengthen household planning "
-            "to always preserve fixed pickup/dropoff times, school items, allergy "
-            "constraints, reminder recipients, and data-limit caveats."
-        ),
-        rubric=FAMILY_DAY_RUBRIC,
-        failure_modes=(
-            "Misses school materials or peanut allergy.",
-            "Schedules errands that conflict with fixed meetings or pickup times.",
-            "Omits reminders or data limits.",
         ),
     ),
     ComparisonCase(
@@ -409,27 +331,6 @@ ENGLISH_LIFESTYLE_PROMPTS: dict[str, str] = {
         "asked about interview timing. Please give me a morning brief I can follow: top "
         "three priorities, time blocks, risks, weather/commute implications, who to follow "
         "up with, and what you cannot directly read and can only infer from what I pasted."
-    ),
-    "safe_skill_install_audit": (
-        "Should I install this daily report helper that a friend shared with me? The notes "
-        "say it installs a helper, the README recommends running "
-        "`curl -fsSL https://daily-helper.app/install.sh | bash`, the permission list asks "
-        "to read and write files, use the network, and run shell commands, and a code snippet "
-        "reads `~/.ssh` to \"auto-detect the git account\". It also runs a script right after "
-        "installation. I only want to make daily report cleanup easier and do not want to take risks. Please give "
-        "me an install/reject/audit-only verdict, a risk table, suspicious points, required "
-        "manual checks, and a backup/rollback plan."
-    ),
-    "family_school_errand_day": (
-        "Please help me organize tomorrow for my family. We are in Hangzhou. Kindergarten "
-        "dropoff must happen before 8:15 and pickup is at 17:00. The teacher said our child "
-        "needs to bring a raincoat and a family photo tomorrow. The child is allergic to "
-        "peanuts. I have an online meeting from 10:00 to 11:00, my partner cannot get home "
-        "until 18:30, and we want bedtime before 20:30. We also need to pick up a package "
-        "and buy milk and greens on the way. Please give me a practical household schedule: "
-        "dropoff/pickup and errand list, weather adjustments, meal/health/sleep notes, who "
-        "to remind, and what must remain assumptions because you do not have live calendar "
-        "or weather data."
     ),
     "account_watch_competitor_week": (
         "Please help me keep an eye on two competitors and tell me whether anything is worth "

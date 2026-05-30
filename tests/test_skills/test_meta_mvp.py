@@ -361,7 +361,7 @@ async def test_meta_resolution_highest_priority_wins() -> None:
 @pytest.mark.asyncio
 async def test_meta_resolution_ignores_triggers_inside_pasted_webchat_dump() -> None:
     spec = _make_meta_spec(
-        name="meta-family-day-coordinator",
+        name="meta-household-calendar-test",
         composition={"steps": [{"id": "a", "skill": "summarize"}]},
         triggers=["家庭日程"],
         priority=56,
@@ -371,7 +371,7 @@ async def test_meta_resolution_ignores_triggers_inside_pasted_webchat_dump() -> 
         [
             "WebChat dump",
             "assistant: 这里是旧页面里的 skill 列表",
-            "meta-family-day-coordinator 家庭日程协调",
+            "meta-household-calendar-test 家庭日程协调",
             "meta-skill-creator",
         ]
         + [f"history line {i}" for i in range(20)]
@@ -392,7 +392,7 @@ async def test_meta_resolution_ignores_triggers_inside_pasted_webchat_dump() -> 
 @pytest.mark.asyncio
 async def test_meta_resolution_still_matches_current_cjk_intent() -> None:
     spec = _make_meta_spec(
-        name="meta-family-day-coordinator",
+        name="meta-household-calendar-test",
         composition={"steps": [{"id": "a", "skill": "summarize"}]},
         triggers=["家庭日程"],
         priority=56,
@@ -407,7 +407,7 @@ async def test_meta_resolution_still_matches_current_cjk_intent() -> None:
 
     out = await meta_resolution(ctx)  # type: ignore[arg-type]
 
-    assert out.metadata["meta_match"].plan.name == "meta-family-day-coordinator"
+    assert out.metadata["meta_match"].plan.name == "meta-household-calendar-test"
 
 
 @pytest.mark.asyncio

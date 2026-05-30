@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from opensquilla.skills.loader import SkillLoader
+from opensquilla.skills.meta.trigger_accuracy import TriggerCase, evaluate_trigger_cases
 from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.templating import evaluate_when
 from scripts.compare_meta_skill_openclaw import EndpointResult, JudgeResult, OpenSquillaRunner
@@ -785,6 +786,15 @@ def test_kid_project_planner_final_audits_original_user_constraints(
     audit_text = json.dumps(step_by_id["project_pack_audit"].with_args, ensure_ascii=False)
 
     assert "project_fact_ledger" in step_by_id
+    assert step_by_id["recall_past_projects"].kind == "agent"
+    assert step_by_id["recall_past_projects"].skill == "memory"
+    recall_text = json.dumps(
+        step_by_id["recall_past_projects"].with_args,
+        ensure_ascii=False,
+    )
+    assert "Return only remembered facts" in recall_text
+    assert "do not curate memory files" in recall_text
+    assert "REMEMBERED_PRIOR_PROJECTS" in recall_text
     assert "recall_past_projects" in step_by_id["project_fact_ledger"].depends_on
     assert "project_fact_ledger" in step_by_id["deliver_project_pack"].depends_on
     assert "deliver_project_pack" in step_by_id["project_pack_audit"].depends_on
@@ -816,6 +826,81 @@ def test_kid_project_planner_final_audits_original_user_constraints(
     assert "Do not invent calendar dates" in final_text
     assert "Do not replace user-provided materials" in final_text
     assert "Design a comparison experiment when it fits the project" in final_text
+
+
+def test_kid_project_planner_memory_and_weather_are_source_strict(
+    tmp_path: Path,
+) -> None:
+    plan = _bundled_meta_plan("meta-kid-project-planner", tmp_path)
+    step_by_id = {step.id: step for step in plan.steps}
+
+    recall = step_by_id["recall_past_projects"]
+    store_project = step_by_id["store_project"]
+    weather_location = step_by_id["weather_location"]
+    weather_check = step_by_id["weather_check"]
+    ledger_text = json.dumps(step_by_id["project_fact_ledger"].with_args, ensure_ascii=False)
+    final_text = json.dumps(step_by_id["deliver_project_pack"].with_args, ensure_ascii=False)
+    audit_text = json.dumps(step_by_id["project_pack_audit"].with_args, ensure_ascii=False)
+
+    assert recall.kind == "agent"
+    assert recall.skill == "memory"
+    assert "child age, drawing/writing preferences" in json.dumps(
+        recall.with_args,
+        ensure_ascii=False,
+    )
+    assert store_project.kind == "agent"
+    assert store_project.skill == "memory"
+    assert store_project.on_failure == "store_project_fallback"
+    assert "remember this project" in (store_project.when or "")
+    assert "save this project" in (store_project.when or "")
+    assert "archive this project" in (store_project.when or "")
+    assert "Do not rewrite the project pack" in json.dumps(
+        store_project.with_args,
+        ensure_ascii=False,
+    )
+    assert weather_location.kind == "llm_chat"
+    assert "feasibility" in weather_location.depends_on
+    assert "Do not use runtime timestamps" in json.dumps(
+        weather_location.with_args,
+        ensure_ascii=False,
+    )
+    assert "weather_location" in weather_check.depends_on
+    assert "DESTINATION: UNKNOWN" in (weather_check.when or "")
+    assert "outputs.get('weather_location'" in (weather_check.when or "")
+    assert "{{ outputs.get('weather_location'" in json.dumps(
+        weather_check.with_args,
+        ensure_ascii=False,
+    )
+    assert "Runtime timestamps" in ledger_text
+    assert "Asia/Shanghai" in ledger_text
+    assert "treat it as not verified" in ledger_text
+    assert "Do not treat runtime timestamps" in final_text
+    assert "live weather was not verified" in final_text
+    assert "Remove runtime timestamps" in audit_text
+    assert "Asia/Shanghai" in audit_text
+
+
+def test_kid_project_planner_triggers_science_project_prompt(tmp_path: Path) -> None:
+    loader = SkillLoader(
+        bundled_dir=Path("src/opensquilla/skills/bundled"),
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+    results = evaluate_trigger_cases(
+        loader,
+        [
+            TriggerCase(
+                name="kid_memory_science_project",
+                user_message=(
+                    "My child needs to submit a small science project in two weeks. "
+                    "Use plant growth as the topic."
+                ),
+                expected_meta_skill="meta-kid-project-planner",
+            )
+        ],
+    )
+
+    assert results["passed"] == 1
+    assert results["failed"] == 0
 
 
 def test_kid_project_planner_final_avoids_fake_dates_weather_and_data(

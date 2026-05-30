@@ -7,8 +7,11 @@ always: false
 final_text_mode: "step:project_pack_audit"
 triggers:
   - "school project"
+  - "science project"
   - "science fair"
   - "kid science"
+  - "kid project"
+  - "plant growth"
   - "孩子做项目"
   - "做一个手工"
   - "科学课作业"
@@ -188,6 +191,32 @@ composition:
       depends_on: [feasibility, project_clarify]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
       on_failure: recall_past_projects_fallback
+      with:
+        task: |
+          Recall durable memory for this child's project planning context.
+          Return only remembered facts; do not curate memory files, summarize
+          the memory skill workflow, list workspace paths, or write new memory.
+
+          Current request:
+          {{ inputs.user_message | xml_escape | truncate(1200) }}
+
+          Search/read MEMORY.md and memory/**/*.md for facts relevant to:
+          child age, drawing/writing preferences, parent supervision time,
+          prior completed school/science projects, lessons learned from those
+          projects, and constraints that should affect this new plant-growth
+          project.
+
+          Return exactly this markdown contract:
+          REMEMBERED_CHILD_PROFILE:
+            - <fact or none>
+          REMEMBERED_PARENT_CONSTRAINTS:
+            - <fact or none>
+          REMEMBERED_PRIOR_PROJECTS:
+            - <project name> — <lesson or none>
+          REMEMBERED_PLANNING_RULES:
+            - <rule or none>
+          MEMORY_LIMITS:
+            - <only facts that were missing or uncertain>
     - id: recall_past_projects_fallback
       kind: llm_chat
       with:
@@ -219,14 +248,33 @@ composition:
 
           Request:
           {{ inputs.user_message | xml_escape | truncate(3500) }}
+    - id: weather_location
+      kind: llm_chat
+      depends_on: [preferences, feasibility, project_clarify]
+      when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences and ('outdoor' in (inputs.user_message | lower) or 'balcony' in (inputs.user_message | lower) or 'plant' in (inputs.user_message | lower) or 'garden' in (inputs.user_message | lower) or 'park' in (inputs.user_message | lower) or '户外' in inputs.user_message or '阳台' in inputs.user_message or '植物' in inputs.user_message or '豆芽' in inputs.user_message)"
+      with:
+        system: "You extract a real user-supplied weather location for a child project. Return only the requested two-line contract."
+        task: |
+          Extract a city, region, airport code, or unambiguous place that the
+          user supplied for weather lookup. Do not use runtime timestamps,
+          timezone labels, current-date metadata, channel metadata, source
+          names, or workspace paths as locations. If no real place is supplied,
+          return UNKNOWN.
+
+          User request:
+          {{ inputs.user_message | xml_escape | truncate(1800) }}
+
+          Return exactly:
+          DESTINATION: <city/region/place or UNKNOWN>
+          LOCATION_SOURCE: <user_request|unknown>
     - id: weather_check
       kind: skill_exec
       skill: weather
-      depends_on: [feasibility, project_clarify]
-      when: "outputs.feasibility != 'INAPPROPRIATE' and ('outdoor' in (inputs.user_message | lower) or 'balcony' in (inputs.user_message | lower) or 'plant' in (inputs.user_message | lower) or 'garden' in (inputs.user_message | lower) or 'park' in (inputs.user_message | lower) or '户外' in inputs.user_message or '阳台' in inputs.user_message or '植物' in inputs.user_message or '豆芽' in inputs.user_message)"
+      depends_on: [feasibility, project_clarify, weather_location]
+      when: "outputs.feasibility != 'INAPPROPRIATE' and 'DESTINATION: UNKNOWN' not in outputs.get('weather_location', '') and (outputs.get('weather_location', '') | length) > 0"
       on_failure: weather_check_fallback
       with:
-        location: "{{ inputs.user_message | xml_escape | truncate(60) }}"
+        location: "{{ outputs.get('weather_location', '') | truncate(160) }}"
         days: 7
     - id: weather_check_fallback
       kind: llm_chat
@@ -289,6 +337,11 @@ composition:
               school rule, allergy, fake measurements, tasting/eating>
 
           Rules:
+          - Runtime timestamps, timezone labels such as Asia/Shanghai, source
+            metadata, channel names, workspace paths, and bracketed current
+            date strings are not user-supplied locations. If those are the only
+            location-like strings, set PROVIDED_LOCATION_LIGHT to UNKNOWN and
+            VERIFIED_WEATHER to none.
           - If durable memory says the child is a specific age, likes/dislikes
             an activity style, has prior projects, or has parent time limits,
             put those in PROVIDED_CHILD_CONTEXT and PROVIDED_MEMORY_CONTEXT.
@@ -300,6 +353,9 @@ composition:
           - If the source says only "half-day sun", mark orientation and hours
             UNKNOWN. Preserve "half-day sun" exactly.
           - If weather was not actually verified, VERIFIED_WEATHER must be none.
+          - If a weather result exists only because a runtime timestamp or
+            timezone was queried, treat it as not verified and do not include
+            the forecast.
           - Never invent sample measurements, dates, allergies, school rules,
             or local forecasts.
     - id: deep_research
@@ -542,6 +598,10 @@ composition:
             hours, rain forecasts, school rules, allergies, or local weather.
             Keep weather/light claims to what the user supplied plus clearly
             labelled assumptions.
+          - Do not treat runtime timestamps, timezone labels such as
+            Asia/Shanghai, source metadata, channel names, or workspace paths
+            as a location. If no city or region was supplied by the user, say
+            live weather was not verified.
           - Do not prefill observation tables with fake measurements, fake
             dates, or predicted heights. For templates, leave measurement cells blank or as placeholders
             such as "__ cm" / "[记录]".
@@ -710,6 +770,10 @@ composition:
           - Remove invented balcony direction, temperature ranges, rain forecasts,
             sunshine hours, school rules, allergies, and local weather claims
             unless they appear in the fact ledger as verified or user-provided.
+          - Remove runtime timestamps, timezone labels such as Asia/Shanghai,
+            channel/source metadata, and workspace paths from location,
+            weather, and date sections. They are not user-provided project
+            facts.
           - Remove fake sample measurements, fake dates, and predicted heights.
             Observation tables must leave measurement cells blank or as
             placeholders like "__ cm" / "[记录]".
@@ -781,7 +845,31 @@ composition:
       kind: agent
       skill: memory
       depends_on: [project_pack_audit, project_clarify, feasibility]
-      when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
+      on_failure: store_project_fallback
+      when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences and ('remember this project' in (inputs.user_message | lower) or 'save this project' in (inputs.user_message | lower) or 'archive this project' in (inputs.user_message | lower) or '记录这个项目' in inputs.user_message or '保存这个项目' in inputs.user_message)"
+      with:
+        task: |
+          Archive the accepted child project plan only because the user
+          explicitly asked to remember/save/archive it.
+
+          Store only concise durable facts:
+          - project title/topic
+          - child age/preferences used
+          - parent constraints used
+          - prior projects avoided
+          - the single most important planning lesson
+
+          Do not rewrite the project pack. Do not include workspace paths.
+          Final project pack:
+          {{ outputs.get('project_pack_audit', '') | truncate(2000) }}
+    - id: store_project_fallback
+      kind: llm_chat
+      with:
+        system: "You produce a silent archival fallback note for child project planning."
+        task: |
+          Project memory archive was not updated. The user-facing project
+          pack has already been produced, so no additional text should be
+          appended to the final answer.
 ---
 
 # meta-kid-project-planner
@@ -804,7 +892,7 @@ into **5 distinct bundled atomic skills**:
 |---|---|---|
 | `multi-search-engine` | `web_research` | Find existing how-to guides for the topic |
 | `deep-research` | `deep_research` | Extra round for `SAFETY_REVIEW_REQUIRED` or `NEEDS_SHOPPING` feasibility |
-| `memory` | `recall_past_projects`, `store_project` | Per-child memory: what they've already done; what they did this time. Avoids project repeats and builds a learning trajectory. |
+| `memory` | `recall_past_projects`, `store_project` | Per-child memory: recalls what they've already done, then archives what they did this time. Avoids project repeats and builds a learning trajectory. |
 | `weather` | `weather_check` | When the topic is outdoor / garden / park, pull a 7-day forecast so `outline_steps` can recommend the best day |
 | `pptx` | `kid_deck` | When `PARENT_SUPERVISION: HANDS_ON`, produce a printable slide deck for the kid (visual step-by-step + safety callouts) |
 
@@ -843,9 +931,9 @@ deliverable IS the redirect, with `PACK_DELIVERED: no_safety_redirect`.
   When the proposed primitive ships, the kid section can go to a
   child-facing surface while the parent section goes to the guardian's
   channel, separately.
-- **No persistence of past projects.** Each invocation is independent
-  — without `state:`, the skill cannot remember which projects the
-  child has already done.
+- **Memory depends on curated source files.** The planner asks the memory
+  skill to read `MEMORY.md` and `memory/**/*.md`; if those files are empty or
+  stale, it degrades to explicit unknowns instead of inventing prior projects.
 - **Vocab cards do not feed an FSRS deck.** The `vocab_cards` step
   emits a one-shot card list; integrating with a spaced-repetition
   state machine is reserved for a future `meta-spaced-rep-coach`.

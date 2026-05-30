@@ -216,16 +216,19 @@ def test_new_lifestyle_meta_skills_hide_runtime_failures_and_reply_inline(
             "required": ["JD Requirement / My Evidence / Gap Table", "48-Hour Interview Prep"],
         },
         "meta-kid-project-planner": {
-            "final": "deliver_project_pack",
+            "final": "project_pack",
             "fallbacks": {
                 "recall_past_projects": "recall_past_projects_fallback",
-                "web_research": "web_research_fallback",
+                "quick_reference": "quick_reference_fallback",
+                "heavy_research": "heavy_research_fallback",
                 "weather_check": "weather_check_fallback",
+                "kid_deck": "kid_deck_fallback",
+                "project_illustration": "project_illustration_fallback",
             },
             "required": [
-                "printable record sheet",
-                "poster-board layout",
-                "Weather / light adjustment",
+                "Tiny observation sheet",
+                "use the generated image as the cover/front image",
+                "print-ready markdown",
             ],
         },
         "meta-web-research-to-report": {
@@ -623,7 +626,7 @@ def test_lifestyle_meta_skills_have_natural_language_activation_cues() -> None:
     expectations = {
         "meta-document-to-decision": [
             "供应商续费",
-            "要不要签",
+            "这个合同要不要签",
             "vendor renewal",
             "contract excerpt",
             "decide tomorrow whether to sign",
@@ -631,14 +634,14 @@ def test_lifestyle_meta_skills_have_natural_language_activation_cues() -> None:
         ],
         "meta-web-research-to-report": [
             "decision memo",
-            "travel esim",
-            "carrier roaming",
-            "mobile data plan",
-            "what i should order",
+            "travel esim research report",
+            "carrier roaming vs local sim report",
+            "mobile data plan decision memo",
+            "research what i should order",
         ],
-        "meta-daily-operator-brief": ["今天先帮我排一下", "前三优先级"],
-        "meta-safe-skill-installer": ["这个插件能不能装", "curl -fsSL"],
-        "meta-account-watch": ["盯一下这两个对手", "销售群里的简报", "和基线相比"],
+        "meta-daily-operator-brief": ["今天先帮我排一下", "今天前三优先级"],
+        "meta-safe-skill-installer": ["这个插件能不能装", "skill install.sh | bash"],
+        "meta-account-watch": ["盯一下这两个对手", "竞品销售群简报", "对手动态和基线相比"],
     }
 
     for skill_name, cues in expectations.items():
@@ -756,24 +759,130 @@ def test_kid_project_preferences_do_not_block_on_optional_context() -> None:
     assert "proceed with explicit assumptions" in raw
 
 
-def test_kid_project_planner_only_generates_vocab_when_explicitly_requested(
+def test_kid_project_planner_removes_heavy_default_export_paths(
     tmp_path: Path,
 ) -> None:
     plan = _bundled_meta_plan("meta-kid-project-planner", tmp_path)
     step_by_id = {step.id: step for step in plan.steps}
 
-    vocab_when = step_by_id["vocab_cards"].when or ""
-    assert "vocab" in vocab_when
-    assert "bilingual" in vocab_when
-    assert "英语" in vocab_when
-    assert "双语" in vocab_when
-    assert "单词" in vocab_when
+    removed_heavy_steps = {
+        "web_research",
+        "project_fact_ledger",
+        "project_core",
+        "deep_research",
+        "outline_steps",
+        "material_list",
+        "safety_notes",
+        "learning_objectives",
+        "vocab_cards",
+        "deliver_project_pack",
+        "project_pack_audit",
+    }
 
-    final_text = json.dumps(step_by_id["deliver_project_pack"].with_args, ensure_ascii=False)
-    assert "Do not include vocabulary cards unless the user explicitly asked" in final_text
-    assert "For Chinese requests, do not use English section headings" in final_text
-    assert "do not copy intermediate outputs verbatim" in final_text
-    assert "1800-3200 Chinese characters" in final_text
+    assert plan.final_text_mode == "step:project_pack"
+    assert removed_heavy_steps.isdisjoint(step_by_id)
+    assert step_by_id["project_route"].kind == "llm_classify"
+    assert step_by_id["project_route"].output_choices == (
+        "LIGHT_PROJECT_PACK",
+        "HEAVY_PROJECT_PACK",
+    )
+    assert step_by_id["quick_reference"].kind == "skill_exec"
+    assert step_by_id["quick_reference"].skill == "multi-search-engine"
+    assert step_by_id["quick_reference"].with_args["max_results"] == 3
+    assert step_by_id["quick_reference"].with_args["engines"] == ["duckduckgo"]
+    assert step_by_id["heavy_research"].kind == "skill_exec"
+    assert step_by_id["heavy_research"].skill == "multi-search-engine"
+    assert "HEAVY_PROJECT_PACK" in (step_by_id["heavy_research"].when or "")
+    assert step_by_id["weather_check"].kind == "skill_exec"
+    assert step_by_id["weather_check"].skill == "weather"
+    assert "HEAVY_PROJECT_PACK" in (step_by_id["weather_check"].when or "")
+    assert step_by_id["kid_deck"].kind == "skill_exec"
+    assert step_by_id["kid_deck"].skill == "pptx"
+    assert "HEAVY_PROJECT_PACK" in (step_by_id["kid_deck"].when or "")
+
+    final_text = json.dumps(step_by_id["project_pack"].with_args, ensure_ascii=False)
+    assert "full pack" in final_text
+    assert "detailed steps" in final_text
+    assert "slide deck" in final_text
+    assert "Avoid report-like sections" in final_text
+    assert "If Route is HEAVY_PROJECT_PACK" in final_text
+
+
+def test_kid_project_planner_compact_default_and_visual_generation_contract(
+    tmp_path: Path,
+) -> None:
+    plan = _bundled_meta_plan("meta-kid-project-planner", tmp_path)
+    step_by_id = {step.id: step for step in plan.steps}
+
+    assert plan.final_text_mode == "step:project_pack"
+    assert list(step_by_id) == [
+        "preferences",
+        "project_clarify",
+        "feasibility",
+        "project_route",
+        "redirect_unsafe",
+        "recall_past_projects",
+        "recall_past_projects_fallback",
+        "quick_reference",
+        "quick_reference_fallback",
+        "heavy_research",
+        "heavy_research_fallback",
+        "weather_location",
+        "weather_check",
+        "weather_check_fallback",
+        "project_pack",
+        "visual_brief",
+        "kid_deck",
+        "kid_deck_fallback",
+        "project_illustration",
+        "project_illustration_fallback",
+        "store_project",
+        "store_project_fallback",
+    ]
+
+    project_pack = step_by_id["project_pack"]
+    assert project_pack.kind == "llm_chat"
+    assert "preferences" in project_pack.depends_on
+    assert "feasibility" in project_pack.depends_on
+    assert "project_route" in project_pack.depends_on
+    assert "recall_past_projects" in project_pack.depends_on
+    assert "quick_reference" in project_pack.depends_on
+    assert "heavy_research" in project_pack.depends_on
+    assert "weather_check" in project_pack.depends_on
+    assert "Exactly 3-4 main steps" in json.dumps(project_pack.with_args, ensure_ascii=False)
+    assert "350-650 words" in json.dumps(project_pack.with_args, ensure_ascii=False)
+    assert "one-evening school projects" in json.dumps(project_pack.with_args, ensure_ascii=False)
+
+    visual_brief = step_by_id["visual_brief"]
+    project_illustration = step_by_id["project_illustration"]
+    fallback = step_by_id["project_illustration_fallback"]
+
+    assert visual_brief.kind == "llm_chat"
+    assert "project_pack" in visual_brief.depends_on
+    assert "配图" in (visual_brief.when or "")
+    assert "image" in (visual_brief.when or "")
+    assert "cover" in (visual_brief.when or "")
+    assert "front" in (visual_brief.when or "")
+    assert project_illustration.kind == "tool_call"
+    assert project_illustration.tool == "image_generate"
+    assert project_illustration.tool_allowlist == ("image_generate",)
+    assert project_illustration.on_failure == "project_illustration_fallback"
+    assert project_illustration.with_args["filename"] == "kid_project_illustration.png"
+    assert set(project_illustration.with_args) == {"prompt", "filename"}
+    assert "outputs.get('visual_brief'" in project_illustration.with_args["prompt"]
+    assert "Generate the child-safe school-project cover illustration" in project_illustration.with_args["prompt"]
+    assert fallback.kind == "llm_chat"
+    assert "IMAGE_PROMPT_TO_REUSE" in json.dumps(fallback.with_args, ensure_ascii=False)
+
+    final_text = json.dumps(project_pack.with_args, ensure_ascii=False)
+    assert "one-evening school-project structure" in final_text
+    assert "Exactly 3-4 main steps" in final_text
+    assert "use the generated image as the cover/front image" in final_text
+    assert "artifact metadata" in final_text
+    assert "## Illustration" in final_text
+    assert "one-page project card" in final_text
+    assert "no dense walls of text" in final_text
+    assert "top title, center" in final_text
 
 
 def test_kid_project_planner_final_audits_original_user_constraints(
@@ -781,11 +890,9 @@ def test_kid_project_planner_final_audits_original_user_constraints(
 ) -> None:
     plan = _bundled_meta_plan("meta-kid-project-planner", tmp_path)
     step_by_id = {step.id: step for step in plan.steps}
-    assert plan.final_text_mode == "step:project_pack_audit"
-    final_text = json.dumps(step_by_id["deliver_project_pack"].with_args, ensure_ascii=False)
-    audit_text = json.dumps(step_by_id["project_pack_audit"].with_args, ensure_ascii=False)
+    assert plan.final_text_mode == "step:project_pack"
+    final_text = json.dumps(step_by_id["project_pack"].with_args, ensure_ascii=False)
 
-    assert "project_fact_ledger" in step_by_id
     assert step_by_id["recall_past_projects"].kind == "agent"
     assert step_by_id["recall_past_projects"].skill == "memory"
     recall_text = json.dumps(
@@ -795,37 +902,20 @@ def test_kid_project_planner_final_audits_original_user_constraints(
     assert "Return only remembered facts" in recall_text
     assert "do not curate memory files" in recall_text
     assert "REMEMBERED_PRIOR_PROJECTS" in recall_text
-    assert "recall_past_projects" in step_by_id["project_fact_ledger"].depends_on
-    assert "project_fact_ledger" in step_by_id["deliver_project_pack"].depends_on
-    assert "deliver_project_pack" in step_by_id["project_pack_audit"].depends_on
-    assert "project_fact_ledger" in step_by_id["project_pack_audit"].depends_on
-    assert "recall_past_projects" in step_by_id["project_pack_audit"].depends_on
-    assert "outline_steps" in step_by_id["project_pack_audit"].depends_on
-    assert "material_list" in step_by_id["project_pack_audit"].depends_on
-    assert "safety_notes" in step_by_id["project_pack_audit"].depends_on
-    assert "learning_objectives" in step_by_id["project_pack_audit"].depends_on
+    assert "recall_past_projects" in step_by_id["project_pack"].depends_on
+    assert "quick_reference" in step_by_id["project_pack"].depends_on
     assert "{{ inputs.user_message" in final_text
-    assert "Project fact ledger" in final_text
     assert "Durable memory / past-project recall" in final_text
-    assert "Project fact ledger" in audit_text
-    assert "PROVIDED_MEMORY_CONTEXT" in audit_text
-    assert "Do not rewrite" in audit_text
-    assert "fields as UNKNOWN" in audit_text
-    assert "intermediate" in audit_text
-    assert "source sections" in audit_text
-    assert "artifact_ref" in audit_text
-    assert "download_url" in audit_text
-    assert "discard those metadata fields" in audit_text
-    assert "printable record sheet" in audit_text
-    assert "poster board layout" in audit_text
-    assert "inline" in audit_text
-    assert "deliverables" in audit_text
+    assert "artifact metadata" in final_text
+    assert "file paths" in final_text
+    assert "download URLs" in final_text
+    assert "print-ready markdown" in final_text
+    assert "inline" in final_text
     assert "Preserve every explicit user constraint" in final_text
-    assert "age, deadline, location, available materials, budget" in final_text
-    assert "parent time, light/weather constraints" in final_text
+    assert "age, deadline, available" in final_text
+    assert "parent time" in final_text
     assert "Do not invent calendar dates" in final_text
-    assert "Do not replace user-provided materials" in final_text
-    assert "Design a comparison experiment when it fits the project" in final_text
+    assert "Prefer a clear comparison design when it fits" in final_text
 
 
 def test_kid_project_planner_memory_and_weather_are_source_strict(
@@ -835,12 +925,9 @@ def test_kid_project_planner_memory_and_weather_are_source_strict(
     step_by_id = {step.id: step for step in plan.steps}
 
     recall = step_by_id["recall_past_projects"]
+    quick_reference = step_by_id["quick_reference"]
     store_project = step_by_id["store_project"]
-    weather_location = step_by_id["weather_location"]
-    weather_check = step_by_id["weather_check"]
-    ledger_text = json.dumps(step_by_id["project_fact_ledger"].with_args, ensure_ascii=False)
-    final_text = json.dumps(step_by_id["deliver_project_pack"].with_args, ensure_ascii=False)
-    audit_text = json.dumps(step_by_id["project_pack_audit"].with_args, ensure_ascii=False)
+    final_text = json.dumps(step_by_id["project_pack"].with_args, ensure_ascii=False)
 
     assert recall.kind == "agent"
     assert recall.skill == "memory"
@@ -858,26 +945,21 @@ def test_kid_project_planner_memory_and_weather_are_source_strict(
         store_project.with_args,
         ensure_ascii=False,
     )
-    assert weather_location.kind == "llm_chat"
-    assert "feasibility" in weather_location.depends_on
-    assert "Do not use runtime timestamps" in json.dumps(
-        weather_location.with_args,
-        ensure_ascii=False,
-    )
-    assert "weather_location" in weather_check.depends_on
-    assert "DESTINATION: UNKNOWN" in (weather_check.when or "")
-    assert "outputs.get('weather_location'" in (weather_check.when or "")
-    assert "{{ outputs.get('weather_location'" in json.dumps(
-        weather_check.with_args,
-        ensure_ascii=False,
-    )
-    assert "Runtime timestamps" in ledger_text
-    assert "Asia/Shanghai" in ledger_text
-    assert "treat it as not verified" in ledger_text
-    assert "Do not treat runtime timestamps" in final_text
-    assert "live weather was not verified" in final_text
-    assert "Remove runtime timestamps" in audit_text
-    assert "Asia/Shanghai" in audit_text
+    assert quick_reference.kind == "skill_exec"
+    assert quick_reference.skill == "multi-search-engine"
+    assert quick_reference.on_failure == "quick_reference_fallback"
+    assert "'weather' in (inputs.user_message | lower)" in (quick_reference.when or "")
+    assert "weather day" in (quick_reference.when or "")
+    assert "'school' in (inputs.user_message | lower)" in (quick_reference.when or "")
+    assert "show-and-tell" in (quick_reference.when or "")
+    assert "Lightweight project reference" in final_text
+    assert step_by_id["weather_location"].kind == "llm_chat"
+    assert "HEAVY_PROJECT_PACK" in (step_by_id["weather_location"].when or "")
+    assert step_by_id["weather_check"].skill == "weather"
+    assert "DESTINATION: UNKNOWN" in (step_by_id["weather_check"].when or "")
+    assert "workspace paths" in final_text
+    assert "runtime details" in final_text
+    assert "Do not invent exact calendar dates, weather" in final_text
 
 
 def test_kid_project_planner_triggers_science_project_prompt(tmp_path: Path) -> None:
@@ -903,33 +985,119 @@ def test_kid_project_planner_triggers_science_project_prompt(tmp_path: Path) -> 
     assert results["failed"] == 0
 
 
+def test_kid_project_planner_triggers_lifestyle_weather_show_and_tell_prompt(
+    tmp_path: Path,
+) -> None:
+    raw_skill = Path(
+        "src/opensquilla/skills/bundled/meta-kid-project-planner/SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "show something about the weather" not in raw_skill
+    assert "front-cover illustration" not in raw_skill
+    assert "weather day" in raw_skill
+    assert "show-and-tell" in raw_skill
+    assert "class presentation" in raw_skill
+
+    loader = SkillLoader(
+        bundled_dir=Path("src/opensquilla/skills/bundled"),
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+    results = evaluate_trigger_cases(
+        loader,
+        [
+            TriggerCase(
+                name="kid_lifestyle_weather_show_and_tell",
+                user_message=(
+                    "My daughter just remembered that tomorrow is "
+                    "'show something about the weather' day at school. "
+                    "It's already after dinner, so I need something we can "
+                    "finish tonight without making a mess. Can you give me a "
+                    "very simple project with only a few steps, a tiny sheet "
+                    "she can fill in, a few sentences for class, and one cute "
+                    "front-cover illustration/image?"
+                ),
+                expected_meta_skill="meta-kid-project-planner",
+            )
+        ],
+    )
+
+    assert results["passed"] == 1
+    assert results["failed"] == 0
+
+
+def test_kid_project_planner_trigger_surface_avoids_broad_lifestyle_false_positives(
+    tmp_path: Path,
+) -> None:
+    loader = SkillLoader(
+        bundled_dir=Path("src/opensquilla/skills/bundled"),
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+    results = evaluate_trigger_cases(
+        loader,
+        [
+            TriggerCase(
+                name="adult_class_presentation_due_tomorrow",
+                user_message=(
+                    "I have a class presentation due tomorrow about quarterly "
+                    "revenue. Make the speaker notes concise."
+                ),
+                expected_meta_skill=None,
+            ),
+            TriggerCase(
+                name="ordinary_weather_question",
+                user_message="What's the weather day after tomorrow in Tokyo?",
+                expected_meta_skill=None,
+            ),
+            TriggerCase(
+                name="generic_product_poster_image",
+                user_message="Create a poster image concept for our product launch.",
+                expected_meta_skill=None,
+            ),
+            TriggerCase(
+                name="adult_plant_growth_analysis",
+                user_message=(
+                    "Compare plant growth models for greenhouse yield forecasting."
+                ),
+                expected_meta_skill=None,
+            ),
+            TriggerCase(
+                name="kid_generic_artifact_for_school",
+                user_message=(
+                    "My kid needs to bring one small object to school tomorrow "
+                    "and explain it in three sentences."
+                ),
+                expected_meta_skill="meta-kid-project-planner",
+            ),
+            TriggerCase(
+                name="child_class_presentation_visual",
+                user_message=(
+                    "My child has a class presentation and needs a simple "
+                    "poster with a cute image."
+                ),
+                expected_meta_skill="meta-kid-project-planner",
+            ),
+        ],
+    )
+
+    assert results["passed"] == results["total"], results["cases"]
+    assert results["false_positives"] == 0
+
+
 def test_kid_project_planner_final_avoids_fake_dates_weather_and_data(
     tmp_path: Path,
 ) -> None:
     plan = _bundled_meta_plan("meta-kid-project-planner", tmp_path)
     step_by_id = {step.id: step for step in plan.steps}
-    final_text = json.dumps(step_by_id["deliver_project_pack"].with_args, ensure_ascii=False)
-    audit_text = json.dumps(step_by_id["project_pack_audit"].with_args, ensure_ascii=False)
+    final_text = json.dumps(step_by_id["project_pack"].with_args, ensure_ascii=False)
 
     assert "If the user gives only a relative deadline" in final_text
     assert "do not convert it into a calendar date" in final_text
-    assert "Do not invent balcony direction, temperature ranges" in final_text
     assert "Do not prefill observation tables with fake measurements" in final_text
     assert "leave measurement cells blank or as placeholders" in final_text
     assert "Do not suggest tasting or eating the experiment materials" in final_text
     assert "Prefer a clear comparison design" in final_text
-    assert "same seed, cup, water, and paper-towel conditions" in final_text
-    assert "If the fact ledger marks a detail UNKNOWN" in final_text
-    assert "Remove exact calendar dates, weekdays, months, or current-year references" in audit_text
-    assert "Remove fake sample measurements" in audit_text
-    assert "Remove invented balcony direction, temperature ranges, rain forecasts" in audit_text
-    assert "2500-3600 Chinese characters" in audit_text
-    assert "Remove leading process commentary" in audit_text
-    assert "first non-empty" in audit_text
-    assert "user-facing project title" in audit_text
-    assert "English-only prose and English headings" in audit_text
-    assert "Return markdown only" in audit_text
-    assert "Never return JSON, artifact metadata" in audit_text
+    assert "same container" in final_text
+    assert "Never mention workflow, meta-skill" in final_text
+    assert "Return the complete response inline in chat" in final_text
 
 
 def test_kid_project_planner_printable_defaults_to_inline_markdown() -> None:
@@ -941,11 +1109,11 @@ def test_kid_project_planner_printable_defaults_to_inline_markdown() -> None:
     assert "print-ready markdown included inline" in raw
     assert "Printable\" means a clean markdown table" in raw
     assert "Do not\n            create or refer to PDFs, HTML files, downloads" in raw
-    assert "unless the\n            user explicitly asked for a file/PDF/export/download" in raw
+    assert "unless the user explicitly asked for a file/PDF/export/download" in raw
     assert "memorable title" in raw
     assert "visual theme" in raw
     assert "drawing-heavy record sheet" in raw
-    assert "parent-ready poster layout" in raw
+    assert "cover/front image" in raw
 
 
 def test_safe_skill_installer_avoids_unverified_external_lookup_claims() -> None:

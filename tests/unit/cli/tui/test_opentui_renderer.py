@@ -37,6 +37,9 @@ async def test_renderer_emits_turn_lifecycle_and_blocks() -> None:
     statuses = [p.get("status") for t, p in handle.sent if t == "tool.call"]
     assert "running" in statuses and "ok" in statuses
     assert any(t == "turn.status" and p.get("phase") == "output" for t, p in handle.sent)
+    # composer is disabled when the turn begins and re-enabled when it ends
+    composer_disabled = [p.get("disabled") for t, p in handle.sent if t == "composer.set"]
+    assert composer_disabled == [True, False]
 
 
 @pytest.mark.asyncio

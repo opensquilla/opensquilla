@@ -41,13 +41,16 @@ class OpenTuiStreamRenderer:
         self._answer_buf = ""
 
     async def _emit(self, message_type: str, payload: Any) -> None:
+        await self._emit_raw(message_type, asdict(payload))
+
+    async def _emit_raw(self, message_type: str, payload: dict[str, Any]) -> None:
         handle = self.output_handle
         if handle is None:
             return
         send = getattr(handle, "send_message", None)
         if send is None:
             return
-        await send(message_type, asdict(payload))
+        await send(message_type, payload)
 
     async def _ensure_begin(self) -> None:
         if self._began:
@@ -58,6 +61,7 @@ class OpenTuiStreamRenderer:
         await self._emit(
             "turn.status", TurnStatusState(phase="thinking", label="thinking", active=True)
         )
+        await self._emit_raw("composer.set", {"disabled": True})
 
     def __enter__(self) -> OpenTuiStreamRenderer:
         return self
@@ -158,6 +162,7 @@ class OpenTuiStreamRenderer:
         await self._emit(
             "turn.status", TurnStatusState(phase="idle", label="ready", active=False)
         )
+        await self._emit_raw("composer.set", {"disabled": False})
 
     async def aclose(self) -> None:
         return None

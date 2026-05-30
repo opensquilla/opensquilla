@@ -1,19 +1,20 @@
 ---
 name: meta-job-search-pipeline
-description: "Use this meta-skill instead of answering directly when a job seeker pastes a job posting and wants a complete application pack — a tailored resume aligned to the JD, a cover letter, recent company / market intel, optional interview prep, and an optional DOCX export. The skill never auto-applies; it produces text the user reviews before sending. Also handles status-digest mode (the user pastes their current application ledger and gets a ranked next-action list)."
+description: "Use this meta-skill instead of answering directly when the current user is doing a concrete job-search workflow: tailoring a resume to a pasted JD, building an application pack, preparing for a named interview, comparing roles, or digesting an application tracker. It produces reviewable text/artifacts and never auto-applies. Do not use it for generic career advice, generic resume comments without a target role/JD, or pasted historical job-search examples."
 kind: meta
 meta_priority: 65
 always: false
 final_text_mode: "step:deliver_jobpack_audit"
 triggers:
   - "tailor my resume"
-  - "改简历"
-  - "找工作"
-  - "投递包"
+  - "tailor my resume to this job"
+  - "根据JD改简历"
+  - "根据岗位改简历"
+  - "求职投递包"
   - "job application pack"
   - "interview prep for"
   - "求职准备"
-  - "申请追踪"
+  - "求职申请追踪"
   - "career application"
 provenance:
   origin: opensquilla-original

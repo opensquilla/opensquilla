@@ -1,6 +1,6 @@
 ---
 name: meta-daily-operator-brief
-description: "Use this meta-skill instead of answering directly when the user wants a practical daily command center, morning brief, priority list, or today plan that benefits from multi-skill orchestration across calendar/mail-style context, weather, news/search, memory, and optional scheduling."
+description: "Use this meta-skill instead of answering directly when the current user asks for a practical today/tomorrow operating brief, morning plan, daily priority list, or day schedule that may combine pasted calendar/task context, weather, memory, and optional reminders. Do not use it for account monitoring, family-only logistics, generic productivity advice, or isolated scheduling/reminder requests that a single tool can handle."
 kind: meta
 meta_priority: 64
 always: false
@@ -14,11 +14,10 @@ triggers:
   - "早上简报"
   - "今天先做什么"
   - "今天先帮我排一下"
-  - "先帮我排一下"
-  - "前三优先级"
-  - "时间块"
-  - "该跟进谁"
-  - "客户 demo"
+  - "今天前三优先级"
+  - "今天时间块"
+  - "今天工作该跟进谁"
+  - "今天客户 demo 安排"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

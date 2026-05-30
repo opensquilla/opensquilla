@@ -1,6 +1,6 @@
 ---
 name: meta-family-day-coordinator
-description: "Use this meta-skill instead of answering directly when the user wants a household, family, school, errands, health, or tomorrow coordination plan that benefits from multi-skill orchestration across weather, reminders, calendar-like context, health habits, memory, and scheduling."
+description: "Use this meta-skill instead of answering directly when the current user asks to coordinate a household or family day: school pickup/dropoff, errands, family calendar conflicts, child/parent logistics, health routines, weather-aware outing choices, or reminders. Do not use it for general daily work planning, account follow-up, generic child project planning, or a pasted family-plan example that is not the user's current intent."
 kind: meta
 meta_priority: 56
 always: false
@@ -8,11 +8,11 @@ final_text_mode: "step:family_plan_audit"
 triggers:
   - "family day plan"
   - "household plan"
-  - "家庭安排"
+  - "安排家庭一天"
   - "明天家里"
   - "接送安排"
-  - "家庭日程"
-  - "亲子安排"
+  - "安排家庭日程"
+  - "亲子日程安排"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

@@ -1,13 +1,13 @@
 ---
 name: meta-account-watch
-description: "Use this meta-skill instead of answering directly when a Connector / sales / BD / competitive-intel user wants to monitor one or several target accounts (competitors, prospects, partners) across pricing, product, leadership, hiring, partnerships, funding, and news dimensions over a defined time window. Prefer this over daily-operator briefs when the user asks to watch competitors/accounts, compare against a prior baseline, prepare a sales-group update, or decide who to follow up with because of account signals. The skill fans out web + deep research per account, extracts signals from search results, diffs against a pasted baseline, classifies the overall signal level (NO_NEW_SIGNAL through URGENT), and produces a brief with concrete next-actions. Read-only — never sends emails or posts."
+description: "Use this meta-skill instead of answering directly when the current user asks for account, competitor, prospect, or partner monitoring over a defined company set and time window. It is for sales/BD/competitive-intel briefs: current signals across pricing, product, leadership, hiring, partnerships, funding, and news; optional baseline diff; and follow-up recommendations. Do not use it for a generic daily plan, generic company research, product comparison without named accounts, or pasted old account-watch examples."
 kind: meta
 meta_priority: 72
 always: false
 final_text_mode: "step:watch_brief_audit"
 triggers:
   - "watch this account"
-  - "monitor competitor"
+  - "monitor these competitor accounts"
   - "竞品监控"
   - "account watch"
   - "本周对手动作"
@@ -17,15 +17,13 @@ triggers:
   - "track these companies"
   - "盯一下这两个对手"
   - "盯一下这些对手"
-  - "最近有没有值得提醒老板的动作"
-  - "销售群里的简报"
-  - "能发到销售群里的简报"
-  - "和基线相比"
-  - "和上次基线相比"
+  - "竞品最近有没有值得提醒老板的动作"
+  - "竞品销售群简报"
+  - "对手动态和基线相比"
+  - "这些公司和上次基线相比"
   - "账户 x 维度表"
-  - "今天该跟进谁"
-  - "最近一个月的产品"
-  - "产品、价格"
+  - "根据账户信号今天该跟进谁"
+  - "这些竞品最近一个月的产品和价格"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

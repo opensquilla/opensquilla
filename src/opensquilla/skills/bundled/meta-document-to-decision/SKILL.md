@@ -1,6 +1,6 @@
 ---
 name: meta-document-to-decision
-description: "Use this meta-skill instead of answering directly when the user gives PDFs, DOCX files, spreadsheets, pasted contracts, quotes, school notices, medical paperwork, or business documents and needs a decision-ready analysis through multi-skill orchestration."
+description: "Use this meta-skill instead of answering directly when the current user provides or references a document, contract, quote, spreadsheet, notice, or paperwork and asks for a decision-ready analysis: sign/reject/negotiate, renewal risk, evidence table, questions to ask, or concrete next action. It may inspect PDF/DOCX/XLSX/pasted excerpts. Do not use it for generic summarization, generic report writing, standalone sales emails, or document text that is merely quoted as historical context."
 kind: meta
 meta_priority: 67
 always: false
@@ -8,15 +8,14 @@ final_text_mode: "step:decision_brief_audit"
 triggers:
   - "document decision"
   - "vendor renewal"
-  - "renewal materials"
+  - "analyze renewal materials"
   - "contract excerpt"
-  - "sales email"
-  - "whether to sign"
+  - "decide whether to sign this document"
   - "decide tomorrow whether to sign"
   - "sign, reject, or negotiate"
-  - "evidence table"
-  - "questions for the vendor"
-  - "看下这个文件"
+  - "evidence table for this document"
+  - "questions for the vendor about this contract"
+  - "看下这个文件再决定"
   - "帮我判断这个文档"
   - "合同风险"
   - "报价单分析"
@@ -24,10 +23,10 @@ triggers:
   - "读完告诉我怎么做"
   - "供应商续费"
   - "续费材料"
-  - "报价单"
-  - "自动续约"
-  - "付款期限"
-  - "要不要签"
+  - "这份报价单要不要接受"
+  - "合同自动续约风险"
+  - "合同付款期限风险"
+  - "这个合同要不要签"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

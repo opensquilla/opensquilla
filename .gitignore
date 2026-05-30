@@ -64,6 +64,10 @@ crontab-*
 .omx/
 tests/functional/reports/
 
+# Frontend build artifacts
+opensquilla-webui/node_modules/
+opensquilla-webui/dist/
+
 # Local-only release-hygiene tests that reference legacy artifact names
 # kept off the public tree.
 /tests/_private/

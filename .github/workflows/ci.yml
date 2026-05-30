@@ -71,11 +71,44 @@ jobs:
       - name: Run actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color=false
 
-  ubuntu-quality:
-    name: Lint, test, and build (ubuntu-latest, 3.12)
-    needs: classify-changes
-    if: needs.classify-changes.outputs.docs_only != 'true'
+  frontend-check:
+    name: Frontend build and typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: opensquilla-webui/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: opensquilla-webui
+        run: npm ci
+
+      - name: Type check
+        working-directory: opensquilla-webui
+        run: npx vue-tsc --noEmit
+
+      - name: Build frontend
+        working-directory: opensquilla-webui
+        run: npm run build
+
+      - name: Verify dist exists
+        run: |
+          if [ ! -f "src/opensquilla/gateway/static/dist/index.html" ]; then
+            echo "ERROR: Frontend dist not found"
+            exit 1
+          fi
+          echo "Frontend dist verified"
+
+  checks:
+    name: Lint, test, and build
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
 
     env:

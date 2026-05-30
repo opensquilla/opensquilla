@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 
-import jinja2
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 from starlette.routing import Mount, Route
@@ -16,27 +16,11 @@ from starlette.staticfiles import StaticFiles
 from opensquilla import __version__
 from opensquilla.gateway.config import GatewayConfig
 
-# Conservative max-age for static assets. 30 days is long enough that hot
-# clients save roundtrips but short enough that any deploy without a version
-# bump still becomes visible within a release cycle. Templates already append
-# ?v={{ version }} to every asset URL so cache invalidation on actual code
-# change is immediate — this header only saves repeat hits for unchanged
-# bytes within the 30-day window.
-#
-# Skip when OPENSQUILLA_STATIC_NO_CACHE is set (debugging / forced refresh).
-# Skip on non-200 responses so 206 Range and 304 conditional reuse stay
-# untouched.
 _STATIC_CACHE_CONTROL = "public, max-age=2592000"
 
 
 class _CachedStaticFiles(StaticFiles):
-    """StaticFiles subclass that attaches Cache-Control to 200 responses.
-
-    Subclassing rather than middleware-wrapping keeps the path scoped to the
-    /static mount only. Range (206) and conditional-GET (304) flows pass
-    through unchanged so browsers' Last-Modified / ETag logic continues
-    working.
-    """
+    """StaticFiles subclass that attaches Cache-Control to 200 responses."""
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
         response = await super().get_response(path, scope)
@@ -46,20 +30,27 @@ class _CachedStaticFiles(StaticFiles):
             response.headers.setdefault("Cache-Control", _STATIC_CACHE_CONTROL)
         return response
 
+
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
+_DIST_DIR = _STATIC_DIR / "dist"
 
-# Process-start timestamp baked into the template-only version string so every
-# gateway restart busts the browser cache for static JS/CSS. config.version
-# itself is preserved for protocol/RPC consumers that expect a stable string.
 _TEMPLATE_VERSION_SUFFIX = str(int(time.time()))
 
-_jinja_env = jinja2.Environment(
-    loader=jinja2.FileSystemLoader(str(_TEMPLATE_DIR)),
-    autoescape=True,
-)
-# Register tojson filter used in index.html template
-_jinja_env.filters["tojson"] = lambda v, **kw: json.dumps(v)
+_jinja_env = None
+
+
+def _get_jinja_env():
+    global _jinja_env
+    if _jinja_env is None:
+        import jinja2
+
+        _jinja_env = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(str(_TEMPLATE_DIR)),
+            autoescape=True,
+        )
+        _jinja_env.filters["tojson"] = lambda v, **kw: json.dumps(v)
+    return _jinja_env
 
 
 def _request_ws_url(request: Request, config: GatewayConfig) -> str:
@@ -86,20 +77,51 @@ def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
     }
 
 
+def _read_vite_assets(base_path: str) -> tuple[str, str]:
+    """Read the Vite-generated index.html and extract the main JS/CSS assets.
+
+    Returns (js_url, css_url) relative to the static directory.
+    """
+    dist_index = _DIST_DIR / "index.html"
+    if not dist_index.exists():
+        # Fallback: return empty strings; template will serve a degraded experience
+        return ("", "")
+
+    html = dist_index.read_text(encoding="utf-8")
+
+    # Extract the main JS module
+    js_match = re.search(r'<script type="module"[^>]*src="([^"]+)"', html)
+    js_url = js_match.group(1) if js_match else ""
+    # Prepend base path to relative URLs
+    if js_url and js_url.startswith("./"):
+        js_url = f"{base_path}/static/dist/{js_url[2:]}"
+
+    # Extract the main CSS link
+    css_match = re.search(r'<link rel="stylesheet"[^>]*href="([^"]+)"', html)
+    css_url = css_match.group(1) if css_match else ""
+    if css_url and css_url.startswith("./"):
+        css_url = f"{base_path}/static/dist/{css_url[2:]}"
+
+    return (js_url, css_url)
+
+
 def create_control_ui_routes(config: GatewayConfig) -> list[Route | Mount]:
     """Create routes for the Control UI. Returns empty list if disabled."""
     if not config.control_ui.enabled:
         return []
 
     base = config.control_ui.base_path
-    template = _jinja_env.get_template("index.html")
+    js_url, css_url = _read_vite_assets(base)
+    template = _get_jinja_env().get_template("index.html")
 
     async def serve_index(request: Request) -> HTMLResponse:
         ctx = _build_bootstrap_context(config, request)
+        ctx["vite_js_url"] = js_url
+        ctx["vite_css_url"] = css_url
         html = template.render(**ctx)
         return HTMLResponse(html)
 
-    return [
+    routes: list[Route | Mount] = [
         Mount(
             f"{base}/static",
             app=_CachedStaticFiles(directory=str(_STATIC_DIR)),
@@ -108,3 +130,4 @@ def create_control_ui_routes(config: GatewayConfig) -> list[Route | Mount]:
         Route(f"{base}/{{path:path}}", serve_index, methods=["GET"]),
         Route(f"{base}/", serve_index, methods=["GET"]),
     ]
+    return routes

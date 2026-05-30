@@ -7,8 +7,7 @@
     <link rel="icon" href="{{ base_path }}/static/img/opensquilla-mark.png?v={{ version }}" type="image/png">
     <link rel="shortcut icon" href="{{ base_path }}/static/img/opensquilla-mark.png?v={{ version }}" type="image/png">
     <link rel="apple-touch-icon" href="{{ base_path }}/static/img/opensquilla-mark.png?v={{ version }}">
-    <!-- Theme flash prevention: must run BEFORE CSS so the first paint
-         already has the correct `data-theme` value. Mirrors theme.js logic. -->
+    <!-- Theme flash prevention: mirrors theme.js logic -->
     <script>
       (function () {
         try {
@@ -22,27 +21,9 @@
         }
       })();
     </script>
-    <!-- CSS: base → components → view-specific → mobile (last for override) -->
-    <link rel="stylesheet" href="{{ base_path }}/static/css/fonts.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/base.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/components.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/views/chat.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/views/chat-meta-ribbon.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/views/cron.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/views/config.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/views/setup.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/views/sessions.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/views/logs.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/views/health.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/views/channels.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/views/usage.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/mobile.css?v={{ version }}">
-    <link rel="stylesheet" href="{{ base_path }}/static/css/prism-opensquilla.css?v={{ version }}">
-    <!-- DISABLED: OPENSQUILLA_FEATURES.tokenViz=false. To restore:
-         flip the flag in static/js/app.js and uncomment this link plus the
-         token-widget.js script tag below.
-    <link rel="stylesheet" href="{{ base_path }}/static/css/components/token-widget.css?v={{ version }}">
-    -->
+    <!-- Vite build output (hashed filenames, read dynamically from dist/) -->
+    {% if vite_css_url %}<link rel="stylesheet" crossorigin href="{{ vite_css_url }}">{% endif %}
+    {% if vite_js_url %}<script type="module" crossorigin src="{{ vite_js_url }}"></script>{% endif %}
 </head>
 <body>
     <noscript>
@@ -62,50 +43,11 @@
          data-config-path="{{ config_path }}"
          style="display:none"></div>
 
-    <!-- Vendor libs (loaded before app code) -->
+    <!-- Vendor libs (marked, DOMPurify, Prism — still used by ChatView) -->
     <script src="{{ base_path }}/static/vendor/marked.min.js"></script>
     <script src="{{ base_path }}/static/vendor/purify.min.js"></script>
     <script src="{{ base_path }}/static/vendor/prism-core.min.js"></script>
     <script src="{{ base_path }}/static/vendor/prism-autoloader.min.js"></script>
     <script>if(window.Prism&&Prism.plugins.autoloader){Prism.plugins.autoloader.languages_path='{{ base_path }}/static/vendor/prism-langs/';}</script>
-
-    <!-- Core modules (dependency order matters) -->
-    <script src="{{ base_path }}/static/js/constants.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/icons.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/theme.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/rpc.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/router.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/markdown.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/components.js?v={{ version }}"></script>
-
-    <!-- Component modules (loaded before views that reference them) -->
-    <!-- DISABLED: token-widget gated off via OPENSQUILLA_FEATURES.tokenViz.
-         savings-fx stays loaded — popup is independent of widget.
-    <script src="{{ base_path }}/static/js/components/token-widget.js?v={{ version }}"></script>
-    -->
-    <script src="{{ base_path }}/static/js/components/savings-fx.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/approval_monitor.js?v={{ version }}"></script>
-
-    <!-- Views (one per page) -->
-    <script src="{{ base_path }}/static/js/views/overview.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/chat/artifact-card.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/chat/meta-ribbon.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/chat/meta-preflight.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/chat/meta-run-history.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/chat.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/sessions.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/agents.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/cron.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/usage.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/config.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/setup.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/channels.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/approvals.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/skills.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/health.js?v={{ version }}"></script>
-    <script src="{{ base_path }}/static/js/views/logs.js?v={{ version }}"></script>
-
-    <!-- App bootstrap (last — wires everything together) -->
-    <script src="{{ base_path }}/static/js/app.js?v={{ version }}"></script>
 </body>
 </html>

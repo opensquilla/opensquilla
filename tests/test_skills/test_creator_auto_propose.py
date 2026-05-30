@@ -21,6 +21,7 @@ import pytest
 from opensquilla.skills.creator.auto_propose import (
     _META_SKILL_CREATOR_TRIGGERS,
     AutoProposeResult,
+    _chain_signature,
     _synthesise_user_message,
     auto_propose,
 )
@@ -35,6 +36,7 @@ def _seed_decision_log(
     *,
     count: int,
     when: datetime | None = None,
+    intent: str = "",
 ) -> None:
     """Append ``count`` decision entries with the given skills chain."""
     when = when or datetime.now(UTC)
@@ -46,6 +48,7 @@ def _seed_decision_log(
             fh.write(json.dumps({
                 "ts": when.isoformat(),
                 "skills_invoked": list(chain),
+                "user_message": intent,
             }) + "\n")
 
 
@@ -121,6 +124,49 @@ def _write_managed_skill(home: Path, name: str, skill_md: str) -> None:
     (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
 
 
+def test_chain_signature_keeps_order_and_intent_separate() -> None:
+    assert _chain_signature(["a", "b"], "invoice cleanup") != _chain_signature(
+        ["b", "a"], "invoice cleanup",
+    )
+    assert _chain_signature(["a", "b"], "invoice cleanup") != _chain_signature(
+        ["a", "b"], "travel planning",
+    )
+
+
+def test_unknown_historical_skills_are_skipped_before_creator_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_dir = tmp_path / "logs"
+    proposals_dir = tmp_path / "proposals"
+    _seed_decision_log(
+        log_dir,
+        ["removed-old-skill", "summarize"],
+        count=5,
+        intent="summarize old workflow output",
+    )
+    loader = _stub_loader_with_creator(monkeypatch)
+    orch = _make_proposer_orchestrator(proposals_dir, proposal_ids=["aaaaaaaa"])
+
+    result = asyncio.run(auto_propose(
+        orchestrator=orch,
+        skill_loader=loader,
+        log_dir=log_dir,
+        min_freq=3,
+        proposals_dir=proposals_dir,
+    ))
+
+    assert result.proposals_created == []
+    assert result.errors == []
+    assert result.skipped == [
+        {
+            "skills": ["removed-old-skill", "summarize"],
+            "freq": 5,
+            "reason": "unknown_skill",
+        }
+    ]
+    orch.run.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -175,7 +221,12 @@ async def test_pattern_at_threshold_creates_proposal_with_provenance(
 ) -> None:
     log_dir = tmp_path / "logs"
     proposals_dir = tmp_path / "proposals"
-    _seed_decision_log(log_dir, ["nano-pdf", "memory"], count=5)
+    _seed_decision_log(
+        log_dir,
+        ["nano-pdf", "memory"],
+        count=5,
+        intent="summarize a PDF and save the digest",
+    )
     loader = _stub_loader_with_creator(monkeypatch)
     orch = _make_proposer_orchestrator(proposals_dir, proposal_ids=["cafe1234"])
 
@@ -197,6 +248,7 @@ async def test_pattern_at_threshold_creates_proposal_with_provenance(
     assert gates["provenance"]["auto_propose_meta"]["skills"] == ["nano-pdf", "memory"]
     assert gates["provenance"]["auto_propose_meta"]["freq"] == 5
     assert isinstance(gates["provenance"]["chain_hash"], str)
+    assert gates["provenance"]["auto_propose_meta"]["intent_digest"]
     # Lint / smoke payload preserved (provenance is additive, not destructive)
     assert gates["lint"]["G1"]["passed"] is True
     assert gates["auto_enable_eligible"] is True
@@ -205,6 +257,7 @@ async def test_pattern_at_threshold_creates_proposal_with_provenance(
     assert match.inputs["user_message"].startswith("auto-proposal:")
     assert "FULL_GATED validation" in match.inputs["user_message"]
     assert "runtime E2E comparison" in match.inputs["user_message"]
+    assert "summarize a PDF and save the digest" in match.inputs["system_prompt"]
     assert match.inputs["system_prompt"].startswith("Unattended meta-skill auto-propose run.")
 
 

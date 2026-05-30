@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from opensquilla.engine.steps.meta_resolution import meta_resolution
+from opensquilla.engine.steps.meta_resolution import _build_hint, meta_resolution
 from opensquilla.engine.types import (
     AgentConfig,
     AgentEvent,
@@ -137,6 +137,34 @@ def test_render_with_args_xml_escape_and_truncate() -> None:
     assert rendered["q"] == "Hello &lt;world"
 
 
+def test_render_with_args_extracts_user_mentioned_spreadsheet_path() -> None:
+    rendered = render_with_args(
+        {"path": "{{ inputs.user_message | extract_path('xlsx') }}"},
+        inputs={
+            "user_message": (
+                "材料在这里："
+                "/tmp/opensquilla-meta-skill-pr/tests/fixtures/watchlist.xlsx，"
+                "请做观察清单。"
+            ),
+        },
+        outputs={},
+    )
+
+    assert (
+        rendered["path"]
+        == "/tmp/opensquilla-meta-skill-pr/tests/fixtures/watchlist.xlsx"
+    )
+
+
+def test_meta_activation_hint_uses_meta_skill_wording_without_preamble() -> None:
+    hint = _build_hint("meta-x", "travel plan", activation_mode="recommend")
+
+    assert 'call `meta_invoke(name="meta-x")`' in hint
+    assert "Do not emit explanatory text before" in hint
+    assert "meta-skill" in hint
+    assert "workflow" not in hint.lower()
+
+
 def test_render_with_args_unknown_variable_raises() -> None:
     with pytest.raises(ValueError, match="undefined template variable"):
         render_with_args(
@@ -199,6 +227,61 @@ async def test_meta_resolution_matches_trigger() -> None:
     match = out.metadata["meta_match"]
     assert match.plan.name == "meta-x"
     assert match.inputs["user_message"] == "please make me a PDF briefing on rust"
+    assert out.metadata["meta_match_tool_choice"] == {
+        "type": "function",
+        "function": {"name": "meta_invoke"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_meta_resolution_semantic_fallback_matches_without_trigger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+    meta_resolution_module = importlib.import_module(
+        "opensquilla.engine.steps.meta_resolution",
+    )
+
+    spec = _make_meta_spec(
+        name="meta-pdf-intelligence",
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["PDF analysis"],
+        priority=55,
+    )
+    loader = _FakeLoader([spec])
+
+    class FakeRetriever:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["strategy"] == "hybrid"
+
+        def retrieve(self, skills: list[SkillSpec], query: str, top_k: int = 1) -> list[SkillSpec]:
+            assert query == "帮我看一下这个文档，重点讲结论和风险"
+            assert top_k == 1
+            return [skills[0]]
+
+    monkeypatch.setattr(meta_resolution_module, "HybridRetriever", FakeRetriever)
+
+    ctx = SimpleNamespace(
+        message="帮我看一下这个文档，重点讲结论和风险",
+        semantic_message="帮我看一下这个文档，重点讲结论和风险",
+        session_key="semantic-session",
+        metadata={"skill_loader": loader},
+        system_prompt=("base prompt", ""),
+        config=SimpleNamespace(skills=SimpleNamespace(filter_strategy="lexical")),
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert out.metadata["meta_match"].plan.name == "meta-pdf-intelligence"
+    assert out.metadata["meta_match_source"] == "semantic"
+    assert out.metadata["meta_match_trigger"] == "semantic"
+    assert out.metadata["meta_activation_mode"] == "hint"
+    assert "meta_match_tool_choice" not in out.metadata
+    hint = str(out.system_prompt)
+    assert "Activation mode: hint" in hint
+    assert 'meta_invoke(name="meta-pdf-intelligence")' in hint
+    assert "Do not answer directly" in hint
+    assert "Do not call ordinary tools before `meta_invoke`" in hint
 
 
 @pytest.mark.asyncio
@@ -219,6 +302,12 @@ async def test_meta_resolution_soft_hint_directs_meta_invoke_not_skill_view() ->
     out = await meta_resolution(ctx)  # type: ignore[arg-type]
 
     hint = out.system_prompt[1]
+    assert out.metadata["meta_activation_mode"] == "recommend"
+    assert out.metadata["meta_match_tool_choice"] == {
+        "type": "function",
+        "function": {"name": "meta_invoke"},
+    }
+    assert "Activation mode: recommend" in hint
     assert 'call `meta_invoke(name="meta-x")`' in hint
     assert "Do not call `skill_view` for this meta-skill" in hint
 
@@ -573,8 +662,11 @@ def test_bundled_sample_loads(tmp_path: Path) -> None:
     assert plan is not None
     assert [s.id for s in plan.steps] == [
         "preferences",
+        "report_clarify",
         "report_mode",
+        "source_seed",
         "search",
+        "search_fallback",
         "source_quality",
         "research",
         "outline",
@@ -582,6 +674,7 @@ def test_bundled_sample_loads(tmp_path: Path) -> None:
         "source_to_claim",
         "quality_gate",
         "final_report",
+        "final_report_audit",
         "export",
     ]
 
@@ -1027,17 +1120,17 @@ async def test_orchestrator_skill_exec_invokes_subprocess(tmp_path: Path) -> Non
     # Synthesize a fake skill with a real entrypoint script that echoes its args.
     skill_dir = tmp_path / "fake_skill"
     skill_dir.mkdir()
-    script = skill_dir / "echo.py"
+    script = skill_dir / "echo.sh"
     script.write_text(
-        "import json, sys\n"
-        "args = sys.argv[1:]\n"
-        "print(json.dumps({'argv': args, 'ok': True}))\n",
+        "#!/bin/sh\n"
+        "printf '{\"argv\":[\"%s\",\"%s\",\"%s\",\"%s\"],\"ok\":true}\\n' \"$1\" \"$2\" \"$3\" \"$4\"\n",
     )
+    script.chmod(0o755)
 
     fake_spec = _make_skill_spec("fake-echo", content="echo me")
     fake_spec.base_dir = str(skill_dir)
     fake_spec.entrypoint = {
-        "command": "python {baseDir}/echo.py",
+        "command": "{baseDir}/echo.sh",
         "args": ["--query", "{{ inputs.user_message }}", "--n", "{{ with.n }}"],
         "parse": "json",
         "timeout": 15,
@@ -1080,12 +1173,13 @@ async def test_orchestrator_skill_exec_invokes_subprocess(tmp_path: Path) -> Non
 async def test_orchestrator_skill_exec_propagates_nonzero_exit(tmp_path: Path) -> None:
     skill_dir = tmp_path / "fail_skill"
     skill_dir.mkdir()
-    script = skill_dir / "fail.py"
-    script.write_text("import sys; sys.stderr.write('boom\\n'); sys.exit(7)\n")
+    script = skill_dir / "fail.sh"
+    script.write_text("#!/bin/sh\necho boom >&2\nexit 7\n")
+    script.chmod(0o755)
 
     fake_spec = _make_skill_spec("fail-skill", content="x")
     fake_spec.base_dir = str(skill_dir)
-    fake_spec.entrypoint = {"command": "python {baseDir}/fail.py", "args": []}
+    fake_spec.entrypoint = {"command": "{baseDir}/fail.sh", "args": []}
 
     plan_spec = _make_meta_spec(
         composition={
@@ -1893,12 +1987,13 @@ async def test_iter_events_invokes_real_skill_view_for_skill_steps(
     from opensquilla.engine.types import ToolResultEvent, ToolUseStartEvent
     from opensquilla.skills.meta.types import MetaResult
 
-    script = tmp_path / "echo.py"
-    script.write_text("print('{\"ok\": true}')\n")
+    script = tmp_path / "echo.sh"
+    script.write_text("#!/bin/sh\nprintf '{\"ok\": true}\\n'\n")
+    script.chmod(0o755)
     exec_spec = _make_skill_spec("scripty", content="Run the wrapped CLI.")
     exec_spec.base_dir = str(tmp_path)
     exec_spec.entrypoint = {
-        "command": "python {baseDir}/echo.py",
+        "command": "{baseDir}/echo.sh",
         "args": [],
         "parse": "json",
     }
@@ -2411,34 +2506,41 @@ async def test_drain_agent_runner_fails_when_sub_agent_produces_no_text() -> Non
     assert result.error and "no plain-text output" in result.error
 
 
-def test_bundled_migration_assistant_has_routes() -> None:
+def test_bundled_account_watch_has_quality_gate_and_exports() -> None:
     bundled = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "bundled"
-    skill_path = bundled / "meta-migration-assistant" / "SKILL.md"
+    skill_path = bundled / "meta-account-watch" / "SKILL.md"
     assert skill_path.is_file()
     loader = SkillLoader(
         bundled_dir=bundled,
-        snapshot_path=Path("/tmp/_migration_snap.json"),
+        snapshot_path=Path("/tmp/_account_watch_snap.json"),
     )
     loader.invalidate_cache()
     specs = {s.name: s for s in loader.load_all()}
-    skill = specs["meta-migration-assistant"]
+    skill = specs["meta-account-watch"]
     plan = parse_meta_plan(skill)
     assert plan is not None
     assert [s.id for s in plan.steps] == [
-        "classify",
-        "fetch_guide",
-        "repo_context",
-        "write_plan",
+        "preferences",
+        "watch_clarify",
+        "depth",
+        "watch_context",
+        "recall_baseline",
+        "recall_baseline_fallback",
+        "web_research",
+        "web_research_fallback",
+        "summarize_web",
+        "deep_dive",
+        "enrich_accounts",
+        "extract_signals",
+        "baseline_diff",
+        "verdict",
+        "recommend_actions",
+        "signals_xlsx",
+        "deliver_watch_brief",
+        "watch_brief_audit",
+        "store_brief",
+        "store_brief_fallback",
+        "export_docx",
     ]
-    classify = plan.steps[0]
-    assert classify.kind == "llm_classify"
-    assert "OPENAI_V0_TO_V1" in classify.output_choices
-    fetch = plan.steps[1]
-    routes_to = {case.to for case in fetch.route}
-    assert routes_to == {"github", "multi-search-engine"}
-    # Default fallthrough must be deep-research (for OTHER verdict)
-    assert fetch.skill == "deep-research"
-    repo_context = plan.steps[2]
-    assert repo_context.skill == "git-diff"
-    assert "current diff" in repo_context.when
-    assert "current branch" in repo_context.when
+    step_ids = {s.id for s in plan.steps}
+    assert {"baseline_diff", "watch_brief_audit", "signals_xlsx", "export_docx"} <= step_ids

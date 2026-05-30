@@ -7,6 +7,7 @@ from opensquilla.skills.creator.runtime_e2e import (
     make_runtime_e2e_context,
     run_runtime_e2e_gate,
 )
+from opensquilla.tool_boundary import ToolCall
 
 SKILL_MD = """---
 name: synth-test-pipeline
@@ -91,6 +92,35 @@ async def test_runtime_e2e_gate_blocks_baseline_winner() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_e2e_gate_blocks_invalid_baseline_refusal() -> None:
+    async def runner(*, route: str, prompt: str, skill_md: str, baseline_model: str) -> dict:
+        if route == "baseline":
+            return {
+                "text": (
+                    "Runtime E2E baseline mode: meta-skill creator tools are "
+                    "disabled, so I cannot complete this request."
+                ),
+                "model": baseline_model,
+            }
+        return {"text": "meta output", "model": "meta"}
+
+    async def judge(*, prompt: str, meta: dict, baseline: dict) -> dict:
+        raise AssertionError("blocked/refusal baseline should not be sent to judge")
+
+    result = await run_runtime_e2e_gate(
+        skill_md=SKILL_MD,
+        eval_prompts=["create a useful meta-skill from this workflow"],
+        baseline_model="frontier/highest",
+        runner=runner,
+        judge=judge,
+    )
+
+    assert result["passed"] is False
+    assert result["winner"] == "invalid"
+    assert result["cases"][0]["regression"] == "baseline_invalid_or_blocked"
+
+
+@pytest.mark.asyncio
 async def test_runtime_e2e_context_baseline_runs_without_meta_loader() -> None:
     seen_configs: list[AgentConfig] = []
 
@@ -127,3 +157,99 @@ async def test_runtime_e2e_context_baseline_runs_without_meta_loader() -> None:
     assert result["text"] == "baseline handled compare this"
     assert seen_configs[0].metadata == {"keep": "yes"}
     assert seen_configs[0].model_id == "frontier/highest"
+
+
+@pytest.mark.asyncio
+async def test_runtime_e2e_context_baseline_blocks_creator_side_effect_tools() -> None:
+    observed: list[tuple[str, bool, str]] = []
+
+    async def unsafe_tool_handler(tc: ToolCall):
+        raise AssertionError(f"baseline leaked creator tool call: {tc.tool_name}")
+
+    class FakeAgent:
+        def __init__(self, **kwargs) -> None:
+            self.tool_handler = kwargs["tool_handler"]
+
+        async def run_turn(self, prompt: str):
+            result = await self.tool_handler(ToolCall(
+                tool_use_id="tool-1",
+                tool_name="meta_skill_persist_proposal",
+                arguments={},
+            ))
+            observed.append((result.tool_name, result.is_error, result.content))
+            yield DoneEvent(text="baseline done")
+
+    ctx = make_runtime_e2e_context(
+        provider=object(),
+        base_config=AgentConfig(model_id="frontier/highest"),
+        skill_loader=object(),
+        tool_definitions=[],
+        tool_handler=unsafe_tool_handler,
+        agent_factory=FakeAgent,
+        llm_chat=None,
+        tool_invoker=None,
+        session_key="test",
+        baseline_model="frontier/highest",
+    )
+
+    result = await ctx["runner"](
+        route="baseline",
+        prompt="compare this",
+        skill_md=SKILL_MD,
+        baseline_model="frontier/highest",
+    )
+
+    assert result["text"] == "baseline done"
+    assert observed == [(
+        "meta_skill_persist_proposal",
+        False,
+        "Continue without this tool and write the strongest standalone answer "
+        "directly in the final response.",
+    )]
+
+
+@pytest.mark.asyncio
+async def test_runtime_e2e_context_baseline_hides_meta_tools_and_instructs_direct_answer() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs) -> None:
+            captured["config"] = kwargs["config"]
+            captured["tool_definitions"] = kwargs["tool_definitions"]
+
+        async def run_turn(self, prompt: str):
+            yield DoneEvent(text="baseline direct answer")
+
+    ctx = make_runtime_e2e_context(
+        provider=object(),
+        base_config=AgentConfig(model_id="frontier/highest"),
+        skill_loader=object(),
+        tool_definitions=[
+            {"type": "function", "function": {"name": "meta_invoke"}},
+            {"type": "function", "function": {"name": "meta_skill_persist_proposal"}},
+            {"type": "function", "function": {"name": "memory_search"}},
+        ],
+        tool_handler=None,
+        agent_factory=FakeAgent,
+        llm_chat=None,
+        tool_invoker=None,
+        session_key="test",
+        baseline_model="frontier/highest",
+    )
+
+    result = await ctx["runner"](
+        route="baseline",
+        prompt="create a meta-skill from my history",
+        skill_md=SKILL_MD,
+        baseline_model="frontier/highest",
+    )
+
+    assert result["text"] == "baseline direct answer"
+    assert captured["tool_definitions"] == [
+        {"type": "function", "function": {"name": "memory_search"}},
+    ]
+    config = captured["config"]
+    assert isinstance(config, AgentConfig)
+    assert "highest-tier single model" in (config.request_context_prompt or "")
+    assert "standalone proposal" in (config.request_context_prompt or "")
+    assert "disabled" not in (config.request_context_prompt or "").lower()

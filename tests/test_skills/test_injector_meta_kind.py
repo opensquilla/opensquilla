@@ -35,6 +35,7 @@ def test_injector_emits_meta_skill_header_when_any_meta_present() -> None:
     # The header tells the LLM how to invoke meta-skills
     assert "meta_invoke" in out
     assert "Do not call `skill_view` for kind=\"meta\" entries" in out
+    assert "without preamble" in out
     assert "kind=\"meta\"" in out or "kind='meta'" in out
 
 

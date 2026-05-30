@@ -36,6 +36,15 @@ def test_list_meta_specs_includes_compiled_meta_sop(loader: SkillLoader) -> None
 
 def test_list_meta_specs_includes_known_meta_bundles(loader: SkillLoader) -> None:
     names = {s.name for s in loader.list_meta_specs()}
-    assert "meta-pdf-intelligence" in names
-    assert "meta-travel-planner" in names
-    assert "meta-web-research-to-report" in names
+    assert names == {
+        "meta-account-watch",
+        "meta-daily-operator-brief",
+        "meta-document-to-decision",
+        "meta-family-day-coordinator",
+        "meta-job-search-pipeline",
+        "meta-kid-project-planner",
+        "meta-paper-write",
+        "meta-safe-skill-installer",
+        "meta-skill-creator",
+        "meta-web-research-to-report",
+    }

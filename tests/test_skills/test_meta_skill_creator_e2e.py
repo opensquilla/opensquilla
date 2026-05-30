@@ -23,6 +23,26 @@ LINT = _BUNDLED_BASE / "skill-creator-linter" / "scripts" / "lint.py"
 BUNDLED = _BUNDLED_BASE
 
 
+def test_creator_catalog_excludes_outer_creator_helper_skills() -> None:
+    """The generated candidate DAG must not be allowed to call creator gates.
+
+    Gate, judge, and proposal persistence steps belong to meta-skill-creator
+    itself. If those helper skills leak into the slot-filling catalog, the LLM
+    can put proposal persistence inside the candidate meta-skill and runtime
+    E2E will correctly fail.
+    """
+    from opensquilla.skills.creator import proposer
+
+    catalog = proposer._build_catalog_summary()
+
+    assert "history-explorer" in catalog
+    assert "summarize" in catalog
+    assert "skill-creator-proposals" not in catalog
+    assert "skill-creator-linter" not in catalog
+    assert "skill-creator-smoke-test" not in catalog
+    assert "meta-skill-creator" not in catalog
+
+
 def test_e2e_p1_proposal_lint_pass(tmp_path, monkeypatch) -> None:
     """Stub each LLM step + run the full pipeline; verify proposal is
     auto_enable_eligible."""

@@ -388,8 +388,12 @@ composition:
         task: |
           For EACH table listed in TABLE_PLAN below, emit one LaTeX
           ``table`` environment with a ``tabular`` body. Use ``---`` or
-          ``<TBD>`` for cells (DO NOT fabricate numbers). Use booktabs
-          (``\toprule``, ``\midrule``, ``\bottomrule``) for clean spacing.
+          ``<TBD>`` for cells (DO NOT fabricate numbers). Every non-label data cell MUST be a placeholder;
+          table headers and row labels may be concrete, but metric values, percentages,
+          counts, scores, latency, costs, and confidence intervals must
+          remain ``---`` or ``<TBD>`` until real experiments are supplied.
+          Use booktabs (``\toprule``, ``\midrule``, ``\bottomrule``) for
+          clean spacing.
 
           Header row comes from TABLE_PLAN columns; row labels come from
           rows_shape (expand the shape into concrete row names like
@@ -608,7 +612,8 @@ composition:
 
           ABSTRACT_DRAFT:
           <120-220 word draft abstract — section authors may polish but
-          may not change claims/numbers>
+          may not change the thesis, scope, terminology, or
+          PLACEHOLDER_RESULT_TOKEN. Do not invent empirical numbers.>
 
           NARRATIVE_ARC:
           - thesis: <one sentence>
@@ -641,7 +646,7 @@ composition:
               key_claims: [C1, C2, ...]
               cite_keys: []           # abstract never cites
               figures: []
-              must_mention: [TITLE, headline_result_number]
+              must_mention: [TITLE, PLACEHOLDER_RESULT_TOKEN]
             introduction:
               target_words: <int>
               key_claims: [C1, C2]
@@ -687,13 +692,22 @@ composition:
           CROSS_SECTION_DEPENDENCIES:
           - method.NOTATION_LOCK symbols MUST be reused verbatim in experiments + discussion
           - intro.contributions_count MUST equal method.structure step count
-          - abstract.headline_result_number == experiments.main_result_number
+          - abstract.PLACEHOLDER_RESULT_TOKEN == experiments.PLACEHOLDER_RESULT_TOKEN
+          - experiments, discussion, and conclusion MUST use the same
+            qualitative result placeholder until real experiment outputs
+            are supplied; do not state exact numeric improvements.
 
           WRITING_VOICE:
           - tense: <e.g. "we present / we observe", active>
           - perspective: <e.g. third-person except contributions list>
           - formality: academic; no contractions, no marketing language
           - language: {{ outputs.paper_contract | truncate(400) }}
+
+          PLACEHOLDER_RESULT_TOKEN:
+          <one stable phrase such as "the planned evaluation will test
+          the thesis across performance, robustness, and efficiency axes";
+          use this same phrase in abstract, experiments, discussion, and
+          conclusion. Do not invent empirical numbers.>
     - id: section_abstract
       kind: agent
       skill: paper-section-author
@@ -889,8 +903,10 @@ composition:
           - Reference via \ref{fig:<id>} and \ref{tab:<id>}.
           - Structure: \subsection{Setup} → \subsection{Main Results} →
             \subsection{Ablations} → \subsection{Sensitivity}.
-          - Headline result number MUST equal writing_plan.ABSTRACT_DRAFT's
-            headline number.
+          - Use writing_plan.PLACEHOLDER_RESULT_TOKEN for the headline
+            evidence claim. Do not state exact numeric improvements,
+            percentages, scores, latency reductions, or win rates unless
+            they are explicitly present in user-provided experiment data.
           - Use ONLY notation/terminology locked in writing_plan.
           - target_words from writing_plan.PER_SECTION_BLUEPRINT.experiments.target_words.
           - Length floor: target_words is a lower-bound writing budget. Do
@@ -1078,6 +1094,43 @@ composition:
               s = s.replace('~', r'\textasciitilde{}')
               s = s.replace('^', r'\textasciicircum{}')
               return s
+
+          def scrub_placeholder_table_cells(tex):
+              """Scrub numeric-looking data cells from placeholder tables."""
+              numeric = re.compile(
+                  r'^\s*(?:\\textbf\{)?[-+]?\d[\d,]*(?:\.\d+)?\s*(?:%|ms|s|x|MB|GB|points?)?(?:\})?\s*$',
+                  re.I,
+              )
+              out = []
+              in_tabular = False
+              after_midrule = False
+              for line in tex.splitlines():
+                  if r'\begin{tabular}' in line:
+                      in_tabular = True
+                      after_midrule = False
+                      out.append(line)
+                      continue
+                  if in_tabular and r'\end{tabular}' in line:
+                      in_tabular = False
+                      after_midrule = False
+                      out.append(line)
+                      continue
+                  if in_tabular and r'\midrule' in line:
+                      after_midrule = True
+                      out.append(line)
+                      continue
+                  if in_tabular and after_midrule and '&' in line and r'\bottomrule' not in line:
+                      suffix = r' \\' if line.rstrip().endswith(r'\\') else ''
+                      row = line.rstrip()
+                      if suffix:
+                          row = row[:-2].rstrip()
+                      cells = [cell.strip() for cell in row.split('&')]
+                      if len(cells) > 1:
+                          cells = [cells[0], *('---' if numeric.match(cell) else cell for cell in cells[1:])]
+                          indent = re.match(r'^\s*', line).group(0)
+                          line = indent + ' & '.join(cells) + suffix
+                  out.append(line)
+              return '\n'.join(out)
           title_tex = latex_escape(raw_title)
           # Build preamble — load xeCJK if title or any section has CJK
           any_cjk = (re.search(r'[一-鿿]', raw_title) is not None) or any(
@@ -1113,6 +1166,7 @@ composition:
               r"\end{document}",
           ]
           tex = '\n'.join(preamble) + '\n\n' + '\n\n'.join(p for p in body_parts if p) + '\n\n' + '\n'.join(tail)
+          tex = scrub_placeholder_table_cells(tex)
           paper_dir = Path('paper')
           paper_dir.mkdir(exist_ok=True)
           tex_path = paper_dir / 'paper.tex'
@@ -1571,6 +1625,43 @@ composition:
           tex_body = re.sub(r'^```(?:latex|tex)?\s*\n', '', tex_body)
           tex_body = re.sub(r'\n```\s*$', '', tex_body)
 
+          def scrub_placeholder_table_cells(tex):
+              """Scrub numeric-looking data cells from placeholder tables."""
+              numeric = re.compile(
+                  r'^\s*(?:\\textbf\{)?[-+]?\d[\d,]*(?:\.\d+)?\s*(?:%|ms|s|x|MB|GB|points?)?(?:\})?\s*$',
+                  re.I,
+              )
+              out = []
+              in_tabular = False
+              after_midrule = False
+              for line in tex.splitlines():
+                  if r'\begin{tabular}' in line:
+                      in_tabular = True
+                      after_midrule = False
+                      out.append(line)
+                      continue
+                  if in_tabular and r'\end{tabular}' in line:
+                      in_tabular = False
+                      after_midrule = False
+                      out.append(line)
+                      continue
+                  if in_tabular and r'\midrule' in line:
+                      after_midrule = True
+                      out.append(line)
+                      continue
+                  if in_tabular and after_midrule and '&' in line and r'\bottomrule' not in line:
+                      suffix = r' \\' if line.rstrip().endswith(r'\\') else ''
+                      row = line.rstrip()
+                      if suffix:
+                          row = row[:-2].rstrip()
+                      cells = [cell.strip() for cell in row.split('&')]
+                      if len(cells) > 1:
+                          cells = [cells[0], *('---' if numeric.match(cell) else cell for cell in cells[1:])]
+                          indent = re.match(r'^\s*', line).group(0)
+                          line = indent + ' & '.join(cells) + suffix
+                  out.append(line)
+              return '\n'.join(out)
+
           # 6. If still empty, fail loudly. Quality-first paper generation
           # must not disguise a missing manuscript as a degraded PDF.
           if not tex_body:
@@ -1599,6 +1690,8 @@ composition:
                   r'\documentclass{article}' + '\n' + r'\usepackage{xeCJK}',
                   1,
               )
+
+          tex_body = scrub_placeholder_table_cells(tex_body)
 
           paper = Path('paper'); paper.mkdir(exist_ok=True)
           (paper / 'paper.tex').write_text(tex_body, encoding='utf-8')

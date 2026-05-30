@@ -74,3 +74,16 @@ def test_p2_with_tail_renders_4_steps() -> None:
     )
     n = _render_and_parse("p2_fan_out_merge.md.j2", slots.model_dump())
     assert n == 4
+
+
+def test_p3_condition_gated_renders_and_parses() -> None:
+    slots = SequentialSlots(
+        name="tst", description="d" * 30, triggers=["go"],
+        steps=[
+            {"id": "intake", "skill": "summarize", "task": "extract constraints"},
+            {"id": "evidence", "skill": "history-explorer", "task": "find context"},
+            {"id": "decision", "skill": "summarize", "task": "write decision"},
+        ],
+    )
+    n = _render_and_parse("p3_condition_gated.md.j2", slots.model_dump())
+    assert n == 3

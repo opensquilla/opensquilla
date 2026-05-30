@@ -384,7 +384,7 @@ async def _register_auto_propose_crons(
 ) -> None:
     """Register or resume one isolated auto-propose cron per configured agent."""
 
-    from opensquilla.scheduler.types import SessionTarget
+    from opensquilla.scheduler.types import ScheduleKind, SessionTarget
 
     schedule_raw = auto_cfg.cron
     existing_jobs = await _list_scheduler_jobs(scheduler)
@@ -405,7 +405,8 @@ async def _register_auto_propose_crons(
         if existing is not None:
             patch: dict[str, Any] = {}
             if getattr(existing, "schedule_raw", "") != schedule_raw:
-                patch["schedule_raw"] = schedule_raw
+                patch["schedule_kind"] = ScheduleKind.CRON
+                patch["schedule_value"] = schedule_raw
             if getattr(existing, "payload", {}).get("agent_id") != agent_id:
                 patch["payload"] = {"agent_id": agent_id}
             if getattr(existing, "session_target", None) != SessionTarget.ISOLATED:
@@ -429,7 +430,8 @@ async def _register_auto_propose_crons(
 
         await scheduler.add_job(
             name=name,
-            schedule_raw=schedule_raw,
+            schedule_kind=ScheduleKind.CRON,
+            schedule_value=schedule_raw,
             handler_key="auto_propose",
             payload={"agent_id": agent_id},
             session_target=SessionTarget.ISOLATED,
@@ -2517,7 +2519,9 @@ async def start_gateway_server(
             from opensquilla.engine.types import AgentConfig
             from opensquilla.skills.creator.proposer import (
                 reset_runtime_e2e_context,
+                reset_smoke_fixture_context,
                 set_runtime_e2e_context,
+                set_smoke_fixture_context,
             )
             from opensquilla.skills.creator.runtime_e2e import make_runtime_e2e_context
 
@@ -2575,9 +2579,11 @@ async def start_gateway_server(
                     args.setdefault("home", str(auto_home))
                     args.setdefault("auto_enable_manual", False)
                 token = set_runtime_e2e_context(runtime_e2e_ctx)
+                smoke_token = set_smoke_fixture_context({"llm_chat": llm_chat})
                 try:
                     return await base_tool_invoker(tool_name, args)
                 finally:
+                    reset_smoke_fixture_context(smoke_token)
                     reset_runtime_e2e_context(token)
 
             return MetaOrchestrator(
@@ -2615,7 +2621,10 @@ async def start_gateway_server(
                 agent_ids=auto_agent_ids,
             )
 
-        async def _post_dream_auto_propose(agent_id: str) -> None:
+        async def _post_dream_auto_propose(
+            agent_id: str,
+            dream_summary: str = "",
+        ) -> None:
             if not bool(getattr(auto_cfg, "on_dream_complete", False)):
                 return
             result = await auto_propose(
@@ -2634,6 +2643,7 @@ async def start_gateway_server(
                 auto_enable_max_risk=str(
                     getattr(auto_cfg, "auto_enable_max_risk", "low"),
                 ),
+                source_context=dream_summary,
             )
             log.info(
                 "auto_propose.dream_hook.complete",

@@ -80,7 +80,9 @@ thesis. Do not add side topics merely to increase length.
   ablations, sensitivity, and failure cases when the writing plan requests
   them. Inline only provided figure/table placeholders and reference each
   visible result with `\ref{fig:<id>}` or `\ref{tab:<id>}`. Do not invent
-  numeric results beyond the writing plan or provided extras.
+  numeric results beyond the writing plan or provided extras; if the writing
+  plan uses result placeholders, quantitative values must remain placeholders
+  rather than plausible-looking scores.
 - **Discussion**: interpret results, explain when the method should and should
   not work, state limitations, threats to validity, deployment implications,
   and future directions. End with a one-sentence takeaway tied to the thesis.

@@ -11,11 +11,13 @@ Behaviour (post-hard-takeover-removal)
   short hint string is appended to ``ctx.system_prompt`` telling the LLM
   *"this looks like meta-skill X; call meta_invoke(name=X) if that's the
   intent"*.
-* **The LLM decides** whether to call ``meta_invoke``. The runtime no
-  longer routes meta-matched turns through ``MetaOrchestrator`` directly;
-  there is exactly one execution path now (the soft / LLM-driven path),
-  which eliminates the silent hard-takeover failure modes (false trigger
-  fires, ``meta_invoke`` "never seen", filter short-circuit, etc.).
+* Trigger matches still use the soft ``meta_invoke`` path rather than
+  directly calling ``MetaOrchestrator``, but the first provider request is
+  forced to choose ``meta_invoke``. This keeps execution observable through
+  the normal tool path while preventing routed models from bypassing the
+  meta DAG with ordinary tools after a deterministic trigger match.
+* Semantic-only matches remain advisory: they inject the hint and leave tool
+  choice automatic so retrieval false positives do not hard-start a DAG.
 * Any parse error on a meta-skill is logged and skipped — the rest of the
   turn falls back to normal handling (fail-open).
 """
@@ -36,6 +38,7 @@ from opensquilla.skills.meta.clarify_text import parse_clarify_reply
 from opensquilla.skills.meta.inputs import make_meta_inputs
 from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
 from opensquilla.skills.meta.types import MetaMatch
+from opensquilla.skills.retrieval import HybridRetriever
 
 log = structlog.get_logger(__name__)
 
@@ -246,10 +249,100 @@ def _first_matching_trigger(triggers: list[str], message_lower: str) -> str:
     return ""  # unreachable when caller already verified ``any(...)``
 
 
+_SEMANTIC_WORKFLOW_CUES = (
+    "pdf",
+    "document",
+    "doc",
+    "report",
+    "research",
+    "summarize",
+    "summary",
+    "analyze",
+    "analysis",
+    "review",
+    "migration",
+    "migrate",
+    "upgrade",
+    "travel",
+    "trip",
+    "itinerary",
+    "skill",
+    "workflow",
+    "文件",
+    "文档",
+    "报告",
+    "调研",
+    "研究",
+    "总结",
+    "分析",
+    "看看",
+    "看一下",
+    "读一下",
+    "迁移",
+    "升级",
+    "旅行",
+    "行程",
+    "技能",
+    "流程",
+)
+
+
+def _has_semantic_workflow_cue(query: str) -> bool:
+    """Keep semantic fallback from turning every utterance into a meta hint."""
+
+    text = query.lower().strip()
+    if not text:
+        return False
+    if re.search(r"\.(pdf|docx?|md|txt|csv|json)\b", text):
+        return True
+    return any(cue in text for cue in _SEMANTIC_WORKFLOW_CUES)
+
+
+def _semantic_meta_candidate(
+    ctx: TurnContext,
+    candidates: list[tuple[int, str, object, object]],
+) -> tuple[int, str, object, str] | None:
+    """Return the best meta-skill candidate from retrieval, if any.
+
+    Trigger matching is the high-precision path. This fallback keeps the
+    product behavior soft: retrieval only chooses which meta-skill to hint;
+    the outer LLM still decides whether invoking the DAG fits the user intent.
+    """
+
+    if not candidates:
+        return None
+    query = (
+        getattr(ctx, "semantic_message", None)
+        or getattr(ctx, "raw_message", None)
+        or getattr(ctx, "message", "")
+        or ""
+    )
+    if not str(query).strip():
+        return None
+    if not _has_semantic_workflow_cue(str(query)):
+        return None
+
+    retriever = HybridRetriever(strategy="hybrid")
+    specs = [spec for _priority, _name, _plan, spec in candidates]
+    try:
+        ranked = retriever.retrieve(specs, str(query), top_k=1)
+    except Exception as exc:  # noqa: BLE001 - fail open; triggers still work.
+        log.warning("meta_resolution.semantic_match_failed", error=str(exc))
+        return None
+    if not ranked:
+        return None
+    chosen_name = getattr(ranked[0], "name", "")
+    for priority, name, plan, _spec in candidates:
+        if name == chosen_name:
+            return (priority, name, plan, "semantic")
+    return None
+
+
 def _build_hint(
     skill_name: str,
     trigger_phrase: str,
     candidates: list[tuple[int, str, str]] | None = None,
+    activation_mode: str = "recommend",
 ) -> str:
     """Render the soft-hint suffix appended to ``system_prompt``.
 
@@ -266,19 +359,57 @@ def _build_hint(
     of the candidates fits (D4) — the substring matcher is not the
     final arbiter of intent.
     """
+    mode = "hint" if activation_mode == "hint" else "recommend"
+    if mode == "hint":
+        lead = (
+            f"The user message is semantically similar to the meta-skill "
+            f"`{skill_name}`. Treat this as a candidate, not a command."
+        )
+        action = (
+            f"First decide whether the user is asking for the end-to-end "
+            f"meta-skill deliverable. If yes, call "
+            f"`meta_invoke(name=\"{skill_name}\")` as the first action; the "
+            f"framework will drive the DAG and the deliverable becomes the "
+            f"assistant reply. Do not emit explanatory text before calling "
+            f"`meta_invoke`. Do not answer directly in that case. Do not call "
+            f"ordinary tools before `meta_invoke`; the meta-skill will call "
+            f"its own sub-skills internally. If a direct answer is more "
+            f"appropriate because the user is only asking a quick question or "
+            f"asking about the meta-skill itself, ignore this candidate and "
+            f"answer normally."
+        )
+    else:
+        if trigger_phrase == "semantic":
+            evidence = (
+                f"The previous turn selected `{skill_name}` by semantic "
+                "similarity and this turn is a sticky continuation."
+            )
+        else:
+            evidence = (
+                f'The user message contains the phrase "{trigger_phrase}", '
+                f"which is a registered trigger for the meta-skill `{skill_name}`."
+            )
+        lead = evidence
+        action = (
+            f"For a concrete deliverable request that matches this meta-skill, "
+            f"call `meta_invoke(name=\"{skill_name}\")` as the next action. "
+            f"Concrete deliverable "
+            f"requests include asking for an audit, review, decision brief, "
+            f"plan, comparison, extraction, report, rollback plan, or other "
+            f"multi-step work product. Do not emit explanatory text before "
+            f"calling `meta_invoke`. Do not answer directly or call ordinary "
+            f"tools such as web/search/http/file tools before `meta_invoke` "
+            f"in that case; the meta-skill DAG will call any required "
+            f"sub-skills internally and its deliverable becomes the assistant "
+            f"reply."
+        )
     lines = [
-        "\n\n## Meta-skill trigger hint",
-        f'The user message contains the phrase "{trigger_phrase}", which is a '
-        f'registered trigger for the meta-skill `{skill_name}`. If running '
-        f'that workflow end-to-end matches the user\'s intent, call '
-        f'`meta_invoke(name="{skill_name}")`; the framework will drive the '
-        f'multi-step DAG and the deliverable becomes the assistant reply.',
-        "For a concrete deliverable request that matches this trigger, call "
-        "`meta_invoke` as the first action. Do not answer directly and do not "
-        "call search, web, file, or ordinary skill tools in the outer turn; "
-        "the meta-skill DAG will call any required sub-skills internally.",
+        "\n\n## Meta-skill activation guidance",
+        f"Activation mode: {mode}",
+        lead,
+        action,
         "Do not call `skill_view` for this meta-skill; `skill_view` is for "
-        "ordinary skills, while this workflow should be started with "
+        "ordinary skills, while this meta-skill should be started with "
         "`meta_invoke` directly.",
     ]
     if candidates and len(candidates) > 1:
@@ -297,10 +428,12 @@ def _build_hint(
     lines.append(
         "If the user is asking *about* a meta-skill, querying status, or their "
         "request is only tangentially related to the trigger phrase, ignore "
-        "this hint and answer normally. You can also call `meta_invoke` for "
-        "any other meta-skill listed in `<available_skills>` whose description "
-        "fits the request — the substring trigger above is a hint, not a "
-        "constraint."
+        "this hint and answer normally. Otherwise, for matched multi-step "
+        "deliverable requests, prefer starting the matched meta-skill over "
+        "manually reproducing its steps with ordinary tools. You can also call "
+        "`meta_invoke` for any other meta-skill listed in `<available_skills>` "
+        "whose description fits the request — the substring trigger above is "
+        "a hint, not a constraint."
     )
     return "\n".join(lines)
 
@@ -432,16 +565,13 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         _sticky_drop(session_id)
 
     matched: list[tuple[int, str, object, str]] = []
+    semantic_candidates: list[tuple[int, str, object, object]] = []
     for spec in all_skills:
         if getattr(spec, "kind", "skill") != "meta":
             continue
         if getattr(spec, "disable_model_invocation", False):
             continue
         triggers = getattr(spec, "triggers", None) or []
-        if not any(
-            isinstance(t, str) and t and _trigger_matches(t, message_lower) for t in triggers
-        ):
-            continue
         try:
             plan = parse_meta_plan(spec)
         except MetaPlanError as exc:
@@ -453,8 +583,12 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
             continue
         if plan is None:
             continue
-        trigger_phrase = _first_matching_trigger(triggers, message_lower)
-        matched.append((plan.priority, plan.name, plan, trigger_phrase))
+        semantic_candidates.append((plan.priority, plan.name, plan, spec))
+        if any(
+            isinstance(t, str) and t and _trigger_matches(t, message_lower) for t in triggers
+        ):
+            trigger_phrase = _first_matching_trigger(triggers, message_lower)
+            matched.append((plan.priority, plan.name, plan, trigger_phrase))
 
     sticky_replay = False
     if not matched:
@@ -464,30 +598,37 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         # length-capped on reasoning, the user closed the form and is
         # now retrying with details, etc.). Replay the stored choice
         # for up to ``_STICKY_MAX_USES`` follow-up turns so meta_invoke
-        # stays on the toolbox and tool_choice stays forced.
+        # stays on the toolbox and trigger-originated tool_choice stays forced.
         sticky = _sticky_get(session_id)
         if sticky is None:
-            return ctx
-        for spec in all_skills:
-            if (
-                getattr(spec, "kind", "skill") != "meta"
-                or getattr(spec, "name", None) != sticky["skill"]
-            ):
-                continue
-            try:
-                plan = parse_meta_plan(spec)
-            except MetaPlanError:
-                continue
-            if plan is None:
-                continue
-            matched.append((plan.priority, plan.name, plan, sticky["trigger"]))
-            break
-        if not matched:
-            # Skill no longer present (loader changed) — drop stale entry.
-            _sticky_drop(session_id)
-            return ctx
-        _sticky_consume(session_id)
-        sticky_replay = True
+            semantic_match = _semantic_meta_candidate(ctx, semantic_candidates)
+            if semantic_match is None:
+                return ctx
+            matched.append(semantic_match)
+            ctx.metadata["meta_match_source"] = "semantic"
+        else:
+            for spec in all_skills:
+                if (
+                    getattr(spec, "kind", "skill") != "meta"
+                    or getattr(spec, "name", None) != sticky["skill"]
+                ):
+                    continue
+                try:
+                    plan = parse_meta_plan(spec)
+                except MetaPlanError:
+                    continue
+                if plan is None:
+                    continue
+                matched.append((plan.priority, plan.name, plan, sticky["trigger"]))
+                break
+            if not matched:
+                # Skill no longer present (loader changed) — drop stale entry.
+                _sticky_drop(session_id)
+                return ctx
+            _sticky_consume(session_id)
+            sticky_replay = True
+    else:
+        ctx.metadata["meta_match_source"] = "trigger"
 
     # Highest priority wins; ties broken by name for determinism.
     matched.sort(key=lambda item: (-item[0], item[1]))
@@ -520,8 +661,17 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
     ctx.metadata["meta_match"] = match
     ctx.metadata["meta_match_trigger"] = chosen_trigger
     ctx.metadata["meta_match_candidates"] = candidate_digest
+    activation_mode = "hint" if str(chosen_trigger) == "semantic" else "recommend"
+    ctx.metadata["meta_activation_mode"] = activation_mode
     if sticky_replay:
         ctx.metadata["meta_match_sticky"] = True
+        ctx.metadata["meta_match_source"] = "sticky"
+
+    if activation_mode == "recommend":
+        ctx.metadata["meta_match_tool_choice"] = {
+            "type": "function",
+            "function": {"name": "meta_invoke"},
+        }
 
     # Clamp reasoning budget so the LLM cannot length-cap on thinking
     # before producing the forced ``meta_invoke`` call. Applies to both
@@ -555,7 +705,12 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
     skill_name = getattr(chosen_plan, "name", "")
     sp = getattr(ctx, "system_prompt", None)
     if skill_name and chosen_trigger and sp is not None:
-        hint = _build_hint(skill_name, chosen_trigger, candidate_digest)
+        hint = _build_hint(
+            skill_name,
+            chosen_trigger,
+            candidate_digest,
+            activation_mode=activation_mode,
+        )
         if isinstance(sp, str):
             base, suffix = sp, ""
         else:
@@ -567,6 +722,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         "meta_resolution.matched",
         meta_skill=skill_name,
         trigger=chosen_trigger,
+        activation_mode=activation_mode,
         candidates=len(matched),
         sticky_replay=sticky_replay,
         # D1: log all candidate names + priorities so operators can

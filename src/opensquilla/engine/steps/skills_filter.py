@@ -157,14 +157,9 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
     # the LLM can still call `meta_invoke(name=...)` from memory, but won't
     # see the description block. Promote it to pinned to guarantee both.
     #
-    # When ``filter_enabled`` is False (the default), the LLM already sees
-    # every skill — pinning is a no-op for description visibility, so we
-    # also skip the more aggressive tool-surface restriction + forced
-    # ``tool_choice``. The hint in system_prompt + the description in
-    # ``<available_skills>`` are sufficient for the LLM to decide whether
-    # to call ``meta_invoke`` itself. The restriction is reserved for the
-    # retriever-on path where the meta-skill description might otherwise
-    # be invisible to the model.
+    # The meta match remains a soft hint: pin the matched workflow into
+    # <available_skills>, but leave the outer tool surface intact so the LLM
+    # can make the final semantic judgment about whether to call meta_invoke.
     meta_match = ctx.metadata.get("meta_match")
     if meta_match is not None:
         hinted_name = getattr(getattr(meta_match, "plan", None), "name", None)
@@ -177,21 +172,6 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
                     filterable = [
                         s for s in filterable if getattr(s, "name", None) != hinted_name
                     ]
-
-        if filter_enabled:
-            meta_tools = [
-                tool for tool in ctx.tool_defs if getattr(tool, "name", None) == "meta_invoke"
-            ]
-            if meta_tools:
-                original_tool_count = len(ctx.tool_defs)
-                ctx.tool_defs = meta_tools
-                ctx.metadata["meta_match_tool_surface_restricted"] = True
-                ctx.metadata["meta_match_original_tool_count"] = original_tool_count
-                ctx.metadata["meta_match_outer_tools"] = [tool.name for tool in meta_tools]
-                ctx.metadata["meta_match_tool_choice"] = {
-                    "type": "function",
-                    "function": {"name": "meta_invoke"},
-                }
 
     if filter_enabled:
         top_k = getattr(skills_cfg, "filter_top_k", 5)

@@ -107,6 +107,7 @@ def test_skills_view_renders_auto_propose_settings_panel() -> None:
     # Section renderer
     assert "_renderAutoProposeSettings" in view
     assert "sk-group--ap-settings" in view
+    assert "Off by default. Enable cron or dream" in view
     assert ".sk-group--ap-settings" in css
     assert ".sk-ap-toggle" in css
 

@@ -225,24 +225,25 @@ async def test_runtime_pipeline_runs_meta_resolution_before_skill_filter(
     assert "meta_invoke(name=\"meta-tiny\")" in str(turn.system_prompt)
     assert "meta-tiny" in str(turn.system_prompt)
 
-    # filter_enabled defaults to False (config=None here). In that mode the
-    # LLM already sees the full toolbox + the meta-skill description in
-    # ``<available_skills>``, so skills_filter does NOT restrict tool_defs
-    # and does NOT force tool_choice — the LLM decides whether to invoke.
+    # Deterministic trigger matches force the first tool call to meta_invoke so
+    # cheaper routed models do not bypass the meta DAG by calling ordinary tools.
     assert {tool.name for tool in turn.tool_defs} == {"meta_invoke", "web_search"}
     assert "meta_match_tool_surface_restricted" not in turn.metadata
-    assert "meta_match_tool_choice" not in turn.metadata
+    assert turn.metadata["meta_match_tool_choice"] == {
+        "type": "function",
+        "function": {"name": "meta_invoke"},
+    }
 
 
 @pytest.mark.asyncio
-async def test_runtime_pipeline_restricts_tools_only_when_skill_filter_enabled(
+async def test_runtime_pipeline_pins_meta_skill_when_skill_filter_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When the retriever is on, ``<available_skills>`` may drop the
-    meta-skill description out of the prompt. To preserve "must invoke
-    meta_invoke" semantics in that mode, skills_filter pins the
-    description AND narrows the tool surface to a forced ``meta_invoke``.
+    meta-skill description out of the prompt. The matched meta-skill is
+    pinned, and deterministic trigger matches force meta_invoke as the first
+    tool call while leaving the broader tool surface intact for later turns.
     """
     from types import SimpleNamespace
 
@@ -287,9 +288,10 @@ async def test_runtime_pipeline_restricts_tools_only_when_skill_filter_enabled(
     )
 
     assert turn.metadata["meta_match"].plan.name == "meta-tiny"
-    assert [tool.name for tool in turn.tool_defs] == ["meta_invoke"]
-    assert turn.metadata["meta_match_tool_surface_restricted"] is True
+    assert {tool.name for tool in turn.tool_defs} == {"meta_invoke", "web_search"}
+    assert "meta_match_tool_surface_restricted" not in turn.metadata
     assert turn.metadata["meta_match_tool_choice"] == {
         "type": "function",
         "function": {"name": "meta_invoke"},
     }
+    assert "meta-tiny" in str(turn.system_prompt)

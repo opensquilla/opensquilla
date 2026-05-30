@@ -90,6 +90,24 @@ def _normalise_winner(value: object) -> str:
     return aliases.get(raw, raw)
 
 
+def _baseline_invalid_reason(baseline: dict[str, Any]) -> str:
+    text = str(baseline.get("text") or "").strip().lower()
+    error = str(baseline.get("error") or "").strip()
+    if error:
+        return "baseline_error"
+    refusal_markers = (
+        "runtime e2e baseline mode",
+        "meta-skill creator tools are disabled",
+        "meta_skill creator tools are disabled",
+        "meta_skill_* creator tools are disabled",
+        "i cannot complete this request",
+        "i can’t complete this request",
+    )
+    if any(marker in text for marker in refusal_markers):
+        return "baseline_invalid_or_blocked"
+    return ""
+
+
 async def run_runtime_e2e_gate(
     *,
     skill_md: str,
@@ -118,6 +136,22 @@ async def run_runtime_e2e_gate(
             skill_md=skill_md,
             baseline_model=baseline_model,
         )
+        invalid_baseline = _baseline_invalid_reason(baseline)
+        if invalid_baseline:
+            winners.append("invalid")
+            cases.append({
+                "prompt": prompt,
+                "winner": "invalid",
+                "regression": invalid_baseline,
+                "reason": (
+                    "Baseline comparison was invalid because the no-meta "
+                    "route returned an error/refusal instead of its strongest "
+                    "standalone answer."
+                ),
+                "meta": meta,
+                "baseline": baseline,
+            })
+            continue
         verdict = await _call_judge(judge, prompt=prompt, meta=meta, baseline=baseline)
         winner = _normalise_winner(verdict.get("winner"))
         winners.append(winner)
@@ -140,8 +174,10 @@ async def run_runtime_e2e_gate(
         case for case in cases
         if case["winner"] not in {"meta", "tie"} or bool(case["regression"])
     ]
-    aggregate_winner = "baseline" if any(w == "baseline" for w in winners) else (
-        "meta" if any(w == "meta" for w in winners) else "tie"
+    aggregate_winner = "invalid" if any(w == "invalid" for w in winners) else (
+        "baseline" if any(w == "baseline" for w in winners) else (
+            "meta" if any(w == "meta" for w in winners) else "tie"
+        )
     )
     return {
         "status": "ok",
@@ -173,6 +209,7 @@ def make_runtime_e2e_context(
     """Build the runner/judge context used by the creator runtime E2E gate."""
 
     from opensquilla.engine.types import DoneEvent, TextDeltaEvent
+    from opensquilla.execution_status import runtime_execution_status
     from opensquilla.skills.meta.inputs import make_meta_inputs
     from opensquilla.skills.meta.orchestrator import (
         MetaOrchestrator,
@@ -180,8 +217,23 @@ def make_runtime_e2e_context(
     )
     from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
     from opensquilla.skills.meta.types import MetaMatch
+    from opensquilla.tool_boundary import ToolCall, ToolResult
 
     resolved_baseline_model = baseline_model or getattr(base_config, "model_id", "") or ""
+
+    def _without_meta_tools(
+        definitions: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        if definitions is None:
+            return None
+        filtered: list[dict[str, Any]] = []
+        for definition in definitions:
+            function = definition.get("function") if isinstance(definition, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if name == "meta_invoke" or str(name or "").startswith("meta_skill_"):
+                continue
+            filtered.append(definition)
+        return filtered
 
     async def _runtime_e2e_runner(
         *,
@@ -199,12 +251,50 @@ def make_runtime_e2e_context(
                 base_config,
                 model_id=selected_baseline_model or getattr(base_config, "model_id", None),
                 metadata=metadata_no_meta,
+                request_context_prompt=(
+                    "Runtime E2E baseline mode: answer the same user request as the "
+                    "highest-tier single model with ordinary non-meta tools only. "
+                    "Produce a complete standalone proposal, decision brief, or "
+                    "final artifact from the user prompt. Do not mention runtime "
+                    "tool restrictions, do not refuse because orchestration is "
+                    "unavailable, and do not ask the user to enable meta-skill "
+                    "creator tools."
+                ),
             )
+
+            async def baseline_tool_handler(tc: ToolCall) -> ToolResult:
+                if tc.tool_name.startswith("meta_skill_"):
+                    return ToolResult(
+                        tool_use_id=tc.tool_use_id,
+                        tool_name=tc.tool_name,
+                        content=(
+                            "Continue without this tool and write the strongest "
+                            "standalone answer directly in the final response."
+                        ),
+                        is_error=False,
+                        execution_status=runtime_execution_status(
+                            "ok",
+                            reason="not_available_in_baseline",
+                        ),
+                    )
+                if tool_handler is None:
+                    return ToolResult(
+                        tool_use_id=tc.tool_use_id,
+                        tool_name=tc.tool_name,
+                        content=f"No tool handler registered for tool '{tc.tool_name}'",
+                        is_error=True,
+                        execution_status=runtime_execution_status(
+                            "error",
+                            reason="runtime_error",
+                        ),
+                    )
+                return await tool_handler(tc)
+
             baseline_agent = agent_factory(
                 provider=provider,
                 config=baseline_config,
-                tool_definitions=tool_definitions,
-                tool_handler=tool_handler,
+                tool_definitions=_without_meta_tools(tool_definitions),
+                tool_handler=baseline_tool_handler,
                 usage_tracker=usage_tracker,
                 session_key=f"{session_key}:runtime_e2e:baseline",
                 tool_registry=tool_registry,
@@ -314,6 +404,12 @@ def make_runtime_e2e_context(
             "Compare two final answers for the same user prompt. "
             "A is OpenSquilla using the candidate meta-skill. "
             "B is OpenSquilla without meta-skills using the highest-tier model. "
+            "If either answer is an error/refusal instead of a substantive "
+            "answer, set winner to baseline unless A is the error/refusal, and "
+            "include a regression explaining that the comparison is invalid. "
+            "Judge final product quality with highest weight: completeness, "
+            "specificity, correctness, actionability, and reusable output "
+            "quality matter more than process narration. "
             "Return strict JSON only with keys winner (meta|baseline|tie), "
             "regression (empty string if none), and reason.\n\n"
             f"User prompt:\n{prompt}\n\n"

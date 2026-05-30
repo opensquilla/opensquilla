@@ -24,6 +24,20 @@ from typing import Any
 REPORT_DIR = Path(
     os.environ.get("OPENSQUILLA_COMPARE_REPORT_DIR", ".reports/meta-skill-comparison")
 )
+JUDGE_SUBSCORE_RANGES: dict[str, tuple[int, int]] = {
+    "final_artifact_quality": (0, 40),
+    "task_completion": (0, 20),
+    "evidence_traceability": (0, 15),
+    "actionability": (0, 10),
+    "risk_boundary_safety": (0, 10),
+    "meta_skill_fit": (0, 5),
+}
+
+OPENCLAW_BASELINE_WARMUP = (
+    "本轮是任务评估会话。身份、称呼和初始化已经完成；后续请直接处理用户请求，"
+    "不要询问姓名、称呼、workspace/bootstrap/onboarding，也不要要求用户在 A/B "
+    "路径中选择。"
+)
 
 BENCHMARK_CONSTRAINTS = (
     "Benchmark constraints: return the final deliverable inline in chat. "
@@ -797,11 +811,12 @@ def build_judge_prompt(
 
         {case.prompt}
 
-        Benchmark constraints both systems had to follow:
-        - Return the final deliverable inline in chat.
-        - Do not create, edit, or write local files.
-        - If an artifact would normally be created, include artifact-ready content inline.
-        - Verification commands may be named, but must not be claimed as executed.
+        Evaluation constraints:
+        - Judge the final user-visible answer, not hidden orchestration traces.
+        - Do not reward claims that tools, files, commands, or external checks were
+          completed unless the answer provides visible evidence.
+        - If the user asked for an artifact, reward artifact-ready content that can
+          be pasted or used directly.
 
         Meta-skill under test: {case.skill_name}
         Scenario: {case.scenario}
@@ -833,13 +848,41 @@ def build_judge_prompt(
         {response_excerpt(openclaw.response_text)}
         ```
 
-        Score each candidate from 0 to 100 using:
-        - task_completion: directly solves the user request
-        - correctness_grounding: facts, constraints, citations, commands, and caveats are plausible and not invented
-        - artifact_readiness: answer is ready to paste/use as the requested deliverable
-        - constraint_following: obeys inline-only/no-write/no-fake-execution constraints
-        - meta_skill_fit: shows the specialized workflow behavior expected for this meta-skill
-        - concision_efficiency: useful density without filler; do not reward verbosity alone
+        Prioritize the quality of the final user-visible deliverable. Meta-skill
+        orchestration is valuable only when it produces a better final artifact.
+
+        Score each candidate from 0 to 100 using these weights:
+        - final_artifact_quality: 40 points. The final deliverable is complete,
+          coherent, polished, directly usable, appropriately structured for the
+          requested artifact, and avoids distracting boilerplate.
+        - task_completion: 20 points. It directly solves the user's concrete
+          request, including all requested sub-parts.
+        - evidence_traceability: 15 points. It maps important claims to pasted
+          facts, source URLs, file/page evidence, or observed tool output where
+          applicable.
+        - actionability: 10 points. It gives concrete next steps, decisions,
+          owners, checks, or schedules that the user can execute without another
+          planning pass.
+        - risk_boundary_safety: 10 points. It flags legal, finance, medical,
+          security, privacy, or unknown-evidence boundaries instead of
+          over-claiming.
+        - meta_skill_fit: 5 points. It shows specialized workflow behavior
+          expected for this meta-skill, beyond a generic high-end chat answer.
+
+        The top-level scores MUST equal the sum of the six weighted subscores
+        for each candidate. Do not invent an independent overall score.
+
+        Use these cross-cutting checks while assigning the weighted score:
+        - endpoint_validity: only compare usable, non-empty answers from healthy endpoints.
+          Do not award a win because the other endpoint errored, timed out, or returned
+          an empty response; treat that row as inconclusive unless both usable answers exist.
+        - correctness_grounding: facts, constraints, citations, commands, and caveats are
+          plausible, internally consistent, and not invented.
+        - constraint_following: obeys inline-only/no-write/no-fake-execution constraints.
+        - fairness_control: do not reward brand assumptions, model reputation, verbosity,
+          or unrelated bootstrap/runtime/system commentary. Penalize unrelated bootstrap
+          notes or tool/runtime chatter that distracts from the user's deliverable.
+        - concision_efficiency: useful density without filler; do not reward verbosity alone.
 
         Hard caps:
         - timeout, empty response, or endpoint error: max 20 unless the other side also failed
@@ -851,6 +894,24 @@ def build_judge_prompt(
         {{
           "winner": "opensquilla" | "openclaw" | "tie",
           "scores": {{"opensquilla": 0-100, "openclaw": 0-100}},
+          "subscores": {{
+            "opensquilla": {{
+              "final_artifact_quality": 0-40,
+              "task_completion": 0-20,
+              "evidence_traceability": 0-15,
+              "actionability": 0-10,
+              "risk_boundary_safety": 0-10,
+              "meta_skill_fit": 0-5
+            }},
+            "openclaw": {{
+              "final_artifact_quality": 0-40,
+              "task_completion": 0-20,
+              "evidence_traceability": 0-15,
+              "actionability": 0-10,
+              "risk_boundary_safety": 0-10,
+              "meta_skill_fit": 0-5
+            }}
+          }},
           "confidence": 0.0-1.0,
           "rationale": "one short paragraph",
           "risks": ["short risk or uncertainty"]
@@ -1076,11 +1137,34 @@ async def _send_application_pings(ws: Any, interval_s: float = 45.0) -> None:
         await ws.send('{"type":"ping"}')
 
 
+def _slug_part(value: str, max_len: int = 64) -> str:
+    slug = re.sub(r"[^a-z0-9_-]+", "-", str(value).strip().lower()).strip("-")
+    return (slug or "default")[:max_len]
+
+
 class OpenSquillaRunner:
-    def __init__(self, url: str, token: str | None, elevated: str | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        token: str | None,
+        elevated: str | None = None,
+        agent_id: str = "main",
+        isolated_agent_per_case: bool = False,
+        run_id: str | None = None,
+    ) -> None:
         self.url = url
         self.token = token
         self.elevated = elevated
+        self.agent_id = agent_id
+        self.isolated_agent_per_case = isolated_agent_per_case
+        self.run_id = _slug_part(run_id or uuid.uuid4().hex[:8])
+
+    def _agent_id_for_case(self, case: ComparisonCase) -> str:
+        if not self.isolated_agent_per_case:
+            return self.agent_id
+        case_part = _slug_part(case.case_id.replace("_", "-"), max_len=32)
+        prefix = _slug_part(self.agent_id if self.agent_id != "main" else "meta-compare")
+        return _slug_part(f"{prefix}-{self.run_id}-{case_part}", max_len=64)
 
     async def run(self, case: ComparisonCase, timeout_s: float) -> EndpointResult:
         start = time.monotonic()
@@ -1098,7 +1182,13 @@ class OpenSquillaRunner:
         control_events: list[dict[str, Any]] = []
         import websockets
 
-        async with websockets.connect(self.url, ping_interval=20, ping_timeout=20) as ws:
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
+        async with websockets.connect(
+            self.url,
+            ping_interval=20,
+            ping_timeout=20,
+            additional_headers=headers,
+        ) as ws:
             first = json.loads(await ws.recv())
             if first.get("event") != "connect.challenge":
                 raise RuntimeError(f"unexpected OpenSquilla handshake: {first}")
@@ -1116,11 +1206,27 @@ class OpenSquillaRunner:
                 },
                 control_events,
             )
+            agent_id = self._agent_id_for_case(case)
+            if agent_id != "main":
+                try:
+                    await self._call(
+                        ws,
+                        "agents.create",
+                        {
+                            "id": agent_id,
+                            "name": f"Meta Compare {case.case_id}",
+                            "description": "Isolated agent for one meta-skill comparison case.",
+                        },
+                        control_events,
+                    )
+                except RuntimeError as exc:
+                    if "agent.exists" not in str(exc):
+                        raise
             created = await self._call(
                 ws,
                 "sessions.create",
                 {
-                    "agentId": "main",
+                    "agentId": agent_id,
                     "kind": "cli",
                     "displayName": f"meta compare {case.case_id}",
                 },
@@ -1158,6 +1264,15 @@ class OpenSquillaRunner:
 
         session_events = _events_for_session(events, session_key)
         text = extract_text_from_events(session_events)
+        meta_final_text = _latest_opensquilla_meta_final_text(session_key)
+        if meta_final_text:
+            text = meta_final_text
+        transcript_text = await _wait_for_opensquilla_transcript_text(
+            session_key,
+            minimum_len=len(text),
+        )
+        if not meta_final_text and len(transcript_text) > len(text):
+            text = transcript_text
         stream_error = extract_error_from_events(session_events)
         score = score_response(text, case)
         provider, model = _provider_model_from_events(session_events)
@@ -1253,7 +1368,12 @@ class OpenClawRunner:
         events: list[dict[str, Any]] = []
         started_at = time.time()
         prompt = benchmark_prompt(case)
-        async with websockets.connect(self.url, ping_interval=20, ping_timeout=20) as ws:
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
+        async with websockets.connect(
+            self.url,
+            ping_interval=None,
+            additional_headers=headers,
+        ) as ws:
             first = json.loads(await ws.recv())
             if first.get("event") != "connect.challenge":
                 raise RuntimeError(f"unexpected OpenClaw handshake: {first}")
@@ -1290,6 +1410,15 @@ class OpenClawRunner:
                 {"key": session_key},
                 control_events,
             )
+            warmup_events: list[dict[str, Any]] = []
+            await self._call(
+                ws,
+                "sessions.send",
+                {"key": session_key, "message": OPENCLAW_BASELINE_WARMUP},
+                warmup_events,
+                session_key=session_key,
+            )
+            await self._read_openclaw_stream(ws, warmup_events, session_key)
             await self._call(
                 ws,
                 "sessions.send",
@@ -1311,8 +1440,13 @@ class OpenClawRunner:
             )
             if discovered is not None and discovered not in session_paths:
                 session_paths.append(discovered)
-        for path in session_paths:
-            events.extend(_openclaw_session_file_events(path, session_key))
+        file_events = await _wait_for_openclaw_session_file_events(
+            session_paths,
+            session_key=session_key,
+            after_prompt=prompt,
+            timeout_s=self.idle_timeout_s,
+        )
+        events.extend(file_events)
         session_events = _events_for_session(events, session_key)
         text = extract_text_from_events(session_events)
         stream_error = extract_error_from_events(session_events)
@@ -1461,7 +1595,7 @@ class LLMJudge:
 
 
 def benchmark_prompt(case: ComparisonCase) -> str:
-    return f"{BENCHMARK_CONSTRAINTS}{case.prompt}"
+    return case.prompt
 
 
 def _event_session_key(event: dict[str, Any]) -> str | None:
@@ -1503,10 +1637,92 @@ def _events_for_session(events: list[dict[str, Any]], session_key: str) -> list[
     return filtered or events
 
 
-def _openclaw_session_file_events(path: Path, session_key: str) -> list[dict[str, Any]]:
+def _latest_opensquilla_transcript_text(session_key: str) -> str:
+    """Return the persisted final assistant text for a local gateway session.
+
+    Some gateway streams emit only the assistant preface before a long-running
+    ``meta_invoke`` while the complete final text is persisted to the transcript
+    after the DAG finishes. Prefer the persisted transcript when available so
+    the benchmark judges the actual user-visible final assistant message.
+    """
+
+    if not session_key:
+        return ""
+    state_db = Path(
+        os.environ.get("OPENSQUILLA_STATE_DB", "/root/.opensquilla/state/sessions.db")
+    )
+    if not state_db.exists():
+        return ""
+    try:
+        import sqlite3
+
+        with sqlite3.connect(state_db) as conn:
+            rows = conn.execute(
+                "SELECT content FROM transcript_entries "
+                "WHERE session_key=? AND role='assistant' "
+                "ORDER BY id ASC",
+                (session_key,),
+            ).fetchall()
+    except Exception:
+        return ""
+    texts = [str(row[0]).strip() for row in rows if row and row[0] and str(row[0]).strip()]
+    return texts[-1] if texts else ""
+
+
+def _latest_opensquilla_meta_final_text(session_key: str) -> str:
+    if not session_key:
+        return ""
+    state_db = Path(
+        os.environ.get("OPENSQUILLA_STATE_DB", "/root/.opensquilla/state/sessions.db")
+    )
+    if not state_db.exists():
+        return ""
+    try:
+        import sqlite3
+
+        with sqlite3.connect(state_db) as conn:
+            rows = conn.execute(
+                "SELECT final_text FROM meta_skill_runs "
+                "WHERE session_key=? AND status='ok' "
+                "ORDER BY started_at_ms ASC",
+                (session_key,),
+            ).fetchall()
+    except Exception:
+        return ""
+    texts = [str(row[0]).strip() for row in rows if row and row[0] and str(row[0]).strip()]
+    return texts[-1] if texts else ""
+
+
+async def _wait_for_opensquilla_transcript_text(
+    session_key: str,
+    *,
+    minimum_len: int,
+    timeout_s: float = 5.0,
+    interval_s: float = 0.25,
+) -> str:
+    """Poll briefly for the final assistant transcript after stream completion."""
+
+    deadline = time.monotonic() + timeout_s
+    best = ""
+    while True:
+        text = _latest_opensquilla_transcript_text(session_key)
+        if len(text) > len(best):
+            best = text
+        if len(best) > minimum_len or time.monotonic() >= deadline:
+            return best
+        await asyncio.sleep(interval_s)
+
+
+def _openclaw_session_file_events(
+    path: Path,
+    session_key: str,
+    *,
+    after_prompt: str | None = None,
+) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     events: list[dict[str, Any]] = []
+    prompt_seen = after_prompt is None
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -1516,6 +1732,14 @@ def _openclaw_session_file_events(path: Path, session_key: str) -> list[dict[str
             continue
         message = item.get("message") if isinstance(item, dict) else None
         if item.get("type") == "message" and isinstance(message, dict):
+            if not prompt_seen:
+                if (
+                    message.get("role") == "user"
+                    and after_prompt
+                    and after_prompt in _content_to_text(message.get("content"))
+                ):
+                    prompt_seen = True
+                continue
             events.append(
                 {
                     "type": "event",
@@ -1524,6 +1748,41 @@ def _openclaw_session_file_events(path: Path, session_key: str) -> list[dict[str
                 }
             )
     return events
+
+
+async def _wait_for_openclaw_session_file_events(
+    paths: list[Path],
+    *,
+    session_key: str,
+    after_prompt: str,
+    timeout_s: float = 90.0,
+    interval_s: float = 0.5,
+    stable_s: float = 5.0,
+) -> list[dict[str, Any]]:
+    """Poll OpenClaw's JSONL file because the WS stream may end before persistence."""
+
+    deadline = time.monotonic() + timeout_s
+    best: list[dict[str, Any]] = []
+    best_text = ""
+    last_change = time.monotonic()
+    while True:
+        for path in paths:
+            events = _openclaw_session_file_events(
+                path,
+                session_key,
+                after_prompt=after_prompt,
+            )
+            text = extract_text_from_events(events)
+            if text != best_text:
+                best = events
+                best_text = text
+                last_change = time.monotonic()
+        now = time.monotonic()
+        if best_text and now - last_change >= stable_s:
+            return best
+        if now >= deadline:
+            return best
+        await asyncio.sleep(interval_s)
 
 
 def _resolve_openclaw_session_path(
@@ -1698,7 +1957,7 @@ async def run_live(args: argparse.Namespace) -> list[dict[str, Any]]:
         row = compare_results(case, sq_result, claw_result)
         if judge is not None:
             try:
-                judge_result = await judge.judge(case, sq_result, claw_result)
+                judge_result = await judge_with_retries(judge, case, sq_result, claw_result)
                 row = apply_judge_result(row, judge_result, case)
             except Exception as exc:
                 row["judge_error"] = f"{type(exc).__name__}: {exc}"
@@ -1738,7 +1997,7 @@ async def judge_existing(args: argparse.Namespace) -> list[dict[str, Any]]:
         row.setdefault("baseline_winner", row.get("winner", "tie"))
         row.setdefault("score_basis", "deterministic")
         try:
-            judge_result = await judge.judge(case, opensquilla, openclaw)
+            judge_result = await judge_with_retries(judge, case, opensquilla, openclaw)
             judged = apply_judge_result(row, judge_result, case)
         except Exception as exc:
             judged = dict(row)
@@ -1786,6 +2045,7 @@ def apply_judge_result(
     judge_result: JudgeResult,
     case: ComparisonCase,
 ) -> dict[str, Any]:
+    judge_result = normalize_weighted_judge_result(judge_result)
     winner = judge_result.winner
     updated = dict(row)
     updated["judge"] = asdict(judge_result)
@@ -1795,6 +2055,77 @@ def apply_judge_result(
     updated["recommended_optimization"] = None if winner == "opensquilla" else case.optimization_if_not_better
     updated.pop("judge_error", None)
     return updated
+
+
+async def judge_with_retries(
+    judge: LLMJudge,
+    case: ComparisonCase,
+    opensquilla: EndpointResult,
+    openclaw: EndpointResult,
+    *,
+    attempts: int = 3,
+) -> JudgeResult:
+    errors: list[str] = []
+    for attempt in range(1, attempts + 1):
+        try:
+            result = await judge.judge(case, opensquilla, openclaw)
+        except Exception as exc:
+            errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
+            continue
+        try:
+            return normalize_weighted_judge_result(result)
+        except ValueError as exc:
+            errors.append(f"attempt {attempt}: {exc}")
+    raise RuntimeError("; ".join(errors))
+
+
+def normalize_weighted_judge_result(judge_result: JudgeResult) -> JudgeResult:
+    if not judge_result.rationale.strip():
+        raise ValueError("judge response missing rationale")
+    raw = judge_result.raw if isinstance(judge_result.raw, dict) else {}
+    totals = weighted_judge_totals(raw)
+    if totals is None:
+        raise ValueError("judge response missing complete weighted subscores")
+    winner = "tie"
+    if totals["opensquilla"] > totals["openclaw"]:
+        winner = "opensquilla"
+    elif totals["openclaw"] > totals["opensquilla"]:
+        winner = "openclaw"
+    normalized_raw = dict(raw)
+    normalized_raw["scores"] = totals
+    normalized_raw["winner"] = winner
+    normalized_raw["score_source"] = "weighted_subscores"
+    return JudgeResult(
+        winner=winner,
+        scores=totals,
+        confidence=judge_result.confidence,
+        rationale=judge_result.rationale,
+        risks=judge_result.risks,
+        raw=normalized_raw,
+        model=judge_result.model,
+    )
+
+
+def weighted_judge_totals(raw: dict[str, Any]) -> dict[str, int] | None:
+    subscores = raw.get("subscores") if isinstance(raw.get("subscores"), dict) else {}
+    totals: dict[str, int] = {}
+    for label in ("opensquilla", "openclaw"):
+        candidate = subscores.get(label)
+        if not isinstance(candidate, dict):
+            return None
+        total = 0
+        for name, (low, high) in JUDGE_SUBSCORE_RANGES.items():
+            if name not in candidate:
+                return None
+            try:
+                value = int(candidate[name])
+            except (TypeError, ValueError):
+                return None
+            if value < low or value > high:
+                return None
+            total += value
+        totals[label] = total
+    return totals
 
 
 def case_from_row(row: dict[str, Any]) -> ComparisonCase:

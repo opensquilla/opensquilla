@@ -228,6 +228,72 @@ async def test_register_auto_propose_crons_resumes_a_paused_job(
 
 
 @pytest.mark.asyncio
+async def test_register_auto_propose_crons_uses_structured_schedule_for_new_jobs(
+    tmp_path: Path,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from opensquilla.gateway.boot import _register_auto_propose_crons
+    from opensquilla.scheduler.types import ScheduleKind, SessionTarget
+
+    scheduler = MagicMock()
+    scheduler.list_jobs = MagicMock(return_value=[])
+    scheduler.update_job = AsyncMock()
+    scheduler.resume_job = AsyncMock()
+    scheduler.add_job = AsyncMock()
+
+    auto_cfg = _make_config(cron="*/5 * * * *")
+    await _register_auto_propose_crons(
+        scheduler=scheduler, auto_cfg=auto_cfg, agent_ids=["main"],
+    )
+
+    scheduler.add_job.assert_called_once_with(
+        name="auto_propose:main",
+        schedule_kind=ScheduleKind.CRON,
+        schedule_value="*/5 * * * *",
+        handler_key="auto_propose",
+        payload={"agent_id": "main"},
+        session_target=SessionTarget.ISOLATED,
+    )
+
+
+@pytest.mark.asyncio
+async def test_register_auto_propose_crons_updates_schedule_with_structured_patch(
+    tmp_path: Path,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from opensquilla.gateway.boot import _register_auto_propose_crons
+    from opensquilla.scheduler.types import JobStatus, ScheduleKind, SessionTarget
+
+    existing = MagicMock()
+    existing.id = "job-id-3"
+    existing.name = "auto_propose:main"
+    existing.schedule_raw = "0 5 * * *"
+    existing.payload = {"agent_id": "main"}
+    existing.session_target = SessionTarget.ISOLATED
+    existing.status = JobStatus.PENDING
+
+    scheduler = MagicMock()
+    scheduler.list_jobs = MagicMock(return_value=[existing])
+    scheduler.update_job = AsyncMock()
+    scheduler.resume_job = AsyncMock()
+    scheduler.add_job = AsyncMock()
+
+    auto_cfg = _make_config(cron="*/5 * * * *")
+    await _register_auto_propose_crons(
+        scheduler=scheduler, auto_cfg=auto_cfg, agent_ids=["main"],
+    )
+
+    scheduler.update_job.assert_called_once_with(
+        "job-id-3",
+        schedule_kind=ScheduleKind.CRON,
+        schedule_value="*/5 * * * *",
+    )
+    scheduler.add_job.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_register_auto_propose_crons_does_not_resume_active_jobs(
     tmp_path: Path,
 ) -> None:

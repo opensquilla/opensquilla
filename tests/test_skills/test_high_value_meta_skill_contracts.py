@@ -1,9 +1,13 @@
-"""Contracts for the default high-value meta-skill workflows."""
+"""Contracts for retained and experimental high-value meta-skill workflows."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from opensquilla.engine.steps.meta_resolution import meta_resolution
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.parser import parse_meta_plan
 
@@ -14,10 +18,15 @@ BUNDLED = (
     / "skills"
     / "bundled"
 )
+EXP = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "exp"
 
 
 def _loader(tmp_path: Path) -> SkillLoader:
-    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
+    loader = SkillLoader(
+        bundled_dir=BUNDLED,
+        extra_dirs=[EXP],
+        snapshot_path=tmp_path / "snapshot.json",
+    )
     loader.invalidate_cache()
     return loader
 
@@ -58,6 +67,21 @@ def _orchestrated_skill_names(loader: SkillLoader, name: str) -> set[str]:
 def _assert_composes_at_least_two_skills(loader: SkillLoader, name: str) -> None:
     skill_names = _orchestrated_skill_names(loader, name)
     assert len(skill_names) >= 2, f"{name} composes too few skills: {skill_names}"
+
+
+def _assert_user_input_step(
+    steps: dict,
+    step_id: str,
+    *,
+    when_contains: str,
+    required_fields: set[str],
+) -> None:
+    step = steps[step_id]
+    assert step.kind == "user_input"
+    assert when_contains in step.when
+    assert step.clarify_config is not None
+    assert step.clarify_config.nl_extract is True
+    assert required_fields <= {field.name for field in step.clarify_config.fields}
 
 
 def test_high_value_meta_skill_descriptions_signal_orchestration_priority(
@@ -125,7 +149,11 @@ def test_report_meta_skill_uses_fast_final_report_path(tmp_path: Path) -> None:
     ):
         assert steps[step_id].kind == "llm_chat"
     assert steps["search"].skill == "multi-search-engine"
-    assert set(steps["search"].depends_on) == {"preferences", "report_mode"}
+    assert set(steps["search"].depends_on) == {
+        "preferences",
+        "report_clarify",
+        "report_mode",
+    }
     assert steps["research"].skill == "deep-research"
     assert steps["export"].skill == "docx"
     final_prompt = str(steps["final_report"].with_args)
@@ -332,7 +360,14 @@ def test_pdf_intelligence_has_inline_fallback_and_final_synthesis(
     steps, plan = _steps_by_id(loader, "meta-pdf-intelligence")
 
     assert plan.final_text_mode == "step:cross_document_synthesis"
+    _assert_user_input_step(
+        steps,
+        "pdf_clarify",
+        when_contains="NEEDS_CLARIFICATION: yes",
+        required_fields={"source_status", "source_material"},
+    )
     assert steps["extract"].on_failure == "inline_excerpt_extract"
+    assert steps["extract"].depends_on == ("intake", "pdf_clarify")
     assert "inline_excerpts_only" in steps["extract"].when
     assert "reference_without_content" in steps["extract"].when
     assert "pdf upload handy" in steps["extract"].when
@@ -359,6 +394,34 @@ def test_pdf_intelligence_has_inline_fallback_and_final_synthesis(
     assert "SOURCE_STATUS" in intake_prompt
     assert "USER_EXCERPTS" in intake_prompt
     assert "inline_excerpts_only" in intake_prompt
+    assert "NEEDS_CLARIFICATION" in intake_prompt
+    assert "reference_without_content" in intake_prompt
+    assert "Clarification answers" in synthesis_prompt
+
+
+@pytest.mark.asyncio
+async def test_pdf_intelligence_matches_lived_chinese_pdf_request(
+    tmp_path: Path,
+) -> None:
+    loader = _loader(tmp_path)
+    ctx = SimpleNamespace(
+        message=(
+            "帮我看一下这个 PDF："
+            "tests/fixtures/meta_skill_inputs/pdf_intelligence/"
+            "router-evaluation-summary.pdf"
+        ),
+        session_key="test-session",
+        metadata={"skill_loader": loader},
+        system_prompt=("base prompt", ""),
+        config=SimpleNamespace(squilla_router=SimpleNamespace(tiers={})),
+        surface_kind="web",
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert out.metadata["meta_match"].plan.name == "meta-pdf-intelligence"
+    assert out.metadata["meta_match_trigger"].lower() == "看一下这个 pdf"
+    assert 'call `meta_invoke(name="meta-pdf-intelligence")`' in out.system_prompt[1]
 
 
 def test_stack_trace_investigator_supports_language_routing_and_degraded_output(
@@ -487,6 +550,12 @@ def test_travel_planner_uses_fast_final_itinerary_path(tmp_path: Path) -> None:
     assert plan.final_text_mode == "step:final_plan"
     assert steps["trip_collect"].kind == "llm_chat"
     assert steps["trip_collect"].clarify_config is None
+    _assert_user_input_step(
+        steps,
+        "trip_clarify",
+        when_contains="NEEDS_CLARIFICATION: yes",
+        required_fields={"destination", "days"},
+    )
     for step_id in (
         "trip_collect",
         "trip_preferences",
@@ -499,6 +568,7 @@ def test_travel_planner_uses_fast_final_itinerary_path(tmp_path: Path) -> None:
     assert steps["weather"].kind == "skill_exec"
     assert steps["poi"].skill == "multi-search-engine"
     assert steps["poi"].kind == "skill_exec"
+    assert steps["trip_preferences"].depends_on == ("trip_collect", "trip_clarify")
     assert steps["final_plan"].depends_on == ("itinerary", "constraints", "weather", "poi")
     collect_prompt = str(steps["trip_collect"].with_args)
     preference_prompt = str(steps["trip_preferences"].with_args)
@@ -507,7 +577,10 @@ def test_travel_planner_uses_fast_final_itinerary_path(tmp_path: Path) -> None:
     assert "Do NOT ask the user to confirm details" in collect_prompt
     assert "safely inferable" in collect_prompt
     assert "Do not invent exact calendar dates" in collect_prompt
+    assert "NEEDS_CLARIFICATION" in collect_prompt
+    assert "only when destination or trip length is absent" in collect_prompt
     assert "outputs.trip_collect" in preference_prompt
+    assert "Clarification answers" in preference_prompt
     assert "Never return a clarification question" in preference_prompt
     assert "short-range/current forecasts" in constraint_prompt
     assert "seasonal risk language" in constraint_prompt
@@ -555,13 +628,28 @@ def test_meta_skill_creator_supports_preview_only_branch(tmp_path: Path) -> None
     steps, plan = _steps_by_id(loader, "meta-skill-creator")
 
     assert plan.final_text_mode == "step:preview"
+    _assert_user_input_step(
+        steps,
+        "creator_clarify",
+        when_contains="NEEDS_CLARIFICATION: yes",
+        required_fields={"workflow_goal", "output_shape"},
+    )
     assert steps["creator_mode"].kind == "llm_classify"
+    assert steps["creator_mode"].depends_on == ("clarify_intent", "creator_clarify")
     assert set(steps["creator_mode"].output_choices) == {
         "PREVIEW_ONLY",
         "PERSISTED_PROPOSAL",
         "FULL_GATED",
     }
+    assert set(steps["pick_pattern"].output_choices) == {
+        "p1_sequential",
+        "p2_fan_out_merge",
+        "p3_condition_gated",
+    }
+    clarify_intent_text = str(steps["clarify_intent"].with_args)
     creator_mode_text = str(steps["creator_mode"].with_args)
+    assert "NEEDS_CLARIFICATION" in clarify_intent_text
+    assert "Clarification answers" in creator_mode_text
     assert "inputs.system_prompt" in creator_mode_text
     assert "unattended auto-propose" in creator_mode_text
     assert "dream" in creator_mode_text
@@ -586,6 +674,8 @@ def test_meta_skill_creator_acceptance_compares_against_highest_tier_baseline(
     assert "same task" in str(baseline.with_args).lower()
     assert "system prompt" in str(baseline.with_args).lower()
     assert "inputs.system_prompt" in str(baseline.with_args)
+    assert "meta-skill-creator" in str(baseline.with_args)
+    assert "auto-enable" in str(baseline.with_args)
     assert "outputs." not in str(baseline.with_args)
 
     assert compare.kind == "llm_chat"
@@ -593,6 +683,8 @@ def test_meta_skill_creator_acceptance_compares_against_highest_tier_baseline(
     assert compare.when == "outputs.creator_mode == 'FULL_GATED'"
     assert "orchestrated candidate" in str(compare.with_args).lower()
     assert "single-model baseline" in str(compare.with_args).lower()
+    assert "meta-skill-creator" in str(compare.with_args)
+    assert "Never make proposal persistence" in str(compare.with_args)
     assert "winner" in str(compare.with_args).lower()
     assert "runtime_e2e" in steps
     assert steps["runtime_e2e"].kind == "tool_call"
@@ -606,6 +698,8 @@ def test_meta_skill_creator_acceptance_compares_against_highest_tier_baseline(
     assert "outputs.acceptance_compare" in str(steps["persist"].tool_args)
     assert "runtime_e2e_result" in str(steps["persist"].tool_args)
     assert "outputs.runtime_e2e" in str(steps["persist"].tool_args)
+    assert "collision_result" in str(steps["persist"].tool_args)
+    assert "risk_result" in str(steps["persist"].tool_args)
     assert "creator_mode" in str(steps["persist"].tool_args)
 
 
@@ -617,7 +711,16 @@ def test_migration_assistant_routes_guides_and_optional_repo_context(
     steps, plan = _steps_by_id(loader, "meta-migration-assistant")
 
     assert plan.final_text_mode == "step:write_plan"
+    assert steps["migration_intake"].kind == "llm_chat"
+    _assert_user_input_step(
+        steps,
+        "migration_clarify",
+        when_contains="NEEDS_CLARIFICATION: yes",
+        required_fields={"source_stack", "target_stack"},
+    )
+    assert set(steps["classify"].depends_on) == {"migration_intake", "migration_clarify"}
     assert steps["fetch_guide"].skill == "deep-research"
+    assert set(steps["fetch_guide"].depends_on) == {"classify", "migration_clarify"}
     assert [case.to for case in steps["fetch_guide"].route] == [
         "github",
         "multi-search-engine",
@@ -629,18 +732,23 @@ def test_migration_assistant_routes_guides_and_optional_repo_context(
     assert "pull request" in steps["repo_context"].when
     assert set(steps["write_plan"].depends_on) == {
         "classify",
+        "migration_clarify",
         "fetch_guide",
         "repo_context",
     }
     assert steps["write_plan"].kind == "llm_chat"
+    intake_prompt = str(steps["migration_intake"].with_args)
     classify_prompt = str(steps["classify"].with_args)
     fetch_prompt = str(steps["fetch_guide"].with_args)
     write_plan_prompt = str(steps["write_plan"].with_args)
+    assert "NEEDS_CLARIFICATION" in intake_prompt
+    assert "Clarification answers" in classify_prompt
     assert "Ignore benchmark wrappers" in classify_prompt
     assert "truncate(1400)" in classify_prompt
     assert "after benchmark constraints" in classify_prompt
     assert "CommonJS" in classify_prompt and "native ESM" in classify_prompt
     assert "return exactly" in classify_prompt and "CJS_TO_ESM" in classify_prompt
+    assert "Clarification answers" in fetch_prompt
     assert "Ignore benchmark preambles" in fetch_prompt
     assert "package.json type/exports" in fetch_prompt
     assert "directory imports" in fetch_prompt
@@ -682,3 +790,24 @@ def test_migration_assistant_routes_guides_and_optional_repo_context(
     assert "dual-package hazards" in write_plan_prompt
     assert "eslint --fix" in write_plan_prompt
     assert "Avoid obsolete Node flags" in write_plan_prompt
+
+
+def test_report_meta_skill_clarifies_only_broad_or_decision_critical_requests(
+    tmp_path: Path,
+) -> None:
+    loader = _loader(tmp_path)
+    steps, _plan = _steps_by_id(loader, "meta-web-research-to-report")
+
+    _assert_user_input_step(
+        steps,
+        "report_clarify",
+        when_contains="NEEDS_CLARIFICATION: yes",
+        required_fields={"topic", "audience", "decision_context"},
+    )
+    assert steps["report_mode"].depends_on == ("preferences", "report_clarify")
+    assert set(steps["search"].depends_on) == {"preferences", "report_clarify", "report_mode"}
+    preferences_prompt = str(steps["preferences"].with_args)
+    report_mode_prompt = str(steps["report_mode"].with_args)
+    assert "NEEDS_CLARIFICATION" in preferences_prompt
+    assert "only when the topic is too broad" in preferences_prompt
+    assert "Clarification answers" in report_mode_prompt

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from opensquilla.skills.creator.proposer import simulate_meta_resolution
 
 VALID_SKILL_MD = """---
@@ -144,7 +148,7 @@ composition:
         task: "{{ inputs.user_message | xml_escape | truncate(512) }}"
 ---
 """
-    raw = meta_skill_smoke_run(skill_md, "openai/gpt-4o-mini", "anthropic/claude-3.5-haiku")
+    raw = meta_skill_smoke_run(skill_md, "openai/gpt-4o-mini", "openrouter/auto")
     result = _json.loads(raw)
     # Top-level degraded flag must be True
     assert result.get("degraded") is True, (
@@ -157,6 +161,49 @@ composition:
     assert result.get("G4", {}).get("degraded") is True, (
         f"G4 should be marked degraded; got: {result.get('G4')}"
     )
+
+
+@pytest.mark.asyncio
+async def test_meta_skill_smoke_run_tool_uses_llm_fixture_context() -> None:
+    from opensquilla.skills.creator.proposer import (
+        meta_skill_smoke_run_tool,
+        reset_smoke_fixture_context,
+        set_smoke_fixture_context,
+    )
+
+    async def llm_chat(_system: str, user: str) -> str:
+        if "positive" in user.lower():
+            return "please run the smoke degraded test"
+        return "help me compare phone plans"
+
+    skill_md = """---
+name: "smoke-degraded-test"
+description: "Test smoke fixture context."
+kind: meta
+meta_priority: 50
+triggers:
+  - "smoke degraded test"
+composition:
+  steps:
+    - id: only
+      skill: summarize
+      with:
+        task: "{{ inputs.user_message | xml_escape | truncate(512) }}"
+---
+"""
+    token = set_smoke_fixture_context({"llm_chat": llm_chat})
+    try:
+        result = json.loads(await meta_skill_smoke_run_tool(
+            skill_md,
+            "openai/gpt-4o-mini",
+            "openrouter/auto",
+        ))
+    finally:
+        reset_smoke_fixture_context(token)
+
+    assert result["degraded"] is False
+    assert result["G3"]["positive_fixture"] == "please run the smoke degraded test"
+    assert result["G4"]["negative_fixture"] == "help me compare phone plans"
 
 
 def test_smoke_g3_passes_with_chinese_triggers() -> None:

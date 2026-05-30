@@ -57,6 +57,7 @@ def aggregate_co_occurrences(
     """
     cutoff = datetime.now(UTC) - timedelta(days=window_days)
     counter: Counter[tuple[str, ...]] = Counter()
+    intents: dict[tuple[str, ...], Counter[str]] = {}
     if not log_dir.is_dir():
         return []
     for log_path in sorted(log_dir.glob("decisions-*.jsonl")):
@@ -69,9 +70,27 @@ def aggregate_co_occurrences(
             skills = payload.get("skills_invoked") or []
             if not isinstance(skills, list) or len(skills) < 2:
                 continue
-            counter[tuple(skills)] += 1
+            key = tuple(skills)
+            counter[key] += 1
+            intent = str(
+                payload.get("intent_summary")
+                or payload.get("session_intent")
+                or payload.get("user_intent")
+                or payload.get("user_message")
+                or payload.get("prompt")
+                or payload.get("message")
+                or "",
+            ).strip()
+            if intent:
+                intents.setdefault(key, Counter())[intent[:500]] += 1
     return [
-        {"skills": list(combo), "freq": freq}
+        {
+            "skills": list(combo),
+            "freq": freq,
+            "sample_intents": [
+                intent for intent, _count in intents.get(combo, Counter()).most_common(3)
+            ],
+        }
         for combo, freq in counter.most_common(top_k)
     ]
 

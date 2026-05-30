@@ -79,14 +79,44 @@ def test_window_excludes_old_entries(tmp_path: Path) -> None:
 def test_meta_usage_counts_meta_skill_invocations(tmp_path: Path) -> None:
     log = tmp_path / "decisions-20260520.jsonl"
     log.write_text("\n".join([
-        _make_log_line(["meta-pdf-intelligence", "pdf-toolkit"], "t1"),
-        _make_log_line(["meta-pdf-intelligence"], "t2"),
-        _make_log_line(["meta-travel-planner", "weather"], "t3"),
+        _make_log_line(["meta-paper-write", "paper-section-author"], "t1"),
+        _make_log_line(["meta-paper-write"], "t2"),
+        _make_log_line(["meta-safe-skill-installer", "sub-agent"], "t3"),
     ]) + "\n", encoding="utf-8")
     out = _run_explore(tmp_path, "anything", window_days=30)
     usage = {row["meta_skill_id"]: row["invocation_count"] for row in out["meta_usage"]}
-    assert usage["meta-pdf-intelligence"] == 2
-    assert usage["meta-travel-planner"] == 1
+    assert usage["meta-paper-write"] == 2
+    assert usage["meta-safe-skill-installer"] == 1
+
+
+def test_co_occurrence_uses_redacted_intent_summary(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    log = tmp_path / "decisions-20260520.jsonl"
+    payload = {
+        "turn_id": "t1",
+        "session_key": "s1",
+        "prompt_hash": "a" * 16,
+        "system_prompt_hash": "b" * 16,
+        "tool_list_hash": "c" * 16,
+        "tool_choice": "auto",
+        "tokens_input": 1,
+        "tokens_output": 2,
+        "model": "x",
+        "provider": "y",
+        "latency_ms": 3,
+        "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "schema_version": 12,
+        "skills_invoked": ["pdf-toolkit", "summarize"],
+        "intent_summary": "review vendor renewal contract [path] [secret]",
+    }
+    log.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    out = _run_explore(tmp_path, "anything", window_days=30)
+
+    assert out["co_occurrences"][0]["sample_intents"] == [
+        "review vendor renewal contract [path] [secret]",
+    ]
 
 
 def test_router_fixtures_surfaces_fixture_files(tmp_path: Path) -> None:

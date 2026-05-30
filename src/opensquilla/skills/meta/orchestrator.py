@@ -80,6 +80,22 @@ LLMChat = Callable[[str, str], Awaitable[str]]
 #: Direct tool invoker — bypasses the LLM. Returns the tool's result as string.
 ToolInvoker = Callable[[str, dict[str, Any]], Awaitable[str]]
 
+_SUBAGENT_METADATA_BLOCKLIST = {
+    # These keys belong to the outer turn's meta-skill activation handshake.
+    # Forwarding them into one-shot sub-Agents can force invalid tool_choice
+    # values after meta_invoke has been stripped from the sub-Agent tools.
+    "meta_match",
+    "meta_match_tool_choice",
+    "meta_match_tool_surface_restricted",
+}
+
+
+def _metadata_for_meta_subagent(base_config: AgentConfig) -> dict[str, Any]:
+    metadata = dict(getattr(base_config, "metadata", {}) or {})
+    for key in _SUBAGENT_METADATA_BLOCKLIST:
+        metadata.pop(key, None)
+    return metadata
+
 
 class MetaOrchestrator:
     """Run one MetaPlan end-to-end with per-step kind dispatch.
@@ -1069,7 +1085,7 @@ def make_agent_runner_from_parent(
             max_iterations=min(getattr(base_config, "max_iterations", 30), 30),
             system_prompt=sub_system_prompt,
             extra_system_prompt=None,
-            metadata=dict(getattr(base_config, "metadata", {}) or {}),
+            metadata=_metadata_for_meta_subagent(base_config),
             # Forward the resolved workspace_dir so sub-Agent's write_file /
             # memory_save / shell tools resolve paths inside the operator's
             # workspace rather than falling back to process cwd. Without

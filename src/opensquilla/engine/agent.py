@@ -5015,7 +5015,9 @@ class Agent:
             result: MetaResult | None = None
             from opensquilla.skills.creator.proposer import (
                 reset_runtime_e2e_context,
+                reset_smoke_fixture_context,
                 set_runtime_e2e_context,
+                set_smoke_fixture_context,
             )
 
             runtime_e2e_ctx = make_runtime_e2e_context(
@@ -5036,6 +5038,7 @@ class Agent:
                 baseline_model=getattr(self.config, "model_id", "") or "",
             )
             runtime_e2e_token = set_runtime_e2e_context(runtime_e2e_ctx)
+            smoke_fixture_token = set_smoke_fixture_context({"llm_chat": llm_chat})
             try:
                 async for ev in orch.iter_events(match):
                     if isinstance(ev, MetaResult):
@@ -5054,6 +5057,7 @@ class Agent:
                 )
                 return
             finally:
+                reset_smoke_fixture_context(smoke_fixture_token)
                 reset_runtime_e2e_context(runtime_e2e_token)
 
             if result is None:

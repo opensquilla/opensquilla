@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +24,16 @@ from typing import Literal
 from opensquilla.bootstrap_types import BootstrapFileReport
 from opensquilla.paths import default_opensquilla_home
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
+_INTENT_SUMMARY_MAX_CHARS = 500
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
+_SECRET_ASSIGN_RE = re.compile(
+    r"\b(api[_-]?key|token|secret|password|authorization)\s*[:=]\s*([^\s,;]+)",
+    re.IGNORECASE,
+)
+_LONG_SECRET_RE = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|[A-Za-z0-9_/-]{32,})\b")
+_ABS_PATH_RE = re.compile(r"(?<!\w)(?:/home/[^/\s]+|/Users/[^/\s]+|/root)(?:/[^\s]+)*")
 
 RoutingSource = Literal[
     "v4_phase3",
@@ -115,6 +125,7 @@ class DecisionEntry:
     ts: str
     session_id: str | None = None
     session_intent: str | None = None
+    intent_summary: str | None = None
     trace_id: str | None = None
     tool_profile: str | None = None
     system_chars: int = 0
@@ -156,6 +167,32 @@ def _hash16(text: str) -> str:
     """Return the first 16 hex chars of the sha256 digest."""
 
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def build_intent_summary(message: str, max_chars: int = _INTENT_SUMMARY_MAX_CHARS) -> str:
+    """Return a bounded, redacted intent hint for history aggregation.
+
+    Default decision logs still avoid raw prompt storage. This derived summary
+    preserves enough task shape for history mining while removing common
+    secrets, emails, URLs, and machine-local absolute paths.
+    """
+
+    text = " ".join(str(message or "").split())
+    if not text:
+        return ""
+    text = _URL_RE.sub("[url]", text)
+    text = _EMAIL_RE.sub("[email]", text)
+    text = _SECRET_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=[secret]", text)
+    text = _LONG_SECRET_RE.sub("[secret]", text)
+    text = _ABS_PATH_RE.sub(_redact_path_keep_basename, text)
+    if len(text) > max_chars:
+        text = text[: max(0, max_chars - 1)].rstrip() + "…"
+    return text
+
+
+def _redact_path_keep_basename(match: re.Match[str]) -> str:
+    basename = match.group(0).rstrip("/").rsplit("/", 1)[-1]
+    return f"[path:{basename}]" if basename else "[path]"
 
 
 def _default_log_dir() -> Path:

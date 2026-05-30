@@ -11,7 +11,13 @@ import pytest
 from opensquilla.artifacts import ArtifactStore
 from opensquilla.channels.stream_policy import resolve_channel_stream_policy
 from opensquilla.channels.types import Attachment, IncomingMessage, OutgoingMessage
-from opensquilla.engine.types import ArtifactEvent, DoneEvent, TextDeltaEvent
+from opensquilla.engine.types import (
+    ArtifactEvent,
+    DoneEvent,
+    TextDeltaEvent,
+    ToolResultEvent,
+    ToolUseStartEvent,
+)
 from opensquilla.gateway.attachment_ingest import (
     MAX_STAGED_PDF_BYTES,
     MAX_TOTAL_ATTACHMENT_BYTES,
@@ -145,6 +151,62 @@ async def test_direct_channel_turn_emits_run_heartbeat_while_stream_is_quiet() -
     )
 
     assert any(event_name == "session.event.run_heartbeat" for _, event_name, _ in bridge.events)
+    assert channel.sent[-1].content == "ok"
+
+
+def test_direct_channel_batch_turn_emits_tool_events_to_webui() -> None:
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            yield ToolUseStartEvent(
+                tool_use_id="meta_step_outline",
+                tool_name="meta-step:outline",
+            )
+            yield ToolResultEvent(
+                tool_use_id="meta_step_outline",
+                tool_name="meta-step:outline",
+                result="outline done",
+                arguments={"kind": "llm_chat", "output_chars": 12},
+            )
+            yield TextDeltaEvent(text="ok")
+            yield DoneEvent()
+
+    channel = _FakeChannel()
+    bridge = _FakeEventBridge()
+    config = SimpleNamespace(
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    asyncio.run(
+        _run_turn_batch_path(
+            channel,
+            FakeTurnRunner(),
+            _message(),
+            "agent:main:channel-test",
+            _tool_ctx(),
+            bridge,
+            None,
+            config,
+        )
+    )
+
+    assert (
+        "agent:main:channel-test",
+        "session.event.tool_use_start",
+        {
+            "tool_use_id": "meta_step_outline",
+            "tool_name": "meta-step:outline",
+            "name": "meta-step:outline",
+            "synthetic_from_text": False,
+        },
+    ) in bridge.events
+    assert any(
+        event_name == "session.event.tool_result"
+        and payload["tool_name"] == "meta-step:outline"
+        and payload["result"] == "outline done"
+        and payload["arguments"]["kind"] == "llm_chat"
+        for _, event_name, payload in bridge.events
+    )
     assert channel.sent[-1].content == "ok"
 
 
@@ -884,6 +946,64 @@ async def test_direct_streaming_path_falls_back_when_adapter_stream_fails() -> N
     assert channel.sent
     assert "part-one" in channel.sent[-1].content
     assert "part-two" in channel.sent[-1].content
+
+
+def test_direct_streaming_path_emits_tool_events_to_webui() -> None:
+    class StreamingChannel(_FakeChannel):
+        async def send_streaming(self, chunks, **kwargs):
+            text = ""
+            async for chunk in chunks:
+                text += chunk
+            self.sent.append(OutgoingMessage(content=text))
+
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            yield ToolUseStartEvent(
+                tool_use_id="meta_step_section",
+                tool_name="meta-step:section_introduction",
+            )
+            yield ToolResultEvent(
+                tool_use_id="meta_step_section",
+                tool_name="meta-step:section_introduction",
+                result="section done",
+            )
+            yield TextDeltaEvent(text="finished")
+            yield DoneEvent()
+
+    channel = StreamingChannel()
+    bridge = _FakeEventBridge()
+    config = SimpleNamespace(
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    asyncio.run(
+        _run_turn_with_streaming(
+            channel,
+            FakeTurnRunner(),
+            _message(),
+            "agent:main:stream-tool-events",
+            bridge,
+            None,
+            config,
+        )
+    )
+
+    event_names = [event_name for _, event_name, _ in bridge.events]
+    assert "session.event.tool_use_start" in event_names
+    assert "session.event.tool_result" in event_names
+    assert any(
+        event_name == "session.event.tool_use_start"
+        and payload["tool_name"] == "meta-step:section_introduction"
+        for _, event_name, payload in bridge.events
+    )
+    assert any(
+        event_name == "session.event.tool_result"
+        and payload["tool_name"] == "meta-step:section_introduction"
+        and payload["result"] == "section done"
+        for _, event_name, payload in bridge.events
+    )
+    assert channel.sent[-1].content == "finished"
 
 
 @pytest.mark.asyncio

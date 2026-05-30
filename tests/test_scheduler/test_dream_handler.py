@@ -60,10 +60,10 @@ async def test_post_dream_hook_invoked_on_successful_run() -> None:
                 apply_status = "ok"
             return _R()
 
-    captured: list[str] = []
+    captured: list[tuple[str, str]] = []
 
-    async def hook(agent_id: str) -> None:
-        captured.append(agent_id)
+    async def hook(agent_id: str, dream_summary: str) -> None:
+        captured.append((agent_id, dream_summary))
 
     handler = make_memory_dream_handler(
         build_dream=lambda aid: _StubDream(aid),
@@ -71,7 +71,7 @@ async def test_post_dream_hook_invoked_on_successful_run() -> None:
     )
     result = await handler(CronJob(id="dream-x", payload={"agent_id": "agent-x"}))
     assert result.summary.startswith("dream agent=agent-x")
-    assert captured == ["agent-x"]
+    assert captured == [("agent-x", result.summary)]
 
 
 @pytest.mark.asyncio
@@ -88,7 +88,7 @@ async def test_post_dream_hook_exception_does_not_poison_handler_result() -> Non
                 apply_status = "ok"
             return _R()
 
-    async def hook(_agent_id: str) -> None:
+    async def hook(_agent_id: str, _dream_summary: str) -> None:
         raise RuntimeError("auto_propose blew up")
 
     handler = make_memory_dream_handler(
@@ -106,7 +106,7 @@ async def test_post_dream_hook_not_called_when_dream_skipped() -> None:
 
     fired = False
 
-    async def hook(_agent_id: str) -> None:
+    async def hook(_agent_id: str, _dream_summary: str) -> None:
         nonlocal fired
         fired = True
 

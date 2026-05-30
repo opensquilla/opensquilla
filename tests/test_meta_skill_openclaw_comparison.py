@@ -1,14 +1,21 @@
+import asyncio
+
 from scripts.compare_meta_skill_openclaw import (
     COMPARISON_CASES,
     EndpointResult,
     JudgeResult,
     _discover_openclaw_session_file,
+    _latest_opensquilla_meta_final_text,
+    _latest_opensquilla_transcript_text,
     _openclaw_session_file_events,
     _resolve_openclaw_session_path,
+    _wait_for_openclaw_session_file_events,
+    _wait_for_opensquilla_transcript_text,
     apply_judge_result,
     build_judge_prompt,
     compare_results,
     extract_text_from_events,
+    judge_with_retries,
     parse_judge_response,
     render_markdown,
     render_prompts_markdown,
@@ -134,6 +141,83 @@ def test_extract_text_ignores_toolish_text_when_final_assistant_exists() -> None
     assert extract_text_from_events(events) == "visible answer"
 
 
+def test_opensquilla_transcript_fallback_reads_final_assistant_text(tmp_path, monkeypatch) -> None:
+    import sqlite3
+
+    db_path = tmp_path / "sessions.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE transcript_entries ("
+        "id INTEGER PRIMARY KEY, session_key TEXT, role TEXT, content TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO transcript_entries (session_key, role, content) VALUES (?, ?, ?)",
+        ("agent:main:cli:test", "assistant", "short streaming preface"),
+    )
+    conn.execute(
+        "INSERT INTO transcript_entries (session_key, role, content) VALUES (?, ?, ?)",
+        ("agent:main:cli:test", "assistant", "full final meta-skill deliverable"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("OPENSQUILLA_STATE_DB", str(db_path))
+
+    assert (
+        _latest_opensquilla_transcript_text("agent:main:cli:test")
+        == "full final meta-skill deliverable"
+    )
+
+
+def test_opensquilla_meta_final_text_reads_clean_dag_deliverable(tmp_path, monkeypatch) -> None:
+    import sqlite3
+
+    db_path = tmp_path / "sessions.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE meta_skill_runs ("
+        "id INTEGER PRIMARY KEY, session_key TEXT, status TEXT, final_text TEXT, started_at_ms INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO meta_skill_runs (session_key, status, final_text, started_at_ms) "
+        "VALUES (?, ?, ?, ?)",
+        ("agent:main:cli:test", "ok", "clean meta deliverable", 100),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("OPENSQUILLA_STATE_DB", str(db_path))
+
+    assert (
+        _latest_opensquilla_meta_final_text("agent:main:cli:test")
+        == "clean meta deliverable"
+    )
+
+
+def test_wait_for_opensquilla_transcript_polls_until_final_text(monkeypatch) -> None:
+    import asyncio
+
+    responses = iter(["short preface", "full final meta-skill deliverable"])
+
+    def fake_latest(_session_key: str) -> str:
+        return next(responses)
+
+    monkeypatch.setattr(
+        "scripts.compare_meta_skill_openclaw._latest_opensquilla_transcript_text",
+        fake_latest,
+    )
+
+    assert (
+        asyncio.run(
+            _wait_for_opensquilla_transcript_text(
+                "agent:main:cli:test",
+                minimum_len=len("short preface"),
+                timeout_s=1,
+                interval_s=0,
+            )
+        )
+        == "full final meta-skill deliverable"
+    )
+
+
 def test_openclaw_session_file_fallback_discovers_and_extracts_final_text(tmp_path) -> None:
     sessions_dir = tmp_path / "agents" / "main" / "sessions"
     sessions_dir.mkdir(parents=True)
@@ -165,6 +249,112 @@ def test_openclaw_session_file_fallback_discovers_and_extracts_final_text(tmp_pa
     assert found == session_file
     events = _openclaw_session_file_events(session_file, "agent:main:dashboard:test")
     assert extract_text_from_events(events) == "final memo answer"
+
+
+def test_openclaw_session_file_events_can_ignore_warmup_before_prompt(tmp_path) -> None:
+    sessions_dir = tmp_path / "agents" / "main" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    session_file = sessions_dir / "abc.jsonl"
+    prompt = "Need a decision memo from the copied vendor renewal terms."
+    session_file.write_text(
+        "\n".join(
+            [
+                '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"warmup"}]}}',
+                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Bootstrap removed. Ready for the task."}]}}',
+                '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"'
+                + prompt
+                + '"}]}}',
+                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"usable decision memo"}]}}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    all_events = _openclaw_session_file_events(session_file, "agent:main:dashboard:test")
+    prompt_events = _openclaw_session_file_events(
+        session_file,
+        "agent:main:dashboard:test",
+        after_prompt=prompt,
+    )
+
+    assert extract_text_from_events(all_events) == "usable decision memo"
+    assert extract_text_from_events(prompt_events) == "usable decision memo"
+    assert all(
+        "Bootstrap removed" not in str(event)
+        for event in prompt_events
+    )
+
+
+def test_wait_for_openclaw_session_file_events_polls_until_answer(tmp_path) -> None:
+    import asyncio
+
+    session_file = tmp_path / "abc.jsonl"
+    prompt = "Need a memo."
+    session_file.write_text(
+        '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Need a memo."}]}}\n',
+        encoding="utf-8",
+    )
+
+    async def append_answer() -> None:
+        await asyncio.sleep(0)
+        with session_file.open("a", encoding="utf-8") as fh:
+            fh.write(
+                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"final memo"}]}}\n'
+            )
+
+    async def collect() -> str:
+        task = asyncio.create_task(append_answer())
+        events = await _wait_for_openclaw_session_file_events(
+            [session_file],
+            session_key="agent:main:dashboard:test",
+            after_prompt=prompt,
+            timeout_s=1,
+            interval_s=0.001,
+            stable_s=0.01,
+        )
+        await task
+        return extract_text_from_events(events)
+
+    assert asyncio.run(collect()) == "final memo"
+
+
+def test_wait_for_openclaw_session_file_events_prefers_later_final_answer(tmp_path) -> None:
+    import asyncio
+
+    session_file = tmp_path / "abc.jsonl"
+    prompt = "Need a memo."
+    session_file.write_text(
+        "\n".join(
+            [
+                '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Need a memo."}]}}',
+                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"checking sources"}]}}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    async def append_answer() -> None:
+        await asyncio.sleep(0)
+        with session_file.open("a", encoding="utf-8") as fh:
+            fh.write(
+                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"final sourced memo"}]}}\n'
+            )
+
+    async def collect() -> str:
+        task = asyncio.create_task(append_answer())
+        events = await _wait_for_openclaw_session_file_events(
+            [session_file],
+            session_key="agent:main:dashboard:test",
+            after_prompt=prompt,
+            timeout_s=1,
+            interval_s=0.001,
+            stable_s=0.01,
+        )
+        await task
+        return extract_text_from_events(events)
+
+    assert asyncio.run(collect()) == "final sourced memo"
 
 
 def test_openclaw_session_path_resolves_state_dir_placeholder(tmp_path) -> None:
@@ -206,6 +396,65 @@ def test_judge_prompt_blinds_endpoint_names_and_includes_caps() -> None:
     assert "OpenClaw" not in prompt
     assert "Hard caps" in prompt
     assert "timeout, empty response, or endpoint error" in prompt
+
+
+def test_judge_prompt_includes_fairness_and_traceability_dimensions() -> None:
+    case = COMPARISON_CASES[0]
+    opensquilla = EndpointResult(
+        endpoint="opensquilla",
+        case_id=case.case_id,
+        ok=True,
+        elapsed_s=1.0,
+        response_text="A sourced memo with assumptions and risks.",
+        score={"total": 5},
+    )
+    openclaw = EndpointResult(
+        endpoint="openclaw",
+        case_id=case.case_id,
+        ok=True,
+        elapsed_s=1.0,
+        response_text="A sourced memo with assumptions and risks.",
+        score={"total": 5},
+    )
+
+    prompt = build_judge_prompt(case, opensquilla, openclaw)
+
+    assert "fairness_control" in prompt
+    assert "evidence_traceability" in prompt
+    assert "risk_boundary_safety" in prompt
+    assert "endpoint_validity" in prompt
+    assert "Do not award a win because the other endpoint errored" in prompt
+    assert "unrelated bootstrap" in prompt
+    assert "tool output" in prompt
+
+
+def test_judge_prompt_weights_final_artifact_quality_highest() -> None:
+    case = COMPARISON_CASES[0]
+    opensquilla = EndpointResult(
+        endpoint="opensquilla",
+        case_id=case.case_id,
+        ok=True,
+        elapsed_s=1.0,
+        response_text="A usable memo.",
+        score={"total": 5},
+    )
+    openclaw = EndpointResult(
+        endpoint="openclaw",
+        case_id=case.case_id,
+        ok=True,
+        elapsed_s=1.0,
+        response_text="A usable memo.",
+        score={"total": 5},
+    )
+
+    prompt = build_judge_prompt(case, opensquilla, openclaw)
+
+    assert "final_artifact_quality: 40 points" in prompt
+    assert "task_completion: 20 points" in prompt
+    assert "evidence_traceability: 15 points" in prompt
+    assert "meta_skill_fit: 5 points" in prompt
+    assert "scores MUST equal the sum of the six weighted subscores" in prompt
+    assert "Prioritize the quality of the final user-visible deliverable" in prompt
 
 
 def test_parse_judge_response_normalizes_json_and_winner() -> None:
@@ -286,7 +535,26 @@ def test_judge_result_becomes_final_winner_and_reported_basis() -> None:
             confidence=0.8,
             rationale="B better handles correctness.",
             risks=["short answer"],
-            raw={},
+            raw={
+                "subscores": {
+                    "opensquilla": {
+                        "final_artifact_quality": 25,
+                        "task_completion": 15,
+                        "evidence_traceability": 10,
+                        "actionability": 8,
+                        "risk_boundary_safety": 8,
+                        "meta_skill_fit": 4,
+                    },
+                    "openclaw": {
+                        "final_artifact_quality": 35,
+                        "task_completion": 18,
+                        "evidence_traceability": 14,
+                        "actionability": 9,
+                        "risk_boundary_safety": 8,
+                        "meta_skill_fit": 4,
+                    },
+                }
+            },
             model="judge-model",
         ),
         case,
@@ -300,6 +568,136 @@ def test_judge_result_becomes_final_winner_and_reported_basis() -> None:
     assert "judge_error" not in judged
     assert "Final winner uses LLM judge for 1/1 rows." in report
     assert "| web_research_report | 5 | 4 | opensquilla | 70-88 openclaw | openclaw |" in report
+
+
+def test_apply_judge_result_recomputes_scores_from_weighted_subscores() -> None:
+    case = COMPARISON_CASES[0]
+    row = compare_results(
+        case,
+        EndpointResult("opensquilla", case.case_id, True, 1.0, "a", {"total": 1}),
+        EndpointResult("openclaw", case.case_id, True, 1.0, "b", {"total": 1}),
+    )
+    judged = apply_judge_result(
+        row,
+        JudgeResult(
+            winner="openclaw",
+            scores={"opensquilla": 0, "openclaw": 100},
+            confidence=0.8,
+            rationale="Weighted subscores favor Candidate A.",
+            risks=[],
+            raw={
+                "subscores": {
+                    "opensquilla": {
+                        "final_artifact_quality": 40,
+                        "task_completion": 20,
+                        "evidence_traceability": 15,
+                        "actionability": 10,
+                        "risk_boundary_safety": 10,
+                        "meta_skill_fit": 5,
+                    },
+                    "openclaw": {
+                        "final_artifact_quality": 30,
+                        "task_completion": 20,
+                        "evidence_traceability": 15,
+                        "actionability": 10,
+                        "risk_boundary_safety": 10,
+                        "meta_skill_fit": 5,
+                    },
+                }
+            },
+            model="judge-model",
+        ),
+        case,
+    )
+
+    assert judged["winner"] == "opensquilla"
+    assert judged["judge"]["scores"] == {"opensquilla": 100, "openclaw": 90}
+    assert judged["judge"]["raw"]["score_source"] == "weighted_subscores"
+
+
+def test_apply_judge_result_rejects_incomplete_weighted_payload() -> None:
+    case = COMPARISON_CASES[0]
+    row = compare_results(
+        case,
+        EndpointResult("opensquilla", case.case_id, True, 1.0, "a", {"total": 1}),
+        EndpointResult("openclaw", case.case_id, True, 1.0, "b", {"total": 1}),
+    )
+
+    try:
+        apply_judge_result(
+            row,
+            JudgeResult(
+                winner="openclaw",
+                scores={"opensquilla": 0, "openclaw": 100},
+                confidence=0.8,
+                rationale="missing subscores",
+                risks=[],
+                raw={},
+                model="judge-model",
+            ),
+            case,
+        )
+    except ValueError as exc:
+        assert "weighted subscores" in str(exc)
+    else:
+        raise AssertionError("expected incomplete judge payload to fail")
+
+
+def test_judge_with_retries_requires_complete_weighted_payload() -> None:
+    case = COMPARISON_CASES[0]
+    opensquilla = EndpointResult("opensquilla", case.case_id, True, 1.0, "a", {"total": 1})
+    openclaw = EndpointResult("openclaw", case.case_id, True, 1.0, "b", {"total": 1})
+
+    class FakeJudge:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def judge(self, *_args):
+            self.calls += 1
+            if self.calls == 1:
+                return JudgeResult(
+                    winner="openclaw",
+                    scores={"opensquilla": 10, "openclaw": 20},
+                    confidence=0.1,
+                    rationale="missing subscores",
+                    risks=[],
+                    raw={},
+                    model="judge-model",
+                )
+            return JudgeResult(
+                winner="openclaw",
+                scores={"opensquilla": 10, "openclaw": 20},
+                confidence=0.9,
+                rationale="complete weighted payload",
+                risks=[],
+                raw={
+                    "subscores": {
+                        "opensquilla": {
+                            "final_artifact_quality": 40,
+                            "task_completion": 20,
+                            "evidence_traceability": 15,
+                            "actionability": 10,
+                            "risk_boundary_safety": 10,
+                            "meta_skill_fit": 5,
+                        },
+                        "openclaw": {
+                            "final_artifact_quality": 30,
+                            "task_completion": 20,
+                            "evidence_traceability": 15,
+                            "actionability": 10,
+                            "risk_boundary_safety": 10,
+                            "meta_skill_fit": 5,
+                        },
+                    }
+                },
+                model="judge-model",
+            )
+
+    fake = FakeJudge()
+    result = asyncio.run(judge_with_retries(fake, case, opensquilla, openclaw))  # type: ignore[arg-type]
+
+    assert fake.calls == 2
+    assert result.scores == {"opensquilla": 100, "openclaw": 90}
 
 
 def test_reports_persist_conclusion_and_prompts() -> None:

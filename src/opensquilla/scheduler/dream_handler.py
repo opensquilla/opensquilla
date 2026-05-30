@@ -22,7 +22,7 @@ BuildDreamFn = Callable[[str], Any]
 DreamGuardFn = Callable[[], str | None]
 
 
-PostDreamHookFn = Callable[[str], Awaitable[None]]
+PostDreamHookFn = Callable[[str, str], Awaitable[None]]
 
 
 def make_memory_dream_handler(
@@ -33,9 +33,10 @@ def make_memory_dream_handler(
     """Factory: returns an async cron handler that runs Dream per agent.
 
     When ``post_dream_hook`` is provided it is invoked after the Dream
-    completes successfully, with the same ``agent_id``. Hook exceptions
-    are logged but never poison the dream HandlerResult — observability
-    must not turn a successful dream into a failed one.
+    completes successfully, with the same ``agent_id`` plus the Dream
+    summary. Hook exceptions are logged but never poison the dream
+    HandlerResult — observability must not turn a successful dream into a
+    failed one.
     """
 
     async def handle_memory_dream(job: CronJob) -> HandlerResult:
@@ -65,7 +66,7 @@ def make_memory_dream_handler(
             )
             if post_dream_hook is not None:
                 try:
-                    await post_dream_hook(agent_id)
+                    await post_dream_hook(agent_id, summary)
                 except Exception:
                     logger.exception(
                         "dream.post_hook.failed",

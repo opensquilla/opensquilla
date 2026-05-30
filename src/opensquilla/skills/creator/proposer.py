@@ -26,6 +26,12 @@ from .runtime_e2e import run_runtime_e2e_gate
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "patterns"
 _log = structlog.get_logger(__name__)
+_CREATOR_INTERNAL_SKILLS = {
+    "meta-skill-creator",
+    "skill-creator-linter",
+    "skill-creator-proposals",
+    "skill-creator-smoke-test",
+}
 
 
 class _FillSlotsValidationError(ValueError):
@@ -209,9 +215,16 @@ def _resolve_provider_from_env() -> tuple[str | None, str | None, str | None]:
     import os
 
     if os.environ.get("OPENROUTER_API_KEY"):
-        return ("openrouter", "anthropic/claude-3.5-haiku", os.environ["OPENROUTER_API_KEY"])
+        return (
+            "openrouter",
+            os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+            os.environ["OPENROUTER_API_KEY"],
+        )
     if os.environ.get("ANTHROPIC_API_KEY"):
-        return ("anthropic", "claude-3-5-haiku-20241022", os.environ["ANTHROPIC_API_KEY"])
+        model = os.environ.get("ANTHROPIC_MODEL")
+        if not model:
+            return (None, None, None)
+        return ("anthropic", model, os.environ["ANTHROPIC_API_KEY"])
     if os.environ.get("OPENAI_API_KEY"):
         return ("openai", "gpt-4o-mini", os.environ["OPENAI_API_KEY"])
     return (None, None, None)
@@ -285,12 +298,15 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
 def _build_catalog_summary() -> str:
     """Enumerate available bundled skills (name + 1-line description).
 
-    Meta-skills are intentionally excluded — the runtime's agent executor
+    Meta-skills and creator-internal helper skills are intentionally excluded — the runtime's agent executor
     rejects ``kind: meta`` composed inside another meta-skill (lint G1.2),
     so showing them in the catalog only invites the LLM to propose
     structurally-invalid SKILL.md files that the gates then reject. The
-    upshot is wasted LLM calls + noisy proposals in the WebUI panel.
-    Filter here so the LLM never sees nested-meta as an option.
+    creator helpers belong to meta-skill-creator's outer validation and
+    persistence flow, not to the candidate meta-skill's business DAG. The
+    upshot is wasted LLM calls + noisy proposals in the WebUI panel. Filter
+    here so the LLM never sees nested-meta or creator-internal tools as an
+    option.
     """
     bundled = Path(__file__).resolve().parents[1] / "bundled"
     loader = SkillLoader(
@@ -300,6 +316,8 @@ def _build_catalog_summary() -> str:
     loader.invalidate_cache()
     lines: list[str] = []
     for spec in loader.load_all():
+        if spec.name in _CREATOR_INTERNAL_SKILLS:
+            continue
         if getattr(spec, "kind", "skill") == "meta":
             continue
         first_line = (spec.description or "").split("\n", 1)[0][:120]
@@ -359,6 +377,36 @@ def _build_pattern_example(pattern_id: str) -> dict:
                 "with_keys": {},
             },
             "tail": None,
+        }
+    if pattern_id == "p3_condition_gated":
+        return {
+            "name": "example-gated-pipeline",
+            "description": (
+                "Assess an incoming request, gather evidence, then produce a "
+                "decision-ready output with explicit assumptions."
+            ),
+            "meta_priority": 50,
+            "triggers": ["example gated trigger"],
+            "steps": [
+                {
+                    "id": "intake",
+                    "skill": "summarize",
+                    "task": "Extract constraints and missing information",
+                    "with_keys": {},
+                },
+                {
+                    "id": "evidence",
+                    "skill": "history-explorer",
+                    "task": "Find relevant prior context when available",
+                    "with_keys": {},
+                },
+                {
+                    "id": "decision",
+                    "skill": "summarize",
+                    "task": "Produce final answer with caveats and next actions",
+                    "with_keys": {},
+                },
+            ],
         }
     return {}
 
@@ -446,6 +494,16 @@ def meta_skill_fill_slots(
         f"## User intent\n{user_intent}\n\n"
         f"## Output instructions\n"
         f"Emit ONLY a JSON object matching the schema above. No prose. No markdown.\n"
+        f"Separate the candidate workflow from the creator workflow:\n"
+        f"- Do not add steps for creator validation or proposal management. "
+        f"Collision checks, lint, smoke tests, runtime E2E, LLM judge, acceptance "
+        f"comparison, writing/saving/persisting a proposal, and auto-enable are "
+        f"handled by meta-skill-creator after this candidate is assembled.\n"
+        f"- If the user asks to create, validate, gate, judge, save, or persist "
+        f"the meta-skill, treat those as outer creator requirements, not as "
+        f"business steps inside the generated meta-skill.\n"
+        f"- Candidate steps should only describe what the new meta-skill will do "
+        f"when a future user invokes it.\n"
         f"CRITICAL field-name rules:\n"
         f"- The list of phrases is called `triggers` (NOT `trigger_condition`).\n"
         f"- If User intent names exact required trigger phrases, include those "
@@ -660,6 +718,10 @@ _RUNTIME_E2E_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     "opensquilla_meta_skill_runtime_e2e_context",
     default=None,
 )
+_SMOKE_FIXTURE_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
+    "opensquilla_meta_skill_smoke_fixture_context",
+    default=None,
+)
 
 
 def set_runtime_e2e_context(ctx: dict[str, Any] | None):
@@ -670,6 +732,16 @@ def set_runtime_e2e_context(ctx: dict[str, Any] | None):
 
 def reset_runtime_e2e_context(token) -> None:
     _RUNTIME_E2E_CONTEXT.reset(token)
+
+
+def set_smoke_fixture_context(ctx: dict[str, Any] | None):
+    """Install LLM fixture generation context for the current async context."""
+
+    return _SMOKE_FIXTURE_CONTEXT.set(ctx)
+
+
+def reset_smoke_fixture_context(token) -> None:
+    _SMOKE_FIXTURE_CONTEXT.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +802,8 @@ def meta_skill_persist_proposal(
     creator_mode: str = "",
     acceptance_result: str = "",
     runtime_e2e_result: str = "",
+    collision_result: str = "",
+    risk_result: str = "",
     auto_enable_manual: bool = True,
 ) -> str:
     """Write a proposal candidate to ~/.opensquilla/proposals/<id>/. Returns JSON."""
@@ -741,7 +815,9 @@ def meta_skill_persist_proposal(
             "--smoke-result", smoke_result,
             "--creator-mode", creator_mode,
             "--acceptance-result", acceptance_result,
-            "--runtime-e2e-result", runtime_e2e_result]
+            "--runtime-e2e-result", runtime_e2e_result,
+            "--collision-result", collision_result,
+            "--risk-result", risk_result]
     if home:
         args.extend(["--home", home])
     proc = subprocess.run(args, capture_output=True, text=True, check=False)
@@ -870,10 +946,64 @@ async def meta_skill_smoke_run_tool(
     fixture_gen_model: str = "stub",
     classifier_model: str = "stub",
 ) -> str:
-    import asyncio
-    return await asyncio.to_thread(
-        meta_skill_smoke_run, skill_md, fixture_gen_model, classifier_model,
-    )
+    ctx = _SMOKE_FIXTURE_CONTEXT.get()
+    llm_chat = (ctx or {}).get("llm_chat") if isinstance(ctx, dict) else None
+    if llm_chat is None:
+        import asyncio
+        return await asyncio.to_thread(
+            meta_skill_smoke_run, skill_md, fixture_gen_model, classifier_model,
+        )
+
+    async def fixture_gen(_skill_md: str, kind: str) -> str:
+        if kind == "positive":
+            guidance = (
+                "Ask for the workflow in everyday language and include one "
+                "exact trigger phrase from the SKILL.md."
+            )
+        else:
+            guidance = (
+                "Ask for a realistic unrelated task that should not activate "
+                "the meta-skill. Do not include any trigger phrase."
+            )
+        prompt = (
+            "Generate one natural user prompt for meta-skill smoke testing.\n"
+            f"Kind: {kind}\n"
+            f"{guidance} Return only the prompt text, no markdown.\n\n"
+            f"SKILL.md:\n{_skill_md[:5000]}"
+        )
+        raw = await llm_chat(
+            "You generate concise, realistic meta-skill smoke-test fixtures.",
+            prompt,
+        )
+        text = str(raw or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:text)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        return text.strip().strip('"') or _deterministic_fixture(_skill_md, kind)
+
+    positive = await fixture_gen(skill_md, "positive")
+    g3_matched = simulate_meta_resolution(skill_md, positive, classifier_model)
+    negative = await fixture_gen(skill_md, "negative")
+    g4_matched = simulate_meta_resolution(skill_md, negative, classifier_model)
+    result = {
+        "G3": {
+            "passed": g3_matched,
+            "positive_fixture": positive,
+            "classifier": classifier_model,
+            "degraded": False,
+            "fixture_model": fixture_gen_model,
+        },
+        "G4": {
+            "passed": not g4_matched,
+            "negative_fixture": negative,
+            "classifier": classifier_model,
+            "degraded": False,
+            "fixture_model": fixture_gen_model,
+        },
+        "degraded": False,
+        "fixture_source": "llm",
+    }
+    return json.dumps(result, ensure_ascii=False)
 
 
 async def meta_skill_runtime_e2e_run(
@@ -939,6 +1069,8 @@ async def meta_skill_runtime_e2e_run_tool(
         "creator_mode": {"type": "string"},
         "acceptance_result": {"type": "string"},
         "runtime_e2e_result": {"type": "string"},
+        "collision_result": {"type": "string"},
+        "risk_result": {"type": "string"},
         "auto_enable_manual": {"type": "boolean"},
         "home": {"type": "string"},
     },
@@ -953,6 +1085,8 @@ async def meta_skill_persist_proposal_tool(
     creator_mode: str = "",
     acceptance_result: str = "",
     runtime_e2e_result: str = "",
+    collision_result: str = "",
+    risk_result: str = "",
     auto_enable_manual: bool = True,
 ) -> str:
     import asyncio
@@ -965,6 +1099,8 @@ async def meta_skill_persist_proposal_tool(
         creator_mode=creator_mode,
         acceptance_result=acceptance_result,
         runtime_e2e_result=runtime_e2e_result,
+        collision_result=collision_result,
+        risk_result=risk_result,
         auto_enable_manual=auto_enable_manual,
     )
 

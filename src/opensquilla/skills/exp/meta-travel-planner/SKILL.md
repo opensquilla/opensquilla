@@ -37,8 +37,9 @@ composition:
           Extract a structured trip brief from the original user request.
           Do NOT ask the user to confirm details that are already stated or
           safely inferable. If a value is missing, make a conservative
-          assumption and mark it as ASSUMED. The next steps need a usable
-          contract, not a clarification question.
+          assumption and mark it as ASSUMED, except only when destination or trip length is absent.
+          In that case set NEEDS_CLARIFICATION: yes so the next step can pause
+          and ask for the missing critical details.
 
           Do not invent exact calendar dates, weekdays, booking status, or
           weather probabilities from vague timing such as "late June" or
@@ -59,20 +60,63 @@ composition:
             - <interest>
           MUST_INCLUDE:
             - <explicit user requirement>
+          NEEDS_CLARIFICATION: <yes|no>
+          MISSING_FIELDS:
+            - <destination|days|none>
+          CLARIFY_REASON: <one concise reason, or none>
           ASSUMPTIONS:
             - <assumption>
+    - id: trip_clarify
+      kind: user_input
+      depends_on: [trip_collect]
+      when: "'NEEDS_CLARIFICATION: yes' in outputs.trip_collect"
+      clarify:
+        mode: form
+        intro: |
+          行程关键条件还不完整。请补齐目的地和天数；如果已有信息不变，可以重复填写。
+        nl_extract: true
+        fields:
+          - name: destination
+            type: string
+            required: true
+            prompt: "目的地 / Destination"
+            max_chars: 120
+          - name: days
+            type: int
+            required: true
+            min: 1
+            max: 60
+            prompt: "旅行天数 / Number of days"
+          - name: dates
+            type: string
+            prompt: "日期或季节 / Dates or season"
+            max_chars: 120
+          - name: party
+            type: string
+            prompt: "同行人和人数 / Party size"
+            max_chars: 120
+          - name: must_include
+            type: string
+            prompt: "必须包含或避开的事项 / Must include or avoid"
+            max_chars: 300
+        cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
+        timeout_hours: 24
     - id: trip_preferences
       kind: llm_chat
-      depends_on: [trip_collect]
+      depends_on: [trip_collect, trip_clarify]
       with:
         system: "You expand extracted travel facts into a structured planning contract."
         task: |
           Expand the extracted travel facts into a full planning contract.
           Never return a clarification question. If facts are uncertain, keep
           the assumption explicit and continue with a practical default.
+          Prefer explicit clarification answers over first-pass assumptions.
 
           Extracted facts:
           {{ outputs.trip_collect | truncate(1200) }}
+
+          Clarification answers (may be empty when not needed):
+          {{ inputs.get('collected', {}).get('trip_clarify', {}) | tojson }}
 
           Original user request:
           {{ inputs.user_message | xml_escape | truncate(1200) }}

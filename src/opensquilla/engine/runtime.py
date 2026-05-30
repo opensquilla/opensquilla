@@ -125,6 +125,7 @@ from opensquilla.observability.decision_log import (
     DecisionEntry,
     PipelineStepRecord,
     SavingsTelemetry,
+    build_intent_summary,
     compute_hashes,
     write_decision_entry,
 )
@@ -3038,14 +3039,18 @@ class TurnRunner:
             except Exception:
                 loaded_skills = []
         meta_skill_enabled = is_meta_skill_enabled(self._config)
-        if ctx is not None and meta_skill_enabled and any(
+        has_invokable_meta_skill = any(
             getattr(skill, "kind", "skill") == "meta"
             and not getattr(skill, "disable_model_invocation", False)
             for skill in loaded_skills
-        ):
-            if ctx.surfaced_tools is None:
-                ctx.surfaced_tools = set()
-            ctx.surfaced_tools.add("meta_invoke")
+        )
+        if ctx is not None:
+            if meta_skill_enabled and has_invokable_meta_skill:
+                if ctx.surfaced_tools is None:
+                    ctx.surfaced_tools = set()
+                ctx.surfaced_tools.add("meta_invoke")
+            else:
+                ctx.denied_tools.add("meta_invoke")
         if metadata is not None:
             metadata["meta_skill_enabled"] = meta_skill_enabled
 
@@ -4041,6 +4046,7 @@ class TurnRunner:
                 session_key=session_key,
                 session_id=session_id,
                 session_intent=session_intent,
+                intent_summary=build_intent_summary(message),
                 trace_id=trace_id or turn_id,
                 tool_profile=prompt_report.tool_profile if prompt_report else None,
                 prompt_hash=prompt_hash,

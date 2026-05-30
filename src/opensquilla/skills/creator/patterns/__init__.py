@@ -10,4 +10,5 @@ from opensquilla.skills.creator.patterns.schemas import (
 PATTERN_SLOT_SCHEMA: dict[str, type[BaseModel]] = {
     "p1_sequential": SequentialSlots,
     "p2_fan_out_merge": FanOutMergeSlots,
+    "p3_condition_gated": SequentialSlots,
 }

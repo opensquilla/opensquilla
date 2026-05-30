@@ -4,7 +4,9 @@ import json
 
 from opensquilla.observability.decision_log import (
     DecisionEntry,
+    build_intent_summary,
     compute_hashes,
+    load_entries,
     write_decision_entry,
 )
 
@@ -60,3 +62,36 @@ def test_decision_debug_mirror_stays_structured_not_raw(monkeypatch, tmp_path) -
     assert mirror_payload["entry"]["cache_creation_input_tokens"] == 3
     assert mirror_payload["entry"]["cache_legacy_hash"] == "legacy"
     assert mirror_payload["entry"]["cache_shadow_final_hash"] == "shadow"
+
+
+def test_intent_summary_is_redacted_and_persisted(tmp_path) -> None:
+    summary = build_intent_summary(
+        "Please analyze /home/alice/private/vendor.pdf with api_key=sk-"
+        "1234567890abcdef1234567890abcdef and email alice@example.com",
+    )
+
+    assert "vendor" in summary
+    assert "/home/alice" not in summary
+    assert "sk-1234567890abcdef1234567890abcdef" not in summary
+    assert "alice@example.com" not in summary
+
+    entry = DecisionEntry(
+        turn_id="turn-2",
+        session_key="agent:main:test",
+        prompt_hash="a" * 16,
+        system_prompt_hash="b" * 16,
+        tool_list_hash="c" * 16,
+        tool_choice="auto",
+        tokens_input=1,
+        tokens_output=2,
+        model="fake-model",
+        provider="fake",
+        latency_ms=3,
+        ts="2026-05-03T20:00:00Z",
+        intent_summary=summary,
+    )
+
+    write_decision_entry(entry, log_dir=tmp_path)
+    loaded = load_entries(next(tmp_path.glob("decisions-*.jsonl")))
+
+    assert loaded[0].intent_summary == summary

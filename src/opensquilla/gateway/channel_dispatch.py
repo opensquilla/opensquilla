@@ -53,7 +53,10 @@ from opensquilla.engine.types import (
     RouterDecisionEvent,
     RunHeartbeatEvent,
     TextDeltaEvent,
+    ToolResultEvent,
+    ToolUseStartEvent,
 )
+from opensquilla.execution_status import normalize_execution_status
 from opensquilla.gateway.attachment_ingest import AttachmentIngestResult, ingest_attachments
 from opensquilla.gateway.session_events import build_sessions_changed_payload
 from opensquilla.paths import media_root_from_config
@@ -1511,6 +1514,30 @@ def _router_decision_payload(event: RouterDecisionEvent) -> dict[str, Any]:
     }
 
 
+def _tool_use_start_payload(event: ToolUseStartEvent) -> dict[str, Any]:
+    return {
+        "tool_use_id": event.tool_use_id,
+        "tool_name": event.tool_name,
+        "name": event.tool_name,
+        "synthetic_from_text": event.synthetic_from_text,
+    }
+
+
+def _tool_result_payload(event: ToolResultEvent) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "tool_use_id": event.tool_use_id,
+        "tool_name": event.tool_name,
+        "name": event.tool_name,
+        "result": event.result,
+        "is_error": event.is_error,
+    }
+    if event.arguments is not None:
+        payload["arguments"] = event.arguments
+    if event.execution_status is not None:
+        payload["execution_status"] = normalize_execution_status(event.execution_status)
+    return payload
+
+
 async def _read_transcript_rows(session_manager: Any, session_key: str) -> list[Any]:
     read_transcript = getattr(session_manager, "read_transcript", None)
     if not callable(read_transcript):
@@ -1878,6 +1905,20 @@ async def _run_turn_batch_path(
                         "session.event.router_decision",
                         _router_decision_payload(event),
                     )
+            elif isinstance(event, ToolUseStartEvent):
+                if event_bridge is not None:
+                    await event_bridge.emit(
+                        session_key,
+                        "session.event.tool_use_start",
+                        _tool_use_start_payload(event),
+                    )
+            elif isinstance(event, ToolResultEvent):
+                if event_bridge is not None:
+                    await event_bridge.emit(
+                        session_key,
+                        "session.event.tool_result",
+                        _tool_result_payload(event),
+                    )
             elif isinstance(event, ErrorEvent):
                 log.error(
                     "channel_dispatch.agent_error",
@@ -2022,6 +2063,20 @@ async def _run_turn_streaming_path(
                         session_key,
                         "session.event.router_decision",
                         _router_decision_payload(event),
+                    )
+            elif isinstance(event, ToolUseStartEvent):
+                if event_bridge is not None:
+                    await event_bridge.emit(
+                        session_key,
+                        "session.event.tool_use_start",
+                        _tool_use_start_payload(event),
+                    )
+            elif isinstance(event, ToolResultEvent):
+                if event_bridge is not None:
+                    await event_bridge.emit(
+                        session_key,
+                        "session.event.tool_result",
+                        _tool_result_payload(event),
                     )
             elif isinstance(event, ErrorEvent):
                 log.error(

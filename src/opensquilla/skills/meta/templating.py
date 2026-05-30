@@ -26,6 +26,14 @@ from opensquilla.skills.meta.types import MetaStep, RouteCase
 # ---------------------------------------------------------------------------
 
 _SLUG_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+_PATH_TOKEN_RE = re.compile(
+    r"(?<![\w.-])"
+    r"(?:/[\w./@%+\-=]+|[\w./@%+\-=]+?\."
+    r"(?:md|txt|csv|tsv|json|yaml|yml|xlsx))"
+    r"(?![\w.-])",
+    re.IGNORECASE,
+)
+_PATH_TRAILING_PUNCT = "`\"'，。；;,)）]】"
 
 
 def _filter_xml_escape(value: object) -> str:
@@ -41,6 +49,17 @@ def _filter_truncate(value: object, length: int = 1024) -> str:
 
 def _filter_slugify(value: object) -> str:
     return _SLUG_RE.sub("-", str(value)).strip("-").lower()[:128]
+
+
+def _filter_extract_path(value: object, suffix: str = "") -> str:
+    wanted = str(suffix or "").strip().lower().lstrip(".")
+    for match in _PATH_TOKEN_RE.findall(str(value)):
+        token = match.strip().strip(_PATH_TRAILING_PUNCT)
+        if not token:
+            continue
+        if not wanted or token.lower().endswith(f".{wanted}"):
+            return token
+    return ""
 
 
 def _build_jinja_env() -> jinja2.Environment:
@@ -61,6 +80,7 @@ def _build_jinja_env() -> jinja2.Environment:
         "length": len,
         "join": jinja2.filters.do_join,
         "lower": lambda value: str(value).lower(),
+        "extract_path": _filter_extract_path,
     }
     return env
 

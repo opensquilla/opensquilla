@@ -6,6 +6,12 @@ meta_priority: 55
 always: false
 final_text_mode: "step:cross_document_synthesis"
 triggers:
+  - "看一下这个 PDF"
+  - "看看这个 PDF"
+  - "读一下这个 PDF"
+  - "分析这个 PDF"
+  - "总结这个 PDF"
+  - "帮我看 PDF"
   - "处理 PDF"
   - "PDF 抽要"
   - "PDF intelligence"
@@ -49,12 +55,50 @@ composition:
               QUOTE: <verbatim user-provided excerpt or empty>
           QUESTION: <specific question or empty>
           OUTPUT_LANGUAGE: <language>
+          NEEDS_CLARIFICATION: <yes|no>
+          MISSING_FIELDS:
+            - <source_material|question|none>
+          CLARIFY_REASON: <one concise reason, or none>
+    - id: pdf_clarify
+      kind: user_input
+      depends_on: [intake]
+      when: "'NEEDS_CLARIFICATION: yes' in outputs.intake"
+      clarify:
+        mode: form
+        intro: |
+          PDF 分析缺少可用来源或目标问题。请补齐材料，或确认只基于已提供摘录/文件名给出有限结论。
+        nl_extract: true
+        fields:
+          - name: source_status
+            type: enum
+            required: true
+            choices: [readable_pdf, inline_excerpts_only, reference_only]
+            prompt: "来源状态 / Source status"
+          - name: source_material
+            type: string
+            required: true
+            prompt: "PDF 路径/URL、上传说明，或页面摘录 / PDF path, URL, upload note, or excerpts"
+            max_chars: 2000
+          - name: question
+            type: string
+            prompt: "具体问题 / Specific question"
+            max_chars: 300
+          - name: output_language
+            type: enum
+            choices: [zh, en, ja, other]
+            default: zh
+            prompt: "输出语言 / Output language"
+        cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
+        timeout_hours: 24
     - id: extract
       skill: pdf-toolkit
-      depends_on: [intake]
+      depends_on: [intake, pdf_clarify]
       when: >-
         'SOURCE_STATUS: inline_excerpts_only' not in outputs.intake
-        and 'SOURCE_STATUS: reference_without_content' not in outputs.intake
+        and (
+          'SOURCE_STATUS: reference_without_content' not in outputs.intake
+          or inputs.get('collected', {}).get('pdf_clarify', {}).get('source_status') == 'readable_pdf'
+        )
         and "don't have the pdf" not in (inputs.user_message | lower)
         and "do not have the pdf" not in (inputs.user_message | lower)
         and "no pdf upload" not in (inputs.user_message | lower)
@@ -150,6 +194,9 @@ composition:
 
           Original user request:
           {{ inputs.user_message | xml_escape | truncate(4000) }}
+
+          Clarification answers (may be empty when not needed):
+          {{ inputs.get('collected', {}).get('pdf_clarify', {}) | tojson }}
 
           Intake:
           {{ outputs.intake | truncate(2000) }}

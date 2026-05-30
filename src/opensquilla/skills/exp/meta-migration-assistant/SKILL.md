@@ -25,8 +25,61 @@ provenance:
   license: Apache-2.0
 composition:
   steps:
+    - id: migration_intake
+      kind: llm_chat
+      with:
+        system: "You extract migration request boundaries and decide whether clarification is required."
+        task: |
+          Extract the requested migration source, target, version context, and
+          repository scope from the user request. Set NEEDS_CLARIFICATION: yes
+          only when the source or target stack is absent or the request is too
+          generic to classify safely.
+
+          User request:
+          {{ inputs.user_message | xml_escape | truncate(1400) }}
+
+          Return exactly:
+          SOURCE_STACK: <source stack/version, or MISSING_SOURCE_STACK>
+          TARGET_STACK: <target stack/version, or MISSING_TARGET_STACK>
+          VERSION_CONTEXT: <version/runtime/package context, or unknown>
+          REPO_SCOPE: <current diff|current branch|named repo|not specified>
+          NEEDS_CLARIFICATION: <yes|no>
+          MISSING_FIELDS:
+            - <source_stack|target_stack|none>
+          CLARIFY_REASON: <one concise reason, or none>
+    - id: migration_clarify
+      kind: user_input
+      depends_on: [migration_intake]
+      when: "'NEEDS_CLARIFICATION: yes' in outputs.migration_intake"
+      clarify:
+        mode: form
+        intro: |
+          迁移目标还不够明确。请补齐源技术栈和目标技术栈，我再生成可执行迁移清单。
+        nl_extract: true
+        fields:
+          - name: source_stack
+            type: string
+            required: true
+            prompt: "源技术栈/版本 / Source stack or version"
+            max_chars: 160
+          - name: target_stack
+            type: string
+            required: true
+            prompt: "目标技术栈/版本 / Target stack or version"
+            max_chars: 160
+          - name: version_context
+            type: string
+            prompt: "运行时、框架或包版本 / Runtime, framework, or package versions"
+            max_chars: 240
+          - name: repo_scope
+            type: string
+            prompt: "仓库范围 / Repository scope"
+            max_chars: 200
+        cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
+        timeout_hours: 24
     - id: classify
       kind: llm_classify
+      depends_on: [migration_intake, migration_clarify]
       output_choices:
         - PY2_TO_PY3
         - VUE2_TO_VUE3
@@ -37,6 +90,12 @@ composition:
       with:
         text: |
           User said: {{ inputs.user_message | xml_escape | truncate(1400) }}
+
+          Migration intake:
+          {{ outputs.migration_intake | truncate(1200) }}
+
+          Clarification answers (may be empty when not needed):
+          {{ inputs.get('collected', {}).get('migration_clarify', {}) | tojson }}
 
           Identify the migration kind.
           Ignore benchmark wrappers, timestamps, locale hints, and generic
@@ -58,7 +117,7 @@ composition:
           CJS_TO_ESM even if other benchmark/context words appear first.
     - id: fetch_guide
       skill: deep-research
-      depends_on: [classify]
+      depends_on: [classify, migration_clarify]
       route:
         - when: "'OPENAI_V0_TO_V1' in outputs.classify"
           to: github
@@ -68,6 +127,10 @@ composition:
         query: |
           Authoritative migration guide for the user's actual migration.
           Classifier verdict: {{ outputs.classify }}.
+          Migration intake:
+          {{ outputs.migration_intake | truncate(1000) }}
+          Clarification answers:
+          {{ inputs.get('collected', {}).get('migration_clarify', {}) | tojson }}
           If the request mentions CommonJS, CJS, native ESM, require(),
           module.exports, or import/export migration, search specifically for
           current CommonJS to native ES Modules migration guidance covering
@@ -99,7 +162,7 @@ composition:
         mode: cached_fallback_worktree
     - id: write_plan
       kind: llm_chat
-      depends_on: [classify, fetch_guide, repo_context]
+      depends_on: [classify, migration_clarify, fetch_guide, repo_context]
       with:
         system: |
           You write migration checklists. Answer the user's requested
@@ -111,6 +174,10 @@ composition:
           do not wrap the entire answer in a fenced code block.
         task: |
           Migration kind: {{ outputs.classify }}
+          Migration intake:
+          {{ outputs.migration_intake | truncate(1200) }}
+          Clarification answers:
+          {{ inputs.get('collected', {}).get('migration_clarify', {}) | tojson }}
           User request:
           {{ inputs.user_message | xml_escape | truncate(1200) }}
 

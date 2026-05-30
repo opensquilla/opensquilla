@@ -115,6 +115,7 @@ def _evaluate_acceptance_compare(
     payload = _normalise_acceptance_result(acceptance_result)
     raw = str(payload.get("raw") or "").strip()
     winner = str(payload.get("winner") or "").strip().lower()
+    quality_score_raw = payload.get("quality_score")
     required_improvements = str(
         payload.get("required_improvements") or payload.get("required_improvement") or ""
     ).strip()
@@ -126,14 +127,30 @@ def _evaluate_acceptance_compare(
                 winner = match.group(1).strip().lower()
         if not required_improvements:
             required_improvements = _first_section_item(raw, "REQUIRED_IMPROVEMENTS")
+        if quality_score_raw is None:
+            score_match = re.search(
+                r"^QUALITY_SCORE:\s*([0-9]+(?:\.[0-9]+)?)",
+                raw,
+                re.MULTILINE | re.IGNORECASE,
+            )
+            if score_match:
+                quality_score_raw = score_match.group(1)
 
     required_improvements_norm = required_improvements.strip().lower()
     has_required_improvements = required_improvements_norm not in _NO_REQUIRED_IMPROVEMENTS
+    quality_score: float | None = None
+    if quality_score_raw not in (None, ""):
+        try:
+            quality_score = float(quality_score_raw)
+        except (TypeError, ValueError):
+            quality_score = None
+    quality_passed = quality_score is None or quality_score >= 0.80
     passed = (
         not required
         or (
             winner in {"orchestrated", "tie"}
             and not has_required_improvements
+            and quality_passed
         )
     )
     diagnostics: list[str] = []
@@ -143,13 +160,50 @@ def _evaluate_acceptance_compare(
         diagnostics.append(f"winner is not orchestrated/tie: {winner or 'missing'}")
     if required and has_required_improvements:
         diagnostics.append("required improvements are present")
+    if required and not quality_passed:
+        diagnostics.append("quality score below 0.80")
 
     return {
         "required": required,
         "passed": passed,
         "winner": winner,
+        "quality_score": quality_score,
         "required_improvements": required_improvements,
         "diagnostics": diagnostics,
+        "raw": raw,
+    }
+
+
+def _evaluate_collision_check(creator_mode: str, collision_result: object) -> dict:
+    mode = (creator_mode or "").strip().upper()
+    required = mode in {"FULL_GATED", "PERSISTED_PROPOSAL"}
+    raw = str(collision_result or "").strip()
+    lowered = raw.lower()
+    failed = "revise_needed" in lowered or "fail" in lowered
+    return {
+        "required": required,
+        "passed": (not required) or (bool(raw) and not failed),
+        "reason": "ok" if ((not required) or (bool(raw) and not failed)) else (
+            "collision_check_failed" if raw else "missing_collision_check"
+        ),
+        "raw": raw,
+    }
+
+
+def _evaluate_risk_classify(creator_mode: str, risk_result: object) -> dict:
+    mode = (creator_mode or "").strip().upper()
+    required = mode in {"FULL_GATED", "PERSISTED_PROPOSAL"}
+    raw = str(risk_result or "").strip()
+    match = re.search(r"^RISK:\s*(low|medium|high)\b", raw, re.MULTILINE | re.IGNORECASE)
+    risk_level = match.group(1).lower() if match else ""
+    passed = (not required) or (bool(raw) and risk_level in {"low", "medium"})
+    return {
+        "required": required,
+        "passed": passed,
+        "risk_level": risk_level,
+        "reason": "ok" if passed else (
+            "risk_too_high" if risk_level == "high" else "missing_risk_classification"
+        ),
         "raw": raw,
     }
 
@@ -231,10 +285,14 @@ def write_proposal(
     creator_mode: str = "",
     acceptance_result: object = None,
     runtime_e2e_result: object = None,
+    collision_result: object = None,
+    risk_result: object = None,
 ) -> dict:
     """Atomic write + return the standard ``{status, proposal_id, ...}`` shape."""
     acceptance_gate = _evaluate_acceptance_compare(creator_mode, acceptance_result)
     runtime_gate = _evaluate_runtime_e2e(creator_mode, runtime_e2e_result)
+    collision_gate = _evaluate_collision_check(creator_mode, collision_result)
+    risk_gate = _evaluate_risk_classify(creator_mode, risk_result)
     gate_eligible = (
         lint_result.get("G1", {}).get("passed", False)
         and lint_result.get("G2", {}).get("passed", False)
@@ -243,12 +301,16 @@ def write_proposal(
     )
     eligible = (
         gate_eligible
+        and bool(collision_gate.get("passed", False))
+        and bool(risk_gate.get("passed", False))
         and bool(acceptance_gate.get("passed", False))
         and bool(runtime_gate.get("passed", False))
     )
     gates = {
         "lint": lint_result,
         "smoke": smoke_result,
+        "collision_check": collision_gate,
+        "risk_classify": risk_gate,
         "acceptance_compare": acceptance_gate,
         "runtime_e2e": runtime_gate,
         "auto_enable_eligible": eligible,

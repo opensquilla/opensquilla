@@ -14,10 +14,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-BUNDLED = (
-    Path(__file__).resolve().parents[2]
-    / "src" / "opensquilla" / "skills" / "bundled"
-)
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+
+BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
 
 
 # The paper-experiment-stub and paper-plot-stub skills were removed
@@ -151,6 +152,29 @@ def test_meta_paper_write_pushes_length_into_plan_and_section_prompts() -> None:
     assert "repeated context compaction" not in section
 
 
+def test_meta_paper_write_forbids_fabricated_result_numbers() -> None:
+    meta = (BUNDLED / "meta-paper-write" / "SKILL.md").read_text(encoding="utf-8")
+    section = (BUNDLED / "paper-section-author" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "PLACEHOLDER_RESULT_TOKEN" in meta
+    assert "Do not invent empirical numbers" in meta
+    assert "Do not state exact numeric improvements" in meta
+    assert "headline_result_number" not in meta
+    assert "main_result_number" not in meta
+    assert "no invented results" in section
+    assert "quantitative values must remain placeholders" in section
+
+
+def test_meta_paper_write_scrubs_numeric_table_cells_before_compile() -> None:
+    meta = (BUNDLED / "meta-paper-write" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "def scrub_placeholder_table_cells" in meta
+    assert "Scrub numeric-looking data cells" in meta
+    assert "tex = scrub_placeholder_table_cells(tex)" in meta
+    assert "tex_body = scrub_placeholder_table_cells(tex_body)" in meta
+    assert "Every non-label data cell MUST be a placeholder" in meta
+
+
 def test_paper_preference_planner_declares_two_generation_modes() -> None:
     planner = (
         BUNDLED / "paper-preference-planner" / "SKILL.md"
@@ -160,6 +184,21 @@ def test_paper_preference_planner_declares_two_generation_modes() -> None:
     assert "direct generation" in planner
     assert "ask the user" in planner
     assert "do not invent preferences" in planner
+
+
+def test_bundled_meta_skills_do_not_exec_prompt_only_memory_skill() -> None:
+    offenders: list[str] = []
+    for skill_md in sorted(BUNDLED.glob("meta-*/SKILL.md")):
+        text = skill_md.read_text(encoding="utf-8")
+        if not text.startswith("---\n"):
+            continue
+        frontmatter = text.split("---", 2)[1]
+        data = yaml.safe_load(frontmatter) or {}
+        for step in (data.get("composition") or {}).get("steps") or []:
+            if step.get("kind") == "skill_exec" and step.get("skill") == "memory":
+                offenders.append(f"{data.get('name')}:{step.get('id')}")
+
+    assert offenders == []
 
 
 def test_latex_compile_produces_pdf(tmp_path: Path) -> None:

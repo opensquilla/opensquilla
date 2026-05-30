@@ -1,0 +1,6 @@
+Use meta-web-research-to-report to write a compact decision memo for a CTO
+choosing whether to adopt OpenTelemetry logs and traces for a Python backend in
+2026. Audience: engineering leadership. Decision context: whether to standardize
+OpenTelemetry across new services this quarter. Prefer official docs, CNCF
+material, vendor-neutral sources, and recent engineering writeups. Include five
+key findings, practical risks, evidence limits, and sources.

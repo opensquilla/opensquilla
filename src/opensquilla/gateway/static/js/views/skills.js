@@ -514,7 +514,7 @@ const SkillsView = (() => {
         <span class="sk-group__caret">▾</span>
         <span class="sk-group__label">Auto-Propose Settings</span>
         <span class="sk-group__count">${statusOn ? 'on' : 'off'}</span>
-        <span class="sk-group__meta">Unattended synthesis of new meta-skills from your usage patterns.</span>
+        <span class="sk-group__meta">Off by default. Enable cron or dream to synthesize gated meta-skills from usage patterns.</span>
       </summary>
       <div class="sk-ap-settings">
         <label class="sk-ap-toggle">

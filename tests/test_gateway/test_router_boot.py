@@ -568,7 +568,9 @@ async def test_start_gateway_server_wires_meta_skill_auto_propose_routes(
     captured: dict[str, Any] = {}
     runtime_contexts: list[dict[str, Any]] = []
     installed_runtime_contexts: list[dict[str, Any]] = []
+    installed_smoke_contexts: list[dict[str, Any]] = []
     reset_tokens: list[str] = []
+    smoke_reset_tokens: list[str] = []
 
     class FakeProviderSelector:
         def __init__(self) -> None:
@@ -659,6 +661,13 @@ async def test_start_gateway_server_wires_meta_skill_auto_propose_routes(
     def fake_reset_runtime_e2e_context(token: str) -> None:
         reset_tokens.append(token)
 
+    def fake_set_smoke_fixture_context(ctx: dict[str, Any]) -> str:
+        installed_smoke_contexts.append(ctx)
+        return "smoke-token"
+
+    def fake_reset_smoke_fixture_context(token: str) -> None:
+        smoke_reset_tokens.append(token)
+
     monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
     monkeypatch.setattr(boot, "build_services", fake_build_services)
     monkeypatch.setattr(boot, "_setup_file_logging", lambda config: None)
@@ -676,6 +685,8 @@ async def test_start_gateway_server_wires_meta_skill_auto_propose_routes(
     monkeypatch.setattr(runtime_e2e_mod, "make_runtime_e2e_context", fake_make_runtime_e2e_context)
     monkeypatch.setattr(proposer_mod, "set_runtime_e2e_context", fake_set_runtime_e2e_context)
     monkeypatch.setattr(proposer_mod, "reset_runtime_e2e_context", fake_reset_runtime_e2e_context)
+    monkeypatch.setattr(proposer_mod, "set_smoke_fixture_context", fake_set_smoke_fixture_context)
+    monkeypatch.setattr(proposer_mod, "reset_smoke_fixture_context", fake_reset_smoke_fixture_context)
     monkeypatch.setattr(
         "opensquilla.gateway.pidlock.GatewayPidLock.acquire", lambda self: None
     )
@@ -725,7 +736,9 @@ async def test_start_gateway_server_wires_meta_skill_auto_propose_routes(
         with pytest.raises(RuntimeError):
             await orch._tool_invoker("meta_skill_runtime_e2e_run", {"skill_md": "x"})
         assert installed_runtime_contexts[-1] is not None
+        assert installed_smoke_contexts[-1]["llm_chat"] is not None
         assert reset_tokens[-1] == "runtime-token"
+        assert smoke_reset_tokens[-1] == "smoke-token"
         rt = get_runtime()
         assert rt is not None
         assert rt.config is config.meta_skill.auto_propose

@@ -224,6 +224,8 @@ def test_full_gated_acceptance_blocks_single_model_winner_even_when_runtime_pass
                 },
             ],
         },
+        collision_result="PASS: no trigger collision",
+        risk_result="RISK: low\nCAPABILITIES:\n- read-only",
     )
 
     assert result["auto_enable_eligible"] is False
@@ -231,6 +233,73 @@ def test_full_gated_acceptance_blocks_single_model_winner_even_when_runtime_pass
     assert shown["gates"]["acceptance_compare"]["passed"] is False
     assert shown["gates"]["acceptance_compare"]["winner"] == "single-model"
     assert shown["gates"]["runtime_e2e"]["passed"] is True
+
+
+def test_full_gated_acceptance_blocks_low_weighted_quality_score(tmp_path: Path) -> None:
+    home = tmp_path / ".opensquilla"
+    result = proposals_lib.write_proposal(
+        home,
+        SAMPLE_SKILL_MD,
+        GATES_PASSING,
+        SMOKE_PASSING,
+        creator_mode="FULL_GATED",
+        acceptance_result={
+            "raw": (
+                "WINNER: orchestrated\n"
+                "QUALITY_SCORE: 0.71\n"
+                "REASONS:\n"
+                "- candidate works but lacks output contracts\n"
+                "REGRESSIONS:\n"
+                "- weaker final artifact quality\n"
+                "REQUIRED_IMPROVEMENTS:\n"
+                "- none\n"
+            ),
+        },
+        runtime_e2e_result={
+            "status": "ok",
+            "passed": True,
+            "winner": "meta",
+            "cases": [{"winner": "meta", "regression": ""}],
+        },
+    )
+
+    assert result["auto_enable_eligible"] is False
+    shown = proposals_lib.show_proposal(home, result["proposal_id"])
+    assert shown["gates"]["acceptance_compare"]["passed"] is False
+    assert shown["gates"]["acceptance_compare"]["quality_score"] == 0.71
+    assert "quality score below 0.80" in shown["gates"]["acceptance_compare"]["diagnostics"]
+
+
+def test_full_gated_blocks_collision_and_high_risk_results(tmp_path: Path) -> None:
+    home = tmp_path / ".opensquilla"
+    result = proposals_lib.write_proposal(
+        home,
+        SAMPLE_SKILL_MD,
+        GATES_PASSING,
+        SMOKE_PASSING,
+        creator_mode="FULL_GATED",
+        acceptance_result={
+            "raw": (
+                "WINNER: orchestrated\n"
+                "QUALITY_SCORE: 0.93\n"
+                "REQUIRED_IMPROVEMENTS:\n"
+                "- none\n"
+            ),
+        },
+        runtime_e2e_result={
+            "status": "ok",
+            "passed": True,
+            "winner": "meta",
+            "cases": [{"winner": "meta", "regression": ""}],
+        },
+        collision_result="REVISE_NEEDED: trigger overlaps with summarize",
+        risk_result="RISK: high\nCAPABILITIES:\n- shell",
+    )
+
+    assert result["auto_enable_eligible"] is False
+    shown = proposals_lib.show_proposal(home, result["proposal_id"])
+    assert shown["gates"]["collision_check"]["passed"] is False
+    assert shown["gates"]["risk_classify"]["passed"] is False
 
 
 def test_full_gated_runtime_e2e_allows_meta_winner_when_acceptance_passes(
@@ -266,6 +335,8 @@ def test_full_gated_runtime_e2e_allows_meta_winner_when_acceptance_passes(
                 },
             ],
         },
+        collision_result="PASS: no trigger collision",
+        risk_result="RISK: low\nCAPABILITIES:\n- read-only",
     )
 
     assert result["auto_enable_eligible"] is True

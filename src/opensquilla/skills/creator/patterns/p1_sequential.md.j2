@@ -29,7 +29,11 @@ composition:
   steps:
 {%- for step in steps %}
     - id: {{ step.id }}
-{%- set step_kind = creator_step_kind(step.skill) if creator_step_kind is defined else "agent" %}
+{%- if creator_step_kind is defined %}
+{%- set step_kind = creator_step_kind(step.skill) %}
+{%- else %}
+{%- set step_kind = "agent" %}
+{%- endif %}
 {%- if step_kind == "skill_exec" %}
       kind: skill_exec
 {%- endif %}

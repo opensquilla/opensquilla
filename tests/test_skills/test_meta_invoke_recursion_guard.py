@@ -107,6 +107,67 @@ def test_sub_agent_tool_list_excludes_meta_invoke() -> None:
     )
 
 
+def test_sub_agent_metadata_excludes_outer_meta_activation_controls() -> None:
+    """Outer-turn meta activation controls must not leak into sub-Agents.
+
+    The parent Agent can force the first LLM call to choose meta_invoke after a
+    deterministic trigger match. Meta sub-Agents intentionally have meta_invoke
+    removed from their tool surface, so inheriting that tool_choice makes
+    providers reject otherwise valid agent steps.
+    """
+    from opensquilla.engine.types import AgentConfig
+    from opensquilla.skills.meta.orchestrator import make_agent_runner_from_parent
+
+    captured: dict[str, Any] = {}
+
+    def agent_factory(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+
+        class _DummyAgent:
+            async def run_turn(self, _msg: str):
+                if False:
+                    yield None  # pragma: no cover
+
+        return _DummyAgent()
+
+    runner = make_agent_runner_from_parent(
+        provider=None,  # type: ignore[arg-type]
+        base_config=AgentConfig(
+            model_id="stub",
+            metadata={
+                "skill_loader": object(),
+                "bootstrap_workspace_dir": "/tmp/workspace",
+                "meta_match": object(),
+                "meta_match_tool_choice": {
+                    "type": "function",
+                    "function": {"name": "meta_invoke"},
+                },
+                "meta_match_tool_surface_restricted": True,
+                "keep": "yes",
+            },
+        ),
+        tool_definitions=[SimpleNamespace(name="bash")],
+        tool_handler=None,
+        agent_factory=agent_factory,
+    )
+
+    import asyncio
+
+    async def _drive() -> None:
+        async for _ in runner("sys", "user"):
+            pass
+
+    asyncio.run(_drive())
+
+    metadata = captured["config"].metadata
+    assert metadata["skill_loader"] is not None
+    assert metadata["bootstrap_workspace_dir"] == "/tmp/workspace"
+    assert metadata["keep"] == "yes"
+    assert "meta_match" not in metadata
+    assert "meta_match_tool_choice" not in metadata
+    assert "meta_match_tool_surface_restricted" not in metadata
+
+
 # ---------------------------------------------------------------------------
 # Change 2: depth + per-turn cap enforcement in _run_one_streaming
 # ---------------------------------------------------------------------------

@@ -41,16 +41,17 @@
 ```
 Python 侧                          IPC (fd 3/4, JSON lines)        JS/Bun 侧 (main.mjs)
 ─────────                          ──────────────────────         ───────────────────
-backend runtime turn 生命周期
-  │                                                               renderXxxBlock(payload)
-  ├─ turn.begin/end/status  ──────────────────────────────────▶  按消息 type 精确渲染
-OpenTuiOutputHandle                                                (无正则分类)
-  ├─ aappend_text → answer.text                                   轻量块状态机:
-  ├─ atool_start  → tool.call(running)                              currentTurn={id,sawAnswer}
-  ├─ atool_finished → tool.call(ok/error)                         footer:
-  ├─ astatus      → model.text                                      composer(disabled 切换)
-  ├─ afinalize    → usage + turn.end                                状态脉动(turn.status 驱动)
-  └─ set_toolbar/invalidate → router.update                         router HUD(边框状态色)
+OpenTuiStreamRenderer              turn.begin/status/end
+  (renderer_factory 注入)          prompt.echo / model.text       renderXxxBlock(payload)
+  ├─ __enter__   → turn.begin  ────────────────────────────────▶  按消息 type 精确渲染
+  ├─ aappend_text → answer.text                                    (无正则分类)
+  ├─ atool_start  → tool.call(running)                            轻量块状态机:
+  ├─ atool_finished → tool.call(ok/error) + tool.detail            currentTurn={id,sawAnswer}
+  ├─ astatus      → model.text                                    footer:
+  ├─ afinalize    → usage + turn.end                                composer(disabled 切换)
+  └─ (经 OpenTuiOutputHandle 发送)                                  状态脉动(turn.status 驱动)
+OpenTuiOutputHandle                                                router HUD(边框状态色)
+  └─ set_toolbar/invalidate → router.update
 ```
 
 ## 组件设计
@@ -102,32 +103,31 @@ JS→Python(保留):`ready` / `input.submit` / `input.cancel` / `input.eof` / `r
 
 细节修复:scrollback id 改单调计数器 `scrollback-${seq++}`;硬编码色收进 `OPENTUI_DAILY_THEME`。
 
-### 3. Python 输出层(`surface.py` + `runtime.py`)
+### 3. Python 输出层(新增 `OpenTuiStreamRenderer` + `surface.py` + `runtime.py`)
 
-`OpenTuiOutputHandle` 实现 `StreamingRenderer` 接口方法,每个发对应消息:
+**已确认的架构约束**:`StreamingRenderer`(`terminal/stream.py`)把工具调用、状态、答案、用量都在自己内部用 Rich 格式化成纯文本/ANSI payload,再通过 `output_handle.write_through`/`aappend_text` 发出 —— 这正是当前 JS 侧必须用正则反向猜语义的根源。真实 turn 路径通过 `stream_deps.renderer_factory(output_handle=tui_output)` 创建 renderer(`chat/turn_stream.py:663/967/1245`),默认工厂是 `TerminalRenderer`(`turn_stream_defaults.py:114`),注入点在 `runtime_bridge.py:122` 的 `default_turn_stream_dependencies()`。
+
+**决策(已确认)**:结构化边界放在 renderer 层。新增 `OpenTuiStreamRenderer`(`opentui/renderer.py`),镜像 `TerminalRenderer` 的接口(`__init__(title, output_handle)`、`__enter__/__exit__`、`aappend_text`、`atool_start`、`atool_finished`、`astatus`、`aerror`、`afinalize`、`aclose`、`stream_output`),但每个方法**不格式化文本,而是通过 output_handle 发结构化消息**。当 backend 为 opentui 时,把它作为 `renderer_factory` 注入。`fake_opentui_app.py` 也改用它。
+
+`OpenTuiStreamRenderer` 方法 → 消息映射:
 
 | 方法 | 发送消息 |
 |---|---|
-| `aappend_text(delta)` | `answer.text` |
-| `astatus(msg, style)` | `model.text` |
-| `atool_start(name, args, id)` | `tool.call` running,summary 由 args 提炼 |
-| `atool_finished(id, success, ...)` | `tool.call` ok/error(按 id 更新) |
-| 工具输出 | `tool.detail` |
-| `afinalize(usage, cancelled)` | `usage` + `turn.end(cancelled)` |
-| `set_toolbar`/`invalidate` | `router.update`(保留) |
-| `write_through(payload)` | 降级 `scrollback.write` |
+| `__enter__` / 首次写入前 | `turn.begin(id)` + `turn.status(thinking, active=true)` + `composer.set(disabled=true)` |
+| `astatus(msg, style)` | `model.text(msg)` |
+| `aappend_text(delta)` | 首次置 `turn.status(output)`;`answer.text(delta)` |
+| `atool_start(name, args, id)` | `turn.status(tool, label=name)` + `tool.call(name, summary, running, id)`,summary 由 `_summarize_args` 提炼 |
+| `atool_finished(id, success, result, ...)` | `tool.call(... ok/error, id)`;若有 result 文本发 `tool.detail` |
+| `aerror(msg)` | `tool.detail(msg)` 或 `model.text`,style=error |
+| `afinalize(usage, cancelled)` | `usage(text)` + `turn.end(id, cancelled)` + `turn.status(idle, "ready", active=false)` + `composer.set(disabled=false)` |
 
-turn 生命周期发送时机(修复死代码核心)。
+`OpenTuiOutputHandle`(保留)负责底层消息发送通道:`set_toolbar`/`invalidate`→`router.update`(保留);`write_through`→降级 `scrollback.write`(ready marker);新增结构化发送方法(如 `send_turn_begin`/`send_tool_call` 等)供 renderer 调用,或 renderer 直接持有 bridge。turn id 由 renderer 内部单调计数器分配。
 
-**已确认约束**:`TuiRuntimeHooks`(`backend/contracts.py`)只有 `on_user_input_echo`、`on_queued_turn_start`、`clear_current_cancel`、`notice`、`on_cancel_active_turn`、`expose_surface`、`clear_exposed_surface`,**没有** turn 开始/结束、工具开始/结束的钩子。因此 turn 状态不靠新增 backend hook,而由已流经 `OpenTuiOutputHandle` 的 `StreamingRenderer` 渲染调用**自然驱动**,这样更内聚,且不触碰 textual/terminal 后端。
+turn 生命周期由 `OpenTuiStreamRenderer` 的方法调用**自然驱动**(见上表),不靠新增 backend hook。
 
-发送时机映射:
-- turn 即将开始 → 挂在已有 `on_user_input_echo`:发 `prompt.echo` + `turn.begin(id)` + `turn.status(thinking, active=true)` + `composer.set(disabled=true)`
-- `atool_start` 被调 → `turn.status(tool, label=<name>)`
-- `aappend_text` 首次增量 → `turn.status(output)`
-- `afinalize` → `usage` + `turn.end(id, cancelled)` + `turn.status(idle, "ready", active=false)` + `composer.set(disabled=false)`
+**已确认约束**:`TuiRuntimeHooks`(`backend/contracts.py`)只有 `on_user_input_echo`、`on_queued_turn_start`、`clear_current_cancel`、`notice`、`on_cancel_active_turn`、`expose_surface`、`clear_exposed_surface`,没有 turn/工具钩子。所以 prompt.echo 仍挂 `on_user_input_echo`,而 turn.begin/status/end 落在 renderer 的 `__enter__`/各 `aXxx`/`afinalize` 上 —— renderer 的生命周期恰好等于一个 turn,这比新增 backend hook 更内聚,且不触碰 textual/terminal 后端。
 
-turn id 由 `OpenTuiOutputHandle` 内部单调计数器分配,`on_user_input_echo` 递增并记为当前 turn,`afinalize` 用同一 id 收尾。`echo_opentui_user_input` 改发 `prompt.echo` 结构化消息(不再拼 `╭─ prompt` 文本)。`router context` 接真实用量或显式 `-`。
+`echo_opentui_user_input` 改发 `prompt.echo` 结构化消息(不再拼 `╭─ prompt` 文本)。`router context` 接真实用量或显式 `-`。
 
 ### 4. footer 重做(布局 A)
 
@@ -152,9 +152,10 @@ router HUD(右下角窄框,颜色语义两者结合):边框色走状态(绿 `#73
 ## 数据流
 
 1. 用户在 footer 输入 → JS 发 `input.submit` → Python `next_line` 返回文本。
-2. `on_user_input_echo` 触发 → `prompt.echo` + `turn.begin` + `turn.status(thinking)` + `composer.set(disabled)` → JS 画 prompt 卡片。
-3. 模型流式 → `astatus`→`model.text` / `aappend_text`(首次置 `turn.status(output)`)→`answer.text`;工具 → `atool_start`(置 `turn.status(tool)`)/`atool_finished`→`tool.call`,输出→`tool.detail`;router 决策 → `set_toolbar`→`router.update`。
-4. `afinalize` → `usage` + `turn.end` + `turn.status(idle)` + `composer.set(enabled)` → JS 闭合 answer 卡片。
+2. `on_user_input_echo` 触发 → `prompt.echo` → JS 画 prompt 卡片。
+3. `renderer_factory(output_handle)` 创建 `OpenTuiStreamRenderer`,`__enter__` → `turn.begin` + `turn.status(thinking)` + `composer.set(disabled)`。
+4. 模型流式 → `astatus`→`model.text` / `aappend_text`(首次置 `turn.status(output)`)→`answer.text`;工具 → `atool_start`(置 `turn.status(tool)`)/`atool_finished`→`tool.call`,输出→`tool.detail`;router 决策 → `set_toolbar`→`router.update`。
+5. `afinalize` → `usage` + `turn.end` + `turn.status(idle)` + `composer.set(enabled)` → JS 闭合 answer 卡片。
 
 ## 错误处理
 
@@ -181,7 +182,8 @@ router HUD(右下角窄框,颜色语义两者结合):边框色走状态(绿 `#73
 - `test_opentui_messages.py`:新消息类型序列化/解析往返
 - `test_opentui_host_layout.py`:锁渲染函数名、theme tokens、`backgroundColor` 仍不存在、脉动帧表存在
 - `test_opentui_chat_adapter.py`:`prompt.echo` 结构化、turn 生命周期发 `turn.status`/`composer.set(disabled)`、多行逐行 `│`
-- `test_opentui_surface.py`:`OpenTuiOutputHandle` 各 `aXxx` 发对应消息
+- `test_opentui_renderer.py`(新增):`OpenTuiStreamRenderer` 各 `aXxx`/`__enter__`/`afinalize` 发对应结构化消息(turn.begin/status/end、model.text、tool.call、answer.text、usage)
+- `test_opentui_surface.py`:`OpenTuiOutputHandle` 的结构化发送方法与 `router.update`/降级 `scrollback.write`
 - `test_architecture_prompt.py`:opentui 分支断言更新为新协议产出标记
 
 JS host smoke:`npm run smoke` 仍通过。Lint:改动 Python 文件过 `ruff`。

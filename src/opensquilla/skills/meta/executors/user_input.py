@@ -22,10 +22,12 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Protocol
 
-from opensquilla.skills.meta.templating import evaluate_when
+from opensquilla.skills.meta.templating import evaluate_when, render_with_args
 from opensquilla.skills.meta.types import (
+    ClarifyField,
     ClarifyStepConfig,
     MetaPaused,
     MetaStep,
@@ -93,7 +95,8 @@ async def run_user_input_step(
             log.info("meta_user_input.skipped", extra={"step": step.id})
             return ""
 
-    schema_json = _serialize_schema(cfg)
+    rendered_cfg = _render_clarify_config(cfg, inputs=inputs, outputs=outputs)
+    schema_json = _serialize_schema(rendered_cfg)
     inputs_json = json.dumps(inputs, ensure_ascii=False, sort_keys=True)
     step_outputs_json = json.dumps(outputs, ensure_ascii=False, sort_keys=True)
 
@@ -129,8 +132,51 @@ async def run_user_input_step(
     raise MetaPaused(
         run_id=run_id,
         step_id=step.id,
-        schema=cfg,
-        intro=cfg.intro,
+        schema=rendered_cfg,
+        intro=rendered_cfg.intro,
+    )
+
+
+def _render_clarify_config(
+    cfg: ClarifyStepConfig,
+    *,
+    inputs: dict[str, Any],
+    outputs: dict[str, str],
+) -> ClarifyStepConfig:
+    """Render user-facing clarify copy against the live meta context.
+
+    The parser keeps clarify schemas static, but language-sensitive forms need
+    access to earlier extraction steps (for example ``LANGUAGE: en`` vs
+    ``LANGUAGE: zh``). Only copy is rendered; field names, types, choices,
+    defaults, and validation limits remain the parsed contract.
+    """
+
+    rendered = render_with_args(
+        {
+            "intro": cfg.intro,
+            "fields": [
+                {"prompt": field.prompt}
+                for field in cfg.fields
+            ],
+        },
+        inputs=inputs,
+        outputs=outputs,
+    )
+    rendered_fields: list[ClarifyField] = []
+    rendered_prompts = rendered.get("fields", [])
+    for index, field in enumerate(cfg.fields):
+        prompt = field.prompt
+        if isinstance(rendered_prompts, list) and index < len(rendered_prompts):
+            rendered_prompt = rendered_prompts[index].get("prompt")
+            if isinstance(rendered_prompt, str):
+                prompt = rendered_prompt
+        rendered_fields.append(replace(field, prompt=prompt))
+
+    intro = rendered.get("intro", cfg.intro)
+    return replace(
+        cfg,
+        intro=intro if isinstance(intro, str) else cfg.intro,
+        fields=tuple(rendered_fields),
     )
 
 

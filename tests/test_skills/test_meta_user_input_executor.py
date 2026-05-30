@@ -8,7 +8,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from opensquilla.skills.meta.executors.user_input import run_user_input_step
+from opensquilla.skills.meta.executors.user_input import (
+    _render_clarify_config,
+    run_user_input_step,
+)
 from opensquilla.skills.meta.types import (
     ClarifyField,
     ClarifyStepConfig,
@@ -77,6 +80,53 @@ async def test_no_skip_raises_meta_paused_after_successful_cas():
     assert json.loads(kwargs["inputs_json"])["user_message"] == "hi"
     assert json.loads(kwargs["step_outputs_json"])["upstream"] == "some output"
     assert kwargs["awaiting_since"] == 1700000000.0
+
+
+def test_clarify_copy_renders_against_inputs_and_outputs():
+    cfg = ClarifyStepConfig(
+        mode="form",
+        intro=(
+            "{% if 'LANGUAGE: zh' in outputs.paper_collect %}"
+            "请补充论文信息"
+            "{% else %}"
+            "Please add paper details"
+            "{% endif %}"
+        ),
+        fields=(
+            ClarifyField(
+                name="topic",
+                type="string",
+                required=True,
+                prompt=(
+                    "{% if 'LANGUAGE: zh' in outputs.paper_collect %}"
+                    "论文主题"
+                    "{% else %}"
+                    "Paper topic"
+                    "{% endif %}"
+                ),
+            ),
+        ),
+    )
+
+    rendered = _render_clarify_config(
+        cfg,
+        inputs={"user_message": "写一篇论文", "collected": {}},
+        outputs={"paper_collect": "LANGUAGE: zh\nNEEDS_CLARIFICATION: yes"},
+    )
+
+    assert rendered.intro == "请补充论文信息"
+    assert rendered.fields[0].prompt == "论文主题"
+    assert rendered.fields[0].name == "topic"
+    assert rendered.fields[0].required is True
+
+    rendered_en = _render_clarify_config(
+        cfg,
+        inputs={"user_message": "write a paper", "collected": {}},
+        outputs={"paper_collect": "LANGUAGE: en\nNEEDS_CLARIFICATION: yes"},
+    )
+
+    assert rendered_en.intro == "Please add paper details"
+    assert rendered_en.fields[0].prompt == "Paper topic"
 
 
 @pytest.mark.asyncio

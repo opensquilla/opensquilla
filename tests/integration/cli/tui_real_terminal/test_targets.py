@@ -55,6 +55,29 @@ def test_textual_target_builds_fake_live_app_command(tmp_path: Path) -> None:
     assert "missing-live-app" not in target.capability_requirements
 
 
+def test_opentui_target_builds_fake_footer_app_command(tmp_path: Path) -> None:
+    context = TargetContext(
+        project_root=Path.cwd(),
+        artifact_dir=tmp_path,
+        scenario_id="launch_input_loop",
+        size=TerminalSize(cols=100, rows=30),
+    )
+
+    target = build_tui_target("opentui", context)
+
+    assert target.backend_id == "opentui"
+    assert target.available is True
+    assert target.skip_reason is None
+    assert target.command[:2] == [sys.executable, "-u"]
+    assert target.command[2].endswith("fake_opentui_app.py")
+    assert target.env["OPENSQUILLA_TUI_FAKE_SCENARIO"] == "launch_input_loop"
+    assert target.env["OPENSQUILLA_TUI_READY_MARKER"] == "OPEN_SQUILLA_TUI_READY"
+    assert target.env["OPENSQUILLA_TUI_BACKEND"] == "opentui"
+    assert target.readiness_markers == ("OPEN_SQUILLA_TUI_READY",)
+    assert target.log_paths == (tmp_path / "opentui-app.log",)
+    assert "opentui-footer" in target.capability_requirements
+
+
 def test_live_textual_target_builds_real_cli_command(tmp_path: Path) -> None:
     context = TargetContext(
         project_root=Path.cwd(),

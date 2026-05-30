@@ -28,7 +28,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--tui-backend",
         action="store",
         default="terminal",
-        choices=("terminal", "textual", "live-textual"),
+        choices=("terminal", "textual", "opentui", "live-textual"),
     )
     parser.addoption(
         "--tui-driver",

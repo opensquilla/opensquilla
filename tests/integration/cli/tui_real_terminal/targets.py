@@ -8,7 +8,7 @@ from typing import Literal
 
 from tui_real_terminal.driver import TerminalSize
 
-TuiBackendId = Literal["terminal", "textual", "live-textual"]
+TuiBackendId = Literal["terminal", "textual", "opentui", "live-textual"]
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,8 @@ def build_tui_target(backend_id: str, context: TargetContext) -> TuiTarget:
         return _terminal_target(context)
     if backend_id == "textual":
         return _textual_target(context)
+    if backend_id == "opentui":
+        return _opentui_target(context)
     if backend_id == "live-textual":
         return _live_textual_target(context)
     raise ValueError(f"unknown TUI backend target: {backend_id}")
@@ -111,6 +113,29 @@ def _textual_target(context: TargetContext) -> TuiTarget:
         readiness_markers=("OPEN_SQUILLA_TUI_READY",),
         log_paths=(app_log,),
         capability_requirements=("real-terminal", "fake-provider", "live-textual-app"),
+    )
+
+
+def _opentui_target(context: TargetContext) -> TuiTarget:
+    app_path = Path(__file__).with_name("fake_opentui_app.py")
+    app_log = context.artifact_dir / "opentui-app.log"
+    env = _base_env(context)
+    env.update(
+        {
+            "OPENSQUILLA_TUI_FAKE_SCENARIO": context.scenario_id,
+            "OPENSQUILLA_TUI_FAKE_APP_LOG": str(app_log),
+            "OPENSQUILLA_TUI_READY_MARKER": "OPEN_SQUILLA_TUI_READY",
+            "OPENSQUILLA_TUI_BACKEND": "opentui",
+        }
+    )
+    return TuiTarget(
+        backend_id="opentui",
+        command=[sys.executable, "-u", str(app_path)],
+        env=env,
+        initial_size=context.size,
+        readiness_markers=("OPEN_SQUILLA_TUI_READY",),
+        log_paths=(app_log,),
+        capability_requirements=("real-terminal", "fake-provider", "opentui-footer"),
     )
 
 

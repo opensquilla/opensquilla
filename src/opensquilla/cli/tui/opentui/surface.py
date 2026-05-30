@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+import os
 import re
 from typing import Protocol
 
@@ -153,12 +154,21 @@ async def open_opentui_surface(
     surface: Surface,
     model: str | None = None,
     session_id: str | None = None,
+    ready_marker: str | None = None,
+    print_ready_marker: bool = True,
     bridge: OpenTuiBridge | None = None,
 ) -> AsyncIterator[TuiSurface]:
     del model, session_id
     active_bridge = bridge or OpenTuiBridge()
     await active_bridge.start()
     try:
+        marker = (
+            os.environ.get("OPENSQUILLA_TUI_READY_MARKER", "OPEN_SQUILLA_TUI_READY")
+            if ready_marker is None
+            else ready_marker
+        )
+        if print_ready_marker and marker:
+            await active_bridge.send("scrollback.write", ScrollbackWrite(text=f"{marker}\n"))
         await active_bridge.send(
             "composer.set",
             ComposerState(placeholder="send a message"),

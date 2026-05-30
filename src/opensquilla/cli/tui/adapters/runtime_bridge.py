@@ -15,6 +15,7 @@ from rich.panel import Panel
 
 import opensquilla.cli.tui.adapters.terminal_bridge as _terminal_bridge
 import opensquilla.cli.tui.adapters.textual_bridge as _textual_bridge
+import opensquilla.cli.tui.adapters.opentui_bridge as _opentui_bridge
 from opensquilla.cli.chat import gateway_runtime as _gateway_runtime
 from opensquilla.cli.chat.session_context import (
     GatewayRuntimeScope,
@@ -45,6 +46,8 @@ def validate_tui_backend_selection(env: Mapping[str, str] | None = None) -> str:
 
 def _runtime_bridge_for_selected_backend() -> Any:
     backend_id = validate_tui_backend_selection()
+    if backend_id == "opentui":
+        return _opentui_bridge
     if backend_id == "textual":
         return _textual_bridge
     return _terminal_bridge
@@ -85,7 +88,7 @@ async def run_concurrent_repl(
 def get_tui_output(
     scope: GatewayRuntimeScope | StandaloneRuntimeScope,
 ) -> TuiOutputHandle | None:
-    return _terminal_bridge.get_tui_output(scope)
+    return _runtime_bridge_for_selected_backend().get_tui_output(scope)
 
 
 def clear_current_cancel() -> None:

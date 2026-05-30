@@ -203,7 +203,7 @@ composition:
       when: "outputs.feasibility in ['STRAIGHTFORWARD', 'NEEDS_ADULT_HELP', 'NEEDS_SHOPPING', 'SAFETY_REVIEW_REQUIRED']"
       on_failure: web_research_fallback
       with:
-        query: "{{ inputs.get('collected', {}).get('project_clarify', {}).get('topic', '') }} {{ outputs.get('preferences', '') | truncate(160) }} {{ inputs.user_message | truncate(160) }} kid science project step-by-step instructions safe"
+        query: "{{ inputs.get('collected', {}).get('project_clarify', {}).get('topic', '') }} {{ outputs.get('preferences', '') | truncate(160) }} {{ inputs.user_message | xml_escape | truncate(160) }} kid science project step-by-step instructions safe"
         engines: [brave, tavily, duckduckgo]
         max_results: 8
     - id: web_research_fallback
@@ -226,7 +226,7 @@ composition:
       when: "outputs.feasibility != 'INAPPROPRIATE' and ('outdoor' in (inputs.user_message | lower) or 'balcony' in (inputs.user_message | lower) or 'plant' in (inputs.user_message | lower) or 'garden' in (inputs.user_message | lower) or 'park' in (inputs.user_message | lower) or '户外' in inputs.user_message or '阳台' in inputs.user_message or '植物' in inputs.user_message or '豆芽' in inputs.user_message)"
       on_failure: weather_check_fallback
       with:
-        location: "{{ inputs.user_message | truncate(60) }}"
+        location: "{{ inputs.user_message | xml_escape | truncate(60) }}"
         days: 7
     - id: weather_check_fallback
       kind: llm_chat

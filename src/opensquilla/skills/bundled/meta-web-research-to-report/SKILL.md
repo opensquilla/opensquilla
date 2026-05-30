@@ -173,7 +173,7 @@ composition:
       depends_on: [preferences, report_clarify, report_mode, source_seed]
       on_failure: search_fallback
       with:
-        query: "{{ inputs.user_message | truncate(240) }}"
+        query: "{{ inputs.user_message | xml_escape | truncate(240) }}"
         engines: [brave, tavily, duckduckgo]
         max_results: 20
     - id: search_fallback

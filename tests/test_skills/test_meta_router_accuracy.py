@@ -32,14 +32,20 @@ from opensquilla.skills.meta.executors.llm_classify import run_llm_classify_step
 from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.types import MetaStep
 
-_BUNDLED_DIR = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "bundled"
+_SKILLS_DIR = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills"
+_BUNDLED_DIR = _SKILLS_DIR / "bundled"
+_EXP_DIR = _SKILLS_DIR / "exp"
 
 
 @pytest.fixture(scope="module")
 def _loader(tmp_path_factory: pytest.TempPathFactory) -> SkillLoader:
-    """Module-scoped loader against the real in-tree bundled skills."""
+    """Module-scoped loader against the real in-tree skill catalogs."""
     snapshot = tmp_path_factory.mktemp("router-acc") / "snapshot.json"
-    loader = SkillLoader(bundled_dir=_BUNDLED_DIR, snapshot_path=snapshot)
+    loader = SkillLoader(
+        bundled_dir=_BUNDLED_DIR,
+        extra_dirs=[_EXP_DIR],
+        snapshot_path=snapshot,
+    )
     loader.invalidate_cache()
     loader.load_all()
     return loader
@@ -47,15 +53,21 @@ def _loader(tmp_path_factory: pytest.TempPathFactory) -> SkillLoader:
 
 def _classify_step_of(loader: SkillLoader, skill_name: str) -> MetaStep:
     spec = loader.get_by_name(skill_name)
-    assert spec is not None, f"bundled skill {skill_name!r} not found"
+    assert spec is not None, f"skill {skill_name!r} not found"
     plan = parse_meta_plan(spec)
     assert plan is not None, f"plan for {skill_name!r} did not parse"
     classify = next((s for s in plan.steps if s.kind == "llm_classify"), None)
     assert classify is not None, (
-        f"bundled skill {skill_name!r} has no llm_classify step — "
+        f"skill {skill_name!r} has no llm_classify step — "
         f"fixture file is for a non-router meta-skill"
     )
     return classify
+
+
+def _fixture_outputs_for(skill_name: str) -> dict[str, str]:
+    if skill_name == migration_assistant.SKILL_NAME:
+        return {"migration_intake": "Synthetic migration intake."}
+    return {}
 
 
 @pytest.mark.parametrize(
@@ -110,7 +122,7 @@ async def test_routing_pipeline_propagates_expected_label(
         yield  # pragma: no cover
 
     inputs: dict[str, Any] = {"user_message": case.user_message}
-    outputs: dict[str, str] = {}
+    outputs = _fixture_outputs_for(case.skill)
 
     result = await run_llm_classify_step(
         classify,
@@ -160,7 +172,7 @@ async def test_noisy_llm_reply_still_coerces_to_choice(
     result = await run_llm_classify_step(
         classify,
         {"user_message": "ignored — chat is mocked"},
-        {},
+        _fixture_outputs_for(skill_name),
         llm_chat=noisy_chat,
         agent_runner=explode_runner,
     )

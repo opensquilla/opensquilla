@@ -1,9 +1,9 @@
-"""End-to-end tests for the bundled meta-travel-planner.
+"""End-to-end tests for the experimental meta-travel-planner.
 
 Travel planning should produce an inline itinerary in the same turn when the
 request already contains enough facts. Generic user_input behavior is covered
-by the dedicated clarify/resume tests; this bundled skill must not pause on a
-well-specified itinerary request.
+by the dedicated clarify/resume tests; this experimental skill must not pause
+on a well-specified itinerary request.
 """
 
 from __future__ import annotations
@@ -21,14 +21,15 @@ from opensquilla.skills.meta.types import MetaMatch
 
 def _load_travel_planner_plan():
     bundled = Path("src/opensquilla/skills/bundled").resolve()
-    loader = SkillLoader(bundled_dir=bundled)
+    exp = Path("src/opensquilla/skills/exp").resolve()
+    loader = SkillLoader(bundled_dir=bundled, extra_dirs=[exp])
     specs = [s for s in loader.load_all() if getattr(s, "kind", "") == "meta"]
     for s in specs:
         if s.name == "meta-travel-planner":
             plan = parse_meta_plan(s)
             assert plan is not None
             return plan
-    raise AssertionError("meta-travel-planner not found in bundled")
+    raise AssertionError("meta-travel-planner not found")
 
 
 async def _sv(*_a):
@@ -43,7 +44,11 @@ def test_travel_planner_starts_with_same_turn_fact_extraction() -> None:
     assert plan.steps[0].id == "trip_collect"
     assert plan.steps[0].kind == "llm_chat"
     assert plan.steps[0].clarify_config is None
-    assert all(step.kind != "user_input" for step in plan.steps)
+    assert steps["trip_clarify"].kind == "user_input"
+    assert steps["trip_clarify"].depends_on == ("trip_collect",)
+    assert steps["trip_clarify"].when == (
+        "'NEEDS_CLARIFICATION: yes' in outputs.trip_collect"
+    )
 
     collect_prompt = str(steps["trip_collect"].with_args)
     assert "Do NOT ask the user to confirm details" in collect_prompt

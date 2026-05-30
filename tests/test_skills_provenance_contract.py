@@ -5,7 +5,9 @@ from pathlib import Path
 from opensquilla.skills.loader import SkillLoader
 
 ROOT = Path(__file__).resolve().parents[1]
-BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
+SKILLS_DIR = ROOT / "src" / "opensquilla" / "skills"
+BUNDLED = SKILLS_DIR / "bundled"
+EXP = SKILLS_DIR / "exp"
 DEFAULTS = {"skill-creator", "pptx", "memory", "cron", "github"}
 
 
@@ -37,11 +39,11 @@ def test_default_bundled_skills_have_release_provenance(tmp_path: Path) -> None:
 
 def test_provenance_survives_snapshot_roundtrip(tmp_path: Path) -> None:
     snapshot = tmp_path / "snapshot.json"
-    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=snapshot)
+    loader = SkillLoader(bundled_dir=BUNDLED, extra_dirs=[EXP], snapshot_path=snapshot)
     first = {skill.name: skill.provenance for skill in loader.load_all()}
     loader.save_snapshot()
 
-    reloaded = SkillLoader(bundled_dir=BUNDLED, snapshot_path=snapshot)
+    reloaded = SkillLoader(bundled_dir=BUNDLED, extra_dirs=[EXP], snapshot_path=snapshot)
     second = {skill.name: skill.provenance for skill in reloaded.load_all()}
 
     for name in DEFAULTS:
@@ -76,11 +78,11 @@ def test_meta_final_text_mode_survives_snapshot_roundtrip(tmp_path: Path) -> Non
     controls must not degrade back to auto-summary mode."""
 
     snapshot = tmp_path / "snapshot.json"
-    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=snapshot)
+    loader = SkillLoader(bundled_dir=BUNDLED, extra_dirs=[EXP], snapshot_path=snapshot)
     fresh = {skill.name: skill.final_text_mode for skill in loader.load_all()}
     loader.save_snapshot()
 
-    reloaded = SkillLoader(bundled_dir=BUNDLED, snapshot_path=snapshot)
+    reloaded = SkillLoader(bundled_dir=BUNDLED, extra_dirs=[EXP], snapshot_path=snapshot)
     from_snapshot = {
         skill.name: skill.final_text_mode for skill in reloaded.load_all()
     }

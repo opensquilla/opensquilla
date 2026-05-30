@@ -126,7 +126,7 @@ def test_report_meta_skill_uses_fast_final_report_path(tmp_path: Path) -> None:
     _assert_composes_at_least_two_skills(loader, "meta-web-research-to-report")
     steps, plan = _steps_by_id(loader, "meta-web-research-to-report")
 
-    assert plan.final_text_mode == "step:final_report"
+    assert plan.final_text_mode == "step:final_report_audit"
     assert steps["report_mode"].kind == "llm_classify"
     assert set(steps["report_mode"].output_choices) == {
         "QUICK_DECISION_MEMO",
@@ -140,12 +140,19 @@ def test_report_meta_skill_uses_fast_final_report_path(tmp_path: Path) -> None:
         "source_quality",
         "source_to_claim",
     }
+    assert set(steps["final_report_audit"].depends_on) == {
+        "preferences",
+        "report_mode",
+        "source_quality",
+        "final_report",
+    }
     for step_id in (
         "preferences",
         "source_quality",
         "outline",
         "source_to_claim",
         "final_report",
+        "final_report_audit",
     ):
         assert steps[step_id].kind == "llm_chat"
     assert steps["search"].skill == "multi-search-engine"
@@ -153,6 +160,7 @@ def test_report_meta_skill_uses_fast_final_report_path(tmp_path: Path) -> None:
         "preferences",
         "report_clarify",
         "report_mode",
+        "source_seed",
     }
     assert steps["research"].skill == "deep-research"
     assert steps["export"].skill == "docx"
@@ -162,8 +170,7 @@ def test_report_meta_skill_uses_fast_final_report_path(tmp_path: Path) -> None:
     preferences_prompt = str(steps["preferences"].with_args)
     search_args = str(steps["search"].with_args)
     assert "SEARCH_QUERY:" in preferences_prompt
-    assert "inputs.user_message" not in search_args
-    assert "outputs.preferences" in search_args
+    assert "inputs.user_message | xml_escape" in search_args
     assert "Source list" in final_prompt
     assert "Assumptions / Decision Context" in final_prompt
     assert "audience, decision being made, scope" in final_prompt
@@ -805,7 +812,12 @@ def test_report_meta_skill_clarifies_only_broad_or_decision_critical_requests(
         required_fields={"topic", "audience", "decision_context"},
     )
     assert steps["report_mode"].depends_on == ("preferences", "report_clarify")
-    assert set(steps["search"].depends_on) == {"preferences", "report_clarify", "report_mode"}
+    assert set(steps["search"].depends_on) == {
+        "preferences",
+        "report_clarify",
+        "report_mode",
+        "source_seed",
+    }
     preferences_prompt = str(steps["preferences"].with_args)
     report_mode_prompt = str(steps["report_mode"].with_args)
     assert "NEEDS_CLARIFICATION" in preferences_prompt

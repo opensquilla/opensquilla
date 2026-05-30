@@ -213,7 +213,7 @@ composition:
       depends_on: [depth, watch_context]
       on_failure: web_research_fallback
       with:
-        query: "{{ outputs.get('watch_context', '') | truncate(900) }} {{ inputs.user_message | truncate(220) }} current product pricing campaign hiring partnership funding news"
+        query: "{{ outputs.get('watch_context', '') | truncate(900) }} {{ inputs.user_message | xml_escape | truncate(220) }} current product pricing campaign hiring partnership funding news"
         engines: [brave, tavily, duckduckgo]
         max_results: 15
     - id: web_research_fallback

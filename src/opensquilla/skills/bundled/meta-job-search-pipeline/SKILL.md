@@ -168,7 +168,7 @@ composition:
       when: "outputs.mode in ['TAILOR_NEW', 'INTERVIEW_PREP', 'COMPARE_ROLES']"
       on_failure: web_research_fallback
       with:
-        query: "{{ inputs.get('collected', {}).get('job_clarify', {}).get('target_company', '') }} {{ outputs.get('preferences', '') | truncate(120) }} {{ inputs.user_message | truncate(160) }} recent news leadership product"
+        query: "{{ inputs.get('collected', {}).get('job_clarify', {}).get('target_company', '') }} {{ outputs.get('preferences', '') | truncate(120) }} {{ inputs.user_message | xml_escape | truncate(160) }} recent news leadership product"
         engines: [brave, tavily, duckduckgo]
         max_results: 10
     - id: web_research_fallback

@@ -12,6 +12,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 _LINTER_DIR = REPO / "src" / "opensquilla" / "skills" / "bundled" / "skill-creator-linter"
+_BUNDLED_DIR = REPO / "src" / "opensquilla" / "skills" / "bundled"
+_EXP_DIR = REPO / "src" / "opensquilla" / "skills" / "exp"
 LINT = _LINTER_DIR / "scripts" / "lint.py"
 
 
@@ -85,6 +87,14 @@ EXISTING_META_BUNDLES = [
 ]
 
 
+def _existing_meta_skill_md(name: str) -> Path:
+    for root in (_BUNDLED_DIR, _EXP_DIR):
+        candidate = root / name / "SKILL.md"
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(name)
+
+
 def test_g1_fails_on_non_xml_escape_first_filter() -> None:
     """G1.6 fires when inputs.user_message has a filter but xml_escape is not
     the first one. Catches the bug class that motivated tightening the regex
@@ -131,12 +141,13 @@ def test_g1_rejects_nested_meta_skill_reference() -> None:
     producing misleading auto_enable_eligible=true proposals that crashed at
     runtime."""
     nested_meta = VALID_P1.replace(
-        "skill: pdf-toolkit", "skill: meta-pdf-intelligence"
+        "skill: pdf-toolkit", "skill: meta-web-research-to-report"
     )
     out = _run_lint(nested_meta)
     assert out["G1"]["passed"] is False
     assert any(
-        "meta-pdf-intelligence" in d and ("nested" in d.lower() or "kind: meta" in d)
+        "meta-web-research-to-report" in d
+        and ("nested" in d.lower() or "kind: meta" in d)
         for d in out["G1"]["diagnostics"]
     ), f"Expected nested meta-skill diagnostic; got: {out['G1']['diagnostics']}"
 
@@ -145,8 +156,7 @@ def test_g1_rejects_nested_meta_skill_reference() -> None:
 def test_linter_passes_existing_meta_bundle(bundle: str) -> None:
     """Regression: linter must accept every existing kind=meta bundle.
     Catches over-strict lint rules."""
-    skill_path = REPO / "src" / "opensquilla" / "skills" / "bundled" / bundle / "SKILL.md"
-    skill_md = skill_path.read_text(encoding="utf-8")
+    skill_md = _existing_meta_skill_md(bundle).read_text(encoding="utf-8")
     out = _run_lint(skill_md)
     assert out["G1"]["passed"] is True, f"{bundle} G1 fail: {out['G1']['diagnostics']}"
     assert out["G2"]["passed"] is True, f"{bundle} G2 fail: {out['G2']['diagnostics']}"

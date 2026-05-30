@@ -163,7 +163,11 @@ function fixedRouterRow(label, value) {
 function renderFooterTree() {
   const composerLine = inputText || composer.text;
   const cursor = !composer.disabled && cursorVisible ? "▏" : " ";
-  const visibleComposer = composerLine ? `${composerLine}${cursor}` : composer.placeholder;
+  // Always show the cursor (even when empty); on an empty line it sits before
+  // the dimmed placeholder so the composer always looks alive.
+  const visibleComposer = composerLine
+    ? `${composerLine}${cursor}`
+    : `${cursor}${composer.placeholder}`;
   const composerColor = composerLine ? OPENTUI_DAILY_THEME.text : OPENTUI_DAILY_THEME.muted;
 
   return Box(

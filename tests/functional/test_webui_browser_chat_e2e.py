@@ -767,6 +767,31 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
                 last_task: { status: "succeeded" },
                 reason: "turn_complete",
               });
+              await emit(page, "sessions.changed", {
+                key: sessionKey,
+                run_status: "running",
+                active_task: { task_id: "running-task", status: "running" },
+                reason: "task_running",
+              });
+              await page.waitForFunction(
+                () => document.querySelector("#chat-run-status")?.innerText === "Running",
+                { timeout: 5000 }
+              );
+              await emit(page, "task.queued", {
+                task_id: "queued-behind-running",
+                session_key: sessionKey,
+                queue_depth: 1,
+                queue_position: 2,
+              });
+              await page.waitForTimeout(150);
+              const statusAfterQueuedBehindRunning =
+                await page.locator("#chat-run-status").innerText();
+              await emit(page, "sessions.changed", {
+                key: sessionKey,
+                run_status: "idle",
+                last_task: { status: "succeeded" },
+                reason: "turn_complete",
+              });
 
               await page.fill("#chat-textarea", "first prompt");
               await page.click("#chat-btn-send");
@@ -833,6 +858,82 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
                 () =>
                   window.__hotfix.chatCalls
                     .some(c => c.params.message === "queued from terminal session change"),
+                { timeout: 5000 }
+              );
+              await emit(page, "session.event.done", { text: "terminal queued answer" });
+              await page.waitForFunction(
+                () => document.querySelector("#chat-run-status")?.innerText === "Idle",
+                { timeout: 5000 }
+              );
+
+              await page.fill("#chat-textarea", "first before error");
+              await page.click("#chat-btn-send");
+              await page.waitForFunction(
+                () => window.__hotfix.chatCalls
+                  .some(c => c.params.message === "first before error"),
+                { timeout: 5000 }
+              );
+              await page.fill("#chat-textarea", "queued before error");
+              await page.click("#chat-btn-send");
+              await page.waitForFunction(
+                () => document.querySelector("#chat-pending")
+                  ?.innerText.includes("queued before error"),
+                { timeout: 5000 }
+              );
+              const queuedBeforeErrorSentPrematurely = await page.evaluate(
+                () => window.__hotfix.chatCalls
+                  .some(c => c.params.message === "queued before error")
+              );
+              await emit(page, "session.event.error", {
+                session_key: sessionKey,
+                message: "synthetic failure",
+                code: "failed",
+              });
+              await page.waitForFunction(
+                () => document.querySelector("#chat-textarea")
+                  ?.value.includes("queued before error"),
+                { timeout: 5000 }
+              );
+              const errorRecoveredComposer = await page.locator("#chat-textarea").inputValue();
+              const queuedBeforeErrorSentAfterFailure = await page.evaluate(
+                () => window.__hotfix.chatCalls
+                  .some(c => c.params.message === "queued before error")
+              );
+              await page.fill("#chat-textarea", "");
+
+              await page.fill("#chat-textarea", "approval turn");
+              await page.click("#chat-btn-send");
+              await page.waitForFunction(
+                () => window.__hotfix.chatCalls.some(c => c.params.message === "approval turn"),
+                { timeout: 5000 }
+              );
+              await page.evaluate((sessionKey) => {
+                window.dispatchEvent(new CustomEvent("opensquilla:approvals-pending", {
+                  detail: {
+                    pending: [{ id: "approval-1", namespace: "exec", sessionKey }],
+                    count: 1,
+                  },
+                }));
+              }, sessionKey);
+              await page.waitForFunction(
+                () => document.querySelector("#chat-run-status")
+                  ?.innerText === "Waiting for approval",
+                { timeout: 5000 }
+              );
+              const approvalStatusDuring = await page.locator("#chat-run-status").innerText();
+              await page.evaluate(() => {
+                window.dispatchEvent(new CustomEvent("opensquilla:approvals-pending", {
+                  detail: { pending: [], count: 0 },
+                }));
+              });
+              await page.waitForFunction(
+                () => document.querySelector("#chat-run-status")?.innerText === "Running",
+                { timeout: 5000 }
+              );
+              const approvalStatusAfterResolve = await page.locator("#chat-run-status").innerText();
+              await emit(page, "session.event.done", { text: "approval answer" });
+              await page.waitForFunction(
+                () => document.querySelector("#chat-run-status")?.innerText === "Idle",
                 { timeout: 5000 }
               );
 
@@ -904,9 +1005,15 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
               const result = {
                 statusAfterOtherTask,
                 statusAfterCurrentTask,
+                statusAfterQueuedBehindRunning,
                 regenerateMessages,
                 bubblesAfterRegenerate,
                 draftAfterQueueDrain,
+                queuedBeforeErrorSentPrematurely,
+                errorRecoveredComposer,
+                queuedBeforeErrorSentAfterFailure,
+                approvalStatusDuring,
+                approvalStatusAfterResolve,
                 yamlDraftPreserved: yamlAfterToggle === yamlDraft,
                 configResetToForm:
                   configFormDisplay !== "none" &&
@@ -962,12 +1069,18 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
     assert payload["pageErrors"] == [], payload["pageErrors"]
     assert payload["statusAfterOtherTask"] == "Idle"
     assert payload["statusAfterCurrentTask"] == "Queued"
+    assert payload["statusAfterQueuedBehindRunning"] == "Running"
     assert payload["regenerateMessages"].count("first prompt") >= 2
     first_regenerate = payload["regenerateMessages"].index("first prompt")
     second_send = payload["regenerateMessages"].index("second prompt")
     assert first_regenerate < second_send
     assert payload["bubblesAfterRegenerate"] <= 3
     assert payload["draftAfterQueueDrain"] == "draft typed during stream"
+    assert payload["queuedBeforeErrorSentPrematurely"] is False
+    assert "queued before error" in payload["errorRecoveredComposer"]
+    assert payload["queuedBeforeErrorSentAfterFailure"] is False
+    assert payload["approvalStatusDuring"] == "Waiting for approval"
+    assert payload["approvalStatusAfterResolve"] == "Running"
     assert payload["yamlDraftPreserved"] is True
     assert payload["configResetToForm"] is True
     assert payload["channelStatusCallsAfterDestroyedWait"] == 0

@@ -535,6 +535,9 @@ def _active_task_summary(rows: list[Any]) -> dict[str, Any] | None:
     ]
     if not active:
         return None
+    running = [row for row in active if _enum_value(getattr(row, "status", None)) == "running"]
+    if running:
+        return _task_summary(_sorted_task_rows(running)[0])
     return _task_summary(_sorted_task_rows(active)[0])
 
 

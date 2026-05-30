@@ -63,6 +63,7 @@ class CompactionResult:
     coverage_status: str = "unknown"
     missing_obligations: list[str] | None = None
     critical_carry_forward: list[str] | None = None
+    skip_reason: str | None = None
 
 
 def _string_value(value: Any) -> str:

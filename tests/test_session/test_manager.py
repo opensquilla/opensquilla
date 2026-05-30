@@ -1,5 +1,6 @@
 """Tests for SessionManager lifecycle operations."""
 
+import contextlib
 import json
 import sqlite3
 from pathlib import Path
@@ -699,6 +700,49 @@ async def test_compact_with_result_returns_source_and_persists(manager):
     ]
     assert canonical_contents == original_contents
     assert [entry.content for entry in transcript] == original_contents[-len(transcript) :]
+
+
+@pytest.mark.asyncio
+async def test_compact_with_result_skips_rewrite_when_transcript_changes(manager):
+    await manager.create("agent:main:main")
+    for i in range(20):
+        await manager.append_message(
+            "agent:main:main",
+            "user",
+            f"msg {i} " + ("x" * 500),
+            token_count=200,
+        )
+    original_contents = [entry.content for entry in await manager.get_transcript("agent:main:main")]
+    context_entries = 0
+
+    @contextlib.asynccontextmanager
+    async def mutation_context():
+        nonlocal context_entries
+        context_entries += 1
+        if context_entries == 2:
+            await manager.append_message(
+                "agent:main:main",
+                "user",
+                "late queued followup",
+                token_count=3,
+            )
+        yield
+
+    result = await manager.compact_with_result(
+        "agent:main:main",
+        context_window_tokens=1000,
+        mutation_context=mutation_context,
+    )
+
+    assert result.summary == ""
+    assert result.summary_source == "skipped"
+    assert result.skip_reason == "stale_preimage"
+    assert result.removed_count == 0
+    node = await manager._storage.get_session("agent:main:main")
+    assert node.compaction_count == 0
+    assert await manager.get_summaries("agent:main:main") == []
+    transcript = await manager.get_transcript("agent:main:main")
+    assert [entry.content for entry in transcript] == original_contents + ["late queued followup"]
 
 
 @pytest.mark.asyncio

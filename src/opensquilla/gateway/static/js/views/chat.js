@@ -39,6 +39,8 @@ const ChatView = (() => {
   let _autoScroll = true;
   let _streamIdleTimer = null;
   let _streamIdlePausedForApproval = false;
+  let _approvalPendingForCurrentSession = false;
+  let _currentRunStatus = 'idle';
   let _historySyncTimer = null;
   const _AWAITING_MODEL_CLASS = 'awaiting-model';
   let _lastVisibleStreamEvent = '';
@@ -1504,6 +1506,7 @@ const ChatView = (() => {
     const labels = {
       queued: 'Queued',
       running: 'Running',
+      approval_pending: 'Waiting for approval',
       interrupted: 'Interrupted',
       failed: 'Failed',
       timeout: 'Timed out',
@@ -1517,8 +1520,9 @@ const ChatView = (() => {
     const value = String(status || '').toLowerCase();
     if (value === 'abandoned') return 'interrupted';
     if (value === 'killed') return 'cancelled';
+    if (value === 'waiting for approval') return 'approval_pending';
     if (value === 'succeeded' || value === 'success' || value === 'complete') return 'idle';
-    if (['queued', 'running', 'interrupted', 'failed', 'timeout', 'cancelled'].includes(value)) {
+    if (['queued', 'running', 'approval_pending', 'interrupted', 'failed', 'timeout', 'cancelled'].includes(value)) {
       return value;
     }
     return 'idle';
@@ -1531,6 +1535,7 @@ const ChatView = (() => {
     return {
       queued: 'chip-warn',
       running: 'chip-ok',
+      approval_pending: 'chip-warn',
       interrupted: 'chip-warn',
       failed: 'chip-danger',
       timeout: 'chip-warn',
@@ -1544,7 +1549,7 @@ const ChatView = (() => {
     const activeStatus = active ? _normalizeRunStatus(active.status) : '';
     const rawStatus = source.run_status || source.runStatus || active?.status || last?.status || '';
     let status = _normalizeRunStatus(rawStatus);
-    if (active && (activeStatus === 'queued' || activeStatus === 'running')) status = activeStatus;
+    if (active && ['queued', 'running', 'approval_pending'].includes(activeStatus)) status = activeStatus;
     const task = active || last || null;
     return { status, label: _runStatusLabel(status), task };
   }
@@ -1629,13 +1634,13 @@ const ChatView = (() => {
     if (!_isCurrentSessionPayload(payload)) return false;
     _clearActiveTaskGroups();
     const state = _sessionRunStatus(payload);
-    const interrupted = state.status === 'cancelled' || state.status === 'interrupted';
-    if (_isStreaming) _endStreaming(interrupted ? { reason: 'aborted' } : undefined);
+    const recoverPending = ['cancelled', 'interrupted', 'failed', 'timeout'].includes(state.status);
+    if (_isStreaming) _endStreaming(recoverPending ? { reason: 'aborted' } : undefined);
     _applySessionRunState(payload);
     _scheduleHistorySync();
-    if (interrupted) {
+    if (recoverPending) {
       _stopRequestedByUser = false;
-      _popAllPendingIntoComposer();
+      _recoverPendingAfterTerminal(state.status);
     } else {
       _schedulePendingDrainAfterTerminal();
     }
@@ -1673,15 +1678,18 @@ const ChatView = (() => {
   }
 
   function _applySessionRunState(source) {
+    const state = _sessionRunStatus(source);
+    _currentRunStatus = state.status;
     const el = _runStatusEl || (_el && _el.querySelector('#chat-run-status'));
     if (!el) return;
     _runStatusEl = el;
-    const state = _sessionRunStatus(source);
     el.className = `chip ${_runStatusChipClass(state.status)}`.trim();
     el.textContent = state.label;
     const taskId = state.task && state.task.task_id ? state.task.task_id : '';
     const reason = state.task && state.task.terminal_reason ? state.task.terminal_reason : '';
-    el.title = [state.label, taskId, reason].filter(Boolean).join(' - ');
+    const queuePosition = state.task && (state.task.queue_position || state.task.queuePosition);
+    const queueTitle = queuePosition ? `queue #${queuePosition}` : '';
+    el.title = [state.label, taskId, queueTitle, reason].filter(Boolean).join(' - ');
   }
 
   function _copySessionKeyToClipboard() {
@@ -2452,8 +2460,9 @@ const ChatView = (() => {
     _unsubs.push(() => document.removeEventListener('paste', pasteHandler));
 
     // Auto-scroll detection
-    _thread.addEventListener('scroll', () => {
-      const gap = _thread.scrollHeight - _thread.scrollTop - _thread.clientHeight;
+    const threadEl = _thread;
+    threadEl.addEventListener('scroll', () => {
+      const gap = threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight;
       _autoScroll = gap < 60;
     });
 
@@ -4344,6 +4353,7 @@ const ChatView = (() => {
 
     _unsubs.push(_rpc.on('task.queued', (payload) => {
       if (!_isCurrentSessionPayload(payload)) return;
+      if (_currentRunStatus === 'running' || _currentRunStatus === 'approval_pending') return;
       _applySessionRunState({
         run_status: 'queued',
         active_task: { ...(payload || {}), status: 'queued' },
@@ -4404,6 +4414,9 @@ const ChatView = (() => {
         }
         if (rawEvent === 'task.succeeded') {
           _scheduleSucceededTaskTerminalSync(rawPayload);
+          if (!_isStreaming) _schedulePendingDrainAfterTerminal();
+        } else if (!_isStreaming) {
+          _recoverPendingAfterTerminal(terminalRunStatus);
         }
       }
       const normalized = _taskTerminalAsSessionEvent(rawEvent, rawPayload);
@@ -4564,6 +4577,7 @@ const ChatView = (() => {
         _endStreaming();
         _addMessage('error', _sessionErrorMessage(payload));
         _scheduleHistorySync();
+        _recoverPendingAfterTerminal(_normalizeRunStatus(payload?.code || payload?.status || 'failed'));
         if (_activeTaskGroups.size > 0) {
           _applySessionRunState(_activeTaskGroupRunState(payload));
         } else {
@@ -5579,10 +5593,20 @@ const ChatView = (() => {
   }
 
   function _setStreamIdlePausedForApproval(paused) {
-    _streamIdlePausedForApproval = !!paused;
+    const nextPaused = !!paused;
+    const changed = _approvalPendingForCurrentSession !== nextPaused;
+    _streamIdlePausedForApproval = nextPaused;
+    _approvalPendingForCurrentSession = nextPaused;
     if (_streamIdlePausedForApproval) {
       _clearStreamIdleTimer();
+      if (changed || _isStreaming) {
+        _applySessionRunState({
+          run_status: 'approval_pending',
+          active_task: { status: 'approval_pending', terminal_reason: 'tool_approval' },
+        });
+      }
     } else if (_isStreaming) {
+      _applySessionRunState({ run_status: 'running', active_task: { status: 'running' } });
       _resetStreamIdleTimer();
     }
   }
@@ -6040,6 +6064,7 @@ const ChatView = (() => {
     _renderDirty = false;
     _clearStreamIdleTimer();
     _streamIdlePausedForApproval = false;
+    _approvalPendingForCurrentSession = false;
     if (_streamBubble) {
       _streamBubble.classList.remove('streaming');
       const cleanedText = _stripProtocolTextLeak(_stripDirectiveTags(_stripGeneratedArtifactMarkers(_streamRaw))).trim();
@@ -6187,6 +6212,7 @@ const ChatView = (() => {
     _renderDirty = false;
     _clearStreamIdleTimer();
     _streamIdlePausedForApproval = false;
+    _approvalPendingForCurrentSession = false;
     if (_streamBubble) _streamBubble.remove();
     routerStrips.forEach((el) => {
       _routerFxPauseScanTimers(el);
@@ -6277,6 +6303,7 @@ const ChatView = (() => {
     _renderDirty = false;
     _clearStreamIdleTimer();
     _streamIdlePausedForApproval = false;
+    _approvalPendingForCurrentSession = false;
     if (_streamBubble) _streamBubble.remove();
     routerStrips.forEach((el) => {
       _routerFxPauseScanTimers(el);
@@ -7753,6 +7780,15 @@ const ChatView = (() => {
     _inputHistoryIdx = null;
     _inputHistoryDraft = '';
     return true;
+  }
+
+  function _recoverPendingAfterTerminal(status = 'failed') {
+    const recovered = _popAllPendingIntoComposer();
+    if (recovered) {
+      const label = _runStatusLabel(_normalizeRunStatus(status)).toLowerCase();
+      UI.toast(`Pending message recovered after ${label}`, 'warn', 2500);
+    }
+    return recovered;
   }
 
   function _clearPendingDrainAfterTerminalTimer() {

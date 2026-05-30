@@ -748,12 +748,13 @@ class _TurnRunnerCompactionPersistAdapter(CompactionPersistPort):
             p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
         ):
             persist_kwargs["trigger_reason"] = "agent_inline_overflow"
-        await persist_method(
-            session_key,
-            summary,
-            kept_entries,
-            **persist_kwargs,
-        )
+        async with self._runner._session_write_context(session_key):
+            await persist_method(
+                session_key,
+                summary,
+                kept_entries,
+                **persist_kwargs,
+            )
         compaction_id = compaction_id or new_compaction_id()
         notify_compaction(
             session_key,
@@ -936,7 +937,7 @@ class _TurnRunnerTranscriptAppendAdapter(TranscriptAppendPort):
             append_kwargs["turn_usage"] = turn_usage
         if _accepts_keyword_arg(session_manager.append_message, "token_count"):
             append_kwargs["token_count"] = token_count
-        await session_manager.append_message(session_key, **append_kwargs)
+        await self._runner._append_session_message(session_key, **append_kwargs)
         return True
 
 class _TurnRunnerTurnMemoryCaptureAdapter(TurnMemoryCapturePort):
@@ -1005,82 +1006,83 @@ class _TurnRunnerSessionTotalsAdapter(SessionTotalsPort):
         session_manager = self._runner._session_manager
         if session_manager is None:
             return None
-        current_session = await session_manager.get_session(session_key)
-        if current_session is None:
-            return None
+        async with self._runner._session_write_context(session_key):
+            current_session = await session_manager.get_session(session_key)
+            if current_session is None:
+                return None
 
-        done_total_tokens = done_event.input_tokens + done_event.output_tokens
-        event_cost_source = normalize_event_cost_source(
-            done_event.cost_source,
-            input_tokens=done_event.input_tokens,
-            output_tokens=done_event.output_tokens,
-            cache_read_tokens=done_event.cached_tokens,
-            cache_write_tokens=done_event.cache_write_tokens,
-            cost_usd=done_event.cost_usd,
-            billed_cost_usd=done_event.billed_cost,
-        )
-        next_total_cost = (
-            getattr(current_session, "total_cost_usd", 0.0) or 0.0
-        ) + done_event.cost_usd
-        next_billed_cost = (
-            getattr(current_session, "billed_cost_usd", 0.0) or 0.0
-        ) + done_event.billed_cost
-        next_estimated_component = (
-            getattr(current_session, "estimated_cost_component_usd", 0.0) or 0.0
-        )
-        if event_cost_source == "opensquilla_estimate":
-            next_estimated_component += done_event.cost_usd
-        next_missing_entries = (
-            getattr(current_session, "missing_cost_entries", 0) or 0
-        )
-        if event_cost_source == "unavailable":
-            next_missing_entries += 1
-        next_cost_source = rollup_cost_source(
-            billed_cost_usd=next_billed_cost,
-            estimated_cost_component_usd=next_estimated_component,
-            missing_cost_entries=next_missing_entries,
-        )
-        next_input_tokens = (
-            getattr(current_session, "input_tokens", 0) or 0
-        ) + done_event.input_tokens
-        next_output_tokens = (
-            getattr(current_session, "output_tokens", 0) or 0
-        ) + done_event.output_tokens
-        next_total_tokens = (
-            getattr(current_session, "total_tokens", 0) or 0
-        ) + done_total_tokens
-        next_estimated_cost = (
-            getattr(current_session, "estimated_cost_usd", 0.0) or 0.0
-        ) + done_event.cost_usd
-        next_cache_read = (
-            getattr(current_session, "cache_read", 0) or 0
-        ) + done_event.cached_tokens
-        next_cache_write = (
-            getattr(current_session, "cache_write", 0) or 0
-        ) + done_event.cache_write_tokens
-        next_model_override = done_event.model or getattr(
-            current_session, "model_override", None
-        )
+            done_total_tokens = done_event.input_tokens + done_event.output_tokens
+            event_cost_source = normalize_event_cost_source(
+                done_event.cost_source,
+                input_tokens=done_event.input_tokens,
+                output_tokens=done_event.output_tokens,
+                cache_read_tokens=done_event.cached_tokens,
+                cache_write_tokens=done_event.cache_write_tokens,
+                cost_usd=done_event.cost_usd,
+                billed_cost_usd=done_event.billed_cost,
+            )
+            next_total_cost = (
+                getattr(current_session, "total_cost_usd", 0.0) or 0.0
+            ) + done_event.cost_usd
+            next_billed_cost = (
+                getattr(current_session, "billed_cost_usd", 0.0) or 0.0
+            ) + done_event.billed_cost
+            next_estimated_component = (
+                getattr(current_session, "estimated_cost_component_usd", 0.0) or 0.0
+            )
+            if event_cost_source == "opensquilla_estimate":
+                next_estimated_component += done_event.cost_usd
+            next_missing_entries = (
+                getattr(current_session, "missing_cost_entries", 0) or 0
+            )
+            if event_cost_source == "unavailable":
+                next_missing_entries += 1
+            next_cost_source = rollup_cost_source(
+                billed_cost_usd=next_billed_cost,
+                estimated_cost_component_usd=next_estimated_component,
+                missing_cost_entries=next_missing_entries,
+            )
+            next_input_tokens = (
+                getattr(current_session, "input_tokens", 0) or 0
+            ) + done_event.input_tokens
+            next_output_tokens = (
+                getattr(current_session, "output_tokens", 0) or 0
+            ) + done_event.output_tokens
+            next_total_tokens = (
+                getattr(current_session, "total_tokens", 0) or 0
+            ) + done_total_tokens
+            next_estimated_cost = (
+                getattr(current_session, "estimated_cost_usd", 0.0) or 0.0
+            ) + done_event.cost_usd
+            next_cache_read = (
+                getattr(current_session, "cache_read", 0) or 0
+            ) + done_event.cached_tokens
+            next_cache_write = (
+                getattr(current_session, "cache_write", 0) or 0
+            ) + done_event.cache_write_tokens
+            next_model_override = done_event.model or getattr(
+                current_session, "model_override", None
+            )
 
-        # Persist the last actual model into usage metadata only.
-        # Writing it to session.model would pin future turns and
-        # silently bypass squilla-router routing.
-        await session_manager.update(
-            session_key,
-            input_tokens=next_input_tokens,
-            output_tokens=next_output_tokens,
-            total_tokens=next_total_tokens,
-            total_tokens_fresh=True,
-            estimated_cost_usd=next_estimated_cost,
-            total_cost_usd=next_total_cost,
-            billed_cost_usd=next_billed_cost,
-            estimated_cost_component_usd=next_estimated_component,
-            cost_source=next_cost_source,
-            missing_cost_entries=next_missing_entries,
-            cache_read=next_cache_read,
-            cache_write=next_cache_write,
-            model_override=next_model_override,
-        )
+            # Persist the last actual model into usage metadata only.
+            # Writing it to session.model would pin future turns and
+            # silently bypass squilla-router routing.
+            await session_manager.update(
+                session_key,
+                input_tokens=next_input_tokens,
+                output_tokens=next_output_tokens,
+                total_tokens=next_total_tokens,
+                total_tokens_fresh=True,
+                estimated_cost_usd=next_estimated_cost,
+                total_cost_usd=next_total_cost,
+                billed_cost_usd=next_billed_cost,
+                estimated_cost_component_usd=next_estimated_component,
+                cost_source=next_cost_source,
+                missing_cost_entries=next_missing_entries,
+                cache_read=next_cache_read,
+                cache_write=next_cache_write,
+                model_override=next_model_override,
+            )
         return CostRollupResult(
             input_tokens=next_input_tokens,
             output_tokens=next_output_tokens,

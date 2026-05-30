@@ -51,6 +51,28 @@ class _ResultCompactionSessionManager(_FakeSessionManager):
         )
 
 
+class _StaleResultCompactionSessionManager(_FakeSessionManager):
+    async def compact_with_result(
+        self,
+        session_key: str,
+        context_window_tokens: int,
+        config: object | None = None,
+        **kwargs: Any,
+    ) -> SimpleNamespace:
+        self.compact_calls.append((session_key, context_window_tokens))
+        return SimpleNamespace(
+            summary="",
+            kept_entries=list(self._transcript),
+            removed_count=0,
+            chunks_processed=0,
+            summary_source="skipped",
+            skip_reason="stale_preimage",
+            tokens_before=300,
+            tokens_after=300,
+            remaining_budget_tokens=context_window_tokens - 300,
+        )
+
+
 @dataclass(frozen=True)
 class _FakeFlushReceipt:
     mode: str = "llm"
@@ -237,6 +259,31 @@ async def test_t3_completed_event_reports_compaction_metadata(
     assert completed["kept_count"] == 1
     assert completed["tokens_after"] == 100
     assert completed["remaining_budget_tokens"] == 99_900
+
+
+@pytest.mark.asyncio
+async def test_t3_stale_preimage_skip_does_not_mark_compacted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sm = _StaleResultCompactionSessionManager(_sample_transcript())
+    fs = _FakeFlushService()
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        runtime_module,
+        "notify_compaction",
+        lambda session_key, **payload: events.append((session_key, payload)),
+    )
+    runner = _make_runner(session_manager=sm, flush_service=fs)
+    session_key = "agent:main:webchat:default"
+
+    turn = _make_turn(routed_tier="t3", previous_tier="t2")
+    result = await runner._maybe_compact_on_t3_upgrade(session_key, turn, 100_000)
+
+    assert result == "handled"
+    assert sm.compact_calls == [(session_key, 100_000)]
+    assert runner.has_compacted_this_turn(session_key) is False
+    skipped = [payload for _, payload in events if payload.get("status") == "skipped"]
+    assert skipped[-1]["reason"] == "stale_preimage"
 
 
 @pytest.mark.asyncio

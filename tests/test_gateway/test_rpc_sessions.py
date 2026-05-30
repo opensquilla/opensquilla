@@ -671,6 +671,45 @@ class TestSessionsList:
         assert row["run_status"] == "running"
 
     @pytest.mark.asyncio
+    async def test_list_prefers_running_active_task_over_newer_queued_task(
+        self, dispatcher
+    ):
+        session = FakeSession(session_key="agent:main:webchat:running-priority")
+        manager = FakeSessionManager([session])
+        manager._storage._agent_tasks[session.session_key] = [
+            SimpleNamespace(
+                task_id="task-running",
+                status="running",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=100,
+                started_at=110,
+                finished_at=None,
+                terminal_reason=None,
+            ),
+            SimpleNamespace(
+                task_id="task-queued",
+                status="queued",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=200,
+                started_at=None,
+                finished_at=None,
+                terminal_reason=None,
+            ),
+        ]
+        ctx = make_ctx(session_manager=manager, task_runtime=None)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        assert row["active_task"]["task_id"] == "task-running"
+        assert row["run_status"] == "running"
+
+    @pytest.mark.asyncio
     async def test_list_batches_persisted_task_state_for_visible_sessions(self, dispatcher):
         one = FakeSession(session_key="agent:main:webchat:one")
         two = FakeSession(session_key="agent:main:webchat:two")

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import contextvars
 import copy
 import hashlib
@@ -360,6 +361,10 @@ def _get_tool_concurrency_policy(
 # self-deadlocking while unrelated tasks still see their own context values.
 _SESSION_LOCK_OWNER: contextvars.ContextVar[dict[int, asyncio.Task[Any]]] = contextvars.ContextVar(
     "_session_lock_owner"
+)
+_SESSION_LOCK_BYPASS_ONLY: contextvars.ContextVar[set[int] | None] = contextvars.ContextVar(
+    "_session_lock_bypass_only",
+    default=None,
 )
 
 
@@ -1270,18 +1275,17 @@ class TurnRunner:
         Per-session locks are supplied by an external ``session_lock_provider``
         (``Callable[[str], asyncio.Lock]``) injected at construction time.
 
-        Gateway path: provider = ``TaskRuntime._get_session_lock_for_turn``,
-        so TaskRuntime and TurnRunner share a single ``asyncio.Lock`` per
-        session_key.  ``TaskRuntime._execute()`` holds the lock before calling
-        the turn handler; ``TurnRunner.run()`` detects this and skips re-acquire
-        (lock.locked() == True → bypass ``async with lock``).
+        Gateway path: provider = ``TaskRuntime._get_session_lock_for_turn``.
+        It returns the short write lock used for transcript/session state
+        mutation. TaskRuntime owns a separate execution lock and marks the
+        call chain so ``TurnRunner.run()`` skips its legacy coarse acquire while
+        append adapters still acquire the write lock.
 
         CLI / standalone path: provider = ``_standalone_lock_provider`` from
         ``build_turn_runner_from_services``, which maintains its own dict.
 
-        The old two-level OUTER/INNER hierarchy is eliminated on the gateway
-        path. No reverse-acquire risk remains there because there is only one
-        shared lock per session.
+        The old model/approval-wide write lock is eliminated on the gateway
+        path. External I/O must stay outside the write lock.
     """
 
     def __init__(
@@ -1649,8 +1653,9 @@ class TurnRunner:
         standalone provider for CLI paths).
 
         External callers (rpc_sessions.py, channel_dispatch.py) that call this
-        directly will now receive the same lock object as
-        TaskRuntime._execute(), ensuring they serialize against the unified lock.
+        directly receive the short write lock used for transcript/session state
+        mutation. Gateway TaskRuntime uses a separate execution lock for the
+        long-running turn lifecycle.
         """
         return self._session_lock_provider(session_key)
 
@@ -1661,6 +1666,31 @@ class TurnRunner:
     def set_session_lock_provider(self, provider: Callable[[str], asyncio.Lock]) -> None:
         """Replace the lock provider at the gateway composition root."""
         self._session_lock_provider = provider
+
+    @contextlib.asynccontextmanager
+    async def _session_write_context(self, session_key: str) -> AsyncIterator[None]:
+        lock = self.get_session_lock(session_key)
+        bypass_only = _SESSION_LOCK_BYPASS_ONLY.get(None)
+        if bypass_only is not None and id(lock) in bypass_only:
+            async with lock:
+                yield
+            return
+        yield
+
+    def _session_write_context_factory(
+        self,
+        session_key: str,
+    ) -> Callable[[], contextlib.AbstractAsyncContextManager[None]]:
+        return lambda: self._session_write_context(session_key)
+
+    async def _append_session_message(self, session_key: str, **append_kwargs: Any) -> Any:
+        if self._session_manager is None:
+            return None
+        async with self._session_write_context(session_key):
+            return await self._session_manager.append_message(
+                session_key,
+                **append_kwargs,
+            )
 
     async def run(
         self,
@@ -1713,17 +1743,16 @@ class TurnRunner:
             router_control_replay_depth=router_control_replay_depth,
             router_control_turn_hold_applied=False,
         )
-        # Re-entry detection: check whether this call chain already owns the
-        # session lock (gateway path: TaskRuntime._execute holds the shared
-        # lock before calling run()). We use a ContextVar keyed by lock id so
-        # child Tasks spawned by stream wrappers inherit ownership for this
-        # call chain. lock.locked() is intentionally NOT used because it cannot
+        # Re-entry detection: check whether this call chain already serializes
+        # the turn lifecycle. On the gateway path TaskRuntime marks ownership
+        # while holding its execution lock, so TurnRunner skips the legacy
+        # coarse lock. lock.locked() is intentionally NOT used because it cannot
         # distinguish owners under concurrent turns.
         current_task = asyncio.current_task()
         owner_map = _SESSION_LOCK_OWNER.get(None)
         _caller_holds_lock = owner_map is not None and id(lock) in owner_map
         if _caller_holds_lock:
-            # Same call chain already holds the lock (re-entrant call).
+            # Same call chain already serializes this turn.
             try:
                 async for event in self._run_turn(
                     message,
@@ -2304,7 +2333,7 @@ class TurnRunner:
                             {"text": body, "artifacts": turn_artifacts},
                             ensure_ascii=False,
                         )
-                    await self._session_manager.append_message(
+                    await self._append_session_message(
                         session_key,
                         role="assistant",
                         content=body,
@@ -2378,7 +2407,7 @@ class TurnRunner:
                     )
                 else:
                     transcript_message = f"Error: {error_message}"
-                await self._session_manager.append_message(
+                await self._append_session_message(
                     session_key, role="system", content=transcript_message
                 )
             if turn_call_logger is not None:
@@ -2606,7 +2635,7 @@ class TurnRunner:
                             code=event_code,
                             error=str(exc),
                         )
-            await self._session_manager.append_message(
+            await self._append_session_message(
                 session_key,
                 role="system",
                 content=transcript_message,
@@ -3847,12 +3876,13 @@ class TurnRunner:
             )("record_memory_checkpoint")
         if not callable(method):
             return False
-        receipt = await self._session_manager.record_memory_checkpoint(
-            session_key,
-            list(transcript),
-            turn_id=turn_id,
-            source=source,
-        )
+        async with self._session_write_context(session_key):
+            receipt = await self._session_manager.record_memory_checkpoint(
+                session_key,
+                list(transcript),
+                turn_id=turn_id,
+                source=source,
+            )
         return durable_receipt_allows_destructive_compaction(receipt)
 
     def _emit_decision_entry(
@@ -4278,6 +4308,10 @@ class TurnRunner:
                     compact_kwargs["trigger_reason"] = "t3_upgrade"
                 if _accepts_keyword_arg(compact_method, "flush_receipt_status"):
                     compact_kwargs["flush_receipt_status"] = flush_receipt_status
+                if _accepts_keyword_arg(compact_method, "mutation_context"):
+                    compact_kwargs["mutation_context"] = self._session_write_context_factory(
+                        session_key
+                    )
                 compaction_result = await self._session_manager.compact_with_result(
                     session_key,
                     context_window_tokens,
@@ -4312,9 +4346,9 @@ class TurnRunner:
                         flush_receipt_status=flush_receipt_status,
                         **observed_payload,
                     )
-            self.mark_compacted_this_turn(session_key)
-            self._record_compaction_success(session_key)
             if result:
+                self.mark_compacted_this_turn(session_key)
+                self._record_compaction_success(session_key)
                 completed_payload = {"summary_len": len(result)}
                 if compaction_result is not None:
                     completed_payload.update(compaction_result_payload(compaction_result))
@@ -4329,12 +4363,18 @@ class TurnRunner:
                     **compaction_lifecycle_payload(compaction_id, COMPACTION_PERSISTED_EVENT),
                 )
             else:
+                skip_reason = str(
+                    getattr(compaction_result, "skip_reason", None) or "empty_summary"
+                )
+                if skip_reason != "stale_preimage":
+                    self.mark_compacted_this_turn(session_key)
+                    self._record_compaction_success(session_key)
                 notify_compaction(
                     session_key,
                     source="automatic",
                     phase="t3_upgrade",
                     status="skipped",
-                    reason="empty_summary",
+                    reason=skip_reason,
                     context_window_tokens=context_window_tokens,
                     flush_receipt_status=flush_receipt_status,
                     **compaction_lifecycle_payload(
@@ -4514,6 +4554,10 @@ class TurnRunner:
                     compact_kwargs["trigger_reason"] = "preflight"
                 if _accepts_keyword_arg(compact_method, "flush_receipt_status"):
                     compact_kwargs["flush_receipt_status"] = flush_receipt_status
+                if _accepts_keyword_arg(compact_method, "mutation_context"):
+                    compact_kwargs["mutation_context"] = self._session_write_context_factory(
+                        session_key
+                    )
                 compaction_result = await self._session_manager.compact_with_result(
                     session_key,
                     context_window_tokens,
@@ -4553,7 +4597,11 @@ class TurnRunner:
                         flush_receipt_status=flush_receipt_status,
                         **observed_payload,
                     )
-            self.mark_compacted_this_turn(session_key)
+            skip_reason = str(
+                getattr(compaction_result, "skip_reason", None) or "empty_summary"
+            )
+            if skip_reason != "stale_preimage":
+                self.mark_compacted_this_turn(session_key)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -4587,13 +4635,32 @@ class TurnRunner:
             )
             return
         if not result:
+            skip_reason = str(
+                getattr(compaction_result, "skip_reason", None) or "empty_summary"
+            )
+            if skip_reason == "stale_preimage":
+                notify_compaction(
+                    session_key,
+                    source="automatic",
+                    phase="preflight",
+                    status="skipped",
+                    reason=skip_reason,
+                    tokens_before=total_tokens,
+                    context_window_tokens=context_window_tokens,
+                    flush_receipt_status=flush_receipt_status,
+                    **compaction_lifecycle_payload(
+                        compaction_id,
+                        COMPACTION_TRIGGERED_EVENT,
+                    ),
+                )
+                return
             emergency_applied = await self._record_emergency_ephemeral_compaction(
                 session_key,
                 transcript,
                 context_window_tokens,
                 compaction_id=compaction_id,
                 phase="preflight",
-                reason="empty_summary",
+                reason=skip_reason,
             )
             if emergency_applied:
                 self._record_compaction_success(session_key)
@@ -4625,7 +4692,7 @@ class TurnRunner:
                 source="automatic",
                 phase="preflight",
                 status="skipped",
-                reason="empty_summary",
+                reason=skip_reason,
                 tokens_before=total_tokens,
                 context_window_tokens=context_window_tokens,
                 flush_receipt_status=flush_receipt_status,

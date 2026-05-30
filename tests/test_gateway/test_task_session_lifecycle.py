@@ -159,7 +159,12 @@ async def test_task_timeout_terminalizes_running_session_and_broadcasts_change()
     assert events[0] == (
         session.session_key,
         "task.queued",
-        {"task_id": handle.task_id, "session_key": session.session_key},
+        {
+            "task_id": handle.task_id,
+            "session_key": session.session_key,
+            "queue_depth": 1,
+            "queue_position": 1,
+        },
     )
     assert events[1] == (
         session.session_key,
@@ -287,7 +292,12 @@ async def test_task_running_reactivates_terminal_session_before_next_turn() -> N
     assert events[0] == (
         session.session_key,
         "task.queued",
-        {"task_id": handle.task_id, "session_key": session.session_key},
+        {
+            "task_id": handle.task_id,
+            "session_key": session.session_key,
+            "queue_depth": 1,
+            "queue_position": 1,
+        },
     )
     assert events[1] == (
         session.session_key,

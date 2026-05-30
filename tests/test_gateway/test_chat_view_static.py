@@ -1920,14 +1920,41 @@ def test_chat_turn_complete_event_schedules_pending_queue_drain_fallback() -> No
     ]
 
     assert "_schedulePendingDrainAfterTerminal();" in helper
-    assert "if (interrupted)" in helper
-    assert "_popAllPendingIntoComposer();" in helper
+    assert "const recoverPending =" in helper
+    assert "_recoverPendingAfterTerminal(state.status);" in helper
     assert (
         "if (_isStreaming || _isCompactInFlightForCurrentSession() || "
         "_pendingQueue.length === 0) return;"
         in scheduler
     )
     assert "_drainQueueHead();" in scheduler
+
+
+def test_chat_failed_terminal_events_recover_pending_queue_to_composer() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    error_start = source.index("} else if (event.endsWith('.error')) {")
+    error_end = source.index("      }\n    }));", error_start)
+    error_body = source[error_start:error_end]
+    terminal_start = source.index("const terminalStatus = _taskTerminalStatus(rawEvent);")
+    terminal_end = source.index("      const normalized =", terminal_start)
+    terminal_body = source[terminal_start:terminal_end]
+
+    assert "function _recoverPendingAfterTerminal(status = 'failed')" in source
+    assert "_recoverPendingAfterTerminal(_normalizeRunStatus" in error_body
+    assert "_recoverPendingAfterTerminal(terminalRunStatus);" in terminal_body
+
+
+def test_chat_approval_pending_has_distinct_run_status() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    approval_start = source.index("function _setStreamIdlePausedForApproval(paused)")
+    approval_end = source.index("  function _resetStreamIdleTimer()", approval_start)
+    approval_body = source[approval_start:approval_end]
+
+    assert "approval_pending: 'Waiting for approval'" in source
+    assert "approval_pending: 'chip-warn'" in source
+    assert "_approvalPendingForCurrentSession" in source
+    assert "run_status: 'approval_pending'" in approval_body
+    assert "active_task: { status: 'approval_pending'" in approval_body
 
 
 def test_chat_ignores_replayed_compaction_toasts() -> None:
@@ -2266,6 +2293,8 @@ def test_chat_task_lifecycle_events_are_session_scoped() -> None:
     terminal_body = source[terminal_start:terminal_end]
 
     assert "if (!_isCurrentSessionPayload(payload)) return;" in queued_body
+    assert "_currentRunStatus === 'running'" in queued_body
+    assert "_currentRunStatus === 'approval_pending'" in queued_body
     assert "if (!_isCurrentSessionPayload(payload)) return;" in running_body
     assert "if (!_isCurrentSessionPayload(rawPayload)) return;" in terminal_body
     queued_emit_start = runtime.index('await self._emit(\n            envelope.session_key,')

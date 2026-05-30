@@ -2288,8 +2288,7 @@ async def start_gateway_server(
             config.task_runtime, "pending_overflow_policy", "reject_newest"
         ),
     )
-    # Wire task_runtime's lock provider into turn_runner so both share a
-    # single asyncio.Lock per session_key.
+    # Wire task_runtime's short write-lock provider into turn_runner.
     turn_runner.set_session_lock_provider(task_runtime._get_session_lock_for_turn)
     svc.task_runtime = task_runtime
     # Wire the runtime into SessionManager so kill_session can cascade-cancel.

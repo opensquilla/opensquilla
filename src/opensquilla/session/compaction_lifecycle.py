@@ -136,6 +136,9 @@ def compaction_result_payload(
         payload["tokens_after"] = int(tokens_after)
     if remaining_budget_tokens is not None:
         payload["remaining_budget_tokens"] = int(remaining_budget_tokens)
+    skip_reason = str(getattr(result, "skip_reason", "") or "")
+    if skip_reason:
+        payload["skip_reason"] = skip_reason
     return payload
 
 

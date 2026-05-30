@@ -189,6 +189,29 @@ class _FailingResultCompactionSessionManager(_ResultCompactionSessionManager):
         raise RuntimeError("preimage write failed")
 
 
+class _StaleResultCompactionSessionManager(_ResultCompactionSessionManager):
+    async def compact_with_result(
+        self,
+        session_key: str,
+        context_window_tokens: int,
+        config: object | None = None,
+        **kwargs,
+    ) -> SimpleNamespace:
+        self.compact_with_result_calls.append((session_key, context_window_tokens, config))
+        self.compact_with_result_kwargs.append(dict(kwargs))
+        return SimpleNamespace(
+            summary="",
+            kept_entries=list(self._transcript),
+            removed_count=0,
+            chunks_processed=0,
+            summary_source="skipped",
+            skip_reason="stale_preimage",
+            tokens_before=2400,
+            tokens_after=2400,
+            remaining_budget_tokens=0,
+        )
+
+
 @pytest.fixture
 async def session_mgr(tmp_path):
     storage = SessionStorage(":memory:")
@@ -787,6 +810,53 @@ async def test_preflight_empty_summary_uses_emergency_ephemeral_history_trim() -
     assert 0 < len(agent.history) < len(entries)
     assert summary_context is not None
     assert "emergency request-scoped compaction" in summary_context.lower()
+
+
+@pytest.mark.asyncio
+async def test_preflight_stale_preimage_skip_does_not_use_emergency_trim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_key = "agent:ops:preflight-stale-summary"
+    context_window = 1000
+    entries = [
+        TranscriptEntry(
+            session_id="test-session-id",
+            session_key=session_key,
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"historic message {index} " + ("x" * 500),
+            token_count=300,
+        )
+        for index in range(8)
+    ]
+    sm = _StaleResultCompactionSessionManager(entries)
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        runtime_module,
+        "notify_compaction",
+        lambda session_key, **payload: events.append((session_key, payload)),
+    )
+    runner = TurnRunner(provider_selector=MagicMock(), session_manager=sm)
+
+    await runner._maybe_preflight_compact(session_key, context_window)
+
+    assert sm.compact_with_result_calls == [(session_key, context_window, None)]
+    assert runner.has_compacted_this_turn(session_key) is False
+    skipped = [payload for _, payload in events if payload.get("status") == "skipped"]
+    assert skipped[-1]["reason"] == "stale_preimage"
+
+    class _HistoryCapture:
+        provider = SimpleNamespace(provider_name="test")
+
+        def __init__(self) -> None:
+            self.history: list[Any] = []
+
+        def set_history(self, history: list[Any]) -> None:
+            self.history = history
+
+    agent = _HistoryCapture()
+    summary_context = await runner._load_history(agent, session_key, trim_last_user=False)
+    assert summary_context is None
+    assert len(agent.history) == len(entries)
 
 
 @pytest.mark.asyncio

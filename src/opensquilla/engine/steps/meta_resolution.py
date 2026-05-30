@@ -185,6 +185,69 @@ _META_SKILL_EXPLANATION_RE = re.compile(
     r"\b(how|what|why|explain|describe)\b.*\bmeta-skill\b"
 )
 
+_PASTED_CONTEXT_MARKERS = (
+    "webchat dump",
+    "chat dump",
+    "page dump",
+    "transcript",
+    "conversation dump",
+    "history dump",
+    "skill list",
+    "old skill",
+    "历史记录",
+    "历史 transcript",
+    "历史页面",
+    "页面内容",
+    "粘贴材料",
+    "整页 webchat",
+    "旧 skill",
+)
+
+_PASTED_CONTEXT_BOUNDARY_RE = re.compile(
+    r"^\s*(?:```|~~~|[-=]{3,}|<skill\b|</skill>|"
+    r"(?:user|assistant|system|tool)\s*:)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_pasted_context(message: str) -> bool:
+    text = (message or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    marker_hit = any(marker in lower for marker in _PASTED_CONTEXT_MARKERS)
+    if not marker_hit:
+        return False
+    return len(text) > 1200 or text.count("\n") >= 8
+
+
+def _trigger_match_text(message: str) -> str:
+    """Return the current-intent slice used for deterministic trigger scans.
+
+    Meta-skill triggers are intentionally cheap and deterministic. For normal
+    short user requests, scanning the whole message is the right behavior. For
+    long pasted chat/page dumps, however, the full message often includes old
+    skill lists, historical assistant text, and quoted examples. In that shape,
+    only the user's leading instruction is a reasonable current-intent signal.
+    """
+
+    if not _looks_like_pasted_context(message):
+        return message
+
+    prefix: list[str] = []
+    for index, line in enumerate(message.splitlines()):
+        lower = line.lower()
+        if index > 0 and _PASTED_CONTEXT_BOUNDARY_RE.match(line):
+            break
+        if index > 0 and any(marker in lower for marker in _PASTED_CONTEXT_MARKERS):
+            break
+        prefix.append(line)
+
+    candidate = "\n".join(prefix).strip()
+    if candidate:
+        return candidate
+    return "\n".join(message.splitlines()[:3]).strip()
+
 
 def _tier_sort_key(name: str, index: int) -> tuple[int, int]:
     """Prefer numeric router tiers (t0 < t1 < t2 < t3), then declaration order."""
@@ -318,6 +381,9 @@ def _semantic_meta_candidate(
         or getattr(ctx, "message", "")
         or ""
     )
+    if not str(query).strip():
+        return None
+    query = _trigger_match_text(str(query))
     if not str(query).strip():
         return None
     if not _has_semantic_workflow_cue(str(query)):
@@ -552,14 +618,19 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         log.warning("meta_resolution.load_failed", error=str(exc))
         return ctx
 
-    # Use ``ctx.message`` (not ``semantic_message``) so the string used
-    # for matching is the same one stuffed into ``MetaMatch.inputs``
-    # downstream. Earlier divergence — match on semantic, render on raw
-    # — meant downstream Jinja templates could see a different message
-    # than the one that fired the trigger.
-    message_lower = (ctx.message or "").lower()
+    # Normal short requests match against the whole current message. Long
+    # pasted chat/page dumps are narrowed to the leading current-intent slice
+    # so quoted skill names and historical trigger phrases do not force a DAG.
+    # MetaMatch.inputs still receives the full ctx.message below so a legitimate
+    # invocation can use all user-provided material after the trigger decision.
+    trigger_text = _trigger_match_text(ctx.message or "")
+    message_lower = trigger_text.lower()
     if not message_lower:
         return ctx
+
+    pasted_context = _looks_like_pasted_context(ctx.message or "")
+    if pasted_context:
+        _sticky_drop(session_id)
 
     # Sticky-cancel: explicit user opt-out always wins over a stale match.
     if _hits_cancel_keywords(ctx.message or "", _STICKY_CANCEL_KEYWORDS):
@@ -732,5 +803,6 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         # Include the head of the actual input so an operator can
         # diagnose accidental fires from the log alone.
         message_head=(ctx.message or "")[:200],
+        trigger_scan_head=trigger_text[:200],
     )
     return ctx

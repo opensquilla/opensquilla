@@ -4,7 +4,7 @@ description: "Use this meta-skill instead of answering directly when the user ex
 kind: meta
 meta_priority: 90
 always: false
-final_text_mode: "step:preview"
+final_text_mode: "step:final_response"
 triggers:
   - "新增 meta 技能"
   - "组合现有 skill 成 meta-skill"
@@ -56,7 +56,7 @@ composition:
     - id: creator_clarify
       kind: user_input
       depends_on: [clarify_intent]
-      when: "'NEEDS_CLARIFICATION: yes' in outputs.clarify_intent"
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower) and 'needs_clarification: yes' in (outputs.clarify_intent | lower)"
       clarify:
         mode: form
         intro: |
@@ -84,9 +84,21 @@ composition:
         cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
         timeout_hours: 24
 
+    - id: normal_skill_exit
+      kind: tool_call
+      depends_on: [clarify_intent]
+      when: "'route: normal-skill' in (outputs.clarify_intent | lower)"
+      tool: emit_text
+      tool_args:
+        text: |
+          This request was classified as a normal standalone skill request, not
+          a meta-skill composition request. The meta-skill creator stopped
+          before proposal assembly or persistence.
+
     - id: creator_mode
       kind: llm_classify
       depends_on: [clarify_intent, creator_clarify]
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
       output_choices:
         - PREVIEW_ONLY
         - PERSISTED_PROPOSAL
@@ -122,6 +134,7 @@ composition:
       kind: skill_exec
       skill: history-explorer
       depends_on: [clarify_intent, creator_clarify]
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
       on_failure: harvest_empty
       with:
         query: |
@@ -140,6 +153,7 @@ composition:
     - id: pick_pattern
       kind: llm_classify
       depends_on: [creator_mode, harvest]
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
       output_choices: [p1_sequential, p2_fan_out_merge, p3_condition_gated]
       with:
         history_summary: "{{ outputs.harvest | truncate(2000) }}"
@@ -153,6 +167,7 @@ composition:
     - id: fill_slots
       kind: tool_call
       depends_on: [pick_pattern]
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
       tool: meta_skill_fill_slots
       tool_args:
         pattern_id: "{{ outputs.pick_pattern }}"
@@ -167,6 +182,7 @@ composition:
     - id: assemble
       kind: tool_call
       depends_on: [fill_slots]
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
       tool: meta_skill_assemble
       tool_args:
         pattern_id: "{{ outputs.pick_pattern }}"
@@ -176,6 +192,7 @@ composition:
       kind: agent
       skill: sub-agent
       depends_on: [assemble]
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
       with:
         task: |
           Review this generated meta-skill proposal for trigger collisions with
@@ -189,6 +206,7 @@ composition:
     - id: lint
       kind: tool_call
       depends_on: [collision_check]
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
       tool: meta_skill_lint_run
       tool_args:
         skill_md: "{{ outputs.assemble }}"
@@ -198,6 +216,7 @@ composition:
       kind: agent
       skill: sub-agent
       depends_on: [lint]
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
       with:
         task: |
           Classify operational risk for the generated meta-skill. Consider file
@@ -218,7 +237,7 @@ composition:
     - id: single_model_baseline
       kind: llm_chat
       depends_on: [creator_mode]
-      when: "outputs.creator_mode == 'FULL_GATED'"
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode == 'FULL_GATED'"
       with:
         system: |
           You are the highest-tier baseline model for meta-skill authoring.
@@ -261,7 +280,7 @@ composition:
     - id: acceptance_compare
       kind: llm_chat
       depends_on: [assemble, single_model_baseline]
-      when: "outputs.creator_mode == 'FULL_GATED'"
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode == 'FULL_GATED'"
       with:
         system: |
           You are an acceptance reviewer. Compare an orchestrated candidate
@@ -311,7 +330,7 @@ composition:
     - id: smoke
       kind: tool_call
       depends_on: [risk_classify]
-      when: "outputs.creator_mode != 'PREVIEW_ONLY'"
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode != 'PREVIEW_ONLY'"
       tool: meta_skill_smoke_run
       tool_args:
         skill_md: "{{ outputs.assemble }}"
@@ -321,7 +340,7 @@ composition:
     - id: runtime_e2e
       kind: tool_call
       depends_on: [assemble, smoke]
-      when: "outputs.creator_mode == 'FULL_GATED'"
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode == 'FULL_GATED'"
       tool: meta_skill_runtime_e2e_run
       tool_args:
         skill_md: "{{ outputs.assemble }}"
@@ -334,6 +353,7 @@ composition:
       kind: agent
       skill: sub-agent
       depends_on: [smoke, acceptance_compare, runtime_e2e]
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
       with:
         task: |
           Produce a concise proposal preview for the user/operator before
@@ -369,7 +389,7 @@ composition:
     - id: persist
       kind: tool_call
       depends_on: [preview]
-      when: "outputs.creator_mode != 'PREVIEW_ONLY'"
+      when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode != 'PREVIEW_ONLY'"
       tool: meta_skill_persist_proposal
       tool_args:
         skill_md: "{{ outputs.assemble }}"
@@ -380,6 +400,18 @@ composition:
         runtime_e2e_result: "{{ outputs.runtime_e2e }}"
         collision_result: "{{ outputs.collision_check }}"
         risk_result: "{{ outputs.risk_classify }}"
+
+    - id: final_response
+      kind: tool_call
+      depends_on: [preview, normal_skill_exit]
+      tool: emit_text
+      tool_args:
+        text: |
+          {% if outputs.normal_skill_exit %}
+          {{ outputs.normal_skill_exit }}
+          {% else %}
+          {{ outputs.preview }}
+          {% endif %}
 ---
 
 # Meta-Skill Creator

@@ -359,6 +359,58 @@ async def test_meta_resolution_highest_priority_wins() -> None:
 
 
 @pytest.mark.asyncio
+async def test_meta_resolution_ignores_triggers_inside_pasted_webchat_dump() -> None:
+    spec = _make_meta_spec(
+        name="meta-family-day-coordinator",
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["家庭日程"],
+        priority=56,
+    )
+    loader = _FakeLoader([spec])
+    dump_body = "\n".join(
+        [
+            "WebChat dump",
+            "assistant: 这里是旧页面里的 skill 列表",
+            "meta-family-day-coordinator 家庭日程协调",
+            "meta-skill-creator",
+        ]
+        + [f"history line {i}" for i in range(20)]
+    )
+    ctx = SimpleNamespace(
+        message=f"请分析下面历史页面是否有误触发，不要运行任何技能。\n{dump_body}",
+        semantic_message=f"请分析下面历史页面是否有误触发，不要运行任何技能。\n{dump_body}",
+        system_prompt="base",
+        metadata={"skill_loader": loader},
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert "meta_match" not in out.metadata
+    assert out.system_prompt == "base"
+
+
+@pytest.mark.asyncio
+async def test_meta_resolution_still_matches_current_cjk_intent() -> None:
+    spec = _make_meta_spec(
+        name="meta-family-day-coordinator",
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["家庭日程"],
+        priority=56,
+    )
+    loader = _FakeLoader([spec])
+    ctx = SimpleNamespace(
+        message="帮我安排明天的家庭日程",
+        semantic_message="帮我安排明天的家庭日程",
+        system_prompt="base",
+        metadata={"skill_loader": loader},
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert out.metadata["meta_match"].plan.name == "meta-family-day-coordinator"
+
+
+@pytest.mark.asyncio
 async def test_meta_resolution_promotes_meta_skill_creator_to_highest_text_tier() -> None:
     spec = _make_meta_spec(
         name="meta-skill-creator",

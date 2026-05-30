@@ -155,6 +155,32 @@ async def test_sticky_cancel_keyword_drops_entry():
 
 
 @pytest.mark.asyncio
+async def test_pasted_context_drops_sticky_without_replay():
+    skills = [_meta_spec(name="meta-paper-write", triggers=("帮我写篇论文",))]
+    await meta_resolution(_ctx(
+        message="帮我写篇论文", session_id="S-PASTE", skills=skills,
+    ))
+    assert mr._sticky_get("S-PASTE") is not None
+
+    dump_body = "\n".join(
+        [
+            "WebChat dump",
+            "assistant: old skill list",
+            "meta-paper-write 帮我写篇论文",
+        ]
+        + [f"history line {i}" for i in range(12)]
+    )
+    out = await meta_resolution(_ctx(
+        message=f"请分析下面历史页面是否误触发。\n{dump_body}",
+        session_id="S-PASTE",
+        skills=skills,
+    ))
+
+    assert "meta_match" not in out.metadata
+    assert mr._sticky_get("S-PASTE") is None
+
+
+@pytest.mark.asyncio
 async def test_fresh_match_on_followup_refreshes_uses():
     """If the user re-utters the trigger, uses are re-armed."""
     skills = [_meta_spec(name="meta-paper-write", triggers=("帮我写篇论文",))]

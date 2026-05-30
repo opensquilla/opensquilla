@@ -21,6 +21,50 @@ class RouterPluginState:
 
 
 @dataclass(frozen=True)
+class TurnBegin:
+    id: str
+
+
+@dataclass(frozen=True)
+class TurnEnd:
+    id: str
+    cancelled: bool = False
+
+
+@dataclass(frozen=True)
+class PromptEcho:
+    text: str
+
+
+@dataclass(frozen=True)
+class ModelText:
+    text: str
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    name: str
+    summary: str = ""
+    status: str = "running"
+    id: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolDetail:
+    text: str
+
+
+@dataclass(frozen=True)
+class AnswerText:
+    text: str
+
+
+@dataclass(frozen=True)
+class Usage:
+    text: str
+
+
+@dataclass(frozen=True)
 class ComposerState:
     placeholder: str = "send a message"
     text: str = ""

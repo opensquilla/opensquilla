@@ -54,6 +54,9 @@ class OpenTuiOutputHandle:
     async def write_through(self, payload: str) -> None:
         await self._bridge.send("scrollback.write", ScrollbackWrite(text=payload))
 
+    async def send_message(self, message_type: str, payload: dict[str, object]) -> None:
+        await self._bridge.send(message_type, payload)
+
     def stream_output(self) -> AbstractAsyncContextManager[Callable[[str], None]]:
         return _opentui_stream_output(self)
 

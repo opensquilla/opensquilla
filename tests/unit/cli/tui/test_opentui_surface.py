@@ -26,7 +26,9 @@ class FakeOpenTuiBridge:
         if payload is None:
             self.sent.append((message_type, None))
             return
-        self.sent.append((message_type, asdict(payload)))
+        self.sent.append(
+            (message_type, payload if isinstance(payload, dict) else asdict(payload))
+        )
 
     async def next_message(self) -> object | None:
         return await self.messages.get()
@@ -94,4 +96,18 @@ def test_opentui_output_toolbar_invalidates_router_plugin() -> None:
                 )
             ),
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_output_handle_send_message_forwards_to_bridge() -> None:
+    bridge = FakeOpenTuiBridge()
+    output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
+
+    await output.send_message("turn.begin", {"id": "t1"})
+    await output.send_message("model.text", {"text": "hi"})
+
+    assert bridge.sent == [
+        ("turn.begin", {"id": "t1"}),
+        ("model.text", {"text": "hi"}),
     ]

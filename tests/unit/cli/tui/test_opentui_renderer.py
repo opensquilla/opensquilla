@@ -23,6 +23,8 @@ async def test_renderer_emits_turn_lifecycle_and_blocks() -> None:
     await renderer.atool_start("read_file", {"path": "main.py"}, "c1")
     await renderer.atool_finished("c1", success=True)
     await renderer.aappend_text("架构分四层")
+    answer_texts = [p.get("text") for t, p in handle.sent if t == "answer.text"]
+    assert "".join(answer_texts) == "架构分四层"
     await renderer.afinalize(None, cancelled=False)
     renderer.__exit__(None, None, None)
 
@@ -34,10 +36,9 @@ async def test_renderer_emits_turn_lifecycle_and_blocks() -> None:
     assert "answer.text" in types
     assert "usage" in types
     assert "turn.end" in types
-    # Only one tool.call line per tool: the finished state. "running" is shown
-    # by the footer status pulse (turn.status), not a separate scrollback line.
     tool_calls = [p for t, p in handle.sent if t == "tool.call"]
-    assert [p.get("status") for p in tool_calls] == ["ok"]
+    assert [p.get("status") for p in tool_calls] == ["running", "ok"]
+    assert all(p.get("id") == "c1" for p in tool_calls)
     assert tool_calls[0]["name"] == "read_file"
     assert tool_calls[0]["summary"]  # arg summary is preserved on the finish line
     assert any(t == "turn.status" and p.get("phase") == "tool" for t, p in handle.sent)

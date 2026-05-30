@@ -38,7 +38,6 @@ class OpenTuiStreamRenderer:
         self._began = False
         self._saw_output = False
         self._tool_calls: dict[str, tuple[str, str]] = {}
-        self._answer_buf = ""
 
     async def _emit(self, message_type: str, payload: Any) -> None:
         await self._emit_raw(message_type, asdict(payload))
@@ -88,18 +87,7 @@ class OpenTuiStreamRenderer:
                 "turn.status", TurnStatusState(phase="output", label="output", active=True)
             )
         self.buffer += delta
-        # Streaming deltas are arbitrary token fragments. Buffer them and emit
-        # one answer.text per completed line so the JS host renders whole lines
-        # (preserving markdown and ASCII layout) instead of one block per token.
-        self._answer_buf += delta
-        while "\n" in self._answer_buf:
-            line, self._answer_buf = self._answer_buf.split("\n", 1)
-            await self._emit("answer.text", AnswerText(text=line))
-
-    async def _flush_answer(self) -> None:
-        if self._answer_buf:
-            line, self._answer_buf = self._answer_buf, ""
-            await self._emit("answer.text", AnswerText(text=line))
+        await self._emit("answer.text", AnswerText(text=delta))
 
     async def astatus(self, message: str, *, style: str = "dim") -> None:
         await self._ensure_begin()
@@ -112,14 +100,15 @@ class OpenTuiStreamRenderer:
         tool_use_id: str | None = None,
     ) -> None:
         await self._ensure_begin()
-        # Remember name + arg summary; the single scrollback line is written on
-        # finish. The "running" state is shown by the footer status pulse, so we
-        # do NOT write a separate running line here (append-only can't collapse
-        # the start/finish pair into one line afterwards).
+        summary = _summarize_args(name, args)
         if tool_use_id:
-            self._tool_calls[tool_use_id] = (name, _summarize_args(name, args))
+            self._tool_calls[tool_use_id] = (name, summary)
         await self._emit(
             "turn.status", TurnStatusState(phase="tool", label=name, active=True)
+        )
+        await self._emit(
+            "tool.call",
+            ToolCall(name=name, summary=summary, status="running", id=tool_use_id),
         )
 
     async def atool_finished(
@@ -154,7 +143,6 @@ class OpenTuiStreamRenderer:
 
     async def afinalize(self, usage: Any | None = None, *, cancelled: bool = False) -> None:
         await self._ensure_begin()
-        await self._flush_answer()
         # turn.end closes the answer card (JS draws the bottom border) BEFORE
         # the usage line, so usage renders outside/below the card frame.
         await self._emit("turn.end", TurnEnd(id=self._turn_id, cancelled=cancelled))

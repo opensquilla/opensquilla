@@ -291,7 +291,7 @@ def check_response_for_cache_break(
 def notify_compaction(
     session_key: str,
     *,
-    notify_listeners: bool = True,
+    notify_listeners: object = True,
     **payload: Any,
 ) -> None:
     event_payload = {
@@ -301,7 +301,7 @@ def notify_compaction(
     }
     if event_payload["status"].lower() == "completed":
         default_cache_break_monitor.notify_compaction(session_key)
-    if not notify_listeners:
+    if not bool(notify_listeners):
         return
     for listener in tuple(_compaction_listeners):
         try:

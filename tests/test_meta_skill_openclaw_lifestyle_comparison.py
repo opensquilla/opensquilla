@@ -292,7 +292,10 @@ def test_job_search_pipeline_preserves_language_and_source_truth() -> None:
     assert "Remove leading process commentary" in raw
     assert "Remove internal sentinels such as PACK_MODE" in raw
     assert "Do not default Chinese user requests to English" in raw
-    assert "If the request is English, write\n            English-only prose and English headings" in raw
+    assert (
+        "If the request is English, write\n            English-only prose and English headings"
+        in raw
+    )
     assert "write Simplified Chinese, including headings" in raw
     assert "Do not add unprovided tools, methods, outcomes, or metrics" in raw
     assert "A/B testing, NPS, customer interviews, Jira" in raw

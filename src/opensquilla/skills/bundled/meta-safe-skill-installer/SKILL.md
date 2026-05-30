@@ -305,8 +305,9 @@ composition:
         system: "You audit and repair the final installer-safety answer against the evidence ledger."
         task: |
           Rewrite the final answer only as needed so it is faithful to the
-          user's pasted installer evidence. Preserve the user's language where
-          practical.
+          user's pasted installer evidence. Preserve the user's language: for
+          English requests, write English-only prose and headings; for Chinese
+          requests, write Simplified Chinese prose and headings.
 
           Pasted evidence ledger:
           {{ outputs.pasted_evidence | truncate(4000) }}
@@ -339,6 +340,9 @@ composition:
           - Include practical safer alternatives for the user's actual goal,
             such as a local read-only daily-report script/template that does
             not read ~/.ssh, run postinstall hooks, or need broad shell access.
+          - Remove leading process commentary, JSON wrappers, artifact
+            metadata, workflow references, or any explanation of how the answer
+            was produced.
 ---
 
 # Safe Skill Installer

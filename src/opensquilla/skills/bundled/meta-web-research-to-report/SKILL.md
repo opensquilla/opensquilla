@@ -8,6 +8,16 @@ final_text_mode: "step:final_report_audit"
 triggers:
   - "调研报告"
   - "research report"
+  - "decision memo"
+  - "decision memo with sources"
+  - "short decision memo"
+  - "key findings"
+  - "tradeoffs and risks"
+  - "travel esim"
+  - "carrier roaming"
+  - "local sim"
+  - "mobile data plan"
+  - "what i should order"
   - "写一份报告"
   - "write up the findings"
   - "source-backed writeup"
@@ -291,6 +301,7 @@ composition:
     - id: source_to_claim
       kind: llm_chat
       depends_on: [report_draft, source_quality]
+      when: "outputs.report_mode != 'QUICK_DECISION_MEMO'"
       with:
         system: "You audit report claims against source packs."
         task: |
@@ -312,6 +323,7 @@ composition:
     - id: quality_gate
       kind: llm_chat
       depends_on: [report_draft, source_quality, source_to_claim]
+      when: "outputs.report_mode != 'QUICK_DECISION_MEMO'"
       with:
         system: "You polish final reports and remove process commentary."
         task: |
@@ -358,19 +370,21 @@ composition:
           Source pack:
           {{ outputs.source_quality | truncate(5000) }}
 
-          Source-to-claim map:
-          {{ outputs.source_to_claim | truncate(4000) }}
+          Source-to-claim map (may be empty for quick decision memos):
+          {{ outputs.get('source_to_claim', '') | truncate(4000) }}
 
-          Polished report:
-          {{ outputs.quality_gate | truncate(10000) }}
+          Polished report or quick memo draft:
+          {{ (outputs.get('quality_gate') or outputs.get('report_draft') or '') | truncate(10000) }}
 
           Final output contract:
           - Never return JSON, artifact references, attachment metadata,
             download URLs, or a wrapper like {"text": ..., "artifacts": ...}.
           - Never mention workflow, meta-skill, tool names, connector failures,
             workspace paths, working directory problems, or runtime details.
-          - Never mention workflow, meta-skill, tool names, connector failures, workspace paths, or runtime details.
-          - Never mention workflow, meta-skill, tool names, connector failures, workspace paths, or runtime details.
+          - Preserve the user's language. If the request is in English, write
+            the memo/report in English with English section headings only; do
+            not default to Chinese or bilingual headings. If the request is in
+            Chinese, write Simplified Chinese and do not default to English.
           - Never say the memo was saved, exported, attached, generated as a
             file, or available via artifact unless the user explicitly asked
             for DOCX/file export and the export step ran.
@@ -400,8 +414,8 @@ composition:
             appears in the Source list.
           - Every non-obvious quantitative claim must be cited or explicitly
             marked as an assumption/inference. Remove invented cost, latency,
-            benchmark, or model-quality numbers that are not supported by the
-            source pack.
+            benchmark, plan-price, availability, or quality numbers that are
+            not supported by the source pack.
           - Key findings must cite only source IDs that appear in the Source
             list. When evidence is indirect, say "inference" or "not directly
             proven by the source pack" in the finding or limitations.
@@ -437,16 +451,21 @@ composition:
           {{ outputs.report_mode }}
 
           Source pack:
-          {{ outputs.source_quality | truncate(5000) }}
+          {{ outputs.source_quality | truncate(3000) }}
 
           Draft final:
-          {{ outputs.final_report | truncate(10000) }}
+          {{ outputs.final_report | truncate(7000) }}
 
           Hard requirements:
           - Return the complete final user-facing memo/report body inline in chat, not JSON.
           - If the draft contains artifact references, download URLs, file
             names, or a JSON wrapper, discard the wrapper and reconstruct the
             complete memo inline from the source pack and user request.
+          - Preserve the user's language. For English requests, return
+            English-only prose and English headings; remove Chinese headings
+            and bilingual labels unless they are quoted source text. For
+            Chinese requests, write Simplified Chinese and do not switch to
+            English headings.
           - Remove phrases such as "元技能", "meta-skill", "workflow",
             "工作流", "工作目录", "workspace", "connector", "tool failure",
             "手动做研究", "信息收集充分", and any runtime apology.

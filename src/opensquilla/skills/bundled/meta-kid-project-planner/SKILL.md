@@ -243,13 +243,17 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(2000) }}
     - id: project_fact_ledger
       kind: llm_chat
-      depends_on: [preferences, project_clarify, weather_check]
+      depends_on: [preferences, project_clarify, recall_past_projects, weather_check]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
       with:
-        system: "You extract a strict source-fact ledger for a child project plan. You do not write the plan. You separate user-provided facts from unknowns and unsafe or unsupported inferences."
+        system: "You extract a strict source-fact ledger for a child project plan. You do not write the plan. You separate user-provided facts, durable memory facts, unknowns, and unsafe or unsupported inferences."
         task: |
           Build a strict project fact ledger from the user's request and any
-          clarification payload.
+          clarification payload. Durable memory is also a source of facts when
+          the memory output clearly states child profile, prior projects,
+          preferences, or parent availability. Ignore memory status prose,
+          file inventory, workspace paths, and runtime/tool wording; extract
+          only the actual remembered facts.
 
           User request:
           {{ inputs.user_message | xml_escape | truncate(3500) }}
@@ -257,13 +261,18 @@ composition:
           Clarification:
           {{ inputs.get('collected', {}).get('project_clarify', {}) | tojson | truncate(1200) }}
 
+          Durable memory / past-project recall:
+          {{ outputs.get('recall_past_projects', '') | truncate(1800) }}
+
           Weather result or fallback:
           {{ outputs.get('weather_check', '') | truncate(800) }}
 
           Return exactly:
           OUTPUT_LANGUAGE: <zh|en|mixed>
           PROVIDED_CHILD_CONTEXT:
-            - <age, ability, guardian availability, or UNKNOWN>
+            - <age, ability, child preferences, guardian availability, or UNKNOWN>
+          PROVIDED_MEMORY_CONTEXT:
+            - <remembered child profile, prior projects, parent constraints, lessons learned, or none>
           PROVIDED_PROJECT_CONTEXT:
             - <topic, school deadline/time window, school output, or UNKNOWN>
           PROVIDED_MATERIALS_BUDGET:
@@ -280,6 +289,13 @@ composition:
               school rule, allergy, fake measurements, tasting/eating>
 
           Rules:
+          - If durable memory says the child is a specific age, likes/dislikes
+            an activity style, has prior projects, or has parent time limits,
+            put those in PROVIDED_CHILD_CONTEXT and PROVIDED_MEMORY_CONTEXT.
+            Do not mark them UNKNOWN.
+          - If the current request asks not to repeat previous projects, list
+            remembered prior projects in PROVIDED_MEMORY_CONTEXT so downstream
+            steps can avoid them explicitly.
           - If the source says only "two weeks later", mark exact date UNKNOWN.
           - If the source says only "half-day sun", mark orientation and hours
             UNKNOWN. Preserve "half-day sun" exactly.
@@ -474,7 +490,7 @@ composition:
         - project_fact_ledger
         - project_clarify
       with:
-        system: "You assemble the final project pack the user will read. Return the complete deliverable inline in chat. Do not create, save, export, attach, or point primarily to an artifact unless the user explicitly asked for a file export. Never mention workflow, meta-skill, tool names, connector failures, workspace paths, or runtime details."
+        system: "You assemble the final project pack the user will read. Return the complete deliverable inline in chat. Do not create, save, export, attach, or point primarily to an artifact unless the user explicitly asked for a file export with words like PDF, file, export, attachment, or download. Treat requests for a printable worksheet, printable record sheet, or poster layout as print-ready markdown included inline. Never mention workflow, meta-skill, tool names, connector failures, workspace paths, or runtime details."
         task: |
           Assemble the final project pack.
 
@@ -494,9 +510,16 @@ composition:
           Project fact ledger:
           {{ outputs.get('project_fact_ledger', '') | truncate(2500) }}
 
+          Durable memory / past-project recall:
+          {{ outputs.get('recall_past_projects', '') | truncate(1600) }}
+
           Source-constraint audit:
           - Treat the Project fact ledger as the source of truth. If an
             intermediate step conflicts with it, ignore the intermediate step.
+          - Treat PROVIDED_MEMORY_CONTEXT in the fact ledger as user-relevant
+            durable context. Preserve remembered age, child preferences, parent
+            time limits, prior projects, and lessons learned unless the current
+            request explicitly contradicts them.
           - If the fact ledger marks a detail UNKNOWN, leave it unknown or mark
             it as an assumption; do not fill it with common sense or current
             date/time.
@@ -535,6 +558,19 @@ composition:
             changed variable such as light exposure. If materials allow, use
             2-3 labelled groups; if not, make the single-group observation
             plan still presentation-ready.
+          - "Printable" means a clean markdown table, worksheet block, or
+            poster-board layout that the user can print from chat. Do not
+            create or refer to PDFs, HTML files, downloads, attachments,
+            local paths, generated artifacts, or workspace files unless the
+            user explicitly asked for a file/PDF/export/download.
+          - If the user asks for a beautiful or visually polished plan, make
+            the inline markdown itself polished: a memorable title, a concise
+            visual theme, color/palette suggestions, kid-facing labels,
+            a drawing-heavy record sheet, and a parent-ready poster layout.
+          - If the user asks to start with remembered constraints, include a
+            section titled exactly "## Remembered constraints I used" near the
+            top and list only facts found in PROVIDED_MEMORY_CONTEXT or the
+            current request. Do not invent memory.
 
           Language and length:
           - Match the user's language. For Chinese requests, write Simplified
@@ -594,28 +630,79 @@ composition:
           without asking the user to confirm before using the current answer.
 
           For English safe projects, use equivalent English headings:
-          assumptions, project design, schedule, materials/substitutes,
-          safety/failure modes, Record and chart, Weather / light adjustment,
-          Final presentation, adult 20-minute check, and missing live info.
+          remembered constraints used when requested, known facts and
+          assumptions, project design, 14-day schedule,
+          materials/substitutes, safety/failure modes, printable record
+          sheet, poster-board layout, simple science explanation,
+          Weather / light adjustment, adult 20-minute check, and missing live
+          info. If the user asked for a visually polished plan, include a
+          short "visual theme" subsection.
 
           End with a single line:
           PACK_DELIVERED: {{ outputs.feasibility }}
     - id: project_pack_audit
       kind: llm_chat
-      depends_on: [deliver_project_pack, project_fact_ledger, feasibility, preferences]
+      depends_on:
+        - deliver_project_pack
+        - project_fact_ledger
+        - recall_past_projects
+        - outline_steps
+        - material_list
+        - safety_notes
+        - learning_objectives
+        - weather_check
+        - feasibility
+        - preferences
       with:
         system: "You are the final quality gate for a child project plan. Return only the cleaned final answer that the user should read. Do not explain the audit. Do not mention workflow, meta-skill, tool names, connector failures, workspace paths, or runtime details."
         task: |
           Rewrite the draft below into the final user-facing project pack.
-          Preserve useful content, but enforce the fact ledger strictly.
+          Preserve useful content, but enforce the fact ledger strictly. If
+          the draft is only JSON, artifact metadata, download references,
+          process commentary, or otherwise not a complete user-facing answer,
+          rebuild the final project pack from the fact ledger and intermediate
+          source sections below.
 
           Project fact ledger:
           {{ outputs.get('project_fact_ledger', '') | truncate(2500) }}
+
+          Durable memory / past-project recall:
+          {{ outputs.get('recall_past_projects', '') | truncate(1600) }}
+
+          Step plan source:
+          {{ outputs.get('outline_steps', '') | truncate(2600) }}
+
+          Materials source:
+          {{ outputs.get('material_list', '') | truncate(1600) }}
+
+          Safety source:
+          {{ outputs.get('safety_notes', '') | truncate(1600) }}
+
+          Learning source:
+          {{ outputs.get('learning_objectives', '') | truncate(1600) }}
+
+          Weather/light source:
+          {{ outputs.get('weather_check', '') | truncate(900) }}
 
           Draft project pack:
           {{ outputs.get('deliver_project_pack', '') | truncate(8000) }}
 
           Required audit rules:
+          - Return markdown only. Never return JSON, artifact metadata, file
+            paths, download links, or attachment notes.
+          - If the draft contains JSON keys such as "text", "artifacts",
+            "artifact_ref", "download_url", "mime", "sha256", "session_id",
+            "created_at", or "store", discard those metadata fields and write
+            a normal markdown answer instead.
+          - Remove leading process commentary such as "perfect match", "let me
+            run it", "I will run", "workflow", "meta-skill", or any similar
+            explanation of how the answer was produced. The first non-empty
+            line must be the user-facing project title, unless the user
+            explicitly requested a different first heading such as
+            "Remembered constraints I used".
+          - Preserve the user's language. If the request is English, write
+            English-only prose and English headings. If the request is Chinese,
+            write Simplified Chinese throughout.
           - Remove exact calendar dates, weekdays, months, or current-year references
             unless the user explicitly provided those exact dates. If the user
             gave only a relative deadline, use Day 1...Day 14 and say exact
@@ -632,8 +719,30 @@ composition:
           - Keep every explicit user constraint from the fact ledger: child age,
             relative deadline, location, available materials, budget, parent
             time, light constraint, and requested sections.
+          - Keep every clear durable-memory constraint from the fact ledger:
+            remembered age, child preferences, writing tolerance, parent
+            availability, prior projects, and lessons learned. Do not rewrite
+            those fields as UNKNOWN when they appear in PROVIDED_MEMORY_CONTEXT.
+          - If the request asks not to repeat previous projects, explicitly
+            avoid or name the prior projects as non-options in one concise
+            sentence.
+          - If the user asks to use remembered facts, include a
+            "## Remembered constraints I used" section with the remembered
+            age, preferences, writing tolerance, parent time limit, prior
+            projects, and lessons learned when those facts appear in
+            PROVIDED_MEMORY_CONTEXT. Do not say no memory exists when
+            PROVIDED_MEMORY_CONTEXT contains facts.
           - Prefer a clear comparison design when it fits: same seed, cup,
             water, and paper-towel conditions, with only light exposure changed.
+          - Treat "printable record sheet" and "poster board layout" as inline
+            deliverables unless the user explicitly asked for PDF/file/export.
+            Include a clean markdown worksheet/table with blank boxes,
+            checkboxes, or placeholders; do not claim that a PDF, HTML file,
+            local file, download, or artifact was generated.
+          - For visually polished project packs, make the markdown itself
+            beautiful and school-ready: memorable title, visual theme or
+            palette, kid-facing labels, drawing-heavy worksheet, and a poster
+            layout the parent can recreate.
           - Keep the answer compact and immediately usable: target 2500-3600 Chinese characters
             for Chinese requests. Avoid long daily tables when grouped phases
             are clearer.
@@ -650,6 +759,21 @@ composition:
           ## 最后展示怎么讲
           ## 家长每晚 20 分钟
           ## 还缺哪些实时信息
+
+          For English requests, use equivalent English headings only:
+          # <Project title>
+          ## Remembered constraints I used
+          ## Known facts and assumptions
+          ## Project design
+          ## 14-day plan
+          ## Materials and substitutes
+          ## Safety and failure modes
+          ## Printable record sheet
+          ## Poster-board layout
+          ## Simple science explanation
+          ## Weather / light adjustment
+          ## Adult 20-minute check
+          ## Missing live information
 
           End with:
           PACK_DELIVERED: {{ outputs.feasibility }}

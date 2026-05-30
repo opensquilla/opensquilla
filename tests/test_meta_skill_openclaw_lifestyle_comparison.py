@@ -7,6 +7,7 @@ from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.templating import evaluate_when
 from scripts.compare_meta_skill_openclaw import EndpointResult, JudgeResult, OpenSquillaRunner
 from scripts.compare_meta_skill_openclaw_lifestyle import (
+    ENGLISH_LIFESTYLE_PROMPTS,
     LIFESTYLE_COMPARISON_CASES,
     OPENCLAW_T3_MODEL,
     _apply_lifestyle_judge_result,
@@ -220,7 +221,11 @@ def test_new_lifestyle_meta_skills_hide_runtime_failures_and_reply_inline(
                 "web_research": "web_research_fallback",
                 "weather_check": "weather_check_fallback",
             },
-            "required": ["Record and chart", "Weather / light adjustment", "Final presentation"],
+            "required": [
+                "printable record sheet",
+                "poster-board layout",
+                "Weather / light adjustment",
+            ],
         },
         "meta-web-research-to-report": {
             "final": "final_report_audit",
@@ -281,7 +286,13 @@ def test_job_search_pipeline_preserves_language_and_source_truth() -> None:
         "src/opensquilla/skills/bundled/meta-job-search-pipeline/SKILL.md"
     ).read_text(encoding="utf-8")
 
+    assert 'final_text_mode: "step:deliver_jobpack_audit"' in raw
+    assert "deliver_jobpack_audit" in raw
+    assert "Never return JSON" in raw
+    assert "Remove leading process commentary" in raw
+    assert "Remove internal sentinels such as PACK_MODE" in raw
     assert "Do not default Chinese user requests to English" in raw
+    assert "If the request is English, write\n            English-only prose and English headings" in raw
     assert "write Simplified Chinese, including headings" in raw
     assert "Do not add unprovided tools, methods, outcomes, or metrics" in raw
     assert "A/B testing, NPS, customer interviews, Jira" in raw
@@ -606,7 +617,21 @@ def test_safe_skill_installer_keeps_source_evidence_boundaries_upstream() -> Non
 
 def test_lifestyle_meta_skills_have_natural_language_activation_cues() -> None:
     expectations = {
-        "meta-document-to-decision": ["供应商续费", "要不要签"],
+        "meta-document-to-decision": [
+            "供应商续费",
+            "要不要签",
+            "vendor renewal",
+            "contract excerpt",
+            "decide tomorrow whether to sign",
+            "sign, reject, or negotiate",
+        ],
+        "meta-web-research-to-report": [
+            "decision memo",
+            "travel esim",
+            "carrier roaming",
+            "mobile data plan",
+            "what i should order",
+        ],
         "meta-daily-operator-brief": ["今天先帮我排一下", "前三优先级"],
         "meta-safe-skill-installer": ["这个插件能不能装", "curl -fsSL"],
         "meta-account-watch": ["盯一下这两个对手", "销售群里的简报", "和基线相比"],
@@ -618,6 +643,30 @@ def test_lifestyle_meta_skills_have_natural_language_activation_cues() -> None:
         )
         for cue in cues:
             assert cue in raw
+
+
+def test_english_lifestyle_prompts_trigger_target_meta_skills(tmp_path: Path) -> None:
+    from opensquilla.engine.steps.meta_resolution import _trigger_matches
+
+    target_cases = {
+        "document_vendor_decision": "meta-document-to-decision",
+        "web_research_parent_esim": "meta-web-research-to-report",
+    }
+    loader = SkillLoader(
+        bundled_dir=Path("src/opensquilla/skills/bundled"),
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    for case_id, skill_name in target_cases.items():
+        case = next(case for case in LIFESTYLE_COMPARISON_CASES if case.case_id == case_id)
+        english_prompt = ENGLISH_LIFESTYLE_PROMPTS[case_id].lower()
+        target = loader.get_by_name(skill_name)
+        assert target is not None
+        assert any(
+            _trigger_matches(trigger, english_prompt)
+            for trigger in (target.triggers or [])
+        ), f"{case_id} should trigger {skill_name}"
+        assert case.prompt
 
 
 def test_account_watch_outranks_daily_brief_for_competitor_followup_prompts(
@@ -733,12 +782,31 @@ def test_kid_project_planner_final_audits_original_user_constraints(
     audit_text = json.dumps(step_by_id["project_pack_audit"].with_args, ensure_ascii=False)
 
     assert "project_fact_ledger" in step_by_id
+    assert "recall_past_projects" in step_by_id["project_fact_ledger"].depends_on
     assert "project_fact_ledger" in step_by_id["deliver_project_pack"].depends_on
     assert "deliver_project_pack" in step_by_id["project_pack_audit"].depends_on
     assert "project_fact_ledger" in step_by_id["project_pack_audit"].depends_on
+    assert "recall_past_projects" in step_by_id["project_pack_audit"].depends_on
+    assert "outline_steps" in step_by_id["project_pack_audit"].depends_on
+    assert "material_list" in step_by_id["project_pack_audit"].depends_on
+    assert "safety_notes" in step_by_id["project_pack_audit"].depends_on
+    assert "learning_objectives" in step_by_id["project_pack_audit"].depends_on
     assert "{{ inputs.user_message" in final_text
     assert "Project fact ledger" in final_text
+    assert "Durable memory / past-project recall" in final_text
     assert "Project fact ledger" in audit_text
+    assert "PROVIDED_MEMORY_CONTEXT" in audit_text
+    assert "Do not rewrite" in audit_text
+    assert "fields as UNKNOWN" in audit_text
+    assert "intermediate" in audit_text
+    assert "source sections" in audit_text
+    assert "artifact_ref" in audit_text
+    assert "download_url" in audit_text
+    assert "discard those metadata fields" in audit_text
+    assert "printable record sheet" in audit_text
+    assert "poster board layout" in audit_text
+    assert "inline" in audit_text
+    assert "deliverables" in audit_text
     assert "Preserve every explicit user constraint" in final_text
     assert "age, deadline, location, available materials, budget" in final_text
     assert "parent time, light/weather constraints" in final_text
@@ -768,6 +836,28 @@ def test_kid_project_planner_final_avoids_fake_dates_weather_and_data(
     assert "Remove fake sample measurements" in audit_text
     assert "Remove invented balcony direction, temperature ranges, rain forecasts" in audit_text
     assert "2500-3600 Chinese characters" in audit_text
+    assert "Remove leading process commentary" in audit_text
+    assert "first non-empty" in audit_text
+    assert "user-facing project title" in audit_text
+    assert "English-only prose and English headings" in audit_text
+    assert "Return markdown only" in audit_text
+    assert "Never return JSON, artifact metadata" in audit_text
+
+
+def test_kid_project_planner_printable_defaults_to_inline_markdown() -> None:
+    raw = Path(
+        "src/opensquilla/skills/bundled/meta-kid-project-planner/SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Treat requests for a printable worksheet" in raw
+    assert "print-ready markdown included inline" in raw
+    assert "Printable\" means a clean markdown table" in raw
+    assert "Do not\n            create or refer to PDFs, HTML files, downloads" in raw
+    assert "unless the\n            user explicitly asked for a file/PDF/export/download" in raw
+    assert "memorable title" in raw
+    assert "visual theme" in raw
+    assert "drawing-heavy record sheet" in raw
+    assert "parent-ready poster layout" in raw
 
 
 def test_safe_skill_installer_avoids_unverified_external_lookup_claims() -> None:
@@ -785,6 +875,8 @@ def test_safe_skill_installer_avoids_unverified_external_lookup_claims() -> None
     assert "one-line threat model" in raw
     assert "immediate action plan" in raw
     assert "isolated audit recipe" in raw
+    assert "English-only prose and headings" in raw
+    assert "Remove leading process commentary" in raw
     assert "what evidence would change the verdict" in raw
     assert "short message the user can send back" in raw
     assert "credential/key rotation" in raw

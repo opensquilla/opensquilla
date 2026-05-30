@@ -298,9 +298,10 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
 def _build_catalog_summary() -> str:
     """Enumerate available bundled skills (name + 1-line description).
 
-    Meta-skills and creator-internal helper skills are intentionally excluded — the runtime's agent executor
-    rejects ``kind: meta`` composed inside another meta-skill (lint G1.2),
-    so showing them in the catalog only invites the LLM to propose
+    Meta-skills and creator-internal helper skills are intentionally excluded
+    — the runtime's agent executor rejects ``kind: meta`` composed inside
+    another meta-skill (lint G1.2), so showing them in the catalog only invites
+    the LLM to propose
     structurally-invalid SKILL.md files that the gates then reject. The
     creator helpers belong to meta-skill-creator's outer validation and
     persistence flow, not to the candidate meta-skill's business DAG. The
@@ -665,12 +666,11 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
     Unicode before constructing the fixture, so simulate_meta_resolution can
     actually match against the parsed trigger.
     """
-    import re
     if kind == "positive":
         # Double-quoted: triggers: \n  - "phrase"
-        m = re.search(r"triggers:\s*\n((?:\s*-\s*\"[^\"]+\"\s*\n)+)", skill_md)
+        m = _re.search(r"triggers:\s*\n((?:\s*-\s*\"[^\"]+\"\s*\n)+)", skill_md)
         if m:
-            first = re.search(r'-\s*"([^"]+)"', m.group(1))
+            first = _re.search(r'-\s*"([^"]+)"', m.group(1))
             if first:
                 raw = first.group(1)
                 # Decode \uXXXX / \n / \t / \" / \\ etc. via JSON-string parse.
@@ -683,9 +683,9 @@ def _deterministic_fixture(skill_md: str, kind: str) -> str:
                     decoded = raw
                 return f"please use {decoded}"
         # Unquoted: triggers: \n  - phrase
-        m = re.search(r"triggers:\s*\n((?:\s*-\s*[^\"\n]+\n)+)", skill_md)
+        m = _re.search(r"triggers:\s*\n((?:\s*-\s*[^\"\n]+\n)+)", skill_md)
         if m:
-            first = re.search(r"-\s*([^\"\n]+)", m.group(1))
+            first = _re.search(r"-\s*([^\"\n]+)", m.group(1))
             if first:
                 return f"please use {first.group(1).strip()}"
         return "please run this meta-skill"
@@ -977,8 +977,8 @@ async def meta_skill_smoke_run_tool(
         )
         text = str(raw or "").strip()
         if text.startswith("```"):
-            text = re.sub(r"^```(?:text)?\s*", "", text)
-            text = re.sub(r"\s*```$", "", text)
+            text = _re.sub(r"^```(?:text)?\s*", "", text)
+            text = _re.sub(r"\s*```$", "", text)
         return text.strip().strip('"') or _deterministic_fixture(_skill_md, kind)
 
     positive = await fixture_gen(skill_md, "positive")

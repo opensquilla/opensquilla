@@ -175,7 +175,8 @@ def test_opensquilla_meta_final_text_reads_clean_dag_deliverable(tmp_path, monke
     conn = sqlite3.connect(db_path)
     conn.execute(
         "CREATE TABLE meta_skill_runs ("
-        "id INTEGER PRIMARY KEY, session_key TEXT, status TEXT, final_text TEXT, started_at_ms INTEGER)"
+        "id INTEGER PRIMARY KEY, session_key TEXT, status TEXT, final_text TEXT, "
+        "started_at_ms INTEGER)"
     )
     conn.execute(
         "INSERT INTO meta_skill_runs (session_key, status, final_text, started_at_ms) "
@@ -259,12 +260,21 @@ def test_openclaw_session_file_events_can_ignore_warmup_before_prompt(tmp_path) 
     session_file.write_text(
         "\n".join(
             [
-                '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"warmup"}]}}',
-                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Bootstrap removed. Ready for the task."}]}}',
+                (
+                    '{"type":"message","message":{"role":"user","content":'
+                    '[{"type":"text","text":"warmup"}]}}'
+                ),
+                (
+                    '{"type":"message","message":{"role":"assistant","content":'
+                    '[{"type":"text","text":"Bootstrap removed. Ready for the task."}]}}'
+                ),
                 '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"'
                 + prompt
                 + '"}]}}',
-                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"usable decision memo"}]}}',
+                (
+                    '{"type":"message","message":{"role":"assistant","content":'
+                    '[{"type":"text","text":"usable decision memo"}]}}'
+                ),
             ]
         ),
         encoding="utf-8",
@@ -291,7 +301,10 @@ def test_wait_for_openclaw_session_file_events_polls_until_answer(tmp_path) -> N
     session_file = tmp_path / "abc.jsonl"
     prompt = "Need a memo."
     session_file.write_text(
-        '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Need a memo."}]}}\n',
+        (
+            '{"type":"message","message":{"role":"user","content":'
+            '[{"type":"text","text":"Need a memo."}]}}\n'
+        ),
         encoding="utf-8",
     )
 
@@ -299,7 +312,8 @@ def test_wait_for_openclaw_session_file_events_polls_until_answer(tmp_path) -> N
         await asyncio.sleep(0)
         with session_file.open("a", encoding="utf-8") as fh:
             fh.write(
-                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"final memo"}]}}\n'
+                '{"type":"message","message":{"role":"assistant","content":'
+                '[{"type":"text","text":"final memo"}]}}\n'
             )
 
     async def collect() -> str:
@@ -326,8 +340,14 @@ def test_wait_for_openclaw_session_file_events_prefers_later_final_answer(tmp_pa
     session_file.write_text(
         "\n".join(
             [
-                '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Need a memo."}]}}',
-                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"checking sources"}]}}',
+                (
+                    '{"type":"message","message":{"role":"user","content":'
+                    '[{"type":"text","text":"Need a memo."}]}}'
+                ),
+                (
+                    '{"type":"message","message":{"role":"assistant","content":'
+                    '[{"type":"text","text":"checking sources"}]}}'
+                ),
             ]
         )
         + "\n",
@@ -338,7 +358,8 @@ def test_wait_for_openclaw_session_file_events_prefers_later_final_answer(tmp_pa
         await asyncio.sleep(0)
         with session_file.open("a", encoding="utf-8") as fh:
             fh.write(
-                '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"final sourced memo"}]}}\n'
+                '{"type":"message","message":{"role":"assistant","content":'
+                '[{"type":"text","text":"final sourced memo"}]}}\n'
             )
 
     async def collect() -> str:

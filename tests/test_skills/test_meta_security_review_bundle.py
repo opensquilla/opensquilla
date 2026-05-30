@@ -29,11 +29,14 @@ from opensquilla.skills.meta.types import MetaMatch
 _BUNDLED = (
     Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "bundled"
 )
+_EXP = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "exp"
 
 
 def _bundle_loader(tmp_path: Path) -> SkillLoader:
     loader = SkillLoader(
-        bundled_dir=_BUNDLED, snapshot_path=tmp_path / "snap.json",
+        bundled_dir=_BUNDLED,
+        extra_dirs=[_EXP],
+        snapshot_path=tmp_path / "snap.json",
     )
     loader.invalidate_cache()
     loader.load_all()

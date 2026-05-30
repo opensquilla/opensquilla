@@ -39,6 +39,7 @@ from opensquilla.skills.meta.inputs import make_meta_inputs
 from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
 from opensquilla.skills.meta.types import MetaMatch
 from opensquilla.skills.retrieval import HybridRetriever
+from opensquilla.skills.types import SkillSpec
 
 log = structlog.get_logger(__name__)
 
@@ -300,7 +301,7 @@ def _has_semantic_workflow_cue(query: str) -> bool:
 
 def _semantic_meta_candidate(
     ctx: TurnContext,
-    candidates: list[tuple[int, str, object, object]],
+    candidates: list[tuple[int, str, object, SkillSpec]],
 ) -> tuple[int, str, object, str] | None:
     """Return the best meta-skill candidate from retrieval, if any.
 
@@ -565,7 +566,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         _sticky_drop(session_id)
 
     matched: list[tuple[int, str, object, str]] = []
-    semantic_candidates: list[tuple[int, str, object, object]] = []
+    semantic_candidates: list[tuple[int, str, object, SkillSpec]] = []
     for spec in all_skills:
         if getattr(spec, "kind", "skill") != "meta":
             continue

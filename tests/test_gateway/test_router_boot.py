@@ -682,11 +682,21 @@ async def test_start_gateway_server_wires_meta_skill_auto_propose_routes(
         "make_memory_dream_handler",
         fake_make_memory_dream_handler,
     )
-    monkeypatch.setattr(runtime_e2e_mod, "make_runtime_e2e_context", fake_make_runtime_e2e_context)
-    monkeypatch.setattr(proposer_mod, "set_runtime_e2e_context", fake_set_runtime_e2e_context)
-    monkeypatch.setattr(proposer_mod, "reset_runtime_e2e_context", fake_reset_runtime_e2e_context)
-    monkeypatch.setattr(proposer_mod, "set_smoke_fixture_context", fake_set_smoke_fixture_context)
-    monkeypatch.setattr(proposer_mod, "reset_smoke_fixture_context", fake_reset_smoke_fixture_context)
+    monkeypatch.setattr(
+        runtime_e2e_mod, "make_runtime_e2e_context", fake_make_runtime_e2e_context
+    )
+    monkeypatch.setattr(
+        proposer_mod, "set_runtime_e2e_context", fake_set_runtime_e2e_context
+    )
+    monkeypatch.setattr(
+        proposer_mod, "reset_runtime_e2e_context", fake_reset_runtime_e2e_context
+    )
+    monkeypatch.setattr(
+        proposer_mod, "set_smoke_fixture_context", fake_set_smoke_fixture_context
+    )
+    monkeypatch.setattr(
+        proposer_mod, "reset_smoke_fixture_context", fake_reset_smoke_fixture_context
+    )
     monkeypatch.setattr(
         "opensquilla.gateway.pidlock.GatewayPidLock.acquire", lambda self: None
     )

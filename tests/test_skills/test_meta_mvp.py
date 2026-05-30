@@ -1120,19 +1120,25 @@ async def test_orchestrator_skill_exec_invokes_subprocess(tmp_path: Path) -> Non
     # Synthesize a fake skill with a real entrypoint script that echoes its args.
     skill_dir = tmp_path / "fake_skill"
     skill_dir.mkdir()
-    script = skill_dir / "echo.sh"
+    script = skill_dir / "echo.py"
     script.write_text(
-        "#!/bin/sh\n"
-        "printf '{\"argv\":[\"%s\",\"%s\",\"%s\",\"%s\"],\"ok\":true}\\n' "
-        '"$1" "$2" "$3" "$4"\n',
+        "import json\n"
+        "import sys\n"
+        "print(json.dumps({'argv': sys.argv[1:], 'ok': True}))\n",
+        encoding="utf-8",
     )
-    script.chmod(0o755)
 
     fake_spec = _make_skill_spec("fake-echo", content="echo me")
     fake_spec.base_dir = str(skill_dir)
     fake_spec.entrypoint = {
-        "command": "{baseDir}/echo.sh",
-        "args": ["--query", "{{ inputs.user_message }}", "--n", "{{ with.n }}"],
+        "command": "python",
+        "args": [
+            "{baseDir}/echo.py",
+            "--query",
+            "{{ inputs.user_message }}",
+            "--n",
+            "{{ with.n }}",
+        ],
         "parse": "json",
         "timeout": 15,
     }
@@ -1174,13 +1180,17 @@ async def test_orchestrator_skill_exec_invokes_subprocess(tmp_path: Path) -> Non
 async def test_orchestrator_skill_exec_propagates_nonzero_exit(tmp_path: Path) -> None:
     skill_dir = tmp_path / "fail_skill"
     skill_dir.mkdir()
-    script = skill_dir / "fail.sh"
-    script.write_text("#!/bin/sh\necho boom >&2\nexit 7\n")
-    script.chmod(0o755)
+    script = skill_dir / "fail.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stderr.write('boom\\n')\n"
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+    )
 
     fake_spec = _make_skill_spec("fail-skill", content="x")
     fake_spec.base_dir = str(skill_dir)
-    fake_spec.entrypoint = {"command": "{baseDir}/fail.sh", "args": []}
+    fake_spec.entrypoint = {"command": "python", "args": ["{baseDir}/fail.py"]}
 
     plan_spec = _make_meta_spec(
         composition={
@@ -1988,14 +1998,17 @@ async def test_iter_events_invokes_real_skill_view_for_skill_steps(
     from opensquilla.engine.types import ToolResultEvent, ToolUseStartEvent
     from opensquilla.skills.meta.types import MetaResult
 
-    script = tmp_path / "echo.sh"
-    script.write_text("#!/bin/sh\nprintf '{\"ok\": true}\\n'\n")
-    script.chmod(0o755)
+    script = tmp_path / "echo.py"
+    script.write_text(
+        "import json\n"
+        "print(json.dumps({'ok': True}))\n",
+        encoding="utf-8",
+    )
     exec_spec = _make_skill_spec("scripty", content="Run the wrapped CLI.")
     exec_spec.base_dir = str(tmp_path)
     exec_spec.entrypoint = {
-        "command": "{baseDir}/echo.sh",
-        "args": [],
+        "command": "python",
+        "args": ["{baseDir}/echo.py"],
         "parse": "json",
     }
     agent_spec = _make_skill_spec("brainy", content="Sub-agent skill body.")

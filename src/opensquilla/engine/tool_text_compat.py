@@ -15,16 +15,23 @@ _PLAIN_JSON_TOOL_PREFIX_RE = re.compile(
 _TEXT_PROTOCOL_MARKER_RE = re.compile(
     (
         r"<\s*(?:minimax:tool_call|tool_calls?|tvoe_calls|invoke\b|"
-        r"parameter\b|effect_calls\b|details\b|angle\s+brackets\b)"
+        r"parameter\b|effect_calls\b|details\b|angle\s+brackets\b|"
+        r"[|｜]\s*DSML\s*[|｜]\s*(?:tool_calls?|invoke\b|parameter\b))"
     ),
     re.IGNORECASE,
 )
 _TEXT_PROTOCOL_PARAMETER_RE = re.compile(
-    r"<\s*parameter\s+name\s*=\s*[\"'](?:path|content|command|code|patch)[\"']",
+    (
+        r"<\s*(?:parameter|[|｜]\s*DSML\s*[|｜]\s*parameter)\s+"
+        r"name\s*=\s*[\"'](?:path|content|command|code|patch|sheets)[\"']"
+    ),
     re.IGNORECASE,
 )
 _TEXT_PROTOCOL_INVOKE_RE = re.compile(
-    r"<\s*invoke\s+name\s*=\s*[\"'][A-Za-z_][A-Za-z0-9_.:-]*[\"']",
+    (
+        r"<\s*(?:invoke|[|｜]\s*DSML\s*[|｜]\s*invoke)\s+"
+        r"name\s*=\s*[\"'][A-Za-z_][A-Za-z0-9_.:-]*[\"']"
+    ),
     re.IGNORECASE,
 )
 _TEXT_PROTOCOL_HTML_RE = re.compile(
@@ -32,11 +39,17 @@ _TEXT_PROTOCOL_HTML_RE = re.compile(
     re.IGNORECASE,
 )
 _TEXT_PROTOCOL_CLOSE_RE = re.compile(
-    r"</\s*invoke\s*>|</\s*(?:tool_calls?|tvoe_calls)\s*>",
+    (
+        r"</\s*(?:invoke|[|｜]\s*DSML\s*[|｜]\s*invoke)\s*>|"
+        r"</\s*(?:tool_calls?|tvoe_calls|[|｜]\s*DSML\s*[|｜]\s*tool_calls?)\s*>"
+    ),
     re.IGNORECASE,
 )
 _TEXT_PROTOCOL_STANDALONE_MARKER_RE = re.compile(
-    r"<\s*(?:parameter|effect_calls|tool_calls?|tvoe_calls|angle\s+brackets)\s*>",
+    (
+        r"<\s*(?:parameter|effect_calls|tool_calls?|tvoe_calls|angle\s+brackets|"
+        r"[|｜]\s*DSML\s*[|｜]\s*(?:tool_calls?|invoke|parameter))\b"
+    ),
     re.IGNORECASE,
 )
 _TEXT_PROTOCOL_DETAILS_SUMMARY_RE = re.compile(
@@ -48,6 +61,14 @@ _TEXT_PROTOCOL_PREFIXES = (
     "<tool_call",
     "<tool_calls",
     "<tvoe_calls",
+    "<|dsml|tool_call",
+    "<|dsml|tool_calls",
+    "<|dsml|invoke",
+    "<|dsml|parameter",
+    "<｜dsml｜tool_call",
+    "<｜dsml｜tool_calls",
+    "<｜dsml｜invoke",
+    "<｜dsml｜parameter",
     "<invoke",
     "<parameter",
     "<effect_calls",

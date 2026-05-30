@@ -73,6 +73,23 @@ def test_malformed_text_tool_protocol_is_removed_before_user_display() -> None:
     assert strip_protocol_text_leak(text) == "Let me write the dashboard now."
 
 
+def test_dsml_text_tool_protocol_is_removed_before_user_display() -> None:
+    text = (
+        "Let me create the printable daily record sheet as well:\n\n"
+        '<｜DSML｜tool_calls><｜DSML｜invoke name="create_xlsx">'
+        '<｜DSML｜parameter name="name" string="true">'
+        "bean-sprout-daily-record-sheet.xlsx"
+        "</｜DSML｜parameter>"
+        '<｜DSML｜parameter name="sheets" string="false">'
+        '[{"name":"Record Sheet","rows":[["Day","Height"]]}]'
+        "</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"
+    )
+
+    assert strip_protocol_text_leak(text) == (
+        "Let me create the printable daily record sheet as well:"
+    )
+
+
 def test_tool_scaffold_details_summary_is_removed_before_user_display() -> None:
     text = (
         "Let me read the specific problematic areas to fix them.\n\n"
@@ -97,6 +114,20 @@ def test_streaming_protocol_guard_holds_split_tool_protocol() -> None:
         guard.push(
             '_calls><invoke name="write_file">'
             '<parameter name="content"><!DOCTYPE html><html></html>'
+        )
+        == ""
+    )
+    assert guard.flush() == ""
+
+
+def test_streaming_protocol_guard_holds_split_dsml_tool_protocol() -> None:
+    guard = ProtocolTextLeakGuard()
+
+    assert guard.push("Let me make the sheet.\n\n<｜DS") == "Let me make the sheet."
+    assert (
+        guard.push(
+            'ML｜tool_calls><｜DSML｜invoke name="create_xlsx">'
+            '<｜DSML｜parameter name="sheets">[]</｜DSML｜parameter>'
         )
         == ""
     )

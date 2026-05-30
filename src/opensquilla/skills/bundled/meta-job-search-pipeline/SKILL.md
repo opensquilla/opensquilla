@@ -4,7 +4,7 @@ description: "Use this meta-skill instead of answering directly when a job seeke
 kind: meta
 meta_priority: 65
 always: false
-final_text_mode: "step:deliver_jobpack"
+final_text_mode: "step:deliver_jobpack_audit"
 triggers:
   - "tailor my resume"
   - "改简历"
@@ -606,17 +606,59 @@ composition:
 
           End with a single line:
           PACK_MODE: {{ outputs.mode }}
+    - id: deliver_jobpack_audit
+      kind: llm_chat
+      depends_on: [deliver_jobpack, source_fact_ledger, mode, preferences]
+      with:
+        system: "You are the final quality gate for a job-search deliverable. Return only the cleaned final answer that the user should read. Do not explain the audit. Do not mention workflow, meta-skill, tool names, connector failures, workspace paths, or runtime details."
+        task: |
+          Rewrite the draft below into the final user-facing application pack.
+          Preserve useful content, but enforce the source fact ledger strictly.
+
+          Mode label:
+          {{ outputs.mode }}
+
+          Preferences:
+          {{ outputs.get('preferences', '') | truncate(500) }}
+
+          Strict source fact ledger:
+          {{ outputs.get('source_fact_ledger', '') | truncate(3000) }}
+
+          Draft deliverable:
+          {{ outputs.get('deliver_jobpack', '') | truncate(9000) }}
+
+          Hard requirements:
+          - Return markdown only. Never return JSON, a {"text": ...} wrapper,
+            artifact metadata, file paths, download links, or attachment notes.
+          - Remove leading process commentary such as "perfect for the
+            meta-skill pipeline", "running it now", "I will run", "workflow",
+            or any similar explanation of how the answer was produced.
+          - Preserve the user's language. If the request is English, write
+            English-only prose and English headings. If the request is Chinese,
+            write Simplified Chinese and keep the Chinese structure.
+          - For TAILOR_NEW, include resume rewrite points, paste-ready resume
+            content, a cover letter or outreach email, JD requirement /
+            evidence / gap table, 48-hour interview prep, and a no-fabrication
+            note.
+          - Audit every concrete claim against the strict source fact ledger.
+            Remove or mark as [to fill] / [待补充] any company fact, tool,
+            ownership claim, metric, method, or outcome not present in the
+            user's request.
+          - Do not upgrade participation into ownership. Keep "participated in
+            an AI customer-service pilot, not the owner" when that is the
+            available fact.
+          - Remove internal sentinels such as PACK_MODE.
     - id: store_pack
       kind: agent
       skill: memory
-      depends_on: [deliver_jobpack, mode, job_clarify]
+      depends_on: [deliver_jobpack_audit, mode, job_clarify]
     - id: export_docx
       kind: skill_exec
       skill: docx
-      depends_on: [deliver_jobpack, job_clarify]
+      depends_on: [deliver_jobpack_audit, job_clarify]
       when: "(inputs.get('collected', {}).get('job_clarify', {}).get('export_docx', 'NO') == 'YES') or ('EXPORT_DOCX_REQUESTED: yes' in outputs.get('preferences', ''))"
       with:
-        markdown: "{{ outputs.deliver_jobpack }}"
+        markdown: "{{ outputs.deliver_jobpack_audit }}"
         output_path: "/tmp/jobpack_{{ inputs.get('collected', {}).get('job_clarify', {}).get('target_company', 'untitled') | slugify }}.docx"
 ---
 

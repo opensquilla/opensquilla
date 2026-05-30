@@ -7,6 +7,15 @@ always: false
 final_text_mode: "step:decision_brief_audit"
 triggers:
   - "document decision"
+  - "vendor renewal"
+  - "renewal materials"
+  - "contract excerpt"
+  - "sales email"
+  - "whether to sign"
+  - "decide tomorrow whether to sign"
+  - "sign, reject, or negotiate"
+  - "evidence table"
+  - "questions for the vendor"
   - "看下这个文件"
   - "帮我判断这个文档"
   - "合同风险"
@@ -239,6 +248,11 @@ composition:
           payment due date. Do not cite statutes or legal article numbers unless
           they appear in the provided materials. Prefer practical negotiation
           language over categorical legal conclusions.
+          Preserve the user's language. If the original request is in English,
+          write the final brief in English with English section headings only;
+          do not default to Chinese or bilingual headings. If the original
+          request is in Chinese, write Simplified Chinese and do not default to
+          English headings.
 
           Risk review:
           {{ outputs.risk_review | truncate(7000) }}
@@ -280,13 +294,24 @@ composition:
           - Preserve the user's requested structure: recommendation, evidence
             table, high/medium/low risks, supplier questions, next 24 hours,
             and professional-review caveat.
-          - Use these exact section titles so the brief is easy to scan:
+          - Preserve the original request language. For an English request,
+            return an English-only brief with English headings; remove Chinese
+            headings such as 底线推荐, 证据表, 高中低风险, 要问供应商的问题, 接下来
+            24 小时, and 专业复核提醒 unless they are quoted source text. For a
+            Chinese request, return Simplified Chinese and do not switch to
+            English section headings.
+          - Use these exact section titles for Chinese or bilingual requests
+            so the brief is easy to scan:
             "Bottom-line recommendation / 底线推荐",
             "Evidence table / 证据表",
             "Risks ranked high/medium/low / 高中低风险",
             "Questions to ask the supplier / 要问供应商的问题",
             "What to do next in 24 hours / 接下来 24 小时",
             and "Professional-review caveat / 专业复核提醒".
+            For English-only requests, use the English portion of each heading
+            only: Bottom-line recommendation, Evidence table, Risks ranked
+            high/medium/low, Questions to ask the supplier, What to do next in
+            24 hours, Professional-review caveat.
           - Preserve date status accurately: payment due 2026-06-03 is an
             upcoming payment deadline, not overdue. Do not infer any
             cancellation deadline from that payment due date.

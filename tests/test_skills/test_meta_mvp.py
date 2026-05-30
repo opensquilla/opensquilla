@@ -1468,6 +1468,46 @@ async def test_make_llm_chat_from_provider_uses_deliverable_sized_token_budget()
 
 
 @pytest.mark.asyncio
+async def test_make_llm_chat_from_provider_forwards_billed_cost_to_usage_tracker() -> None:
+    from opensquilla.engine.usage import UsageTracker, usage_scope
+    from opensquilla.provider.types import DoneEvent as ProviderDoneEvent
+    from opensquilla.provider.types import TextDeltaEvent as ProviderTextDelta
+
+    class FakeProvider:
+        async def chat(self, _messages, *, tools, config):
+            assert tools is None
+            assert config.temperature == 0.0
+            yield ProviderTextDelta(text="ok")
+            yield ProviderDoneEvent(
+                input_tokens=10,
+                output_tokens=2,
+                model="deepseek/deepseek-v4-pro-20260423",
+                billed_cost=0.123,
+            )
+
+    tracker = UsageTracker()
+    llm_chat = make_llm_chat_from_provider(
+        provider=FakeProvider(),
+        base_config=AgentConfig(model_id="fallback-model"),
+        usage_tracker=tracker,
+        session_key="session-a",
+    )
+
+    with usage_scope("meta-run:step-a"):
+        assert await llm_chat("system", "user") == "ok"
+
+    usage = tracker.get("session-a")
+    scoped = tracker.get_scope("session-a", "meta-run:step-a")
+    assert usage is not None
+    assert scoped is not None
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 2
+    assert usage.billed_cost == pytest.approx(0.123)
+    assert usage.total_cost == pytest.approx(0.123)
+    assert scoped.billed_cost == pytest.approx(0.123)
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_final_text_auto_prepends_llm_summary_to_raw() -> None:
     """``final_text_mode='auto'`` (default) renders ``final_text`` as
     ``<LLM Markdown summary>\n\n---\n\n**Output details:**\n\n<raw last

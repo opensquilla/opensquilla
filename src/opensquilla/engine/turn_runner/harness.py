@@ -1034,6 +1034,11 @@ class _TurnRunnerSessionTotalsAdapter(SessionTotalsPort):
             )
             if event_cost_source == "opensquilla_estimate":
                 next_estimated_component += done_event.cost_usd
+            elif event_cost_source == "mixed":
+                next_estimated_component += max(
+                    0.0,
+                    done_event.cost_usd - done_event.billed_cost,
+                )
             next_missing_entries = (
                 getattr(current_session, "missing_cost_entries", 0) or 0
             )

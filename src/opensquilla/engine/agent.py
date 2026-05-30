@@ -150,6 +150,16 @@ _meta_invoke_turn_count: ContextVar[int] = ContextVar(
     "opensquilla_meta_invoke_turn_count", default=0
 )
 
+
+def _cost_source_for_usage(cost_usd: float, billed_cost: float) -> str:
+    if billed_cost > 0.0 and abs(cost_usd - billed_cost) <= 1e-9:
+        return "provider_billed"
+    if billed_cost > 0.0:
+        return "mixed"
+    if cost_usd > 0.0:
+        return "opensquilla_estimate"
+    return "unavailable"
+
 MAX_META_INVOKE_DEPTH = 3
 MAX_META_INVOKE_PER_TURN = 8
 
@@ -1832,6 +1842,11 @@ class Agent:
         total_cached_tokens = 0
         total_cache_write_tokens = 0
         total_billed_cost = 0.0
+        usage_turn_baseline = (
+            self._usage_tracker.session_checkpoint(self._session_key)
+            if self._usage_tracker and self._session_key
+            else None
+        )
         turn_llm_calls = 0
         turn_tool_errors = 0
         last_actual_model = ""
@@ -3598,32 +3613,58 @@ class Agent:
             done_cost = 0.0
             cost_source = "unavailable"
 
+        session_totals = (
+            self._usage_tracker.session_snapshot(self._session_key)
+            if self._usage_tracker and self._session_key
+            else None
+        )
+        turn_usage_delta = (
+            self._usage_tracker.session_delta_snapshot(self._session_key, usage_turn_baseline)
+            if self._usage_tracker and self._session_key
+            else None
+        )
+        done_input_tokens = total_input_tokens
+        done_output_tokens = total_output_tokens
+        done_cached_tokens = total_cached_tokens
+        done_cache_write_tokens = total_cache_write_tokens
+        done_billed_cost = total_billed_cost
+        if turn_usage_delta and (
+            turn_usage_delta.input_tokens
+            or turn_usage_delta.output_tokens
+            or turn_usage_delta.cache_read_tokens
+            or turn_usage_delta.cache_write_tokens
+            or turn_usage_delta.cost_usd
+            or turn_usage_delta.billed_cost
+        ):
+            done_input_tokens = turn_usage_delta.input_tokens
+            done_output_tokens = turn_usage_delta.output_tokens
+            done_cached_tokens = turn_usage_delta.cache_read_tokens
+            done_cache_write_tokens = turn_usage_delta.cache_write_tokens
+            done_cost = turn_usage_delta.cost_usd
+            done_billed_cost = turn_usage_delta.billed_cost
+            cost_source = _cost_source_for_usage(done_cost, done_billed_cost)
+
         has_usage = bool(
-            total_input_tokens
-            or total_output_tokens
+            done_input_tokens
+            or done_output_tokens
             or total_reasoning_tokens
-            or total_cached_tokens
-            or total_cache_write_tokens
-            or total_billed_cost
+            or done_cached_tokens
+            or done_cache_write_tokens
+            or done_billed_cost
         )
         if terminal_error is None or has_usage:
             if terminal_error is None:
                 yield self._transition(AgentState.DONE)
-            session_totals = (
-                self._usage_tracker.session_snapshot(self._session_key)
-                if self._usage_tracker and self._session_key
-                else None
-            )
             yield DoneEvent(
                 text="".join(final_text_parts),
-                input_tokens=total_input_tokens,
-                output_tokens=total_output_tokens,
+                input_tokens=done_input_tokens,
+                output_tokens=done_output_tokens,
                 reasoning_tokens=total_reasoning_tokens,
-                cached_tokens=total_cached_tokens,
-                cache_write_tokens=total_cache_write_tokens,
+                cached_tokens=done_cached_tokens,
+                cache_write_tokens=done_cache_write_tokens,
                 iterations=iterations,
                 cost_usd=done_cost,
-                billed_cost=total_billed_cost,
+                billed_cost=done_billed_cost,
                 cost_source=cost_source,
                 model=done_model,
                 runtime_context_hash=runtime_context_hash,
@@ -4919,9 +4960,11 @@ class Agent:
                         tool_use_id=tc.tool_use_id,
                         tool_name="meta_invoke",
                         content=(
-                            f"上一个 meta-skill ({existing_awaiting.step_id!r} "
-                            f"in run {existing_awaiting.run_id}) 还在等你回答，"
-                            "请先回答表单或回 '取消' 终止后再发起新的 meta-skill。"
+                            f"Previous meta-skill ({existing_awaiting.step_id!r} "
+                            f"in run {existing_awaiting.run_id}) is still "
+                            "waiting for your answer. Please complete the "
+                            "form or reply 'cancel' before starting a new "
+                            "meta-skill."
                         ),
                         is_error=True,
                         terminates_turn=True,
@@ -5317,6 +5360,7 @@ class Agent:
         is reused to render the form a second time.
         """
         from opensquilla.engine.turn_runner.turn_finalizer_stage import (
+            _schema_language,
             render_paused_outcome,
         )
         from opensquilla.skills.meta.plan_serde import (
@@ -5324,12 +5368,15 @@ class Agent:
         )
         from opensquilla.skills.meta.types import MetaPaused, MetaResult
 
-        lines: list[str] = ["未能解析回复："]
-        for err in (errors or []):
-            lines.append(f"  - {err}")
         try:
             schema_payload = json.loads(awaiting.awaiting_schema_json or "{}")
             cfg = clarify_config_from_jsonable(schema_payload)
+            language = _schema_language(cfg, cfg.intro)
+            lines: list[str] = [
+                "未能解析回复：" if language == "zh" else "I could not parse your reply:",
+            ]
+            for err in (errors or []):
+                lines.append(f"  - {err}")
             synthetic = MetaResult(
                 ok=False,
                 paused=True,
@@ -5345,6 +5392,9 @@ class Agent:
                 lines.append("")
                 lines.append(form_text)
         except Exception:  # noqa: BLE001 — best-effort re-render
+            lines = ["未能解析回复："]
+            for err in (errors or []):
+                lines.append(f"  - {err}")
             lines.append("")
             lines.append("请按上次的表单格式重新回答，或回 '取消' 终止。")
         return "\n".join(lines)

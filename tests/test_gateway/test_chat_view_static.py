@@ -79,6 +79,9 @@ def test_chat_renders_live_and_historical_artifacts_as_header_auth_downloads() -
 def test_chat_artifact_images_render_as_preview_cards_and_refresh_on_done() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")
+    preview_start = source.index("function _artifactPreviewUrl(artifact)")
+    preview_end = source.index("  function _renderArtifacts", preview_start)
+    preview_body = source[preview_start:preview_end]
     render_start = source.index("function _renderArtifacts(artifacts)")
     render_end = source.index("  async function _downloadArtifact", render_start)
     render_body = source[render_start:render_end]
@@ -89,6 +92,9 @@ def test_chat_artifact_images_render_as_preview_cards_and_refresh_on_done() -> N
     assert "function _isImageArtifact(artifact)" in source
     assert "function _artifactCategory(artifact)" in source
     assert "function _artifactPreviewUrl(artifact)" in source
+    assert "url.searchParams.set('sessionKey', _sessionKey)" in preview_body
+    assert "const token = (App.getAuthToken && App.getAuthToken()) || '';" in preview_body
+    assert "url.searchParams.set('token', token)" in preview_body
     assert "msg-artifact-gallery" in render_body
     assert "msg-artifact-files" in render_body
     assert "class=\"msg-artifact-card msg-artifact-card--image\"" in render_body

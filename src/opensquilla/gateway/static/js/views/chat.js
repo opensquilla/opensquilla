@@ -7025,6 +7025,12 @@ const ChatView = (() => {
     const schema = args.clarify_schema || {};
     const runId = args.run_id || '';
     const fields = Array.isArray(schema.fields) ? schema.fields : [];
+    const schemaCopy = [
+      schema.intro || '',
+      ...fields.map((field) => field && field.prompt || ''),
+    ].join('\n');
+    const schemaLang = /[\u4e00-\u9fff]/.test(schemaCopy) ? 'zh' : 'en';
+    const clarifyText = (zh, en) => schemaLang === 'zh' ? zh : en;
 
     const bubble = _ensureStreamBubble();
     const body = bubble.querySelector('.msg-body');
@@ -7036,7 +7042,7 @@ const ChatView = (() => {
 
     const header = document.createElement('div');
     header.className = 'clarify-form-header';
-    header.textContent = '请确认以下信息';
+    header.textContent = clarifyText('请确认以下信息', 'Please confirm these details');
     card.appendChild(header);
 
     if (schema.intro) {
@@ -7068,7 +7074,9 @@ const ChatView = (() => {
         if (!field.required) {
           const blank = document.createElement('option');
           blank.value = '';
-          blank.textContent = field.default ? '(默认: ' + field.default + ')' : '(可选)';
+          blank.textContent = field.default
+            ? clarifyText('(默认: ' + field.default + ')', '(default: ' + field.default + ')')
+            : clarifyText('(可选)', '(optional)');
           input.appendChild(blank);
         }
         field.choices.forEach((choice) => {
@@ -7083,7 +7091,7 @@ const ChatView = (() => {
         ['', 'true', 'false'].forEach((v) => {
           const opt = document.createElement('option');
           opt.value = v;
-          opt.textContent = v === '' ? '(未选)' : v;
+          opt.textContent = v === '' ? clarifyText('(未选)', '(not selected)') : v;
           if (field.default === (v === 'true')) opt.selected = true;
           input.appendChild(opt);
         });
@@ -7116,7 +7124,7 @@ const ChatView = (() => {
     const submitBtn = document.createElement('button');
     submitBtn.type = 'submit';
     submitBtn.className = 'clarify-form-submit';
-    submitBtn.textContent = '提交';
+    submitBtn.textContent = clarifyText('提交', 'Submit');
     actions.appendChild(submitBtn);
 
     const cancelKeyword = (
@@ -7128,7 +7136,7 @@ const ChatView = (() => {
       const cancelBtn = document.createElement('button');
       cancelBtn.type = 'button';
       cancelBtn.className = 'clarify-form-cancel';
-      cancelBtn.textContent = '取消';
+      cancelBtn.textContent = clarifyText('取消', 'Cancel');
       cancelBtn.addEventListener('click', () => {
         const sessionKey = _currentSessionKey();
         _rpc.call('chat.send', {
@@ -7136,7 +7144,7 @@ const ChatView = (() => {
           sessionKey: sessionKey,
           intent: 'clarify_cancel',
         }).catch((err) => {
-          UI.toast('取消失败: ' + (err && err.message || err), 'error');
+          UI.toast(clarifyText('取消失败: ', 'Cancel failed: ') + (err && err.message || err), 'error');
         });
         submitBtn.disabled = true;
         cancelBtn.disabled = true;
@@ -7174,11 +7182,11 @@ const ChatView = (() => {
       });
       if (firstErrorEl) {
         firstErrorEl.focus();
-        UI.toast('请检查必填字段', 'warn');
+        UI.toast(clarifyText('请检查必填字段', 'Please check required fields'), 'warn');
         return;
       }
       if (Object.keys(collected).length === 0) {
-        UI.toast('请至少填写一个字段', 'warn');
+        UI.toast(clarifyText('请至少填写一个字段', 'Please fill in at least one field'), 'warn');
         return;
       }
       submitBtn.disabled = true;
@@ -7189,7 +7197,7 @@ const ChatView = (() => {
         fields: collected,
       }).catch((err) => {
         submitBtn.disabled = false;
-        UI.toast('提交失败: ' + (err && err.message || err), 'error');
+        UI.toast(clarifyText('提交失败: ', 'Submit failed: ') + (err && err.message || err), 'error');
       });
     });
 
@@ -7316,6 +7324,8 @@ const ChatView = (() => {
     try {
       const url = new URL(raw, window.location.origin);
       if (_sessionKey) url.searchParams.set('sessionKey', _sessionKey);
+      const token = (App.getAuthToken && App.getAuthToken()) || '';
+      if (token) url.searchParams.set('token', token);
       return url.pathname + url.search + url.hash;
     } catch {
       return raw;

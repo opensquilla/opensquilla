@@ -1202,6 +1202,7 @@ def make_llm_chat_from_provider(
                         model_id=event.model or base_config.model_id or "",
                         cache_read_tokens=event.cached_tokens,
                         cache_write_tokens=event.cache_write_tokens,
+                        billed_cost=event.billed_cost,
                     )
             elif type(event).__name__ == "ErrorEvent" and not first_error:
                 # Capture provider-level errors (auth, network, illegal

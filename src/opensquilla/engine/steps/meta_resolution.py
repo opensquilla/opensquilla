@@ -296,12 +296,21 @@ def _trigger_matches(trigger: str, message_lower: str) -> bool:
       substring matching does not produce ambiguous fires.
     """
     tl = trigger.lower()
-    if tl not in message_lower:
-        return False
     if all(ord(c) < 128 for c in tl):
         if _META_SKILL_EXPLANATION_RE.search(message_lower):
             return False
-        return bool(re.search(r"\b" + re.escape(tl) + r"\b", message_lower))
+        normalized_trigger = re.sub(r"[^a-z0-9]+", " ", tl).strip()
+        normalized_message = re.sub(r"[^a-z0-9]+", " ", message_lower).strip()
+        if not normalized_trigger or normalized_trigger not in normalized_message:
+            return False
+        return bool(
+            re.search(
+                r"\b" + re.escape(normalized_trigger) + r"\b",
+                normalized_message,
+            )
+        )
+    if tl not in message_lower:
+        return False
     return True
 
 

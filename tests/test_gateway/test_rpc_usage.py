@@ -393,6 +393,49 @@ def test_usage_status_prefers_persisted_row_over_same_session_tracker_row() -> N
     assert row["costEphemeral"] is False
 
 
+def test_usage_status_overlays_tracker_when_persisted_row_is_still_empty() -> None:
+    """Cover the done-event/read-after-write race seen in live meta runs."""
+
+    db_session = SimpleNamespace(
+        session_key="agent:webchat:stale",
+        status="running",
+        input_tokens=0,
+        output_tokens=0,
+        total_cost_usd=0.0,
+        billed_cost_usd=0.0,
+        estimated_cost_component_usd=0.0,
+        cost_source="none",
+        missing_cost_entries=0,
+        cache_read=0,
+        cache_write=0,
+        model="deepseek/deepseek-v4-pro",
+    )
+    sm = _FakeSessionManager([db_session])
+    tracker = UsageTracker()
+    tracker.add(
+        "agent:webchat:stale",
+        input_tokens=97_223,
+        output_tokens=25_486,
+        model_id="deepseek/deepseek-v4-pro-20260423",
+        cache_read_tokens=32_768,
+        billed_cost=0.132452324,
+    )
+
+    ctx = _ctx(session_manager=sm, usage_tracker=tracker)
+    payload = asyncio.run(_handle_usage_status(None, ctx))
+
+    [row] = payload["sessions"]
+    assert row["session"] == "agent:webchat:stale"
+    assert row["inputTokens"] == 97_223
+    assert row["outputTokens"] == 25_486
+    assert row["cacheReadTokens"] == 32_768
+    assert row["costUsd"] == 0.132452
+    assert row["billedCostUsd"] == 0.132452
+    assert row["costSource"] == "provider_billed"
+    assert row["costEphemeral"] is True
+    assert payload["totalCostUsd"] == 0.132452
+
+
 def test_usage_status_reads_real_session_manager_dict_rows_and_deduplicates_tracker() -> None:
     async def scenario():
         storage = SessionStorage(":memory:")

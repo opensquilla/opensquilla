@@ -1176,6 +1176,48 @@ async def test_chat_send_accepts_turn_without_synchronous_context_overflow_gate(
     assert accepted["key"] == "s-auto"
 
 
+def test_chat_send_creates_webchat_session_with_agent_from_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(ContextOverflowPolicy.AUTO_SUMMARIZE, budget=10)
+    sm = SimpleNamespace(
+        get_or_create=AsyncMock(
+            return_value=SimpleNamespace(
+                session_key="agent:kid-project:webchat:abc",
+                agent_id="kid-project",
+            )
+        ),
+    )
+    ctx = SimpleNamespace(
+        config=cfg,
+        session_manager=sm,
+        principal=SimpleNamespace(role="owner"),
+    )
+
+    async def _fake_sessions_send(params: dict[str, Any], _ctx: Any) -> dict[str, Any]:
+        return {"status": "accepted", "key": params["key"], "task_id": "task-1"}
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_sessions._handle_sessions_send",
+        _fake_sessions_send,
+    )
+
+    async def _run() -> dict[str, Any]:
+        return await _handle_chat_send(
+            {"message": "m", "sessionKey": "agent:kid-project:webchat:abc"},
+            ctx,
+        )
+
+    result = asyncio.run(_run())
+
+    assert result["ok"] is True
+    sm.get_or_create.assert_awaited_once_with(
+        session_key="agent:kid-project:webchat:abc",
+        agent_id="kid-project",
+        display_name="WebChat",
+    )
+
+
 @pytest.mark.asyncio
 async def test_rpc_chat_auto_summarize_builds_provider_compaction_config() -> None:
     cfg = _cfg(ContextOverflowPolicy.AUTO_SUMMARIZE, budget=10)

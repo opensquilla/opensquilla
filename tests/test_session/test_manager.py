@@ -283,6 +283,20 @@ async def test_append_message_updates_tokens(manager):
 
 
 @pytest.mark.asyncio
+async def test_append_message_with_turn_usage_does_not_double_count_output_tokens(manager):
+    await manager.create("agent:main:main")
+    await manager.append_message(
+        "agent:main:main",
+        "assistant",
+        "hi",
+        turn_usage={"model": "gpt-test", "input_tokens": 10, "output_tokens": 3},
+        token_count=3,
+    )
+    node = await manager._storage.get_session("agent:main:main")
+    assert node.total_tokens == 0
+
+
+@pytest.mark.asyncio
 async def test_get_transcript(manager):
     await manager.create("agent:main:main")
     await manager.append_message("agent:main:main", "user", "msg1")

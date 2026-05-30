@@ -555,6 +555,7 @@ async def test_run_dag_tool_result_includes_scoped_step_usage() -> None:
             input_tokens=10 if step.id == "a" else 20,
             output_tokens=1 if step.id == "a" else 2,
             model_id=f"model-{step.id}",
+            billed_cost=0.123 if step.id == "a" else 0.0,
         )
         yield _StepDone(text=f"{step.id}-done")
 
@@ -581,7 +582,14 @@ async def test_run_dag_tool_result_includes_scoped_step_usage() -> None:
     assert usage_a["output_tokens"] == 1
     assert usage_a["total_tokens"] == 11
     assert usage_a["model"] == "model-a"
+    assert usage_a["cost_usd"] == pytest.approx(0.123)
+    assert usage_a["billed_cost"] == pytest.approx(0.123)
+    assert usage_a["billed_cost_usd"] == pytest.approx(0.123)
+    assert usage_a["cost_source"] == "provider_billed"
+    assert usage_a["is_provider_billed"] is True
     assert usage_b["input_tokens"] == 20
     assert usage_b["output_tokens"] == 2
     assert usage_b["total_tokens"] == 22
     assert usage_b["model"] == "model-b"
+    assert usage_b["billed_cost"] == 0.0
+    assert usage_b["is_provider_billed"] is False

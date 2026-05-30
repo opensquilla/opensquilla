@@ -160,6 +160,10 @@ async def run_dag(
         output_tokens = int(getattr(scoped, "output_tokens", 0) or 0)
         cache_read_tokens = int(getattr(scoped, "cache_read_tokens", 0) or 0)
         cache_write_tokens = int(getattr(scoped, "cache_write_tokens", 0) or 0)
+        cost_usd = float(getattr(scoped, "total_cost", 0.0) or 0.0)
+        estimated_cost = float(getattr(scoped, "cost", 0.0) or 0.0)
+        billed_cost = float(getattr(scoped, "billed_cost", 0.0) or 0.0)
+        cost_source = str(getattr(scoped, "cost_source", "") or "")
         if not (
             input_tokens
             or output_tokens
@@ -174,7 +178,12 @@ async def run_dag(
                 "total_tokens": input_tokens + output_tokens,
                 "cache_read_tokens": cache_read_tokens,
                 "cache_write_tokens": cache_write_tokens,
-                "cost_usd": round(float(getattr(scoped, "cost", 0.0) or 0.0), 6),
+                "cost_usd": round(cost_usd, 6),
+                "billed_cost": round(billed_cost, 6),
+                "billed_cost_usd": round(billed_cost, 6),
+                "estimated_cost_usd": round(estimated_cost, 6),
+                "cost_source": cost_source,
+                "is_provider_billed": cost_source == "provider_billed",
                 "model": str(getattr(scoped, "model_id", "") or ""),
             }
         }

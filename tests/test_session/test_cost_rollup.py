@@ -12,6 +12,14 @@ def test_normalize_event_cost_source_prefers_provider_billed_signals() -> None:
     assert normalize_event_cost_source(None, billed_cost_usd=0.01) == "provider_billed"
 
 
+def test_normalize_event_cost_source_preserves_mixed_components() -> None:
+    assert normalize_event_cost_source("mixed") == "mixed"
+    assert (
+        normalize_event_cost_source(None, cost_usd=0.03, billed_cost_usd=0.01)
+        == "mixed"
+    )
+
+
 def test_normalize_event_cost_source_distinguishes_estimate_unavailable_and_none() -> None:
     assert normalize_event_cost_source("opensquilla_estimate") == "opensquilla_estimate"
     assert normalize_event_cost_source(None, cost_usd=0.02) == "opensquilla_estimate"

@@ -777,7 +777,7 @@ class SessionManager:
         await self._storage.append_transcript_entry(entry, expected_epoch=expected_epoch)
 
         node.updated_at = _now_ms()
-        if token_count:
+        if token_count and turn_usage is None:
             node.total_tokens += token_count
             node.total_tokens_fresh = False
         await self._storage.upsert_session(node)

@@ -46,7 +46,7 @@ from opensquilla.session.compaction_lifecycle import (
     pre_compaction_flush_enabled,
     pre_compaction_flush_requires_safe_receipt,
 )
-from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
+from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
 from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
 
 _d = get_dispatcher()
@@ -356,6 +356,21 @@ def _require_key(params: dict | None) -> str:
     if not isinstance(key, str):
         raise ValueError("params.key must be a string")
     return canonicalize_session_key(key)
+
+
+def _effective_agent_id_for_session(session: Any | None, session_key: str) -> str:
+    """Prefer the explicit agent encoded in modern session keys.
+
+    Older WebChat paths could accidentally persist ``agent_id='main'`` for a
+    key such as ``agent:ops:webchat:...``.  Routing, workspace selection, and
+    memory lookup must follow the canonical session key in that case.
+    """
+
+    parsed = parse_agent_id(session_key)
+    stored = normalize_agent_id(getattr(session, "agent_id", None) or "main")
+    if parsed != "main":
+        return parsed
+    return stored
 
 
 def _context_window_tokens(params: dict | None, ctx: RpcContext) -> int:
@@ -877,7 +892,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         session, _intent_applied = await ctx.session_manager.apply_intent(
             key,
             session_intent,
-            agent_id=normalize_agent_id(session.agent_id if session is not None else "main"),
+            agent_id=_effective_agent_id_for_session(session, key),
         )
     elif session_intent is not SessionIntent.CONTINUE:
         raise RuntimeError("Session intent handling requires SessionManager.apply_intent")
@@ -894,7 +909,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         build_web_route_envelope,
     )
 
-    agent_id = normalize_agent_id(session.agent_id if session is not None else "main")
+    agent_id = _effective_agent_id_for_session(session, key)
     if source_hint.get("caller_kind") == "cli" or source_hint.get("channel_kind") == "cli":
         route_envelope = build_cli_route_envelope(
             session_key=key,

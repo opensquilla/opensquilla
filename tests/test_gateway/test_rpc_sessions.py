@@ -852,6 +852,45 @@ class TestSessionsSend:
             "persisted_user_message_id"
         ) is None
 
+    def test_send_prefers_agent_encoded_in_session_key_for_routing(
+        self, dispatcher
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        session = FakeSession(
+            session_key="agent:kid-project:webchat:test",
+            session_id="test",
+            agent_id="main",
+        )
+        runtime = RecordingTaskRuntime()
+        manager = FakeSessionManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
+
+        async def _run():
+            return await dispatcher.dispatch(
+                "r1",
+                "sessions.send",
+                {"key": session.session_key, "message": "hello"},
+                ctx,
+            )
+
+        res = asyncio.run(_run())
+
+        assert res.ok is True
+        assert runtime.enqueue_calls[0]["envelope"].agent_id == "kid-project"
+
     def test_legacy_session_error_payload_is_terminal_message_normalized(self):
         payload = _normalize_terminal_event_payload(
             "session.event.error",

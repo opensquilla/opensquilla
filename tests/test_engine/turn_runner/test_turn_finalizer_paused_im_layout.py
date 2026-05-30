@@ -84,6 +84,39 @@ def test_string_max_chars_renders_qualifier():
     assert "(<=100 chars)" in text
 
 
+def test_english_schema_renders_english_fallback_copy():
+    cfg = ClarifyStepConfig(
+        mode="form",
+        intro="Some paper details are missing.",
+        fields=(
+            ClarifyField(
+                name="topic",
+                type="string",
+                required=True,
+                max_chars=200,
+                prompt="Paper topic",
+            ),
+            ClarifyField(
+                name="paper_mode",
+                type="enum",
+                required=False,
+                choices=("FULL_MANUSCRIPT", "COMPACT_SKELETON"),
+                default="COMPACT_SKELETON",
+                prompt="Mode",
+            ),
+        ),
+        cancel_keywords=("cancel", "stop"),
+    )
+    text = render_paused_outcome(_paused(cfg))
+    assert "Please reply with these fields:" in text
+    assert "[required]" in text
+    assert "(default COMPACT_SKELETON)" in text
+    assert "Reply format example:" in text
+    assert "Or reply cancel / stop to cancel." in text
+    assert "请回复以下字段" not in text
+    assert "必填" not in text
+
+
 def test_format_example_block_present_for_required_fields():
     cfg = ClarifyStepConfig(
         mode="form",

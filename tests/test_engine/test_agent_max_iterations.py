@@ -8,6 +8,7 @@ import pytest
 from opensquilla.engine import Agent, AgentConfig, ToolResult
 from opensquilla.engine.subagent import SubagentSpec
 from opensquilla.engine.types import ArtifactEvent, ErrorEvent
+from opensquilla.engine.usage import UsageTracker
 from opensquilla.provider import (
     ChatConfig,
     Message,
@@ -470,6 +471,37 @@ async def test_agent_stops_when_turn_output_token_budget_is_exceeded() -> None:
         event.kind == "error" and event.code == "turn_output_token_budget_exceeded"
         for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_agent_done_event_uses_current_turn_real_billed_usage_delta() -> None:
+    tracker = UsageTracker()
+    session_key = "agent:test:webchat:s1"
+    tracker.add(
+        session_key,
+        input_tokens=100,
+        output_tokens=10,
+        model_id="deepseek/deepseek-v4-pro-20260423",
+        billed_cost=0.050,
+    )
+    provider = _DoneUsageProvider(input_tokens=9, output_tokens=4, billed_cost=0.123)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(model_id="deepseek/deepseek-v4-pro-20260423"),
+        usage_tracker=tracker,
+        session_key=session_key,
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+    done = next(event for event in events if event.kind == "done")
+
+    assert done.input_tokens == 9
+    assert done.output_tokens == 4
+    assert done.cost_usd == pytest.approx(0.123)
+    assert done.billed_cost == pytest.approx(0.123)
+    assert done.cost_source == "provider_billed"
+    assert done.session_totals is not None
+    assert done.session_totals.billed_cost == pytest.approx(0.173)
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,7 @@ from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.context_overflow import apply_context_overflow_policy
 from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
 from opensquilla.session.compaction import build_compaction_config_from_provider
-from opensquilla.session.keys import build_webchat_key, canonicalize_session_key
+from opensquilla.session.keys import build_webchat_key, canonicalize_session_key, parse_agent_id
 
 _d = get_dispatcher()
 log = structlog.get_logger(__name__)
@@ -314,6 +314,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
 
     message = params["message"]
     session_key = _canonical_webchat_session_key(params.get("sessionKey"))
+    agent_id = parse_agent_id(session_key)
 
     # Fresh-WebUI / smoke path: when no session manager is wired (webui
     # simulator, dispatcher-only boot), instant-accept without kicking off a
@@ -335,7 +336,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             try:
                 await mgr.get_or_create(
                     session_key=session_key,
-                    agent_id="main",
+                    agent_id=agent_id,
                     display_name="WebChat",
                 )
             except Exception as exc:

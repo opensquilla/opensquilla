@@ -7,6 +7,7 @@ from dataclasses import asdict
 
 from opensquilla.engine.types import DoneEvent
 from opensquilla.engine.usage import UsageTracker
+from opensquilla.engine.agent import _cost_source_for_usage
 
 
 def test_tracked_session_emits_six_field_snapshot():
@@ -51,6 +52,28 @@ def test_multi_turn_aggregates_in_snapshot():
     assert snap is not None
     assert snap.input_tokens == 15
     assert snap.output_tokens == 27
+
+
+def test_usage_snapshot_delta_is_one_turn_not_lifetime():
+    tracker = UsageTracker()
+    tracker.add("sess-B", input_tokens=10, output_tokens=20, model_id="gpt-test")
+    before = tracker.session_checkpoint("sess-B")
+    tracker.add(
+        "sess-B",
+        input_tokens=5,
+        output_tokens=7,
+        model_id="gpt-test",
+        billed_cost=0.01,
+    )
+
+    delta = tracker.session_delta_snapshot("sess-B", before)
+
+    assert delta is not None
+    assert delta.input_tokens == 5
+    assert delta.output_tokens == 7
+    assert delta.billed_cost == 0.01
+    assert delta.cost_usd == 0.01
+    assert _cost_source_for_usage(delta.cost_usd, delta.billed_cost) == "provider_billed"
 
 
 def test_stale_replay_roundtrips_through_json_and_live_tracker_wins():

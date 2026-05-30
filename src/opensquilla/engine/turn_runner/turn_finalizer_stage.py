@@ -110,13 +110,25 @@ def _field_qualifier_text(field: Any) -> str:
     return ""
 
 
-def _field_flag_text(field: Any) -> str:
+def _schema_language(schema: Any, intro: str = "") -> str:
+    text = "\n".join(
+        [intro or getattr(schema, "intro", "")]
+        + [getattr(field, "prompt", "") for field in getattr(schema, "fields", ())]
+    )
+    return "zh" if any("\u4e00" <= ch <= "\u9fff" for ch in text) else "en"
+
+
+def _field_flag_text(field: Any, *, language: str = "zh") -> str:
     """Render required / default / optional marker per spec §9.3."""
     if field.required:
-        return "[必填]"
+        return "[必填]" if language == "zh" else "[required]"
     if field.default is not None:
-        return f"（默认 {field.default}）"
-    return "[可选]"
+        return (
+            f"（默认 {field.default}）"
+            if language == "zh"
+            else f"(default {field.default})"
+        )
+    return "[可选]" if language == "zh" else "[optional]"
 
 
 def render_paused_outcome(result: MetaResult) -> str:
@@ -140,13 +152,14 @@ def render_paused_outcome(result: MetaResult) -> str:
         return result.final_text or ""
     payload = result.paused_payload
     schema = payload.schema
+    language = _schema_language(schema, payload.intro)
     lines: list[str] = []
     if payload.intro or schema.intro:
         lines.append(payload.intro or schema.intro)
         lines.append("")
-    lines.append("请回复以下字段：")
+    lines.append("请回复以下字段：" if language == "zh" else "Please reply with these fields:")
     for index, field in enumerate(schema.fields, start=1):
-        flag = _field_flag_text(field)
+        flag = _field_flag_text(field, language=language)
         prompt = field.prompt or field.name
         qualifier = _field_qualifier_text(field)
         bits = [field.name, "—", prompt]
@@ -158,7 +171,7 @@ def render_paused_outcome(result: MetaResult) -> str:
     sample_fields = [f for f in schema.fields if f.required] or list(schema.fields)
     if sample_fields:
         lines.append("")
-        lines.append("回复格式示例：")
+        lines.append("回复格式示例：" if language == "zh" else "Reply format example:")
         for field in sample_fields[:3]:
             placeholder = _field_sample_value(field)
             lines.append(f"  {field.name}: {placeholder}")
@@ -166,7 +179,10 @@ def render_paused_outcome(result: MetaResult) -> str:
     if schema.cancel_keywords:
         kws = " / ".join(schema.cancel_keywords)
         lines.append("")
-        lines.append(f"或回复 {kws} 取消。")
+        if language == "zh":
+            lines.append(f"或回复 {kws} 取消。")
+        else:
+            lines.append(f"Or reply {kws} to cancel.")
     return "\n".join(lines)
 
 

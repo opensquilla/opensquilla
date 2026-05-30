@@ -39,6 +39,8 @@ const OPENTUI_DAILY_THEME = Object.freeze({
   detailText: "#8A96A6",
   answerAccent: "#9AD18B",
   promptAccent: "#FFB86C",
+  routeText: "#C4B5FD",
+  savingText: "#8BD5CA",
 });
 const STATUS_PULSE_FRAMES = Object.freeze({
   thinking: ["∙", "•", "●", "•"],
@@ -55,6 +57,8 @@ let createCliRenderer;
 let inputText = "";
 let pulseFrame = 0;
 let pulseTimer;
+let scrollbackSeq = 0;
+const currentTurn = { id: null, sawAnswer: false };
 
 const composer = {
   placeholder: "send a message",
@@ -74,7 +78,6 @@ const turnStatus = {
   phase: "idle",
   label: "ready",
   active: false,
-  style: "dim",
 };
 
 function sendHostMessage(message) {
@@ -125,19 +128,19 @@ function fixedRouterRow(label, value) {
   let clipped = "";
   let cells = 0;
   for (const char of Array.from(safeValue)) {
-    const nextCells = cells + cellWidth(char);
-    if (nextCells > maxValueCells) break;
+    const next = cells + cellWidth(char);
+    if (next > maxValueCells) break;
     clipped += char;
-    cells = nextCells;
+    cells = next;
   }
-  return `${label.padEnd(5)} ${clipped.padEnd(maxValueCells + clipped.length - cells)}`;
+  const padding = " ".repeat(Math.max(0, maxValueCells - cells));
+  return `${label.padEnd(5)} ${clipped}${padding}`;
 }
 
 function renderFooterTree() {
   const composerLine = inputText || composer.text;
   const visibleComposer = composerLine || composer.placeholder;
   const composerColor = composerLine ? OPENTUI_DAILY_THEME.text : OPENTUI_DAILY_THEME.muted;
-  const routerColor = colorForStyle(routerState.style);
 
   return Box(
     {
@@ -182,7 +185,7 @@ function renderFooterTree() {
         width: 31,
         height: FOOTER_HEIGHT,
         borderStyle: "rounded",
-        borderColor: routerColor,
+        borderColor: colorForStyle(routerState.style),
         title: " router ",
         titleAlignment: "left",
         paddingLeft: 1,
@@ -191,8 +194,8 @@ function renderFooterTree() {
         shouldFill: true,
       },
       Text({ id: "router-model", content: fixedRouterRow("model", routerState.model), fg: OPENTUI_DAILY_THEME.text }),
-      Text({ id: "router-route", content: fixedRouterRow("route", routerState.route), fg: "#C4B5FD" }),
-      Text({ id: "router-saving", content: fixedRouterRow("save", routerState.saving), fg: "#8BD5CA" }),
+      Text({ id: "router-route", content: fixedRouterRow("route", routerState.route), fg: OPENTUI_DAILY_THEME.routeText }),
+      Text({ id: "router-saving", content: fixedRouterRow("save", routerState.saving), fg: OPENTUI_DAILY_THEME.savingText }),
       Text({ id: "router-context", content: fixedRouterRow("ctx", routerState.context), fg: OPENTUI_DAILY_THEME.routerWarning }),
     ),
   );
@@ -208,141 +211,72 @@ function rerenderFooter() {
   renderer.requestRender?.();
 }
 
-function writePlainScrollback(text) {
+function writeScrollbackBlock(lines, fg, { startOnNewLine = true } = {}) {
+  if (!renderer) return;
   renderer.writeToScrollback((ctx) => {
-    const plain = decorateDailyTimelineScrollback(text);
-    const semantic = isDailySemanticScrollback(plain);
     const width = Math.max(1, ctx.width - 1);
+    const plain = lines.map((line) => stripTerminalControls(line)).join("\n");
     const wrapped = padLinesForScrollback(wrapText(plain, Math.max(1, width - 1)));
     const height = Math.max(1, wrapped.split("\n").length);
-    const root = new TextRenderable(ctx.renderContext, {
-      id: `scrollback-${Date.now()}`,
+    const node = new TextRenderable(ctx.renderContext, {
+      id: `scrollback-${scrollbackSeq++}`,
       position: "absolute",
       left: 0,
       top: 0,
       width,
       height,
       content: wrapped,
-      fg: colorForDailyScrollback(plain),
+      fg,
     });
-    return {
-      root,
-      width,
-      height,
-      startOnNewLine: semantic,
-      trailingNewline: semantic,
-    };
+    return { root: node, width, height, startOnNewLine, trailingNewline: true };
   });
 }
 
-function decorateDailyTimelineScrollback(text) {
-  const plain = stripTerminalControls(text);
-  const lines = plain.split("\n");
-  let currentBlock = "";
-  let changed = false;
-  const decorated = lines.map((line) => {
-    const trimmed = line.trim();
-    if (currentBlock === "prompt" && /^│\s+/u.test(trimmed)) {
-      return line;
-    }
-    const kind = classifyDailyTimelineLine(line);
-    if (kind === "prompt") {
-      currentBlock = trimmed === "╰" ? "" : "prompt";
-      return line;
-    }
-    if (kind === "answer") {
-      currentBlock = "answer";
-      changed = true;
-      return `╭─ answer ${line.replace(/^◢\s*/u, "").trim() || "squilla"}`;
-    }
-    if (kind === "tool") {
-      currentBlock = "tool";
-      changed = true;
-      return decorateDailyToolLine(line);
-    }
-    if (kind === "detail") {
-      currentBlock = "detail";
-      changed = true;
-      return decorateDailyDetailLine(line);
-    }
-    if (kind === "status") {
-      currentBlock = "status";
-      changed = true;
-      return `│ step ${line.trim()}`;
-    }
-    if (kind === "usage") {
-      currentBlock = "";
-      changed = true;
-      return `╰─ usage ${line.trim()}`;
-    }
-    if (currentBlock === "answer" && line.trim()) {
-      changed = true;
-      return `│ answer ${line}`;
-    }
-    if (currentBlock === "detail" && line.trim()) {
-      changed = true;
-      return decorateDailyDetailLine(line);
-    }
-    return line;
-  });
-  return changed ? trimDailySemanticBlankEdges(decorated).join("\n") : plain;
+function renderPromptBlock(text) {
+  const lines = ["╭─ prompt"];
+  for (const line of String(text).split("\n")) lines.push(`│ ${line}`);
+  lines.push("╰");
+  writeScrollbackBlock(lines, OPENTUI_DAILY_THEME.promptAccent);
 }
 
-function classifyDailyTimelineLine(line) {
-  const trimmed = line.trim();
-  if (!trimmed) return "empty";
-  if (/^(╭─ prompt|╭─ squilla|╰$)/u.test(trimmed)) return "prompt";
-  if (/^◢\s+/u.test(trimmed)) return "answer";
-  if (/^[▸✓✗]\s+/u.test(trimmed)) return "tool";
-  if (/^tool_output\b/u.test(trimmed)) return "detail";
-  if (/^│\s+/u.test(trimmed)) return "detail";
-  if (/^(router route|thinking:|approval requested:)/u.test(trimmed)) return "status";
-  if (/(\bin\s*\/\s*\d+.*\bout\b|cached|think|\$[0-9]|aggregate)/u.test(trimmed)) return "usage";
-  if (/^turn cancelled$/u.test(trimmed)) return "usage";
-  return "body";
+function renderModelText(text) {
+  writeScrollbackBlock([String(text)], OPENTUI_DAILY_THEME.answerAccent);
 }
 
-function decorateDailyToolLine(line) {
-  const trimmed = line.trim();
-  if (trimmed.startsWith("▸ ")) return `╭─ tool ${trimmed}`;
-  if (trimmed.startsWith("✓ ")) return `╰─ tool ${trimmed}`;
-  if (trimmed.startsWith("✗ ")) return `╰─ tool ${trimmed}`;
-  return `╭─ tool ${trimmed}`;
+function renderToolCall(name, summary, status) {
+  const glyph = status === "error" ? "✗" : status === "ok" ? "✓" : "•";
+  const fg = status === "error" ? OPENTUI_DAILY_THEME.routerError : OPENTUI_DAILY_THEME.toolAccent;
+  const tail = summary ? ` ${summary}` : "";
+  writeScrollbackBlock([`  ${glyph} ${name}${tail}`], fg);
 }
 
-function decorateDailyDetailLine(line) {
-  const detail = line.replace(/^│\s*/u, "").trim();
-  return `│ detail ${detail}`;
+function renderToolDetail(text) {
+  const lines = String(text).split("\n").map((line) => `    │ ${line}`);
+  writeScrollbackBlock(lines, OPENTUI_DAILY_THEME.detailText);
 }
 
-function colorForDailyScrollback(text) {
-  if (text.includes("╭─ answer") || text.includes("│ answer")) {
-    return OPENTUI_DAILY_THEME.text;
+function renderAnswerText(text) {
+  const lines = [];
+  if (!currentTurn.sawAnswer) {
+    lines.push("╭─ answer ─ squilla");
+    currentTurn.sawAnswer = true;
   }
-  if (text.includes("╭─ tool") || text.includes("╰─ tool")) {
-    return OPENTUI_DAILY_THEME.toolAccent;
-  }
-  if (text.includes("│ detail")) {
-    return OPENTUI_DAILY_THEME.detailText;
-  }
-  if (text.includes("╭─ prompt")) {
-    return OPENTUI_DAILY_THEME.promptAccent;
-  }
-  if (text.includes("╰─ usage")) {
-    return OPENTUI_DAILY_THEME.muted;
-  }
-  return OPENTUI_DAILY_THEME.text;
+  for (const line of String(text).split("\n")) lines.push(`│ ${line}`);
+  writeScrollbackBlock(lines, OPENTUI_DAILY_THEME.text);
 }
 
-function isDailySemanticScrollback(text) {
-  return /(^|\n)(╭─|╰─|│ (answer|detail|step))/u.test(text);
+function renderAnswerClose(cancelled) {
+  if (cancelled) {
+    writeScrollbackBlock(["╰─ turn cancelled"], OPENTUI_DAILY_THEME.muted);
+    return;
+  }
+  if (currentTurn.sawAnswer) {
+    writeScrollbackBlock(["╰"], OPENTUI_DAILY_THEME.text);
+  }
 }
 
-function trimDailySemanticBlankEdges(lines) {
-  const trimmed = [...lines];
-  while (trimmed.length > 0 && trimmed[0] === "") trimmed.shift();
-  while (trimmed.length > 0 && trimmed[trimmed.length - 1] === "") trimmed.pop();
-  return trimmed;
+function renderUsage(text) {
+  writeScrollbackBlock([`  · ${text}`], OPENTUI_DAILY_THEME.muted);
 }
 
 function stripTerminalControls(text) {
@@ -361,37 +295,34 @@ function padLinesForScrollback(text) {
 function wrapText(text, width) {
   const rows = [];
   for (const line of text.split("\n")) {
-    const continuationPrefix = continuationPrefixForLine(line);
-    const lineWidth = wrapWidthForDailyLine(line, width);
     let current = "";
     let cells = 0;
     for (const token of line.split(/(\s+)/u)) {
       if (!token) continue;
       const tokenCells = textWidth(token);
       if (/^\s+$/u.test(token)) {
-        if (current && cells + tokenCells <= lineWidth) {
+        if (current && cells + tokenCells <= width) {
           current += token;
           cells += tokenCells;
         }
         continue;
       }
-      if (tokenCells > lineWidth) {
+      if (tokenCells > width) {
         const result = appendHardWrappedToken(
           rows,
           current,
           cells,
           token,
-          lineWidth,
-          continuationPrefix,
+          width,
         );
         current = result.current;
         cells = result.cells;
         continue;
       }
-      if (current && cells + tokenCells > lineWidth) {
+      if (current && cells + tokenCells > width) {
         rows.push(current.trimEnd());
-        current = `${continuationPrefix}${token}`;
-        cells = textWidth(continuationPrefix) + tokenCells;
+        current = token;
+        cells = tokenCells;
         continue;
       }
       current += token;
@@ -400,21 +331,6 @@ function wrapText(text, width) {
     rows.push(current);
   }
   return rows.join("\n");
-}
-
-function wrapWidthForDailyLine(line, width) {
-  if (line.startsWith("│ detail ")) return Math.min(width, 56);
-  if (line.startsWith("│ answer ")) return Math.min(width, 86);
-  if (line.startsWith("│ step ")) return Math.min(width, 86);
-  return width;
-}
-
-function continuationPrefixForLine(line) {
-  if (line.startsWith("│ detail ")) return "│ detail ";
-  if (line.startsWith("│ answer ")) return "│ answer ";
-  if (line.startsWith("│ step ")) return "│ step ";
-  if (line.startsWith("╭─ tool ")) return "│ tool ";
-  return "";
 }
 
 function appendHardWrappedToken(rows, current, cells, token, width, continuationPrefix = "") {
@@ -471,13 +387,45 @@ function handlePythonMessage(message) {
         phase: String(message.phase ?? turnStatus.phase),
         label: String(message.label ?? turnStatus.label),
         active: Boolean(message.active ?? turnStatus.active),
-        style: String(message.style ?? turnStatus.style),
       });
       syncPulseTimer();
       rerenderFooter();
       return;
+    case "turn.begin":
+      currentTurn.id = String(message.id ?? "");
+      currentTurn.sawAnswer = false;
+      return;
+    case "prompt.echo":
+      renderPromptBlock(String(message.text ?? ""));
+      return;
+    case "model.text":
+      renderModelText(String(message.text ?? ""));
+      return;
+    case "tool.call":
+      renderToolCall(
+        String(message.name ?? ""),
+        String(message.summary ?? ""),
+        String(message.status ?? "running"),
+      );
+      return;
+    case "tool.detail":
+      renderToolDetail(String(message.text ?? ""));
+      return;
+    case "answer.text":
+      renderAnswerText(String(message.text ?? ""));
+      return;
+    case "turn.end":
+      renderAnswerClose(Boolean(message.cancelled ?? false));
+      currentTurn.id = null;
+      currentTurn.sawAnswer = false;
+      return;
+    case "usage":
+      renderUsage(String(message.text ?? ""));
+      return;
     case "scrollback.write":
-      writePlainScrollback(String(message.text ?? ""));
+      writeScrollbackBlock([String(message.text ?? "")], OPENTUI_DAILY_THEME.text, {
+        startOnNewLine: false,
+      });
       return;
     case "shutdown":
       if (pulseTimer) clearInterval(pulseTimer);

@@ -34,11 +34,14 @@ def test_opentui_host_locks_recommended_daily_visual_preset() -> None:
     assert "OPENTUI_DAILY_THEME" in source
     assert 'preset: "daily"' in source
     assert 'frame: "card"' in source
-    assert 'detailMode: "inline"' in source
-    assert 'answerMode: "panel"' in source
     assert "#77B7FF" in source
-    assert "decorateDailyTimelineScrollback" in source
-    assert "classifyDailyTimelineLine" in source
+    assert "renderPromptBlock" in source
+    assert "renderModelText" in source
+    assert "renderToolCall" in source
+    assert "renderToolDetail" in source
+    assert "renderAnswerText" in source
+    assert "renderUsage" in source
+    assert "STATUS_PULSE_FRAMES" in source
 
 
 def test_opentui_host_uses_lines_not_backgrounds_for_visual_separation() -> None:
@@ -46,3 +49,22 @@ def test_opentui_host_uses_lines_not_backgrounds_for_visual_separation() -> None
 
     assert "backgroundColor" not in source
     assert "routerBackground" not in source
+
+
+def test_opentui_host_removes_regex_timeline_classifier() -> None:
+    source = HOST_SOURCE.read_text(encoding="utf-8")
+
+    assert "decorateDailyTimelineScrollback" not in source
+    assert "classifyDailyTimelineLine" not in source
+    assert "colorForDailyScrollback" not in source
+    assert "currentTurn" in source
+
+
+def test_opentui_footer_revives_status_and_composer_and_router_color() -> None:
+    source = HOST_SOURCE.read_text(encoding="utf-8")
+
+    assert "syncPulseTimer" in source
+    assert "setInterval" in source
+    assert "composerDisabledBorder" in source
+    assert "colorForStyle(routerState.style)" in source
+    assert "backgroundColor" not in source

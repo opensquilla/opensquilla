@@ -1186,7 +1186,7 @@ class TestSessionsSend:
             web_session.session_id,
             runner_attachments[0]["sha256"],
         )
-        assert material_path.read_text() == raw
+        assert material_path.read_text(encoding="utf-8") == raw
 
         persisted = json.loads(web_manager.created_messages[0][2])
         assert persisted["text"] == placeholder
@@ -1252,7 +1252,7 @@ class TestSessionsSend:
             web_session.session_key.rsplit(":", 1)[-1],
             runtime_attachment["sha256"],
         )
-        assert canonical_path.read_text() == raw
+        assert canonical_path.read_text(encoding="utf-8") == raw
         assert not suffix_path.exists()
 
     @pytest.mark.asyncio
@@ -1533,7 +1533,7 @@ class TestSessionsSend:
             chat_session.session_id,
             attachments[0]["sha256"],
         )
-        assert material_path.read_text() == raw
+        assert material_path.read_text(encoding="utf-8") == raw
         provenance = chat_runner.run_calls[0]["input_provenance"]
         assert provenance["input_normalization"]["guard_action"] == (
             "generated_text_attachment"

@@ -152,11 +152,11 @@ async def test_full_rollout_applies_routed_model_thinking_and_p0_prompt(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.model == "deepseek/deepseek-v4-flash"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     assert routed.metadata["routed_tier"] == "t1"
-    assert routed.metadata["routed_model"] == "deepseek/deepseek-v4-flash"
+    assert routed.metadata["routed_model"] == "deepseek/deepseek-v4-pro"
     assert routed.metadata["routing_applied"] is True
-    assert routed.metadata["applied_model"] == "deepseek/deepseek-v4-flash"
+    assert routed.metadata["applied_model"] == "deepseek/deepseek-v4-pro"
     assert routed.metadata["baseline_model"] == baseline_model
     assert routed.metadata["routing_confidence"] == 0.91
     assert routed.metadata["routing_source"] == "v4_phase3"
@@ -204,7 +204,7 @@ async def test_router_reports_provider_state_loss_without_changing_route(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.model == "deepseek/deepseek-v4-flash"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     diagnostic = routed.metadata["provider_state_continuity"]
     assert diagnostic["decision"] == "use_portable_fallback"
     assert diagnostic["provider_state_loss_risk"] is True
@@ -326,7 +326,7 @@ async def test_confidence_gate_promotes_low_confidence_t0_to_default_t1_and_reco
     extra = routed.metadata["routing_extra"]
 
     assert routed.metadata["routed_tier"] == "t1"
-    assert routed.model == "deepseek/deepseek-v4-flash"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     assert extra["confidence_gate_applied"] is True
     assert extra["base_tier"] == "t0"
     assert extra["final_tier"] == "t1"
@@ -355,7 +355,7 @@ async def test_confidence_gate_falls_back_low_confidence_non_default_text_tier(
     extra = routed.metadata["routing_extra"]
 
     assert routed.metadata["routed_tier"] == "t1"
-    assert routed.model == "deepseek/deepseek-v4-flash"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     assert extra["confidence_gate_applied"] is True
     assert extra["pre_confidence_tier"] == "t2"
     assert extra["final_tier"] == "t1"

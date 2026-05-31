@@ -126,6 +126,6 @@ async def test_router_control_replay_event_replays_turn_once(monkeypatch) -> Non
 
     assert len(replay_events) == 1
     assert replay_events[0].target_tier == "t3"
-    assert provider.calls == ["deepseek/deepseek-v4-flash", "anthropic/claude-opus-4.7"]
+    assert provider.calls == ["deepseek/deepseek-v4-pro", "anthropic/claude-opus-4.7"]
     assert done_events[-1].text == "new final"
     assert text.endswith("new final")

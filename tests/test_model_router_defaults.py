@@ -47,7 +47,7 @@ def test_squilla_router_defaults_match_runtime_router_config() -> None:
 
     assert cfg.tiers["t0"]["model"] == "deepseek/deepseek-v4-flash"
     assert cfg.tiers["t0"]["thinking_level"] == "high"
-    assert cfg.tiers["t1"]["model"] == "deepseek/deepseek-v4-flash"
+    assert cfg.tiers["t1"]["model"] == "deepseek/deepseek-v4-pro"
     assert cfg.tiers["t1"]["thinking_level"] == "high"
     assert cfg.tiers["t2"]["model"] == "z-ai/glm-5.1"
     assert cfg.tiers["t2"]["thinking_level"] == "high"
@@ -288,7 +288,7 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
     squilla_router = data["squilla_router"]
 
     assert data["llm"]["provider"] == "openrouter"
-    assert data["llm"]["model"] == "deepseek/deepseek-v4-flash"
+    assert data["llm"]["model"] == "deepseek/deepseek-v4-pro"
     assert squilla_router["enabled"] is True
     assert squilla_router["auto_thinking"] is True
     assert squilla_router["rollout_phase"] == "full"
@@ -307,7 +307,7 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
     tiers = squilla_router["tiers"]
     assert tiers["t0"]["model"] == "deepseek/deepseek-v4-flash"
     assert tiers["t0"]["thinking_level"] == "high"
-    assert tiers["t1"]["model"] == "deepseek/deepseek-v4-flash"
+    assert tiers["t1"]["model"] == "deepseek/deepseek-v4-pro"
     assert tiers["t1"]["thinking_level"] == "high"
     assert tiers["t2"]["model"] == "z-ai/glm-5.1"
     assert tiers["t2"]["thinking_level"] == "high"

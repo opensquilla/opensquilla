@@ -57,6 +57,13 @@ def _normalize_agent_step_output(effective_skill: str, text: str) -> str:
     return fragment or text
 
 
+def _append_language_instruction(system_prompt: str, inputs: dict[str, Any]) -> str:
+    instruction = str(inputs.get("language_instruction") or "").strip()
+    if not instruction:
+        return system_prompt
+    return f"{system_prompt.rstrip()}\n\n{instruction}"
+
+
 async def run_step_with_skill_stream(
     step: MetaStep,
     effective_skill: str,
@@ -89,10 +96,18 @@ async def run_step_with_skill_stream(
         inputs=inputs,
         outputs=outputs,
     )
-    user_message = format_step_prompt(effective_skill, rendered_args)
-    system_prompt = _expand_skill_placeholders(skill_spec)
+    user_message = format_step_prompt(
+        effective_skill,
+        rendered_args,
+        language_instruction=str(inputs.get("language_instruction") or ""),
+    )
+    system_prompt = _append_language_instruction(
+        _expand_skill_placeholders(skill_spec),
+        inputs,
+    )
 
     final_text_parts: list[str] = []
+    done_text = ""
     last_error_tool_result: str = ""
     async for event in agent_runner(system_prompt, user_message):
         # Suppress sub-Agent's terminal DoneEvent — it would prematurely
@@ -101,6 +116,8 @@ async def run_step_with_skill_stream(
         from opensquilla.engine.types import DoneEvent as _DoneEvent
 
         if isinstance(event, _DoneEvent):
+            if event.text:
+                done_text = event.text
             continue
         if isinstance(event, TextDeltaEvent):
             final_text_parts.append(event.text)
@@ -119,7 +136,7 @@ async def run_step_with_skill_stream(
 
     text = _normalize_agent_step_output(
         effective_skill,
-        "".join(final_text_parts).strip(),
+        ("".join(final_text_parts) or done_text).strip(),
     )
     if text:
         yield _StepDone(text=text)
@@ -160,8 +177,15 @@ async def run_step_with_skill_text_only(
         inputs=inputs,
         outputs=outputs,
     )
-    user_message = format_step_prompt(effective_skill, rendered_args)
-    system_prompt = _expand_skill_placeholders(skill_spec)
+    user_message = format_step_prompt(
+        effective_skill,
+        rendered_args,
+        language_instruction=str(inputs.get("language_instruction") or ""),
+    )
+    system_prompt = _append_language_instruction(
+        _expand_skill_placeholders(skill_spec),
+        inputs,
+    )
     text = await llm_chat(system_prompt, user_message)
     return _normalize_agent_step_output(effective_skill, text.strip())
 

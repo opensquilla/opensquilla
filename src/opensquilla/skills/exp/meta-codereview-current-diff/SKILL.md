@@ -4,6 +4,7 @@ description: "Read the current uncommitted diff, run three independent reviewers
 kind: meta
 meta_priority: 65
 always: false
+final_text_mode: "step:arbitrate"
 triggers:
   - "multi-reviewer diff"
   - "codereview my diff"
@@ -21,10 +22,10 @@ composition:
         mode: cached_fallback_worktree
         cwd: "{{ inputs.workspace_dir | default('.') }}"
     - id: review_safety
-      kind: agent
-      skill: sub-agent
+      kind: llm_chat
       depends_on: [read_diff]
       with:
+        system: "You are a precise code safety reviewer. Reply with exactly one requested verdict line."
         task: |
           You are the *safety reviewer* for a 3-reviewer codereview bundle.
           Apply ONLY the rules below; do not invent additional concerns.
@@ -52,10 +53,10 @@ composition:
             WARNING: <one-sentence reason>
             CLEAR: no safety concerns found
     - id: review_tests
-      kind: agent
-      skill: sub-agent
+      kind: llm_chat
       depends_on: [read_diff]
       with:
+        system: "You are a precise test-coverage reviewer. Reply with exactly one requested verdict line."
         task: |
           You are the *test-coverage reviewer* for a 3-reviewer codereview
           bundle. Apply ONLY the rules below.
@@ -79,10 +80,10 @@ composition:
             MISSING_TESTS: <which functions/classes lack tests>
             PASS: tests adequate (or n/a)
     - id: review_style
-      kind: agent
-      skill: sub-agent
+      kind: llm_chat
       depends_on: [read_diff]
       with:
+        system: "You are a precise style reviewer. Reply with exactly one requested verdict line."
         task: |
           You are the *style / idiom reviewer* for a 3-reviewer codereview
           bundle. Look for project-specific anti-patterns.
@@ -104,10 +105,10 @@ composition:
             ANTIPATTERNS: <one-line list with line refs>
             CLEAN: no style issues found
     - id: arbitrate
-      kind: agent
-      skill: sub-agent
+      kind: llm_chat
       depends_on: [review_safety, review_tests, review_style]
       with:
+        system: "You arbitrate code review verdicts. Follow the priority rules exactly."
         task: |
           Three reviewers ran on the diff:
             - Safety: {{ outputs.review_safety }}
@@ -130,20 +131,6 @@ composition:
             BLOCK: <safety critical reason>
             BLOCK_WITH_OVERRIDE: <warning(s); user must confirm>
             PASS_WITH_NOTES: <style notes; or "clean">
-    - id: persist
-      kind: agent
-      skill: memory
-      depends_on: [arbitrate]
-      with:
-        action: save
-        topic: "codereview"
-        content: |
-          === codereview run ===
-          invocation: {{ inputs.user_message | xml_escape | truncate(200) }}
-          safety:  {{ outputs.review_safety | truncate(200) }}
-          tests:   {{ outputs.review_tests | truncate(200) }}
-          style:   {{ outputs.review_style | truncate(200) }}
-          verdict: {{ outputs.arbitrate | truncate(400) }}
 ---
 
 # Codereview of Current Diff (Meta-Skill)
@@ -172,5 +159,5 @@ staged).
 If `read_diff` returns `NO_DIFF`, the downstream reviewers should
 reply with their respective clean verdicts ("CLEAR" / "PASS" /
 "CLEAN") and arbitrate emits `PASS_WITH_NOTES: clean`. If a reviewer
-sub-Agent fails, the orchestrator's partial outputs are visible in
+LLM step fails, the orchestrator's partial outputs are visible in
 `step_outputs`; operator should manually re-run the failed reviewer.

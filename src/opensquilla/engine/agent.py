@@ -3185,7 +3185,8 @@ class Agent:
                 if not tool_calls:
                     max_iterations_finalization_pending = False
                     break
-                tool_calls = [self._coerce_meta_skill_view_tool_call(tc) for tc in tool_calls]
+                tool_calls = [self._coerce_meta_tool_call(tc) for tc in tool_calls]
+                tool_calls = self._force_matched_meta_invoke_tool_calls(tool_calls)
 
                 tool_deadline = _loop.time() + self.config.iteration_timeout
 
@@ -4833,6 +4834,97 @@ class Agent:
             }:
                 self._tool_failure_loop_counts.clear()
         return result
+
+    def _matched_meta_skill_name_from_metadata(self) -> str | None:
+        metadata = self.config.metadata or {}
+        match = metadata.get("meta_match")
+        plan = getattr(match, "plan", None)
+        name = getattr(plan, "name", None)
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return None
+
+    def _coerce_meta_tool_call(self, tc: ToolCall) -> ToolCall:
+        tc = self._coerce_meta_skill_view_tool_call(tc)
+        return self._coerce_meta_invoke_tool_call(tc)
+
+    def _coerce_meta_invoke_tool_call(self, tc: ToolCall) -> ToolCall:
+        if tc.tool_name != "meta_invoke":
+            return tc
+        name = tc.arguments.get("name")
+        if isinstance(name, str) and name.strip():
+            return tc
+
+        raw = tc.arguments.get("_raw")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                parsed_name = parsed.get("name")
+                if isinstance(parsed_name, str) and parsed_name.strip():
+                    return ToolCall(
+                        tool_use_id=tc.tool_use_id,
+                        tool_name="meta_invoke",
+                        arguments={"name": parsed_name.strip()},
+                        synthetic_from_text=tc.synthetic_from_text,
+                        origin_trace=tc.origin_trace,
+                    )
+
+        matched_name = self._matched_meta_skill_name_from_metadata()
+        if matched_name is None or not (self.config.metadata or {}).get("meta_match_tool_choice"):
+            return tc
+
+        logger.info(
+            "agent.meta_invoke_arguments_coerced",
+            skill=matched_name,
+            tool_use_id=tc.tool_use_id,
+        )
+        return ToolCall(
+            tool_use_id=tc.tool_use_id,
+            tool_name="meta_invoke",
+            arguments={"name": matched_name},
+            synthetic_from_text=tc.synthetic_from_text,
+            origin_trace=tc.origin_trace,
+        )
+
+    def _force_matched_meta_invoke_tool_calls(
+        self,
+        tool_calls: list[ToolCall],
+    ) -> list[ToolCall]:
+        metadata = self.config.metadata or {}
+        if not metadata.get("meta_match_tool_choice"):
+            return tool_calls
+        matched_name = self._matched_meta_skill_name_from_metadata()
+        if not matched_name:
+            return tool_calls
+        for tc in tool_calls:
+            if (
+                tc.tool_name == "meta_invoke"
+                and isinstance(tc.arguments.get("name"), str)
+                and tc.arguments["name"].strip()
+            ):
+                return tool_calls
+        if not tool_calls:
+            return tool_calls
+
+        first = tool_calls[0]
+        logger.warning(
+            "agent.meta_match_forced_invoke_rewrite",
+            skill=matched_name,
+            original_tool=first.tool_name,
+            tool_use_id=first.tool_use_id,
+        )
+        return [
+            ToolCall(
+                tool_use_id=first.tool_use_id,
+                tool_name="meta_invoke",
+                arguments={"name": matched_name},
+                synthetic_from_text=first.synthetic_from_text,
+                origin_trace=first.origin_trace,
+            )
+        ]
 
     def _coerce_meta_skill_view_tool_call(self, tc: ToolCall) -> ToolCall:
         if tc.tool_name != "skill_view":

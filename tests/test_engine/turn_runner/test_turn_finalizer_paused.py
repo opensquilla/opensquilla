@@ -35,6 +35,38 @@ def test_render_paused_outcome_includes_intro_and_fields():
     assert "天数" in text
 
 
+def test_render_paused_outcome_uses_english_labels_for_english_pauses():
+    cfg = ClarifyStepConfig(
+        mode="form",
+        fields=(
+            ClarifyField(
+                name="topic",
+                type="string",
+                required=True,
+                prompt="Report topic",
+                max_chars=240,
+            ),
+        ),
+        intro="A few details are missing.",
+        cancel_keywords=("cancel", "stop"),
+    )
+    paused = MetaPaused(
+        run_id="r1",
+        step_id="collect",
+        schema=cfg,
+        language="en",
+    )
+    result = MetaResult(ok=False, paused=True, paused_payload=paused)
+
+    text = render_paused_outcome(result)
+
+    assert "Please reply with the following fields:" in text
+    assert "[required]" in text
+    assert "Example reply format:" in text
+    assert "Or reply cancel / stop to cancel." in text
+    assert "请回复" not in text
+
+
 def test_render_paused_outcome_returns_final_text_when_not_paused():
     """Non-paused result with final_text should return that text verbatim."""
     result = MetaResult(ok=True, final_text="done", paused=False)

@@ -49,17 +49,17 @@ def test_parses_with_expected_topology(tmp_path: Path) -> None:
         "review_tests",
         "review_style",
         "arbitrate",
-        "persist",
     ]
     by_id = {s.id: s for s in plan.steps}
     for r in ("review_safety", "review_tests", "review_style"):
+        assert by_id[r].kind == "llm_chat"
         assert by_id[r].depends_on == ("read_diff",)
+    assert by_id["arbitrate"].kind == "llm_chat"
     assert set(by_id["arbitrate"].depends_on) == {
         "review_safety",
         "review_tests",
         "review_style",
     }
-    assert by_id["persist"].depends_on == ("arbitrate",)
 
 
 def _classify(user_message: str) -> str:

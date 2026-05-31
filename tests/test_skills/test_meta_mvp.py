@@ -17,6 +17,7 @@ from opensquilla.engine.types import (
     TextDeltaEvent,
 )
 from opensquilla.skills.loader import SkillLoader
+from opensquilla.skills.meta.inputs import make_meta_inputs
 from opensquilla.skills.meta.orchestrator import (
     MetaOrchestrator,
     format_step_prompt,
@@ -189,6 +190,21 @@ def test_format_step_prompt_includes_all_args() -> None:
     assert "summarize" in out
     assert "text: hello" in out
     assert "max_words: 100" in out
+
+
+def test_make_meta_inputs_marks_plain_english_requests_as_english_only() -> None:
+    inputs = make_meta_inputs(user_message="Please build a launch brief.")
+
+    assert inputs["user_language"] == "en"
+    assert "English only" in inputs["language_instruction"]
+    assert "Do not copy Chinese or bilingual headings" in inputs["language_instruction"]
+
+
+def test_make_meta_inputs_marks_chinese_requests_as_simplified_chinese() -> None:
+    inputs = make_meta_inputs(user_message="帮我做一个发布简报")
+
+    assert inputs["user_language"] == "zh"
+    assert "Simplified Chinese" in inputs["language_instruction"]
 
 
 # ---------------------------------------------------------------------------
@@ -1468,7 +1484,214 @@ async def test_orchestrator_llm_chat_uses_single_llm_call_when_wired() -> None:
 
     assert result.ok, result.error
     assert result.final_text == "compact report"
-    assert chat_calls == [("Write a compact report.", "Input: x")]
+    assert len(chat_calls) == 1
+    assert chat_calls[0][0].startswith("Write a compact report.")
+    assert "write final user-facing prose" in chat_calls[0][0]
+    assert "English only" in chat_calls[0][0]
+    assert chat_calls[0][1] == "Input: x"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_llm_chat_includes_rendered_context_args() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {
+                    "id": "diff",
+                    "kind": "llm_chat",
+                    "with": {"task": "Return a diff."},
+                },
+                {
+                    "id": "summarize",
+                    "kind": "llm_chat",
+                    "depends_on": ["diff"],
+                    "with": {
+                        "task": "Summarize the upstream evidence.",
+                        "upstream": "{{ outputs.diff | truncate(2000) }}",
+                        "prior_outputs": {"diff": "{{ outputs.diff }}"},
+                    },
+                },
+            ],
+        },
+        final_text_mode="step:summarize",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+
+    chat_calls: list[tuple[str, str]] = []
+
+    async def fake_chat(system_prompt: str, user_message: str) -> str:
+        chat_calls.append((system_prompt, user_message))
+        if len(chat_calls) == 1:
+            return "diff --git a/README.md"
+        return "summary"
+
+    async def explode_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("agent runner must not be called for llm_chat")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=explode_runner,
+        skill_loader=_FakeLoader([]),
+        llm_chat=fake_chat,
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={}))
+
+    assert result.ok, result.error
+    assert "Context:" in chat_calls[1][1]
+    assert "upstream:\ndiff --git a/README.md" in chat_calls[1][1]
+    assert '"diff": "diff --git a/README.md"' in chat_calls[1][1]
+
+
+@pytest.mark.asyncio
+async def test_meta_llm_chat_injects_english_language_guard_for_bilingual_templates() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {
+                    "id": "final",
+                    "kind": "llm_chat",
+                    "with": {
+                        "system": "Write the final plan.",
+                        "task": (
+                            "Use these template headings if applicable: "
+                            "\"Top 3 / 前三优先级\", \"Data limits / 数据限制\".\n"
+                            "Request: {{ inputs.user_message }}"
+                        ),
+                    },
+                },
+            ],
+        },
+        final_text_mode="step:final",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    chat_calls: list[tuple[str, str]] = []
+
+    async def fake_chat(system_prompt: str, user_message: str) -> str:
+        chat_calls.append((system_prompt, user_message))
+        return "## Top 3\n\nData limits: only pasted context was used."
+
+    async def explode_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("agent runner must not be called for llm_chat")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=explode_runner,
+        skill_loader=_FakeLoader([]),
+        llm_chat=fake_chat,
+    )
+    result = await orch.run(
+        MetaMatch(
+            plan=plan,
+            inputs=make_meta_inputs(
+                user_message="Please make a daily brief for tomorrow.",
+            ),
+        ),
+    )
+
+    assert result.ok, result.error
+    assert "前" not in result.final_text
+    assert len(chat_calls) == 1
+    assert "English only" in chat_calls[0][0]
+    assert "Do not copy Chinese or bilingual headings" in chat_calls[0][0]
+    assert "Top 3 / 前三优先级" in chat_calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_meta_agent_step_injects_language_guard_into_subagent_prompt() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {
+                    "id": "agent_step",
+                    "skill": "skill_a",
+                    "with": {
+                        "text": "Use heading \"风险 / Risk\" if applicable.",
+                    },
+                },
+            ],
+        },
+        final_text_mode="step:agent_step",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    calls: list[tuple[str, str]] = []
+
+    async def stub_runner(system_prompt: str, user_message: str) -> AsyncIterator[AgentEvent]:
+        calls.append((system_prompt, user_message))
+        yield TextDeltaEvent(text="Risk\n- Review the calendar.")
+        yield DoneEvent(text="")
+
+    orch = MetaOrchestrator(
+        agent_runner=stub_runner,
+        skill_loader=_FakeLoader([_make_skill_spec("skill_a", content="Skill body")]),
+    )
+    result = await orch.run(
+        MetaMatch(
+            plan=plan,
+            inputs=make_meta_inputs(
+                user_message="Please coordinate a household plan for Friday.",
+            ),
+        ),
+    )
+
+    assert result.ok, result.error
+    assert result.final_text == "Risk\n- Review the calendar."
+    assert len(calls) == 1
+    assert "English only" in calls[0][0]
+    assert "English only" in calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_meta_orchestrator_repairs_chinese_leakage_in_english_final_text() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {
+                    "id": "final",
+                    "kind": "llm_chat",
+                    "with": {
+                        "system": "Write a short answer.",
+                        "task": "Request: {{ inputs.user_message }}",
+                    },
+                },
+            ],
+        },
+        final_text_mode="step:final",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    chat_calls: list[tuple[str, str]] = []
+
+    async def fake_chat(system_prompt: str, user_message: str) -> str:
+        chat_calls.append((system_prompt, user_message))
+        if "localization pass" in system_prompt:
+            return "# Proposal Preview\n\nBasic information only."
+        return "# 提案预览\n\n基本信息。"
+
+    async def explode_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("agent runner must not be called for llm_chat")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=explode_runner,
+        skill_loader=_FakeLoader([]),
+        llm_chat=fake_chat,
+    )
+    result = await orch.run(
+        MetaMatch(
+            plan=plan,
+            inputs=make_meta_inputs(
+                user_message="Please create a release readiness skill.",
+            ),
+        ),
+    )
+
+    assert result.ok, result.error
+    assert result.final_text == "# Proposal Preview\n\nBasic information only."
+    assert len(chat_calls) == 2
+    assert "English only" in chat_calls[1][0]
 
 
 @pytest.mark.asyncio
@@ -1888,6 +2111,49 @@ async def test_orchestrator_llm_classify_coerces_noisy_reply() -> None:
 
     assert result.ok
     assert result.step_outputs["classify"] == "URL"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_llm_classify_repairs_ambiguous_reply_with_llm() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {
+                    "id": "classify",
+                    "kind": "llm_classify",
+                    "output_choices": ["A", "B"],
+                    "with": {"text": "{{ inputs.user_message }}"},
+                },
+            ],
+        },
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+
+    chat_calls: list[tuple[str, str]] = []
+
+    async def repairing_chat(system_prompt: str, user_message: str) -> str:
+        chat_calls.append((system_prompt, user_message))
+        if len(chat_calls) == 1:
+            return "I cannot tell from the prompt"
+        return "B"
+
+    async def explode_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("should not run")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=explode_runner,
+        skill_loader=_FakeLoader([]),
+        llm_chat=repairing_chat,
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "x"}))
+
+    assert result.ok
+    assert result.step_outputs["classify"] == "B"
+    assert len(chat_calls) == 2
+    assert "repair classifier outputs" in chat_calls[1][0].lower()
+    assert "I cannot tell" in chat_calls[1][1]
 
 
 @pytest.mark.asyncio
@@ -2634,7 +2900,33 @@ async def test_drain_agent_runner_fails_when_sub_agent_produces_no_text() -> Non
 
     assert result.ok is False
     assert result.failed_step_id == "a"
-    assert result.error and "no plain-text output" in result.error
+
+
+@pytest.mark.asyncio
+async def test_drain_agent_runner_uses_done_event_text_when_deltas_absent() -> None:
+    """Some providers surface final text only on DoneEvent; keep that output."""
+
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "a", "skill": "done-only", "with": {}},
+            ],
+        },
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+
+    async def done_only_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        yield DoneEvent(text="final answer from done")
+
+    orch = MetaOrchestrator(
+        agent_runner=done_only_runner,
+        skill_loader=_FakeLoader([_make_skill_spec("done-only", content="DONE")]),
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={}))
+
+    assert result.ok is True
+    assert result.step_outputs["a"] == "final answer from done"
 
 
 def test_bundled_account_watch_has_quality_gate_and_exports() -> None:

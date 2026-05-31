@@ -35,6 +35,65 @@ from opensquilla.skills.meta.types import (
 
 log = logging.getLogger(__name__)
 
+_EN_INTRO = (
+    "A few required details are still missing. Please provide the fields "
+    "below so I can continue."
+)
+
+
+def _contains_cjk(text: str) -> bool:
+    return any("\u3400" <= ch <= "\u9fff" or "\uf900" <= ch <= "\ufaff" for ch in text)
+
+
+def _english_field_prompt(field: ClarifyField) -> str:
+    prompt = (field.prompt or "").strip()
+    if not prompt:
+        return field.name.replace("_", " ").title()
+    for delimiter in (" / ", "/", " | ", "|"):
+        if delimiter in prompt:
+            candidates = [part.strip() for part in prompt.split(delimiter)]
+            for candidate in reversed(candidates):
+                if candidate and not _contains_cjk(candidate):
+                    return candidate
+    if _contains_cjk(prompt):
+        return field.name.replace("_", " ").title()
+    return prompt
+
+
+def _localize_clarify_config(
+    cfg: ClarifyStepConfig,
+    inputs: dict[str, Any],
+) -> ClarifyStepConfig:
+    if str(inputs.get("user_language") or "").lower() != "en":
+        return cfg
+    fields = tuple(
+        ClarifyField(
+            name=field.name,
+            type=field.type,
+            required=field.required,
+            prompt=_english_field_prompt(field),
+            choices=field.choices,
+            default=field.default,
+            min=field.min,
+            max=field.max,
+            max_chars=field.max_chars,
+        )
+        for field in cfg.fields
+    )
+    intro = cfg.intro
+    if not intro.strip() or _contains_cjk(intro):
+        intro = _EN_INTRO
+    return ClarifyStepConfig(
+        mode=cfg.mode,
+        fields=fields,
+        skip_if=cfg.skip_if,
+        cancel_keywords=tuple(kw for kw in cfg.cancel_keywords if not _contains_cjk(kw)),
+        timeout_hours=cfg.timeout_hours,
+        intro=intro,
+        nl_extract=cfg.nl_extract,
+        nl_extract_tier=cfg.nl_extract_tier,
+    )
+
 
 class _DAOProto(Protocol):
     """Minimal DAO surface this executor depends on (PR2 MetaRunWriter)."""
@@ -96,17 +155,13 @@ async def run_user_input_step(
             return ""
 
     rendered_cfg = _render_clarify_config(cfg, inputs=inputs, outputs=outputs)
+    rendered_cfg = _localize_clarify_config(rendered_cfg, inputs)
     schema_json = _serialize_schema(rendered_cfg)
     inputs_json = json.dumps(inputs, ensure_ascii=False, sort_keys=True)
     step_outputs_json = json.dumps(outputs, ensure_ascii=False, sort_keys=True)
 
     awaiting_since = now()
 
-    # Run the DAO call off the event loop. MetaRunWriter holds a sync
-    # sqlite3 connection — its docstring requires `loop.run_in_executor`
-    # wrapping when called from async code. `asyncio.to_thread` is the
-    # idiomatic equivalent.
-    #
     # CancelledError MUST propagate so the scheduler can tear down
     # sibling tasks consistently — see design §8.1.
     try:
@@ -134,6 +189,7 @@ async def run_user_input_step(
         step_id=step.id,
         schema=rendered_cfg,
         intro=rendered_cfg.intro,
+        language=str(inputs.get("user_language") or ""),
     )
 
 

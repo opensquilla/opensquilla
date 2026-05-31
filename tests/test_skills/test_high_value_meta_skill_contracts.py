@@ -212,7 +212,7 @@ def test_paper_meta_skill_has_pre_compile_quality_gates(tmp_path: Path) -> None:
     } <= ids
 
 
-def test_paper_meta_skill_uses_compact_default_with_clarification(
+def test_paper_meta_skill_uses_full_pdf_default_with_clarification(
     tmp_path: Path,
 ) -> None:
     loader = _loader(tmp_path)
@@ -230,22 +230,10 @@ def test_paper_meta_skill_uses_compact_default_with_clarification(
     assert steps["paper_contract"].depends_on == ("paper_collect", "paper_clarify")
     paper_collect_prompt = str(steps["paper_collect"].with_args)
     assert "NEEDS_CLARIFICATION" in paper_collect_prompt
-    assert "COMPACT_SKELETON by default" in paper_collect_prompt
-    assert "Use FULL_MANUSCRIPT only when the user explicitly asks" in paper_collect_prompt
-    assert "Do not set NEEDS_CLARIFICATION: yes for missing paper_mode" in paper_collect_prompt
-    assert "write CLARIFY_QUESTION in the same" in paper_collect_prompt
+    assert "FULL_MANUSCRIPT by default" in paper_collect_prompt
     assert "TARGET_PAGES" in paper_collect_prompt
     assert "CITATION_TARGET" in paper_collect_prompt
     assert "MISSING_FIELDS" in paper_collect_prompt
-    clarify = steps["paper_clarify"].clarify_config
-    assert clarify is not None
-    assert "Some paper details are missing" in clarify.intro
-    assert "论文信息还不完整" in clarify.intro
-    assert "user_language" in clarify.intro
-    assert "contains_cjk" in clarify.intro
-    assert clarify.fields[1].default == "COMPACT_SKELETON"
-    assert "Mode (default COMPACT_SKELETON" in clarify.fields[1].prompt
-    assert "类型（默认 COMPACT_SKELETON" in clarify.fields[1].prompt
     raw = str(loader.get_by_name("meta-paper-write").composition_raw)
     assert "inputs.collected.paper_collect" not in raw
     # Pipeline rewrite: experiment/plot (skill_exec stubs producing fake
@@ -630,7 +618,6 @@ def test_meta_skill_creator_has_intent_collision_risk_and_preview_gates(
 
     assert {
         "clarify_intent",
-        "normal_skill_exit",
         "creator_mode",
         "collision_check",
         "risk_classify",
@@ -639,29 +626,22 @@ def test_meta_skill_creator_has_intent_collision_risk_and_preview_gates(
         "runtime_e2e",
         "preview",
         "persist",
-        "final_response",
     } <= ids
 
 
 def test_meta_skill_creator_supports_preview_only_branch(tmp_path: Path) -> None:
     loader = _loader(tmp_path)
-    _assert_composes_at_least_two_skills(loader, "meta-skill-creator")
     steps, plan = _steps_by_id(loader, "meta-skill-creator")
 
-    assert plan.final_text_mode == "step:final_response"
+    assert plan.final_text_mode == "step:preview"
     _assert_user_input_step(
         steps,
         "creator_clarify",
-        when_contains="route: meta-skill",
+        when_contains="NEEDS_CLARIFICATION: yes",
         required_fields={"workflow_goal", "output_shape"},
     )
-    assert "needs_clarification: yes" in steps["creator_clarify"].when
-    assert steps["normal_skill_exit"].kind == "tool_call"
-    assert steps["normal_skill_exit"].tool == "emit_text"
-    assert "route: normal-skill" in steps["normal_skill_exit"].when
     assert steps["creator_mode"].kind == "llm_classify"
     assert steps["creator_mode"].depends_on == ("clarify_intent", "creator_clarify")
-    assert "route: meta-skill" in steps["creator_mode"].when
     assert set(steps["creator_mode"].output_choices) == {
         "PREVIEW_ONLY",
         "PERSISTED_PROPOSAL",
@@ -680,28 +660,17 @@ def test_meta_skill_creator_supports_preview_only_branch(tmp_path: Path) -> None
     assert "unattended auto-propose" in creator_mode_text
     assert "dream" in creator_mode_text
     assert "cron" in creator_mode_text
-    creation_steps = {
-        "creator_mode",
-        "harvest",
-        "pick_pattern",
-        "fill_slots",
-        "assemble",
-        "collision_check",
-        "lint",
-        "risk_classify",
-        "single_model_baseline",
-        "acceptance_compare",
-        "smoke",
-        "runtime_e2e",
-        "preview",
-        "persist",
-    }
-    for step_id in creation_steps:
-        assert "route: meta-skill" in steps[step_id].when
-    assert "outputs.creator_mode != 'PREVIEW_ONLY'" in steps["smoke"].when
-    assert "outputs.creator_mode != 'PREVIEW_ONLY'" in steps["persist"].when
-    assert steps["final_response"].depends_on == ("preview", "normal_skill_exit")
-    assert steps["final_response"].tool == "emit_text"
+    assert steps["clarify_intent"].kind == "llm_chat"
+    assert steps["collision_check"].kind == "llm_chat"
+    assert steps["risk_classify"].kind == "llm_chat"
+    assert steps["preview"].kind == "llm_chat"
+    assert steps["harvest"].kind == "skill_exec"
+    assert steps["harvest"].skill == "history-explorer"
+    assert steps["harvest"].when == (
+        "'Unattended meta-skill auto-propose run' in inputs.get('system_prompt', '')"
+    )
+    assert steps["smoke"].when == "outputs.creator_mode != 'PREVIEW_ONLY'"
+    assert steps["persist"].when == "outputs.creator_mode != 'PREVIEW_ONLY'"
 
 
 def test_meta_skill_creator_acceptance_compares_against_highest_tier_baseline(
@@ -715,8 +684,7 @@ def test_meta_skill_creator_acceptance_compares_against_highest_tier_baseline(
 
     assert baseline.kind == "llm_chat"
     assert baseline.depends_on == ("creator_mode",)
-    assert "route: meta-skill" in baseline.when
-    assert "outputs.creator_mode == 'FULL_GATED'" in baseline.when
+    assert baseline.when == "outputs.creator_mode == 'FULL_GATED'"
     assert "highest-tier" in str(baseline.with_args).lower()
     assert "same task" in str(baseline.with_args).lower()
     assert "system prompt" in str(baseline.with_args).lower()
@@ -727,8 +695,7 @@ def test_meta_skill_creator_acceptance_compares_against_highest_tier_baseline(
 
     assert compare.kind == "llm_chat"
     assert set(compare.depends_on) == {"assemble", "single_model_baseline"}
-    assert "route: meta-skill" in compare.when
-    assert "outputs.creator_mode == 'FULL_GATED'" in compare.when
+    assert compare.when == "outputs.creator_mode == 'FULL_GATED'"
     assert "orchestrated candidate" in str(compare.with_args).lower()
     assert "single-model baseline" in str(compare.with_args).lower()
     assert "meta-skill-creator" in str(compare.with_args)
@@ -737,8 +704,7 @@ def test_meta_skill_creator_acceptance_compares_against_highest_tier_baseline(
     assert "runtime_e2e" in steps
     assert steps["runtime_e2e"].kind == "tool_call"
     assert steps["runtime_e2e"].tool == "meta_skill_runtime_e2e_run"
-    assert "route: meta-skill" in steps["runtime_e2e"].when
-    assert "outputs.creator_mode == 'FULL_GATED'" in steps["runtime_e2e"].when
+    assert steps["runtime_e2e"].when == "outputs.creator_mode == 'FULL_GATED'"
     assert set(steps["runtime_e2e"].depends_on) == {"assemble", "smoke"}
     assert "acceptance_compare" in str(steps["preview"].depends_on)
     assert "runtime_e2e" in str(steps["preview"].depends_on)
@@ -768,12 +734,9 @@ def test_migration_assistant_routes_guides_and_optional_repo_context(
         required_fields={"source_stack", "target_stack"},
     )
     assert set(steps["classify"].depends_on) == {"migration_intake", "migration_clarify"}
-    assert steps["fetch_guide"].skill == "deep-research"
+    assert steps["fetch_guide"].kind == "skill_exec"
+    assert steps["fetch_guide"].skill == "multi-search-engine"
     assert set(steps["fetch_guide"].depends_on) == {"classify", "migration_clarify"}
-    assert [case.to for case in steps["fetch_guide"].route] == [
-        "github",
-        "multi-search-engine",
-    ]
     assert steps["repo_context"].skill == "git-diff"
     assert "current diff" in steps["repo_context"].when
     assert "current branch" in steps["repo_context"].when

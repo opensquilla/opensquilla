@@ -21,6 +21,17 @@ programmatically exercising the bundled high-value meta-skills.
   memo request with enough context to proceed.
 - `web_research_to_report/broad_request.txt` - intentionally broad report
   request that should trigger `report_clarify`.
+- `code_review_dirty_repo/` - tiny repository baseline plus `patch.diff` for
+  `meta-codereview-current-diff`.
+- `kid_project/complete_safe_request.txt` - complete safe request for
+  `meta-kid-project-planner`.
+- `kid_project/unsafe_request.txt` - unsafe request that should be redirected
+  by `meta-kid-project-planner`.
+- `auto_propose/decision_log_seed.jsonl` - low-risk repeated chain seed for
+  `meta-skill-creator` unattended proposal validation.
+- `meta_validation_cases.json` - validation matrix covering activation,
+  negative activation, bundled meta-skills, creator, auto-propose, and live
+  creator judge bundles.
 
 All prompts use repository-relative paths so they can be pasted into a local
 gateway or test harness from the repository root.

@@ -11,13 +11,11 @@ process. Stdout is interpreted per ``parse`` (``text`` | ``json`` |
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json as _json
 import os
 import shlex
+import subprocess
 import sys
-import warnings
 from pathlib import Path as _Path
 from typing import Any
 
@@ -28,24 +26,6 @@ from opensquilla.skills.meta.templating import _JINJA_ENV, render_with_args
 from opensquilla.skills.meta.types import MetaStep
 
 log = structlog.get_logger(__name__)
-
-
-def _attach_child_watcher_to_current_loop() -> None:
-    """Keep asyncio subprocess waits reliable across short-lived loops."""
-
-    policy = asyncio.get_event_loop_policy()
-    get_child_watcher = getattr(policy, "get_child_watcher", None)
-    if get_child_watcher is None:
-        return
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            watcher = get_child_watcher()
-            attach_loop = getattr(watcher, "attach_loop", None)
-            if attach_loop is not None:
-                attach_loop(asyncio.get_running_loop())
-    except (NotImplementedError, RuntimeError):
-        return
 
 
 async def run_skill_exec_step(
@@ -278,27 +258,22 @@ async def run_skill_exec_step(
         stdin_bytes=len(stdin_bytes) if stdin_bytes is not None else 0,
     )
 
-    _attach_child_watcher_to_current_loop()
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=workdir,
-    )
     try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(input=stdin_bytes), timeout=timeout,
+        proc = subprocess.run(  # noqa: S603 - argv is manifest-authored and pre-split.
+            argv,
+            input=stdin_bytes,
+            capture_output=True,
+            cwd=workdir,
+            timeout=timeout,
+            check=False,
         )
-    except TimeoutError as exc:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+    except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
             f"skill {effective_skill!r} timed out after {timeout}s",
         ) from exc
 
-    stdout_text = stdout_bytes.decode("utf-8", errors="replace")
-    stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+    stdout_text = (proc.stdout or b"").decode("utf-8", errors="replace")
+    stderr_text = (proc.stderr or b"").decode("utf-8", errors="replace")
     if proc.returncode != 0:
         raise RuntimeError(
             f"skill {effective_skill!r} exited {proc.returncode}: "

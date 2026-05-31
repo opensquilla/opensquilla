@@ -264,6 +264,21 @@ composition:
             happened later. For example, a "11:30 要回" finance item should be
             "before 11:30 / 11:30 前完成" unless the user says it was already
             missed.
+          {% if inputs.get('user_language') == 'en' %}
+          - English-only output: do not include Chinese characters, bilingual
+            headings, or slash-paired Chinese labels anywhere in the final
+            user-facing brief.
+          - Use these exact top-level headings when applicable:
+            "Top 3",
+            "Time Blocks",
+            "Risk / Conflicts",
+            "Weather & Commute",
+            "Follow-ups",
+            "Data limits".
+          - The "Risk / Conflicts" section must include fixed-time conflicts,
+            deadline/order risks, handoff blockers, and any likely sequence
+            failure such as demo preparation being interrupted.
+          {% else %}
           - Use these exact top-level headings when applicable:
             "Top 3 / 前三优先级",
             "Time Blocks / 时间块",
@@ -274,6 +289,7 @@ composition:
           - The "Risk / 风险 / 冲突" section must include fixed-time conflicts,
             deadline/order risks, handoff blockers, and any likely sequence
             failure such as demo preparation being interrupted.
+          {% endif %}
           - Rank priorities by consequence and reversibility: fixed external
             events with audience/customer impact outrank flexible internal
             work; hard deadlines outrank soft replies; same-day boss
@@ -283,14 +299,20 @@ composition:
             deadline, and a boss-requested same-day deliverable, the top three
             must cover all three unless the user explicitly says one is
             already done.
-          - Put a 5-15 minute "quick reply sweep / 快速回复清账" near the
-            start of a morning plan for overdue or unblocker replies such as
-            teacher, caregiver, HR, quote, finance, and customer messages.
+          - Put a 5-15 minute quick reply sweep near the start of a morning
+            plan for overdue or unblocker replies such as teacher, caregiver,
+            HR, quote, finance, and customer messages.
             Do not defer a yesterday teacher/caregiver headcount reply until
             after a late-afternoon demo unless morning is completely blocked.
+          {% if inputs.get('user_language') == 'en' %}
+          - The "Data limits" section must include the phrase "only pasted"
+            when live calendar, email, reminders, exact locations, or original
+            message bodies were not read.
+          {% else %}
           - The "Data limits / 数据限制" section must include the phrase
             "only pasted / 仅根据" when live calendar, email, reminders,
             exact locations, or original message bodies were not read.
+          {% endif %}
           - If live weather was not verified, say "live weather not verified"
             and give generic commute buffers instead of exact weather.
           - If weather is provided, caveat it as source-dependent and do not
@@ -298,9 +320,9 @@ composition:
           - Include short ready-to-send drafts for named recipients when enough
             context exists: finance, teacher, Li/Mr. Li, HR, boss, customer, or
             friends.
-          - Include a "Drafts / 可直接发送" section when the prompt names two or
-            more people waiting on replies. Drafts may be short placeholders
-            when details are missing, but must preserve uncertainty instead of
+          - Include a "Drafts" section when the prompt names two or more
+            people waiting on replies. Drafts may be short placeholders when
+            details are missing, but must preserve uncertainty instead of
             inventing amounts, prices, times, or attendance numbers.
           - Drafts must use placeholders such as [人数], [金额], [日期1],
             [日期2], [时间1], [时间2], [报价版本], or [材料位置] when the prompt

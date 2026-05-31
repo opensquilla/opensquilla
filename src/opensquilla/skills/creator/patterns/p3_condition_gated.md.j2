@@ -34,8 +34,8 @@ composition:
 {%- else %}
 {%- set step_kind = "agent" %}
 {%- endif %}
-{%- if step_kind == "skill_exec" %}
-      kind: skill_exec
+{%- if step_kind in ["skill_exec", "llm_chat"] %}
+      kind: {{ step_kind }}
 {%- endif %}
       skill: {{ step.skill | tojson }}
       read_only: true

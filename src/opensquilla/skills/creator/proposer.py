@@ -74,8 +74,11 @@ def _creator_step_kind(skill_name: str) -> str:
 
     Skills with an entrypoint should be composed as ``skill_exec`` so the
     runtime executes the wrapped CLI directly instead of asking a sub-Agent to
-    describe a command. Plain skills stay as agent steps.
+    describe a command. Pure text transforms should use ``llm_chat`` to avoid
+    spawning a tool-capable sub-agent that may return no visible final text.
     """
+    if skill_name == "summarize":
+        return "llm_chat"
     bundled = Path(__file__).resolve().parents[1] / "bundled"
     loader = SkillLoader(
         bundled_dir=bundled,

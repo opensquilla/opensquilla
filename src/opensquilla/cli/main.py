@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
 from opensquilla.env import load_env, warn_if_proxy_ignored
@@ -19,6 +21,7 @@ from opensquilla.cli.cost_cmd import app as cost_app  # noqa: E402
 from opensquilla.cli.cron_cmd import cron_app  # noqa: E402
 from opensquilla.cli.diagnostics_cmd import diagnostics_app  # noqa: E402
 from opensquilla.cli.dist_cmd import app as dist_app  # noqa: E402
+from opensquilla.cli.doctor_cmd import doctor_command  # noqa: E402
 from opensquilla.cli.init_cmd import init_command  # noqa: E402
 from opensquilla.cli.mcp_server_cmd import app as mcp_server_app  # noqa: E402
 from opensquilla.cli.memory_flush_cmd import memory_flush_session_cmd  # noqa: E402
@@ -58,6 +61,7 @@ app.add_typer(sessions_app, name="sessions")
 app.add_typer(skills_app, name="skills")
 
 app.command("init")(init_command)
+app.command("doctor")(doctor_command)
 app.add_typer(onboard_app, name="onboard")
 app.command("configure")(configure_command)
 
@@ -68,6 +72,8 @@ memory_app = typer.Typer(help="Memory subsystem commands.")
 app.add_typer(memory_app, name="memory")
 raw_fallbacks_app = typer.Typer(help="Raw fallback receipt commands.")
 memory_app.add_typer(raw_fallbacks_app, name="raw-fallbacks")
+repair_app = typer.Typer(help="Compaction memory repair commands.")
+memory_app.add_typer(repair_app, name="repair")
 
 
 def _build_cli_dream(agent: str, *, force: bool = False, need_provider: bool = True):
@@ -88,8 +94,6 @@ def _build_cli_dream(agent: str, *, force: bool = False, need_provider: bool = T
 
     dream = build_dream_factory(
         config=gw,
-        provider_selector=None,
-        tool_registry=None,
         turn_runner=None,
         need_provider=need_provider,
     )
@@ -104,6 +108,7 @@ def memory_status_cmd(
     agent_id: str = typer.Option("main", "--agent", help="Agent id (default: main)"),
     deep: bool = typer.Option(False, "--deep", help="Include detailed retrieval health"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Show read-only memory backend status from the running gateway."""
 
@@ -119,7 +124,7 @@ def memory_status_cmd(
             params["deep"] = True
         return await client.call("doctor.memory.status", params)
 
-    payload = run_gateway_sync(_run, json_output=json_output)
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if json_output:
         print_json(payload)
         return
@@ -215,9 +220,9 @@ def memory_search_cmd(
     agent_id: str = typer.Option("main", "--agent", help="Agent id (default: main)"),
     limit: int = typer.Option(10, "--limit", "-n", help="Maximum results"),
     source: str = typer.Option(
-        "all",
+        "memory",
         "--source",
-        help="Search source: all, memory, or sessions",
+        help="Search source: memory, sessions, or all",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
@@ -355,6 +360,137 @@ def memory_raw_fallbacks_show_cmd(
         console.print("[dim]... truncated[/dim]")
 
 
+@repair_app.command("list")
+def memory_repair_list_cmd(
+    agent_id: str = typer.Option("main", "--agent", help="Agent id (default: main)"),
+    limit: int = typer.Option(50, "--limit", min=1, help="Maximum pending repairs"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
+) -> None:
+    """List degraded compaction records pending repair."""
+
+    from rich.table import Table
+
+    from opensquilla.cli.gateway_rpc import run_gateway_sync
+    from opensquilla.cli.output import print_json
+    from opensquilla.cli.ui import console
+
+    async def _run(client):
+        return await client.call(
+            "memory.repair.list",
+            {"agentId": agent_id, "limit": limit},
+        )
+
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
+    if json_output:
+        print_json(payload)
+        return
+
+    table = Table(title=f"Memory repair queue - agent={agent_id}", show_header=True)
+    table.add_column("Summary")
+    table.add_column("Session")
+    table.add_column("Compaction")
+    table.add_column("Status")
+    table.add_column("Removed", justify="right")
+    for row in payload.get("items", []):
+        table.add_row(
+            str(row.get("summaryId") or ""),
+            str(row.get("sessionKey") or ""),
+            str(row.get("compactionId") or ""),
+            str(row.get("flushReceiptStatus") or ""),
+            "" if row.get("removedCount") is None else str(row.get("removedCount")),
+        )
+    console.print(table)
+
+
+@repair_app.command("show")
+def memory_repair_show_cmd(
+    summary_id: int | None = typer.Option(None, "--summary-id", help="Repair summary id"),
+    session_key: str = typer.Option("", "--session-key", help="Session key to inspect"),
+    compaction_id: str = typer.Option("", "--compaction-id", help="Compaction id to inspect"),
+    agent_id: str = typer.Option("main", "--agent", help="Agent id (default: main)"),
+    entry_limit: int = typer.Option(
+        20,
+        "--entry-limit",
+        min=1,
+        help="Maximum preimage entries",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Show archived preimage entries for one degraded compaction."""
+
+    from opensquilla.cli.gateway_rpc import run_gateway_sync
+    from opensquilla.cli.output import print_json
+    from opensquilla.cli.ui import console
+
+    async def _run(client):
+        params: dict[str, object] = {"agentId": agent_id}
+        if summary_id is not None:
+            params["summaryId"] = summary_id
+        if session_key:
+            params["sessionKey"] = session_key
+        if compaction_id:
+            params["compactionId"] = compaction_id
+        if entry_limit != 20:
+            params["entryLimit"] = entry_limit
+        return await client.call("memory.repair.show", params)
+
+    payload = run_gateway_sync(_run, json_output=json_output)
+    if json_output:
+        print_json(payload)
+        return
+    for row in payload.get("entries", []):
+        console.print(f"[{row.get('role', '')}] {row.get('content', '')}")
+
+
+@repair_app.command("run")
+def memory_repair_run_cmd(
+    summary_id: int | None = typer.Option(None, "--summary-id", help="Repair summary id"),
+    session_key: str = typer.Option("", "--session-key", help="Session key to repair"),
+    compaction_id: str = typer.Option("", "--compaction-id", help="Compaction id to repair"),
+    agent_id: str = typer.Option("main", "--agent", help="Agent id (default: main)"),
+    limit: int = typer.Option(50, "--limit", min=1, help="Maximum repairs to run"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
+) -> None:
+    """Retry extraction from archived compaction preimages."""
+
+    from rich.table import Table
+
+    from opensquilla.cli.gateway_rpc import run_gateway_sync
+    from opensquilla.cli.output import print_json
+    from opensquilla.cli.ui import console
+
+    async def _run(client):
+        params: dict[str, object] = {"agentId": agent_id, "limit": limit}
+        if summary_id is not None:
+            params["summaryId"] = summary_id
+        if session_key:
+            params["sessionKey"] = session_key
+        if compaction_id:
+            params["compactionId"] = compaction_id
+        return await client.call("memory.repair.run", params)
+
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
+    if json_output:
+        print_json(payload)
+        return
+
+    table = Table(title=f"Memory repair run - agent={agent_id}", show_header=True)
+    table.add_column("Session")
+    table.add_column("Compaction")
+    table.add_column("Status")
+    table.add_column("Reason")
+    for row in payload.get("results", []):
+        table.add_row(
+            str(row.get("sessionKey") or ""),
+            str(row.get("compactionId") or ""),
+            str(row.get("status") or ""),
+            str(row.get("reason") or ""),
+        )
+    console.print(table)
+
+
 @memory_app.command("dream")
 def memory_dream_cmd(
     agent: str = typer.Option("main", "--agent", "-a", help="Agent ID"),
@@ -373,7 +509,7 @@ def memory_dream_cmd(
         return
     if status:
         cursor = dream.cursor.load()
-        pending = len(dream._candidate_files())
+        pending = dream.pending_candidate_count()
         typer.echo(
             f"agent={agent} cursor={cursor} pending={pending} "
             f"memory_md_exists={dream.memory_md.exists()}"
@@ -383,9 +519,8 @@ def memory_dream_cmd(
     typer.echo(
         f"dream agent={agent} "
         f"processed={result.files_processed} "
-        f"deleted={result.files_deleted} "
-        f"phase1={result.phase1_status} "
-        f"phase2={result.phase2_status}"
+        f"evidence={result.evidence_status} "
+        f"apply={result.apply_status}"
     )
     if result.error:
         typer.echo(f"error: {result.error}", err=True)
@@ -403,14 +538,25 @@ app.add_typer(gateway_app, name="gateway")
 
 @gateway_app.command("run")
 def gateway_run(
-    port: int = typer.Option(18791, "--port", "-p", help="Port to bind"),
-    bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to bind"),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port to bind (default: config port, usually 18791)",
+    ),
+    bind: str | None = typer.Option(
+        None,
+        "--bind",
+        "-b",
+        help="Host to bind (default: config host, usually 127.0.0.1)",
+    ),
     listen: str = typer.Option(
         "",
         "--listen",
         help="Host to bind (alias of --bind; wins over --bind when both supplied)",
     ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug mode"),
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Start the ASGI gateway server.
 
@@ -420,14 +566,31 @@ def gateway_run(
     """
     from opensquilla.cli.gateway_cmd import run_gateway
 
-    run_gateway(port=port, bind=bind, listen=listen, debug=debug)
+    run_gateway(
+        port=port,
+        bind=bind,
+        listen=listen,
+        debug=debug,
+        config_path=config_path,
+    )
 
 
 @gateway_app.command("start")
 def gateway_start(
-    port: int = typer.Option(18791, "--port", "-p", help="Port to bind"),
-    bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to bind"),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port to bind (default: config port, usually 18791)",
+    ),
+    bind: str | None = typer.Option(
+        None,
+        "--bind",
+        "-b",
+        help="Host to bind (default: config host, usually 127.0.0.1)",
+    ),
     listen: str = typer.Option("", "--listen", help="Host to bind (wins over --bind)"),
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
     health_timeout: float = typer.Option(60.0, "--timeout", help="Readiness wait timeout"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
@@ -438,6 +601,7 @@ def gateway_start(
         port=port,
         bind=bind,
         listen=listen,
+        config_path=config_path,
         health_timeout=health_timeout,
         json_output=json_output,
     )
@@ -445,22 +609,56 @@ def gateway_start(
 
 @gateway_app.command("status")
 def gateway_status(
-    port: int = typer.Option(18791, "--port", "-p", help="Port to inspect"),
-    bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to inspect"),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port to inspect (default: config port, usually 18791)",
+    ),
+    bind: str | None = typer.Option(
+        None,
+        "--bind",
+        "-b",
+        help="Host to inspect (default: config host, usually 127.0.0.1)",
+    ),
     listen: str = typer.Option("", "--listen", help="Host to inspect (wins over --bind)"),
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
+    gateway_url: str | None = typer.Option(
+        None,
+        "--gateway",
+        help="Remote gateway URL to inspect instead of local lifecycle state.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Inspect the managed gateway process without mutating state."""
     from opensquilla.cli.gateway_cmd import status_gateway
 
-    status_gateway(port=port, bind=bind, listen=listen, json_output=json_output)
+    status_gateway(
+        port=port,
+        bind=bind,
+        listen=listen,
+        config_path=config_path,
+        gateway_url=gateway_url,
+        json_output=json_output,
+    )
 
 
 @gateway_app.command("stop")
 def gateway_stop(
-    port: int = typer.Option(18791, "--port", "-p", help="Port to stop"),
-    bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to stop"),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port to stop (default: config port, usually 18791)",
+    ),
+    bind: str | None = typer.Option(
+        None,
+        "--bind",
+        "-b",
+        help="Host to stop (default: config host, usually 127.0.0.1)",
+    ),
     listen: str = typer.Option("", "--listen", help="Host to stop (wins over --bind)"),
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
     shutdown_timeout: float = typer.Option(10.0, "--timeout", help="Shutdown wait timeout"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
@@ -471,6 +669,7 @@ def gateway_stop(
         port=port,
         bind=bind,
         listen=listen,
+        config_path=config_path,
         shutdown_timeout=shutdown_timeout,
         json_output=json_output,
     )
@@ -478,9 +677,20 @@ def gateway_stop(
 
 @gateway_app.command("restart")
 def gateway_restart(
-    port: int = typer.Option(18791, "--port", "-p", help="Port to restart"),
-    bind: str = typer.Option("127.0.0.1", "--bind", "-b", help="Host to restart"),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port to restart (default: config port, usually 18791)",
+    ),
+    bind: str | None = typer.Option(
+        None,
+        "--bind",
+        "-b",
+        help="Host to restart (default: config host, usually 127.0.0.1)",
+    ),
     listen: str = typer.Option("", "--listen", help="Host to restart (wins over --bind)"),
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
     health_timeout: float = typer.Option(60.0, "--timeout", help="Readiness wait timeout"),
     shutdown_timeout: float = typer.Option(
         10.0, "--shutdown-timeout", help="Shutdown wait timeout"
@@ -494,6 +704,7 @@ def gateway_restart(
         port=port,
         bind=bind,
         listen=listen,
+        config_path=config_path,
         health_timeout=health_timeout,
         shutdown_timeout=shutdown_timeout,
         json_output=json_output,
@@ -539,8 +750,8 @@ def agent(
     max_iterations: int | None = typer.Option(
         None,
         "--max-iterations",
-        min=1,
-        help="Maximum agent model/tool loop iterations",
+        min=0,
+        help="Maximum agent model/tool loop iterations (0=unlimited)",
     ),
     iteration_timeout_seconds: float | None = typer.Option(
         None,
@@ -562,6 +773,12 @@ def agent(
         "--max-provider-retries",
         min=0,
         help="Maximum provider-level retries for transient errors",
+    ),
+    length_capped_continuations: int | None = typer.Option(
+        None,
+        "--length-capped-continuations",
+        min=1,
+        help="Maximum automatic continuations after provider output reaches its length limit",
     ),
     thinking: str = typer.Option(
         "",
@@ -638,6 +855,7 @@ def agent(
         tool_timeout_seconds=tool_timeout_seconds,
         request_timeout_seconds=request_timeout_seconds,
         max_provider_retries=max_provider_retries,
+        length_capped_continuations=length_capped_continuations,
         transcript_path=transcript_path,
         usage_path=usage_path,
         session_db_path=session_db_path,

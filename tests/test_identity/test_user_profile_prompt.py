@@ -64,7 +64,9 @@ def test_system_prompt_disambiguates_session_memory_results() -> None:
         tools=["memory_search", "memory_get"],
     )
 
-    assert "plus indexed session snippets when available" in prompt
+    assert "By default, `memory_search` searches curated memory source files" in prompt
+    assert "source=sessions" in prompt
+    assert "source=all" in prompt
     assert "raw turn captures or raw fallback files" in prompt
     assert "For `source: memory` results, use `memory_get`" in prompt
     assert "For `source: sessions` results, use the returned snippet" in prompt
@@ -85,7 +87,7 @@ def test_system_prompt_routes_exact_transcript_search_to_session_search() -> Non
     assert "exact prior chat wording" in prompt
     assert "transcript context" in prompt
     assert "code snippets from persisted sessions" in prompt
-    assert "Ordinary recall should start with source-aware `memory_search`" in prompt
+    assert "Ordinary recall should start with default curated `memory_search`" in prompt
     assert "debug" not in prompt.lower()
 
 

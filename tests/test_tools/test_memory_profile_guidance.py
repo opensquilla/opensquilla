@@ -16,12 +16,9 @@ def test_memory_tool_descriptions_keep_profile_out_of_memory_save() -> None:
     assert "decisions, dates, people, preferences, or todos" not in memory_search.spec.description
     assert "User identity/profile fields" in memory_search.spec.description
     assert "USER.md" in memory_search.spec.description
-    assert "curated memory source files" in memory_search.spec.description
-    assert "indexed sessions source" in memory_search.spec.description
+    assert "By default, searches curated memory source files" in memory_search.spec.description
+    assert "source=sessions for indexed transcript snippets" in memory_search.spec.description
     assert "Use memory_get only for source=memory results" in memory_search.spec.description
-    assert "Prefer curated memory over conflicting session snippets" in (
-        memory_search.spec.description
-    )
     assert "Do not use memory_search for current user identity/profile questions" in (
         memory_search.spec.description
     )

@@ -59,9 +59,9 @@ const CronView = (() => {
         <section class="cron-jobs">
           <div class="cron-jobs__head">
             <h3 class="cron-jobs__title" id="cron-jobs-title">All schedules</h3>
-            <div class="cron-view-toggle" role="tablist" aria-label="View mode">
-              <button class="cron-view-toggle__btn is-active" data-view="cards" role="tab">Cards</button>
-              <button class="cron-view-toggle__btn" data-view="table" role="tab">Table</button>
+            <div class="cron-view-toggle" role="group" aria-label="View mode">
+              <button class="cron-view-toggle__btn is-active" data-view="cards" aria-pressed="true">Cards</button>
+              <button class="cron-view-toggle__btn" data-view="table" aria-pressed="false">Table</button>
             </div>
           </div>
           <div id="cron-content"></div>
@@ -290,7 +290,9 @@ const CronView = (() => {
       btn.addEventListener('click', () => {
         _viewMode = btn.dataset.view;
         _el.querySelectorAll('.cron-view-toggle__btn').forEach(b => {
-          b.classList.toggle('is-active', b.dataset.view === _viewMode);
+          const active = b.dataset.view === _viewMode;
+          b.classList.toggle('is-active', active);
+          b.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
         _renderTable();
       });
@@ -639,10 +641,10 @@ const CronView = (() => {
           ${message ? `<div class="cron-card__message"><dt>Prompt</dt><dd>${_esc(message.length > 140 ? message.slice(0, 140) + '…' : message)}</dd></div>` : ''}
         </dl>
         <footer class="cron-card__actions">
-          <button class="cron-iconbtn cron-iconbtn--accent" data-cron-run="${_esc(j.id)}" title="Run now">${icons.send()}<span>Run</span></button>
-          <button class="cron-iconbtn" data-cron-toggle="${_esc(j.id)}" title="${enabled ? 'Pause' : 'Resume'}">${enabled ? icons.stop() : icons.send()}<span>${enabled ? 'Pause' : 'Resume'}</span></button>
-          <button class="cron-iconbtn" data-cron-edit="${_esc(j.id)}" title="Edit">${icons.edit()}<span>Edit</span></button>
-          <button class="cron-iconbtn cron-iconbtn--danger" data-cron-delete="${_esc(j.id)}" title="Delete">${icons.trash()}</button>
+          <button class="cron-iconbtn cron-iconbtn--accent" data-cron-run="${_esc(j.id)}" title="Run now" aria-label="Run ${_esc(j.name || j.id)} now">${icons.send()}<span>Run</span></button>
+          <button class="cron-iconbtn" data-cron-toggle="${_esc(j.id)}" title="${enabled ? 'Pause' : 'Resume'}" aria-label="${enabled ? 'Pause' : 'Resume'} ${_esc(j.name || j.id)}">${enabled ? icons.stop() : icons.send()}<span>${enabled ? 'Pause' : 'Resume'}</span></button>
+          <button class="cron-iconbtn" data-cron-edit="${_esc(j.id)}" title="Edit" aria-label="Edit ${_esc(j.name || j.id)}">${icons.edit()}<span>Edit</span></button>
+          <button class="cron-iconbtn cron-iconbtn--danger" data-cron-delete="${_esc(j.id)}" title="Delete" aria-label="Delete ${_esc(j.name || j.id)}">${icons.trash()}</button>
         </footer>
       </article>`;
   }
@@ -664,7 +666,8 @@ const CronView = (() => {
     cols.forEach(col => {
       if (sortable.includes(col.key)) {
         const arrow = _sortCol === col.key ? (_sortAsc ? ' ▲' : ' ▼') : '';
-        html += `<th class="cron-th-sort" data-sort="${col.key}">${col.label}<span class="cron-table__arrow">${arrow}</span></th>`;
+        const ariaSort = _sortCol === col.key ? (_sortAsc ? 'ascending' : 'descending') : 'none';
+        html += `<th class="cron-th-sort" aria-sort="${ariaSort}"><button type="button" class="cron-th-sort__btn" data-sort="${col.key}">${col.label}<span class="cron-table__arrow" aria-hidden="true">${arrow}</span></button></th>`;
       } else {
         html += `<th>${col.label}</th>`;
       }
@@ -691,10 +694,10 @@ const CronView = (() => {
         <td class="cron-mono">${lastRun}</td>
         <td class="cron-mono">${enabled ? nextRun : '—'}</td>
         <td class="cron-table__actions">
-          <button class="cron-iconbtn cron-iconbtn--sm" data-cron-run="${_esc(j.id)}" title="Run now">${icons.send()}</button>
-          <button class="cron-iconbtn cron-iconbtn--sm" data-cron-toggle="${_esc(j.id)}" title="${enabled ? 'Pause' : 'Resume'}">${enabled ? icons.stop() : icons.send()}</button>
-          <button class="cron-iconbtn cron-iconbtn--sm" data-cron-edit="${_esc(j.id)}" title="Edit">${icons.edit()}</button>
-          <button class="cron-iconbtn cron-iconbtn--sm cron-iconbtn--danger" data-cron-delete="${_esc(j.id)}" title="Delete">${icons.trash()}</button>
+          <button class="cron-iconbtn cron-iconbtn--sm" data-cron-run="${_esc(j.id)}" title="Run now" aria-label="Run ${_esc(j.name || j.id)} now">${icons.send()}</button>
+          <button class="cron-iconbtn cron-iconbtn--sm" data-cron-toggle="${_esc(j.id)}" title="${enabled ? 'Pause' : 'Resume'}" aria-label="${enabled ? 'Pause' : 'Resume'} ${_esc(j.name || j.id)}">${enabled ? icons.stop() : icons.send()}</button>
+          <button class="cron-iconbtn cron-iconbtn--sm" data-cron-edit="${_esc(j.id)}" title="Edit" aria-label="Edit ${_esc(j.name || j.id)}">${icons.edit()}</button>
+          <button class="cron-iconbtn cron-iconbtn--sm cron-iconbtn--danger" data-cron-delete="${_esc(j.id)}" title="Delete" aria-label="Delete ${_esc(j.name || j.id)}">${icons.trash()}</button>
         </td>
       </tr>`;
     });
@@ -703,9 +706,9 @@ const CronView = (() => {
   }
 
   function _bindRowEvents(content) {
-    content.querySelectorAll('[data-sort]').forEach(th => {
-      th.addEventListener('click', () => {
-        const col = th.dataset.sort;
+    content.querySelectorAll('[data-sort]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const col = btn.dataset.sort;
         if (_sortCol === col) _sortAsc = !_sortAsc;
         else { _sortCol = col; _sortAsc = true; }
         _renderTable();
@@ -772,7 +775,7 @@ const CronView = (() => {
           `<p>Delete <strong>${_esc(job.name || job.id)}</strong>? This cannot be undone.</p>`,
           [
             {
-              label: 'Delete', cls: 'btn-danger', onClick: () => {
+              label: 'Delete', cls: 'btn--danger', onClick: () => {
                 _rpc.call('cron.remove', { id: job.id })
                   .then(() => { UI.toast('Job deleted', 'info'); if (_selectedId === job.id) _selectedId = null; _loadData(); })
                   .catch(err => UI.toast('Delete failed: ' + err.message, 'err'));

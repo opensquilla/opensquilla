@@ -60,46 +60,62 @@ def _apply_typer_help_theme() -> None:
     rich_utils.STYLE_USAGE = ACCENT_SOFT
     rich_utils.STYLE_METAVAR = f"bold {ACCENT_SOFT}"
 
+    def _is_argument(param: object) -> bool:
+        return (
+            isinstance(param, click.Argument)
+            or getattr(param, "param_type_name", "") == "argument"
+        )
+
+    def _is_option(param: object) -> bool:
+        return isinstance(param, click.Option) or getattr(param, "param_type_name", "") == "option"
+
     def _make_metavar(param: click.Parameter) -> str:
-        if param.metavar:
-            return param.metavar
-        if isinstance(param, click.Argument) and param.name:
-            return param.name.upper()
-        return param.type.name.upper()
+        metavar = getattr(param, "metavar", None)
+        if metavar:
+            return str(metavar)
+        name = getattr(param, "name", None)
+        if _is_argument(param) and name:
+            return str(name).upper()
+        param_type = getattr(param, "type", None)
+        type_name = getattr(param_type, "name", "text")
+        return str(type_name).upper()
 
     def _parameter_label(param: click.Parameter, ctx: click.Context) -> Text:
-        if isinstance(param, click.Argument):
+        if _is_argument(param):
             metavar = _make_metavar(param)
             return Text(metavar, style=rich_utils.STYLE_METAVAR)
 
-        assert isinstance(param, click.Option)
-        opt_parts = [*param.opts]
-        if param.secondary_opts:
-            opt_parts.append("/".join(param.secondary_opts))
+        if not _is_option(param):
+            return Text(str(getattr(param, "name", "") or ""), style=rich_utils.STYLE_OPTION)
+        opt_parts = [*getattr(param, "opts", ())]
+        secondary_opts = getattr(param, "secondary_opts", ())
+        if secondary_opts:
+            opt_parts.append("/".join(secondary_opts))
         label = Text(", ".join(opt_parts), style=rich_utils.STYLE_OPTION)
 
         metavar = _make_metavar(param)
         if metavar != "BOOLEAN":
             label.append(" ")
             label.append(metavar, style=rich_utils.STYLE_METAVAR)
-        if param.required:
+        if getattr(param, "required", False):
             label.append(" ")
             label.append(rich_utils.REQUIRED_SHORT_STRING, style=rich_utils.STYLE_REQUIRED_SHORT)
         return label
 
     def _parameter_help(param: click.Parameter, ctx: click.Context) -> Text:
-        if isinstance(param, click.Option):
+        if _is_option(param):
             try:
                 help_record = param.get_help_record(ctx)
-            except TypeError:
-                help_text = param.help or ""
-                if param.show_default and param.default not in (None, "", False):
-                    help_text = f"{help_text}  [default: {param.default}]".strip()
+            except (AttributeError, TypeError):
+                help_text = str(getattr(param, "help", "") or "")
+                default = getattr(param, "default", None)
+                if getattr(param, "show_default", False) and default not in (None, "", False):
+                    help_text = f"{help_text}  [default: {default}]".strip()
                 return Text(help_text, style=rich_utils.STYLE_OPTION_HELP)
             else:
                 if help_record is not None:
                     return Text(help_record[1] or "", style=rich_utils.STYLE_OPTION_HELP)
-        return Text("")
+        return Text(str(getattr(param, "help", "") or ""), style=rich_utils.STYLE_OPTION_HELP)
 
     def _print_compact_options_panel(
         *,

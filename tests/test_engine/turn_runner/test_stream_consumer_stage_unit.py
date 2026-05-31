@@ -93,12 +93,14 @@ class _RecordingCompactionPersist:
         session_key: str,
         summary: str,
         kept_entries: list[Any],
+        compaction_id: str | None = None,
     ) -> None:
         self.calls.append(
             {
                 "session_key": session_key,
                 "summary": summary,
                 "kept_entries": kept_entries,
+                "compaction_id": compaction_id,
             }
         )
         if self.raises is not None:
@@ -451,6 +453,32 @@ def test_tool_result_handler_keeps_small_write_file_arguments() -> None:
     assert state.turn_segments[0]["input"] is arguments
 
 
+def test_tool_result_handler_updates_tool_use_name_after_runtime_coercion() -> None:
+    state = _make_state()
+    state.turn_segments.append(
+        {
+            "type": "tool_use",
+            "tool_use_id": "meta-1",
+            "name": "skill_view",
+            "input": "",
+        }
+    )
+
+    _ToolResultHandler().handle(
+        ToolResultEvent(
+            tool_use_id="meta-1",
+            tool_name="meta_invoke",
+            result="meta-skill 'meta-travel-planner' completed.",
+            arguments={"name": "meta-travel-planner"},
+        ),
+        state,
+    )
+
+    assert state.turn_segments[0]["name"] == "meta_invoke"
+    assert state.turn_segments[0]["input"] == {"name": "meta-travel-planner"}
+    assert state.turn_segments[1]["name"] == "meta_invoke"
+
+
 def test_artifact_handler_appends_payload() -> None:
     state = _make_state()
     handler = _ArtifactHandler()
@@ -524,11 +552,22 @@ def test_warning_handler_forwards_through_transformer() -> None:
 def test_done_handler_normalizes_and_emits_done() -> None:
     state = _make_state()
     handler = _DoneHandler()
-    inp = _make_input(state=state, turn=_make_turn(metadata={"routed_tier": "L1"}))
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(
+            metadata={
+                "routed_tier": "L1",
+                "routing_applied": False,
+                "rollout_phase": "observe",
+            }
+        ),
+    )
     done = DoneEvent(text="result", input_tokens=10, output_tokens=5)
     transformed, extra = handler.handle(done, inp, state)
     assert isinstance(transformed, DoneEvent)
     assert transformed.routed_tier == "L1"
+    assert transformed.routing_applied is False
+    assert transformed.rollout_phase == "observe"
     assert state.done_event is transformed
     assert extra == []
 
@@ -545,12 +584,13 @@ async def test_compaction_handler_runs_persist_snapshot_prompt_in_order() -> Non
     )
     inp = _make_input()
     await handler.handle(
-        CompactionEvent(summary="s", kept_entries=[1, 2]),
+        CompactionEvent(compaction_id="cmp_inline_1", summary="s", kept_entries=[1, 2]),
         inp,
     )
     assert len(persist.calls) == 1
     assert persist.calls[0]["summary"] == "s"
     assert persist.calls[0]["kept_entries"] == [1, 2]
+    assert persist.calls[0]["compaction_id"] == "cmp_inline_1"
     assert len(snapshot.calls) == 1
     assert len(prompt.calls) == 1
 
@@ -835,3 +875,22 @@ async def test_outer_stage_empty_stream_still_notifies() -> None:
 
 def test_stage_name() -> None:
     assert StreamConsumerStage.name == "stream_consumer_stage"
+
+
+def test_turn_context_surface_kind_defaults_to_unknown() -> None:
+    """PR3: surface_kind is "unknown" unless gateway/CLI/channel sets it."""
+    from opensquilla.engine.pipeline import TurnContext
+
+    # TurnContext requires: message, session_key, config, provider, model,
+    # tool_defs, system_prompt — check the actual signature in pipeline.py
+    # if this construction fails; pass minimal-but-valid args.
+    ctx = TurnContext(
+        message="hi",
+        session_key="S",
+        config=None,
+        provider=None,
+        model="",
+        tool_defs=[],
+        system_prompt="",
+    )
+    assert ctx.surface_kind == "unknown"

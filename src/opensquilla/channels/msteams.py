@@ -175,7 +175,7 @@ class MSTeamsChannel:
     async def start(self) -> None:
         """Build the BotFrameworkAdapter and load the persisted ref cache."""
         if self._adapter is None:
-            # Lazy import — keeps the [msteams] extra optional.
+            # Lazy import keeps Bot Framework out of gateway startup unless configured.
             from botbuilder.core import (  # type: ignore[import-untyped]  # noqa: PLC0415
                 BotFrameworkAdapter,
                 BotFrameworkAdapterSettings,

@@ -11,66 +11,45 @@ from opensquilla.tools.builtin.web import (
     run_web_search_payload,
     search_runtime_status,
 )
-from opensquilla.tools.policy import ToolSurfaceCapabilities
 from opensquilla.tools.registry import get_default_registry
+from opensquilla.tools.rpc_payload import (
+    tools_catalog_payload,
+    tools_effective_payload,
+)
 
 _d = get_dispatcher()
 
 
-def _tool_surface_capabilities(ctx: RpcContext) -> ToolSurfaceCapabilities:
-    try:
-        from opensquilla.tools.builtin.media import image_generation_available
-
-        image_generation = image_generation_available()
-    except Exception:
-        image_generation = False
-    return ToolSurfaceCapabilities(
-        session_manager=getattr(ctx, "session_manager", None) is not None,
-        task_runtime=getattr(ctx, "task_runtime", None) is not None,
-        scheduler=getattr(ctx, "cron_scheduler", None) is not None,
-        gateway_config=getattr(ctx, "config", None) is not None,
-        channel_backing=(
-            getattr(ctx, "channel_manager", None) is not None
-            or getattr(ctx, "originating_envelope", None) is not None
-        ),
-        image_generation=image_generation,
-    )
-
-
 @_d.method("tools.catalog", scope="operator.read")
 async def _handle_tools_catalog(params: dict | None, ctx: RpcContext) -> dict:
-    raw = params or {}
-    profile = raw.get("profile")
     tool_registry = getattr(ctx, "tool_registry", None) or get_default_registry()
-    tools = await tool_registry.list_tools(
-        profile=profile,
-        session_key=raw.get("sessionKey"),
-        agent_id=raw.get("agentId"),
-        caller_kind=raw.get("callerKind"),
-        interaction_mode=raw.get("interactionMode"),
-        tool_surface_capabilities=_tool_surface_capabilities(ctx),
+    return await tools_catalog_payload(
+        params,
+        tool_registry=tool_registry,
+        session_manager=getattr(ctx, "session_manager", None),
+        task_runtime=getattr(ctx, "task_runtime", None),
+        scheduler=getattr(ctx, "cron_scheduler", None),
+        gateway_config=getattr(ctx, "config", None),
+        channel_manager=getattr(ctx, "channel_manager", None),
+        originating_envelope=getattr(ctx, "originating_envelope", None),
         is_owner=ctx.principal.is_owner,
     )
-    return {"tools": tools}
 
 
 @_d.method("tools.effective", scope="operator.read")
 async def _handle_tools_effective(params: dict | None, ctx: RpcContext) -> dict:
-    raw = params or {}
-    session_key = raw.get("sessionKey")
-    agent_id = raw.get("agentId")
-    caller_kind = raw.get("callerKind")
-    interaction_mode = raw.get("interactionMode")
     tool_registry = getattr(ctx, "tool_registry", None) or get_default_registry()
-    tools = await tool_registry.effective_tools(
-        session_key=session_key,
-        agent_id=agent_id,
-        caller_kind=caller_kind,
-        interaction_mode=interaction_mode,
-        tool_surface_capabilities=_tool_surface_capabilities(ctx),
+    return await tools_effective_payload(
+        params,
+        tool_registry=tool_registry,
+        session_manager=getattr(ctx, "session_manager", None),
+        task_runtime=getattr(ctx, "task_runtime", None),
+        scheduler=getattr(ctx, "cron_scheduler", None),
+        gateway_config=getattr(ctx, "config", None),
+        channel_manager=getattr(ctx, "channel_manager", None),
+        originating_envelope=getattr(ctx, "originating_envelope", None),
         is_owner=ctx.principal.is_owner,
     )
-    return {"tools": tools}
 
 
 @_d.method("tools.search_provider", scope="operator.read")
@@ -87,6 +66,16 @@ def _active_llm_provider(ctx: RpcContext) -> str | None:
     llm_cfg = getattr(getattr(ctx, "config", None), "llm", None)
     provider = getattr(llm_cfg, "provider", None)
     return str(provider) if provider else None
+
+
+def _provider_api_key_env(provider_id: str, default_env_key: str, ctx: RpcContext) -> str:
+    active = provider_id == _active_llm_provider(ctx)
+    llm_cfg = getattr(getattr(ctx, "config", None), "llm", None)
+    if active:
+        configured_env = str(getattr(llm_cfg, "api_key_env", "") or "")
+        if configured_env:
+            return configured_env
+    return default_env_key
 
 
 def _provider_key_configured(provider_id: str, env_key: str, ctx: RpcContext) -> bool:
@@ -150,7 +139,8 @@ async def _handle_providers_status(params: dict | None, ctx: RpcContext) -> dict
     rows: list[dict[str, Any]] = []
     for spec in specs:
         is_active = spec.provider_id == active
-        api_key_configured = _provider_key_configured(spec.provider_id, spec.env_key, ctx)
+        api_key_env = _provider_api_key_env(spec.provider_id, spec.env_key, ctx)
+        api_key_configured = _provider_key_configured(spec.provider_id, api_key_env, ctx)
         base_url = _provider_base_url(spec.provider_id, spec.default_base_url, ctx)
         base_url_configured = bool(base_url)
         configured = (
@@ -159,13 +149,16 @@ async def _handle_providers_status(params: dict | None, ctx: RpcContext) -> dict
             and (not spec.requires_base_url or base_url_configured)
         )
         model = str(getattr(llm_cfg, "model", "") or "") if is_active else ""
+        api_key = str(getattr(llm_cfg, "api_key", "") or "") if is_active else ""
+        if is_active and not api_key and api_key_env:
+            api_key = os.environ.get(api_key_env, "")
         error: str | None = None
         buildable = False
         try:
             build_provider(
                 spec.provider_id,
                 model or "diagnostic-model",
-                api_key=str(getattr(llm_cfg, "api_key", "") or "") if is_active else "",
+                api_key=api_key,
                 base_url=base_url,
             )
             buildable = True
@@ -186,6 +179,7 @@ async def _handle_providers_status(params: dict | None, ctx: RpcContext) -> dict
                 "buildable": buildable,
                 "model": model,
                 "requiresApiKey": spec.requires_api_key,
+                "apiKeyEnv": api_key_env,
                 "apiKeyConfigured": api_key_configured,
                 "baseUrlConfigured": base_url_configured,
                 "error": error,

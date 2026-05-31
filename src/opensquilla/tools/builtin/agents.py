@@ -161,7 +161,11 @@ async def subagents(
             except ToolError:
                 runtime = None
             if runtime is not None:
-                await runtime.cancel(session_key=session_key)
+                await runtime.cancel(
+                    session_key=session_key,
+                    source="agent_tool_kill",
+                    reason="agent_tool_kill",
+                )
             await mgr.kill_session(session_key)
             return json.dumps({"action": "kill", "session_key": session_key, "status": "killed"})
         else:  # steer

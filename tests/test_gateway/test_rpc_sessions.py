@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 from dataclasses import dataclass
@@ -13,8 +14,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from opensquilla.agents.registry import AgentRegistry
-from opensquilla.engine.types import DoneEvent
-from opensquilla.gateway import rpc_sessions
+from opensquilla.attachment_refs import transcript_material_path
+from opensquilla.engine.types import DoneEvent, ErrorEvent
+from opensquilla.gateway import rpc_chat, rpc_sessions
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
 from opensquilla.gateway.attachment_ingest import (
     MAX_STAGED_PDF_BYTES,
@@ -22,6 +24,7 @@ from opensquilla.gateway.attachment_ingest import (
 )
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
+from opensquilla.gateway.input_normalization import LARGE_PASTE_CHARS, estimate_text_tokens
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.rpc_sessions import _normalize_terminal_event_payload
 from opensquilla.gateway.session_streams import get_session_streams
@@ -65,6 +68,7 @@ class FakeStorage:
         self._sessions = {s.session_key: s for s in (sessions or [])}
         self._transcripts: dict[str, list] = {}
         self._agent_tasks: dict[str, list[SimpleNamespace]] = {}
+        self.memory_durable_receipts: list[Any] = []
         self.list_agent_tasks_calls: list[str | None] = []
         self.list_agent_tasks_for_sessions_calls: list[tuple[str, ...]] = []
 
@@ -112,6 +116,53 @@ class FakeStorage:
             for key in session_keys
         }
 
+    async def list_memory_durable_receipts(
+        self,
+        session_key: str | None = None,
+        session_id: str | None = None,
+        scope: str | None = None,
+        status: str | None = None,
+        coverage_turn_id: str | None = None,
+        coverage_hash: str | None = None,
+        coverage_entry_count: int | None = None,
+        idempotency_key: str | None = None,
+        limit: int = 100,
+    ) -> list[Any]:
+        rows = list(self.memory_durable_receipts)
+        if session_key is not None:
+            rows = [row for row in rows if getattr(row, "session_key", None) == session_key]
+        if session_id is not None:
+            rows = [row for row in rows if getattr(row, "session_id", None) == session_id]
+        if scope is not None:
+            rows = [row for row in rows if getattr(row, "scope", None) == scope]
+        if status is not None:
+            rows = [row for row in rows if getattr(row, "status", None) == status]
+        if coverage_turn_id is not None:
+            rows = [
+                row
+                for row in rows
+                if getattr(row, "coverage_turn_id", None) == coverage_turn_id
+            ]
+        if coverage_hash is not None:
+            rows = [
+                row
+                for row in rows
+                if getattr(row, "coverage_hash", None) == coverage_hash
+            ]
+        if coverage_entry_count is not None:
+            rows = [
+                row
+                for row in rows
+                if getattr(row, "coverage_entry_count", None) == coverage_entry_count
+            ]
+        if idempotency_key is not None:
+            rows = [
+                row
+                for row in rows
+                if getattr(row, "idempotency_key", None) == idempotency_key
+            ]
+        return rows[:limit]
+
 
 class FakeSessionManager:
     def __init__(self, sessions: list[FakeSession] | None = None):
@@ -121,6 +172,7 @@ class FakeSessionManager:
         self.applied_intents: list[tuple[str, str]] = []
         self.truncate_calls: list[tuple[str, int]] = []
         self.compact_calls: list[tuple[str, int, object | None]] = []
+        self.compact_kwargs: list[dict[str, Any]] = []
         self.compact_instructions: list[str | None] = []
         self.compact_summary = "summary for compacted context"
         self.compact_summary_source = "fallback"
@@ -155,6 +207,21 @@ class FakeSessionManager:
         self._storage._sessions[session_key] = session
         return session
 
+    async def get_or_create(
+        self,
+        session_key: str,
+        agent_id: str = "main",
+        display_name: str | None = None,
+    ):
+        session = await self._storage.get_session(session_key)
+        if session is not None:
+            return session
+        return await self.create(
+            session_key=session_key,
+            agent_id=agent_id,
+            display_name=display_name,
+        )
+
     async def get_transcript(self, key: str) -> list:
         return list(self.transcript)
 
@@ -178,7 +245,9 @@ class FakeSessionManager:
         context_window_tokens: int,
         config=None,
         custom_instructions: str | None = None,
+        **kwargs: Any,
     ):
+        self.compact_kwargs.append(dict(kwargs))
         self.compact_instructions.append(custom_instructions)
         summary = await self.compact(session_key, context_window_tokens, config)
         return SimpleNamespace(
@@ -241,6 +310,46 @@ def make_ctx(session_manager=None, **kwargs) -> RpcContext:
     ctx = RpcContext(**defaults)
     ctx.session_manager = session_manager
     return ctx
+
+
+def _capture_compaction_emits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, str, dict[str, Any]]]:
+    emitted: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def _record_emit(
+        _ctx: RpcContext,
+        session_key: str,
+        event_name: str,
+        payload: dict[str, Any],
+    ) -> None:
+        emitted.append((session_key, event_name, payload))
+
+    monkeypatch.setattr(rpc_sessions, "_emit_to_subscribers", _record_emit)
+    return emitted
+
+
+def _checkpoint_receipt(
+    session: FakeSession,
+    *,
+    turn_id: str,
+    entries: list[Any],
+    status: str = "checkpoint_saved",
+) -> SimpleNamespace:
+    from opensquilla.memory.checkpoint import checkpoint_coverage_hash, checkpoint_turn_id
+
+    return SimpleNamespace(
+        session_key=session.session_key,
+        session_id=session.session_id,
+        turn_id=turn_id,
+        scope="checkpoint",
+        status=status,
+        source_path="memory/.checkpoints/agent-main-webchat-abc/turn-1.jsonl",
+        content_hash="h1",
+        coverage_turn_id=checkpoint_turn_id(entries),
+        coverage_hash=checkpoint_coverage_hash(entries),
+        coverage_entry_count=len(entries),
+    )
 
 
 class _FakeCompactionProvider:
@@ -344,6 +453,12 @@ class _FakeUploadStore:
 def _exact_pdf(size: int) -> bytes:
     header = b"%PDF-1.4\n"
     return header + b"a" * (size - len(header))
+
+
+def _ctx_config_with_media_root(tmp_path) -> GatewayConfig:
+    cfg = GatewayConfig(memory={"flush_enabled": False})
+    cfg.attachments.media_root = str(tmp_path)
+    return cfg
 
 
 @pytest.fixture
@@ -597,6 +712,45 @@ class TestSessionsList:
         assert row["run_status"] == "running"
 
     @pytest.mark.asyncio
+    async def test_list_prefers_running_active_task_over_newer_queued_task(
+        self, dispatcher
+    ):
+        session = FakeSession(session_key="agent:main:webchat:running-priority")
+        manager = FakeSessionManager([session])
+        manager._storage._agent_tasks[session.session_key] = [
+            SimpleNamespace(
+                task_id="task-running",
+                status="running",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=100,
+                started_at=110,
+                finished_at=None,
+                terminal_reason=None,
+            ),
+            SimpleNamespace(
+                task_id="task-queued",
+                status="queued",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=200,
+                started_at=None,
+                finished_at=None,
+                terminal_reason=None,
+            ),
+        ]
+        ctx = make_ctx(session_manager=manager, task_runtime=None)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        assert row["active_task"]["task_id"] == "task-running"
+        assert row["run_status"] == "running"
+
+    @pytest.mark.asyncio
     async def test_list_batches_persisted_task_state_for_visible_sessions(self, dispatcher):
         one = FakeSession(session_key="agent:main:webchat:one")
         two = FakeSession(session_key="agent:main:webchat:two")
@@ -656,6 +810,38 @@ class TestSessionsSend:
         ]
 
     @pytest.mark.asyncio
+    async def test_send_preserves_persisted_message_on_context_budget_terminal_error(
+        self, dispatcher, session
+    ):
+        class _BudgetErrorTurnRunner(_RecordingTurnRunner):
+            async def run(self, message: str, session_key: str, **kwargs):
+                self.run_calls.append({"message": message, "session_key": session_key, **kwargs})
+                yield ErrorEvent(
+                    message='{"fallback_reason":"provider_request_budget_exhausted"}',
+                    code="provider_request_budget_exhausted",
+                )
+
+        manager = FakeSessionManager([session])
+        runner = _BudgetErrorTurnRunner()
+        ctx = make_ctx(session_manager=manager, turn_runner=runner)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {"key": session.session_key, "message": "keep this overlong input"},
+            ctx,
+        )
+        task = get_agent_task_registry().get(session.session_key)
+        if task is not None:
+            await task
+
+        assert res.ok is True
+        assert manager.created_messages == [
+            (session.session_key, "user", "keep this overlong input")
+        ]
+        assert manager.removed_messages == []
+
+    @pytest.mark.asyncio
     async def test_send_passes_persisted_user_message_id_to_task_runtime(
         self, dispatcher, session
     ):
@@ -689,6 +875,138 @@ class TestSessionsSend:
         assert runtime.enqueue_calls[0]["envelope"].metadata.get(
             "persisted_user_message_id"
         ) is None
+
+    @pytest.mark.asyncio
+    async def test_send_marks_empty_transcript_as_fresh_user_session(
+        self, dispatcher, session
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        runtime = RecordingTaskRuntime()
+        manager = FakeSessionManager([session])
+        manager.transcript = []
+        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {"key": session.session_key, "message": "hello"},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert runtime.enqueue_calls[0]["fresh_user_session"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_marks_non_empty_transcript_as_not_fresh_user_session(
+        self, dispatcher, session
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        runtime = RecordingTaskRuntime()
+        manager = FakeSessionManager([session])
+        manager.transcript = [SimpleNamespace(role="user", content="previous")]
+        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {"key": session.session_key, "message": "hello"},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert runtime.enqueue_calls[0]["fresh_user_session"] is False
+
+    @pytest.mark.asyncio
+    async def test_send_marks_direct_runner_empty_transcript_as_fresh_user_session(
+        self, dispatcher
+    ):
+        session = FakeSession(session_key="agent:main:webchat:fresh-direct")
+        manager = FakeSessionManager([session])
+        manager.transcript = []
+        runner = _RecordingTurnRunner()
+        ctx = make_ctx(
+            session_manager=manager,
+            task_runtime=None,
+            turn_runner=runner,
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {"key": session.session_key, "message": "hello"},
+            ctx,
+        )
+        task = get_agent_task_registry().get(session.session_key)
+        if task is not None:
+            await task
+
+        assert res.ok is True
+        assert runner.run_calls[0]["fresh_user_session"] is True
+
+    def test_send_prefers_agent_encoded_in_session_key_for_routing(
+        self, dispatcher
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        session = FakeSession(
+            session_key="agent:kid-project:webchat:test",
+            session_id="test",
+            agent_id="main",
+        )
+        runtime = RecordingTaskRuntime()
+        manager = FakeSessionManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
+
+        async def _run():
+            return await dispatcher.dispatch(
+                "r1",
+                "sessions.send",
+                {"key": session.session_key, "message": "hello"},
+                ctx,
+            )
+
+        res = asyncio.run(_run())
+
+        assert res.ok is True
+        assert runtime.enqueue_calls[0]["envelope"].agent_id == "kid-project"
 
     def test_legacy_session_error_payload_is_terminal_message_normalized(self):
         payload = _normalize_terminal_event_payload(
@@ -854,6 +1172,476 @@ class TestSessionsSend:
         assert cli_persisted["text"] == "Describe these attachments"
         assert "display_text" not in cli_persisted
         assert cli_runner.run_calls[0]["message"] == "Describe these attachments"
+
+    @pytest.mark.asyncio
+    async def test_web_large_paste_is_normalized_before_turn_runner(
+        self,
+        dispatcher,
+        tmp_path,
+    ):
+        raw = "a" * LARGE_PASTE_CHARS
+        placeholder = "Please process the attached pasted text."
+        web_session = FakeSession(
+            session_key="agent:main:webchat:web-large-paste",
+            session_id="web-large-paste",
+        )
+        web_manager = FakeSessionManager([web_session])
+        web_runner = _RecordingTurnRunner()
+        web_ctx = make_ctx(
+            session_manager=web_manager,
+            turn_runner=web_runner,
+            config=_ctx_config_with_media_root(tmp_path),
+        )
+
+        res = await dispatcher.dispatch(
+            "r-web-large-paste",
+            "sessions.send",
+            {
+                "key": web_session.session_key,
+                "message": raw,
+                "inputProvenance": {"kind": "webchat_clip", "surface": "test"},
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            web_ctx,
+        )
+        web_task = get_agent_task_registry().get(web_session.session_key)
+        if web_task is not None:
+            await web_task
+
+        assert res.ok is True
+        assert web_runner.run_calls[0]["message"] == placeholder
+        assert web_runner.run_calls[0]["semantic_message"] == placeholder
+        runner_attachments = web_runner.run_calls[0]["attachments"]
+        assert len(runner_attachments) == 1
+        assert runner_attachments[0]["kind"] == "attachment_ref"
+        assert runner_attachments[0]["source"] == "input_normalization"
+        assert runner_attachments[0]["type"] == "text/plain"
+        assert runner_attachments[0]["name"].startswith("webchat-paste-")
+        assert "data" not in runner_attachments[0]
+        assert runner_attachments[0]["_provider_inline_policy"] == "preview_only"
+        material_path = transcript_material_path(
+            tmp_path,
+            web_session.session_id,
+            runner_attachments[0]["sha256"],
+        )
+        assert material_path.read_text(encoding="utf-8") == raw
+
+        persisted = json.loads(web_manager.created_messages[0][2])
+        assert persisted["text"] == placeholder
+        assert len(persisted["attachments"]) == 1
+        assert persisted["attachments"][0]["sha256_ref"] == runner_attachments[0]["sha256"]
+        assert persisted["attachments"][0]["name"].startswith("webchat-paste-")
+
+        provenance = web_runner.run_calls[0]["input_provenance"]
+        assert provenance["kind"] == "webchat_clip"
+        assert provenance["surface"] == "test"
+        assert provenance["input_normalization"]["guard_action"] == (
+            "generated_text_attachment"
+        )
+        assert provenance["input_normalization"]["original_chars"] == len(raw)
+        assert provenance["input_normalization"]["generated_attachment_count"] == 1
+        assert provenance["input_normalization"]["material_estimated_tokens"] == (
+            estimate_text_tokens(raw)
+        )
+
+    @pytest.mark.asyncio
+    async def test_web_large_paste_material_uses_canonical_session_id(
+        self,
+        dispatcher,
+        tmp_path,
+    ):
+        raw = "a" * LARGE_PASTE_CHARS
+        web_session = FakeSession(
+            session_key="agent:main:webchat:web-large-paste",
+            session_id="canonical-transcript-id",
+        )
+        web_manager = FakeSessionManager([web_session])
+        web_runner = _RecordingTurnRunner()
+        web_ctx = make_ctx(
+            session_manager=web_manager,
+            turn_runner=web_runner,
+            config=_ctx_config_with_media_root(tmp_path),
+        )
+
+        res = await dispatcher.dispatch(
+            "r-web-large-paste-canonical-id",
+            "sessions.send",
+            {
+                "key": web_session.session_key,
+                "message": raw,
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            web_ctx,
+        )
+        web_task = get_agent_task_registry().get(web_session.session_key)
+        if web_task is not None:
+            await web_task
+
+        assert res.ok is True
+        runtime_attachment = web_runner.run_calls[0]["attachments"][0]
+        assert runtime_attachment["scope"] == web_session.session_id
+        canonical_path = transcript_material_path(
+            tmp_path,
+            web_session.session_id,
+            runtime_attachment["sha256"],
+        )
+        suffix_path = transcript_material_path(
+            tmp_path,
+            web_session.session_key.rsplit(":", 1)[-1],
+            runtime_attachment["sha256"],
+        )
+        assert canonical_path.read_text(encoding="utf-8") == raw
+        assert not suffix_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_sessions_send_large_paste_defaults_to_web_guard(
+        self,
+        dispatcher,
+        tmp_path,
+    ):
+        raw = "a" * LARGE_PASTE_CHARS
+        placeholder = "Please process the attached pasted text."
+        web_session = FakeSession(
+            session_key="agent:main:webchat:untagged-large-paste",
+            session_id="untagged-large-paste",
+        )
+        web_manager = FakeSessionManager([web_session])
+        web_runner = _RecordingTurnRunner()
+        web_ctx = make_ctx(
+            session_manager=web_manager,
+            turn_runner=web_runner,
+            config=_ctx_config_with_media_root(tmp_path),
+        )
+
+        res = await dispatcher.dispatch(
+            "r-untagged-large-paste",
+            "sessions.send",
+            {
+                "key": web_session.session_key,
+                "message": raw,
+            },
+            web_ctx,
+        )
+        web_task = get_agent_task_registry().get(web_session.session_key)
+        if web_task is not None:
+            await web_task
+
+        assert res.ok is True
+        assert web_runner.run_calls[0]["message"] == placeholder
+        assert web_runner.run_calls[0]["semantic_message"] == placeholder
+        runner_attachments = web_runner.run_calls[0]["attachments"]
+        assert len(runner_attachments) == 1
+        assert runner_attachments[0]["kind"] == "attachment_ref"
+        assert runner_attachments[0]["source"] == "input_normalization"
+        assert runner_attachments[0]["type"] == "text/plain"
+        assert runner_attachments[0]["name"].startswith("webchat-paste-")
+        assert "data" not in runner_attachments[0]
+
+        persisted = json.loads(web_manager.created_messages[0][2])
+        assert persisted["text"] == placeholder
+        assert len(persisted["attachments"]) == 1
+        assert persisted["attachments"][0]["sha256_ref"] == runner_attachments[0]["sha256"]
+        assert persisted["attachments"][0]["name"].startswith("webchat-paste-")
+
+        provenance = web_runner.run_calls[0]["input_provenance"]
+        assert provenance["input_normalization"]["guard_action"] == (
+            "generated_text_attachment"
+        )
+        assert provenance["input_normalization"]["original_chars"] == len(raw)
+        assert provenance["input_normalization"]["generated_attachment_count"] == 1
+        assert provenance["input_normalization"]["material_estimated_tokens"] == (
+            estimate_text_tokens(raw)
+        )
+
+    @pytest.mark.asyncio
+    async def test_cli_large_message_is_not_auto_attachmentized(
+        self,
+        dispatcher,
+    ):
+        raw = "a" * LARGE_PASTE_CHARS
+        cli_session = FakeSession(
+            session_key="agent:main:cli:cli-large-paste",
+            session_id="cli-large-paste",
+        )
+        cli_manager = FakeSessionManager([cli_session])
+        cli_runner = _RecordingTurnRunner()
+        cli_ctx = make_ctx(session_manager=cli_manager, turn_runner=cli_runner)
+
+        res = await dispatcher.dispatch(
+            "r-cli-large-paste",
+            "sessions.send",
+            {
+                "key": cli_session.session_key,
+                "message": raw,
+                "_source": {"caller_kind": "cli", "channel_kind": "cli"},
+            },
+            cli_ctx,
+        )
+        cli_task = get_agent_task_registry().get(cli_session.session_key)
+        if cli_task is not None:
+            await cli_task
+
+        assert res.ok is True
+        assert cli_manager.created_messages[0][2] == raw
+        assert cli_runner.run_calls[0]["message"] == raw
+        assert cli_runner.run_calls[0]["semantic_message"] == raw
+        assert cli_runner.run_calls[0]["attachments"] == []
+        assert "input_normalization" not in cli_runner.run_calls[0][
+            "input_provenance"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_chat_send_large_web_paste_uses_sessions_guard(
+        self,
+        dispatcher,
+        tmp_path,
+    ):
+        assert rpc_chat._handle_chat_send is not None
+        raw = "a" * LARGE_PASTE_CHARS
+        placeholder = "Please process the attached pasted text."
+        attachment = {"type": "text/plain", "data": "bm90ZQ==", "name": "note.txt"}
+        chat_session = FakeSession(
+            session_key="agent:main:webchat:chat-large-paste",
+            session_id="chat-large-paste",
+        )
+        chat_manager = FakeSessionManager([chat_session])
+        chat_runner = _RecordingTurnRunner()
+        chat_ctx = make_ctx(
+            session_manager=chat_manager,
+            turn_runner=chat_runner,
+            config=_ctx_config_with_media_root(tmp_path),
+        )
+
+        res = await dispatcher.dispatch(
+            "r-chat-large-paste",
+            "chat.send",
+            {
+                "sessionKey": chat_session.session_key,
+                "message": raw,
+                "displayText": "",
+                "attachments": [attachment],
+            },
+            chat_ctx,
+        )
+        chat_task = get_agent_task_registry().get(chat_session.session_key)
+        if chat_task is not None:
+            await chat_task
+
+        assert res.ok is True
+        assert chat_runner.run_calls[0]["message"] == placeholder
+        assert chat_runner.run_calls[0]["semantic_message"] == placeholder
+        assert len(chat_runner.run_calls[0]["attachments"]) == 2
+        assert chat_runner.run_calls[0]["attachments"][0]["kind"] == "attachment_ref"
+        assert "data" not in chat_runner.run_calls[0]["attachments"][0]
+        assert chat_runner.run_calls[0]["attachments"][0]["name"].startswith(
+            "webchat-paste-"
+        )
+        assert chat_runner.run_calls[0]["attachments"][1]["name"] == "note.txt"
+        persisted = json.loads(chat_manager.created_messages[0][2])
+        assert persisted["text"] == placeholder
+        assert persisted["display_text"] == ""
+
+    @pytest.mark.asyncio
+    async def test_chat_send_client_normalized_paste_preserves_provenance(
+        self,
+        dispatcher,
+        tmp_path,
+    ):
+        assert rpc_chat._handle_chat_send is not None
+        raw = "a" * LARGE_PASTE_CHARS
+        placeholder = "Please process the attached pasted text."
+        attachment = {
+            "type": "text/plain",
+            "mime": "text/plain",
+            "data": base64.b64encode(raw.encode("utf-8")).decode("ascii"),
+            "name": "webchat-paste-20260531-000000.txt",
+        }
+        client_provenance = {
+            "kind": "web_message",
+            "source": "WebChat",
+            "input_normalization": {
+                "source": "input_normalization",
+                "original_chars": len(raw),
+                "material_estimated_tokens": estimate_text_tokens(raw),
+                "marker_score": 0,
+                "generated_attachment_count": 1,
+                "guard_action": "generated_text_attachment",
+            },
+        }
+        chat_session = FakeSession(
+            session_key="agent:main:webchat:client-normalized-paste",
+            session_id="client-normalized-paste",
+        )
+        chat_manager = FakeSessionManager([chat_session])
+        chat_runner = _RecordingTurnRunner()
+        chat_ctx = make_ctx(
+            session_manager=chat_manager,
+            turn_runner=chat_runner,
+            config=_ctx_config_with_media_root(tmp_path),
+        )
+
+        res = await dispatcher.dispatch(
+            "r-chat-client-normalized-paste",
+            "chat.send",
+            {
+                "sessionKey": chat_session.session_key,
+                "message": placeholder,
+                "displayText": placeholder,
+                "attachments": [attachment],
+                "inputProvenance": client_provenance,
+            },
+            chat_ctx,
+        )
+        chat_task = get_agent_task_registry().get(chat_session.session_key)
+        if chat_task is not None:
+            await chat_task
+
+        assert res.ok is True
+        assert chat_runner.run_calls[0]["message"] == placeholder
+        assert chat_runner.run_calls[0]["semantic_message"] == placeholder
+        attachments = chat_runner.run_calls[0]["attachments"]
+        assert len(attachments) == 1
+        assert attachments[0]["kind"] == "attachment_ref"
+        assert attachments[0]["source"] == "input_normalization"
+        assert "data" not in attachments[0]
+        assert attachments[0]["_provider_inline_policy"] == "preview_only"
+        provenance = chat_runner.run_calls[0]["input_provenance"]
+        assert provenance["kind"] == "web_message"
+        assert provenance["source"] == "WebChat"
+        assert provenance["input_normalization"]["guard_action"] == (
+            "generated_text_attachment"
+        )
+        assert provenance["input_normalization"]["original_chars"] == len(raw)
+        assert provenance["input_normalization"]["material_estimated_tokens"] == (
+            estimate_text_tokens(raw)
+        )
+
+    @pytest.mark.asyncio
+    async def test_chat_send_client_normalized_paste_without_provenance_is_inferred(
+        self,
+        dispatcher,
+        tmp_path,
+    ):
+        assert rpc_chat._handle_chat_send is not None
+        raw = "界" * LARGE_PASTE_CHARS
+        placeholder = "Please process the attached pasted text."
+        attachment = {
+            "type": "text/plain",
+            "mime": "text/plain",
+            "data": base64.b64encode(raw.encode("utf-8")).decode("ascii"),
+            "name": "webchat-paste-20260531-000000.txt",
+        }
+        chat_session = FakeSession(
+            session_key="agent:main:webchat:client-normalized-no-provenance",
+            session_id="client-normalized-no-provenance",
+        )
+        chat_manager = FakeSessionManager([chat_session])
+        chat_runner = _RecordingTurnRunner()
+        chat_ctx = make_ctx(
+            session_manager=chat_manager,
+            turn_runner=chat_runner,
+            config=_ctx_config_with_media_root(tmp_path),
+        )
+
+        res = await dispatcher.dispatch(
+            "r-chat-client-normalized-no-provenance",
+            "chat.send",
+            {
+                "sessionKey": chat_session.session_key,
+                "message": placeholder,
+                "displayText": placeholder,
+                "attachments": [attachment],
+            },
+            chat_ctx,
+        )
+        chat_task = get_agent_task_registry().get(chat_session.session_key)
+        if chat_task is not None:
+            await chat_task
+
+        assert res.ok is True
+        assert chat_runner.run_calls[0]["message"] == placeholder
+        assert chat_runner.run_calls[0]["semantic_message"] == placeholder
+        attachments = chat_runner.run_calls[0]["attachments"]
+        assert len(attachments) == 1
+        assert attachments[0]["kind"] == "attachment_ref"
+        assert attachments[0]["source"] == "input_normalization"
+        assert "data" not in attachments[0]
+        material_path = transcript_material_path(
+            tmp_path,
+            chat_session.session_id,
+            attachments[0]["sha256"],
+        )
+        assert material_path.read_text(encoding="utf-8") == raw
+        provenance = chat_runner.run_calls[0]["input_provenance"]
+        assert provenance["input_normalization"]["guard_action"] == (
+            "generated_text_attachment"
+        )
+        assert provenance["input_normalization"]["original_chars"] == len(raw)
+        assert provenance["input_normalization"]["material_estimated_tokens"] == (
+            estimate_text_tokens(raw)
+        )
+
+    @pytest.mark.asyncio
+    async def test_chat_send_client_normalized_paste_server_metadata_wins(
+        self,
+        dispatcher,
+        tmp_path,
+    ):
+        assert rpc_chat._handle_chat_send is not None
+        raw = "界" * LARGE_PASTE_CHARS
+        placeholder = "Please process the attached pasted text."
+        attachment = {
+            "type": "text/plain",
+            "mime": "text/plain",
+            "data": base64.b64encode(raw.encode("utf-8")).decode("ascii"),
+            "name": "webchat-paste-20260531-000000.txt",
+        }
+        client_provenance = {
+            "kind": "web_message",
+            "input_normalization": {
+                "source": "input_normalization",
+                "original_chars": 1,
+                "material_estimated_tokens": 1,
+                "marker_score": 0,
+                "generated_attachment_count": 1,
+                "guard_action": "generated_text_attachment",
+            },
+        }
+        chat_session = FakeSession(
+            session_key="agent:main:webchat:client-normalized-server-wins",
+            session_id="client-normalized-server-wins",
+        )
+        chat_manager = FakeSessionManager([chat_session])
+        chat_runner = _RecordingTurnRunner()
+        chat_ctx = make_ctx(
+            session_manager=chat_manager,
+            turn_runner=chat_runner,
+            config=_ctx_config_with_media_root(tmp_path),
+        )
+
+        res = await dispatcher.dispatch(
+            "r-chat-client-normalized-server-wins",
+            "chat.send",
+            {
+                "sessionKey": chat_session.session_key,
+                "message": placeholder,
+                "displayText": placeholder,
+                "attachments": [attachment],
+                "inputProvenance": client_provenance,
+            },
+            chat_ctx,
+        )
+        chat_task = get_agent_task_registry().get(chat_session.session_key)
+        if chat_task is not None:
+            await chat_task
+
+        assert res.ok is True
+        provenance = chat_runner.run_calls[0]["input_provenance"]
+        assert provenance["kind"] == "web_message"
+        assert provenance["input_normalization"]["original_chars"] == len(raw)
+        assert provenance["input_normalization"]["material_estimated_tokens"] == (
+            estimate_text_tokens(raw)
+        )
 
     @pytest.mark.asyncio
     async def test_send_rejects_aggregate_attachment_cap_before_start_and_evict(
@@ -1037,6 +1825,42 @@ class TestSessionsAbort:
         assert res.ok is True
 
     @pytest.mark.asyncio
+    async def test_abort_passes_cancel_source_to_runtime(self, dispatcher, session):
+        class Runtime:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            async def cancel(
+                self,
+                session_key: str | None = None,
+                source: str | None = None,
+                reason: str | None = None,
+            ) -> int:
+                self.calls.append(
+                    {"session_key": session_key, "source": source, "reason": reason}
+                )
+                return 1
+
+        runtime = Runtime()
+        ctx = make_ctx(session_manager=FakeSessionManager([session]), task_runtime=runtime)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.abort",
+            {"key": session.session_key, "source": "webui_escape"},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert runtime.calls == [
+            {
+                "session_key": session.session_key,
+                "source": "webui_escape",
+                "reason": "user_abort",
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_abort_no_manager(self, dispatcher, ctx_no_manager):
         res = await dispatcher.dispatch("r1", "sessions.abort", {"key": "any"}, ctx_no_manager)
         assert res.ok is True  # no-op
@@ -1134,6 +1958,153 @@ class TestSessionsReset:
         assert runtime.wait_calls == ["task-race"]
         assert runtime.cancel_calls == 1
         assert runtime.cancelled is False
+
+    @pytest.mark.asyncio
+    async def test_reset_allows_checkpoint_receipt_when_flush_receipt_is_degraded(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [SimpleNamespace(id=1, content="message to preserve")]
+        manager._storage.memory_durable_receipts.append(
+            _checkpoint_receipt(session, turn_id="cmp-reset", entries=manager.transcript)
+        )
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    mode="raw",
+                    result_status="parse_failed_archived",
+                    flushed_paths=["memory/.raw_fallbacks/raw.md"],
+                    content_hash="h1",
+                    indexed_chunk_count=0,
+                    integrity_status="unverified",
+                    output_coverage_status="unverified",
+                    invalid_candidate_count=0,
+                    candidate_missing_ids=[],
+                    obligation_status="unverified",
+                    obligation_missing_ids=[],
+                    to_dict=lambda: {
+                        "mode": "raw",
+                        "result_status": "parse_failed_archived",
+                        "flushed_paths": ["memory/.raw_fallbacks/raw.md"],
+                        "content_hash": "h1",
+                    },
+                )
+            )
+        )
+        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+
+        res = await dispatcher.dispatch(
+            "r1", "sessions.reset", {"key": session.session_key}, ctx
+        )
+
+        assert res.ok is True
+        assert res.payload["flush_receipt"]["result_status"] == "parse_failed_archived"
+        assert manager.applied_intents == [(session.session_key, "reset_same_key")]
+
+    @pytest.mark.asyncio
+    async def test_reset_refuses_stale_checkpoint_receipt_for_later_transcript(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [
+            SimpleNamespace(id=1, content="checkpointed"),
+            SimpleNamespace(id=2, content="not checkpointed"),
+        ]
+        manager._storage.memory_durable_receipts.append(
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-reset-old",
+                entries=manager.transcript[:1],
+            )
+        )
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    mode="error",
+                    result_status="archive_failed",
+                    flushed_paths=[],
+                    content_hash="h1",
+                    indexed_chunk_count=0,
+                    integrity_status="unverified",
+                    output_coverage_status="unverified",
+                    invalid_candidate_count=0,
+                    candidate_missing_ids=[],
+                    obligation_status="unverified",
+                    obligation_missing_ids=[],
+                    to_dict=lambda: {
+                        "mode": "error",
+                        "result_status": "archive_failed",
+                        "flushed_paths": [],
+                        "content_hash": "h1",
+                    },
+                )
+            )
+        )
+        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+
+        res = await dispatcher.dispatch(
+            "r1", "sessions.reset", {"key": session.session_key}, ctx
+        )
+
+        assert res.ok is False
+        assert res.error.code == "flush_disk_error"
+        assert res.error.details["memory_safety_status"] == "unsafe"
+        assert res.error.details["semantic_memory_status"] == "failed"
+        assert manager.applied_intents == []
+
+    @pytest.mark.asyncio
+    async def test_reset_without_flush_service_allows_covering_checkpoint_receipt(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [SimpleNamespace(id=1, content="message to preserve")]
+        manager._storage.memory_durable_receipts.append(
+            _checkpoint_receipt(session, turn_id="cmp-reset", entries=manager.transcript)
+        )
+        ctx = make_ctx(session_manager=manager, flush_service=None)
+
+        res = await dispatcher.dispatch(
+            "r1", "sessions.reset", {"key": session.session_key}, ctx
+        )
+
+        assert res.ok is True
+        assert manager.applied_intents == [(session.session_key, "reset_same_key")]
+
+    @pytest.mark.asyncio
+    async def test_reset_without_flush_service_checkpoint_gate_uses_session_lock(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [SimpleNamespace(id=1, content="message to preserve")]
+        manager._storage.memory_durable_receipts.append(
+            _checkpoint_receipt(session, turn_id="cmp-reset", entries=manager.transcript)
+        )
+        turn_runner = _RecordingTurnRunner()
+        lock = turn_runner._get_session_lock(session.session_key)
+        await lock.acquire()
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=None,
+            turn_runner=turn_runner,
+        )
+        reset_task = asyncio.create_task(
+            dispatcher.dispatch(
+                "r1",
+                "sessions.reset",
+                {"key": session.session_key},
+                ctx,
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert manager.applied_intents == []
+        assert reset_task.done() is False
+
+        lock.release()
+        res = await reset_task
+
+        assert res.ok is True
+        assert manager.applied_intents == [(session.session_key, "reset_same_key")]
 
     @pytest.mark.asyncio
     async def test_reset_not_found(self, dispatcher, ctx_with_sessions):
@@ -1245,6 +2216,189 @@ class TestSessionsTruncate:
         assert res.error.code == "CONTEXT_FLUSH_FAILED"
         assert manager.truncate_calls == []
 
+    @pytest.mark.asyncio
+    async def test_truncate_allows_checkpoint_receipt_when_flush_receipt_is_degraded(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [
+            SimpleNamespace(id=1, content="message to remove"),
+            SimpleNamespace(id=2, content="message to keep"),
+        ]
+        manager._storage.memory_durable_receipts.append(
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-truncate",
+                entries=manager.transcript[:1],
+            )
+        )
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    mode="raw",
+                    result_status="parse_failed_archived",
+                    flushed_paths=["memory/.raw_fallbacks/raw.md"],
+                    content_hash="h1",
+                    indexed_chunk_count=0,
+                    integrity_status="unverified",
+                    output_coverage_status="unverified",
+                    invalid_candidate_count=0,
+                    candidate_missing_ids=[],
+                    obligation_status="unverified",
+                    obligation_missing_ids=[],
+                    to_dict=lambda: {
+                        "mode": "raw",
+                        "result_status": "parse_failed_archived",
+                        "flushed_paths": ["memory/.raw_fallbacks/raw.md"],
+                        "content_hash": "h1",
+                    },
+                )
+            )
+        )
+        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.truncate",
+            {"key": session.session_key, "maxMessages": 1},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert res.payload["flush_receipt"]["result_status"] == "parse_failed_archived"
+        assert manager.truncate_calls == [(session.session_key, 1)]
+
+    @pytest.mark.asyncio
+    async def test_truncate_refuses_stale_checkpoint_for_later_removed_messages(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [
+            SimpleNamespace(id=1, content="checkpointed"),
+            SimpleNamespace(id=2, content="not checkpointed"),
+        ]
+        manager._storage.memory_durable_receipts.append(
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-truncate-old",
+                entries=manager.transcript[:1],
+            )
+        )
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    mode="error",
+                    result_status="archive_failed",
+                    flushed_paths=[],
+                    content_hash="h1",
+                    indexed_chunk_count=0,
+                    integrity_status="unverified",
+                    output_coverage_status="unverified",
+                    invalid_candidate_count=0,
+                    candidate_missing_ids=[],
+                    obligation_status="unverified",
+                    obligation_missing_ids=[],
+                    to_dict=lambda: {
+                        "mode": "error",
+                        "result_status": "archive_failed",
+                        "flushed_paths": [],
+                        "content_hash": "h1",
+                    },
+                )
+            )
+        )
+        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.truncate",
+            {"key": session.session_key, "maxMessages": 0},
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "CONTEXT_FLUSH_FAILED"
+        assert res.error.details["memory_safety_status"] == "unsafe"
+        assert res.error.details["semantic_memory_status"] == "failed"
+        assert manager.truncate_calls == []
+
+    @pytest.mark.asyncio
+    async def test_truncate_without_flush_service_allows_covering_checkpoint_receipt(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [
+            SimpleNamespace(id=1, content="message to remove"),
+            SimpleNamespace(id=2, content="message to keep"),
+        ]
+        manager._storage.memory_durable_receipts.append(
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-truncate",
+                entries=manager.transcript[:1],
+            )
+        )
+        ctx = make_ctx(session_manager=manager, flush_service=None)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.truncate",
+            {"key": session.session_key, "maxMessages": 1},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert manager.truncate_calls == [(session.session_key, 1)]
+
+    @pytest.mark.asyncio
+    async def test_truncate_refuses_orphaned_checkpoint_receipt(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [SimpleNamespace(content="message to preserve")]
+        manager._storage.memory_durable_receipts.append(
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-orphaned",
+                entries=manager.transcript,
+                status="receipt_orphaned",
+            )
+        )
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    mode="error",
+                    result_status="archive_failed",
+                    flushed_paths=[],
+                    content_hash="h1",
+                    indexed_chunk_count=0,
+                    integrity_status="unverified",
+                    output_coverage_status="unverified",
+                    invalid_candidate_count=0,
+                    candidate_missing_ids=[],
+                    obligation_status="unverified",
+                    obligation_missing_ids=[],
+                    to_dict=lambda: {
+                        "mode": "error",
+                        "result_status": "archive_failed",
+                        "flushed_paths": [],
+                        "content_hash": "h1",
+                    },
+                )
+            )
+        )
+        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+
+        res = await dispatcher.dispatch(
+            "r1", "sessions.truncate", {"key": session.session_key}, ctx
+        )
+
+        assert res.ok is False
+        assert res.error.code == "CONTEXT_FLUSH_FAILED"
+        assert res.error.details["memory_safety_status"] == "unsafe"
+        assert res.error.details["semantic_memory_status"] == "failed"
+        assert manager.truncate_calls == []
+
 
 class TestSessionsContextCompact:
     @pytest.mark.asyncio
@@ -1261,6 +2415,9 @@ class TestSessionsContextCompact:
         assert res.ok is True
         assert res.payload["key"] == session.session_key
         assert res.payload["compacted"] is True
+        assert res.payload["applied"] is True
+        assert res.payload["durability"] == "durable"
+        assert res.payload["user_visible"] is True
         assert res.payload["mode"] == "summary"
         assert res.payload["summary_len"] == len(ctx_with_sessions.session_manager.compact_summary)
         assert res.payload["context_window_tokens"] == 1234
@@ -1298,10 +2455,21 @@ class TestSessionsContextCompact:
         assert res.ok is True
         assert [(key, payload["status"]) for key, payload in events] == [
             (session.session_key, "started"),
+            (session.session_key, "observed"),
+            (session.session_key, "observed"),
             (session.session_key, "completed"),
         ]
         assert all(payload["source"] == "manual" for _, payload in events)
         assert all(payload["phase"] == "manual" for _, payload in events)
+        compaction_ids = {payload.get("compaction_id") for _, payload in events}
+        assert len(compaction_ids) == 1
+        assert None not in compaction_ids
+        assert [payload["event"] for _, payload in events] == [
+            "compaction.triggered",
+            "compaction.chunk_summarized",
+            "compaction.summary_verified",
+            "compaction.persisted",
+        ]
 
     @pytest.mark.asyncio
     async def test_context_compact_emits_started_while_slow_compaction_is_running(
@@ -1313,6 +2481,7 @@ class TestSessionsContextCompact:
         manager = SlowCompactionSessionManager([session])
         ctx = make_ctx(session_manager=manager)
         events: list[tuple[str, dict[str, Any]]] = []
+        emitted = _capture_compaction_emits(monkeypatch)
         monkeypatch.setattr(
             rpc_sessions,
             "notify_compaction",
@@ -1330,6 +2499,9 @@ class TestSessionsContextCompact:
 
         await asyncio.wait_for(manager.started.wait(), timeout=1.0)
         assert [payload["status"] for _, payload in events] == ["started"]
+        assert [(key, event, payload["status"]) for key, event, payload in emitted] == [
+            (session.session_key, "session.event.compaction", "started")
+        ]
         assert task.done() is False
 
         manager.release.set()
@@ -1338,6 +2510,14 @@ class TestSessionsContextCompact:
         assert res.ok is True
         assert [payload["status"] for _, payload in events] == [
             "started",
+            "observed",
+            "observed",
+            "completed",
+        ]
+        assert [payload["status"] for _, _, payload in emitted] == [
+            "started",
+            "observed",
+            "observed",
             "completed",
         ]
 
@@ -1351,6 +2531,7 @@ class TestSessionsContextCompact:
         manager = SlowCompactionSessionManager([session])
         ctx = make_ctx(session_manager=manager)
         events: list[tuple[str, dict[str, Any]]] = []
+        emitted = _capture_compaction_emits(monkeypatch)
         monkeypatch.setattr(
             rpc_sessions,
             "notify_compaction",
@@ -1375,6 +2556,10 @@ class TestSessionsContextCompact:
             "started",
             "cancelled",
         ]
+        assert [payload["status"] for _, _, payload in emitted] == [
+            "started",
+            "cancelled",
+        ]
         assert manager.compact_calls == []
 
     @pytest.mark.asyncio
@@ -1388,6 +2573,7 @@ class TestSessionsContextCompact:
         manager.compact_summary = ""
         ctx = make_ctx(session_manager=manager)
         events: list[tuple[str, dict[str, Any]]] = []
+        emitted = _capture_compaction_emits(monkeypatch)
         monkeypatch.setattr(
             rpc_sessions,
             "notify_compaction",
@@ -1400,7 +2586,18 @@ class TestSessionsContextCompact:
 
         assert res.ok is True
         assert res.payload["compacted"] is False
+        assert res.payload["applied"] is False
+        assert res.payload["durability"] == "none"
+        assert res.payload["skip_reason"] == "empty_summary"
+        assert res.payload["user_visible"] is True
         assert [payload["status"] for _, payload in events] == ["started", "skipped"]
+        assert events[-1][1]["applied"] is False
+        assert events[-1][1]["durability"] == "none"
+        assert events[-1][1]["skip_reason"] == "empty_summary"
+        assert [payload["status"] for _, _, payload in emitted] == [
+            "started",
+            "skipped",
+        ]
 
     @pytest.mark.asyncio
     async def test_context_compact_emits_failed_when_compaction_raises(
@@ -1417,6 +2614,7 @@ class TestSessionsContextCompact:
         manager.compact_with_result = _boom  # type: ignore[method-assign]
         ctx = make_ctx(session_manager=manager)
         events: list[tuple[str, dict[str, Any]]] = []
+        emitted = _capture_compaction_emits(monkeypatch)
         monkeypatch.setattr(
             rpc_sessions,
             "notify_compaction",
@@ -1429,6 +2627,10 @@ class TestSessionsContextCompact:
 
         assert res.ok is False
         assert [payload["status"] for _, payload in events] == ["started", "failed"]
+        assert [payload["status"] for _, _, payload in emitted] == [
+            "started",
+            "failed",
+        ]
         assert "compact boom" in events[-1][1]["message"]
 
     @pytest.mark.asyncio
@@ -1480,11 +2682,22 @@ class TestSessionsContextCompact:
             execute=AsyncMock(
                 return_value=SimpleNamespace(
                     mode="raw",
-                    integrity_ok=True,
-                    output_coverage_status="ok",
-                    missing_candidate_count=0,
+                    result_status="parse_failed_archived",
+                    flushed_paths=["memory/.raw_fallbacks/raw.md"],
+                    content_hash="h1",
+                    indexed_chunk_count=0,
+                    integrity_status="unverified",
+                    output_coverage_status="unverified",
                     invalid_candidate_count=0,
-                    obligation_status="ok",
+                    candidate_missing_ids=[],
+                    obligation_status="unverified",
+                    obligation_missing_ids=[],
+                    to_dict=lambda: {
+                        "mode": "raw",
+                        "result_status": "parse_failed_archived",
+                        "flushed_paths": ["memory/.raw_fallbacks/raw.md"],
+                        "content_hash": "h1",
+                    },
                 )
             )
         )
@@ -1501,6 +2714,196 @@ class TestSessionsContextCompact:
         assert res.ok is True
         assert len(manager.compact_calls) == 1
         assert manager.compact_calls[0][:2] == (session.session_key, 100000)
+        assert manager.compact_kwargs[0]["flush_receipt_status"] == "degraded_forensic"
+        assert res.payload["flush_receipt_status"] == "degraded_forensic"
+
+    @pytest.mark.asyncio
+    async def test_context_compact_block_mode_allows_checkpoint_receipt(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [SimpleNamespace(id=1, content="message to preserve")]
+        manager._storage.memory_durable_receipts.append(
+            _checkpoint_receipt(session, turn_id="cmp-compact", entries=manager.transcript)
+        )
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    mode="raw",
+                    result_status="parse_failed_archived",
+                    flushed_paths=["memory/.raw_fallbacks/raw.md"],
+                    content_hash="h1",
+                    indexed_chunk_count=0,
+                    integrity_status="unverified",
+                    output_coverage_status="unverified",
+                    invalid_candidate_count=0,
+                    candidate_missing_ids=[],
+                    obligation_status="unverified",
+                    obligation_missing_ids=[],
+                    to_dict=lambda: {
+                        "mode": "raw",
+                        "result_status": "parse_failed_archived",
+                        "flushed_paths": ["memory/.raw_fallbacks/raw.md"],
+                        "content_hash": "h1",
+                    },
+                )
+            )
+        )
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(
+                memory={
+                    "flush_enabled": True,
+                    "flush_compaction_safety_mode": "block",
+                }
+            ),
+        )
+
+        res = await dispatcher.dispatch(
+            "r1", "sessions.contextCompact", {"key": session.session_key}, ctx
+        )
+
+        assert res.ok is True
+        assert res.payload["flush_receipt"]["result_status"] == "parse_failed_archived"
+        assert res.payload["flush_receipt_status"] == "unsafe"
+        assert manager.compact_calls[0][:2] == (session.session_key, 100000)
+
+    @pytest.mark.asyncio
+    async def test_context_compact_block_mode_refuses_stale_checkpoint_receipt(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [
+            SimpleNamespace(id=1, content="checkpointed"),
+            SimpleNamespace(id=2, content="not checkpointed"),
+        ]
+        manager._storage.memory_durable_receipts.append(
+            _checkpoint_receipt(
+                session,
+                turn_id="cmp-compact-old",
+                entries=manager.transcript[:1],
+            )
+        )
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    mode="error",
+                    result_status="archive_failed",
+                    flushed_paths=[],
+                    content_hash="h1",
+                    indexed_chunk_count=0,
+                    integrity_status="unverified",
+                    output_coverage_status="unverified",
+                    invalid_candidate_count=0,
+                    candidate_missing_ids=[],
+                    obligation_status="unverified",
+                    obligation_missing_ids=[],
+                    to_dict=lambda: {
+                        "mode": "error",
+                        "result_status": "archive_failed",
+                        "flushed_paths": [],
+                        "content_hash": "h1",
+                    },
+                )
+            )
+        )
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(
+                memory={
+                    "flush_enabled": True,
+                    "flush_compaction_safety_mode": "block",
+                }
+            ),
+        )
+
+        res = await dispatcher.dispatch(
+            "r1", "sessions.contextCompact", {"key": session.session_key}, ctx
+        )
+
+        assert res.ok is False
+        assert res.error.code == "CONTEXT_FLUSH_FAILED"
+        assert res.error.details["memory_safety_status"] == "unsafe"
+        assert res.error.details["semantic_memory_status"] == "failed"
+        assert manager.compact_calls == []
+
+    @pytest.mark.asyncio
+    async def test_context_compact_block_mode_refuses_without_checkpoint_receipt(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [SimpleNamespace(content="message to preserve")]
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    mode="raw",
+                    integrity_ok=True,
+                    output_coverage_status="ok",
+                    missing_candidate_count=0,
+                    invalid_candidate_count=0,
+                    obligation_status="ok",
+                )
+            )
+        )
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(
+                memory={
+                    "flush_enabled": True,
+                    "flush_compaction_safety_mode": "block",
+                }
+            ),
+        )
+
+        res = await dispatcher.dispatch(
+            "r1", "sessions.contextCompact", {"key": session.session_key}, ctx
+        )
+
+        assert res.ok is False
+        assert res.error.code == "CONTEXT_FLUSH_FAILED"
+        assert manager.compact_calls == []
+
+    @pytest.mark.asyncio
+    async def test_context_compact_persists_noop_flush_receipt_status(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [SimpleNamespace(content="message to preserve")]
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    mode="llm",
+                    result_status="ok_noop_no_memory",
+                    flushed_paths=[],
+                    raw_reason=None,
+                    error=None,
+                    indexed_chunk_count=0,
+                    integrity_status="unverified",
+                    output_coverage_status="unverifiable",
+                    invalid_candidate_count=0,
+                    candidate_missing_ids=[],
+                    obligation_status="unverifiable",
+                    obligation_missing_ids=[],
+                )
+            )
+        )
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(memory={"flush_enabled": True}),
+        )
+
+        res = await dispatcher.dispatch(
+            "r1", "sessions.contextCompact", {"key": session.session_key}, ctx
+        )
+
+        assert res.ok is True
+        assert len(manager.compact_calls) == 1
+        assert manager.compact_kwargs[0]["flush_receipt_status"] == "noop_no_memory"
+        assert res.payload["flush_receipt_status"] == "noop_no_memory"
 
     @pytest.mark.asyncio
     async def test_context_compact_allowed_for_operator_write_scope(self, dispatcher, session):
@@ -1591,6 +2994,41 @@ class TestSessionsContextCompact:
         assert res.ok is True
         assert res.payload["summary_source"] == "unknown"
         assert manager.compact_calls == [(session.session_key, 1234)]
+
+    @pytest.mark.asyncio
+    async def test_context_compact_missing_ephemeral_webchat_session_skips(
+        self,
+        dispatcher,
+        ctx_with_sessions,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        events: list[tuple[str, dict[str, Any]]] = []
+        emitted = _capture_compaction_emits(monkeypatch)
+        monkeypatch.setattr(
+            rpc_sessions,
+            "notify_compaction",
+            lambda session_key, **payload: events.append((session_key, payload)),
+        )
+
+        key = "agent:main:webchat:58x01oc0"
+        res = await dispatcher.dispatch(
+            "r1", "sessions.contextCompact", {"key": key}, ctx_with_sessions
+        )
+
+        assert res.ok is True
+        assert res.payload["key"] == key
+        assert res.payload["compacted"] is False
+        assert res.payload["status"] == "skipped"
+        assert res.payload["reason"] == "empty_ephemeral_webchat_session"
+        assert ctx_with_sessions.session_manager.compact_calls == []
+        assert [(event_key, payload["status"]) for event_key, payload in events] == [
+            (key, "started"),
+            (key, "skipped"),
+        ]
+        assert [(event_key, payload["status"]) for event_key, _, payload in emitted] == [
+            (key, "started"),
+            (key, "skipped"),
+        ]
 
     @pytest.mark.asyncio
     async def test_context_compact_not_found(self, dispatcher, ctx_with_sessions):

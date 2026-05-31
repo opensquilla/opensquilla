@@ -74,7 +74,16 @@ def _deterministic_gate(
 
 
 async def filter_skills(ctx: TurnContext) -> TurnContext:
-    """Gate, optionally filter, and inject skills into the system prompt."""
+    """Gate, optionally filter, and inject skills into the system prompt.
+
+    Note: a ``meta_match`` in metadata used to short-circuit this step
+    when hard-takeover was active. The takeover branch was removed and
+    the trigger is now a *soft hint* injected by ``meta_resolution``, so
+    we never bypass skill injection here — the meta-skill in question
+    must still appear in ``<available_skills>`` so that the LLM can call
+    ``meta_invoke(name=...)`` for it. The hinted skill is pinned below
+    to defend against retrieval filters dropping it on noisy turns.
+    """
     skill_loader = ctx.metadata.get("skill_loader")
     if skill_loader is None:
         return ctx
@@ -91,13 +100,46 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
     if not all_skills:
         return ctx
 
+    from opensquilla.skills.meta.enabled import is_meta_skill_enabled
+
+    meta_skill_enabled = is_meta_skill_enabled(ctx.config)
+    ctx.metadata["meta_skill_enabled"] = meta_skill_enabled
+
     # ── deterministic gate (no LLM, pure Python) ──
     available_tools = {t.name for t in ctx.tool_defs} if ctx.tool_defs else set()
     gated = _deterministic_gate(all_skills, available_tools)
+    if not meta_skill_enabled:
+        gated = [
+            s for s in gated if getattr(s, "kind", "skill") != "meta"
+        ]
+        for key in (
+            "meta_match",
+            "meta_match_trigger",
+            "meta_match_candidates",
+        ):
+            ctx.metadata.pop(key, None)
 
     # ── always skills bypass filter, guaranteed visibility ──
     pinned = [s for s in gated if s.always]
     filterable = [s for s in gated if not s.always]
+
+    # ── pin the meta-skill that meta_resolution matched ──
+    # The soft-hint in system_prompt references this skill by name; if the
+    # retriever (when filter_enabled=True) drops it from `<available_skills>`,
+    # the LLM can still call `meta_invoke(name=...)` from memory, but won't
+    # see the description block. Promote it to pinned to guarantee both.
+    meta_match = ctx.metadata.get("meta_match")
+    if meta_match is not None:
+        hinted_name = getattr(getattr(meta_match, "plan", None), "name", None)
+        if hinted_name:
+            already_pinned = any(getattr(s, "name", None) == hinted_name for s in pinned)
+            if not already_pinned:
+                promoted = [s for s in filterable if getattr(s, "name", None) == hinted_name]
+                if promoted:
+                    pinned = pinned + promoted
+                    filterable = [
+                        s for s in filterable if getattr(s, "name", None) != hinted_name
+                    ]
 
     skills_cfg = getattr(ctx.config, "skills", None) if ctx.config else None
     filter_enabled = getattr(skills_cfg, "filter_enabled", False) if skills_cfg else False
@@ -108,6 +150,28 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
         semantic_message = getattr(ctx, "raw_message", None)
     if semantic_message is None:
         semantic_message = ctx.message
+
+    # ── pin the meta-skill that meta_resolution matched ──
+    # The soft-hint in system_prompt references this skill by name; if the
+    # retriever (filter_enabled=True path) drops it from `<available_skills>`,
+    # the LLM can still call `meta_invoke(name=...)` from memory, but won't
+    # see the description block. Promote it to pinned to guarantee both.
+    #
+    # The meta match remains a soft hint: pin the matched workflow into
+    # <available_skills>, but leave the outer tool surface intact so the LLM
+    # can make the final semantic judgment about whether to call meta_invoke.
+    meta_match = ctx.metadata.get("meta_match")
+    if meta_match is not None:
+        hinted_name = getattr(getattr(meta_match, "plan", None), "name", None)
+        if hinted_name:
+            already_pinned = any(getattr(s, "name", None) == hinted_name for s in pinned)
+            if not already_pinned:
+                promoted = [s for s in filterable if getattr(s, "name", None) == hinted_name]
+                if promoted:
+                    pinned = pinned + promoted
+                    filterable = [
+                        s for s in filterable if getattr(s, "name", None) != hinted_name
+                    ]
 
     if filter_enabled:
         top_k = getattr(skills_cfg, "filter_top_k", 5)

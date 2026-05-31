@@ -122,7 +122,7 @@ def test_cross_platform_wheelhouse_requires_target_host(tmp_path: Path) -> None:
         )
 
 
-def test_portable_recommended_wheelhouse_includes_feishu_extra(tmp_path: Path) -> None:
+def test_portable_recommended_wheelhouse_uses_recommended_extra_only(tmp_path: Path) -> None:
     module = load_script()
     module.platform_tag = lambda: "windows-x64"
     wheel_path = tmp_path / "opensquilla-0.1.0-py3-none-any.whl"
@@ -135,14 +135,15 @@ def test_portable_recommended_wheelhouse_includes_feishu_extra(tmp_path: Path) -
         target_platform_tag="windows-x64",
         python_major=3,
         python_minor=12,
-        extra_extras=("feishu",),
     )
 
-    assert str(wheel_path) + "[recommended,feishu]" in command
+    assert str(wheel_path) + "[recommended]" in command
+    assert str(wheel_path) + "[recommended,feishu]" not in command
 
 def test_release_wheel_allows_router_provenance_markdown() -> None:
     module = load_script()
     provenance = module.ROUTER_PROVENANCE_WHEEL_PATH
+    tokenjuice_provenance = module.TOKENJUICE_PROVENANCE_WHEEL_PATH
     pptx_reference = "opensquilla/skills/bundled/pptx/references/python_pptx.md"
     unrelated_skill_reference = (
         "opensquilla/skills/bundled/example/references/private-notes.md"
@@ -154,6 +155,7 @@ def test_release_wheel_allows_router_provenance_markdown() -> None:
     violations = module.forbidden_release_wheel_entries(
         (
             provenance,
+            tokenjuice_provenance,
             unrelated_router_doc,
             "opensquilla/skills/bundled/example/SKILL.md",
             pptx_reference,
@@ -162,6 +164,7 @@ def test_release_wheel_allows_router_provenance_markdown() -> None:
     )
 
     assert provenance not in violations
+    assert tokenjuice_provenance not in violations
     assert "opensquilla/skills/bundled/example/SKILL.md" not in violations
     assert pptx_reference not in violations
     assert unrelated_router_doc in violations
@@ -177,6 +180,8 @@ def test_pyproject_release_wheel_config_excludes_forbidden_skill_resources() -> 
 
     assert "src/opensquilla/skills/bundled/**/THIRD_PARTY_NOTICES.md" in excludes
     assert "src/opensquilla/skills/bundled/**/references/*.md" in excludes
+    assert "src/opensquilla/skills/exp/**" in excludes
+    assert "src/opensquilla/skills/meta/META_SKILL_AUTHORING.md" in excludes
     assert module.forbidden_release_wheel_entries(tuple(force_includes.values())) == []
 
 

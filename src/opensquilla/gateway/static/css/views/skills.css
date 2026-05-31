@@ -20,12 +20,12 @@
 }
 .sk-stage__title-block { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .sk-stage__eyebrow {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.16em;
+  font-size: var(--fs-2xs); font-weight: 700; letter-spacing: 0.16em;
   text-transform: uppercase; color: var(--text-dim);
 }
 .sk-stage__title {
-  font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
-  font-weight: 700; letter-spacing: -0.025em; line-height: 1.05;
+  font-size: var(--fs-display);
+  font-weight: 700; letter-spacing: 0; line-height: var(--lh-display);
   position: relative;
 }
 .sk-stage__title::after {
@@ -50,6 +50,7 @@
 .sk-search-icon svg { width: 14px; height: 14px; }
 .sk-search-input {
   width: 240px; padding: 8px 12px 8px 32px;
+  min-height: 40px;
   font-size: var(--fs-sm);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -67,7 +68,9 @@
 
 .sk-iconbtn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px;
+  width: 40px; height: 40px;
+  min-width: 40px;
+  flex: 0 0 40px;
   border: 1px solid var(--border); border-radius: var(--radius-md);
   background: var(--bg-surface);
   color: var(--text-muted);
@@ -130,7 +133,7 @@
 }
 .sk-stat__value {
   font-size: 1.75rem; font-weight: 700;
-  letter-spacing: -0.02em; line-height: 1;
+  letter-spacing: 0; line-height: 1;
   font-variant-numeric: tabular-nums;
 }
 .sk-stat__hint { margin-top: 6px; font-size: var(--fs-xs); color: var(--text-muted); }
@@ -150,6 +153,7 @@
 }
 .sk-tab {
   display: inline-flex; align-items: center; gap: 6px;
+  min-height: 40px;
   padding: 5px 16px;
   font-size: var(--fs-sm); font-weight: 600;
   letter-spacing: 0.02em;
@@ -161,8 +165,10 @@
 }
 .sk-tab svg { width: 14px; height: 14px; }
 .sk-tab:hover { color: var(--text); }
-.sk-tab.is-active { background: var(--accent); color: #1a0e02; }
+.sk-tab.is-active { background: var(--accent); color: var(--accent-foreground); }
 .sk-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#skills-refresh { min-height: 40px; }
+#skills-github-install { min-height: 40px; }
 
 /* ─── Layer groups ───────────────────────────────────────────────────── */
 
@@ -246,7 +252,7 @@
 }
 .sk-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .sk-card__head {
-  display: flex; align-items: center; gap: 8px; min-width: 0;
+  display: flex; align-items: flex-start; gap: 8px; min-width: 0;
 }
 .sk-card__dot {
   width: 8px; height: 8px; border-radius: 50%;
@@ -277,20 +283,25 @@
   font-size: var(--fs-sm);
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .sk-card:hover .sk-card__name { color: var(--accent); }
 .sk-card__desc {
   margin: 0;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 54px;
   color: var(--text-muted);
   font-size: 12.5px;
   line-height: 1.45;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
+  mask-image: linear-gradient(180deg, #000 72%, transparent);
 }
 
 .sk-error {
@@ -452,7 +463,7 @@
 }
 .sk-dialog__head-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .sk-dialog__emoji { font-size: 1.4em; }
-.sk-dialog__name { font-size: var(--fs-md); font-weight: 700; letter-spacing: -0.01em; }
+.sk-dialog__name { font-size: var(--fs-md); font-weight: 700; letter-spacing: 0; }
 .sk-dialog__chips { display: flex; align-items: center; gap: 6px; }
 .sk-dialog__body {
   padding: var(--sp-4);
@@ -530,5 +541,318 @@
   .sk-search-wrap { flex: 1; }
   .sk-registry__head,
   .sk-github-install { flex-direction: column; align-items: stretch; }
+  .sk-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
+  .sk-stat { min-height: 86px; padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4); }
+  .sk-stat__value { font-size: 1.35rem; }
   .sk-grid { grid-template-columns: 1fr; }
+}
+
+/* ─── Meta-Skill group + cards ───────────────────────────────────────── */
+
+.sk-group--meta {
+  border-color: color-mix(in oklab, var(--accent) 30%, var(--border));
+  background: color-mix(in oklab, var(--accent) 4%, transparent);
+}
+.sk-group--meta .sk-group__label {
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+.sk-group--meta .sk-group__count {
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+.sk-card--meta {
+  border-color: color-mix(in oklab, var(--accent) 25%, var(--border));
+  position: relative;
+}
+.sk-card__kind-badge {
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1.2;
+}
+
+.sk-card__sub-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.sk-card__sub-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 2px;
+}
+.sk-card__sub-chip {
+  max-width: 100%;
+  min-width: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--text) 8%, transparent);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.sk-card__sub-chip--more {
+  background: transparent;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* Dialog: composition + triggers chip lists */
+.sk-dialog__sub-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.sk-chip--sub {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 25%, transparent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.sk-chip--trigger {
+  background: color-mix(in oklab, var(--text) 6%, transparent);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+/* ─── Pending Proposals section (Path 3) ──────────────────────────── */
+
+.sk-stat--proposals {
+  /* Visual differentiation from the four filter tiles — proposals is a
+     review queue, not a filter. */
+  border-left: 3px solid var(--warn, #d97706);
+}
+
+.sk-group--proposals .sk-group__head {
+  background: color-mix(in oklab, var(--warn, #d97706) 6%, transparent);
+}
+
+.sk-proposals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 14px;
+}
+
+.sk-proposal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface, transparent);
+}
+
+.sk-proposal-row__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sk-proposal-row__id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  background: color-mix(in oklab, var(--text) 6%, transparent);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.sk-proposal-row__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sk-prop-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.sk-prop-chip--ok {
+  background: color-mix(in oklab, #16a34a 12%, transparent);
+  color: #16a34a;
+  border-color: color-mix(in oklab, #16a34a 30%, transparent);
+}
+
+.sk-prop-chip--warn {
+  background: color-mix(in oklab, var(--warn, #d97706) 12%, transparent);
+  color: var(--warn, #d97706);
+  border-color: color-mix(in oklab, var(--warn, #d97706) 30%, transparent);
+}
+
+.sk-prop-chip--auto {
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+  font-family: var(--font-mono);
+}
+
+.sk-prop-hash {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* Proposal SKILL.md dialog */
+.sk-detail {
+  max-width: 800px;
+}
+.sk-detail__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.sk-detail__section {
+  margin: 14px 0;
+}
+.sk-detail__section h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  letter-spacing: 0.4px;
+}
+.sk-detail__pre {
+  background: color-mix(in oklab, var(--text) 4%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.sk-audit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.sk-audit-grid > div,
+.sk-audit-empty {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  background: color-mix(in oklab, var(--text) 3%, transparent);
+}
+
+.sk-audit-grid__wide {
+  grid-column: 1 / -1;
+}
+
+.sk-audit-grid span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.sk-audit-grid strong {
+  font-size: 13px;
+}
+
+.sk-audit-grid p {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ─── Auto-propose settings panel ─────────────────────────────────── */
+
+.sk-group--ap-settings .sk-group__head {
+  background: color-mix(in oklab, var(--accent) 4%, transparent);
+}
+
+.sk-ap-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px 16px;
+}
+
+.sk-ap-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--surface, transparent);
+}
+
+.sk-ap-toggle:hover {
+  background: color-mix(in oklab, var(--text) 4%, transparent);
+}
+
+.sk-ap-toggle input[type="checkbox"] {
+  grid-row: 1 / span 2;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.sk-ap-select {
+  grid-row: 1 / span 2;
+  width: 96px;
+  min-height: 30px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.sk-ap-toggle__label {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.sk-ap-toggle__hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.sk-ap-toggle code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  background: color-mix(in oklab, var(--text) 6%, transparent);
+  border-radius: 3px;
 }

@@ -52,6 +52,59 @@ def test_dev_null_redirection_does_not_hide_sensitive_operand() -> None:
     assert json.loads(payload)["sensitive_path"] == "/dev"
 
 
+def test_sensitive_shell_allows_configured_workspace_under_sensitive_prefix() -> None:
+    workspace = Path("/root/.opensquilla/workspace")
+    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
+    try:
+        script = (
+            "python3 - <<'PY'\n"
+            "from pathlib import Path\n"
+            f"print(Path({str(workspace / 'notes.txt')!r}))\n"
+            "PY"
+        )
+        payload = shell._sensitive_shell_block(
+            "exec_command",
+            script,
+            workdir=str(workspace),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload is None
+
+
+def test_sensitive_shell_still_blocks_sensitive_command_inside_workspace() -> None:
+    workspace = Path("/root/.opensquilla/workspace")
+    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
+    try:
+        payload = shell._sensitive_shell_block(
+            "exec_command",
+            "cat /root/.ssh/id_rsa",
+            workdir=str(workspace),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload is not None
+    assert json.loads(payload)["sensitive_path"] == "~/.ssh"
+
+
+def test_sensitive_shell_workspace_exception_keeps_leaf_secret_blocks() -> None:
+    workspace = Path("/root/.opensquilla/workspace")
+    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
+    try:
+        payload = shell._sensitive_shell_block(
+            "exec_command",
+            f"cat {workspace / '.env'}",
+            workdir=str(workspace),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload is not None
+    assert json.loads(payload)["reason"] == "sensitive_path"
+
+
 @pytest.mark.asyncio
 async def test_background_process_blocks_sensitive_workdir(tmp_path: Path) -> None:
     sensitive_dir = tmp_path / ".env"

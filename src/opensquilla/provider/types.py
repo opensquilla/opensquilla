@@ -193,7 +193,7 @@ class ModelInfo(BaseModel):
 class ChatConfig(BaseModel):
     """Runtime options for a single chat call."""
 
-    max_tokens: int = 8192
+    max_tokens: int = 16384
     temperature: float | None = None
     system: str | None = None
     stop_sequences: list[str] = []
@@ -206,6 +206,7 @@ class ChatConfig(BaseModel):
     model_capabilities: ModelCapabilities | None = None
     thinking_level: Any | None = None
     provider_request_max_chars: int = 0
+    tool_choice: Any | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +255,12 @@ class ContentBlockThinking(BaseModel):
     signature: str | None = None
 
 
+class ContentBlockCompaction(BaseModel):
+    type: Literal["compaction"] = "compaction"
+    content: str | None = None
+    cache_control: dict[str, Any] | None = None
+
+
 MessageContent = (
     str
     | list[
@@ -263,6 +270,7 @@ MessageContent = (
         | ContentBlockImage
         | ContentBlockDocument
         | ContentBlockThinking
+        | ContentBlockCompaction
     ]
 )
 

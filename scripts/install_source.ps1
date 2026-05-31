@@ -49,11 +49,6 @@ $profile = if ($Profile) {
 }
 
 $validExtras = @(
-    'feishu',
-    'telegram',
-    'dingtalk',
-    'wecom',
-    'qq',
     'matrix',
     'matrix-e2e',
     'document-extras'

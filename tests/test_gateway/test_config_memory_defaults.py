@@ -19,6 +19,7 @@ def test_memory_core_defaults_keep_single_stable_path() -> None:
     assert config.memory.dream.enabled is False
     assert config.memory.dream.preview_mode is True
     assert config.memory.dream.auto_schedule is False
+    assert not hasattr(config.memory.dream, "evidence_" + "enabled")
     assert config.memory.capture_mode == "turn_pair"
     assert config.memory_mode_fingerprint()["mode"] == "stable"
     assert "derived_cache" not in config.memory_mode_fingerprint()

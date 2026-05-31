@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
@@ -100,6 +101,42 @@ async def test_mark_terminal_emits_additive_terminal_message_for_timeout_payload
     assert record.terminal_reason == "timeout"
     assert record.error_class == "TimeoutError"
     assert record.error_message == "The task timed out before it could finish."
+    assert record.details is not None
+    assert record.details["turn_outcome"]["kind"] == "interrupted"
+    assert record.details["turn_outcome"]["error_class"] == "TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_task_persists_cancel_source_details() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_handler(_run: Any) -> None:
+        started.set()
+        await release.wait()
+
+    runtime = _make_runtime(_blocking_handler)
+    handle = await runtime.enqueue(_make_envelope(), "hello")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+
+    cancelled = await runtime.cancel(
+        task_id=handle.task_id,
+        source="webui_escape",
+        reason="user_abort",
+    )
+    record = await runtime.wait(handle.task_id, timeout=2.0)
+
+    assert cancelled == 1
+    assert record.status == AgentTaskStatus.CANCELLED
+    assert record.terminal_reason == "cancelled"
+    assert record.details is not None
+    assert record.details["cancellation"] == {
+        "source": "webui_escape",
+        "reason": "user_abort",
+    }
+    assert record.details["turn_outcome"]["kind"] == "interrupted"
+    assert record.details["turn_outcome"]["reason"] == "cancelled"
+    assert record.details["turn_outcome"]["cancellation_source"] == "webui_escape"
 
 
 @pytest.mark.asyncio
@@ -137,6 +174,9 @@ async def test_context_overflow_failure_is_sanitized_in_record_and_subagent_even
     assert "too large" in record.error_message.lower()
     assert raw_error not in record.error_message
     assert "history compaction cannot reduce it" not in record.error_message
+    assert record.details is not None
+    assert record.details["turn_outcome"]["kind"] == "budgetLimited"
+    assert record.details["turn_outcome"]["reason"] == "provider_request_too_large"
     assert terminal_events
     event_payload = terminal_events[-1].to_payload()
     assert event_payload["error_class"] == "provider_request_too_large"
@@ -191,6 +231,7 @@ async def test_successful_parent_task_persists_subagent_group_outcome_details() 
     assert record.details["metadata"] == {"existing": "metadata"}
     assert record.details["input_provenance"]["source_tool"] == "subagent_completion"
     assert record.details["subagent_group_outcome"] == outcome
+    assert record.details["turn_outcome"]["kind"] == "completed"
 
 
 def test_subagent_completion_payload_adds_terminal_message_for_non_success() -> None:

@@ -1270,7 +1270,7 @@ def _build_fts_query(query: str) -> str | None:
     import re
 
     segmented = _segment_for_fts(query)
-    # Prefer multi-char tokens (filters stopwords like 的/了/吗)
+    # Prefer multi-char tokens, which filters common single-character particles.
     tokens = re.findall(r"[a-zA-Z0-9\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]{2,}", segmented)
     if not tokens:
         # Fallback: include single chars

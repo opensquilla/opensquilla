@@ -250,3 +250,38 @@ async def test_permission_matrix_clamps_channel_is_owner_leak_to_user_role() -> 
     ]
     assert matrix_blocks, "permission matrix must record the block"
     assert matrix_blocks[0]["reason"].startswith("admin_only_denied_in_")
+
+
+@pytest.mark.asyncio
+async def test_permission_matrix_uses_webui_source_for_owner_admin_tools() -> None:
+    """Authenticated Web UI turns should use the Web UI permission surface.
+
+    Webchat sessions carry ``channel_kind='webchat'`` for display/routing,
+    while the trusted surface is recorded as ``source_kind='webui'``. The
+    permission matrix must not collapse those turns to the DM surface or
+    admin-only workspace tools are denied even for authenticated operators.
+    """
+    handler = build_tool_handler(_registry_with("write_file"))
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.CHANNEL,
+        interaction_mode=InteractionMode.INTERACTIVE,
+        agent_id="main",
+        session_key="agent:main:webchat:hardening",
+        channel_kind="webchat",
+        source_kind="webui",
+    )
+    token = current_tool_context.set(ctx)
+    try:
+        result = await handler(
+            ToolCall(
+                tool_use_id="tc-webui-write",
+                tool_name="write_file",
+                arguments={},
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result.is_error is False
+    assert result.content == "ok"

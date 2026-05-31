@@ -1002,6 +1002,8 @@ async def test_context_overflow_effective_compaction_allows_single_retry(
 async def test_provider_request_budget_exhausted_compacts_warns_and_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    compaction_events: list[tuple[str, dict[str, Any]]] = []
+
     async def _effective_compact(request: Any) -> CompactionResult:
         return CompactionResult(
             summary="short summary",
@@ -1011,6 +1013,10 @@ async def test_provider_request_budget_exhausted_compacts_warns_and_retries(
         )
 
     monkeypatch.setattr("opensquilla.engine.agent.compact_context", _effective_compact)
+    monkeypatch.setattr(
+        "opensquilla.engine.agent.notify_compaction",
+        lambda session_key, **payload: compaction_events.append((session_key, payload)),
+    )
     provider = _ProviderRequestBudgetExceededProvider(success_after=1)
     agent = Agent(
         provider=provider,
@@ -1019,6 +1025,7 @@ async def test_provider_request_budget_exhausted_compacts_warns_and_retries(
             max_overflow_retries=2,
             flush_enabled=False,
         ),
+        session_key="agent:main:budget",
     )
 
     events = [event async for event in agent.run_turn("x" * 4000)]
@@ -1038,6 +1045,19 @@ async def test_provider_request_budget_exhausted_compacts_warns_and_retries(
         and event.code == "provider_request_budget_exhausted"
         for event in events
     )
+    assert [(key, payload["status"]) for key, payload in compaction_events] == [
+        ("agent:main:budget", "started"),
+        ("agent:main:budget", "observed"),
+        ("agent:main:budget", "observed"),
+    ]
+    compaction_ids = {payload.get("compaction_id") for _, payload in compaction_events}
+    assert len(compaction_ids) == 1
+    assert None not in compaction_ids
+    assert [payload["event"] for _, payload in compaction_events] == [
+        "compaction.triggered",
+        "compaction.chunk_summarized",
+        "compaction.summary_verified",
+    ]
 
 
 @pytest.mark.asyncio

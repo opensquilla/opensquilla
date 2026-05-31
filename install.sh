@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-default_version="v0.2.1"
+default_version="v0.3.0"
 repo_slug="${OPENSQUILLA_REPOSITORY:-opensquilla/opensquilla}"
 python_version="${OPENSQUILLA_PYTHON_VERSION:-3.12}"
 original_path="${PATH:-}"
@@ -18,10 +18,10 @@ cli_extras=""
 
 usage() {
     cat <<HELP
-Usage: bash install.sh [--version v0.2.1|latest] [--profile recommended|core] [--extras name[,name]]
+Usage: bash install.sh [--version v0.3.0|latest] [--profile recommended|core] [--extras name[,name]]
 
 Environment equivalents:
-  OPENSQUILLA_VERSION=v0.2.1
+  OPENSQUILLA_VERSION=v0.3.0
   OPENSQUILLA_INSTALL_PROFILE=recommended|core
   OPENSQUILLA_INSTALL_EXTRAS=matrix
   OPENSQUILLA_INSTALL_DRY_RUN=1
@@ -74,7 +74,7 @@ is_release_version() {
     [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]
 }
 
-valid_extras=" feishu telegram dingtalk wecom qq matrix matrix-e2e document-extras "
+valid_extras=" matrix matrix-e2e document-extras "
 extras_csv="${OPENSQUILLA_INSTALL_EXTRAS:-}"
 if [[ -n "${cli_extras}" ]]; then
     extras_csv="${extras_csv}${extras_csv:+,}${cli_extras}"
@@ -87,7 +87,7 @@ if [[ -n "${extras_csv}" ]]; then
 fi
 
 install_extras=()
-for extra in "${raw_extras[@]}"; do
+for extra in ${raw_extras[@]+"${raw_extras[@]}"}; do
     [[ -n "${extra}" ]] || continue
     if [[ "${valid_extras}" != *" ${extra} "* ]]; then
         echo "install.sh: unsupported extra '${extra}'." >&2
@@ -95,7 +95,7 @@ for extra in "${raw_extras[@]}"; do
         exit 1
     fi
     duplicate=0
-    for existing in "${install_extras[@]}"; do
+    for existing in ${install_extras[@]+"${install_extras[@]}"}; do
         if [[ "${existing}" == "${extra}" ]]; then
             duplicate=1
             break
@@ -133,7 +133,7 @@ fi
 
 if [[ "${release_selector}" != "latest" && "${release_selector}" != "stable" ]] && ! is_release_version "${release_selector}"; then
     echo "install.sh: unsupported OPENSQUILLA_VERSION='${release_selector}'." >&2
-    echo "install.sh: the release installer only supports latest, stable, or release versions like v0.2.1." >&2
+    echo "install.sh: the release installer only supports latest, stable, or release versions like v0.3.0." >&2
     echo "install.sh: use git clone plus scripts/install_source.sh for main, dev, branch, or source installs." >&2
     exit 1
 fi

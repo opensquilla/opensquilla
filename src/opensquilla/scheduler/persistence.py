@@ -93,6 +93,35 @@ _NEW_COLUMNS: list[tuple[str, str]] = [
     ("creator_is_owner", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
+_DATETIME_COLUMNS: tuple[str, ...] = (
+    "created_at",
+    "updated_at",
+    "last_run_at",
+    "next_run_at",
+    "backoff_until",
+    "reserved_at",
+    "scheduled_run_at",
+    "anchor_at",
+)
+
+
+def _storage_iso(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat()
+
+
+def _normalize_datetime_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _storage_iso(parsed)
+
 
 def _row_to_job(row: aiosqlite.Row) -> CronJob:
     def _dt(s: str | None) -> datetime | None:
@@ -351,6 +380,7 @@ class JobStore:
                 await db.execute(f"ALTER TABLE scheduler_runs ADD COLUMN {col_name} {col_def}")
 
         await self._normalize_legacy_jobs()
+        await self._normalize_datetime_columns()
 
         await db.commit()
 
@@ -405,6 +435,28 @@ class JobStore:
                 (handler_key, payload_json, session_key, origin_session_key, row["id"]),
             )
 
+    async def _normalize_datetime_columns(self) -> None:
+        """Store scheduler datetime text in UTC so lexical due checks are stable."""
+        db = self._db()
+        columns = ", ".join(_DATETIME_COLUMNS)
+        async with db.execute(f"SELECT id, {columns} FROM scheduler_jobs") as cur:
+            rows = await cur.fetchall()
+
+        for row in rows:
+            updates: dict[str, str] = {}
+            for column in _DATETIME_COLUMNS:
+                raw_value = row[column]
+                normalized = _normalize_datetime_text(raw_value)
+                if normalized is not None and normalized != raw_value:
+                    updates[column] = normalized
+            if not updates:
+                continue
+            set_clause = ", ".join(f"{column} = ?" for column in updates)
+            await db.execute(
+                f"UPDATE scheduler_jobs SET {set_clause} WHERE id = ?",
+                [*updates.values(), row["id"]],
+            )
+
     async def close(self) -> None:
         if self._conn:
             await self._conn.close()
@@ -423,7 +475,7 @@ class JobStore:
         return self._conn
 
     def _iso(self, dt: datetime | None) -> str | None:
-        return dt.isoformat() if dt else None
+        return _storage_iso(dt)
 
     async def _execute_save(self, job: CronJob) -> None:
         handler_key, payload, session_target, session_key = normalize_contract(

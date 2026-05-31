@@ -32,6 +32,7 @@
     <link rel="stylesheet" href="{{ base_path }}/static/css/views/setup.css?v={{ version }}">
     <link rel="stylesheet" href="{{ base_path }}/static/css/views/sessions.css?v={{ version }}">
     <link rel="stylesheet" href="{{ base_path }}/static/css/views/logs.css?v={{ version }}">
+    <link rel="stylesheet" href="{{ base_path }}/static/css/views/health.css?v={{ version }}">
     <link rel="stylesheet" href="{{ base_path }}/static/css/views/channels.css?v={{ version }}">
     <link rel="stylesheet" href="{{ base_path }}/static/css/views/usage.css?v={{ version }}">
     <link rel="stylesheet" href="{{ base_path }}/static/css/mobile.css?v={{ version }}">
@@ -57,6 +58,7 @@
          data-ws-url="{{ ws_url }}"
          data-auth-mode="{{ auth_mode }}"
          data-base-path="{{ base_path }}"
+         data-config-path="{{ config_path }}"
          style="display:none"></div>
 
     <!-- Vendor libs (loaded before app code) -->
@@ -95,6 +97,7 @@
     <script src="{{ base_path }}/static/js/views/channels.js?v={{ version }}"></script>
     <script src="{{ base_path }}/static/js/views/approvals.js?v={{ version }}"></script>
     <script src="{{ base_path }}/static/js/views/skills.js?v={{ version }}"></script>
+    <script src="{{ base_path }}/static/js/views/health.js?v={{ version }}"></script>
     <script src="{{ base_path }}/static/js/views/logs.js?v={{ version }}"></script>
 
     <!-- App bootstrap (last — wires everything together) -->

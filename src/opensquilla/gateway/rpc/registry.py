@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from opensquilla.engine.runtime import TurnRunner
 
+from opensquilla import __version__
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.protocol import (
     ERROR_METHOD_NOT_FOUND,
@@ -266,11 +267,15 @@ async def _status(params: Any, ctx: RpcContext) -> dict[str, Any]:
 
     provider_name = None
     if ctx.provider_selector is not None:
-        try:
-            p = ctx.provider_selector.resolve()
-            provider_name = getattr(p, "provider_name", None)
-        except Exception:
-            pass
+        # Configured provider id (e.g. "openrouter"), not the OpenAI-compatible
+        # backend class physically serving it. See app.api_system_status.
+        provider_name = getattr(ctx.provider_selector, "active_provider_id", None)
+        if not provider_name:
+            try:
+                p = ctx.provider_selector.resolve()
+                provider_name = getattr(p, "provider_name", None)
+            except Exception:
+                pass
 
     active_sessions = 0
     if ctx.session_manager is not None:
@@ -284,7 +289,7 @@ async def _status(params: Any, ctx: RpcContext) -> dict[str, Any]:
 
     return {
         "status": "running",
-        "version": "0.1.0",
+        "version": __version__,
         "uptime_ms": uptime,
         "provider": provider_name,
         "active_sessions": active_sessions,
@@ -340,7 +345,7 @@ async def _sessions_get(params: Any, ctx: RpcContext) -> dict[str, Any]:
 async def _gateway_identity_get(params: Any, ctx: RpcContext) -> dict[str, Any]:
     import socket
 
-    return {"machine_name": socket.gethostname(), "version": "0.1.0", "conn_id": ctx.conn_id}
+    return {"machine_name": socket.gethostname(), "version": __version__, "conn_id": ctx.conn_id}
 
 
 async def _last_heartbeat(params: Any, ctx: RpcContext) -> dict[str, Any]:

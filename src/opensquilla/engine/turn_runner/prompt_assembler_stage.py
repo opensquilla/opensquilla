@@ -66,6 +66,7 @@ class RunPipelineRequest:
     history_user_texts: list[str] | None = None
     flags_text_override: str | None = None
     tool_context: ToolContext | None = None
+    normalization_metadata: dict[str, Any] | None = None
 
 # ---------------------------------------------------------------------------
 # Ports — narrow Protocols so the stage is unit-testable without the full
@@ -93,6 +94,7 @@ class PromptAssemblerPort(Protocol):
         extra_context: dict[str, str] | None,
         prompt_metadata: dict[str, Any],
         bootstrap_context_mode: str | None,
+        fresh_user_session: bool = False,
     ) -> str | tuple[str, str]: ...
 
 @runtime_checkable
@@ -225,7 +227,9 @@ class PromptAssemblerStageInput:
     model: str | None
     history_has_persisted_user: bool
     persist_input: bool
-    ingress_pipeline_steps: list[PipelineStepRecord] | None
+    fresh_user_session: bool = False
+    ingress_pipeline_steps: list[PipelineStepRecord] | None = None
+    normalization_metadata: dict[str, Any] | None = None
 
 @dataclass(frozen=True)
 class PromptAssemblerStageOutput:
@@ -348,6 +352,7 @@ class PromptAssemblerStage:
             extra_context=inp.extra_prompt_context,
             prompt_metadata=prompt_metadata,
             bootstrap_context_mode=inp.bootstrap_context_mode,
+            fresh_user_session=inp.fresh_user_session,
         )
 
         # 2. Fetch router context (transcript-driven)
@@ -374,6 +379,7 @@ class PromptAssemblerStage:
             history_user_texts=router_context.get("history_user_texts"),
             flags_text_override=inp.semantic_input,
             tool_context=inp.effective_tool_context,
+            normalization_metadata=inp.normalization_metadata,
         )
         turn, provider = await self._pipeline_executor.run_pipeline(request)
 

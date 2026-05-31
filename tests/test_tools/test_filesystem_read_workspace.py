@@ -9,7 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from opensquilla.attachment_refs import write_transcript_material
 from opensquilla.engine.types import ToolCall
+from opensquilla.sandbox import sensitive_paths
 from opensquilla.tools.builtin import filesystem as fs
 from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import get_default_registry
@@ -21,6 +23,8 @@ def tool_context(
     workspace: Path,
     *,
     strict: bool = True,
+    artifact_media_root: Path | None = None,
+    artifact_session_id: str | None = None,
 ) -> Iterator[None]:
     token = current_tool_context.set(
         ToolContext(
@@ -29,6 +33,8 @@ def tool_context(
             channel_id="cli:test",
             workspace_dir=str(workspace),
             workspace_strict=strict,
+            artifact_media_root=str(artifact_media_root) if artifact_media_root else None,
+            artifact_session_id=artifact_session_id,
         )
     )
     try:
@@ -94,6 +100,112 @@ async def test_workspace_strict_allows_inside_workspace(tmp_path: Path) -> None:
         assert "needle" in await fs.grep_search("needle", path=str(tmp_path))
 
 
+@pytest.mark.asyncio
+async def test_workspace_strict_allows_current_session_material_read(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    media_root = tmp_path / "media"
+    sha, material_path, _wrote = write_transcript_material(
+        media_root=media_root,
+        session_id="s1",
+        payload=b"material body\n",
+    )
+    assert sha
+
+    with tool_context(
+        workspace,
+        artifact_media_root=media_root,
+        artifact_session_id="s1",
+    ):
+        output = await fs.read_file(str(material_path))
+
+    assert "1\tmaterial body" in output
+
+
+@pytest.mark.asyncio
+async def test_workspace_strict_blocks_other_session_material_read(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    media_root = tmp_path / "media"
+    _sha, other_material_path, _wrote = write_transcript_material(
+        media_root=media_root,
+        session_id="s2",
+        payload=b"other material\n",
+    )
+
+    with tool_context(
+        workspace,
+        artifact_media_root=media_root,
+        artifact_session_id="s1",
+    ):
+        with pytest.raises(ToolError, match="outside active read roots"):
+            await fs.read_file(str(other_material_path))
+
+
+@pytest.mark.asyncio
+async def test_workspace_inside_sensitive_parent_allows_normal_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(sensitive_paths, "_SENSITIVE_PREFIXES", (str(tmp_path),))
+    monkeypatch.setattr(
+        sensitive_paths,
+        "_WORKSPACE_PARENT_EXCEPTION_MARKERS",
+        (str(tmp_path),),
+    )
+    target = workspace / "notes" / "plan.md"
+    target.parent.mkdir()
+    target.write_text("hello\n", encoding="utf-8")
+
+    with tool_context(workspace):
+        write_gate = await fs._gate_out_of_workspace_write(
+            "write_file",
+            target.resolve(),
+            "notes/plan.md",
+            None,
+        )
+        read_result = await fs.read_file("notes/plan.md")
+        listed = await fs.list_dir("notes")
+        globbed = await fs.glob_search("*.md", path="notes")
+        grepped = await fs.grep_search("hello", path="notes")
+
+    assert write_gate is None
+    assert "1\thello" in read_result
+    assert "plan.md" in listed
+    assert "plan.md" in globbed
+    assert "plan.md:1: hello" in grepped
+
+
+@pytest.mark.asyncio
+async def test_workspace_inside_sensitive_parent_keeps_leaf_secret_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(sensitive_paths, "_SENSITIVE_PREFIXES", (str(tmp_path),))
+    monkeypatch.setattr(
+        sensitive_paths,
+        "_WORKSPACE_PARENT_EXCEPTION_MARKERS",
+        (str(tmp_path),),
+    )
+
+    with tool_context(workspace):
+        payload = await fs._gate_out_of_workspace_write(
+            "write_file",
+            (workspace / ".env").resolve(),
+            ".env",
+            None,
+        )
+
+    assert payload is not None
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "sensitive_path"
+    assert not (workspace / ".env").exists()
+
+
 def test_resolve_path_rejects_foreign_posix_absolute_path_on_windows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -132,7 +244,7 @@ async def test_workspace_strict_blocks_outside_base_path(tmp_path: Path) -> None
             lambda: fs.glob_search("*.txt", path=str(outside)),
             lambda: fs.grep_search("secret", path=str(outside)),
         ):
-            with pytest.raises(ToolError, match="outside active workspace"):
+            with pytest.raises(ToolError, match="outside active read roots"):
                 await call()
 
 
@@ -160,7 +272,7 @@ async def test_workspace_strict_block_is_actionable_in_tool_failure_envelope(
     assert result.is_error is True
     assert envelope["status"] == "error"
     assert envelope["tool"] == "glob_search"
-    assert "outside active workspace" in envelope["user_message"]
+    assert "outside active read roots" in envelope["user_message"]
     assert "internal error" not in envelope["user_message"]
     assert envelope["retry_allowed"] is False
 
@@ -181,7 +293,7 @@ async def test_workspace_strict_blocks_nonexistent_outside_before_not_found(
             lambda: fs.glob_search("*.txt", path=str(outside_missing_dir)),
             lambda: fs.grep_search("needle", path=str(outside_missing_dir)),
         ):
-            with pytest.raises(ToolError, match="outside active workspace"):
+            with pytest.raises(ToolError, match="outside active read roots"):
                 await call()
 
 
@@ -215,7 +327,7 @@ async def test_workspace_strict_blocks_read_file_symlink_escape(tmp_path: Path) 
     _make_symlink(link, outside)
 
     with tool_context(workspace):
-        with pytest.raises(ToolError, match="outside active workspace"):
+        with pytest.raises(ToolError, match="outside active read roots"):
             await fs.read_file(str(link))
 
 
@@ -232,7 +344,7 @@ async def test_workspace_strict_surfaces_list_dir_symlink_escape(tmp_path: Path)
         output = await fs.list_dir(str(workspace))
 
     assert "[blocked]" in output
-    assert "outside active workspace" in output
+    assert "outside active read roots" in output
 
 
 @pytest.mark.asyncio
@@ -251,9 +363,9 @@ async def test_workspace_strict_surfaces_glob_and_grep_symlink_escape(
         grepped = await fs.grep_search("needle", path=str(workspace))
 
     assert "[blocked]" in globbed
-    assert "outside active workspace" in globbed
+    assert "outside active read roots" in globbed
     assert "[blocked]" in grepped
-    assert "outside active workspace" in grepped
+    assert "outside active read roots" in grepped
 
 
 @pytest.mark.asyncio

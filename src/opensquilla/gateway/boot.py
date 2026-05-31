@@ -8,11 +8,11 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     from opensquilla.engine.usage import UsageTracker
@@ -54,6 +54,25 @@ from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_ag
 
 log = structlog.get_logger(__name__)
 
+
+class _FlushReceiptSessionStorage(Protocol):
+    async def get_session(self, session_key: str) -> Any | None: ...
+
+    async def list_memory_durable_receipts(self, **kwargs: Any) -> list[Any]: ...
+
+    async def upsert_memory_durable_receipt(self, receipt: Any) -> Any: ...
+
+_AUTO_PROPOSE_TOOL_ALLOWLIST = frozenset(
+    {
+        "emit_text",
+        "meta_skill_fill_slots",
+        "meta_skill_assemble",
+        "meta_skill_lint_run",
+        "meta_skill_smoke_run",
+        "meta_skill_runtime_e2e_run",
+        "meta_skill_persist_proposal",
+    }
+)
 _DEBUG_FILE_HANDLER_ATTR = "_opensquilla_debug_file_handler"
 _ENABLED_VALUES = {"1", "true", "yes", "on"}
 _DISABLED_VALUES = {"0", "false", "no", "off"}
@@ -68,6 +87,74 @@ _LOG_LEVELS = {
     "TRACE": logging.DEBUG,
     "NOTSET": logging.NOTSET,
 }
+
+
+def _make_auto_propose_tool_invoker(
+    registry: ToolRegistry,
+    *,
+    allowed_tools: frozenset[str] = _AUTO_PROPOSE_TOOL_ALLOWLIST,
+) -> Callable[[str, dict[str, Any]], Any]:
+    """Build the unattended auto-propose tool invoker through dispatch policy."""
+
+    from opensquilla.skills.meta.orchestrator import make_tool_invoker_from_handler
+    from opensquilla.tools.dispatch import build_tool_handler
+    ctx = _make_auto_propose_tool_context(allowed_tools=allowed_tools)
+    return make_tool_invoker_from_handler(
+        tool_handler=build_tool_handler(registry, ctx),
+    )
+
+
+def _make_auto_propose_tool_context(
+    *,
+    agent_id: str = "auto_propose",
+    workspace_dir: str | None = None,
+    allowed_tools: frozenset[str] = _AUTO_PROPOSE_TOOL_ALLOWLIST,
+) -> Any:
+    """Policy context for unattended meta-skill auto-propose work."""
+
+    from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext
+
+    return ToolContext(
+        is_owner=False,
+        caller_kind=CallerKind.CRON,
+        interaction_mode=InteractionMode.UNATTENDED,
+        agent_id=agent_id,
+        workspace_dir=workspace_dir,
+        workspace_strict=bool(workspace_dir),
+        allowed_tools=set(allowed_tools),
+        surfaced_tools=set(allowed_tools),
+    )
+
+
+def _resolve_migrations_dir() -> Path:
+    """Locate yoyo migrations in env override, installed package, or checkout."""
+
+    env_dir = os.environ.get("OPENSQUILLA_MIGRATIONS_DIR")
+    if env_dir:
+        candidate = Path(env_dir)
+        if any(candidate.glob("V*.py")):
+            return candidate
+
+    try:
+        from importlib import resources as importlib_resources
+
+        package_dir = importlib_resources.files("opensquilla").joinpath("_migrations")
+        if package_dir.is_dir():
+            path = Path(str(package_dir))
+            if any(path.glob("V*.py")):
+                return path
+    except Exception:
+        pass
+
+    repo_dir = Path(__file__).resolve().parents[3] / "migrations"
+    if any(repo_dir.glob("V*.py")):
+        return repo_dir
+
+    raise RuntimeError(
+        "opensquilla migrations directory not found "
+        "(checked OPENSQUILLA_MIGRATIONS_DIR, opensquilla/_migrations, "
+        "and repo migrations/)"
+    )
 
 
 class TaskRuntimeStreamError(RuntimeError):
@@ -255,6 +342,103 @@ async def _pause_dream_crons(*, scheduler: Any, jobs: list[Any], reason: str) ->
             )
 
 
+async def _pause_auto_propose_crons(
+    *,
+    scheduler: Any,
+    agent_ids: list[str],
+) -> None:
+    """Pause per-agent auto-propose jobs without deleting persisted rows."""
+
+    existing_jobs = await _list_scheduler_jobs(scheduler)
+    target_names = {f"auto_propose:{agent_id}" for agent_id in agent_ids}
+    pause_job = getattr(scheduler, "pause_job", None)
+    update_job = getattr(scheduler, "update_job", None)
+    for job in existing_jobs:
+        if getattr(job, "name", "") not in target_names:
+            continue
+        status = getattr(getattr(job, "status", None), "value", getattr(job, "status", ""))
+        if status in {"paused", "disabled", "deleted"}:
+            continue
+        job_id = getattr(job, "id", None)
+        if not job_id:
+            continue
+        try:
+            if callable(pause_job):
+                result = pause_job(job_id)
+            elif callable(update_job):
+                result = update_job(job_id, enabled=False)
+            else:
+                continue
+            if inspect.isawaitable(result):
+                await result
+            log.info("boot.auto_propose.paused", job_id=job_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("boot.auto_propose.pause_failed", job_id=job_id, error=str(exc))
+
+
+async def _register_auto_propose_crons(
+    *,
+    scheduler: Any,
+    auto_cfg: Any,
+    agent_ids: list[str],
+) -> None:
+    """Register or resume one isolated auto-propose cron per configured agent."""
+
+    from opensquilla.scheduler.types import ScheduleKind, SessionTarget
+
+    schedule_raw = auto_cfg.cron
+    existing_jobs = await _list_scheduler_jobs(scheduler)
+    existing_by_name = {
+        getattr(job, "name", ""): job
+        for job in existing_jobs
+        if getattr(job, "name", "").startswith("auto_propose:")
+    }
+    allowed_agent_ids = set(getattr(auto_cfg, "agent_ids", []) or [])
+    if allowed_agent_ids:
+        agent_ids = [agent_id for agent_id in agent_ids if agent_id in allowed_agent_ids]
+
+    update_job = getattr(scheduler, "update_job", None)
+    resume_job = getattr(scheduler, "resume_job", None)
+    for agent_id in agent_ids:
+        name = f"auto_propose:{agent_id}"
+        existing = existing_by_name.get(name)
+        if existing is not None:
+            patch: dict[str, Any] = {}
+            if getattr(existing, "schedule_raw", "") != schedule_raw:
+                patch["schedule_kind"] = ScheduleKind.CRON
+                patch["schedule_value"] = schedule_raw
+            if getattr(existing, "payload", {}).get("agent_id") != agent_id:
+                patch["payload"] = {"agent_id": agent_id}
+            if getattr(existing, "session_target", None) != SessionTarget.ISOLATED:
+                patch["session_target"] = SessionTarget.ISOLATED
+            if patch and callable(update_job):
+                result = update_job(getattr(existing, "id"), **patch)
+                if inspect.isawaitable(result):
+                    await result
+
+            status = getattr(
+                getattr(existing, "status", None),
+                "value",
+                getattr(existing, "status", ""),
+            )
+            if status == "paused" and callable(resume_job):
+                result = resume_job(getattr(existing, "id"))
+                if inspect.isawaitable(result):
+                    await result
+            log.info("boot.auto_propose.already_registered", agent_id=agent_id)
+            continue
+
+        await scheduler.add_job(
+            name=name,
+            schedule_kind=ScheduleKind.CRON,
+            schedule_value=schedule_raw,
+            handler_key="auto_propose",
+            payload={"agent_id": agent_id},
+            session_target=SessionTarget.ISOLATED,
+        )
+        log.info("boot.auto_propose.registered", agent_id=agent_id, schedule=schedule_raw)
+
+
 @dataclass
 class ServiceContainer:
     """Typed container for initialized services. Returned by build_services().
@@ -288,6 +472,8 @@ class ServiceContainer:
     memory_retrievers: dict[str, Any] = field(default_factory=dict)
     turn_capture_services: dict[str, Any] = field(default_factory=dict)
     flush_service: Any = None  # SessionFlushService | None (gated by OPENSQUILLA_SESSION_FLUSH)
+    memory_repair_service: Any = None
+    meta_run_writer: Any = None
     task_runtime: Any = None
     heartbeat_loop: Any = None
     heartbeat_watcher: Any = None
@@ -347,6 +533,23 @@ class ServiceContainer:
                 set_task_runtime(None)
             except Exception:
                 pass
+
+        if self.memory_repair_service is not None:
+            try:
+                await self.memory_repair_service.stop()
+            except Exception:
+                pass
+        if self.meta_run_writer is not None:
+            try:
+                self.meta_run_writer.close()
+            except Exception:
+                pass
+        try:
+            from opensquilla.gateway.auto_propose_bridge import reset_runtime
+
+            reset_runtime()
+        except Exception:
+            pass
 
         # ── 2. Tear down memory tier through MemoryManager ──
         # In real boot, the legacy `memory_watchers` / `memory_stores` below
@@ -498,6 +701,18 @@ def _state_path(config: GatewayConfig, filename: str) -> Path:
     return state_root / filename
 
 
+def _gateway_home(config: GatewayConfig) -> Path:
+    state_root = _resolved_path(getattr(config, "state_dir", None))
+    if state_root is not None:
+        return state_root.parent
+
+    config_path = _resolved_path(getattr(config, "config_path", None))
+    if config_path is not None:
+        return config_path.parent
+
+    return default_opensquilla_home()
+
+
 def _task_runtime_max_concurrency(config: GatewayConfig) -> int:
     return int(config.task_runtime.max_concurrency)
 
@@ -508,18 +723,9 @@ def _task_runtime_max_pending_per_session(config: GatewayConfig) -> int:
 
 def _task_runtime_turn_hard_deadline_s(config: GatewayConfig) -> float | None:
     configured = getattr(config.task_runtime, "turn_hard_deadline_s", None)
-    if configured is not None:
-        return float(configured)
-    runtime_timeout = getattr(config, "agent_runtime_timeout_seconds", None)
-    if runtime_timeout is None:
-        runtime_timeout = 900.0
-    try:
-        runtime_timeout_value = float(runtime_timeout)
-    except (TypeError, ValueError):
-        runtime_timeout_value = 900.0
-    if runtime_timeout_value <= 0:
+    if configured is None:
         return None
-    return runtime_timeout_value + 30.0
+    return float(configured)
 
 
 def _task_runtime_envelope_owner(envelope: Any) -> bool:
@@ -644,6 +850,7 @@ def build_task_runtime_run_kwargs(
         "input_provenance": run.input_provenance,
         "run_kind": run.run_kind,
         "no_memory_capture": run.no_memory_capture,
+        "fresh_user_session": bool(getattr(run, "fresh_user_session", False)),
         "ingress_pipeline_steps": ingress_steps,
     }
     if run.semantic_message is not None:
@@ -998,6 +1205,8 @@ def build_flush_service(
     tool_registry: Any,
     provider_selector: Any,
     config: GatewayConfig | None = None,
+    session_manager: Any | None = None,
+    memory_managers: Mapping[str, Any] | None = None,
 ) -> Any:
     """Construct a :class:`SessionFlushService` gated by flush config.
 
@@ -1020,6 +1229,15 @@ def build_flush_service(
     from opensquilla.tools.dispatch import build_tool_handler
 
     tool_handler = build_tool_handler(tool_registry)
+    raw_session_storage = get_session_storage(session_manager)
+    session_storage: _FlushReceiptSessionStorage | None = None
+    if (
+        raw_session_storage is not None
+        and callable(getattr(raw_session_storage, "get_session", None))
+        and callable(getattr(raw_session_storage, "list_memory_durable_receipts", None))
+        and callable(getattr(raw_session_storage, "upsert_memory_durable_receipt", None))
+    ):
+        session_storage = cast(_FlushReceiptSessionStorage, raw_session_storage)
 
     def _resolve_provider(_agent_id: str) -> Any:
         if provider_selector is None:
@@ -1032,6 +1250,119 @@ def build_flush_service(
         except Exception:  # noqa: BLE001
             return None
 
+    async def _resolve_flush_session_id(session_key: str) -> str | None:
+        if session_storage is None:
+            return None
+        session = await session_storage.get_session(session_key)
+        if session is None:
+            return None
+        return str(getattr(session, "session_id", "") or "") or None
+
+    async def _resolve_flush_checkpoint_exists(
+        session_key: str,
+        session_id: str | None,
+    ) -> bool:
+        if session_storage is None or not session_id:
+            return False
+        rows = await session_storage.list_memory_durable_receipts(
+            session_key=session_key,
+            session_id=session_id,
+            scope="checkpoint",
+            status="checkpoint_saved",
+            limit=1,
+        )
+        return bool(rows)
+
+    async def _write_durable_flush_receipt(receipt: Any, **row: Any) -> None:
+        if session_storage is None:
+            return
+
+        from opensquilla.session.models import MemoryDurableReceipt
+
+        session_key = str(row.get("session_key") or "")
+        if not session_key:
+            return
+        captured_session_id = str(row.get("session_id") or "")
+        if not captured_session_id:
+            log.warning(
+                "session_flush.receipt_write_skipped",
+                reason="session_id_missing",
+                session_key=session_key,
+                result_status=getattr(receipt, "result_status", None),
+            )
+            return
+        current_session = await session_storage.get_session(session_key)
+        current_session_id = (
+            str(getattr(current_session, "session_id", "") or "")
+            if current_session is not None
+            else ""
+        )
+        if current_session_id and current_session_id != captured_session_id:
+            log.warning(
+                "session_flush.receipt_session_mismatch",
+                session_key=session_key,
+                captured_session_id=captured_session_id,
+                current_session_id=current_session_id,
+                result_status=getattr(receipt, "result_status", None),
+            )
+
+        scope = str(row.get("scope") or "")
+        status = str(row.get("status") or "")
+        reason = row.get("reason")
+        target_path = row.get("target_path")
+        target_path = str(target_path) if target_path else None
+        source_path = row.get("source_path")
+        source_path = str(source_path) if source_path else None
+        turn_id = row.get("turn_id")
+        turn_id = str(turn_id) if turn_id else None
+        content_hash = row.get("content_hash")
+        content_hash = str(content_hash) if content_hash else None
+        idempotency_key = ":".join(
+            [
+                "flush-receipt",
+                scope,
+                session_key,
+                captured_session_id,
+                turn_id or "",
+                status,
+                str(reason or ""),
+                source_path or "",
+                target_path or "",
+                content_hash or "",
+                str(getattr(receipt, "input_message_count", 0) or 0),
+                str(getattr(receipt, "first_included_message", "") or ""),
+                str(getattr(receipt, "last_included_message", "") or ""),
+            ]
+        )
+        await session_storage.upsert_memory_durable_receipt(
+            MemoryDurableReceipt(
+                session_key=session_key,
+                session_id=captured_session_id,
+                turn_id=turn_id,
+                scope=scope,
+                source_path=source_path,
+                target_path=target_path,
+                content_hash=content_hash,
+                idempotency_key=idempotency_key,
+                status=status,
+                reason=str(reason) if reason else None,
+                attempt_count=1,
+            )
+        )
+
+    def _resolve_archive_workspace(agent_id: str) -> Path | None:
+        if not memory_managers:
+            return None
+        managers = [memory_managers.get(agent_id), memory_managers.get("main")]
+        for attr_name in ("workspace_dir", "memory_dir"):
+            for manager in managers:
+                if manager is None:
+                    continue
+                path_value = getattr(manager, attr_name, None)
+                if path_value is not None:
+                    return Path(path_value).expanduser()
+        return None
+
     service_kwargs: dict[str, Any] = {}
     if memory_cfg is not None:
         service_kwargs["default_timeout"] = getattr(
@@ -1039,11 +1370,21 @@ def build_flush_service(
             "flush_background_timeout_seconds",
             30.0,
         )
+        service_kwargs["raw_archive_max_chars"] = getattr(
+            memory_cfg,
+            "flush_archive_max_bytes",
+            800_000,
+        )
+    if session_storage is not None:
+        service_kwargs["receipt_writer"] = _write_durable_flush_receipt
+        service_kwargs["session_identity_resolver"] = _resolve_flush_session_id
+        service_kwargs["checkpoint_exists_resolver"] = _resolve_flush_checkpoint_exists
 
     return SessionFlushService(
         provider_selector=_resolve_provider,
         tool_registry=tool_registry,
         tool_handler=tool_handler,
+        archive_workspace_resolver=_resolve_archive_workspace,
         **service_kwargs,
     )
 
@@ -1247,11 +1588,7 @@ async def build_services(
 
         if "://" not in session_db_path:
             Path(session_db_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
-        env_migrations_dir = os.environ.get("OPENSQUILLA_MIGRATIONS_DIR")
-        if env_migrations_dir:
-            migrations_dir = Path(env_migrations_dir)
-        else:
-            migrations_dir = Path(__file__).resolve().parents[3] / "migrations"
+        migrations_dir = _resolve_migrations_dir()
         applied = apply_pending(session_db_path, migrations_dir)
         if applied:
             log.info("build_services.migrations_applied", count=len(applied), ids=applied)
@@ -1269,7 +1606,11 @@ async def build_services(
         Path(session_db_path).parent.mkdir(parents=True, exist_ok=True)
         storage = SessionStorage(session_db_path)
         await storage.connect()
-        session_manager = SessionManager(storage, agent_registry=agent_registry)
+        session_manager = SessionManager(
+            storage,
+            agent_registry=agent_registry,
+            checkpoint_workspace_dir=config.workspace_dir,
+        )
 
     # Wire session manager into tool layer (like set_scheduler, set_gateway_config)
     from opensquilla.tools.builtin.sessions import (
@@ -1586,11 +1927,77 @@ async def build_services(
         tool_registry=tool_registry,
         provider_selector=provider_selector,
         config=config,
+        session_manager=session_manager,
+        memory_managers=memory_managers,
     )
     if flush_service is not None:
         log.info("build_services.session_flush_service_ready")
     else:
         log.info("build_services.session_flush_service_disabled")
+
+    memory_repair_service = None
+    if (
+        bool(getattr(config.memory, "repair_enabled", True))
+        and flush_service is not None
+        and session_manager is not None
+    ):
+        try:
+            from opensquilla.gateway.memory_repair_service import MemoryRepairService
+
+            memory_roots = {
+                agent_id: Path(root)
+                for agent_id, manager in memory_managers.items()
+                for root in [
+                    getattr(manager, "workspace_dir", None)
+                    or getattr(manager, "memory_dir", None)
+                ]
+                if root is not None
+            }
+            memory_repair_service = MemoryRepairService(
+                session_manager=session_manager,
+                flush_service=flush_service,
+                memory_roots=memory_roots,
+                agent_ids=tuple(_configured_agent_ids(config, extra_agent_ids)),
+                interval_seconds=float(getattr(config.memory, "repair_interval_seconds", 60.0)),
+                max_items_per_tick=int(
+                    getattr(config.memory, "repair_max_items_per_tick", 5)
+                ),
+            )
+            log.info("build_services.memory_repair_service_ready")
+        except Exception as e:
+            log.warning("build_services.memory_repair_service_failed", error=str(e))
+
+    meta_run_writer = None
+    try:
+        from opensquilla.skills.meta.enabled import is_meta_skill_enabled
+
+        persistence_cfg = getattr(getattr(config, "meta_skill", None), "persistence", None)
+        if (
+            is_meta_skill_enabled(config)
+            and persistence_cfg is not None
+            and getattr(persistence_cfg, "enabled", False)
+        ):
+            meta_storage = get_session_storage(session_manager)
+            db_path = (
+                getattr(meta_storage, "_db_path", None)
+                if meta_storage is not None
+                else None
+            )
+            if db_path and db_path != ":memory:":
+                from opensquilla.persistence.meta_run_writer import open_meta_run_writer
+
+                meta_run_writer = open_meta_run_writer(db_path)
+                if meta_storage is not None and hasattr(meta_storage, "_meta_run_writer"):
+                    meta_storage._meta_run_writer = meta_run_writer
+                meta_run_writer.mark_orphans_failed(
+                    age_ms=int(
+                        getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)
+                    )
+                    * 1000,
+                )
+    except Exception as e:  # noqa: BLE001 - meta traces must not block boot.
+        log.warning("build_services.meta_run_writer_failed", error=str(e))
+        meta_run_writer = None
 
     svc = ServiceContainer(
         config=config,
@@ -1609,6 +2016,8 @@ async def build_services(
         memory_retrievers=memory_retrievers,
         turn_capture_services=turn_capture_services,
         flush_service=flush_service,
+        memory_repair_service=memory_repair_service,
+        meta_run_writer=meta_run_writer,
     )
     # Attach deferred callback ref so start_gateway_server can wire TurnRunner
     svc._turn_runner_ref = _turn_runner_ref  # type: ignore[attr-defined]
@@ -1662,6 +2071,7 @@ def build_turn_runner_from_services(
         # plumbing stays here so the path is wired end-to-end.
         turn_hooks=getattr(svc, "turn_hooks", None),
         compaction_hooks=getattr(svc, "compaction_hooks", None),
+        meta_run_writer=getattr(svc, "meta_run_writer", None),
     )
 
 
@@ -1694,6 +2104,11 @@ async def start_gateway_server(
     _setup_file_logging(config)
     if config.config_path:
         log.info("gateway.config_loaded", path=config.config_path)
+
+    if subscription_manager is None:
+        from opensquilla.gateway.websocket import SubscriptionManager
+
+        subscription_manager = SubscriptionManager()
 
     # Gateway-specific: set env var for other components to discover
     os.environ["OPENSQUILLA_GATEWAY_PORT"] = str(config.port)
@@ -1769,6 +2184,11 @@ async def start_gateway_server(
     # Patch deferred callback so memory writes refresh TurnRunner snapshots
     if hasattr(svc, "_turn_runner_ref"):
         svc._turn_runner_ref.append(turn_runner)  # type: ignore[attr-defined]
+
+    memory_repair_service = getattr(svc, "memory_repair_service", None)
+    if memory_repair_service is not None:
+        memory_repair_service.start()
+        log.info("gateway.memory_repair_service_started")
 
     # Lazy ref for channel_manager — cron handler captures it via closure,
     # populated after channel_manager is constructed below.
@@ -1869,8 +2289,7 @@ async def start_gateway_server(
             config.task_runtime, "pending_overflow_policy", "reject_newest"
         ),
     )
-    # Wire task_runtime's lock provider into turn_runner so both share a
-    # single asyncio.Lock per session_key.
+    # Wire task_runtime's short write-lock provider into turn_runner.
     turn_runner.set_session_lock_provider(task_runtime._get_session_lock_for_turn)
     svc.task_runtime = task_runtime
     # Wire the runtime into SessionManager so kill_session can cascade-cancel.
@@ -1906,7 +2325,12 @@ async def start_gateway_server(
 
     # Register cron agent_run handler (DI-based, no monkey-patch)
     if svc.cron_scheduler is not None:
+        from opensquilla.gateway.auto_propose_bridge import (
+            AutoProposeRuntime,
+            register_runtime,
+        )
         from opensquilla.memory.dream_factory import build_dream_factory
+        from opensquilla.scheduler.auto_propose_handler import make_auto_propose_handler
         from opensquilla.scheduler.delivery import DeliveryChain
         from opensquilla.scheduler.dream_handler import make_memory_dream_handler
         from opensquilla.scheduler.handlers import (
@@ -1915,6 +2339,14 @@ async def start_gateway_server(
             make_system_event_handler,
         )
         from opensquilla.scheduler.heartbeat_service import HeartbeatService
+        from opensquilla.skills.creator.auto_propose import auto_propose
+        from opensquilla.skills.meta.orchestrator import (
+            MetaOrchestrator,
+            make_agent_runner_from_parent,
+            make_llm_chat_from_provider,
+            make_tool_invoker_from_handler,
+        )
+        from opensquilla.tools.dispatch import build_tool_handler
 
         async def _cron_ws_emitter(topic: str, event: str, payload: dict) -> int:
             """Targeted WS push with per-connection error isolation."""
@@ -2034,6 +2466,195 @@ async def start_gateway_server(
                 workspace_strict = bool(workspace_dir)
             return str(workspace_dir), workspace_strict
 
+        auto_cfg = config.meta_skill.auto_propose
+        auto_home = _gateway_home(config)
+        auto_proposals_dir = auto_home / "proposals"
+        auto_log_dir = Path(
+            os.environ.get("OPENSQUILLA_LOG_DIR", str(auto_home / "logs"))
+        )
+        auto_agent_ids = _configured_agent_ids(config)
+
+        def _build_auto_propose_orchestrator(
+            agent_id: str,
+            *,
+            triggered_by: str,
+        ) -> MetaOrchestrator:
+            if svc.provider_selector is None:
+                raise RuntimeError("auto_propose provider not configured")
+            provider_selector = svc.provider_selector
+            router_cfg = getattr(config, "squilla_router", None)
+            tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+            t3_tier = tiers.get("t3") if isinstance(tiers, dict) else None
+            t3_model = ""
+            t3_thinking_level = ""
+            if isinstance(t3_tier, dict):
+                t3_model = str(t3_tier.get("model") or "").strip()
+                t3_thinking_level = str(
+                    t3_tier.get("thinking_level") or t3_tier.get("thinking") or ""
+                ).strip()
+
+            clone_selector = getattr(provider_selector, "clone", None)
+            if t3_model and callable(clone_selector):
+                provider_selector = clone_selector()
+                override_model = getattr(provider_selector, "override_model", None)
+                if callable(override_model):
+                    override_model(t3_model)
+
+            resolver = getattr(provider_selector, "resolve", None)
+            if not callable(resolver):
+                raise RuntimeError("auto_propose provider selector has no resolve()")
+            provider = resolver()
+            workspace_dir = resolve_agent_workspace_dir(agent_id, config)
+            workspace_str = str(workspace_dir) if workspace_dir else None
+            ctx = _make_auto_propose_tool_context(
+                agent_id=agent_id,
+                workspace_dir=workspace_str,
+            )
+            if svc.tool_registry is None:
+                raise RuntimeError("auto_propose tool registry not configured")
+            if svc.skill_loader is None:
+                raise RuntimeError("auto_propose skill loader not configured")
+            tool_handler = build_tool_handler(svc.tool_registry, ctx)
+            from opensquilla.engine.agent import Agent
+            from opensquilla.engine.types import AgentConfig
+            from opensquilla.skills.creator.proposer import (
+                reset_runtime_e2e_context,
+                reset_smoke_fixture_context,
+                set_runtime_e2e_context,
+                set_smoke_fixture_context,
+            )
+            from opensquilla.skills.creator.runtime_e2e import make_runtime_e2e_context
+
+            auto_model_id = t3_model or resolve_agent_model(agent_id, config)
+            auto_metadata: dict[str, Any] = {
+                "routing_source": "meta_skill_auto_propose",
+                "routing_applied": bool(t3_model),
+            }
+            if t3_model:
+                auto_metadata.update({
+                    "routed_tier": "t3",
+                    "routed_model": t3_model,
+                    "applied_model": t3_model,
+                })
+            if t3_thinking_level:
+                auto_metadata.update({
+                    "thinking_requested": True,
+                    "thinking_level": t3_thinking_level,
+                })
+
+            base_config = AgentConfig(
+                model_id=auto_model_id,
+                workspace_dir=workspace_str,
+                metadata=auto_metadata,
+            )
+            tool_definitions = svc.tool_registry.to_tool_definitions(ctx)
+            llm_chat = make_llm_chat_from_provider(
+                provider=provider,
+                base_config=base_config,
+                usage_tracker=svc.usage_tracker,
+                session_key=f"auto_propose:{agent_id}",
+            )
+            base_tool_invoker = make_tool_invoker_from_handler(tool_handler=tool_handler)
+            runtime_e2e_ctx = make_runtime_e2e_context(
+                provider=provider,
+                base_config=base_config,
+                skill_loader=svc.skill_loader,
+                tool_definitions=tool_definitions,
+                tool_handler=tool_handler,
+                agent_factory=Agent,
+                llm_chat=llm_chat,
+                tool_invoker=base_tool_invoker,
+                workspace_dir=workspace_str,
+                usage_tracker=svc.usage_tracker,
+                session_key=f"auto_propose:{agent_id}",
+                tool_registry=svc.tool_registry,
+                tool_context=ctx,
+                system_prompt=base_config.system_prompt or "",
+                baseline_model=base_config.model_id or "",
+            )
+
+            async def _tool_invoker(tool_name: str, args: dict[str, Any]) -> Any:
+                if tool_name == "meta_skill_persist_proposal":
+                    args = dict(args)
+                    args.setdefault("home", str(auto_home))
+                    args.setdefault("auto_enable_manual", False)
+                token = set_runtime_e2e_context(runtime_e2e_ctx)
+                smoke_token = set_smoke_fixture_context({"llm_chat": llm_chat})
+                try:
+                    return await base_tool_invoker(tool_name, args)
+                finally:
+                    reset_smoke_fixture_context(smoke_token)
+                    reset_runtime_e2e_context(token)
+
+            return MetaOrchestrator(
+                agent_runner=make_agent_runner_from_parent(
+                    provider=provider,
+                    base_config=base_config,
+                    tool_definitions=tool_definitions,
+                    tool_handler=tool_handler,
+                    agent_factory=Agent,
+                    workspace_dir=workspace_str,
+                    usage_tracker=svc.usage_tracker,
+                    session_key=f"auto_propose:{agent_id}",
+                ),
+                skill_loader=svc.skill_loader,
+                llm_chat=llm_chat,
+                tool_invoker=_tool_invoker,
+                workspace_dir=workspace_str,
+                run_writer=getattr(svc, "meta_run_writer", None),
+                triggered_by=triggered_by,
+                session_key=f"auto_propose:{agent_id}",
+                turn_id=None,
+                usage_tracker=svc.usage_tracker,
+            )
+
+        async def _register_auto_propose_runtime_crons() -> None:
+            await _register_auto_propose_crons(
+                scheduler=svc.cron_scheduler,
+                auto_cfg=auto_cfg,
+                agent_ids=auto_agent_ids,
+            )
+
+        async def _pause_auto_propose_runtime_crons() -> None:
+            await _pause_auto_propose_crons(
+                scheduler=svc.cron_scheduler,
+                agent_ids=auto_agent_ids,
+            )
+
+        async def _post_dream_auto_propose(
+            agent_id: str,
+            dream_summary: str = "",
+        ) -> None:
+            if not bool(getattr(auto_cfg, "on_dream_complete", False)):
+                return
+            result = await auto_propose(
+                orchestrator=_build_auto_propose_orchestrator(
+                    agent_id,
+                    triggered_by="auto_dream",
+                ),
+                skill_loader=cast("SkillLoader", svc.skill_loader),
+                log_dir=auto_log_dir,
+                window_days=auto_cfg.window_days,
+                min_freq=auto_cfg.min_freq,
+                top_k=auto_cfg.top_k,
+                triggered_by="dream",
+                proposals_dir=auto_proposals_dir,
+                auto_enable=bool(getattr(auto_cfg, "auto_enable", False)),
+                auto_enable_max_risk=str(
+                    getattr(auto_cfg, "auto_enable_max_risk", "low"),
+                ),
+                source_context=dream_summary,
+            )
+            log.info(
+                "auto_propose.dream_hook.complete",
+                agent_id=agent_id,
+                summary=result.summary(),
+                proposal_ids=result.proposals_created,
+                enabled_proposal_ids=result.proposals_enabled,
+                skipped=result.skipped,
+                errors=result.errors,
+            )
+
         agent_handler = make_agent_run_handler(
             delivery_chain=delivery_chain,
             turn_runner_ref=lambda: turn_runner,
@@ -2053,30 +2674,52 @@ async def start_gateway_server(
             default_elevated=lambda: configured_default_elevated(config),
         )
         static_handler = make_static_message_handler(delivery_chain=delivery_chain)
+        auto_propose_handler = make_auto_propose_handler(
+            build_orchestrator=lambda agent_id: _build_auto_propose_orchestrator(
+                agent_id,
+                triggered_by="auto_cron",
+            ),
+            skill_loader=cast("SkillLoader", svc.skill_loader),
+            log_dir=auto_log_dir,
+            proposals_dir=auto_proposals_dir,
+            config=auto_cfg,
+            enabled_predicate=lambda: bool(getattr(auto_cfg, "enabled", False)),
+        )
         dream_handler = make_memory_dream_handler(
             build_dream=build_dream_factory(
                 config=config,
-                provider_selector=svc.provider_selector,
-                tool_registry=svc.tool_registry,
                 turn_runner=turn_runner,
             ),
             should_skip=lambda: (
                 "disabled" if not getattr(config.memory.dream, "enabled", False) else None
             ),
+            post_dream_hook=_post_dream_auto_propose,
         )
         svc.cron_scheduler.register_handler("agent_run", agent_handler)
         svc.cron_scheduler.register_handler("static_message", static_handler)
         svc.cron_scheduler.register_handler("system_event", system_handler)
         svc.cron_scheduler.register_handler("memory_dream", dream_handler)
+        svc.cron_scheduler.register_handler("auto_propose", auto_propose_handler)
         log.info("gateway.cron_handler_registered", handler_key="agent_run")
         log.info("gateway.cron_handler_registered", handler_key="static_message")
         log.info("gateway.cron_handler_registered", handler_key="system_event")
         log.info("gateway.cron_handler_registered", handler_key="memory_dream")
+        log.info("gateway.cron_handler_registered", handler_key="auto_propose")
+        register_runtime(AutoProposeRuntime(
+            config=auto_cfg,
+            home=auto_home,
+            register_crons=_register_auto_propose_runtime_crons,
+            pause_crons=_pause_auto_propose_runtime_crons,
+        ))
         await _register_dream_crons(
             scheduler=svc.cron_scheduler,
             memory_config=config.memory,
             agent_ids=_configured_agent_ids(config),
         )
+        if bool(getattr(auto_cfg, "enabled", False)):
+            await _register_auto_propose_runtime_crons()
+        else:
+            await _pause_auto_propose_runtime_crons()
 
     # Build channel adapters (don't start yet -- app doesn't exist)
     webhook_routes: list = []

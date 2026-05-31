@@ -85,19 +85,27 @@ async def _context_status(
     model: str | None,
     allow_transcript_estimate: bool = False,
 ) -> dict[str, Any] | None:
-    context_tokens = _positive_int(
+    persisted_context_tokens = _positive_int(
         _first_field(source, "context_tokens", "current_context_tokens")
     )
+    compaction_count = _positive_int(_field(source, "compaction_count")) or 0
+    context_tokens = persisted_context_tokens
     token_source = "session_context_tokens" if context_tokens is not None else "unavailable"
-    if context_tokens is None and allow_transcript_estimate and ctx.session_manager is not None:
+    should_estimate_transcript = (
+        allow_transcript_estimate
+        and ctx.session_manager is not None
+        and (context_tokens is None or compaction_count > 0)
+    )
+    if should_estimate_transcript:
         get_transcript = getattr(ctx.session_manager, "get_transcript", None)
         if callable(get_transcript):
             try:
                 transcript = await get_transcript(session_key)
             except (KeyError, AttributeError, NotImplementedError):
-                transcript = []
-            context_tokens = sum(_transcript_entry_tokens(entry) for entry in transcript)
-            token_source = "transcript_estimate"
+                transcript = None
+            if transcript is not None:
+                context_tokens = sum(_transcript_entry_tokens(entry) for entry in transcript)
+                token_source = "transcript_estimate"
     if context_tokens is None:
         return None
 
@@ -107,7 +115,6 @@ async def _context_status(
 
     threshold = int(context_window * _CONTEXT_WARNING_RATIO)
     pressure = min(1.0, context_tokens / context_window) if context_window > 0 else 0.0
-    compaction_count = _positive_int(_field(source, "compaction_count")) or 0
     return {
         "contextTokens": context_tokens,
         "contextWindowTokens": context_window,
@@ -319,6 +326,59 @@ def _tracker_rows(ctx: RpcContext, *, now_ms: int) -> list[dict[str, Any]]:
 _BILLED_COST_SOURCES = frozenset({"provider_billed", "mixed"})
 
 
+def _row_has_usage(row: Mapping[str, Any]) -> bool:
+    return any(
+        float(row.get(name) or 0.0) > 0.0
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "cost_usd",
+            "billed_cost_usd",
+            "estimated_cost_usd",
+            "cache_read_tokens",
+            "cache_write_tokens",
+        )
+    )
+
+
+def _row_can_overlay_tracker_totals(row: Mapping[str, Any], tracker_row: Mapping[str, Any]) -> bool:
+    """Allow tracker totals to cover the tiny done→persistence status race.
+
+    ``usage.status`` normally prefers persisted rows because they are durable.
+    During a just-finished turn, however, the in-memory tracker can already
+    contain the final provider-billed totals while the session row is still at
+    its zero defaults. In that narrow window, surfacing the tracker row avoids a
+    visibly wrong "0 tokens / $0" status without overriding real persisted
+    totals once they exist.
+    """
+
+    source = str(row.get("cost_source") or row.get("costSource") or "none")
+    return source in {"none", "unavailable"} and not _row_has_usage(row) and _row_has_usage(
+        tracker_row
+    )
+
+
+def _overlay_tracker_totals(row: dict[str, Any], tracker_row: Mapping[str, Any]) -> None:
+    for snake, camel in (
+        ("input_tokens", "inputTokens"),
+        ("output_tokens", "outputTokens"),
+        ("cost_usd", "costUsd"),
+        ("billed_cost_usd", "billedCostUsd"),
+        ("estimated_cost_usd", "estimatedCostUsd"),
+        ("cost_source", "costSource"),
+        ("missing_cost_entries", "missingCostEntries"),
+        ("cache_read_tokens", "cacheReadTokens"),
+        ("cache_write_tokens", "cacheWriteTokens"),
+    ):
+        value = tracker_row.get(snake, tracker_row.get(camel))
+        row[snake] = value
+        row[camel] = value
+    row["cost_ephemeral"] = True
+    row["costEphemeral"] = True
+    if not row.get("model"):
+        row["model"] = tracker_row.get("model")
+
+
 def _reconcile_breakdown_to_row(row: dict[str, Any]) -> None:
     """Make per-model breakdown costs sum to the row's displayed total.
 
@@ -459,6 +519,8 @@ def _append_tracker_only_rows(
             and not row.get("modelBreakdown")
         ):
             row["modelBreakdown"] = tracker_row["modelBreakdown"]
+        if tracker_row and _row_can_overlay_tracker_totals(row, tracker_row):
+            _overlay_tracker_totals(row, tracker_row)
         _reconcile_breakdown_to_row(row)
     return rows + [row for row in tracker_rows if row["session"] not in seen]
 

@@ -18,6 +18,8 @@ import structlog
 
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.pricing import lookup_price
+from opensquilla.provider.context_capabilities import provider_state_continuity_diagnostic
+from opensquilla.router_control import RouterControlHoldStore
 from opensquilla.squilla_router.controller import (
     derive_prompt_policy,
     derive_thinking_mode,
@@ -98,6 +100,10 @@ _THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh", "adaptive"}
 _TIER_TO_ROUTE_CLASS = {"t0": "R0", "t1": "R1", "t2": "R2", "t3": "R3"}
 _ROUTE_CLASS_TO_TIER = {v: k for k, v in _TIER_TO_ROUTE_CLASS.items()}
 _THINKING_MODE_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3}
+_LARGE_CONTEXT_T2_FLOOR_TOKENS = 25_000
+_LARGE_CONTEXT_T3_FLOOR_TOKENS = 80_000
+_LARGE_CONTEXT_T3_CONTEXT_RATIO = 0.40
+_DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000
 _COMPLAINT_TERMS = (
     "不对",
     "不行",
@@ -248,6 +254,7 @@ def commit_deferred_router_history(ctx: TurnContext) -> TurnContext:
         ctx.metadata["routing_history"] = _append_routing_history(session_key, entry_payload)
     return ctx
 
+
 _RESPONSE_POLICY_OPEN = "[RESPONSE_POLICY:"
 
 
@@ -276,14 +283,19 @@ class _UnavailableV4Strategy:
         **kwargs: object,
     ) -> tuple[str, float, str, dict]:
         tier = "t1" if "t1" in valid_tiers else (valid_tiers[0] if valid_tiers else "t1")
-        return tier, 0.0, "v4_unavailable", {
-            "route_class": "R1",
-            "top1_label": "R1",
-            "thinking_mode": "T1",
-            "prompt_policy": "P1",
-            "model_version": "unavailable",
-            "error": str(self.error),
-        }
+        return (
+            tier,
+            0.0,
+            "v4_unavailable",
+            {
+                "route_class": "R1",
+                "top1_label": "R1",
+                "thinking_mode": "T1",
+                "prompt_policy": "P1",
+                "model_version": "unavailable",
+                "error": str(self.error),
+            },
+        )
 
 
 def _strategy_cache_key(config: object) -> tuple:
@@ -481,6 +493,61 @@ def _tier_index(tier: str, valid_tiers: list[str]) -> int:
     return valid_tiers.index(tier) if tier in valid_tiers else -1
 
 
+def _token_estimate(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return max(value, 0)
+    return None
+
+
+def _material_estimated_tokens(ctx: TurnContext, semantic_message: str) -> int:
+    metadata = getattr(ctx, "metadata", {}) or {}
+    candidates: list[int] = [max(len(semantic_message) // 4, 0)]
+
+    top_level = _token_estimate(metadata.get("material_estimated_tokens"))
+    if top_level is not None:
+        candidates.append(top_level)
+
+    normalization = metadata.get("input_normalization")
+    if isinstance(normalization, dict):
+        nested = _token_estimate(normalization.get("material_estimated_tokens"))
+        if nested is not None:
+            candidates.append(nested)
+
+    return max(candidates)
+
+
+def _context_window_tokens(ctx: TurnContext, router_cfg: object) -> int:
+    for candidate in (
+        getattr(router_cfg, "context_window_tokens", None),
+        getattr(getattr(ctx, "config", None), "context_window_tokens", None),
+        getattr(getattr(getattr(ctx, "config", None), "llm", None), "context_window_tokens", None),
+    ):
+        tokens = _token_estimate(candidate)
+        if tokens and tokens > 0:
+            return tokens
+    return _DEFAULT_CONTEXT_WINDOW_TOKENS
+
+
+def _large_context_min_tier(
+    ctx: TurnContext,
+    *,
+    router_cfg: object,
+    semantic_message: str,
+) -> tuple[str, int] | None:
+    material_tokens = _material_estimated_tokens(ctx, semantic_message)
+    context_window = _context_window_tokens(ctx, router_cfg)
+    if (
+        material_tokens >= _LARGE_CONTEXT_T3_FLOOR_TOKENS
+        or material_tokens >= int(context_window * _LARGE_CONTEXT_T3_CONTEXT_RATIO)
+    ):
+        return "t3", material_tokens
+    if material_tokens >= _LARGE_CONTEXT_T2_FLOOR_TOKENS:
+        return "t2", material_tokens
+    return None
+
+
 def _tier_config_value(tier_cfg: object, key: str, default: object = None) -> object:
     if isinstance(tier_cfg, dict):
         return tier_cfg.get(key, default)
@@ -530,6 +597,55 @@ def _detect_complaint(message: str, max_chars: int | None = None) -> list[str]:
 
 def _route_class_for_tier(tier: str) -> str | None:
     return _TIER_TO_ROUTE_CLASS.get(tier)
+
+
+def _apply_large_context_floor(
+    decision: RoutingDecision,
+    *,
+    ctx: TurnContext,
+    router_cfg: object,
+    tiers: dict,
+    valid_tiers: list[str],
+    semantic_message: str,
+    extra: dict | None,
+) -> RoutingDecision:
+    if decision.tier not in valid_tiers:
+        return decision
+
+    floor = _large_context_min_tier(
+        ctx,
+        router_cfg=router_cfg,
+        semantic_message=semantic_message,
+    )
+    if floor is None:
+        return decision
+
+    min_tier, material_tokens = floor
+    if min_tier not in valid_tiers:
+        return decision
+    if _tier_index(decision.tier, valid_tiers) >= _tier_index(min_tier, valid_tiers):
+        return decision
+
+    floored = RoutingDecision(
+        tier=min_tier,
+        model=tiers[min_tier].get("model", decision.model),
+        confidence=decision.confidence,
+        source="large_context_floor",
+    )
+    ctx.metadata["large_context_floor_from_tier"] = decision.tier
+    ctx.metadata["large_context_material_tokens"] = material_tokens
+
+    if extra is not None:
+        extra.setdefault("base_tier", decision.tier)
+        extra["large_context_floor_applied"] = True
+        extra["large_context_floor_from_tier"] = decision.tier
+        extra["large_context_floor_min_tier"] = min_tier
+        extra["large_context_material_tokens"] = material_tokens
+        extra["large_context_pre_floor_source"] = decision.source
+        extra["final_tier"] = min_tier
+        extra["final_route_class"] = _route_class_for_tier(min_tier)
+
+    return floored
 
 
 def _tier_for_route_class(route_class: object) -> str | None:
@@ -675,11 +791,9 @@ def _finalize_decision(
         )
         if complaint_terms:
             upgrade_start_tier = final_tier
-            if (
-                previous_tier in valid_tiers
-                and _tier_index(previous_tier, valid_tiers)
-                > _tier_index(upgrade_start_tier, valid_tiers)
-            ):
+            if previous_tier in valid_tiers and _tier_index(
+                previous_tier, valid_tiers
+            ) > _tier_index(upgrade_start_tier, valid_tiers):
                 upgrade_start_tier = previous_tier
             upgraded_tier = _upgrade_tier(
                 upgrade_start_tier,
@@ -826,6 +940,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         ctx.metadata["routed_tier"] = decision.tier
         ctx.metadata["routed_model"] = decision.model
         ctx.metadata["routing_applied"] = routing_applied
+        ctx.metadata["rollout_phase"] = rollout_phase
         ctx.metadata["applied_model"] = ctx.model
         ctx.metadata["routing_confidence"] = decision.confidence
         ctx.metadata["routing_source"] = decision.source
@@ -838,6 +953,43 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
     valid_tiers = [name for name, tier in tiers.items() if not tier.get("image_only", False)]
     if not valid_tiers:
         return ctx
+
+    hold_store = ctx.metadata.get("router_control_hold_store")
+    if isinstance(hold_store, RouterControlHoldStore):
+        hold = hold_store.get_valid(ctx.session_key, decrement=True)
+        if hold is not None and hold.tier in tiers and hold.tier in valid_tiers:
+            decision = RoutingDecision(
+                tier=hold.tier,
+                model=hold.model,
+                confidence=1.0,
+                source="router_control_hold",
+            )
+            ctx.metadata["baseline_model"] = ctx.model
+            ctx.model = decision.model
+            ctx.metadata["routed_tier"] = decision.tier
+            ctx.metadata["routed_model"] = decision.model
+            ctx.metadata["routing_applied"] = True
+            ctx.metadata["applied_model"] = ctx.model
+            ctx.metadata["routing_confidence"] = decision.confidence
+            ctx.metadata["routing_source"] = decision.source
+            ctx.metadata["router_control_hold_applied"] = True
+            ctx.metadata["router_control_action"] = "set_hold"
+            ctx.metadata["router_control_target_tier"] = hold.tier
+            ctx.metadata["router_control_target_model"] = hold.model
+            ctx.metadata["router_control_target_provider"] = hold.provider
+            ctx.metadata["router_control_evidence"] = hold.evidence
+            if hold.duplicate_model_resolution:
+                ctx.metadata["router_control_duplicate_model_resolution"] = True
+            ctx.metadata.update(_compute_savings(decision.model, tiers))
+            _record_thinking_metadata(ctx, router_cfg, tiers[decision.tier])
+            log.debug(
+                "squilla_router.router_control_hold_applied",
+                tier=decision.tier,
+                model=decision.model,
+                session=ctx.session_key,
+            )
+            return ctx
+
     strategy = _get_strategy(router_cfg)
     strategy_name = _strategy_name(router_cfg)
     defer_history = bool(ctx.metadata.get(_DEFER_ROUTING_HISTORY_KEY))
@@ -852,9 +1004,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             if persisted:
                 now = time.monotonic()
                 routing_history = [
-                    {**dict(entry), "_ts": now}
-                    if "_ts" not in entry
-                    else dict(entry)
+                    {**dict(entry), "_ts": now} if "_ts" not in entry else dict(entry)
                     for entry in persisted
                     if isinstance(entry, dict)
                 ]
@@ -954,16 +1104,49 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             routing_extra,
         )
 
+    routing_extra = ctx.metadata.get("routing_extra")
+    decision = _apply_large_context_floor(
+        decision,
+        ctx=ctx,
+        router_cfg=router_cfg,
+        tiers=tiers,
+        valid_tiers=valid_tiers,
+        semantic_message=semantic_message,
+        extra=routing_extra if isinstance(routing_extra, dict) else None,
+    )
+    if decision.source == "large_context_floor" and isinstance(routing_extra, dict):
+        thinking_mode, prompt_policy = _reconcile_controller_with_final_tier(
+            thinking_mode,
+            prompt_policy,
+            routing_extra,
+        )
+
     routing_applied = rollout_phase != "observe"
     if routing_applied:
         ctx.model = decision.model
     ctx.metadata["routed_tier"] = decision.tier
     ctx.metadata["routed_model"] = decision.model
     ctx.metadata["routing_applied"] = routing_applied
+    ctx.metadata["rollout_phase"] = rollout_phase
     ctx.metadata["applied_model"] = ctx.model
     ctx.metadata["routing_confidence"] = decision.confidence
     ctx.metadata["routing_source"] = decision.source
     ctx.metadata.update(_compute_savings(decision.model, tiers))
+
+    context_states = ctx.metadata.get("session_context_states") or ctx.metadata.get(
+        "active_context_states"
+    )
+    if isinstance(context_states, list):
+        tier_cfg = tiers[decision.tier]
+        candidate_provider = str(
+            tier_cfg.get("provider") or getattr(router_cfg, "tier_profile", "") or ""
+        )
+        ctx.metadata["provider_state_continuity"] = provider_state_continuity_diagnostic(
+            context_states=context_states,
+            candidate_provider=candidate_provider,
+            candidate_model=decision.model,
+            now_ms=int(time.time() * 1000),
+        ).as_metadata()
 
     try:
         _apply_controller(
@@ -1034,5 +1217,6 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         anti_downgrade_applied=routing_extra.get("anti_downgrade_applied"),
         probabilities=routing_extra.get("probabilities"),
         margin=routing_extra.get("margin"),
+        provider_state_continuity=ctx.metadata.get("provider_state_continuity"),
     )
     return ctx

@@ -70,6 +70,29 @@ class ToolRunBudgetPolicy:
 DEFAULT_TOOL_RUN_BUDGET_POLICY = ToolRunBudgetPolicy()
 
 
+def build_webresearch_tool_run_budget_policy(
+    *,
+    max_web_search_calls_per_turn: int | None = None,
+    max_web_fetch_calls_per_turn: int | None = None,
+    max_external_text_chars_per_turn: int | None = None,
+    max_single_fetch_chars: int | None = 50_000,
+    max_web_search_results: int | None = 10,
+) -> ToolRunBudgetPolicy:
+    """Build an explicit webresearch budget policy for benchmark/profile use.
+
+    The defaults intentionally match the normal runtime: no per-turn call-count
+    caps and no aggregate external-text cap. Callers must opt in to tighter
+    limits by passing concrete values.
+    """
+    return ToolRunBudgetPolicy(
+        max_web_search_calls_per_turn=max_web_search_calls_per_turn,
+        max_web_fetch_calls_per_turn=max_web_fetch_calls_per_turn,
+        max_external_text_chars_per_turn=max_external_text_chars_per_turn,
+        max_single_fetch_chars=max_single_fetch_chars,
+        max_web_search_results=max_web_search_results,
+    )
+
+
 class ToolRunBudgetExceededError(RuntimeError):
     """Raised when a tool call would exceed the per-turn run budget."""
 
@@ -166,6 +189,15 @@ class ToolRunBudgetTracker:
                 self._web_fetch_calls_used = max(0, self._web_fetch_calls_used - 1)
             if reservation.counted_as_search:
                 self._web_search_calls_used = max(0, self._web_search_calls_used - 1)
+
+    async def snapshot(self) -> dict[str, int]:
+        async with self._lock:
+            return {
+                "web_search_calls_used": self._web_search_calls_used,
+                "web_fetch_calls_used": self._web_fetch_calls_used,
+                "external_text_chars_used": self._external_text_chars_used,
+                "external_text_chars_reserved": self._external_text_chars_reserved,
+            }
 
     def _reserve_external_text_budget(
         self,

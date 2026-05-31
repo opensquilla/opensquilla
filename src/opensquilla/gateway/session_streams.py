@@ -34,6 +34,22 @@ class SessionStreamRegistry:
         self._seq_by_session: dict[str, int] = {}
         self._events_by_session: dict[str, deque[BufferedSessionEvent]] = {}
 
+    @staticmethod
+    def _is_replay_lossy(event_name: str) -> bool:
+        return event_name in {
+            "session.event.text_delta",
+            "session.event.run_heartbeat",
+        }
+
+    def _trim_session_events(self, events: deque[BufferedSessionEvent]) -> None:
+        while len(events) > self._max_events_per_session:
+            for index, event in enumerate(events):
+                if self._is_replay_lossy(event.event_name):
+                    del events[index]
+                    break
+            else:
+                events.popleft()
+
     def current_seq(self, session_key: str) -> int:
         return self._seq_by_session.get(session_key, 0)
 
@@ -51,10 +67,9 @@ class SessionStreamRegistry:
         enriched["stream_seq"] = stream_seq
 
         event = BufferedSessionEvent(event_name=event_name, payload=enriched, stream_seq=stream_seq)
-        self._events_by_session.setdefault(
-            session_key,
-            deque(maxlen=self._max_events_per_session),
-        ).append(event)
+        events = self._events_by_session.setdefault(session_key, deque())
+        events.append(event)
+        self._trim_session_events(events)
         return enriched
 
     def replay(self, session_key: str, since_stream_seq: int | None) -> ReplayResult:

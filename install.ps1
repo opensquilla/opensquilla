@@ -12,7 +12,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$defaultVersion = 'v0.2.1'
+$defaultVersion = 'v0.3.0'
 $repoSlug = if ($env:OPENSQUILLA_REPOSITORY) { $env:OPENSQUILLA_REPOSITORY } else { 'opensquilla/opensquilla' }
 $pythonVersion = if ($env:OPENSQUILLA_PYTHON_VERSION) { $env:OPENSQUILLA_PYTHON_VERSION } else { '3.12' }
 $originalPath = if ($env:Path) { $env:Path } else { '' }
@@ -36,11 +36,6 @@ $profileName = if ($Profile) {
 }
 
 $validExtras = @(
-    'feishu',
-    'telegram',
-    'dingtalk',
-    'wecom',
-    'qq',
     'matrix',
     'matrix-e2e',
     'document-extras'
@@ -99,7 +94,7 @@ function Test-ReleaseVersion {
 }
 
 if ($Version -notin @('latest', 'stable') -and -not (Test-ReleaseVersion $Version)) {
-    Write-Error "install.ps1: unsupported OPENSQUILLA_VERSION='$Version'. The release installer only supports latest, stable, or release versions like v0.2.1. Use git clone plus scripts/install_source.ps1 for main, dev, branch, or source installs."
+    Write-Error "install.ps1: unsupported OPENSQUILLA_VERSION='$Version'. The release installer only supports latest, stable, or release versions like v0.3.0. Use git clone plus scripts/install_source.ps1 for main, dev, branch, or source installs."
     exit 1
 }
 

@@ -12,6 +12,7 @@ from typing import Any
 import structlog
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
+from opensquilla import __version__
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.protocol import (
@@ -624,7 +625,7 @@ async def handle_ws_connection(
     # Step 6: Send HelloOk
     hello = HelloOk(
         protocol=negotiated,
-        server=ServerInfo(version=config.version, conn_id=conn_id),
+        server=ServerInfo(version=__version__, conn_id=conn_id),
         features=_build_features(dispatcher),
         snapshot=SnapshotInfo(
             uptime_ms=int(time.time() * 1000),

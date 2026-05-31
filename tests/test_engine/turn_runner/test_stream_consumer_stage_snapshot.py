@@ -122,12 +122,9 @@ def _patch_budget_resolvers(runner: TurnRunner) -> None:
     runner._resolve_agent_max_provider_retries = _retries.__get__(runner, TurnRunner)
 
 
-def _patch_thinking_compression(runner: TurnRunner) -> None:
+def _patch_thinking(runner: TurnRunner) -> None:
     runner._resolve_turn_thinking = (
         lambda self, turn: False  # noqa: ARG005
-    ).__get__(runner, TurnRunner)
-    runner._resolve_tool_result_compression_mode = (
-        lambda self, atc: "off"  # noqa: ARG005
     ).__get__(runner, TurnRunner)
 
 
@@ -451,7 +448,7 @@ def _setup_runner(
     _patch_resolve_prompt_config(runner, "FINAL", None, None)
     _patch_session_id(runner, "sess-1")
     _patch_budget_resolvers(runner)
-    _patch_thinking_compression(runner)
+    _patch_thinking(runner)
     _patch_memory_helpers(runner)
     _patch_observability(runner)
     _patch_compaction_history(runner)

@@ -104,6 +104,7 @@ class CompactionPersistPort(Protocol):
         session_key: str,
         summary: str,
         kept_entries: list[Any],
+        compaction_id: str | None = None,
     ) -> None: ...
 
 @runtime_checkable
@@ -363,6 +364,7 @@ class _ToolResultHandler:
                     segment.get("type") == "tool_use"
                     and segment.get("tool_use_id") == event.tool_use_id
                 ):
+                    segment["name"] = event.tool_name
                     segment["input"] = _persisted_tool_use_input(
                         event.tool_name,
                         event.tool_use_id,
@@ -477,6 +479,10 @@ class _DoneHandler:
         routed_tier = metadata.get("routed_tier")
         routing_source = metadata.get("routing_source", "none")
         routing_confidence = float(metadata.get("routing_confidence") or 0.0)
+        routing_applied = metadata.get("routing_applied")
+        if routing_applied is None:
+            routing_applied = True
+        rollout_phase = str(metadata.get("rollout_phase") or "full")
         baseline_model = metadata.get("baseline_model", "")
         routed_model = metadata.get("routed_model", "") or event.model
         savings_pct = float(metadata.get("savings_pct") or 0.0)
@@ -509,6 +515,8 @@ class _DoneHandler:
             routed_tier=routed_tier,
             routing_source=routing_source or "none",
             routing_confidence=routing_confidence,
+            routing_applied=bool(routing_applied),
+            rollout_phase=rollout_phase,
             baseline_model=baseline_model,
             routed_model=routed_model,
             savings_pct=savings_pct,
@@ -722,10 +730,19 @@ class _CompactionHandler:
                     session_key=inp.session_key,
                     summary=event.summary,
                     kept_entries=event.kept_entries,
+                    compaction_id=event.compaction_id,
                 )
             except Exception as exc:  # noqa: BLE001 - preserve turn recoverability
                 log.warning("compaction_persist_failed", error=str(exc))
                 from opensquilla.engine.cache_break_monitor import notify_compaction
+                from opensquilla.session.compaction_lifecycle import (
+                    COMPACTION_TRIGGERED_EVENT,
+                    compaction_effect_payload,
+                    compaction_lifecycle_payload,
+                    new_compaction_id,
+                )
+
+                compaction_id = event.compaction_id or new_compaction_id()
 
                 notify_compaction(
                     inp.session_key,
@@ -736,6 +753,11 @@ class _CompactionHandler:
                     message=str(exc),
                     kept_count=len(event.kept_entries),
                     summary_len=len(event.summary or ""),
+                    **compaction_effect_payload(status="failed", reason="persist_failed"),
+                    **compaction_lifecycle_payload(
+                        compaction_id,
+                        COMPACTION_TRIGGERED_EVENT,
+                    ),
                 )
                 await self._fire_after_compact(
                     state,

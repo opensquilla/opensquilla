@@ -72,7 +72,12 @@ class GatewayClient:
         self._http_base: str | None = None
         self._auth_token: str | None = None
 
-    async def connect(self, url: str = "ws://localhost:18791/ws") -> None:
+    async def connect(
+        self,
+        url: str = "ws://localhost:18791/ws",
+        *,
+        token: str | None = None,
+    ) -> None:
         """Connect to gateway. Raises SystemExit with friendly message on failure."""
         has_existing_connection = (
             self._ws is not None
@@ -109,6 +114,7 @@ class GatewayClient:
         if base.endswith("/ws"):
             base = base[: -len("/ws")]
         self._http_base = base.rstrip("/")
+        self._auth_token = token
 
         # Wait for connect.challenge
         raw = await self._ws.recv()
@@ -118,18 +124,21 @@ class GatewayClient:
 
         # Send connect request
         req_id = str(uuid.uuid4())
+        params: dict[str, Any] = {
+            "minProtocol": 1,
+            "maxProtocol": 3,
+            "role": "operator",
+            "scopes": ["operator.admin"],
+        }
+        if token:
+            params["auth"] = {"token": token}
         await self._ws.send(
             json.dumps(
                 {
                     "type": "req",
                     "id": req_id,
                     "method": "connect",
-                    "params": {
-                        "minProtocol": 1,
-                        "maxProtocol": 3,
-                        "role": "operator",
-                        "scopes": ["operator.admin"],
-                    },
+                    "params": params,
                 }
             )
         )

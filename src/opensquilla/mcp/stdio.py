@@ -7,6 +7,7 @@ import json
 import os
 from typing import Any, cast
 
+from opensquilla import __version__
 from opensquilla.mcp.client import MCPClient
 from opensquilla.mcp.types import MCPServerConfig, MCPToolDef, MCPToolResult
 
@@ -77,7 +78,7 @@ class MCPStdioClient(MCPClient):
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "opensquilla", "version": "0.1.0"},
+                "clientInfo": {"name": "opensquilla", "version": __version__},
             },
         )
         # Send initialized notification

@@ -89,6 +89,17 @@ class ToolResultEvent:
 
 
 @dataclass
+class RouterControlReplayEvent:
+    kind: Literal["router_control_replay"] = field(default="router_control_replay", init=False)
+    action: str = ""
+    target_tier: str | None = None
+    target_model: str | None = None
+    target_provider: str | None = None
+    target_id: str | None = None
+    replay_depth: int = 0
+
+
+@dataclass
 class ArtifactEvent:
     kind: Literal["artifact"] = "artifact"
     id: str = ""
@@ -151,11 +162,40 @@ class DoneEvent:
     cache_write_tokens: int = 0
     reasoning_content: str | None = None
     session_totals: SessionTotalsSnapshot | None = None
+    routing_applied: bool = True
+    rollout_phase: str = "full"
 
     @property
     def upstream_cost_usd(self) -> float:
         """Backward-compatible alias for earlier OpenRouter cost consumers."""
         return self.billed_cost
+
+
+@dataclass
+class RouterDecisionEvent:
+    """Squilla router's decision for this turn, emitted once after the
+    pre-turn pipeline resolves the tier/model. Frontend uses this to drive
+    the router HUD (tier pill, tier-shift highlight, scanner popover).
+
+    Routing fires exactly once per user-message; the tier sticks across
+    the entire agent loop. Subsequent events in the same turn carry no
+    routing information.
+    """
+
+    kind: Literal["router_decision"] = field(default="router_decision", init=False)
+    tier: str = ""
+    tier_index: int = -1
+    model: str = ""
+    baseline_model: str = ""
+    source: str = "none"
+    confidence: float = 0.0
+    probs: list[float] = field(default_factory=list)
+    savings_pct: float = 0.0
+    fallback: bool = False
+    thinking_mode: str = ""
+    prompt_policy: str = ""
+    routing_applied: bool = True
+    rollout_phase: str = "full"
 
 
 @dataclass
@@ -177,6 +217,7 @@ class CompactionEvent:
     """Emitted when Agent completes inline compaction. Captured by TurnRunner for DB persistence."""
 
     kind: Literal["compaction"] = field(default="compaction", init=False)
+    compaction_id: str | None = None
     summary: str = ""
     kept_entries: list[dict] = field(default_factory=list)
     kept_count: int = 0
@@ -192,6 +233,7 @@ class CompactionOutcome:
     summary: str = ""
     kept_entries: list[dict] = field(default_factory=list)
     removed_count: int = 0
+    compaction_id: str | None = None
     request_context_insert_index: int | None = None
     runtime_context_insert_index: int | None = None
 
@@ -202,12 +244,14 @@ AgentEvent = (
     | RunHeartbeatEvent
     | ToolUseStartEvent
     | ToolResultEvent
+    | RouterControlReplayEvent
     | ArtifactEvent
     | StateChangeEvent
     | ErrorEvent
     | DoneEvent
     | CompactionEvent
     | WarningEvent
+    | RouterDecisionEvent
 )
 
 
@@ -227,11 +271,17 @@ _CHARS_PER_TOKEN = 4
 
 @dataclass
 class AgentConfig:
-    max_iterations: int = 100
+    # Model/tool loop budget. 0 = unlimited; explicit positive values are
+    # bounded operator budgets for CI, benchmarks, and constrained runs.
+    max_iterations: int = 0
     # Total turn wall-clock budget (seconds; 0 = disabled)
-    timeout: float = 300.0
+    # 30 min — see iteration_timeout note below; outer turn budget for
+    # meta-skill DAGs (paper-write / arxiv-deck run 5-7 min commonly).
+    timeout: float = 1800.0
     # Per-iteration timeout: one LLM call + its tool executions
-    iteration_timeout: float = 300.0
+    # 30 min — single iteration may be the whole meta DAG when the soft
+    # path treats meta_invoke as a single tool call.
+    iteration_timeout: float = 1800.0
     # HTTP-level timeout for a single LLM API request
     request_timeout: float = 120.0
     # Per-tool execution timeout
@@ -239,7 +289,7 @@ class AgentConfig:
     # Upper bound for same-turn safe tool execution. Safe tools can overlap, but
     # unbounded fan-out can overload local/network resources.
     max_safe_tool_concurrency: int = 6
-    max_tokens: int = 8192
+    max_tokens: int = 16384
     # Optional per-turn operator budgets. 0 disables the corresponding budget.
     max_turn_llm_calls: int = 0
     max_turn_input_tokens: int = 0
@@ -260,6 +310,7 @@ class AgentConfig:
     max_history_turns: int = 0  # 0 = unlimited; compaction handles oversized history
     # Retry policy for transient LLM errors (429, 500, 503)
     max_provider_retries: int = 3
+    length_capped_continuations: int = 1
     retry_base_backoff_ms: int = 1000
     retry_max_backoff_ms: int = 30_000
     # Prompt caching breakpoints (list of {"text": ..., "cache": "true"})
@@ -280,9 +331,16 @@ class AgentConfig:
     flush_backoff_max_seconds: float = 300.0
     flush_archive_max_bytes: int = 800_000
     flush_compaction_requires_safe_receipt: bool = False
+    flush_compaction_safety_mode: Literal["protect", "best_effort", "block", "off"] = "protect"
+    repair_enabled: bool = True
+    repair_interval_seconds: float = 60.0
+    repair_max_items_per_tick: int = 5
     flush_workspace_dir: str | None = None
     model_capabilities: Any | None = None  # ModelCapabilities from provider.types
-    # Agent token saving: compress tool results before feeding them back to the LLM.
+    # Tokenjuice projection: project eligible fresh tool results before the
+    # next LLM turn. This is not user-selectable behavior.
+    # Legacy compression knobs remain as compatibility shims for meta_invoke
+    # tests and embedded callers; the runtime's default path uses Tokenjuice.
     tool_result_compression_enabled: bool = True
     tool_result_compression_mode: Literal["off", "truncate", "summarize"] | None = None
     tool_result_compression_max_share: float = 0.25
@@ -290,6 +348,7 @@ class AgentConfig:
     tool_result_compression_summary_max_tokens: int = 1024
     tool_result_compression_summary_timeout_seconds: float = 20.0
     tool_result_compression_summary_input_max_chars: int = 60_000
+    tool_result_projection_max_inline_chars: int = 60_000
     tool_result_provider_request_max_chars: int = 0
     provider_request_proof_max_chars: int = 0
     tool_use_argument_provider_request_max_chars: int = 0

@@ -72,11 +72,15 @@ def _patch_manager_dependencies(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     )
 
 
-async def _build_one(config: GatewayConfig, monkeypatch, tmp_path):
+async def _build_one(config: GatewayConfig, monkeypatch, tmp_path, *, session_storage=None):
     from opensquilla.memory.manager import build_memory_managers
 
     _patch_manager_dependencies(monkeypatch, tmp_path)
-    managers = await build_memory_managers(config, ["main"])
+    managers = await build_memory_managers(
+        config,
+        ["main"],
+        session_storage=session_storage,
+    )
     try:
         assert len(_FakeStore.providers) == 1
         return _FakeStore.providers[0], managers
@@ -84,6 +88,44 @@ async def _build_one(config: GatewayConfig, monkeypatch, tmp_path):
         for manager in managers.values():
             await manager.close()
         raise
+
+
+@pytest.mark.asyncio
+async def test_build_memory_leaves_session_source_indexer_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(_LOCAL_AVAILABLE_PATH, lambda *_: True)
+    _provider, managers = await _build_one(
+        GatewayConfig(),
+        monkeypatch,
+        tmp_path,
+        session_storage=object(),
+    )
+    try:
+        assert managers["main"].sync_manager.kwargs["session_indexer"] is None
+    finally:
+        for manager in managers.values():
+            await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_build_memory_enables_session_source_indexer_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(_LOCAL_AVAILABLE_PATH, lambda *_: True)
+    _provider, managers = await _build_one(
+        GatewayConfig(memory={"session_source_enabled": True}),
+        monkeypatch,
+        tmp_path,
+        session_storage=object(),
+    )
+    try:
+        assert managers["main"].sync_manager.kwargs["session_indexer"] is not None
+    finally:
+        for manager in managers.values():
+            await manager.close()
 
 
 @pytest.mark.asyncio
@@ -290,6 +332,23 @@ def test_resolver_auto_uses_memory_remote_when_local_unavailable() -> None:
     decision = resolve_memory_embedding(cfg.memory, local_available=lambda *_: False)
     assert decision.effective_provider == "openai"
     assert decision.remote_api_key == "mem-key"
+
+
+def test_resolver_explicit_remote_uses_memory_env_key(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_EMBEDDINGS_API_KEY", "mem-env-key")
+    cfg = GatewayConfig(
+        memory={
+            "embedding": {
+                "provider": "openai",
+                "remote": {"api_key_env": "OPENAI_EMBEDDINGS_API_KEY"},
+            }
+        }
+    )
+
+    decision = resolve_memory_embedding(cfg.memory, local_available=lambda *_: False)
+
+    assert decision.effective_provider == "openai"
+    assert decision.remote_api_key == "mem-env-key"
 
 
 def test_resolver_explicit_remote_requires_memory_api_key() -> None:

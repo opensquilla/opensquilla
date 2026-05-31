@@ -68,6 +68,14 @@ class CommandRegistry:
             params_factory(envelope),
             context_factory(envelope),
         )
+        compact_reply = _format_channel_compact_reply(
+            name=name,
+            method=method,
+            res=res,
+            reply_to=envelope.thread_id or envelope.channel_id,
+        )
+        if compact_reply is not None:
+            return compact_reply
         denied = bool(not res.ok and getattr(res.error, "code", "") == "UNAUTHORIZED")
         reason = "" if res.ok else f": {getattr(res.error, 'message', 'command failed')}"
         state = "completed" if res.ok else ("denied" if denied else "failed")
@@ -76,6 +84,47 @@ class CommandRegistry:
             reply_to=envelope.thread_id or envelope.channel_id,
             metadata={"command": name, "method": method, "denied": denied},
         )
+
+
+def _format_channel_compact_reply(
+    *,
+    name: str,
+    method: str,
+    res: Any,
+    reply_to: str | None,
+) -> OutgoingMessage | None:
+    if name != "compact" or method != "sessions.contextCompact":
+        return None
+    denied = bool(not res.ok and getattr(res.error, "code", "") == "UNAUTHORIZED")
+    metadata = {"command": name, "method": method, "denied": denied}
+    if not res.ok:
+        error_message = getattr(res.error, "message", "command failed")
+        state = "denied" if denied else "failed"
+        return OutgoingMessage(
+            content=f"Compact {state}: {error_message}",
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+    payload = res.payload if isinstance(res.payload, dict) else {}
+    status = str(payload.get("status") or "").lower()
+    compacted = bool(payload.get("compacted"))
+    if compacted or status == "completed":
+        return OutgoingMessage(
+            content="Context compacted.",
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+    if status == "skipped" or payload.get("compacted") is False:
+        return OutgoingMessage(
+            content="Already within context budget; no compact was applied.",
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+    return OutgoingMessage(
+        content="/compact completed",
+        reply_to=reply_to,
+        metadata=metadata,
+    )
 
 
 def build_channel_rpc_context(

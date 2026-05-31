@@ -10,6 +10,7 @@ from .failures import (
 )
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
+from .openai_responses import OpenAIResponsesProvider
 from .protocol import (
     LLMProvider,
     ProviderFailure,
@@ -38,6 +39,7 @@ from .selector import (
 from .smart_routing import RefusalDecision, should_refuse
 from .types import (
     ChatConfig,
+    ContentBlockCompaction,
     ContentBlockDocument,
     ContentBlockText,
     ContentBlockThinking,
@@ -76,6 +78,7 @@ __all__ = [
     # Providers
     "AnthropicProvider",
     "OpenAIProvider",
+    "OpenAIResponsesProvider",
     "OllamaProvider",
     # Registry
     "ProviderSpec",
@@ -117,5 +120,6 @@ __all__ = [
     "ContentBlockThinking",
     "ContentBlockToolUse",
     "ContentBlockToolResult",
+    "ContentBlockCompaction",
     "ContentBlockDocument",
 ]

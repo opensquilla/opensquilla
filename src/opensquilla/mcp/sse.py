@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import httpx
 
+from opensquilla import __version__
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.mcp.client import MCPClient
 from opensquilla.mcp.types import MCPServerConfig, MCPToolDef, MCPToolResult
@@ -79,7 +80,7 @@ class MCPSSEClient(MCPClient):
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "opensquilla", "version": "0.1.0"},
+                "clientInfo": {"name": "opensquilla", "version": __version__},
             },
         )
         # Send initialized notification

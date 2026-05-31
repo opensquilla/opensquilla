@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from .anthropic import AnthropicProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
+from .openai_responses import OpenAIResponsesProvider
 from .protocol import LLMProvider, ProviderPlugin, resolve_failover_chain
 from .registry import UnknownProviderError, get_provider_spec
 
@@ -87,6 +88,19 @@ def _build_provider(cfg: ProviderConfig) -> LLMProvider:
                 kwargs["provider_routing"] = cfg.provider_routing
             return OpenAIProvider(**kwargs)
 
+        case "openai_responses":
+            kwargs = {
+                "api_key": cfg.api_key,
+                "model": cfg.model,
+            }
+            if base_url:
+                kwargs["base_url"] = base_url
+            if cfg.org_id:
+                kwargs["org_id"] = cfg.org_id
+            if cfg.proxy:
+                kwargs["proxy"] = cfg.proxy
+            return OpenAIResponsesProvider(**kwargs)
+
         case "ollama":
             kwargs = {"model": cfg.model}
             if base_url:
@@ -125,6 +139,18 @@ class ModelSelector:
     def resolve(self) -> LLMProvider:
         """Return the current provider (primary on first call)."""
         return _build_provider(self._chain[self._index])
+
+    @property
+    def active_provider_id(self) -> str:
+        """Configured provider id of the currently-active chain link.
+
+        This is the operator-facing identity (e.g. ``"openrouter"``,
+        ``"deepseek"``) — distinct from the wire-protocol backend class that
+        serves it. OpenAI-compatible providers all run through
+        ``OpenAIProvider``, whose ``provider_name`` is the generic ``"openai"``;
+        surfacing that would mislabel an OpenRouter deployment as OpenAI.
+        """
+        return self._chain[self._index].provider
 
     def has_fallback(self) -> bool:
         """True if there is at least one more fallback available."""

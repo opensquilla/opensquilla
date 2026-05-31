@@ -2,7 +2,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 /dist/
-build/
+/build/
 .venv/
 .env
 .env.test
@@ -26,6 +26,7 @@ benchmarks/
 specs/
 # Local agent/editor instructions and runtime state.
 AGENTS.md
+!docs/agents.md
 !src/opensquilla/identity/templates/bootstrap/AGENTS.md
 CLAUDE.md
 GEMINI.md
@@ -41,16 +42,16 @@ GEMINI.md
 /prd.json
 /progress.txt
 /plans/
+/docs/superpowers/
 *.png
 # Brand assets are intentionally tracked: top-level assets/ for branding,
 # and the WebUI static asset path so the gateway page renders the mark.
 !/assets/*.png
 !/src/opensquilla/gateway/static/img/*.png
 site/
-plugins/
+/plugins/
 crontab-*
 ~/
-/docs/
 /reference-*
 /reference-mem
 /bench-mem
@@ -60,3 +61,13 @@ tests/functional/reports/
 # Local-only release-hygiene tests that reference legacy artifact names
 # kept off the public tree.
 /tests/_private/
+
+# Maintainer-local design / planning artifacts kept beside the repo but
+# not part of the published source. Move into /docs/proposals/ if/when
+# they are ready for public consumption.
+/meta-skills.pptx
+/kb-index.xlsx
+
+# Generated local outputs from document/meta-skill smoke runs.
+/texput.log
+/src/opensquilla/skills/bundled/multi-search-engine/Tokyo_5日出差行程.docx

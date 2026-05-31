@@ -11,7 +11,7 @@ from typing import Any
 
 import typer
 
-from opensquilla.session.compaction_lifecycle import flush_receipt_allows_destructive_compaction
+from opensquilla.session.compaction_lifecycle import flush_receipt_is_successful_flush
 
 
 @dataclass(frozen=True)
@@ -109,7 +109,7 @@ def parse_non_negative(value: int, *, name: str) -> int:
 
 
 def _receipt_is_complete_flush(receipt: dict[str, Any]) -> bool:
-    return flush_receipt_allows_destructive_compaction(receipt)
+    return flush_receipt_is_successful_flush(receipt)
 
 
 def _emit_text_result(result: MemoryFlushSessionResult, *, success: bool) -> None:

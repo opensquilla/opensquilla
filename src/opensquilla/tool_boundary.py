@@ -29,6 +29,7 @@ class ToolResult:
     is_error: bool = False
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     execution_status: ExecutionStatus | None = None
+    terminates_turn: bool = False
 
 
 AgentToolHandler = Callable[[ToolCall], Awaitable[ToolResult]]

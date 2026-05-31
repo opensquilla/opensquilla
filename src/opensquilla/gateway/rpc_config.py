@@ -283,8 +283,6 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
         "squilla_router.strategy",
         "squilla_router.default_tier",
         "squilla_router.confidence_threshold",
-        "agent_token_saving.tool_result_compression_enabled",
-        "agent_token_saving.tool_result_compression_mode",
     }
 )
 

@@ -13,8 +13,7 @@ from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import derive_is_error
 
 from .request_proof import (
-    ProviderRequestBudgetExceeded,
-    prove_or_compact_provider_payload,
+    ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
 from .types import (
@@ -41,6 +40,7 @@ def _uses_authorization_bearer(base_url: str) -> bool:
     """MiniMax Anthropic-compatible APIs require Authorization."""
     normalized = base_url.lower()
     return "api.minimaxi.com" in normalized or "api.minimax.io" in normalized
+
 
 _KNOWN_MODELS: list[dict[str, Any]] = [
     {
@@ -182,6 +182,13 @@ def _build_message_payload(msg: Message, model: str | None = None) -> dict[str, 
             if block.signature:
                 thinking_block["signature"] = block.signature
             parts.append(thinking_block)
+        elif block.type == "compaction":
+            compaction_block: dict[str, Any] = {"type": "compaction"}
+            if block.content is not None:
+                compaction_block["content"] = block.content
+            if block.cache_control:
+                compaction_block["cache_control"] = block.cache_control
+            parts.append(compaction_block)
         elif block.type == "tool_result":
             is_error = (
                 derive_is_error(block.execution_status)
@@ -248,6 +255,21 @@ def _anthropic_input_token_counts(usage: dict[str, Any]) -> tuple[int, int, int]
     cache_creation_tokens = _cache_creation_input_tokens(usage)
     total_input_tokens = base_input_tokens + cache_read_tokens + cache_creation_tokens
     return total_input_tokens, cache_read_tokens, cache_creation_tokens
+
+
+def _anthropic_iteration_token_counts(usage: dict[str, Any]) -> tuple[int, int]:
+    iterations = usage.get("iterations")
+    if not isinstance(iterations, list):
+        return _coerce_int(usage.get("input_tokens")), _coerce_int(usage.get("output_tokens"))
+
+    input_tokens = 0
+    output_tokens = 0
+    for iteration in iterations:
+        if not isinstance(iteration, dict):
+            continue
+        input_tokens += _coerce_int(iteration.get("input_tokens"))
+        output_tokens += _coerce_int(iteration.get("output_tokens"))
+    return input_tokens, output_tokens
 
 
 class AnthropicProvider:
@@ -335,21 +357,32 @@ class AnthropicProvider:
         if thinking_payload:
             payload["thinking"] = thinking_payload
 
-        try:
-            payload, _proof = prove_or_compact_provider_payload(
-                payload,
-                projection_adapter="anthropic",
-                proof_budget=cfg.provider_request_max_chars,
-                status_projection_mode="native_is_error",
+        from opensquilla.engine.context_budget import coordinate_provider_context_budget
+
+        budget_decision = coordinate_provider_context_budget(
+            payload,
+            projection_adapter="anthropic",
+            proof_budget=cfg.provider_request_max_chars,
+            status_projection_mode="native_is_error",
+        )
+        if budget_decision.action == "budget_limited":
+            proof = budget_decision.proof or {}
+            log.warning("provider.request_budget_exhausted", **proof)
+            yield ErrorEvent(
+                message=json.dumps(proof, ensure_ascii=False, sort_keys=True),
+                code="provider_request_budget_exhausted",
             )
-            if _proof is not None:
-                log.info("provider.request_proof", **_proof)
+            return
+        payload = budget_decision.payload or payload
+        if budget_decision.proof is not None:
+            log.info("provider.request_proof", **budget_decision.proof)
+        try:
             prove_provider_payload_from_env(
                 payload,
                 projection_adapter="anthropic",
                 status_projection_mode="native_is_error",
             )
-        except ProviderRequestBudgetExceeded as exc:
+        except ProviderRequestBudgetExceededError as exc:
             log.warning("provider.request_budget_exhausted", **exc.proof)
             yield ErrorEvent(
                 message=json.dumps(exc.proof, ensure_ascii=False, sort_keys=True),
@@ -476,7 +509,11 @@ class AnthropicProvider:
 
                         elif etype == "message_delta":
                             usage = event.get("usage", {})
-                            output_tokens = usage.get("output_tokens", 0)
+                            (
+                                iteration_input_tokens,
+                                iteration_output_tokens,
+                            ) = _anthropic_iteration_token_counts(usage)
+                            output_tokens = iteration_output_tokens
                             cached_tokens = max(
                                 cached_tokens,
                                 usage.get("cache_read_input_tokens", 0),
@@ -487,7 +524,12 @@ class AnthropicProvider:
                             )
                             if "input_tokens" in usage:
                                 base_input_tokens = _coerce_int(usage.get("input_tokens"))
-                            input_tokens = base_input_tokens + cached_tokens + cache_creation_tokens
+                            if isinstance(usage.get("iterations"), list):
+                                input_tokens = iteration_input_tokens
+                            else:
+                                input_tokens = (
+                                    base_input_tokens + cached_tokens + cache_creation_tokens
+                                )
                             stop_reason = event.get("delta", {}).get("stop_reason", "end_turn")
 
                         elif etype == "message_stop":

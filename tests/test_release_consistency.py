@@ -3,7 +3,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-CURRENT_VERSION = "0.2.1"
+CURRENT_VERSION = "0.3.0"
 CURRENT_TAG = f"v{CURRENT_VERSION}"
 PREVIEW_VERSION = "0.2.0rc1"
 PREVIEW_TAG = f"v{PREVIEW_VERSION}"
@@ -68,8 +68,7 @@ def test_default_recommended_install_contract_covers_router_and_channels() -> No
         "websockets",  # Discord gateway and Feishu SDK transport
     } <= dependencies
     for alias in ("feishu", "telegram", "dingtalk", "wecom", "qq"):
-        assert alias in extras
-        assert extras[alias] == []
+        assert alias not in extras
 
     assert "matrix-nio" in "\n".join(extras["matrix"])
 

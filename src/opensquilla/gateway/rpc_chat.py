@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
+from urllib.parse import quote
 
 import structlog
 
-from opensquilla.artifacts import artifact_payload
-from opensquilla.channels.artifact_delivery import strip_artifact_markers_from_channel_text
+from opensquilla.chat.conversation import ChatSendRequest, sessions_send_params
+from opensquilla.chat.history import transcript_entries_to_chat_messages
+from opensquilla.chat.source import chat_source_metadata
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.context_overflow import apply_context_overflow_policy
 from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
 from opensquilla.session.compaction import build_compaction_config_from_provider
-from opensquilla.session.keys import build_webchat_key, canonicalize_session_key
+from opensquilla.session.keys import build_webchat_key, canonicalize_session_key, parse_agent_id
 
 _d = get_dispatcher()
 log = structlog.get_logger(__name__)
 
 _WEBCHAT_SESSION_KEY = build_webchat_key()
+_CHAT_HISTORY_DEFAULT_LIMIT = 50
+_CHAT_HISTORY_MAX_LIMIT = 200
 
 
 def _canonical_webchat_session_key(value: object = None) -> str:
@@ -34,6 +38,181 @@ def _require_chat_session_manager(ctx: RpcContext):
     if ctx.session_manager is None:
         raise RpcUnavailableError("Chat session manager not available")
     return ctx.session_manager
+
+
+def _normalize_chat_history_limit(value: object) -> int:
+    try:
+        if isinstance(value, int):
+            limit = value
+        elif isinstance(value, str):
+            limit = int(value)
+        else:
+            limit = _CHAT_HISTORY_DEFAULT_LIMIT
+    except (TypeError, ValueError):
+        limit = _CHAT_HISTORY_DEFAULT_LIMIT
+    return max(1, min(limit, _CHAT_HISTORY_MAX_LIMIT))
+
+
+def _is_webchat_session_key(key: str) -> bool:
+    parts = str(key or "").split(":")
+    return (
+        len(parts) == 4
+        and parts[0] == "agent"
+        and bool(parts[1])
+        and parts[2] == "webchat"
+        and bool(parts[3])
+    )
+
+
+def _empty_chat_history_payload(limit: int) -> dict[str, Any]:
+    return {
+        "messages": [],
+        "has_more": False,
+        "oldest_cursor": None,
+        "newest_cursor": None,
+        "history_scope": "complete",
+        "loaded_count": 0,
+        "page_size": limit,
+        "canonical_available": False,
+        "compaction_summaries": [],
+    }
+
+
+def _chat_history_bool(value: object, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
+def _chat_history_cursor(entry: object | None) -> str | None:
+    if entry is None:
+        return None
+    created_at = getattr(entry, "created_at", "")
+    stable_id = getattr(entry, "id", None) or getattr(entry, "message_id", "")
+    if created_at in {None, ""} or stable_id in {None, ""}:
+        return None
+    return f"{created_at}|{stable_id}"
+
+
+def _chat_history_cursor_index(entries: list[object], cursor: object) -> int | None:
+    raw = str(cursor or "").strip()
+    if not raw:
+        return None
+    for idx, entry in enumerate(entries):
+        if _chat_history_cursor(entry) == raw:
+            return idx
+    return None
+
+
+def _chat_history_page(
+    entries: list[object],
+    *,
+    limit: int,
+    before: object = None,
+    after: object = None,
+) -> tuple[list[object], bool]:
+    if not entries:
+        return [], False
+    before_idx = _chat_history_cursor_index(entries, before)
+    if before_idx is not None:
+        end = before_idx
+        start = max(0, end - limit)
+        return entries[start:end], start > 0
+
+    after_idx = _chat_history_cursor_index(entries, after)
+    if after_idx is not None:
+        start = min(len(entries), after_idx + 1)
+        end = min(len(entries), start + limit)
+        return entries[start:end], end < len(entries)
+
+    if len(entries) <= limit:
+        return entries, False
+    return entries[-limit:], True
+
+
+def _session_summary_to_chat_payload(summary: object) -> dict[str, Any]:
+    return {
+        "id": getattr(summary, "id", None),
+        "compaction_id": getattr(summary, "compaction_id", None),
+        "compaction_index": getattr(summary, "compaction_index", None),
+        "trigger_reason": getattr(summary, "trigger_reason", None),
+        "summary_text": getattr(summary, "summary_text", "") or "",
+        "summary_format": getattr(summary, "summary_format", "") or "",
+        "coverage_status": getattr(summary, "coverage_status", "") or "",
+        "removed_count": getattr(summary, "removed_count", None),
+        "kept_count": getattr(summary, "kept_count", None),
+        "covered_through_id": getattr(summary, "covered_through_id", None),
+        "created_at": getattr(summary, "created_at", None),
+    }
+
+
+def _annotate_transcript_attachment_downloads(
+    messages: list[dict[str, Any]],
+    *,
+    session_key: str,
+) -> list[dict[str, Any]]:
+    session_qs = quote(session_key, safe="")
+    for msg in messages:
+        attachments = msg.get("attachments")
+        if not isinstance(attachments, list):
+            continue
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            sha = attachment.get("sha256_ref")
+            if not isinstance(sha, str) or not sha:
+                continue
+            if attachment.get("download_url"):
+                continue
+            name = str(attachment.get("name") or "attachment")
+            mime = str(attachment.get("mime") or attachment.get("type") or "")
+            attachment["download_url"] = (
+                f"/api/v1/attachments/{quote(sha, safe='')}?sessionKey={session_qs}"
+                f"&name={quote(name, safe='')}&mime={quote(mime, safe='')}"
+            )
+    return messages
+
+
+async def _chat_history_transcript(
+    mgr: object,
+    session_key: str,
+    *,
+    include_canonical: bool,
+) -> tuple[list[object], bool]:
+    if include_canonical:
+        getter = getattr(mgr, "get_canonical_transcript", None)
+        if callable(getter):
+            try:
+                return list(await getter(session_key)), True
+            except Exception:  # noqa: BLE001 - fall back to active transcript
+                pass
+    transcript_getter = getattr(mgr, "get_transcript", None)
+    if not callable(transcript_getter):
+        return [], False
+    transcript = await transcript_getter(session_key)
+    return list(transcript or []), False
+
+
+async def _chat_history_summaries(
+    mgr: object,
+    session_key: str,
+    *,
+    include_summaries: bool,
+) -> list[dict[str, Any]]:
+    if not include_summaries:
+        return []
+    getter = getattr(mgr, "get_summaries", None)
+    if not callable(getter):
+        return []
+    try:
+        summaries = await getter(session_key)
+    except Exception:  # noqa: BLE001 - summaries are optional display metadata
+        return []
+    return [_session_summary_to_chat_payload(summary) for summary in summaries or []]
 
 
 def _effective_compaction_model(session: object | None) -> str | None:
@@ -164,6 +343,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
 
     message = params["message"]
     session_key = _canonical_webchat_session_key(params.get("sessionKey"))
+    agent_id = parse_agent_id(session_key)
 
     # Fresh-WebUI / smoke path: when no session manager is wired (webui
     # simulator, dispatcher-only boot), instant-accept without kicking off a
@@ -175,10 +355,9 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
     mgr = _require_chat_session_manager(ctx)
     intent = params.get("intent")
 
-    # Gate the turn on the configured context-overflow policy.
-    refusal = await _enforce_context_overflow(ctx, session_key, message)
-    if refusal is not None:
-        return {"ok": False, "sessionKey": session_key, **refusal}
+    # WebChat must accept the turn even when existing history is oversized.
+    # Context shaping happens inside TurnRunner so it can produce a request-scoped
+    # sendable view instead of making the RPC layer a terminal overflow gate.
 
     try:
         if intent != "new_chat":
@@ -186,7 +365,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             try:
                 await mgr.get_or_create(
                     session_key=session_key,
-                    agent_id="main",
+                    agent_id=agent_id,
                     display_name="WebChat",
                 )
             except Exception as exc:
@@ -200,28 +379,9 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
         if not isinstance(incoming_source, dict):
             incoming_source = {}
 
-        send_params: dict = {
-            "key": session_key,
-            "message": message,
-            "_source": {
-                "caller_kind": "web",
-                "channel_kind": "webchat",
-                "channel_id": f"webchat:{session_key}",
-                "sender_id": ctx.principal.role,
-                "source_kind": "webui",
-                "source_name": "WebChat",
-            },
-        }
         elevated_hint = incoming_source.get("elevated")
-        if elevated_hint in ("on", "bypass", "full"):
-            send_params["_source"]["elevated"] = elevated_hint
         attachments = params.get("attachments")
-        if attachments:
-            send_params["attachments"] = attachments
-            if "displayText" in params:
-                send_params["displayText"] = params.get("displayText")
-        if intent is not None:
-            send_params["intent"] = intent
+        extra: dict = {}
         for source_key, target_key in (
             ("noMemoryCapture", "noMemoryCapture"),
             ("no_memory_capture", "no_memory_capture"),
@@ -234,7 +394,28 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             ("run_kind", "run_kind"),
         ):
             if source_key in params:
-                send_params[target_key] = params[source_key]
+                extra[target_key] = params[source_key]
+        send_params = sessions_send_params(
+            ChatSendRequest(
+                session_key=session_key,
+                message=message,
+                attachments=attachments if isinstance(attachments, list) else [],
+                display_text=params.get("displayText")
+                if attachments and "displayText" in params
+                else None,
+                intent=cast(str, intent) if intent is not None else None,
+                extra=extra,
+            ),
+            chat_source_metadata(
+                caller_kind="web",
+                channel_kind="webchat",
+                channel_id=f"webchat:{session_key}",
+                sender_id=ctx.principal.role,
+                source_kind="webui",
+                source_name="WebChat",
+                elevated=elevated_hint if isinstance(elevated_hint, str) else None,
+            ),
+        )
         result = await _handle_sessions_send(send_params, ctx)
         return {"ok": True, "sessionKey": session_key, **result}
     except Exception:
@@ -247,7 +428,8 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
 
 @_d.method("chat.abort", scope="operator.write")
 async def _handle_chat_abort(params: dict | None, ctx: RpcContext) -> dict:
-    session_key = _canonical_webchat_session_key((params or {}).get("sessionKey"))
+    raw_params = params or {}
+    session_key = _canonical_webchat_session_key(raw_params.get("sessionKey"))
     # Fresh-WebUI / smoke path: abort always returns an ok envelope keyed by
     # sessionKey, regardless of whether a live task exists to cancel.
     if ctx.session_manager is None:
@@ -255,96 +437,152 @@ async def _handle_chat_abort(params: dict | None, ctx: RpcContext) -> dict:
     _require_chat_session_manager(ctx)
     from opensquilla.gateway.rpc_sessions import _handle_sessions_abort
 
-    result = await _handle_sessions_abort({"key": session_key}, ctx)
+    result = await _handle_sessions_abort(
+        {
+            "key": session_key,
+            "source": raw_params.get("source") or "webui_abort",
+        },
+        ctx,
+    )
     return {"sessionKey": session_key, **result}
 
 
 @_d.method("chat.history", scope="operator.read")
 async def _handle_chat_history(params: dict | None, ctx: RpcContext) -> dict:
-    session_key = _canonical_webchat_session_key((params or {}).get("sessionKey"))
-    limit = (params or {}).get("limit", 50)
+    raw_params = params or {}
+    session_key = _canonical_webchat_session_key(raw_params.get("sessionKey"))
+    limit = _normalize_chat_history_limit(raw_params.get("limit"))
+    before = raw_params.get("before")
+    after = raw_params.get("after")
+    include_canonical = _chat_history_bool(
+        raw_params.get("includeCanonical"),
+        default=True,
+    )
+    include_summaries = _chat_history_bool(
+        raw_params.get("includeSummaries"),
+        default=True,
+    )
 
     mgr = _require_chat_session_manager(ctx)
 
-    transcript = await mgr.get_transcript(session_key)
-    if not transcript:
-        return {"messages": []}
+    try:
+        transcript, canonical_available = await _chat_history_transcript(
+            mgr,
+            session_key,
+            include_canonical=include_canonical,
+        )
+    except KeyError:
+        if _is_webchat_session_key(session_key):
+            return _empty_chat_history_payload(limit)
+        raise
+    page_entries, has_more = _chat_history_page(
+        transcript,
+        limit=limit,
+        before=before,
+        after=after,
+    )
+    summaries = await _chat_history_summaries(
+        mgr,
+        session_key,
+        include_summaries=include_summaries,
+    )
+    if summaries:
+        history_scope = "compacted"
+    elif has_more:
+        history_scope = "latest_window"
+    else:
+        history_scope = "complete"
 
-    import json as _json
+    messages = transcript_entries_to_chat_messages(page_entries, limit=None)
+    return {
+        "messages": _annotate_transcript_attachment_downloads(
+            messages,
+            session_key=session_key,
+        ),
+        "has_more": has_more,
+        "oldest_cursor": _chat_history_cursor(page_entries[0]) if page_entries else None,
+        "newest_cursor": _chat_history_cursor(page_entries[-1]) if page_entries else None,
+        "history_scope": history_scope,
+        "loaded_count": len(page_entries),
+        "page_size": limit,
+        "canonical_available": canonical_available,
+        "compaction_summaries": summaries,
+    }
 
-    messages = []
-    for entry in transcript[-limit:]:
-        content = getattr(entry, "content", "") or ""
-        attachments = None
-        artifacts = None
-        # Parse JSON-encoded content with attachments
-        if content and content.startswith("{"):
-            try:
-                parsed = _json.loads(content)
-                if isinstance(parsed, dict) and "text" in parsed:
-                    display_text = parsed.get("display_text")
-                    content = display_text if isinstance(display_text, str) else parsed["text"]
-                    attachments = parsed.get("attachments")
-                    parsed_artifacts = parsed.get("artifacts")
-                    if isinstance(parsed_artifacts, list):
-                        artifacts = [
-                            artifact_payload(item)
-                            for item in parsed_artifacts
-                            if isinstance(item, dict)
-                        ]
-                        if artifacts:
-                            content = strip_artifact_markers_from_channel_text(content)
-            except (ValueError, KeyError):
-                pass
-        # Recover from corrupted Python repr of content blocks (old compaction bug).
-        # Extract text from ContentBlockText entries; skip pure tool-only messages.
-        if content and content.lstrip().startswith("[ContentBlock"):
-            import re
 
-            texts = re.findall(
-                r"ContentBlockText\(type='text', text='(.*?)'\)",
-                content,
-            )
-            content = "\n".join(t.replace("\\n", "\n") for t in texts) if texts else ""
-            if not content.strip():
-                continue
-        msg = {
-            "id": getattr(entry, "message_id", None),
-            "message_id": getattr(entry, "message_id", None),
-            "role": getattr(entry, "role", "unknown"),
-            "text": content,
-            "timestamp": getattr(entry, "created_at", None),
-            "provenance_kind": getattr(entry, "provenance_kind", None),
-            "provenance_source_session_key": getattr(
-                entry, "provenance_source_session_key", None
-            ),
-            "provenance_source_tool": getattr(entry, "provenance_source_tool", None),
+def _clarify_fields_to_text(fields: dict[str, object]) -> str:
+    """Serialise a clarify-form submission into a ``key: value\\n`` reply.
+
+    The synthetic message is fed back through ``chat.send`` so it
+    traverses the regular meta-resolution pipeline:
+      peek_awaiting → parse_clarify_reply (key:value mode) →
+      try_claim_resume → DAG continues.
+
+    Bools are rendered as ``true``/``false``; everything else uses
+    Python's natural string representation. Empty / None values are
+    skipped — they signal "optional field omitted".
+    """
+    lines: list[str] = []
+    for key, value in fields.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        else:
+            rendered = str(value)
+        lines.append(f"{key}: {rendered}")
+    return "\n".join(lines)
+
+
+@_d.method("chat.clarify_submit", scope="operator.write")
+async def _handle_chat_clarify_submit(params: dict | None, ctx: RpcContext) -> dict:
+    """Accept a structured clarify-form submission from a Web UI surface.
+
+    Params:
+      ``sessionKey``  (str)  — same WebChat session that triggered the pause
+      ``fields``      (dict) — ``{field_name: value}`` collected by the form
+      ``run_id``      (str, optional) — awaiting run id for trace/log only;
+                                          the awaiting branch in meta_resolution
+                                          uses ``session_key`` for the CAS
+
+    The fields dict is serialised into ``key: value\\n`` text and fed
+    into the regular ``chat.send`` path so meta_resolution's awaiting
+    branch picks it up. This is purely a convenience surface — clients
+    can equivalently call ``chat.send`` with the same text.
+    """
+    if not isinstance(params, dict):
+        raise ValueError("params required: sessionKey, fields")
+    fields = params.get("fields")
+    if not isinstance(fields, dict) or not fields:
+        raise ValueError("params.fields must be a non-empty mapping")
+
+    session_key = _canonical_webchat_session_key(params.get("sessionKey"))
+    text = _clarify_fields_to_text(fields)
+    if not text:
+        raise ValueError("params.fields contained only empty values")
+
+    send_params: dict = {
+        "message": text,
+        "sessionKey": session_key,
+        # meta_resolution's awaiting branch keys off session_key, not
+        # intent — so we deliberately stay on the default "continue"
+        # intent (SessionIntent enum rejects unknown values). The
+        # provenance tag is the observability hook for distinguishing
+        # form submits from typed replies downstream.
+        "inputProvenance": "clarify_form",
+    }
+    run_id = params.get("run_id")
+    if isinstance(run_id, str) and run_id:
+        send_params["_source"] = {
+            "caller_kind": "web",
+            "channel_kind": "webchat",
+            "channel_id": f"webchat:{session_key}",
+            "source_kind": "webui",
+            "source_name": "WebChat",
+            "clarify_run_id": run_id,
         }
-        if attachments:
-            msg["attachments"] = attachments
-        if artifacts:
-            msg["artifacts"] = artifacts
-        usage = getattr(entry, "turn_usage", None)
-        if isinstance(usage, dict):
-            msg["usage"] = usage
-            model = usage.get("model") or usage.get("routed_model")
-            if model:
-                msg["model"] = model
-            input_tokens = int(usage.get("input_tokens") or usage.get("inputTokens") or 0)
-            output_tokens = int(
-                usage.get("output_tokens") or usage.get("outputTokens") or 0
-            )
-            msg["input"] = input_tokens
-            msg["output"] = output_tokens
-            msg["input_tokens"] = input_tokens
-            msg["output_tokens"] = output_tokens
-            if usage.get("cost_usd") is not None:
-                msg["cost_usd"] = float(usage.get("cost_usd") or 0.0)
-        tc = getattr(entry, "tool_calls", None)
-        if tc:
-            msg["tool_calls"] = tc
-        messages.append(msg)
-    return {"messages": messages}
+    result = await _handle_chat_send(send_params, ctx)
+    return cast(dict, result)
 
 
 @_d.method("chat.inject", scope="operator.admin")

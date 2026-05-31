@@ -29,10 +29,28 @@ def _stable_hash(value: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _message_prefix_payload(messages: list[Message], *, tail_count: int = 2) -> list[Any]:
+def _message_prefix_messages(messages: list[Message], *, tail_count: int = 2) -> list[Message]:
     if tail_count <= 0:
-        return [_jsonable(message) for message in messages]
-    return [_jsonable(message) for message in messages[:-tail_count]]
+        return list(messages)
+    return list(messages[:-tail_count])
+
+
+def _message_prefix_payload(messages: list[Message], *, tail_count: int = 2) -> list[Any]:
+    return [
+        _jsonable(message) for message in _message_prefix_messages(messages, tail_count=tail_count)
+    ]
+
+
+def _message_prefix_item_kind(message: Message) -> str:
+    content = message.content
+    if isinstance(content, str):
+        if content.startswith("[Request context for this turn]"):
+            return "request_context"
+        if content.startswith("[Runtime context for this turn]"):
+            return "runtime_context"
+        if content.startswith("[Available skills for this turn]"):
+            return "skills_context"
+    return "history"
 
 
 def _cache_control_payload(config: ChatConfig) -> dict[str, Any]:
@@ -60,6 +78,7 @@ class PromptStateSnapshot:
     message_count: int
     tool_count: int
     messages_prefix_item_hashes: tuple[str, ...] = ()
+    messages_prefix_item_kinds: tuple[str, ...] = ()
     cache_control_field_hashes: tuple[tuple[str, str], ...] = ()
 
     def changed_fields(self, previous: PromptStateSnapshot) -> tuple[str, ...]:
@@ -81,6 +100,7 @@ class PromptStateSnapshot:
             "tools_hash": self.tools_hash,
             "messages_prefix_hash": self.messages_prefix_hash,
             "messages_prefix_item_hashes": list(self.messages_prefix_item_hashes),
+            "messages_prefix_item_kinds": list(self.messages_prefix_item_kinds),
             "cache_control_hash": self.cache_control_hash,
             "cache_control_field_hashes": dict(self.cache_control_field_hashes),
             "model": self.model,
@@ -145,7 +165,8 @@ class CacheBreakMonitor:
         config: ChatConfig,
         model: str,
     ) -> PromptStateSnapshot:
-        messages_prefix_payload = _message_prefix_payload(messages)
+        messages_prefix_messages = _message_prefix_messages(messages)
+        messages_prefix_payload = [_jsonable(message) for message in messages_prefix_messages]
         cache_control_payload = _cache_control_payload(config)
         return PromptStateSnapshot(
             system_hash=_stable_hash(config.system or ""),
@@ -157,6 +178,9 @@ class CacheBreakMonitor:
             tool_count=len(tools or []),
             messages_prefix_item_hashes=tuple(
                 _stable_hash(message) for message in messages_prefix_payload
+            ),
+            messages_prefix_item_kinds=tuple(
+                _message_prefix_item_kind(message) for message in messages_prefix_messages
             ),
             cache_control_field_hashes=tuple(
                 (key, _stable_hash(value)) for key, value in sorted(cache_control_payload.items())
@@ -264,7 +288,12 @@ def check_response_for_cache_break(
     )
 
 
-def notify_compaction(session_key: str, **payload: Any) -> None:
+def notify_compaction(
+    session_key: str,
+    *,
+    notify_listeners: object = True,
+    **payload: Any,
+) -> None:
     event_payload = {
         "status": str(payload.pop("status", "completed") or "completed"),
         "source": str(payload.pop("source", "automatic") or "automatic"),
@@ -272,6 +301,8 @@ def notify_compaction(session_key: str, **payload: Any) -> None:
     }
     if event_payload["status"].lower() == "completed":
         default_cache_break_monitor.notify_compaction(session_key)
+    if not bool(notify_listeners):
+        return
     for listener in tuple(_compaction_listeners):
         try:
             listener(session_key, dict(event_payload))

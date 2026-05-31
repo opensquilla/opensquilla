@@ -9,7 +9,7 @@ from typing import Any, cast
 from opensquilla.bootstrap_types import BootstrapFileReport
 from opensquilla.observability.decision_log import _hash16
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass
@@ -37,6 +37,9 @@ class PromptReport:
     skill_count: int = 0
     skills_prompt_chars: int = 0
     memory_md_present: bool = False
+    daily_notes_omitted: bool = False
+    daily_notes_count_before_omit: int = 0
+    daily_notes_policy_reason: str | None = None
     injected_workspace_files_count: int = 0
     bootstrap_files: list[BootstrapFileReport] = field(default_factory=list)
     memory_mode_fingerprint: dict[str, str] = field(default_factory=dict)
@@ -152,6 +155,13 @@ def build_prompt_report(
         skill_count=int(metadata.get("skill_count") or 0),
         skills_prompt_chars=int(metadata.get("skills_prompt_chars") or 0),
         memory_md_present=bool(metadata.get("memory_md_present", False)),
+        daily_notes_omitted=bool(metadata.get("daily_notes_omitted", False)),
+        daily_notes_count_before_omit=int(metadata.get("daily_notes_count_before_omit") or 0),
+        daily_notes_policy_reason=(
+            str(metadata["daily_notes_policy_reason"])
+            if metadata.get("daily_notes_policy_reason") is not None
+            else None
+        ),
         injected_workspace_files_count=int(metadata.get("injected_workspace_files_count") or 0),
         bootstrap_files=_bootstrap_file_reports(metadata),
         memory_mode_fingerprint={str(k): str(v) for k, v in fingerprint.items()},

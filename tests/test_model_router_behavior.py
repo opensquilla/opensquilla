@@ -152,11 +152,11 @@ async def test_full_rollout_applies_routed_model_thinking_and_p0_prompt(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.model == "deepseek/deepseek-v4-flash"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     assert routed.metadata["routed_tier"] == "t1"
-    assert routed.metadata["routed_model"] == "deepseek/deepseek-v4-flash"
+    assert routed.metadata["routed_model"] == "deepseek/deepseek-v4-pro"
     assert routed.metadata["routing_applied"] is True
-    assert routed.metadata["applied_model"] == "deepseek/deepseek-v4-flash"
+    assert routed.metadata["applied_model"] == "deepseek/deepseek-v4-pro"
     assert routed.metadata["baseline_model"] == baseline_model
     assert routed.metadata["routing_confidence"] == 0.91
     assert routed.metadata["routing_source"] == "v4_phase3"
@@ -168,6 +168,91 @@ async def test_full_rollout_applies_routed_model_thinking_and_p0_prompt(
     assert routed.metadata["thinking_level"] == "low"
     assert routed.metadata["prompt_policy"] == "P0"
     assert "[RESPONSE_POLICY: Answer directly" in routed.message
+
+
+@pytest.mark.asyncio
+async def test_router_reports_provider_state_loss_without_changing_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_strategy(
+        monkeypatch,
+        "t1",
+        0.91,
+        {
+            "route_class": "R1",
+            "thinking_mode": "T1",
+            "prompt_policy": "P0",
+        },
+    )
+    ctx = make_context("Continue the long task.")
+    ctx.metadata["session_context_states"] = [
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "state_kind": "anthropic_compaction_block",
+            "valid": True,
+            "portable": False,
+        },
+        {
+            "provider": "portable",
+            "model": "",
+            "state_kind": "structured_summary_v1",
+            "valid": True,
+            "portable": True,
+        },
+    ]
+
+    routed = await apply_squilla_router(ctx)
+
+    assert routed.model == "deepseek/deepseek-v4-pro"
+    diagnostic = routed.metadata["provider_state_continuity"]
+    assert diagnostic["decision"] == "use_portable_fallback"
+    assert diagnostic["provider_state_loss_risk"] is True
+    assert diagnostic["candidate_provider"] == "openrouter"
+
+
+@pytest.mark.asyncio
+async def test_router_continuity_diagnostic_ignores_expired_provider_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_strategy(
+        monkeypatch,
+        "t1",
+        0.91,
+        {
+            "route_class": "R1",
+            "thinking_mode": "T1",
+            "prompt_policy": "P0",
+        },
+    )
+    ctx = make_context("Continue the long task.")
+    ctx.metadata["session_context_states"] = [
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "state_kind": "anthropic_compaction_block",
+            "created_at": 100,
+            "expires_at": 150,
+            "valid": True,
+            "portable": False,
+        },
+        {
+            "provider": "portable",
+            "model": "",
+            "state_kind": "structured_summary_v1",
+            "created_at": 90,
+            "valid": True,
+            "portable": True,
+        },
+    ]
+
+    routed = await apply_squilla_router(ctx)
+
+    diagnostic = routed.metadata["provider_state_continuity"]
+    assert diagnostic["decision"] == "use_portable_fallback"
+    assert diagnostic["provider_state_loss_risk"] is False
+    assert diagnostic["active_state_provider"] is None
+    assert diagnostic["portable_fallback_available"] is True
 
 
 @pytest.mark.asyncio
@@ -241,7 +326,7 @@ async def test_confidence_gate_promotes_low_confidence_t0_to_default_t1_and_reco
     extra = routed.metadata["routing_extra"]
 
     assert routed.metadata["routed_tier"] == "t1"
-    assert routed.model == "deepseek/deepseek-v4-flash"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     assert extra["confidence_gate_applied"] is True
     assert extra["base_tier"] == "t0"
     assert extra["final_tier"] == "t1"
@@ -270,10 +355,51 @@ async def test_confidence_gate_falls_back_low_confidence_non_default_text_tier(
     extra = routed.metadata["routing_extra"]
 
     assert routed.metadata["routed_tier"] == "t1"
-    assert routed.model == "deepseek/deepseek-v4-flash"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     assert extra["confidence_gate_applied"] is True
     assert extra["pre_confidence_tier"] == "t2"
     assert extra["final_tier"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_large_material_estimate_floors_low_router_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_strategy(monkeypatch, "t1", 0.91, {"route_class": "R1"})
+    ctx = make_context("Please process the attached pasted text.")
+    ctx.metadata["input_normalization"] = {
+        "guard_action": "generated_text_attachment",
+        "material_estimated_tokens": 45_000,
+    }
+    ctx.metadata["material_estimated_tokens"] = 45_000
+
+    routed = await apply_squilla_router(ctx)
+
+    assert routed.metadata["routed_tier"] == "t2"
+    assert routed.metadata["routing_source"] == "large_context_floor"
+    assert routed.metadata["large_context_floor_from_tier"] == "t1"
+    assert routed.metadata["large_context_material_tokens"] == 45_000
+    assert routed.metadata["routing_extra"]["final_tier"] == "t2"
+
+
+@pytest.mark.asyncio
+async def test_large_material_ratio_floors_low_router_tier_to_t3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_strategy(monkeypatch, "t1", 0.91, {"route_class": "R1"})
+    ctx = make_context("Please process the attached pasted text.")
+    object.__setattr__(ctx.config.squilla_router, "context_window_tokens", 100_000)
+    ctx.metadata["input_normalization"] = {
+        "guard_action": "generated_text_attachment",
+        "material_estimated_tokens": 40_000,
+    }
+
+    routed = await apply_squilla_router(ctx)
+
+    assert routed.metadata["routed_tier"] == "t3"
+    assert routed.metadata["routing_source"] == "large_context_floor"
+    assert routed.metadata["large_context_floor_from_tier"] == "t1"
+    assert routed.metadata["large_context_material_tokens"] == 40_000
 
 
 @pytest.mark.asyncio

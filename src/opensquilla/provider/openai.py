@@ -21,12 +21,12 @@ from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import compact_provider_status, derive_is_error
 from opensquilla.secrets import clean_header_secret
 
+from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
 from .openrouter_attribution import openrouter_app_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .request_proof import (
-    ProviderRequestBudgetExceeded,
-    prove_or_compact_provider_payload,
+    ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
 from .types import (
@@ -456,15 +456,7 @@ def _build_openai_tool(tool: ToolDefinition) -> dict[str, Any]:
 
 
 def _openrouter_model_likely_supports_explicit_prompt_cache(model: str) -> bool:
-    model_l = model.strip().lower()
-    return model_l.startswith(
-        (
-            "anthropic/",
-            "google/",
-            "deepseek/",
-            "x-ai/",
-        )
-    )
+    return supports_openrouter_explicit_prompt_cache(model)
 
 
 def _openrouter_model_is_anthropic(model: str) -> bool:
@@ -487,6 +479,19 @@ def _openrouter_anthropic_should_use_top_level_cache(
 def _stable_json_hash(value: Any) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _openrouter_non_system_prefix_item_hashes(
+    messages: list[dict[str, Any]], *, max_items: int = 3
+) -> list[str]:
+    hashes: list[str] = []
+    for message in messages:
+        if message.get("role") == "system":
+            continue
+        hashes.append(_stable_json_hash(message))
+        if len(hashes) >= max_items:
+            break
+    return hashes
 
 
 def _attach_reasoning_content(
@@ -788,6 +793,8 @@ class OpenAIProvider:
             payload["stop"] = cfg.stop_sequences
         if tools:
             payload["tools"] = [_build_openai_tool(t) for t in tools]
+            if cfg.tool_choice is not None:
+                payload["tool_choice"] = cfg.tool_choice
         if self._provider_kind == "openrouter":
             pinned_provider = self._provider_routing.get(self._model)
             if pinned_provider:
@@ -855,23 +862,34 @@ class OpenAIProvider:
             if any(message.get("role") == "tool" for message in openai_messages)
             else None
         )
-        try:
-            payload, _proof = prove_or_compact_provider_payload(
-                payload,
-                projection_adapter=self._provider_kind,
-                proof_budget=cfg.provider_request_max_chars,
-                status_projection_mode="content_envelope",
-                fallback_reason=fallback_reason,
+        from opensquilla.engine.context_budget import coordinate_provider_context_budget
+
+        budget_decision = coordinate_provider_context_budget(
+            payload,
+            projection_adapter=self._provider_kind,
+            proof_budget=cfg.provider_request_max_chars,
+            status_projection_mode="content_envelope",
+            fallback_reason=fallback_reason,
+        )
+        if budget_decision.action == "budget_limited":
+            proof = budget_decision.proof or {}
+            log.warning("provider.request_budget_exhausted", **proof)
+            yield ErrorEvent(
+                message=json.dumps(proof, ensure_ascii=False, sort_keys=True),
+                code="provider_request_budget_exhausted",
             )
-            if _proof is not None:
-                log.info("provider.request_proof", **_proof)
+            return
+        payload = budget_decision.payload or payload
+        if budget_decision.proof is not None:
+            log.info("provider.request_proof", **budget_decision.proof)
+        try:
             prove_provider_payload_from_env(
                 payload,
                 projection_adapter=self._provider_kind,
                 status_projection_mode="content_envelope",
                 fallback_reason=fallback_reason,
             )
-        except ProviderRequestBudgetExceeded as exc:
+        except ProviderRequestBudgetExceededError as exc:
             log.warning("provider.request_budget_exhausted", **exc.proof)
             yield ErrorEvent(
                 message=json.dumps(exc.proof, ensure_ascii=False, sort_keys=True),
@@ -916,6 +934,9 @@ class OpenAIProvider:
                 if openai_messages and openai_messages[0].get("role") == "system"
                 else None
             )
+            non_system_prefix_item_hashes = _openrouter_non_system_prefix_item_hashes(
+                openai_messages
+            )
             log.debug(
                 "openrouter.payload_cache_shape",
                 model=self._model,
@@ -923,6 +944,10 @@ class OpenAIProvider:
                 system_hash=_stable_json_hash(system_payload) if system_payload else "",
                 tools_hash=_stable_json_hash(payload.get("tools", [])) if tools else "",
                 messages_prefix_hash=_stable_json_hash(openai_messages[:-1]),
+                first_non_system_hash=(
+                    non_system_prefix_item_hashes[0] if non_system_prefix_item_hashes else ""
+                ),
+                non_system_prefix_item_hashes=non_system_prefix_item_hashes,
                 message_count=len(openai_messages),
             )
 
@@ -949,12 +974,27 @@ class OpenAIProvider:
                             response.status_code,
                             body,
                         )
+                        # Diagnostic: dump payload head (no auth headers)
+                        # so 400s from picky upstreams are debuggable. Truncated
+                        # to keep memory low.
+                        _body_text = (
+                            body.decode("utf-8", errors="replace")
+                            if isinstance(body, bytes) else str(body)
+                        )
+                        try:
+                            _payload_head = json.dumps(
+                                payload, ensure_ascii=False,
+                            )[:4000]
+                        except Exception:  # noqa: BLE001
+                            _payload_head = repr(payload)[:4000]
                         log.warning(
                             "provider.chat_http_error",
                             provider=self._provider_kind,
                             model=self._model,
                             status_code=response.status_code,
                             message=message,
+                            response_body=_body_text[:2000],
+                            request_payload_head=_payload_head,
                         )
                         yield ErrorEvent(
                             message=message,

@@ -16,8 +16,11 @@ async def test_sqlite3_fallback_execute_supports_await_and_async_context(
     conn = await module.connect(":memory:")
     try:
         await conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
-        await conn.execute("INSERT INTO items (name) VALUES (?)", ("alpha",))
+        async with conn.execute("INSERT INTO items (name) VALUES (?)", ("alpha",)) as cur:
+            inserted_id = cur.lastrowid
         await conn.commit()
+
+        assert inserted_id == 1
 
         async with conn.execute("SELECT name FROM items") as cur:
             row = await cur.fetchone()

@@ -13,7 +13,7 @@ from opensquilla.paths import default_opensquilla_home
 def _default_model_for_provider(provider: str) -> str:
     normalized = provider.strip().lower()
     if normalized == "openrouter":
-        return "deepseek/deepseek-v4-flash"
+        return "deepseek/deepseek-v4-pro"
     if normalized == "deepseek":
         return "deepseek-v4-flash"
     return "openai/gpt-4o-mini"

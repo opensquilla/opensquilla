@@ -29,6 +29,7 @@ from opensquilla.result_budget import (
     ToolRunBudgetExceededError,
     resolve_budget_class,
 )
+from opensquilla.router_control import router_control_payload_terminates_turn
 from opensquilla.tool_boundary import ToolCall, ToolResult
 from opensquilla.tools.envelope import build_tool_failure_envelope, is_denial_payload
 from opensquilla.tools.types import InteractionMode, ToolContext
@@ -259,4 +260,8 @@ async def finalize(
         is_error=is_error,
         artifacts=artifacts,
         execution_status=execution_status,
+        terminates_turn=(
+            call.tool_name == "router_control"
+            and router_control_payload_terminates_turn(content)
+        ),
     )

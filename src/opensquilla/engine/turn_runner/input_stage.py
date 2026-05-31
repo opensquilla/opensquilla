@@ -107,6 +107,7 @@ class InputStageOutput:
     semantic_input: str
     extra_prompt_context: dict[str, str] | None
     persisted_entry: TranscriptEntry | None = None
+    normalization_metadata: dict[str, Any] | None = None
 
     def to_outcome(self) -> StageOutcome[InputStageOutput]:
         """Wrap this output as a non-terminal ``StageOutcome``.
@@ -158,6 +159,11 @@ class InputStage:
             extra_prompt_context,
             self._extra_ctx.extra_context_for(inp.tool_context),
         )
+        normalization_metadata = None
+        if isinstance(inp.input_provenance, dict):
+            input_normalization = inp.input_provenance.get("input_normalization")
+            if isinstance(input_normalization, dict):
+                normalization_metadata = dict(input_normalization)
 
         persisted_entry = None
         if inp.persist_input and inp.session_append is not None and inp.message:
@@ -182,4 +188,5 @@ class InputStage:
             semantic_input=semantic_input,
             extra_prompt_context=extra_prompt_context,
             persisted_entry=persisted_entry,
+            normalization_metadata=normalization_metadata,
         )

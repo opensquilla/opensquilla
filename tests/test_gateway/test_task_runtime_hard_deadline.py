@@ -73,11 +73,12 @@ def _make_runtime(
     turn_handler: Callable[..., Awaitable[Any]],
     turn_hard_deadline_s: float | None,
     running_heartbeat_interval_s: float | None = 30.0,
+    max_concurrency: int = 1,
 ) -> TaskRuntime:
     return TaskRuntime(
         storage=_make_storage(),
         turn_handler=turn_handler,
-        max_concurrency=1,
+        max_concurrency=max_concurrency,
         max_pending_per_session=8,
         turn_hard_deadline_s=turn_hard_deadline_s,
         running_heartbeat_interval_s=running_heartbeat_interval_s,
@@ -244,6 +245,66 @@ async def test_handler_finishing_before_deadline_is_unaffected() -> None:
     record = await rt.wait(handle.task_id, timeout=2.0)
     assert record.status == AgentTaskStatus.SUCCEEDED
     assert record.terminal_reason == "completed"
+
+
+@pytest.mark.asyncio
+async def test_running_turn_does_not_hold_session_write_lock() -> None:
+    handler_started = asyncio.Event()
+    handler_release = asyncio.Event()
+
+    async def slow_handler(_run: Any) -> None:
+        handler_started.set()
+        await handler_release.wait()
+
+    rt = _make_runtime(
+        turn_handler=slow_handler,
+        turn_hard_deadline_s=None,
+    )
+
+    env = _make_envelope("agent-1::sess-write-lock-free")
+    handle = await rt.enqueue(env, "hi")
+    await asyncio.wait_for(handler_started.wait(), timeout=1.0)
+
+    lock = rt._get_session_lock_for_turn(env.session_key)
+    await asyncio.wait_for(lock.acquire(), timeout=0.2)
+    lock.release()
+
+    handler_release.set()
+    record = await rt.wait(handle.task_id, timeout=2.0)
+    assert record.status == AgentTaskStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_slot_wait_does_not_hold_waiting_session_write_lock() -> None:
+    first_started = asyncio.Event()
+    first_release = asyncio.Event()
+
+    async def handler(run: Any) -> None:
+        if run.session_key.endswith("busy"):
+            first_started.set()
+            await first_release.wait()
+
+    rt = _make_runtime(
+        turn_handler=handler,
+        turn_hard_deadline_s=None,
+        max_concurrency=1,
+    )
+
+    busy = _make_envelope("agent-1::sess-busy")
+    waiting = _make_envelope("agent-1::sess-waiting")
+    busy_handle = await rt.enqueue(busy, "first")
+    await asyncio.wait_for(first_started.wait(), timeout=1.0)
+
+    waiting_handle = await rt.enqueue(waiting, "second")
+    await asyncio.sleep(0.05)
+
+    lock = rt._get_session_lock_for_turn(waiting.session_key)
+    await asyncio.wait_for(lock.acquire(), timeout=0.2)
+    lock.release()
+
+    first_release.set()
+    assert (await rt.wait(busy_handle.task_id, timeout=2.0)).status == AgentTaskStatus.SUCCEEDED
+    assert (await rt.wait(waiting_handle.task_id, timeout=2.0)).status == AgentTaskStatus.SUCCEEDED
 
 
 @pytest.mark.asyncio

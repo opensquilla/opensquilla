@@ -7,7 +7,54 @@ from opensquilla.skills.loader import SkillLoader
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
 NOTICES = ROOT / "THIRD_PARTY_NOTICES.md"
-ORIGINALS = {"memory"}
+ORIGINALS = {
+    "cron",
+    "deep-research",
+    "docx",
+    "git-diff",
+    "github",
+    "history-explorer",
+    "html-to-pdf",
+    "http-fetch",
+    "latex-compile",
+    "memory",
+    "meta-competitive-intel",
+    "meta-daily-operator-brief",
+    "meta-document-to-decision",
+    "meta-job-search-pipeline",
+    "meta-kid-project-planner",
+    "meta-paper-write",
+    "meta-skill-creator",
+    "meta-web-research-to-report",
+    "multi-search-engine",
+    "nano-pdf",
+    "paper-abstract-author",
+    "paper-citation-planner",
+    "paper-experiment-stub",
+    "paper-outline-author",
+    "paper-plot-stub",
+    "paper-preference-planner",
+    "paper-refbib-stub",
+    "paper-revision-author",
+    "paper-section-author",
+    "paper-source-curator",
+    "pdf-toolkit",
+    "pptx",
+    "skill-creator",
+    "skill-creator-linter",
+    "skill-creator-proposals",
+    "skill-creator-smoke-test",
+    "stack-trace-generic-probe",
+    "stack-trace-go-probe",
+    "stack-trace-js-probe",
+    "stack-trace-python-probe",
+    "stack-trace-rust-probe",
+    "sub-agent",
+    "summarize",
+    "tmux",
+    "weather",
+    "xlsx",
+}
 
 
 def test_all_bundled_skills_have_complete_provenance(tmp_path: Path) -> None:
@@ -71,3 +118,28 @@ def test_third_party_notices_match_bundled_provenance(tmp_path: Path) -> None:
         if line.strip().startswith("- `") and line.strip().endswith("`")
     }
     assert listed == set(skills)
+
+
+def test_tokenjuice_backend_has_third_party_provenance() -> None:
+    text = NOTICES.read_text(encoding="utf-8")
+    package_dir = ROOT / "src" / "opensquilla" / "plugins" / "tokenjuice"
+    provenance = package_dir / "PROVENANCE.md"
+    license_file = package_dir / "LICENSE.tokenjuice"
+
+    assert provenance.is_file()
+    assert license_file.is_file()
+
+    provenance_text = provenance.read_text(encoding="utf-8")
+    license_text = license_file.read_text(encoding="utf-8")
+
+    assert "## tokenjuice adapted reduction rules" in text
+    assert "https://github.com/vincentkoc/tokenjuice" in text
+    assert "License: MIT" in text
+    assert "Copyright (c) 2026 Vincent Koc" in text
+    assert "adaptation" in text
+    assert "LICENSE.tokenjuice" in text
+
+    assert "https://github.com/vincentkoc/tokenjuice" in provenance_text
+    assert "bundled JSON reduction rules are derived" in provenance_text
+    assert "MIT License" in license_text
+    assert "Copyright (c) 2026 Vincent Koc" in license_text

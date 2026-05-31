@@ -232,7 +232,11 @@ async def test_memory_search_tool_outputs_sessions_source(tmp_path):
     registry = ToolRegistry()
 
     class FakeRetriever:
-        async def search(self, *_args, **_kwargs):
+        def __init__(self) -> None:
+            self.opts = None
+
+        async def search(self, _query, opts, **_kwargs):
+            self.opts = opts
             return [
                 MemorySearchResult(
                     chunk_id="session",
@@ -246,16 +250,18 @@ async def test_memory_search_tool_outputs_sessions_source(tmp_path):
                 )
             ]
 
+    retriever = FakeRetriever()
     create_memory_tools(
         stores=SimpleNamespace(),
-        retrievers=FakeRetriever(),  # type: ignore[arg-type]
+        retrievers=retriever,  # type: ignore[arg-type]
         memory_dir=str(tmp_path),
         registry=registry,
     )
 
     registered = registry.get("memory_search")
     assert registered is not None
-    output = await registered.handler(query="recall")
+    output = await registered.handler(query="recall", source="sessions")
 
+    assert retriever.opts.source is MemorySource.sessions
     assert "source: sessions" in output
     assert "sessions/main/session-1.md" in output

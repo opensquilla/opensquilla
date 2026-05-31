@@ -6,6 +6,15 @@ const SkillsView = (() => {
   let _unsubs = [];
   let _intervals = [];
   let _allSkills = [];
+  let _proposals = [];
+  let _autoEnabledSkills = [];
+  let _proposalsSettings = {
+    available: false,
+    enabled: false,
+    on_dream_complete: false,
+    auto_enable: false,
+    auto_enable_max_risk: 'low',
+  };
   let _filterText = '';
   let _statusFilter = 'all';
   let _activeTab = 'installed';
@@ -66,9 +75,9 @@ const SkillsView = (() => {
 
         <section class="sk-stats" id="sk-stats"></section>
 
-        <div class="sk-tabs" role="tablist" aria-label="Skill source">
-          <button class="sk-tab is-active" data-tab="installed" role="tab">${icons.skills()}<span>Installed</span></button>
-          <button class="sk-tab" data-tab="registry" role="tab">${icons.download()}<span>Community</span></button>
+        <div class="sk-tabs" role="group" aria-label="Skill source">
+          <button class="sk-tab is-active" data-tab="installed" aria-pressed="true">${icons.skills()}<span>Installed</span></button>
+          <button class="sk-tab" data-tab="registry" aria-pressed="false">${icons.download()}<span>Community</span></button>
         </div>
 
         <div id="skills-tab-installed" class="sk-panel">
@@ -118,7 +127,11 @@ const SkillsView = (() => {
     _el.querySelectorAll('.sk-tab').forEach(btn => {
       btn.addEventListener('click', () => {
         _activeTab = btn.dataset.tab;
-        _el.querySelectorAll('.sk-tab').forEach(b => b.classList.toggle('is-active', b === btn));
+        _el.querySelectorAll('.sk-tab').forEach(b => {
+          const active = b === btn;
+          b.classList.toggle('is-active', active);
+          b.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
         _el.querySelectorAll('.sk-panel').forEach(p => { p.hidden = true; });
         const panel = _el.querySelector('#skills-tab-' + btn.dataset.tab);
         if (panel) panel.hidden = false;
@@ -167,7 +180,14 @@ const SkillsView = (() => {
       }
       const statusPill = e.target.closest('[data-status-filter]');
       if (statusPill) {
-        _statusFilter = statusPill.dataset.statusFilter;
+        const v = statusPill.dataset.statusFilter;
+        if (v === 'proposals') {
+          // Proposals tile: not a real filter — scroll to the section.
+          const target = _el.querySelector('.sk-group--proposals');
+          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
+        _statusFilter = v;
         _renderStats();
         _renderCards();
         return;
@@ -177,10 +197,32 @@ const SkillsView = (() => {
         _installDeps(depsBtn.dataset.installDepsName, depsBtn.dataset.installDepsId, depsBtn);
         return;
       }
+      const propShow = e.target.closest('[data-proposal-show]');
+      if (propShow) { _showProposal(propShow.dataset.proposalShow); return; }
+      const apToggle = e.target.closest('[data-ap-toggle]');
+      if (apToggle) {
+        // Fires on the checkbox click; the new checked state is already
+        // reflected in apToggle.checked.
+        _toggleAutoPropose(apToggle.dataset.apToggle, apToggle.checked, apToggle);
+        return;
+      }
+      const propAccept = e.target.closest('[data-proposal-accept]');
+      if (propAccept) { _acceptProposal(propAccept.dataset.proposalAccept); return; }
+      const propReject = e.target.closest('[data-proposal-reject]');
+      if (propReject) { _rejectProposal(propReject.dataset.proposalReject); return; }
+      const autoDisable = e.target.closest('[data-auto-enabled-disable]');
+      if (autoDisable) { _disableAutoEnabled(autoDisable.dataset.autoEnabledDisable); return; }
       const card = e.target.closest('[data-skill-card]');
       if (card) {
         const skill = _allSkills.find(s => s.name === card.dataset.skillCard);
         if (skill) _openSkillDialog(skill);
+      }
+    });
+
+    _el.addEventListener('change', (e) => {
+      const apRisk = e.target.closest('[data-ap-risk-select]');
+      if (apRisk) {
+        _setAutoEnableRisk(apRisk.value, apRisk);
       }
     });
 
@@ -203,6 +245,7 @@ const SkillsView = (() => {
     try {
       const data = await _rpc.call('skills.list');
       _allSkills = data.skills || [];
+      await _loadProposals();
       _renderStats();
       _renderCards();
     } catch (err) {
@@ -210,6 +253,71 @@ const SkillsView = (() => {
       if (wrap) {
         wrap.innerHTML = `<div class="sk-error">Failed to load skills: ${_esc(err.message)}</div>`;
       }
+    }
+  }
+
+  async function _loadProposals() {
+    // Path 3: meta-skill-creator's pending proposal queue. Best-effort —
+    // if the gateway is too old to expose the RPC method, fall through
+    // with an empty list and the skills view continues to function.
+    try {
+      const data = await _rpc.call('exec.proposals.list');
+      _proposals = (data && data.proposals) || [];
+    } catch {
+      _proposals = [];
+    }
+    try {
+      const data = await _rpc.call('exec.proposals.auto_enabled.list');
+      _autoEnabledSkills = (data && data.skills) || [];
+    } catch {
+      _autoEnabledSkills = [];
+    }
+    try {
+      const settings = await _rpc.call('exec.proposals.settings.get');
+      _proposalsSettings = settings || _proposalsSettings;
+    } catch {
+      _proposalsSettings = {
+        available: false,
+        enabled: false,
+        on_dream_complete: false,
+        auto_enable: false,
+        auto_enable_max_risk: 'low',
+      };
+    }
+  }
+
+  async function _toggleAutoPropose(key, value, button) {
+    if (button) button.disabled = true;
+    try {
+      const out = await _rpc.call('exec.proposals.settings.set', { [key]: value });
+      if (out && out.status === 'error') {
+        UI.toast('Settings update failed: ' + (out.reason || 'unknown'), 'err');
+        return;
+      }
+      _proposalsSettings = (out && out.settings) || _proposalsSettings;
+      _renderStats();
+      _renderCards();
+    } catch (err) {
+      UI.toast('Settings update failed: ' + err.message, 'err');
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function _setAutoEnableRisk(value, select) {
+    if (select) select.disabled = true;
+    try {
+      const out = await _rpc.call('exec.proposals.settings.set', { auto_enable_max_risk: value });
+      if (out && out.status === 'error') {
+        UI.toast('Settings update failed: ' + (out.reason || 'unknown'), 'err');
+        return;
+      }
+      _proposalsSettings = (out && out.settings) || _proposalsSettings;
+      _renderCards();
+    } catch (err) {
+      UI.toast('Settings update failed: ' + err.message, 'err');
+    } finally {
+      if (select) select.disabled = false;
     }
   }
 
@@ -234,11 +342,21 @@ const SkillsView = (() => {
       </button>`;
     };
 
+    const proposalsCount = _proposals.length;
+    const proposalsTile = proposalsCount > 0
+      ? `<button class="sk-stat sk-stat--proposals${_statusFilter === 'proposals' ? ' is-active' : ''}" data-status-filter="proposals" type="button" title="Pending meta-skill proposals — synthesised by meta-skill-creator from your usage patterns">
+          <div class="sk-stat__label">Pending Proposals</div>
+          <div class="sk-stat__value"><span class="sk-stat__warn">${proposalsCount}</span></div>
+          <div class="sk-stat__hint">awaiting review</div>
+        </button>`
+      : '';
+
     wrap.innerHTML = `
       ${tile('all', 'All skills', total, `${layers.size} layer${layers.size === 1 ? '' : 's'}`, 'sk-stat--accent')}
       ${tile('ready', 'Ready', `<span class="sk-stat__ok">${ready}</span>`, ready ? 'install-ready' : 'none ready')}
       ${tile('needs-setup', 'Needs setup', `<span class="sk-stat__warn">${needs}</span>`, needs ? 'awaiting deps' : 'all set')}
       ${tile('not-declared', 'Not declared', notDeclared, 'no manifest')}
+      ${proposalsTile}
     `;
   }
 
@@ -286,22 +404,87 @@ const SkillsView = (() => {
       return 2;
     };
 
+    // Bucket: meta-skills (kind in {"meta", "meta_sop"}) get a dedicated
+    // top-level group; everything else falls back to the layer-based
+    // grouping. Meta-skills are conceptually different (they orchestrate
+    // sub-skills) and deserve a separate visual lane.
+    const metaList = [];
     const groups = {};
     skills.forEach(s => {
+      const kind = s.kind || 'skill';
+      if (kind === 'meta' || kind === 'meta_sop') {
+        metaList.push(s);
+        return;
+      }
       const l = s.layer || 'extra';
       (groups[l] = groups[l] || []).push(s);
     });
 
-    Object.values(groups).forEach(list => {
-      list.sort((a, b) => {
-        const ra = _rank(a);
-        const rb = _rank(b);
-        if (ra !== rb) return ra - rb;
-        return (a.name || '').localeCompare(b.name || '');
-      });
+    const _sortByReady = (list) => list.sort((a, b) => {
+      const ra = _rank(a);
+      const rb = _rank(b);
+      if (ra !== rb) return ra - rb;
+      return (a.name || '').localeCompare(b.name || '');
     });
+    _sortByReady(metaList);
+    Object.values(groups).forEach(_sortByReady);
 
     let html = '';
+
+    // Auto-propose settings (always rendered when runtime is available
+    // — even if there are no pending proposals — so the operator can
+    // turn the feature on in the first place from a clean state).
+    if (_proposalsSettings && _proposalsSettings.available) {
+      html += _renderAutoProposeSettings();
+    }
+
+    // Pending proposals come below the settings. Path 3 of the
+    // auto-propose feature — `meta-skill-creator` writes proposals
+    // here when the cron job or dream-hook fires.
+    if (_proposals.length) {
+      html += `<details class="sk-group sk-group--proposals" open>
+        <summary class="sk-group__head">
+          <span class="sk-group__caret">▾</span>
+          <span class="sk-group__label">Pending Proposals</span>
+          <span class="sk-group__count">${_proposals.length}</span>
+          <span class="sk-group__meta">meta-skill-creator candidates awaiting your accept/reject decision.</span>
+        </summary>
+        <div class="sk-proposals-list">
+          ${_proposals.map(_renderProposalRow).join('')}
+        </div>
+      </details>`;
+    }
+
+    if (_autoEnabledSkills.length) {
+      html += `<details class="sk-group sk-group--proposals" open>
+        <summary class="sk-group__head">
+          <span class="sk-group__caret">▾</span>
+          <span class="sk-group__label">Auto-Enabled Meta-Skills</span>
+          <span class="sk-group__count">${_autoEnabledSkills.length}</span>
+          <span class="sk-group__meta">Promoted by auto-enable. Disable moves the skill back to pending proposals.</span>
+        </summary>
+        <div class="sk-proposals-list">
+          ${_autoEnabledSkills.map(_renderAutoEnabledRow).join('')}
+        </div>
+      </details>`;
+    }
+
+    // Meta-skills group first (if any). Different summary styling so the
+    // user instantly sees "this is the high-level orchestrators bucket".
+    if (metaList.length) {
+      html += `<details class="sk-group sk-group--meta" open>
+        <summary class="sk-group__head">
+          <span class="sk-group__caret">▾</span>
+          <span class="sk-group__label">Meta-Skills</span>
+          <span class="sk-group__count">${metaList.length}</span>
+          <span class="sk-group__meta">Composed workflows that drive a DAG of sub-skills.</span>
+        </summary>
+        <div class="sk-grid">
+          ${metaList.map(_renderCard).join('')}
+        </div>
+      </details>`;
+    }
+
     _LAYER_ORDER.forEach(layer => {
       const list = groups[layer];
       if (!list || list.length === 0) return;
@@ -321,6 +504,231 @@ const SkillsView = (() => {
     wrap.innerHTML = html;
   }
 
+  function _renderAutoProposeSettings() {
+    const s = _proposalsSettings || {};
+    const cronChecked = s.enabled ? 'checked' : '';
+    const dreamChecked = s.on_dream_complete ? 'checked' : '';
+    const autoEnableChecked = s.auto_enable ? 'checked' : '';
+    const cronExpr = _esc(s.cron || '0 5 * * *');
+    const statusOn = s.enabled || s.on_dream_complete || s.auto_enable;
+    const maxRisk = _esc(s.auto_enable_max_risk || 'low');
+    const riskOption = (value, label) => `<option value="${value}" ${maxRisk === value ? 'selected' : ''}>${label}</option>`;
+    return `<details class="sk-group sk-group--ap-settings" ${statusOn ? 'open' : ''}>
+      <summary class="sk-group__head">
+        <span class="sk-group__caret">▾</span>
+        <span class="sk-group__label">Auto-Propose Settings</span>
+        <span class="sk-group__count">${statusOn ? 'on' : 'off'}</span>
+        <span class="sk-group__meta">Off by default. Enable cron or dream to synthesize gated meta-skills from usage patterns.</span>
+      </summary>
+      <div class="sk-ap-settings">
+        <label class="sk-ap-toggle">
+          <input type="checkbox" data-ap-toggle="enabled" ${cronChecked} />
+          <span class="sk-ap-toggle__label">Scheduled (cron)</span>
+          <span class="sk-ap-toggle__hint">Run on <code>${cronExpr}</code>. Drives the meta-skill-creator DAG against your top co-occurrence patterns.</span>
+        </label>
+        <label class="sk-ap-toggle">
+          <input type="checkbox" data-ap-toggle="on_dream_complete" ${dreamChecked} />
+          <span class="sk-ap-toggle__label">After memory consolidation (dream)</span>
+          <span class="sk-ap-toggle__hint">Piggyback on the memory-dream completion. Independent of the cron toggle.</span>
+        </label>
+        <label class="sk-ap-toggle">
+          <input type="checkbox" data-ap-toggle="auto_enable" ${autoEnableChecked} />
+          <span class="sk-ap-toggle__label">Auto-enable gated proposals</span>
+          <span class="sk-ap-toggle__hint">Promote only proposals that pass all gates and stay within the configured <code>${maxRisk}</code> risk ceiling.</span>
+        </label>
+        <label class="sk-ap-toggle">
+          <span class="sk-ap-toggle__label">Auto-enable risk ceiling</span>
+          <select class="sk-ap-select" data-ap-risk-select>
+            ${riskOption('low', 'Low')}
+            ${riskOption('medium', 'Medium')}
+            ${riskOption('high', 'High')}
+          </select>
+          <span class="sk-ap-toggle__hint">Low is the default. Higher ceilings still run the static safety preflight and keep audit metadata.</span>
+        </label>
+      </div>
+    </details>`;
+  }
+
+  function _renderProposalRow(p) {
+    const pid = _esc(p.proposal_id || '');
+    const eligibleBadge = p.auto_enable_eligible
+      ? '<span class="sk-prop-chip sk-prop-chip--ok">gates ✓</span>'
+      : '<span class="sk-prop-chip sk-prop-chip--warn">gates ✗</span>';
+    const autoChip = (typeof p.triggered_by === 'string' && p.triggered_by.startsWith('auto_'))
+      ? `<span class="sk-prop-chip sk-prop-chip--auto" title="Auto-generated by ${_esc(p.triggered_by)}">[auto]</span>`
+      : '';
+    const autoDecision = p.auto_enable && p.auto_enable.status
+      ? `<span class="sk-prop-chip sk-prop-chip--warn" title="${_esc(p.auto_enable.reason || '')}">auto-enable: ${_esc(p.auto_enable.status)}</span>`
+      : '';
+    const profile = p.auto_enable && p.auto_enable.validation_profile
+      ? `<span class="sk-prop-chip" title="validation profile">${_esc(p.auto_enable.validation_profile)}</span>`
+      : '';
+    const chainHint = p.chain_hash
+      ? `<span class="sk-prop-hash" title="chain hash">${_esc(String(p.chain_hash).slice(0, 8))}</span>`
+      : '';
+    return `<div class="sk-proposal-row" data-proposal-id="${pid}">
+      <div class="sk-proposal-row__head">
+        <code class="sk-proposal-row__id">${pid}</code>
+        ${eligibleBadge}
+        ${autoChip}
+        ${autoDecision}
+        ${profile}
+        ${chainHint}
+      </div>
+      <div class="sk-proposal-row__actions">
+        <button class="btn btn--ghost btn--sm" data-proposal-show="${pid}" type="button">Show</button>
+        <button class="btn btn--primary btn--sm" data-proposal-accept="${pid}" type="button">Accept</button>
+        <button class="btn btn--ghost btn--sm" data-proposal-reject="${pid}" type="button">Reject</button>
+      </div>
+    </div>`;
+  }
+
+  function _renderAutoEnabledRow(s) {
+    const name = _esc(s.name || '');
+    const risk = _esc(s.risk_level || 'unknown');
+    const source = _esc(s.triggered_by || 'unknown');
+    const profile = _esc(s.validation_profile || 'unknown');
+    const skills = Array.isArray(s.skills) && s.skills.length
+      ? `<span class="sk-prop-chip" title="Referenced skills">${s.skills.slice(0, 4).map(_esc).join(', ')}</span>`
+      : '';
+    const pid = s.proposal_id ? `<span class="sk-prop-hash" title="proposal id">${_esc(String(s.proposal_id))}</span>` : '';
+    return `<div class="sk-proposal-row" data-auto-enabled="${name}">
+      <div class="sk-proposal-row__head">
+        <code class="sk-proposal-row__id">${name}</code>
+        <span class="sk-prop-chip sk-prop-chip--ok">enabled</span>
+        <span class="sk-prop-chip sk-prop-chip--auto">${source}</span>
+        <span class="sk-prop-chip">risk: ${risk}</span>
+        <span class="sk-prop-chip">${profile}</span>
+        ${skills}
+        ${pid}
+      </div>
+      <div class="sk-proposal-row__actions">
+        <button class="btn btn--ghost btn--sm" data-auto-enabled-disable="${name}" type="button">Disable</button>
+      </div>
+    </div>`;
+  }
+
+  function _renderAutoEnableAudit(audit) {
+    if (!audit || !audit.status) {
+      return '<div class="sk-audit-empty">No auto-enable decision recorded.</div>';
+    }
+    const list = (items) => Array.isArray(items) && items.length
+      ? items.map(v => `<code>${_esc(String(v))}</code>`).join(' ')
+      : '<span class="sk-dim">none</span>';
+    return `<div class="sk-audit-grid">
+      <div><span>Status</span><strong>${_esc(audit.status)}</strong></div>
+      <div><span>Risk</span><strong>${_esc(audit.risk_level || 'unknown')} / ${_esc(audit.max_risk || 'unknown')}</strong></div>
+      <div><span>static-safety profile</span><strong>${_esc(audit.validation_profile || 'unknown')}</strong></div>
+      <div><span>Reason</span><strong>${_esc(audit.reason || 'none')}</strong></div>
+      <div class="sk-audit-grid__wide"><span>Skills</span><p>${list(audit.skills)}</p></div>
+      <div class="sk-audit-grid__wide"><span>Tools</span><p>${list(audit.tools)}</p></div>
+      <div class="sk-audit-grid__wide"><span>Static-safety reasons</span><p>${list(audit.reasons)}</p></div>
+    </div>`;
+  }
+
+  async function _showProposal(proposalId) {
+    try {
+      const data = await _rpc.call('exec.proposals.show', { proposal_id: proposalId });
+      if (data.status !== 'ok') {
+        UI.toast('Show failed: ' + (data.reason || 'unknown'), 'err');
+        return;
+      }
+      const dlg = _el.querySelector('#skill-detail-dialog');
+      const body = _el.querySelector('#skill-detail-body');
+      if (!dlg || !body) return;
+      const gatesJson = JSON.stringify(data.gates || {}, null, 2);
+      const auditHtml = _renderAutoEnableAudit(data.auto_enable_audit || {});
+      body.innerHTML = `<div class="sk-detail">
+        <header class="sk-detail__header">
+          <h3>Proposal ${_esc(proposalId)}</h3>
+          <button class="btn btn--ghost btn--sm" data-dialog-close type="button">Close</button>
+        </header>
+        <section class="sk-detail__section">
+          <h4>Auto-enable Audit</h4>
+          ${auditHtml}
+        </section>
+        <section class="sk-detail__section">
+          <h4>SKILL.md</h4>
+          <pre class="sk-detail__pre">${_esc(data.skill_md || '')}</pre>
+        </section>
+        <section class="sk-detail__section">
+          <h4>Gates</h4>
+          <pre class="sk-detail__pre">${_esc(gatesJson)}</pre>
+        </section>
+      </div>`;
+      const closeBtn = body.querySelector('[data-dialog-close]');
+      if (closeBtn) closeBtn.addEventListener('click', () => dlg.close());
+      dlg.showModal();
+    } catch (err) {
+      UI.toast('Show failed: ' + err.message, 'err');
+    }
+  }
+
+  async function _acceptProposal(proposalId) {
+    try {
+      let data = await _rpc.call('exec.proposals.accept', { proposal_id: proposalId });
+      if (data.status === 'refused' && data.reason && data.reason.indexOf('gates') !== -1) {
+        const ok = await UI.confirm({
+          title: 'Force accept proposal?',
+          message: `<p>Proposal <strong>${_esc(proposalId)}</strong> did not pass all gates.</p><p>${_esc(data.reason)}</p><p>Accept anyway?</p>`,
+          confirmLabel: 'Force accept',
+          danger: true,
+        });
+        if (!ok) return;
+        data = await _rpc.call('exec.proposals.accept', { proposal_id: proposalId, force: true });
+      }
+      if (data.status !== 'ok') {
+        UI.toast('Accept failed: ' + (data.reason || data.status), 'err');
+        return;
+      }
+      // Reload list + cards so the proposal disappears and the new
+      // skill appears under MANAGED layer.
+      await _loadData();
+    } catch (err) {
+      UI.toast('Accept failed: ' + err.message, 'err');
+    }
+  }
+
+  async function _rejectProposal(proposalId) {
+    const ok = await UI.confirm({
+      title: 'Reject proposal?',
+      message: `<p>Reject and delete proposal <strong>${_esc(proposalId)}</strong>?</p><p>This cannot be undone.</p>`,
+      confirmLabel: 'Reject proposal',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const data = await _rpc.call('exec.proposals.reject', { proposal_id: proposalId });
+      if (data.status !== 'ok') {
+        UI.toast('Reject failed: ' + (data.reason || data.status), 'err');
+        return;
+      }
+      await _loadData();
+    } catch (err) {
+      UI.toast('Reject failed: ' + err.message, 'err');
+    }
+  }
+
+  async function _disableAutoEnabled(name) {
+    const ok = await UI.confirm({
+      title: 'Disable auto-enabled skill?',
+      message: `<p>Disable <strong>${_esc(name)}</strong> and move it back to pending proposals?</p>`,
+      confirmLabel: 'Disable skill',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const data = await _rpc.call('exec.proposals.auto_enabled.disable', { name });
+      if (data.status !== 'ok') {
+        UI.toast('Disable failed: ' + (data.reason || data.status), 'err');
+        return;
+      }
+      await _loadData();
+    } catch (err) {
+      UI.toast('Disable failed: ' + err.message, 'err');
+    }
+  }
+
   function _renderCard(skill) {
     const status = skill.status || (skill.eligible ? 'ready' : 'needs_setup');
     let dotCls;
@@ -330,16 +738,39 @@ const SkillsView = (() => {
 
     const dotTitle = skill.status_detail || (skill.eligible ? 'Ready' : 'Needs setup');
     const emoji = skill.emoji ? `<span class="sk-card__emoji">${_esc(skill.emoji)}</span>` : '';
-    const desc = skill.description
-      ? (skill.description.length > 100 ? skill.description.slice(0, 100) + '…' : skill.description)
+    const desc = skill.description || '';
+    // Meta-skill card adds a "uses:" chip strip showing the sub-skills its
+    // composition references. Limit to 6 visible chips + "+N" overflow so
+    // the card height stays bounded for large DAGs.
+    const isMeta = skill.kind === 'meta' || skill.kind === 'meta_sop';
+    let subSkillsHtml = '';
+    if (isMeta && Array.isArray(skill.sub_skills) && skill.sub_skills.length) {
+      const subs = skill.sub_skills;
+      const visible = subs.slice(0, 6);
+      const overflow = subs.length - visible.length;
+      const chips = visible
+        .map(n => `<span class="sk-card__sub-chip">${_esc(n)}</span>`)
+        .join('');
+      const more = overflow > 0
+        ? `<span class="sk-card__sub-chip sk-card__sub-chip--more">+${overflow}</span>`
+        : '';
+      subSkillsHtml = `<div class="sk-card__sub-row" title="Sub-skills used by this meta-skill">
+        <span class="sk-card__sub-label">uses</span>
+        ${chips}${more}
+      </div>`;
+    }
+    const kindBadge = isMeta
+      ? `<span class="sk-card__kind-badge" title="${_esc(skill.kind)}">${skill.kind === 'meta_sop' ? 'SOP' : 'META'}</span>`
       : '';
-    return `<button type="button" class="sk-card" data-skill-card="${_esc(skill.name)}">
+    return `<button type="button" class="sk-card${isMeta ? ' sk-card--meta' : ''}" data-skill-card="${_esc(skill.name)}" title="${_esc(skill.name + (desc ? ': ' + desc : ''))}">
       <div class="sk-card__head">
         <span class="sk-card__dot ${dotCls}" title="${_esc(dotTitle)}"></span>
         ${emoji}
         <span class="sk-card__name">${_esc(skill.name)}</span>
+        ${kindBadge}
       </div>
-      <p class="sk-card__desc">${_esc(desc)}</p>
+      <p class="sk-card__desc" title="${_esc(desc)}">${_esc(desc)}</p>
+      ${subSkillsHtml}
     </button>`;
   }
 
@@ -403,6 +834,33 @@ const SkillsView = (() => {
       ? `<button class="btn btn--sm" data-uninstall="${_esc(skill.name)}">Remove</button>`
       : '';
 
+    // Meta-skill composition: render the sub-skill list as a vertical
+    // chip stack. Order is preserved (parser yields composition.steps in
+    // declaration order, dedup'd). Each chip is the literal skill name
+    // referenced by `composition.steps[].skill` (or `routes[].skill`).
+    const isMeta = skill.kind === 'meta' || skill.kind === 'meta_sop';
+    let compositionHtml = '';
+    if (isMeta && Array.isArray(skill.sub_skills) && skill.sub_skills.length) {
+      const chips = skill.sub_skills
+        .map(n => `<span class="sk-chip sk-chip--sub">${_esc(n)}</span>`)
+        .join(' ');
+      const kindLabel = skill.kind === 'meta_sop' ? 'meta_sop' : 'meta';
+      compositionHtml = `<div class="sk-dialog__section">
+        <div class="sk-dialog__section-title">Composition (${_esc(kindLabel)}, ${skill.sub_skills.length} sub-skills)</div>
+        <div class="sk-dialog__sub-list">${chips}</div>
+      </div>`;
+    }
+    let triggersHtml = '';
+    if (isMeta && Array.isArray(skill.triggers) && skill.triggers.length) {
+      const triggers = skill.triggers
+        .map(t => `<code class="sk-chip sk-chip--trigger">${_esc(t)}</code>`)
+        .join(' ');
+      triggersHtml = `<div class="sk-dialog__section">
+        <div class="sk-dialog__section-title">Triggers</div>
+        <div class="sk-dialog__sub-list">${triggers}</div>
+      </div>`;
+    }
+
     body.innerHTML = `
       <header class="sk-dialog__head">
         <div class="sk-dialog__head-left">
@@ -413,7 +871,9 @@ const SkillsView = (() => {
         <button type="button" class="sk-iconbtn" id="skill-dialog-close" aria-label="Close">${icons.x()}</button>
       </header>
       <section class="sk-dialog__body">
-        <p class="sk-dialog__desc">${_esc(_truncDesc(skill.description))}</p>
+        <p class="sk-dialog__desc">${_esc(skill.description || '')}</p>
+        ${triggersHtml}
+        ${compositionHtml}
         ${missingHtml}
         ${installHtml}
         ${homepage ? `<div class="sk-dialog__section">${homepage}</div>` : ''}
@@ -532,13 +992,6 @@ const SkillsView = (() => {
 
   function _esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
-
-  function _truncDesc(s, n = 220) {
-    if (!s) return '';
-    const firstSent = s.split(/(?<=\.)\s+(?=[A-Z])/)[0] || s;
-    const base = firstSent.length <= n ? firstSent : firstSent.slice(0, n).replace(/\s+\S*$/, '') + '…';
-    return base;
   }
 
   function _layerLabel(layer) {

@@ -7,7 +7,7 @@ RELEASE_PS1 = ROOT / "install.ps1"
 RELEASE_SH = ROOT / "install.sh"
 SOURCE_PS1 = ROOT / "scripts" / "install_source.ps1"
 SOURCE_SH = ROOT / "scripts" / "install_source.sh"
-CURRENT_RELEASE_TAG = "v0.2.1"
+CURRENT_RELEASE_TAG = "v0.3.0"
 
 
 def test_source_install_scripts_force_refresh_local_uv_tool_package() -> None:
@@ -109,7 +109,9 @@ def test_install_scripts_support_optional_extras() -> None:
 
     for script in scripts:
         assert "OPENSQUILLA_INSTALL_EXTRAS" in script
-        assert "feishu" in script
+        for legacy_extra in ("feishu", "telegram", "dingtalk", "wecom", "qq"):
+            assert legacy_extra not in script
+        assert "matrix" in script
         assert "matrix-e2e" in script
         assert "document-extras" in script
         assert "msteams" not in script

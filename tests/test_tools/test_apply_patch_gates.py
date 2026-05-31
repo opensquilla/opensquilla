@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+from opensquilla.sandbox import sensitive_paths
 from opensquilla.tools.builtin import patch as patch_tool
 from opensquilla.tools.registry import get_default_registry
 from opensquilla.tools.types import (
@@ -75,6 +76,92 @@ async def test_apply_patch_blocks_sensitive_key_file_suffix(tmp_path: Path) -> N
     assert payload["status"] == "blocked"
     assert payload["sensitive_path"] == "/id_rsa"
     assert not (tmp_path / "id_rsa").exists()
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_blocks_workspace_write_deny_glob(tmp_path: Path) -> None:
+    token = current_tool_context.set(
+        ToolContext(
+            workspace_dir=str(tmp_path),
+            workspace_write_deny_globs=["blocked/**"],
+        )
+    )
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(
+            """*** Begin Patch
+*** Add File: blocked/generated.txt
++nope
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "workspace_write_deny"
+    assert payload["matched_pattern"] == "blocked/**"
+    assert not (tmp_path / "blocked" / "generated.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_allows_workspace_under_sensitive_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(sensitive_paths, "_SENSITIVE_PREFIXES", (str(tmp_path),))
+    monkeypatch.setattr(
+        sensitive_paths,
+        "_WORKSPACE_PARENT_EXCEPTION_MARKERS",
+        (str(tmp_path),),
+    )
+    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(
+            """*** Begin Patch
+*** Add File: docs/plan.md
++hello
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "Applied patch: 1 file(s) added"
+    assert (workspace / "docs" / "plan.md").read_text(encoding="utf-8") == "hello"
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_workspace_exception_keeps_leaf_secret_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(sensitive_paths, "_SENSITIVE_PREFIXES", (str(tmp_path),))
+    monkeypatch.setattr(
+        sensitive_paths,
+        "_WORKSPACE_PARENT_EXCEPTION_MARKERS",
+        (str(tmp_path),),
+    )
+    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(
+            """*** Begin Patch
+*** Add File: .env
++TOKEN=secret
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "sensitive_path"
+    assert not (workspace / ".env").exists()
 
 
 @pytest.mark.asyncio

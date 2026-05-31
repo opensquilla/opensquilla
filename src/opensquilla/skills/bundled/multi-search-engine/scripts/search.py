@@ -66,14 +66,24 @@ def _ddg_search(query: str, limit: int) -> list[Result]:
         return results
 
 
+_BRAVE_MAX_COUNT = 20  # Brave Web Search API hard-caps `count` at 20; >20 → HTTP 422.
+
+
 def _brave_search(query: str, limit: int) -> list[Result]:
-    api_key = os.environ.get("BRAVE_API_KEY")
+    api_key = os.environ.get("BRAVE_SEARCH_API_KEY") or os.environ.get("BRAVE_API_KEY")
     if not api_key:
-        raise RuntimeError("BRAVE_API_KEY not set; skipping")
+        raise RuntimeError("BRAVE_SEARCH_API_KEY/BRAVE_API_KEY not set; skipping")
+    effective_count = min(max(limit, 1), _BRAVE_MAX_COUNT)
+    if limit > _BRAVE_MAX_COUNT:
+        print(
+            f"[multi-search-engine] brave count clamped {limit}→{_BRAVE_MAX_COUNT} "
+            f"(API hard-cap)",
+            file=sys.stderr,
+        )
     with _client() as client:
         response = client.get(
             "https://api.search.brave.com/res/v1/web/search",
-            params={"q": query, "count": limit},
+            params={"q": query, "count": effective_count},
             headers={"X-Subscription-Token": api_key},
         )
         response.raise_for_status()
@@ -131,12 +141,24 @@ ENGINES: dict[str, Callable[[str, int], list[Result]]] = {
 }
 
 
+def _normalize_query(query: str) -> str:
+    """Extract the actual web query from structured planner output."""
+    lines = [line.strip() for line in query.splitlines() if line.strip()]
+    for line in lines:
+        if line.upper().startswith("SEARCH_QUERY:"):
+            extracted = line.split(":", 1)[1].strip()
+            if extracted:
+                return extracted
+    return query.strip()
+
+
 def search_all(
     query: str,
     engines: list[str],
     limit: int,
     strict: bool,
 ) -> dict[str, object]:
+    normalized_query = _normalize_query(query)
     results: list[dict[str, object]] = []
     errors: list[EngineError] = []
     handlers: list[tuple[str, Callable[[str, int], list[Result]] | None, str | None]] = []
@@ -150,7 +172,7 @@ def search_all(
         handlers.append((name, handler, None))
 
     def _run_engine(handler: Callable[[str, int], list[Result]]) -> list[Result]:
-        return handler(query, limit)
+        return handler(normalized_query, limit)
 
     max_workers = max(1, len(handlers))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -176,7 +198,7 @@ def search_all(
             for r in engine_results:
                 results.append(r.__dict__)
     return {
-        "query": query,
+        "query": normalized_query,
         "results": results,
         "errors": [e.__dict__ for e in errors],
     }

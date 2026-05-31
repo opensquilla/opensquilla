@@ -145,8 +145,11 @@ def test_channel_catalog_payload_exposes_ui_metadata():
     assert fields["app_secret"]["placeholder"]
     assert fields["webhook_path"]["showWhen"] == {"connection_mode": "webhook"}
     assert fields["encrypt_key"]["advanced"] is True
+    assert feishu["blocking"] is False
+    assert feishu["whatYouNeed"]
     slack = next(c for c in payload if c["type"] == "slack")
     assert "public URL" in slack["help"]
+    assert any("public URL" in item for item in slack["whatYouNeed"])
 
 
 def test_matrix_encryption_choices():
@@ -167,18 +170,22 @@ def test_conditional_webhook_channels_flagged(type_name: str):
     assert spec.transport in {"mixed", "webhook"}
 
 
-def test_dependency_extras_are_set_for_optional_extras():
-    expected = {
-        "feishu": "feishu",
-        "telegram": "telegram",
-        "dingtalk": "dingtalk",
-        "wecom": "wecom",
-        "qq": "qq",
-        "matrix": "matrix",
-    }
-    for type_name, extra in expected.items():
+def test_base_channel_specs_do_not_advertise_legacy_extras():
+    for type_name in ("feishu", "telegram", "dingtalk", "wecom", "qq"):
         spec = get_channel_setup_spec(type_name)
-        assert spec.dependency_extra == extra
+        assert spec.dependency_extra is None
+
+
+def test_matrix_advertises_its_real_optional_extra():
+    spec = get_channel_setup_spec("matrix")
+    assert spec.dependency_extra == "matrix"
+
+
+def test_channel_catalog_payload_only_advertises_real_install_extras():
+    payload = {entry["type"]: entry for entry in channel_catalog_payload()}
+    for type_name in ("feishu", "telegram", "dingtalk", "wecom", "qq"):
+        assert payload[type_name]["dependencyExtra"] is None
+    assert payload["matrix"]["dependencyExtra"] == "matrix"
 
 
 def test_unknown_channel_raises():

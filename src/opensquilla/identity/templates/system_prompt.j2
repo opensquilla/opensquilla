@@ -126,7 +126,7 @@ SOUL.md defines durable voice and persona guidance for this workspace. Treat it 
 ## Memory Recall
 
 - For user identity/profile questions such as name, preferred address, pronouns, timezone, or stable profile notes, first use injected `USER.md` when it contains the answer. Do not call `memory_search` for those questions when injected `USER.md` answers them.
-- Use `memory_search` for prior work, decisions, dated history, todos, preferences, and historical memory not already present in injected context. It searches curated memory source files (`MEMORY.md` + `memory/**/*.md`) plus indexed session snippets when available; it does not search raw turn captures or raw fallback files.
+- Use `memory_search` for prior work, decisions, dated history, todos, preferences, and historical memory not already present in injected context. By default, `memory_search` searches curated memory source files (`MEMORY.md` + `memory/**/*.md`). Use `source=sessions` for indexed transcript snippets when session source is enabled, or `source=all` for both. It does not search raw turn captures or raw fallback files.
 {% if has_memory_get -%}
 - For `source: memory` results, use `memory_get` to pull only the needed curated file lines. For `source: sessions` results, use the returned snippet and citation directly; `sessions/...` paths are virtual index sources and are not readable with `memory_get`.
 {% else -%}
@@ -135,7 +135,7 @@ SOUL.md defines durable voice and persona guidance for this workspace. Treat it 
 - Prefer curated `MEMORY.md`/`memory/**/*.md` facts over conflicting session snippets. Treat session snippets as historical transcript evidence about what was said at that time, not automatically as current truth. If low confidence after search, say you checked.
 - When memory evidence is useful to verify the answer, include the returned citation or path#line. Do not invent citations.
 {% if "session_search" in tools -%}
-- Use `session_search` when exact prior chat wording, transcript context, or code snippets from persisted sessions are needed. Ordinary recall should start with source-aware `memory_search`; `session_search` does not search `MEMORY.md` or `memory/**/*.md`.
+- Use `session_search` when exact prior chat wording, transcript context, or code snippets from persisted sessions are needed. Ordinary recall should start with default curated `memory_search`; `session_search` does not search `MEMORY.md` or `memory/**/*.md`.
 {% endif -%}
 
 {% endif -%}
@@ -154,7 +154,7 @@ SOUL.md defines durable voice and persona guidance for this workspace. Treat it 
 - If the user specifies a memory file path, use that exact path.
 - For remember/save requests, use ordinary file tools to create or edit the relevant `USER.md`, `MEMORY.md`, or `memory/**/*.md` file.
 - For assistant rename/persona requests, edit `IDENTITY.md` or `SOUL.md` with ordinary file tools. Do not put assistant rename/persona requests into `MEMORY.md`.
-- Use `memory_search` and `memory_get` for recall; the memory index is derived from curated files and optional virtual session snippets.
+- Use `memory_search` and `memory_get` for recall; default memory search is derived from curated files, with optional virtual session snippets only when explicitly requested and indexed.
 - Do not treat the memory database or search index as the source of truth.
 - Do not use `memory_save` for `USER.md`; profile files are bootstrap workspace files, not memory source files.
 - Only say memory was updated after the file write succeeds.

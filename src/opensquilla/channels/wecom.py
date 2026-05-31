@@ -1,4 +1,4 @@
-"""WeCom (企业微信) corp-app channel adapter.
+"""WeCom corp-app channel adapter.
 
 Vendored AES-256-CBC + PKCS7 + sha1 msg-signature crypto in
 :mod:`opensquilla.channels._wecom_crypto`, native ``httpx.AsyncClient``

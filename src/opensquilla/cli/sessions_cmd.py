@@ -12,9 +12,9 @@ from typing import Any
 import typer
 from rich.table import Table
 
+from opensquilla.cli.chat.session_state import messages_to_markdown
 from opensquilla.cli.gateway_rpc import run_gateway_sync
 from opensquilla.cli.output import print_json
-from opensquilla.cli.repl.session_state import messages_to_markdown
 from opensquilla.cli.ui import ACCENT, ACCENT_HEADER, console, error_panel
 from opensquilla.cli.url_utils import normalize_gateway_url
 

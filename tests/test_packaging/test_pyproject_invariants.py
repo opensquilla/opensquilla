@@ -1,9 +1,8 @@
-"""Invariants for pyproject.toml after the 0.1.0 release refactor.
+"""Invariants for pyproject.toml after the channel install contract cleanup.
 
-The refactor moves real-used channel SDKs into base dependencies, deletes
-dead extras (msteams / matrix), and turns the remaining channel extras
-into empty backward-compat aliases. These tests assert those invariants
-so the configuration cannot silently regress.
+Real-used channel SDKs stay in base dependencies. Base-install channels
+must not be re-exposed as empty optional extras, because package metadata
+is also a user-visible install contract.
 """
 
 from __future__ import annotations
@@ -14,12 +13,19 @@ from pathlib import Path
 import pytest
 
 PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
+UV_LOCK = Path(__file__).resolve().parents[2] / "uv.lock"
 
 
 @pytest.fixture(scope="module")
 def project_table() -> dict:
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     return data["project"]
+
+
+@pytest.fixture(scope="module")
+def lock_package() -> dict:
+    data = tomllib.loads(UV_LOCK.read_text(encoding="utf-8"))
+    return next(package for package in data["package"] if package["name"] == "opensquilla")
 
 
 def _dep_names(specs: list[str]) -> set[str]:
@@ -64,15 +70,24 @@ def test_no_dead_extras(project_table: dict) -> None:
     )
 
 
-def test_legacy_extras_are_empty(project_table: dict) -> None:
-    """Channel extras that used to pull vendor SDKs must now be empty aliases."""
+def test_base_channel_extras_are_not_exposed_as_noop_aliases(
+    project_table: dict,
+) -> None:
+    """Base-install channels must not be exposed as no-op extras."""
 
     extras = project_table.get("optional-dependencies", {})
     for name in ("feishu", "telegram", "dingtalk", "wecom", "qq"):
-        assert name in extras, f"legacy alias {name} should still exist for compat"
-        assert extras[name] == [], (
-            f"legacy alias {name} should be an empty list (SDK is now in base)"
-        )
+        assert name not in extras, f"{name} is installed from base; do not expose a no-op extra"
+
+
+def test_lockfile_does_not_advertise_removed_base_channel_extras(
+    lock_package: dict,
+) -> None:
+    """uv.lock metadata must match the package install contract."""
+
+    provides_extras = set(lock_package.get("provides-extras", []))
+    for name in ("feishu", "telegram", "dingtalk", "wecom", "qq"):
+        assert name not in provides_extras
 
 
 def test_no_duplicate_ml_extra(project_table: dict) -> None:

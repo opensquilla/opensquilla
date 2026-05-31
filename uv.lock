@@ -1644,7 +1644,7 @@ wheels = [
 
 [[package]]
 name = "opensquilla"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1792,7 +1792,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=13.0" },
     { name = "yoyo-migrations", specifier = ">=8.2" },
 ]
-provides-extras = ["dev", "mcp", "memory", "recommended", "feishu", "telegram", "dingtalk", "wecom", "qq", "matrix", "matrix-e2e", "document-extras"]
+provides-extras = ["dev", "mcp", "memory", "recommended", "matrix", "matrix-e2e", "document-extras"]
 
 [package.metadata.requires-dev]
 dev = [

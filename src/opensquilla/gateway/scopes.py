@@ -32,6 +32,7 @@ ADMIN_SCOPE = "operator.admin"
 READ_SCOPE = "operator.read"
 WRITE_SCOPE = "operator.write"
 APPROVALS_SCOPE = "operator.approvals"
+PROPOSALS_SCOPE = "operator.proposals"
 PAIRING_SCOPE = "operator.pairing"
 NODE_SCOPE = "node"
 
@@ -40,14 +41,20 @@ OPERATOR_SCOPE_NAMESPACE = "operator."
 # Default scope set for a locally-proven operator: same machine, loopback
 # transport. Mirrors what the desktop CLI declares on connect.
 CLI_DEFAULT_OPERATOR_SCOPES: frozenset[str] = frozenset(
-    {ADMIN_SCOPE, READ_SCOPE, WRITE_SCOPE, APPROVALS_SCOPE, PAIRING_SCOPE}
+    {
+        ADMIN_SCOPE, READ_SCOPE, WRITE_SCOPE,
+        APPROVALS_SCOPE, PROPOSALS_SCOPE, PAIRING_SCOPE,
+    }
 )
 
 # Default scope set for a remote / unproven operator under no-auth mode.
 # Notably excludes ``operator.admin``: unauthenticated remote callers must
-# not get destructive privileges. Pairing is also excluded — that scope is
-# only granted via a deliberate token grant or the loopback path.
-REMOTE_OPERATOR_SCOPES: frozenset[str] = frozenset({READ_SCOPE, WRITE_SCOPE, APPROVALS_SCOPE})
+# not get destructive privileges. Pairing and proposals are also excluded:
+# proposal mutation promotes generated SKILL.md files into the managed skill
+# layer, so remote callers need an authenticated/admin path for that surface.
+REMOTE_OPERATOR_SCOPES: frozenset[str] = frozenset(
+    {READ_SCOPE, WRITE_SCOPE, APPROVALS_SCOPE}
+)
 
 # Default scopes for the node role (separate scope namespace).
 NODE_DEFAULT_SCOPES: frozenset[str] = frozenset({NODE_SCOPE})
@@ -90,6 +97,7 @@ METHOD_SCOPES: dict[str, str] = {
     "gateway.identity.get": READ_SCOPE,
     "last-heartbeat": READ_SCOPE,
     "system-presence": READ_SCOPE,
+    "doctor.status": READ_SCOPE,
     "doctor.memory.status": READ_SCOPE,
     "diagnostics.status": READ_SCOPE,
     "logs.status": READ_SCOPE,
@@ -133,6 +141,7 @@ METHOD_SCOPES: dict[str, str] = {
     "agent.wait": WRITE_SCOPE,
     "chat.send": WRITE_SCOPE,
     "chat.abort": WRITE_SCOPE,
+    "chat.clarify_submit": WRITE_SCOPE,
     "search.query": WRITE_SCOPE,
     "sessions.create": WRITE_SCOPE,
     "sessions.send": WRITE_SCOPE,
@@ -157,6 +166,14 @@ METHOD_SCOPES: dict[str, str] = {
     "plugin.approval.request": APPROVALS_SCOPE,
     "plugin.approval.waitDecision": APPROVALS_SCOPE,
     "plugin.approval.resolve": APPROVALS_SCOPE,
+    # ----- proposals (auto-propose UI: list/show) -----
+    # ``exec.proposals.*`` prefix sits OUTSIDE the ``exec.approvals.``
+    # admin prefix so that proposal browsing can remain operator-visible.
+    "exec.proposals.pending_count": PROPOSALS_SCOPE,
+    "exec.proposals.list": PROPOSALS_SCOPE,
+    "exec.proposals.show": PROPOSALS_SCOPE,
+    "exec.proposals.settings.get": PROPOSALS_SCOPE,
+    "exec.proposals.auto_enabled.list": PROPOSALS_SCOPE,
     # ----- admin -----
     "chat.inject": ADMIN_SCOPE,
     "system-event": ADMIN_SCOPE,
@@ -171,6 +188,13 @@ METHOD_SCOPES: dict[str, str] = {
     "skills.update": ADMIN_SCOPE,
     "skills.uninstall": ADMIN_SCOPE,
     "skills.deps.install": ADMIN_SCOPE,
+    # Proposal mutation changes the managed skill layer or unattended
+    # synthesis state, so require authenticated admin rather than remote
+    # no-auth operator.proposals.
+    "exec.proposals.accept": ADMIN_SCOPE,
+    "exec.proposals.reject": ADMIN_SCOPE,
+    "exec.proposals.settings.set": ADMIN_SCOPE,
+    "exec.proposals.auto_enabled.disable": ADMIN_SCOPE,
     "channels.logout": ADMIN_SCOPE,
     "channels.restart": ADMIN_SCOPE,  # OpenSquilla-only.
     "diagnostics.set": ADMIN_SCOPE,
@@ -184,6 +208,9 @@ METHOD_SCOPES: dict[str, str] = {
     "memory.index": ADMIN_SCOPE,
     "memory.raw_fallbacks.list": ADMIN_SCOPE,
     "memory.raw_fallbacks.show": ADMIN_SCOPE,
+    "memory.repair.list": ADMIN_SCOPE,
+    "memory.repair.run": ADMIN_SCOPE,
+    "memory.repair.show": ADMIN_SCOPE,
     # OpenSquilla-only — onboarding mutations require admin scope.
     "onboarding.provider.configure": ADMIN_SCOPE,
     "onboarding.router.configure": ADMIN_SCOPE,

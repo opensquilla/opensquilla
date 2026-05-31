@@ -30,6 +30,11 @@ class ImageGenerationProviderSetupSpec:
     default_base_url: str
     default_model: str
     suggested_models: tuple[str, ...]
+    deployment: str
+    blocking: bool
+    can_probe: bool
+    readme_scenarios: tuple[str, ...]
+    what_you_need: tuple[str, ...]
     fields: tuple[ImageGenerationProviderSetupField, ...]
 
 
@@ -99,6 +104,14 @@ def list_image_generation_provider_setup_specs() -> list[ImageGenerationProvider
             default_base_url=str(data["default_base_url"]),
             default_model=str(data["default_model"]),
             suggested_models=tuple(data["suggested_models"]),
+            deployment="cloud",
+            blocking=False,
+            can_probe=False,
+            readme_scenarios=("image generation", "first-run setup"),
+            what_you_need=(
+                f"API key via {data['env_key']} or a one-time paste.",
+                "A provider/model id that supports image generation.",
+            ),
             fields=_fields_for(data),
         )
         for provider_id, data in _IMAGE_PROVIDER_DATA.items()
@@ -125,6 +138,11 @@ def image_generation_provider_catalog_payload() -> list[dict[str, Any]]:
             "defaultBaseUrl": s.default_base_url,
             "defaultModel": s.default_model,
             "suggestedModels": list(s.suggested_models),
+            "deployment": s.deployment,
+            "blocking": s.blocking,
+            "canProbe": s.can_probe,
+            "readmeScenarios": list(s.readme_scenarios),
+            "whatYouNeed": list(s.what_you_need),
             "fields": [
                 {
                     "name": f.name,

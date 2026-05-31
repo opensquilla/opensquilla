@@ -33,7 +33,11 @@ OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, Qwen/DashScope,
 and 20+ other LLM providers with no change to your code or config
 schema.
 
-OpenSquilla 0.2.1 is the current release.
+OpenSquilla 0.3.0 is the current release.
+
+For task-oriented product documentation, start with the
+[OpenSquilla Product Guide](README.product.md) or the
+[documentation index](docs/README.md).
 
 ---
 
@@ -156,7 +160,7 @@ $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 **2. Install OpenSquilla** — the same command on every platform.
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.2.1/opensquilla-0.2.1-py3-none-any.whl"
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.3.0/opensquilla-0.3.0-py3-none-any.whl"
 ```
 
 This installs the OpenSquilla wheel from the release URL, then lets
@@ -177,7 +181,7 @@ opensquilla gateway run
 > a new terminal, or re-run the PATH line from step 1.
 
 For a fully pinned install, use the versioned wheel URL:
-`https://github.com/opensquilla/opensquilla/releases/download/v0.2.1/opensquilla-0.2.1-py3-none-any.whl`.
+`https://github.com/opensquilla/opensquilla/releases/download/v0.3.0/opensquilla-0.3.0-py3-none-any.whl`.
 
 ### Install from source
 
@@ -327,6 +331,7 @@ variables when you pass `--api-key-env`. The router defaults to
 opensquilla onboard                # full interactive wizard
 opensquilla onboard --if-needed    # idempotent: safe for scripts and re-installs
 opensquilla onboard --minimal      # provider only; skip channels and search
+opensquilla onboard status         # inspect every setup section without writing
 ```
 
 In SSH, CI, or any environment without a TTY, use the non-interactive
@@ -362,7 +367,10 @@ opensquilla configure channels
 
 Sections: `provider`, `router`, `channels`, `search`,
 `image-generation`, `memory-embedding`. The Web UI exposes the same
-flow at `/control/setup`.
+catalog and status model at `/control/setup`: Provider and Router are
+the fast path, while Channels, Search, Image generation, and Memory
+embedding sit in the Capability Center and can be configured later.
+Empty channels are treated as an opt-out, not a failed setup.
 
 **Config load order:** `OPENSQUILLA_GATEWAY_CONFIG_PATH` →
 `./opensquilla.toml` → `~/.opensquilla/config.toml` → built-in
@@ -396,9 +404,21 @@ opensquilla chat                       # interactive REPL
 opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 ```
 
-Open the Web UI at <http://127.0.0.1:18791/control/> and check health
-with `curl http://127.0.0.1:18791/health`. Press `Ctrl+C` to stop a
-foreground gateway.
+Open the Web UI at <http://127.0.0.1:18791/control/>. The **Health**
+view shows whether OpenSquilla is ready, what is not ready, and the
+next recovery steps. From the CLI, run:
+
+```sh
+opensquilla doctor
+opensquilla doctor --json
+opensquilla doctor --config ./opensquilla.toml --json
+```
+
+`/health` and `/healthz` are lightweight liveness endpoints for process
+checks. `opensquilla doctor` and the Web UI Health view are the readiness
+surfaces for provider config, memory, logs, search, channels, sandbox
+posture, router, image generation, and recovery guidance. Press
+`Ctrl+C` to stop a foreground gateway.
 
 Other command groups include `sessions`, `skills`, `memory`, `migrate`,
 `cron`, `channels`, `providers`, `models`, and `cost`. Run
@@ -458,6 +478,32 @@ Provider tiers, sandbox tuning, image generation, and concurrency
 settings live in `opensquilla.toml.example`.
 
 ---
+
+## What's New in 0.3.0
+
+OpenSquilla 0.3.0 makes reusable agent workflows first-class with
+MetaSkills, then strengthens the runtime around diagnostics, context
+management, and documentation:
+
+- **MetaSkills** — repeatable multi-step work can now run as reusable,
+  inspectable workflows with composition parsing, scheduling, pause/resume
+  user input, proposal gates, run history, and authoring documentation.
+- **Health Doctor** — `opensquilla doctor` and the WebUI Health view now turn
+  provider, gateway, memory, search, router, sandbox, and channel problems into
+  actionable findings with recovery commands.
+- **Structured tool compression** — Tokenjuice-backed projection keeps large
+  logs, diffs, test output, JSON, and package-manager results useful without
+  flooding the provider context.
+- **Real product documentation** — the docs now cover quickstart,
+  configuration, CLI, WebUI, providers, sessions, tools, memory, compaction,
+  MetaSkills, tool compression, scheduling, channels, MCP, and
+  troubleshooting.
+- **Runtime and WebUI stability** — long-session compaction, attachment
+  rendering, artifact downloads, router replay, stream recovery, and
+  cross-platform CLI behavior were tightened across the release.
+
+Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
+[`docs/releases/0.3.0.md`](docs/releases/0.3.0.md).
 
 ## What's New in 0.2.1
 
@@ -525,6 +571,10 @@ Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
 | **Unified gateway** | A Starlette ASGI server on `127.0.0.1:18791` with WebSocket RPC and an embedded control console (`/control/`). Web UI, CLI, and channels for Terminal, WebSocket, Slack, Telegram, Discord, Feishu, DingTalk, WeCom, Matrix, and QQ all share one `TurnRunner`. |
 | **Durable sessions, subagents, and scheduling** | SQLite-backed session, transcript, and replay storage with per-agent workspaces. Agents spawn depth-bounded subagents, and a `SchedulerEngine` with an in-tree cron parser runs recurring jobs via `opensquilla cron`. |
 | **Operator controls** | Human-in-the-loop approvals can pause sensitive tool calls for a decision; per-turn and per-session token and cost rollups (`opensquilla cost`) and diagnostics are available from the CLI and Web UI. |
+
+MetaSkill docs: [`docs/features/meta-skills.md`](docs/features/meta-skills.md),
+[`docs/features/meta-skill-user-guide.md`](docs/features/meta-skill-user-guide.md),
+and [`docs/authoring/meta-skills.md`](docs/authoring/meta-skills.md).
 
 ---
 

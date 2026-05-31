@@ -21,6 +21,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from opensquilla import __version__
 from opensquilla.gateway.config_migration import (
     backup_and_write_migrated_config,
     migrate_config_payload,
@@ -127,6 +128,7 @@ class ToolsConfig(BaseModel):
     allow: list[str] = Field(default_factory=list)
     deny: list[str] = Field(default_factory=list)
     also_allow: list[str] = Field(default_factory=list)
+    workspace_write_deny_globs: list[str] = Field(default_factory=list)
     trusted_fake_ip_cidrs: list[str] = Field(default_factory=list)
 
     @field_validator("trusted_fake_ip_cidrs")
@@ -215,7 +217,7 @@ class LlmProviderConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_LLM_")
 
     provider: str = "openrouter"
-    model: str = "deepseek/deepseek-v4-flash"
+    model: str = "deepseek/deepseek-v4-pro"
     api_key: str = ""
     api_key_env: str = ""
     base_url: str = "https://openrouter.ai/api/v1"
@@ -353,10 +355,11 @@ class PromptCacheConfig(BaseSettings):
 class DreamConfig(BaseModel):
     """Per-agent Dream consolidation cron configuration."""
 
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = False
     interval_h: int = Field(default=24, ge=1)
     cron: str | None = None  # e.g. "0 3 * * *"; overrides interval_h when set
-    model_override: str | None = None
     max_batch_size: int = Field(default=20, ge=1)
     max_iterations: int = Field(default=15, ge=1)
     min_batch_size: int = Field(default=1, ge=1)
@@ -367,6 +370,11 @@ class DreamConfig(BaseModel):
     candidate_file_max_chars: int = Field(default=4_000, ge=0)
     candidate_total_max_chars: int = Field(default=24_000, ge=0)
     fallback_total_max_chars: int = Field(default=80_000, ge=0)
+    evidence_min_score: float = Field(default=0.55, ge=0.0, le=1.0)
+    evidence_min_seen_count: int = Field(default=1, ge=1)
+    evidence_negative_recurrence_threshold: int = Field(default=2, ge=1)
+    evidence_curated_writes_enabled: bool = True
+    evidence_quarantine_enabled: bool = True
 
 
 class SafetyConfig(BaseModel):
@@ -402,6 +410,7 @@ class MemoryEmbeddingRemoteConfig(BaseModel):
     """OpenAI-compatible remote memory embedding settings."""
 
     api_key: str | None = None
+    api_key_env: str | None = None
     base_url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
     model: str | None = None
@@ -464,6 +473,7 @@ class MemoryConfig(BaseSettings):
     retrieval_mode: Literal["hybrid", "fts_only"] = "hybrid"
     embedding: MemoryEmbeddingConfig = Field(default_factory=MemoryEmbeddingConfig)
     sync_interval_minutes: float = Field(default=0.0, ge=0.0)
+    session_source_enabled: bool = False
 
     # Passive injection
     inject_limit: int = 4000  # max chars for passive memory injection into system prompt
@@ -488,6 +498,10 @@ class MemoryConfig(BaseSettings):
     flush_backoff_max_seconds: float = 300.0
     flush_archive_max_bytes: int = 800_000
     flush_compaction_requires_safe_receipt: bool = False
+    flush_compaction_safety_mode: Literal["protect", "best_effort", "block", "off"] = "protect"
+    repair_enabled: bool = True
+    repair_interval_seconds: float = Field(default=60.0, ge=0.0)
+    repair_max_items_per_tick: int = Field(default=5, ge=1)
 
     # Per-turn auto capture / recall
     auto_capture_enabled: bool = True
@@ -532,7 +546,7 @@ def _default_tiers() -> dict:
         },
         "t1": {
             "provider": "openrouter",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "deepseek/deepseek-v4-pro",
             "description": (
                 "M tier: default balanced text model for normal agent work, coding assistance, "
                 "debugging, and moderate analysis"
@@ -932,24 +946,11 @@ class SquillaRouterConfig(BaseSettings):
 class AgentTokenSavingConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_AGENT_TOKEN_SAVING_")
 
-    # Keep enabled by default to preserve the existing agent behavior: large
-    # tool outputs are head+tail truncated before they re-enter LLM context.
-    tool_result_compression_enabled: bool = True
-    tool_result_compression_mode: Literal["off", "truncate", "summarize"] | None = None
-    tool_result_compression_max_share: float = Field(default=0.25, gt=0.0, le=1.0)
-    tool_result_compression_summary_model: str | None = None
-    tool_result_compression_summary_max_tokens: int = Field(default=1024, ge=64)
-    tool_result_compression_summary_timeout_seconds: float = Field(default=20.0, gt=0.0)
-    tool_result_compression_summary_input_max_chars: int = Field(default=60_000, ge=1000)
+    # Tokenjuice projection is the default tool-result path.
+    tool_result_projection_max_inline_chars: int = Field(default=60_000, ge=1000)
     tool_result_store_max_bytes: int = Field(default=8 * 1024 * 1024, ge=0)
     tool_result_store_disk_budget_bytes: int = Field(default=256 * 1024 * 1024, ge=0)
     tool_result_store_retention_seconds: int = Field(default=7 * 24 * 60 * 60, ge=0)
-
-    @property
-    def effective_tool_result_compression_mode(self) -> Literal["off", "truncate", "summarize"]:
-        if self.tool_result_compression_mode is not None:
-            return self.tool_result_compression_mode
-        return "truncate" if self.tool_result_compression_enabled else "off"
 
 
 class CompactionLlmConfig(BaseSettings):
@@ -1124,7 +1125,7 @@ class DiscordChannelEntry(ConfiguredChannelEntry):
 
 
 class DingTalkChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a DingTalk (钉钉) channel."""
+    """Gateway config entry for a DingTalk channel."""
 
     type: Literal["dingtalk"] = "dingtalk"
     client_id: str
@@ -1132,7 +1133,7 @@ class DingTalkChannelEntry(ConfiguredChannelEntry):
 
 
 class WeComChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a WeCom (企业微信) corp-app channel."""
+    """Gateway config entry for a WeCom corp-app channel."""
 
     type: Literal["wecom"] = "wecom"
     corp_id: str
@@ -1299,11 +1300,117 @@ class SubagentsGatewayConfig(BaseModel):
     """When enabled, subagent bootstrap prompts keep only AGENTS.md and TOOLS.md."""
 
 
+class MetaSkillPersistenceConfig(BaseSettings):
+    """Persistence/audit ledger for meta-skill executions (G4)."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_META_SKILL_PERSISTENCE_",
+        extra="forbid",
+    )
+    enabled: bool = True
+    orphan_cleanup_age_seconds: int = 3600
+    # Per-DAG memory persist: when False the orchestrator skips any step
+    # whose ``skill`` is "memory" (the conventional last-step pattern that
+    # archives DAG output to memory/*.md). Defaults to True to preserve
+    # existing behaviour. Toggle off for exploratory runs where polluting
+    # the long-term memory store is undesirable.
+    memory_persist_enabled: bool = True
+
+
+class MetaSkillAutoProposeConfig(BaseSettings):
+    """Unattended synthesis: drive meta-skill-creator from co-occurrence
+    patterns observed in ``~/.opensquilla/logs/decisions-*.jsonl``.
+
+    Two independent triggers feed the same library function
+    (``skills.creator.auto_propose``):
+      * ``enabled`` schedules a recurring cron job
+      * ``on_dream_complete`` piggybacks on memory-consolidation dreams
+
+    Both default off. Operators flip them on after reviewing
+    meta-skill-creator's gated output once.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_META_SKILL_AUTO_PROPOSE_",
+        extra="forbid",
+    )
+
+    enabled: bool = False
+    """Path 1: schedule the auto-propose cron job. When false no
+    handler is registered at all (zero-impact code path)."""
+
+    cron: str = "0 5 * * *"
+    """Cron expression (5-field, local time) for the scheduled job."""
+
+    window_days: int = Field(default=30, ge=1, le=365)
+    """How many days of decision-log history to aggregate."""
+
+    min_freq: int = Field(default=3, ge=1)
+    """Drop co-occurrence chains observed fewer than this many times."""
+
+    top_k: int = Field(default=5, ge=1, le=50)
+    """At most this many distinct patterns considered per fire."""
+
+    on_dream_complete: bool = False
+    """Path 2: also run after a successful memory-consolidation dream.
+    Independent of ``enabled`` — either, both, or neither may be on."""
+
+    auto_enable: bool = False
+    """When true, eligible low-risk proposals are promoted to MANAGED
+    automatically after the creator gates pass. Defaults off."""
+
+    auto_enable_max_risk: Literal["low", "medium", "high"] = "low"
+    """Highest deterministic risk class that unattended promotion may accept."""
+
+    agent_ids: list[str] = Field(default_factory=list)
+    """Restrict to these agent IDs; empty = all configured agents."""
+
+
+class MetaSkillConfig(BaseSettings):
+    """Top-level meta-skill subsystem configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_META_SKILL_",
+        env_nested_delimiter="__",
+        extra="forbid",
+    )
+    enabled: bool = True
+    persistence: MetaSkillPersistenceConfig = Field(
+        default_factory=MetaSkillPersistenceConfig,
+    )
+    auto_propose: MetaSkillAutoProposeConfig = Field(
+        default_factory=MetaSkillAutoProposeConfig,
+    )
+
+
+class TlsConfig(BaseSettings):
+    """Optional TLS termination at the gateway itself.
+
+    When ``keyfile`` and ``certfile`` are set, ``run_gateway`` passes
+    ``ssl_keyfile`` / ``ssl_certfile`` to uvicorn so the gateway speaks
+    HTTPS / WSS on its bound port. Disabled by default — gateways
+    behind a reverse proxy (nginx + LetsEncrypt) keep using plain HTTP.
+
+    Self-signed certs are fine for IP-based access (browser prints a
+    one-time "not trusted" warning); for a real CA-signed cert wire
+    via the same fields.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_TLS_",
+        extra="forbid",
+    )
+    keyfile: str = ""
+    certfile: str = ""
+
+
 class GatewayConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENSQUILLA_GATEWAY_",
         env_nested_delimiter="__",
     )
+
+    tls: TlsConfig = Field(default_factory=TlsConfig)
 
     # bind defaults to 127.0.0.1 (loopback only).
     # OPENSQUILLA_LISTEN is recognised as a short-name env alias for ``host``
@@ -1313,7 +1420,10 @@ class GatewayConfig(BaseSettings):
     # > default) is testable without the pydantic-settings env cache.
     host: str = "127.0.0.1"
     port: int = 18791
-    version: str = "0.1.0"
+    # Resolved from installed distribution metadata (opensquilla.__version__),
+    # not operator config. UI/RPC surfaces read __version__ directly, so any
+    # stale value persisted in config.toml has no display effect.
+    version: str = __version__
     debug: bool = False
     log_file_enabled: bool = True
     log_level: str = "DEBUG"
@@ -1350,6 +1460,7 @@ class GatewayConfig(BaseSettings):
     agents: list[AgentEntryConfig] = Field(default_factory=list)
     agents_defaults: AgentDefaults = Field(default_factory=AgentDefaults)
     subagents: SubagentsGatewayConfig = Field(default_factory=SubagentsGatewayConfig)
+    meta_skill: MetaSkillConfig = Field(default_factory=MetaSkillConfig)
 
     # Component enable flags
     control_ui: ControlUiConfig = Field(default_factory=ControlUiConfig)
@@ -1415,8 +1526,8 @@ class GatewayConfig(BaseSettings):
     # Maximum provider-level retries for transient errors. ``None`` means
     # use the AgentConfig default.
     agent_max_provider_retries: int | None = None
-    # Agent model/tool loop budget for a single turn.
-    agent_max_iterations: int = Field(default=100, ge=1)
+    # Agent model/tool loop budget for a single turn. 0 disables this cap.
+    agent_max_iterations: int = Field(default=0, ge=0)
     # Provider request timeout (single LLM HTTP/streaming request).
     llm_request_timeout_seconds: float = 120.0
     # Agent stream liveness events. The heartbeat interval only affects

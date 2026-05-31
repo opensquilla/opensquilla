@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from opensquilla.provider.context_capabilities import (
+    NativeCompactionSupport,
+    PromptCacheSupport,
+    provider_context_capabilities,
+    provider_state_continuity_diagnostic,
+)
 from opensquilla.provider.model_catalog import ModelCatalog
 
 
@@ -121,3 +127,186 @@ def test_unknown_compatible_model_degrades_to_tools_only() -> None:
     assert caps.supports_reasoning is False
     assert caps.supports_tools is True
     assert caps.reasoning_format == "none"
+
+
+def test_openrouter_context_capability_profile_centralizes_prompt_cache_decision() -> None:
+    deepseek = provider_context_capabilities(
+        provider_kind="openrouter",
+        model="deepseek/deepseek-v4-pro",
+    )
+    zai = provider_context_capabilities(
+        provider_kind="openrouter",
+        model="z-ai/glm-5.1",
+    )
+
+    assert deepseek.prompt_cache == PromptCacheSupport.EXPLICIT
+    assert deepseek.supports_cache_breakpoints is True
+    assert deepseek.native_compaction == NativeCompactionSupport.NONE
+    assert deepseek.state_portable_across_providers is False
+
+    assert zai.prompt_cache == PromptCacheSupport.IMPLICIT
+    assert zai.supports_cache_breakpoints is False
+    assert zai.native_compaction == NativeCompactionSupport.NONE
+
+
+def test_anthropic_context_capability_does_not_claim_native_compaction() -> None:
+    caps = provider_context_capabilities(
+        provider_kind="anthropic",
+        model="claude-opus-4-7",
+    )
+
+    assert caps.native_compaction == NativeCompactionSupport.NONE
+    assert caps.native_compaction_state_kind is None
+    assert caps.supports_cache_breakpoints is True
+
+
+def test_anthropic_context_capability_keeps_other_models_on_generic_compaction() -> None:
+    caps = provider_context_capabilities(
+        provider_kind="anthropic",
+        model="claude-3-5-sonnet-20241022",
+    )
+
+    assert caps.native_compaction == NativeCompactionSupport.NONE
+    assert caps.native_compaction_state_kind is None
+    assert caps.supports_cache_breakpoints is True
+
+
+def test_openai_responses_context_capability_declares_standalone_compaction() -> None:
+    caps = provider_context_capabilities(
+        provider_kind="openai_responses",
+        model="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+    )
+
+    assert caps.prompt_cache == PromptCacheSupport.AUTOMATIC
+    assert caps.native_compaction == NativeCompactionSupport.STANDALONE
+    assert caps.native_compaction_state_kind == "openai_responses_compacted_window"
+    assert caps.state_portable_across_providers is False
+
+
+def test_context_capability_profile_exposes_cache_and_native_state_fields() -> None:
+    caps = provider_context_capabilities(
+        provider_kind="gemini",
+        model="gemini-2.5-flash",
+    )
+
+    assert caps.prompt_cache == PromptCacheSupport.IMPLICIT
+    assert caps.native_compaction == NativeCompactionSupport.NONE
+    assert caps.supports_cache_breakpoints is False
+    assert caps.state_portable_across_providers is False
+    assert caps.min_cache_tokens == 1024
+    assert caps.cache_ttl_options == ()
+
+
+def test_gemini_context_capability_treats_cached_content_as_cache_not_compaction() -> None:
+    caps = provider_context_capabilities(
+        provider_kind="gemini",
+        model="gemini-2.5-pro",
+    )
+
+    assert caps.prompt_cache == PromptCacheSupport.IMPLICIT
+    assert caps.native_compaction == NativeCompactionSupport.NONE
+    assert caps.native_compaction_state_kind is None
+    assert caps.min_cache_tokens == 4096
+
+
+def test_provider_state_continuity_diagnostic_reports_safe_actions() -> None:
+    keep = provider_state_continuity_diagnostic(
+        context_states=[
+            {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "state_kind": "anthropic_compaction_block",
+                "valid": True,
+                "portable": False,
+            }
+        ],
+        candidate_provider="anthropic",
+        candidate_model="claude-opus-4-7",
+    )
+    fallback = provider_state_continuity_diagnostic(
+        context_states=[
+            {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "state_kind": "anthropic_compaction_block",
+                "valid": True,
+                "portable": False,
+            },
+            {
+                "provider": "portable",
+                "model": "",
+                "state_kind": "structured_summary_v1",
+                "valid": True,
+                "portable": True,
+            },
+        ],
+        candidate_provider="openrouter",
+        candidate_model="deepseek/deepseek-v4-flash",
+    )
+
+    assert keep.decision == "keep_provider"
+    assert keep.provider_state_loss_risk is False
+    assert fallback.decision == "use_portable_fallback"
+    assert fallback.provider_state_loss_risk is True
+
+
+def test_provider_state_continuity_diagnostic_prefers_latest_matching_native_state() -> None:
+    diagnostic = provider_state_continuity_diagnostic(
+        context_states=[
+            {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "state_kind": "anthropic_compaction_block",
+                "created_at": 100,
+                "valid": True,
+                "portable": False,
+            },
+            {
+                "provider": "openai_responses",
+                "model": "gpt-5.5",
+                "state_kind": "openai_responses_compacted_window",
+                "created_at": 200,
+                "valid": True,
+                "portable": False,
+            },
+        ],
+        candidate_provider="openai_responses",
+        candidate_model="gpt-5.5",
+    )
+
+    assert diagnostic.decision == "keep_provider"
+    assert diagnostic.provider_state_loss_risk is False
+    assert diagnostic.active_state_provider == "openai_responses"
+    assert diagnostic.active_state_kind == "openai_responses_compacted_window"
+
+
+def test_provider_state_continuity_diagnostic_ignores_expired_native_state() -> None:
+    diagnostic = provider_state_continuity_diagnostic(
+        context_states=[
+            {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "state_kind": "anthropic_compaction_block",
+                "created_at": 100,
+                "expires_at": 150,
+                "valid": True,
+                "portable": False,
+            },
+            {
+                "provider": "portable",
+                "state_kind": "structured_summary_v1",
+                "created_at": 90,
+                "valid": True,
+                "portable": True,
+            },
+        ],
+        candidate_provider="openrouter",
+        candidate_model="deepseek/deepseek-v4-flash",
+        now_ms=200,
+    )
+
+    assert diagnostic.decision == "use_portable_fallback"
+    assert diagnostic.provider_state_loss_risk is False
+    assert diagnostic.active_state_kind is None
+    assert diagnostic.portable_fallback_available is True

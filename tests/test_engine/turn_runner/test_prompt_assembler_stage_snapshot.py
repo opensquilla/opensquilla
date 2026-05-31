@@ -181,6 +181,7 @@ def _patch_assemble_prompt(runner, base_prompt, prompt_metadata):
     def _assemble_prompt(
         self, agent_id, tool_defs, *, session_key=None, semantic_message=None,
         extra_context=None, prompt_metadata=None, bootstrap_context_mode=None,
+        fresh_user_session=False,
     ):  # noqa: ARG001
         if prompt_metadata is not None:
             prompt_metadata.update(pm_to_emit)
@@ -196,6 +197,7 @@ def _patch_run_pipeline(runner, turn_factory, provider, raises=None):
         semantic_message=None, ingress_pipeline_steps=None,
         prev_assistant_text=None, prev_assistant_usage=None,
         history_user_texts=None, flags_text_override=None, tool_context=None,
+        normalization_metadata=None,
     ):  # noqa: ARG001
         if raises is not None:
             raise raises("equivalence pipeline boom")

@@ -2,17 +2,69 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, NoReturn
 
 from opensquilla.gateway.config import GatewayConfig
-from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
+from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, RpcUnavailableError, get_dispatcher
+from opensquilla.gateway.rpc_memory import memory_health_from_durable_ledger
 from opensquilla.session.keys import normalize_agent_id
 
 _d = get_dispatcher()
 
+_AGENT_WAIT_SUPPORTED_PARAMS = [
+    "agentId",
+    "agent_id",
+    "sessionKey",
+    "session_key",
+    "timeoutMs",
+    "timeout_ms",
+]
+_AGENT_WAIT_AVAILABLE_METHODS = [
+    "agents.list",
+    "agents.files.list",
+    "sessions.list",
+    "sessions.get",
+    "tools.catalog",
+]
+
 
 def _raise_unavailable(method: str) -> NoReturn:
     raise RpcUnavailableError(f"{method} is not available in this build")
+
+
+def _repair_summary_wire(summary: Any) -> dict[str, Any]:
+    return {
+        "summaryId": getattr(summary, "id", None),
+        "sessionKey": getattr(summary, "session_key", ""),
+        "compactionId": getattr(summary, "compaction_id", None),
+        "flushReceiptStatus": getattr(summary, "flush_receipt_status", "unknown"),
+        "removedCount": int(getattr(summary, "removed_count", 0) or 0),
+        "coveredThroughId": getattr(summary, "covered_through_id", None),
+        "createdAt": getattr(summary, "created_at", None),
+    }
+
+
+def _raw_fallback_rows_for_manager(manager: Any) -> list[dict[str, Any]]:
+    root = getattr(manager, "workspace_dir", None) or getattr(manager, "memory_dir", None)
+    if root is None:
+        return []
+    raw_root = Path(root) / "memory" / ".raw_fallbacks"
+    if not raw_root.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    for file_path in sorted(path for path in raw_root.glob("*.md") if path.is_file()):
+        try:
+            stat = file_path.stat()
+        except OSError:
+            continue
+        rows.append(
+            {
+                "path": (Path("memory") / ".raw_fallbacks" / file_path.name).as_posix(),
+                "sizeBytes": stat.st_size,
+            }
+        )
+    return rows
 
 
 @_d.method("wake", scope="operator.write")
@@ -42,9 +94,40 @@ async def _handle_agent(params: dict | None, ctx: RpcContext) -> None:
 
 @_d.method("agent.wait", scope="operator.write")
 async def _handle_agent_wait(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
-    if not isinstance(params, dict) or "message" not in params:
-        raise ValueError("params.message is required")
-    _raise_unavailable("agent.wait")
+    if not isinstance(params, dict):
+        raise ValueError("params must be an object")
+
+    agent_id = params.get("agentId", params.get("agent_id"))
+    session_key = params.get("sessionKey", params.get("session_key"))
+    timeout_ms = params.get("timeoutMs", params.get("timeout_ms"))
+    if agent_id is None and session_key is None:
+        raise ValueError("params.agentId or params.sessionKey is required")
+
+    accepted_params: dict[str, Any] = {}
+    if agent_id is not None:
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            raise ValueError("params.agentId must be a non-empty string")
+        accepted_params["agentId"] = normalize_agent_id(agent_id)
+    if session_key is not None:
+        if not isinstance(session_key, str) or not session_key.strip():
+            raise ValueError("params.sessionKey must be a non-empty string")
+        accepted_params["sessionKey"] = session_key.strip()
+    if timeout_ms is not None:
+        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 0:
+            raise ValueError("params.timeoutMs must be a non-negative integer")
+        accepted_params["timeoutMs"] = timeout_ms
+
+    raise RpcHandlerError(
+        "agent.unavailable",
+        "agent.wait parameters are accepted, but no agent runtime bridge is available.",
+        details={
+            "reason": "runtime_bridge_unavailable",
+            "acceptedParams": accepted_params,
+            "supportedParams": _AGENT_WAIT_SUPPORTED_PARAMS,
+            "availableRpcMethods": _AGENT_WAIT_AVAILABLE_METHODS,
+        },
+        retryable=False,
+    )
 
 
 @_d.method("system-presence", scope="operator.read")
@@ -165,13 +248,20 @@ async def _handle_doctor_memory_status(params: dict | None, ctx: RpcContext) -> 
     memory_backend = getattr(ctx, "memory_backend", None)
     manager = (getattr(ctx, "memory_managers", None) or {}).get(agent_id)
     if memory_backend is None and manager is None:
-        return {
+        unavailable_payload: dict[str, Any] = {
             "backend": "none",
             "status": "unavailable",
             "entryCount": None,
             "sizeBytes": None,
             "error": "No memory backend configured",
         }
+        unavailable_payload.update(
+            await memory_health_from_durable_ledger(
+                getattr(ctx, "session_manager", None),
+                agent_id=agent_id,
+            )
+        )
+        return unavailable_payload
     health: dict[str, Any] = {}
     try:
         if memory_backend is not None:
@@ -233,7 +323,31 @@ async def _handle_doctor_memory_status(params: dict | None, ctx: RpcContext) -> 
         "sourceCounts": manager_status.get("source_counts", {}),
         "degraded": degraded_rows,
     }
+    payload.update(
+        await memory_health_from_durable_ledger(
+            getattr(ctx, "session_manager", None),
+            agent_id=agent_id,
+        )
+    )
     if deep:
+        repair_rows: list[Any] = []
+        repair_failures: list[dict[str, Any]] = []
+        session_manager = getattr(ctx, "session_manager", None)
+        list_degraded = getattr(session_manager, "list_degraded_compactions", None)
+        if callable(list_degraded):
+            try:
+                repair_rows = await list_degraded(agent_id=agent_id, limit=50)
+                repair_failures = [
+                    _repair_summary_wire(row)
+                    for row in repair_rows
+                    if str(getattr(row, "flush_receipt_status", ""))
+                    in {"failed_retryable", "quarantined"}
+                ]
+            except Exception:
+                repair_rows = []
+                repair_failures = []
+
+        raw_rows = _raw_fallback_rows_for_manager(manager) if manager is not None else []
         payload.update(
             {
                 "fileCount": manager_status.get("file_count"),
@@ -249,6 +363,11 @@ async def _handle_doctor_memory_status(params: dict | None, ctx: RpcContext) -> 
                 "embeddingModel": manager_status.get("embedding_model"),
                 "vectorWeight": manager_status.get("vector_weight"),
                 "textWeight": manager_status.get("text_weight"),
+                "pendingRepairCount": len(repair_rows),
+                "recentPreimages": [_repair_summary_wire(row) for row in repair_rows[:5]],
+                "repairFailures": repair_failures[:5],
+                "rawFallbackCount": len(raw_rows),
+                "recentRawFallbacks": raw_rows[-5:],
             }
         )
     return payload

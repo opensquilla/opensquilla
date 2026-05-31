@@ -10,7 +10,7 @@ from opensquilla.tools.registry import ToolProfile
 
 EXPECTED_ROUTER_MODELS = {
     "t0": "deepseek/deepseek-v4-flash",
-    "t1": "deepseek/deepseek-v4-flash",
+    "t1": "deepseek/deepseek-v4-pro",
     "t2": "z-ai/glm-5.1",
     "t3": "anthropic/claude-opus-4.7",
 }

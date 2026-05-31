@@ -12,6 +12,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+## [0.3.0] - 2026-05-31
+
+### Added
+
+- MetaSkills are now first-class workflow capabilities: bundled stable
+  MetaSkills, composition parsing, step scheduling, pause/resume user-input
+  flows, proposal gates, runtime history, and authoring documentation let
+  repeatable multi-step work become reusable agent routines.
+- `opensquilla doctor` and the WebUI Health view now provide actionable
+  readiness diagnostics across provider, gateway, memory, logs, search, image
+  generation, router, channels, sandbox, and embedding surfaces.
+- Tokenjuice-backed tool-result projection now compacts large logs, diffs,
+  JSON, test output, package-manager output, and other known tool shapes before
+  they crowd out provider context.
+- A task-oriented documentation set now covers quickstart, configuration,
+  WebUI, CLI, tools and sandboxing, sessions, providers, usage and cost,
+  memory, compaction, MetaSkills, tool compression, scheduling, channels, MCP,
+  troubleshooting, and contribution guidance.
+
+### Changed
+
+- Tool-output context management now separates durable runtime results from
+  provider-visible compact previews, records projection telemetry, and uses
+  provider request proof/compaction before oversized payloads reach an LLM.
+- WebChat, CLI chat, and terminal TUI internals now share more runtime-backed
+  turn, stream, slash-command, artifact, attachment, and recovery behavior.
+- Long-session memory and compaction flows now preserve raw archive evidence,
+  checkpoint receipts, repair queues, and WebUI-safe compaction status instead
+  of treating semantic memory quality and context safety as the same signal.
+- Channel install extras now expose only real optional packages; Feishu,
+  Telegram, DingTalk, WeCom, and QQ are included in the base install instead
+  of being accepted as no-op extras.
+
+### Fixed
+
+- WebChat reliability fixes cover router replay, session restore gaps,
+  duplicate compaction status, attachment and pasted-text rendering, artifact
+  downloads, composer layout, model-router animation timing, and visible
+  recovery during long turns.
+- Provider and runtime hardening reduces malformed tool-call fallout, preserves
+  configured model-switch intent, handles provider tool-choice requirements,
+  and keeps oversized current-turn tool payloads from surfacing as bare
+  internal failures.
+- Cross-platform CI and Windows portability fixes stabilize CLI help rendering,
+  sqlite fallback behavior, UTF-8 subprocess handling, Windows-only test
+  fixtures, onboarding commands, and release-surface checks.
+
 ## [0.2.1] - 2026-05-21
 
 ### Changed

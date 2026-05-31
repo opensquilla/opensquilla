@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from opensquilla.execution_status import normalize_execution_status
-from opensquilla.safety.permission_matrix import Principal, is_tool_allowed
+from opensquilla.safety.permission_matrix import CHANNEL_WEBUI, Principal, is_tool_allowed
 from opensquilla.tool_boundary import ToolCall, ToolResult
 from opensquilla.tools.envelope import build_tool_failure_envelope
 from opensquilla.tools.policy.types import DispatchInput, PolicyDecision
@@ -272,7 +272,12 @@ class PermissionMatrixPolicy:
                 role="user",
                 channel_id=ctx.session_key,
             )
-            decision = is_tool_allowed(d.tool_call.tool_name, "dm", principal)
+            channel_kind = (
+                CHANNEL_WEBUI
+                if (ctx.source_kind or "").strip().lower() == CHANNEL_WEBUI
+                else (ctx.channel_kind or "dm")
+            )
+            decision = is_tool_allowed(d.tool_call.tool_name, channel_kind, principal)
             if not decision.allowed:
                 envelope = _denial_envelope(
                     d.tool_call,

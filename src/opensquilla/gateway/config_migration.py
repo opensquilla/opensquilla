@@ -55,9 +55,28 @@ DEPRECATED_MEMORY_LEAVES: frozenset[str] = frozenset(
     if k.startswith("memory.") and not k.startswith("memory.cost.")
 )
 
+DEPRECATED_AGENT_TOKEN_SAVING_FIELDS: frozenset[str] = frozenset(
+    {
+        "agent_token_saving.tool_result_compression_enabled",
+        "agent_token_saving.tool_result_compression_mode",
+        "agent_token_saving.tool_result_compression_max_share",
+        "agent_token_saving.tool_result_compression_summary_model",
+        "agent_token_saving.tool_result_compression_summary_max_tokens",
+        "agent_token_saving.tool_result_compression_summary_timeout_seconds",
+        "agent_token_saving.tool_result_compression_summary_input_max_chars",
+    }
+)
+DEPRECATED_AGENT_TOKEN_SAVING_LEAVES: frozenset[str] = frozenset(
+    k.removeprefix("agent_token_saving.")
+    for k in DEPRECATED_AGENT_TOKEN_SAVING_FIELDS
+)
+
 _LEGACY_MEMORY_FIELDS_WARN_LOCK = threading.Lock()
 _LEGACY_MEMORY_FIELDS_WARNED = False
 _LEGACY_MEMORY_FIELDS_SEEN: set[str] = set()
+_LEGACY_AGENT_TOKEN_SAVING_FIELDS_WARN_LOCK = threading.Lock()
+_LEGACY_AGENT_TOKEN_SAVING_FIELDS_WARNED = False
+_LEGACY_AGENT_TOKEN_SAVING_FIELDS_SEEN: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -132,6 +151,53 @@ def handle_deprecated_memory_fields(
         )
 
 
+def handle_deprecated_agent_token_saving_fields(
+    found: dict[str, object],
+    source: str,
+) -> None:
+    """Record and warn once for deprecated token-saving fields removed from config data."""
+    global _LEGACY_AGENT_TOKEN_SAVING_FIELDS_WARNED
+
+    if not found:
+        return
+
+    with _LEGACY_AGENT_TOKEN_SAVING_FIELDS_WARN_LOCK:
+        _LEGACY_AGENT_TOKEN_SAVING_FIELDS_SEEN.update(found.keys())
+        should_warn = not _LEGACY_AGENT_TOKEN_SAVING_FIELDS_WARNED
+        if should_warn:
+            _LEGACY_AGENT_TOKEN_SAVING_FIELDS_WARNED = True
+            warning_fields = sorted(_LEGACY_AGENT_TOKEN_SAVING_FIELDS_SEEN)
+        else:
+            warning_fields = []
+
+    _write_legacy_field_log(found, source)
+
+    if should_warn:
+        n = len(warning_fields)
+        first_three = ", ".join(warning_fields[:3])
+        try:
+            logs_dir = default_opensquilla_home() / "logs"
+            log_ref = str(logs_dir)
+        except Exception:
+            log_ref = "~/.opensquilla/logs"
+        warnings.warn(
+            f"OpenSquilla: {n} legacy agent_token_saving.tool_result_compression_* "
+            f"config field(s) migrated or ignored (e.g. {first_three}); see "
+            f"{log_ref} for details. Tokenjuice projection is now the built-in "
+            "tool-result path.",
+            DeprecationWarning,
+            stacklevel=6,
+        )
+        logging.getLogger(__name__).warning(
+            "OpenSquilla: %d legacy agent_token_saving.tool_result_compression_* "
+            "config field(s) migrated or ignored (e.g. %s); see %s for details. "
+            "Tokenjuice projection is now the built-in tool-result path.",
+            n,
+            first_three,
+            log_ref,
+        )
+
+
 def _write_legacy_field_log(found: dict[str, object], source: str) -> None:
     try:
         logs_dir = default_opensquilla_home() / "logs"
@@ -159,38 +225,73 @@ def migrate_config_payload(data: dict[str, Any]) -> ConfigMigrationResult:
     """
     builder = _MigrationBuilder(payload=copy.deepcopy(data))
     memory = builder.payload.get("memory")
-    if not isinstance(memory, dict):
-        return builder.result()
+    if isinstance(memory, dict):
+        if memory.get("capture_mode") == "archive_turn_pair":
+            memory["capture_mode"] = "turn_pair"
+            builder.changes.append("memory.capture_mode: archive_turn_pair -> turn_pair")
 
-    if memory.get("capture_mode") == "archive_turn_pair":
-        memory["capture_mode"] = "turn_pair"
-        builder.changes.append("memory.capture_mode: archive_turn_pair -> turn_pair")
+        if "index_captured_turns" in memory:
+            value = memory.pop("index_captured_turns")
+            builder.removed_fields.append("memory.index_captured_turns")
+            if bool(value):
+                builder.warnings.append(
+                    "memory.index_captured_turns was removed; captured turns are no "
+                    "longer indexed into normal recall"
+                )
 
-    if "index_captured_turns" in memory:
-        value = memory.pop("index_captured_turns")
-        builder.removed_fields.append("memory.index_captured_turns")
-        if bool(value):
-            builder.warnings.append(
-                "memory.index_captured_turns was removed; captured turns are no "
-                "longer indexed into normal recall"
+        deprecated: dict[str, object] = {}
+        for leaf in list(memory):
+            if leaf in DEPRECATED_MEMORY_LEAVES:
+                deprecated[f"memory.{leaf}"] = memory.pop(leaf)
+
+        cost = memory.get("cost")
+        if isinstance(cost, dict):
+            for leaf in list(cost):
+                if leaf in DEPRECATED_COST_LEAVES:
+                    deprecated[f"memory.cost.{leaf}"] = cost.pop(leaf)
+            if not cost:
+                memory.pop("cost", None)
+
+        if deprecated:
+            builder.removed_fields.extend(sorted(deprecated))
+            handle_deprecated_memory_fields(deprecated, "config_migration")
+
+    token_saving = builder.payload.get("agent_token_saving")
+    if isinstance(token_saving, dict):
+        summary_input_leaf = "tool_result_compression_summary_input_max_chars"
+        projection_leaf = "tool_result_projection_max_inline_chars"
+        if summary_input_leaf in token_saving and projection_leaf not in token_saving:
+            token_saving[projection_leaf] = token_saving[summary_input_leaf]
+            builder.changes.append(
+                "agent_token_saving.tool_result_compression_summary_input_max_chars "
+                "-> agent_token_saving.tool_result_projection_max_inline_chars"
             )
 
-    deprecated: dict[str, object] = {}
-    for leaf in list(memory):
-        if leaf in DEPRECATED_MEMORY_LEAVES:
-            deprecated[f"memory.{leaf}"] = memory.pop(leaf)
+        deprecated_token_saving: dict[str, object] = {}
+        for leaf in list(token_saving):
+            if leaf in DEPRECATED_AGENT_TOKEN_SAVING_LEAVES:
+                deprecated_token_saving[f"agent_token_saving.{leaf}"] = token_saving.pop(leaf)
 
-    cost = memory.get("cost")
-    if isinstance(cost, dict):
-        for leaf in list(cost):
-            if leaf in DEPRECATED_COST_LEAVES:
-                deprecated[f"memory.cost.{leaf}"] = cost.pop(leaf)
-        if not cost:
-            memory.pop("cost", None)
-
-    if deprecated:
-        builder.removed_fields.extend(sorted(deprecated))
-        handle_deprecated_memory_fields(deprecated, "config_migration")
+        if deprecated_token_saving:
+            builder.removed_fields.extend(sorted(deprecated_token_saving))
+            handle_deprecated_agent_token_saving_fields(
+                deprecated_token_saving,
+                "config_migration",
+            )
+            if (
+                deprecated_token_saving.get(
+                    "agent_token_saving.tool_result_compression_enabled"
+                )
+                is False
+                or deprecated_token_saving.get(
+                    "agent_token_saving.tool_result_compression_mode"
+                )
+                == "off"
+            ):
+                builder.warnings.append(
+                    "agent_token_saving.tool_result_compression_* was removed; "
+                    "tokenjuice projection is now the built-in tool-result path"
+                )
 
     return builder.result()
 

@@ -7,6 +7,7 @@ from typing import ClassVar, Literal
 
 ProviderBackend = Literal[
     "openai_compat",
+    "openai_responses",
     "anthropic",
     "ollama",
     "unsupported_oauth",
@@ -108,6 +109,16 @@ for _provider_spec in [
         "https://openrouter.ai/api/v1",
     ),
     _spec("openai", "openai_compat", "openai", "OPENAI_API_KEY", "https://api.openai.com/v1"),
+    _spec(
+        "openai_responses",
+        "openai_responses",
+        "openai_responses",
+        "OPENAI_API_KEY",
+        "https://api.openai.com/v1",
+        support_level="native",
+        usage_shape="openai_responses",
+        capabilities=frozenset({"chat", "responses"}),
+    ),
     _spec(
         "azure",
         "openai_compat",

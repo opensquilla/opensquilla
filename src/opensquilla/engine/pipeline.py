@@ -31,6 +31,10 @@ class TurnContext:
     attachments: list[dict] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     raw_message: str | None = None
+    # PR3 (design §14): surface origin so PR4's clarify reply parser
+    # can adapt its tolerance per surface. Defaults to "unknown" so
+    # the gateway/CLI/channel adapters can set it post-construction.
+    surface_kind: str = "unknown"  # "web" | "cli" | "channel:<adapter>" | "unknown"
 
     @property
     def semantic_message(self) -> str:

@@ -371,6 +371,35 @@ async def test_publish_artifact_tool_hides_local_path_from_non_owner_channel(
 
 
 @pytest.mark.asyncio
+async def test_publish_artifact_tool_accepts_workspace_alias(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = workspace / "paper.pdf"
+    output.write_bytes(b"%PDF-1.5\nready")
+    ctx = ToolContext(
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:webchat:session-1",
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        result = await publish_artifact(
+            path="/workspace/paper.pdf",
+            name="paper.pdf",
+            mime="application/pdf",
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(result)
+    assert payload["status"] == "published"
+    assert payload["artifact"]["name"] == "paper.pdf"
+    assert len(ctx.published_artifacts) == 1
+
+
+@pytest.mark.asyncio
 async def test_publish_artifact_tool_is_idempotent_for_existing_turn_artifact(
     tmp_path: Path,
 ) -> None:

@@ -658,7 +658,9 @@ def _final_hard_cap_payload_once(payload: dict[str, Any]) -> dict[str, Any]:
         role = message.get("role")
         content = message.get("content")
         if role == "user":
-            if index != latest_user_index:
+            if index == latest_user_index:
+                message["content"] = _compact_user_content_for_provider(content)
+            else:
                 message["content"] = _hard_compact_content_for_provider(
                     content,
                     label="user_context",

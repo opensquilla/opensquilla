@@ -21,7 +21,6 @@ from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
     AgentFactoryPort,
     MemorySnapshotPort,
     ModelCatalogPort,
-    SummarizerProviderPort,
     TimeoutBudgetPort,
     _AgentConfigAuxiliaries,
     _MemorySnapshotResult,
@@ -40,6 +39,7 @@ def _default_budgets() -> _ResolvedBudgets:
     return _ResolvedBudgets(
         runtime_timeout=60.0,
         max_iterations=10,
+        max_iterations_source="test budget",
         iteration_timeout=30.0,
         tool_timeout=20.0,
         request_timeout=120.0,
@@ -58,17 +58,13 @@ def _default_catalog(*, capabilities: Any = None) -> _ResolvedCatalog:
 def _default_aux(
     *,
     thinking: bool | ThinkingLevel = False,
-    mode: str = "off",
-    summary_model: str | None = None,
     flush_compaction_requires_safe_receipt: bool = False,
 ) -> _AgentConfigAuxiliaries:
     return _AgentConfigAuxiliaries(
         thinking=thinking,
-        tool_result_compression_mode=mode,
-        tool_result_compression_summary_model=summary_model,
         flush_workspace_dir="/tmp/flush",
-        tool_result_store_dir="/tmp/store",
-        tool_result_store_session_id="s1",
+        tool_result_store_dir="/tmp/tool-results",
+        tool_result_store_session_id="session-test",
         flush_enabled=True,
         flush_timeout_seconds=15.0,
         flush_background_timeout_seconds=120.0,
@@ -76,14 +72,11 @@ def _default_aux(
         flush_backoff_max_seconds=300.0,
         flush_archive_max_bytes=800_000,
         flush_compaction_requires_safe_receipt=flush_compaction_requires_safe_receipt,
-        tool_result_compression_enabled=True,
-        tool_result_compression_max_share=0.25,
-        tool_result_compression_summary_max_tokens=1024,
-        tool_result_compression_summary_timeout_seconds=20.0,
-        tool_result_compression_summary_input_max_chars=60_000,
-        tool_result_store_max_bytes=8 * 1024 * 1024,
-        tool_result_store_disk_budget_bytes=256 * 1024 * 1024,
-        tool_result_store_retention_seconds=7 * 24 * 60 * 60,
+        flush_compaction_safety_mode="protect",
+        tool_result_projection_max_inline_chars=60_000,
+        tool_result_store_max_bytes=400_000,
+        tool_result_store_disk_budget_bytes=4_000_000,
+        tool_result_store_retention_seconds=3600,
     )
 
 
@@ -120,18 +113,6 @@ class _RecordingAgentConfigBuilder:
         self.calls += 1
         self.last_kwargs = dict(kwargs)
         return self.aux
-
-
-@dataclass
-class _RecordingSummarizerProvider:
-    summarizer: Any = None
-    last_kwargs: dict[str, Any] = field(default_factory=dict)
-    calls: int = 0
-
-    def resolve(self, **kwargs: Any) -> Any | None:
-        self.calls += 1
-        self.last_kwargs = dict(kwargs)
-        return self.summarizer
 
 
 @dataclass
@@ -192,6 +173,7 @@ def _make_input(
     session_id_for_log="sess-1",
     tool_handler=None,
     turn_call_logger=None,
+    tool_context=None,
     session_key="agent:main:s1",
     agent_id="agent:main",
     timeout=None,
@@ -200,6 +182,7 @@ def _make_input(
     tool_timeout=None,
     request_timeout=None,
     max_provider_retries=None,
+    length_capped_continuations=None,
 ):
     return AgentBootstrapStageInput(
         provider=provider if provider is not None else object(),
@@ -212,6 +195,7 @@ def _make_input(
         session_id_for_log=session_id_for_log,
         tool_handler=tool_handler,
         turn_call_logger=turn_call_logger,
+        tool_context=tool_context,
         session_key=session_key,
         agent_id=agent_id,
         timeout=timeout,
@@ -220,6 +204,7 @@ def _make_input(
         tool_timeout=tool_timeout,
         request_timeout=request_timeout,
         max_provider_retries=max_provider_retries,
+        length_capped_continuations=length_capped_continuations,
     )
 
 
@@ -228,7 +213,6 @@ def _make_stage(
     budgets=None,
     catalog=None,
     aux=None,
-    summarizer=None,
     snapshot=None,
     factory=None,
 ):
@@ -236,7 +220,6 @@ def _make_stage(
         timeout_budget=budgets or _RecordingTimeoutBudget(),
         model_catalog=catalog or _RecordingModelCatalog(),
         agent_config_builder=aux or _RecordingAgentConfigBuilder(),
-        summarizer_provider=summarizer or _RecordingSummarizerProvider(),
         memory_snapshot=snapshot or _RecordingMemorySnapshot(),
         agent_factory=factory or _RecordingAgentFactory(),
     )
@@ -256,6 +239,7 @@ async def test_case01_success_all_defaults() -> None:
     o = out.output
     assert o.effective_runtime_timeout == 60.0
     assert o.effective_max_iterations == 10
+    assert o.effective_max_iterations_source == "test budget"
     assert o.effective_iteration_timeout == 30.0
     assert o.effective_tool_timeout == 20.0
     assert o.effective_request_timeout == 120.0
@@ -268,6 +252,18 @@ async def test_case01_success_all_defaults() -> None:
     assert o.agent_config.max_tokens == 4096
     assert o.agent_config.context_window_tokens == 200_000
     assert o.agent_config.max_history_turns == 0
+    assert o.agent_config.length_capped_continuations == 1
+    assert o.agent_config.metadata["agent_max_iterations"] == 10
+    assert o.agent_config.metadata["agent_max_iterations_source"] == "test budget"
+
+
+@pytest.mark.asyncio
+async def test_length_capped_continuations_threads_to_agent_config() -> None:
+    stage = _make_stage()
+    inp = _make_input(length_capped_continuations=3)
+    out = await stage.run(inp)
+
+    assert out.output.agent_config.length_capped_continuations == 3
 
 
 @pytest.mark.asyncio
@@ -305,6 +301,7 @@ async def test_case04_session_max_iterations_threaded() -> None:
     inp = _make_input(max_iterations=5)
     out = await stage.run(inp)
     assert out.output.effective_max_iterations == 5
+    assert out.output.agent_config.metadata["agent_max_iterations"] == 5
 
 
 @pytest.mark.asyncio
@@ -324,7 +321,7 @@ async def test_case05_no_model_catalog_fallback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_case06_model_with_capabilities_and_summarize() -> None:
+async def test_case06_model_with_capabilities_and_projection_limit() -> None:
     caps = SimpleNamespace(supports_reasoning=True)
     catalog = _RecordingModelCatalog(
         catalog=_ResolvedCatalog(
@@ -332,39 +329,15 @@ async def test_case06_model_with_capabilities_and_summarize() -> None:
         )
     )
     aux_builder = _RecordingAgentConfigBuilder(
-        aux=_default_aux(
-            thinking=True, mode="summarize", summary_model="claude-haiku-4.5"
-        )
+        aux=replace(_default_aux(thinking=True), tool_result_projection_max_inline_chars=1234)
     )
-    summarizer_provider = SimpleNamespace(name="summary_wrapped")
-    summarizer = _RecordingSummarizerProvider(summarizer=summarizer_provider)
     factory = _RecordingAgentFactory()
-    stage = _make_stage(
-        catalog=catalog, aux=aux_builder, summarizer=summarizer, factory=factory
-    )
+    stage = _make_stage(catalog=catalog, aux=aux_builder, factory=factory)
     inp = _make_input(cloned_selector=SimpleNamespace())
     out = await stage.run(inp)
     assert out.output.model_capabilities is caps
     assert out.output.agent_config.thinking is True
-    assert summarizer.calls == 1
-    assert summarizer.last_kwargs["mode"] == "summarize"
-    assert summarizer.last_kwargs["summary_model"] == "claude-haiku-4.5"
-    assert factory.last_kwargs["tool_result_summarizer_provider"] is (
-        summarizer_provider
-    )
-
-
-@pytest.mark.asyncio
-async def test_case07_summarize_without_summary_model() -> None:
-    aux_builder = _RecordingAgentConfigBuilder(
-        aux=_default_aux(mode="summarize", summary_model=None)
-    )
-    current_provider = SimpleNamespace(name="current")
-    summarizer = _RecordingSummarizerProvider(summarizer=current_provider)
-    stage = _make_stage(aux=aux_builder, summarizer=summarizer)
-    inp = _make_input(provider=current_provider)
-    await stage.run(inp)
-    assert summarizer.last_kwargs["summary_model"] is None
+    assert out.output.agent_config.tool_result_projection_max_inline_chars == 1234
 
 
 @pytest.mark.asyncio
@@ -414,13 +387,25 @@ async def test_case10_snapshot_already_exists() -> None:
 
 
 @pytest.mark.asyncio
-async def test_case11_max_iterations_zero_raises() -> None:
-    """When the budget resolver raises, the exception propagates verbatim."""
-    budgets = _RecordingTimeoutBudget(raises=ValueError)
+async def test_case11_max_iterations_zero_threads_as_unlimited() -> None:
+    budgets = _RecordingTimeoutBudget(
+        budgets=replace(
+            _default_budgets(),
+            max_iterations=0,
+            max_iterations_source="explicit argument",
+        )
+    )
     stage = _make_stage(budgets=budgets)
     inp = _make_input(max_iterations=0)
-    with pytest.raises(ValueError, match="recording timeout budget boom"):
-        await stage.run(inp)
+    out = await stage.run(inp)
+    assert out.output.effective_max_iterations == 0
+    assert out.output.effective_max_iterations_source == "explicit argument"
+    assert out.output.agent_config.max_iterations == 0
+    assert out.output.agent_config.metadata["agent_max_iterations"] == 0
+    assert (
+        out.output.agent_config.metadata["agent_max_iterations_source"]
+        == "explicit argument"
+    )
 
 
 @pytest.mark.asyncio
@@ -439,6 +424,7 @@ async def test_agent_factory_receives_typed_inputs() -> None:
     factory = _RecordingAgentFactory()
     handler = SimpleNamespace(name="handler")
     logger = SimpleNamespace(name="logger")
+    tool_context = SimpleNamespace(name="tool-context")
     stage = _make_stage(factory=factory)
     turn = _make_turn(metadata={"cache_mode": "automatic"}, tool_defs=[1, 2, 3])
     inp = _make_input(
@@ -446,11 +432,13 @@ async def test_agent_factory_receives_typed_inputs() -> None:
         turn=turn,
         tool_handler=handler,
         turn_call_logger=logger,
+        tool_context=tool_context,
     )
     await stage.run(inp)
     kw = factory.last_kwargs
     assert kw["tool_handler"] is handler
     assert kw["turn_call_logger"] is logger
+    assert kw["tool_context"] is tool_context
     assert kw["session_key"] == "agent:main:s1"
     assert kw["tool_definitions"] == [1, 2, 3]
     assert kw["config"].cache_mode == "automatic"
@@ -472,7 +460,10 @@ async def test_turn_metadata_threaded_into_agent_config() -> None:
     out = await stage.run(inp)
     assert out.output.agent_config.cache_mode == "automatic"
     assert out.output.agent_config.skills_context_prompt == "SKILLS"
+    assert out.output.agent_config.metadata is turn.metadata
     assert out.output.agent_config.metadata.get("routed_tier") == "premium"
+    assert turn.metadata["agent_max_iterations"] == 10
+    assert turn.metadata["agent_max_iterations_source"] == "test budget"
 
 
 def test_stage_name_constant() -> None:
@@ -483,7 +474,6 @@ def test_ports_runtime_checkable() -> None:
     assert isinstance(_RecordingTimeoutBudget(), TimeoutBudgetPort)
     assert isinstance(_RecordingModelCatalog(), ModelCatalogPort)
     assert isinstance(_RecordingAgentConfigBuilder(), AgentConfigBuilderPort)
-    assert isinstance(_RecordingSummarizerProvider(), SummarizerProviderPort)
     assert isinstance(_RecordingMemorySnapshot(), MemorySnapshotPort)
     assert isinstance(_RecordingAgentFactory(), AgentFactoryPort)
 

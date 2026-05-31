@@ -1,22 +1,19 @@
 """In-process task runtime for agent turns.
 
 Lock ordering invariant:
-    Two independent per-session lock dictionaries exist in this process:
+    TaskRuntime owns two per-session lock classes used by gateway-dispatched turns.
+    Gateway construction injects ``TaskRuntime._get_session_lock_for_turn`` as
+    TurnRunner's ``session_lock_provider``. That provider returns the short
+    write lock for transcript/session state mutation.
 
-    1. ``TaskRuntime._session_locks`` (this module, line ~183)
-       OUTER lock — serializes task dispatch within a session.  Acquired by
-       ``_execute()`` before the turn handler is called.
+    ``TaskRuntime._execute()`` acquires a separate execution lock before
+    calling the turn handler. ``TurnRunner.run()`` detects that TaskRuntime is
+    already serializing the turn lifecycle and skips the old coarse acquire;
+    TurnRunner append adapters still acquire the short write lock.
 
-    2. ``TurnRunner._session_locks`` (engine/runtime.py, ~line 900)
-       INNER lock — serializes transcript writes and memory capture within a
-       session.  Acquired by ``TurnRunner.run()`` which is invoked *inside*
-       ``_execute()`` via the ``_turn_handler`` callback.
-
-    Required acquire order: OUTER (TaskRuntime) then INNER (TurnRunner).
-    DO NOT acquire ``TaskRuntime._session_locks[*]`` while already holding
-    ``TurnRunner._session_locks[*]``; that reverse order would deadlock under
-    contention.  The two locks protect disjoint concerns and must never be
-    acquired in the wrong direction.
+    CLI or standalone TurnRunner instances may use a different provider, but
+    they are not nested inside TaskRuntime execution. Keep external I/O outside
+    the short write lock.
 """
 
 from __future__ import annotations
@@ -31,6 +28,7 @@ from typing import Any, cast
 
 import structlog
 
+from opensquilla.engine.outcome import completed_outcome, outcome_from_error
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
 from opensquilla.gateway.session_lifecycle import TaskLifecycleEvent, TaskLifecycleListener
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
@@ -105,6 +103,9 @@ class TaskRun:
     # the ingress surface. Kept off RouteEnvelope.metadata so cached envelopes
     # cannot leak stale one-turn ids into later runtime sends.
     persisted_user_message_id: str | None = None
+    # True when the ingress surface observed an empty user transcript before
+    # persisting this turn's user message.
+    fresh_user_session: bool = False
     # Optional in-process sink for the structured events produced by this
     # specific task's turn stream. Used by channel delivery to mirror the
     # same live text stream that WebUI already receives without changing
@@ -174,12 +175,15 @@ class _RuntimeTask:
     ingress_pipeline_steps: tuple[Any, ...] = ()
     semantic_message: str | None = None
     persisted_user_message_id: str | None = None
+    fresh_user_session: bool = False
     stream_event_sink: TaskStreamEventSink | None = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
     terminal_emitted: bool = False
     cancel_requested: bool = False
     acquired_slot: bool = False
     overflow_dropped: bool = False
+    cancel_source: str | None = None
+    cancel_reason: str | None = None
 
 
 TaskHandler = Callable[[TaskRun], Awaitable[Any]]
@@ -231,21 +235,28 @@ class _TurnHardDeadlineExceeded(TimeoutError):  # noqa: N818
         self.deadline_s = deadline_s
 
 
+def _clean_cancel_detail(value: str | None, default: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    safe = "".join(
+        ch if ch.isalnum() or ch in {"_", "-", ".", ":"} else "_"
+        for ch in text
+    )
+    return (safe.strip("_") or default)[:80]
+
+
 class TaskRuntime:
     """Serialize same-session turns while allowing cross-session concurrency.
 
-    Lock ordering invariant:
-        This class owns ``self._session_locks`` (the OUTER lock dict) to gate
-        task dispatch: ``_execute()`` acquires the lock before invoking the
-        turn handler, which eventually calls ``TurnRunner.run()`` and acquires
-        the INNER lock (``TurnRunner._session_locks``).
+    Gateway lock invariant:
+        ``self._session_execution_locks`` serializes task execution for a
+        session. ``self._session_locks`` stores the short critical-section
+        locks shared with TurnRunner and RPC ingress through
+        ``_get_session_lock_for_turn``.
 
-        Required acquire order: OUTER (this class) → INNER (TurnRunner).
-        DO NOT acquire ``self._session_locks[*]`` while holding
-        ``TurnRunner._session_locks[*]``; reverse order deadlocks under
-        contention.  The two dicts protect different scopes: this dict
-        serializes queued-task dispatch; TurnRunner's dict serializes
-        transcript writes and memory capture.
+        The write lock serializes transcript/session mutations; it must not
+        cover model streaming, tool execution, slot waits, or approval waits.
     """
 
     def __init__(
@@ -305,11 +316,14 @@ class TaskRuntime:
         self._turn_hard_deadline_s = turn_hard_deadline_s
         self._running_heartbeat_interval_s = running_heartbeat_interval_s
         self._pending_overflow_policy = pending_overflow_policy
-        # OUTER per-session lock dict (see Lock ordering invariant in class docstring).
-        # Protects: task dispatch serialization within a session — ensures at most
-        # one task runs at a time per session_key.  Acquire order: always BEFORE
-        # TurnRunner._session_locks when both are needed in the same call path.
+        # Per-session write locks shared with TurnRunner and RPC ingress on
+        # gateway-dispatched turns. These guard short transcript/session state
+        # mutations only.
         self._session_locks: dict[str, asyncio.Lock] = {}
+        # Per-session execution locks serialize whole turn lifecycles without
+        # blocking transcript writes, browser queue acknowledgements, or approval
+        # status updates behind external I/O.
+        self._session_execution_locks: dict[str, asyncio.Lock] = {}
         self._tasks: dict[str, _RuntimeTask] = {}
         self._pending_by_session: dict[str, list[_RuntimeTask]] = {}
         self._running_by_session: dict[str, _RuntimeTask] = {}
@@ -358,6 +372,7 @@ class TaskRuntime:
         ingress_pipeline_steps: tuple[Any, ...] | list[Any] | None = None,
         semantic_message: str | None = None,
         persisted_user_message_id: str | None = None,
+        fresh_user_session: bool = False,
         stream_event_sink: TaskStreamEventSink | None = None,
         *,
         update_envelope_cache: bool = True,
@@ -379,7 +394,11 @@ class TaskRuntime:
             if collected is not None:
                 return collected
         if queue_mode == "interrupt":
-            await self.cancel(session_key=envelope.session_key)
+            await self.cancel(
+                session_key=envelope.session_key,
+                source="queue_interrupt",
+                reason="queue_mode_interrupt",
+            )
         elif self._max_pending_per_session is not None:
             effective_policy = self._pending_overflow_policy
             if overflow_policy is not None:
@@ -408,6 +427,7 @@ class TaskRuntime:
                 "no_memory_capture": no_memory_capture,
                 "metadata": envelope.metadata,
                 "persisted_user_message_id": persisted_user_message_id,
+                "fresh_user_session": fresh_user_session,
             },
         )
         await self._storage.create_agent_task(record)
@@ -422,6 +442,7 @@ class TaskRuntime:
             ingress_pipeline_steps=tuple(ingress_pipeline_steps or ()),
             semantic_message=semantic_message,
             persisted_user_message_id=persisted_user_message_id,
+            fresh_user_session=fresh_user_session,
             stream_event_sink=stream_event_sink,
         )
         async with self._state_lock:
@@ -442,6 +463,7 @@ class TaskRuntime:
                 self._last_envelope_by_session[envelope.session_key] = envelope
             runtime_task.asyncio_task = asyncio.create_task(self._execute(runtime_task))
             _queue_depth = len(self._pending_by_session.get(envelope.session_key, []))
+            _queue_position = _queue_depth
         _emit_metric(
             "opensquilla_queue_depth",
             value=_queue_depth,
@@ -450,7 +472,12 @@ class TaskRuntime:
         await self._emit(
             envelope.session_key,
             "task.queued",
-            {"task_id": record.task_id, "session_key": envelope.session_key},
+            {
+                "task_id": record.task_id,
+                "session_key": envelope.session_key,
+                "queue_depth": _queue_depth,
+                "queue_position": _queue_position,
+            },
         )
         return TaskHandle(
             task_id=record.task_id,
@@ -480,6 +507,9 @@ class TaskRuntime:
         self,
         task_id: str | None = None,
         session_key: str | None = None,
+        *,
+        source: str | None = None,
+        reason: str | None = None,
     ) -> int:
         if task_id is None and session_key is None:
             raise ValueError("task_id or session_key is required")
@@ -495,6 +525,8 @@ class TaskRuntime:
             ]
             for task in tasks:
                 task.cancel_requested = True
+                task.cancel_source = _clean_cancel_detail(source, "unknown")
+                task.cancel_reason = _clean_cancel_detail(reason, "cancelled")
                 if task.asyncio_task is not None and not task.asyncio_task.done():
                     task.asyncio_task.cancel()
         return len(tasks)
@@ -764,103 +796,74 @@ class TaskRuntime:
 
     async def _execute(self, task: _RuntimeTask) -> None:
         session_key = task.envelope.session_key
-        lock = self._session_locks.setdefault(session_key, asyncio.Lock())
+        write_lock = self._session_locks.setdefault(session_key, asyncio.Lock())
+        execution_lock = self._session_execution_locks.setdefault(session_key, asyncio.Lock())
         try:
-            async with lock:
-                # Signal to TurnRunner.run() that this Task already holds the
-                # session lock so run() can skip re-acquisition without using
-                # lock.locked() (which cannot distinguish owners across tasks).
-                from opensquilla.engine.runtime import _SESSION_LOCK_OWNER
-
-                _current_task = asyncio.current_task()
-                _prev_map = _SESSION_LOCK_OWNER.get(None)
-                _new_map: dict[int, Any] = dict(_prev_map or {})
-                if _current_task is not None:
-                    _new_map[id(lock)] = _current_task
-                _owner_token = _SESSION_LOCK_OWNER.set(_new_map)
+            async with execution_lock:
+                if task.cancel_requested:
+                    reason = (
+                        "overflow_drop" if task.overflow_dropped else "user_cancel"
+                    )
+                    terminal_reason = (
+                        "dropped_by_overflow"
+                        if task.overflow_dropped
+                        else "cancelled_before_start"
+                    )
+                    _emit_metric(
+                        "turn_cancellations_total",
+                        value=1,
+                        reason=reason,
+                        session_key=task.envelope.session_key,
+                    )
+                    await self._mark_terminal(
+                        task,
+                        AgentTaskStatus.CANCELLED,
+                        terminal_reason=terminal_reason,
+                    )
+                    return
+                await self._wait_for_subagent_slot(task)
+                acquired = False
+                heartbeat_task: asyncio.Task[None] | None = None
                 try:
-                    if task.cancel_requested:
-                        reason = (
-                            "overflow_drop" if task.overflow_dropped else "user_cancel"
-                        )
-                        terminal_reason = (
-                            "dropped_by_overflow"
-                            if task.overflow_dropped
-                            else "cancelled_before_start"
-                        )
-                        _emit_metric(
-                            "turn_cancellations_total",
-                            value=1,
-                            reason=reason,
-                            session_key=task.envelope.session_key,
-                        )
-                        await self._mark_terminal(
-                            task,
-                            AgentTaskStatus.CANCELLED,
-                            terminal_reason=terminal_reason,
-                        )
-                        return
-                    await self._wait_for_subagent_slot(task)
-                    acquired = False
-                    heartbeat_task: asyncio.Task[None] | None = None
-                    try:
-                        await self._acquire_fair_slot(task)
-                        acquired = True
-                        heartbeat_task = self._start_running_heartbeat(task)
-                        run = TaskRun(
-                            task_id=task.task_id,
-                            envelope=task.envelope,
-                            message=task.message,
-                            attachments=task.attachments,
-                            queue_mode=task.queue_mode,
-                            run_kind=task.run_kind,
-                            no_memory_capture=task.no_memory_capture,
-                            ingress_pipeline_steps=task.ingress_pipeline_steps,
-                            semantic_message=task.semantic_message,
-                            persisted_user_message_id=task.persisted_user_message_id,
-                            stream_event_sink=task.stream_event_sink,
-                        )
-                        if self._turn_hard_deadline_s is not None:
-                            _deadline_start = time.monotonic()
-                            try:
-                                await asyncio.wait_for(
-                                    self._turn_handler(run),
-                                    timeout=self._turn_hard_deadline_s,
-                                )
-                            except TimeoutError as exc:
-                                # Only reclassify when the hard-deadline budget
-                                # was actually exhausted.  A TimeoutError that
-                                # originates inside the handler (e.g. from a
-                                # stage class or tool call) will have elapsed
-                                # well below the deadline; in that case re-raise
-                                # the original exception unchanged so the outer
-                                # handler records the correct cause.
-                                _elapsed = time.monotonic() - _deadline_start
-                                if _elapsed + 0.01 >= self._turn_hard_deadline_s:
-                                    raise _TurnHardDeadlineExceeded(
-                                        deadline_s=self._turn_hard_deadline_s,
-                                    ) from exc
-                                raise
-                        else:
-                            await self._turn_handler(run)
-                        if heartbeat_task is not None:
-                            await self._stop_running_heartbeat(heartbeat_task)
-                            heartbeat_task = None
-                        if acquired:
-                            await self._release_slot(task)
-                            acquired = False
-                        await self._mark_terminal(
-                            task,
-                            AgentTaskStatus.SUCCEEDED,
-                            terminal_reason="completed",
-                        )
-                    finally:
-                        if heartbeat_task is not None:
-                            await self._stop_running_heartbeat(heartbeat_task)
-                        if acquired:
-                            await self._release_slot(task)
+                    await self._acquire_fair_slot(task)
+                    acquired = True
+                    async with write_lock:
+                        pass
+                    heartbeat_task = self._start_running_heartbeat(task)
+                    run = TaskRun(
+                        task_id=task.task_id,
+                        envelope=task.envelope,
+                        message=task.message,
+                        attachments=task.attachments,
+                        queue_mode=task.queue_mode,
+                        run_kind=task.run_kind,
+                        no_memory_capture=task.no_memory_capture,
+                        ingress_pipeline_steps=task.ingress_pipeline_steps,
+                        semantic_message=task.semantic_message,
+                        persisted_user_message_id=task.persisted_user_message_id,
+                        fresh_user_session=task.fresh_user_session,
+                        stream_event_sink=task.stream_event_sink,
+                    )
+                    await self._run_turn_handler_with_write_lock_bypass(
+                        run,
+                        write_lock=write_lock,
+                    )
+                    if heartbeat_task is not None:
+                        await self._stop_running_heartbeat(heartbeat_task)
+                        heartbeat_task = None
+                    if acquired:
+                        await self._release_slot(task)
+                        acquired = False
+                    await self._mark_terminal(
+                        task,
+                        AgentTaskStatus.SUCCEEDED,
+                        terminal_reason="completed",
+                    )
                 finally:
-                    _SESSION_LOCK_OWNER.reset(_owner_token)
+                    if heartbeat_task is not None:
+                        await self._stop_running_heartbeat(heartbeat_task)
+                    if acquired:
+                        await self._release_slot(task)
         except asyncio.CancelledError:
             reason = "overflow_drop" if task.overflow_dropped else "interrupt"
             terminal_reason = (
@@ -919,6 +922,52 @@ class TaskRuntime:
                 error_class=str(getattr(exc, "code", None) or type(exc).__name__),
                 error_message=str(exc),
             )
+
+    async def _run_turn_handler_with_write_lock_bypass(
+        self,
+        run: TaskRun,
+        *,
+        write_lock: asyncio.Lock,
+    ) -> None:
+        """Run the handler while TurnRunner transcript writes use short locks."""
+        from opensquilla.engine.runtime import (
+            _SESSION_LOCK_BYPASS_ONLY,
+            _SESSION_LOCK_OWNER,
+        )
+
+        current_task = asyncio.current_task()
+        prev_map = _SESSION_LOCK_OWNER.get(None)
+        new_map: dict[int, Any] = dict(prev_map or {})
+        if current_task is not None:
+            new_map[id(write_lock)] = current_task
+        owner_token = _SESSION_LOCK_OWNER.set(new_map)
+        prev_bypass = _SESSION_LOCK_BYPASS_ONLY.get(None)
+        new_bypass = set(prev_bypass or set())
+        new_bypass.add(id(write_lock))
+        bypass_token = _SESSION_LOCK_BYPASS_ONLY.set(new_bypass)
+        try:
+            if self._turn_hard_deadline_s is not None:
+                deadline_start = time.monotonic()
+                try:
+                    await asyncio.wait_for(
+                        self._turn_handler(run),
+                        timeout=self._turn_hard_deadline_s,
+                    )
+                except TimeoutError as exc:
+                    # Only reclassify when the hard-deadline budget was actually
+                    # exhausted. A TimeoutError from inside the handler should
+                    # keep its original cause.
+                    elapsed = time.monotonic() - deadline_start
+                    if elapsed + 0.01 >= self._turn_hard_deadline_s:
+                        raise _TurnHardDeadlineExceeded(
+                            deadline_s=self._turn_hard_deadline_s,
+                        ) from exc
+                    raise
+            else:
+                await self._turn_handler(run)
+        finally:
+            _SESSION_LOCK_BYPASS_ONLY.reset(bypass_token)
+            _SESSION_LOCK_OWNER.reset(owner_token)
 
     def _ensure_slot_cond(self) -> asyncio.Condition:
         if self._slot_cond is None:
@@ -1129,12 +1178,10 @@ class TaskRuntime:
                 self._running_by_session.pop(task.envelope.session_key, None)
             self._tasks.pop(task.task_id, None)
             self._last_envelope_by_session.pop(task.envelope.session_key, None)
-            # C3 fix: never pop _session_locks here.  Popping while _execute
-            # still holds the lock causes split-brain: a concurrent enqueue
-            # calls setdefault() and gets a *new* lock object, allowing two
-            # tasks to run concurrently for the same session.  The lock dict
-            # grows at most by # unique session_keys (one Lock ~200 B each),
-            # which is acceptable.
+            # Keep the short write lock stable for this session. Popping it can
+            # split callers across old/new lock objects while callbacks or
+            # late lifecycle events still reference the old one. The dict grows
+            # at most by unique session_keys, which is acceptable.
             session_key = task.envelope.session_key
             # Clean up RR deque entry when session has no more work.
             if (
@@ -1187,7 +1234,13 @@ class TaskRuntime:
             terminal_reason=terminal_reason,
             error_class=error_class,
             error_message=error_message,
-            **await self._terminal_details_update(task),
+            **await self._terminal_details_update(
+                task,
+                status=status,
+                terminal_reason=terminal_reason,
+                error_class=error_class,
+                error_message=error_message,
+            ),
         )
         payload: dict[str, Any] = {
             "task_id": task.task_id,
@@ -1291,19 +1344,46 @@ class TaskRuntime:
         except Exception:
             return
 
-    async def _terminal_details_update(self, task: _RuntimeTask) -> dict[str, Any]:
+    async def _terminal_details_update(
+        self,
+        task: _RuntimeTask,
+        *,
+        status: AgentTaskStatus,
+        terminal_reason: str,
+        error_class: str | None,
+        error_message: str | None,
+    ) -> dict[str, Any]:
         outcome = _subagent_group_outcome_from_provenance(task.envelope.input_provenance)
-        if outcome is None:
-            return {}
         existing = await self._storage.get_agent_task(task.task_id)
         current_details = getattr(existing, "details", None)
         details = dict(current_details) if isinstance(current_details, dict) else {}
-        details["subagent_group_outcome"] = outcome
-        disclosure_required = task.envelope.input_provenance.get(
-            "runtime_partial_failure_disclosure_required"
-        )
-        if disclosure_required is True:
-            details["runtime_partial_failure_disclosure_required"] = True
+        cancellation: dict[str, str] | None = None
+        if status == AgentTaskStatus.CANCELLED:
+            cancellation = {
+                "source": task.cancel_source
+                or ("overflow_drop" if task.overflow_dropped else "unknown"),
+                "reason": task.cancel_reason
+                or ("overflow_drop" if task.overflow_dropped else terminal_reason),
+            }
+            details["cancellation"] = cancellation
+        if status == AgentTaskStatus.SUCCEEDED:
+            details["turn_outcome"] = completed_outcome().to_dict()
+        else:
+            turn_outcome = outcome_from_error(
+                code=terminal_reason if terminal_reason != "error" else error_class,
+                message=error_message,
+                error_class=error_class,
+            ).to_dict()
+            if cancellation is not None:
+                turn_outcome["cancellation_source"] = cancellation["source"]
+            details["turn_outcome"] = turn_outcome
+        if outcome is not None:
+            details["subagent_group_outcome"] = outcome
+            disclosure_required = task.envelope.input_provenance.get(
+                "runtime_partial_failure_disclosure_required"
+            )
+            if disclosure_required is True:
+                details["runtime_partial_failure_disclosure_required"] = True
         return {"details": details}
 
 

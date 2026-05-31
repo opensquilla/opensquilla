@@ -11,7 +11,9 @@ from opensquilla.result_budget import (
     ToolResultBudgetPolicy,
     ToolRunBudgetExceededError,
     ToolRunBudgetPolicy,
+    build_webresearch_tool_run_budget_policy,
 )
+from opensquilla.tools import dispatch as dispatch_module
 from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import (
@@ -65,6 +67,16 @@ def _strict_preview_chars(content: str) -> int:
     preview = payload.get("preview", "")
     assert isinstance(preview, str)
     return len(preview)
+
+
+def test_webresearch_budget_profile_builder_preserves_unlimited_call_defaults() -> None:
+    policy = build_webresearch_tool_run_budget_policy()
+
+    assert policy.max_web_search_calls_per_turn is None
+    assert policy.max_web_fetch_calls_per_turn is None
+    assert policy.max_external_text_chars_per_turn is None
+    assert policy.max_single_fetch_chars == 50_000
+    assert policy.max_web_search_results == 10
 
 
 def test_default_tool_run_budget_leaves_room_for_complex_turns() -> None:
@@ -684,7 +696,7 @@ async def test_dispatch_run_budget_blocks_exhausted_external_call_before_handler
                 max_web_fetch_calls_per_turn=1,
                 max_single_fetch_chars=500,
                 max_external_text_chars_per_turn=1_000,
-            )
+            ),
         ),
     )
 
@@ -748,7 +760,7 @@ async def test_dispatch_run_budget_abort_releases_failed_external_reservation() 
                 max_web_fetch_calls_per_turn=1,
                 max_single_fetch_chars=400,
                 max_external_text_chars_per_turn=400,
-            )
+            ),
         ),
     )
 
@@ -856,7 +868,7 @@ async def test_dispatch_run_budget_limits_concurrent_external_calls_atomically()
                 max_web_fetch_calls_per_turn=1,
                 max_single_fetch_chars=400,
                 max_external_text_chars_per_turn=1_000,
-            )
+            ),
         ),
     )
 
@@ -919,7 +931,7 @@ async def test_dispatch_run_budget_allows_oversized_result_then_controls_retry()
                 max_web_fetch_calls_per_turn=2,
                 max_single_fetch_chars=200,
                 max_external_text_chars_per_turn=200,
-            )
+            ),
         ),
     )
 
@@ -952,6 +964,59 @@ async def test_dispatch_run_budget_allows_oversized_result_then_controls_retry()
 
 
 @pytest.mark.asyncio
+async def test_dispatch_logs_webresearch_run_diagnostics_without_default_call_caps(
+    monkeypatch,
+) -> None:
+    registry = ToolRegistry()
+
+    async def web_search(query: str, max_results: int | None = None) -> str:
+        return json.dumps({"query": query, "results": ["one", "two"]})
+
+    registry.register(
+        ToolSpec(
+            name="web_search",
+            description="search",
+            parameters={"query": {"type": "string"}, "max_results": {"type": "integer"}},
+            result_budget_class="external",
+        ),
+        web_search,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(tool_run_budget_key="dispatch-test-search-diagnostics"),
+    )
+
+    log_events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        dispatch_module.log,
+        "debug",
+        lambda event, **payload: log_events.append((event, payload)),
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-search-diagnostics",
+            tool_name="web_search",
+            arguments={"query": "test", "max_results": 3},
+        )
+    )
+
+    assert result.is_error is False
+    assert json.loads(result.content)["results"] == ["one", "two"]
+    event = next(
+        payload
+        for name, payload in log_events
+        if name == "dispatch.webresearch_tool_run_diagnostics"
+    )
+    assert event["tool"] == "web_search"
+    assert event["tool_use_id"] == "tc-search-diagnostics"
+    assert event["web_search_calls_used"] == 1
+    assert event["web_fetch_calls_used"] == 0
+    assert event["external_text_chars_used"] >= len(result.content)
+    assert event["tool_wall_time_ms"] >= 0
+
+
+@pytest.mark.asyncio
 async def test_dispatch_run_budget_charges_web_search_external_text() -> None:
     registry = ToolRegistry()
 
@@ -974,7 +1039,7 @@ async def test_dispatch_run_budget_charges_web_search_external_text() -> None:
             tool_run_budget_policy=ToolRunBudgetPolicy(
                 max_web_search_calls_per_turn=2,
                 max_external_text_chars_per_turn=200,
-            )
+            ),
         ),
     )
 
@@ -1198,9 +1263,7 @@ async def test_dispatch_preserves_sessions_yield_control_json_when_bounding() ->
     handler = build_tool_handler(
         registry,
         ToolContext(
-            tool_result_budget_policy=ToolResultBudgetPolicy(
-                max_single_tool_result_chars=160
-            )
+            tool_result_budget_policy=ToolResultBudgetPolicy(max_single_tool_result_chars=160)
         ),
     )
 

@@ -5,18 +5,26 @@ const UI = (() => {
   // -- Toast notifications --
   let _toastContainer = null;
   const _visibleToasts = new Map();
+  const _TOAST_TYPES = { error: 'err', danger: 'err', success: 'ok' };
 
   function toast(message, type = 'info', duration = 3000) {
+    type = _TOAST_TYPES[type] || type;
     const toastKey = `${type}\u0000${message}`;
     if (_visibleToasts.has(toastKey)) return;
 
     if (!_toastContainer) {
       _toastContainer = document.createElement('div');
       _toastContainer.className = 'toast-stack';
+      _toastContainer.setAttribute('role', 'status');
+      _toastContainer.setAttribute('aria-live', 'polite');
+      _toastContainer.setAttribute('aria-atomic', 'false');
       document.body.appendChild(_toastContainer);
     }
     const el = document.createElement('div');
     el.className = `toast ${type}`;
+    if (type === 'err' || type === 'warn') {
+      el.setAttribute('role', 'alert');
+    }
     el.textContent = message;
     _visibleToasts.set(toastKey, el);
     _toastContainer.appendChild(el);
@@ -41,29 +49,95 @@ const UI = (() => {
         <div class="modal-foot"></div>
       </div>`;
     const actionsEl = overlay.querySelector('.modal-foot');
+    const dialog = overlay.querySelector('.modal');
+    const previousFocus = document.activeElement;
+    let closed = false;
+
+    const focusableSelector = [
+      'a[href]',
+      'button:not([disabled])',
+      'textarea:not([disabled])',
+      'input:not([disabled])',
+      'select:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(',');
+
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', onKey, true);
+      overlay.dispatchEvent(new CustomEvent('ui:modal-close'));
+      overlay.remove();
+      try { previousFocus && previousFocus.focus && previousFocus.focus(); } catch (_) {}
+    };
+
     actions.forEach(({ label, cls, onClick }) => {
       const btn = document.createElement('button');
       btn.className = `btn ${cls || ''}`;
       btn.textContent = label;
-      btn.addEventListener('click', () => { onClick?.(); overlay.remove(); });
+      btn.type = 'button';
+      btn.addEventListener('click', () => { onClick?.(); close(); });
       actionsEl.appendChild(btn);
     });
     overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
+      if (e.target === overlay) close();
     });
-    // Esc closes the modal — matches user expectation for any dialog.
     const onKey = (e) => {
-      if (e.key === 'Escape' && document.body.contains(overlay)) {
-        overlay.remove();
-        document.removeEventListener('keydown', onKey);
+      if (!document.body.contains(overlay)) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        close();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const focusables = Array.from(dialog.querySelectorAll(focusableSelector))
+          .filter(el => el.offsetWidth || el.offsetHeight || el === document.activeElement);
+        if (focusables.length === 0) {
+          e.preventDefault();
+          dialog.focus();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
     document.body.appendChild(overlay);
-    // Move focus into the modal for keyboard users.
-    const firstAction = actionsEl.querySelector('button');
+    dialog.setAttribute('tabindex', '-1');
+    const firstAction = dialog.querySelector('[autofocus], button, input, textarea, select, a[href]');
     if (firstAction) firstAction.focus();
+    else dialog.focus();
+    overlay.close = close;
     return overlay;
+  }
+
+  function confirm({
+    title = 'Confirm action',
+    message = '',
+    confirmLabel = 'Confirm',
+    cancelLabel = 'Cancel',
+    danger = false,
+  } = {}) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const overlay = modal(title, message, [
+        { label: cancelLabel, cls: 'btn--ghost', onClick: () => finish(false) },
+        { label: confirmLabel, cls: danger ? 'btn--danger' : 'btn--primary', onClick: () => finish(true) },
+      ]);
+      overlay.addEventListener('ui:modal-close', () => finish(false), { once: true });
+    });
   }
 
   // -- Data table with sort + pagination --
@@ -88,8 +162,14 @@ const UI = (() => {
 
       let html = '<table class="data-table"><thead><tr>';
       columns.forEach((col, i) => {
+        const sortable = col.sortable !== false;
+        const sortState = sortCol === i ? (sortAsc ? 'ascending' : 'descending') : 'none';
         const arrow = sortCol === i ? (sortAsc ? ' \u25b2' : ' \u25bc') : '';
-        html += `<th data-col="${i}">${col.label}<span class="sort-arrow">${arrow}</span></th>`;
+        html += `<th ${sortable ? `aria-sort="${sortState}"` : ''}>`;
+        html += sortable
+          ? `<button type="button" class="table-sort-btn" data-col="${i}">${col.label}<span class="sort-arrow" aria-hidden="true">${arrow}</span></button>`
+          : `${col.label}`;
+        html += '</th>';
       });
       html += '</tr></thead><tbody>';
       slice.forEach(row => {
@@ -114,9 +194,9 @@ const UI = (() => {
       }
 
       container.innerHTML = html;
-      container.querySelectorAll('th[data-col]').forEach(th => {
-        th.addEventListener('click', () => {
-          const ci = Number(th.dataset.col);
+      container.querySelectorAll('[data-col]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const ci = Number(btn.dataset.col);
           if (sortCol === ci) { sortAsc = !sortAsc; } else { sortCol = ci; sortAsc = true; }
           _render();
         });
@@ -623,7 +703,7 @@ const UI = (() => {
   }
 
   return {
-    toast, modal, dataTable, skeleton, chip, relTime,
+    toast, modal, confirm, dataTable, skeleton, chip, relTime,
     sessionStatusClass, sessionStatusChip, sessionStatusLabel,
     drawer, combobox,
   };

@@ -46,15 +46,18 @@ __all__ = [
 # importing these names from ``opensquilla.tools.policy`` continue to work.
 # They are intentionally NOT in ``__all__`` so ``from ... import *`` only
 # surfaces the chain primitives. New code should import these directly from
-# ``opensquilla.tools.policy_helpers``.
+# their owning boundary modules.
 from opensquilla.tools.policy_helpers import (  # noqa: E402, F401
     ToolPolicy,
-    ToolSurfaceCapabilities,
     apply_tool_policy,
     apply_tool_policy_from_config,
     apply_tool_policy_layer,
+)
+from opensquilla.tools.policy_runtime import (  # noqa: E402, F401
+    ToolSurfaceCapabilities,
     detect_runtime_tool_surface_capabilities,
     private_memory_read_tool_denied,
     private_memory_read_tools_blocked,
     resolve_runtime_tool_surface,
+    tool_surface_capabilities_from_runtime,
 )

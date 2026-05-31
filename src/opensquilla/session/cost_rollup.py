@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-EventCostSource = Literal["provider_billed", "opensquilla_estimate", "unavailable", "none"]
+EventCostSource = Literal[
+    "provider_billed",
+    "opensquilla_estimate",
+    "unavailable",
+    "mixed",
+    "none",
+]
 SessionCostSource = Literal[
     "provider_billed",
     "opensquilla_estimate",
@@ -27,6 +33,8 @@ def normalize_event_cost_source(
     """Normalize per-turn cost source using final DoneEvent precision."""
 
     raw = (source or "none").strip().lower()
+    if raw == "mixed":
+        return "mixed"
     if raw in {"provider_billed", "openrouter_usage"}:
         return "provider_billed"
     if raw == "opensquilla_estimate":
@@ -34,6 +42,8 @@ def normalize_event_cost_source(
     if raw in {"unavailable", "unpriced"}:
         return "unavailable"
 
+    if billed_cost_usd > 0.0 and cost_usd > billed_cost_usd:
+        return "mixed"
     if billed_cost_usd > 0.0:
         return "provider_billed"
     if cost_usd > 0.0:

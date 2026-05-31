@@ -73,6 +73,19 @@ def test_agent_fallback_retries_transport_transient_errors(message: str) -> None
     assert policy.should_retry(kind, attempt=0) is True
 
 
+def test_agent_fallback_retries_timeout_code_when_message_is_sparse() -> None:
+    policy = FallbackPolicy(max_retries=2)
+
+    kind = policy.classify_error(
+        "Request timed out: ",
+        provider_name="openrouter",
+        raw_code="timeout",
+    )
+
+    assert kind is ProviderErrorKind.TRANSPORT_TRANSIENT
+    assert policy.should_retry(kind, attempt=0) is True
+
+
 @pytest.mark.parametrize(
     "message",
     [

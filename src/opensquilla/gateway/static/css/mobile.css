@@ -7,8 +7,19 @@
 
   /* Touch-friendly tap targets */
   .btn { min-height: 44px; min-width: 44px; }
-  .btn--sm { min-height: 36px; }
+  .btn--sm { min-height: 40px; }
   .btn--icon { min-width: 44px; min-height: 44px; }
+  .chat-session-copy-btn,
+  .attachment-remove,
+  .sess-iconbtn,
+  .cron-iconbtn {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  .cron-preset {
+    min-height: 40px;
+    padding: 8px 12px;
+  }
 
   /* Safe area insets for notched phones */
   .content {

@@ -2,7 +2,7 @@
 
 These four handlers are the wire surface for the onboard wizard state
 machine. The heavy lifting — typed schemas, state transitions, validation
-— lives in :mod:`opensquilla.gateway.wizard`. This module is a thin translator
+— lives in :mod:`opensquilla.application.wizard`. This module is a thin translator
 between the JSON-over-RPC shape (camelCase field names) and the Python
 registry (snake_case attributes).
 
@@ -14,8 +14,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from opensquilla.application.wizard import get_wizard_registry
+from opensquilla.application.wizard_rpc import (
+    wizard_cancel_rpc_payload,
+    wizard_next_rpc_payload,
+    wizard_start_rpc_payload,
+    wizard_status_rpc_payload,
+)
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
-from opensquilla.gateway.wizard import get_wizard_registry
 
 _d = get_dispatcher()
 
@@ -30,10 +36,7 @@ async def _handle_wizard_start(params: dict | None, ctx: RpcContext) -> dict[str
 
     registry = get_wizard_registry()
     wizard_id, first_step = registry.start(wizard_type)
-    return {
-        "wizardId": wizard_id,
-        "step": first_step.to_dict(),
-    }
+    return wizard_start_rpc_payload(wizard_id, first_step)
 
 
 @_d.method("wizard.next", scope="operator.admin")
@@ -55,11 +58,7 @@ async def _handle_wizard_next(params: dict | None, ctx: RpcContext) -> dict[str,
 
     registry = get_wizard_registry()
     outcome = registry.advance(wizard_id, answers)
-    return {
-        "step": outcome.next_step.to_dict() if outcome.next_step is not None else None,
-        "completed": outcome.completed,
-        "result": outcome.result,
-    }
+    return wizard_next_rpc_payload(outcome)
 
 
 @_d.method("wizard.cancel", scope="operator.admin")
@@ -72,7 +71,7 @@ async def _handle_wizard_cancel(params: dict | None, ctx: RpcContext) -> dict[st
 
     registry = get_wizard_registry()
     registry.cancel(wizard_id)
-    return {"wizardId": wizard_id, "cancelled": True}
+    return wizard_cancel_rpc_payload(wizard_id)
 
 
 @_d.method("wizard.status", scope="operator.admin")
@@ -85,4 +84,7 @@ async def _handle_wizard_status(params: dict | None, ctx: RpcContext) -> dict[st
 
     registry = get_wizard_registry()
     session = registry.status(wizard_id)
-    return session.to_dict(total_steps=registry.total_steps(session.wizard_type))
+    return wizard_status_rpc_payload(
+        session,
+        total_steps=registry.total_steps(session.wizard_type),
+    )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 
+from opensquilla.engine.agent import _cost_source_for_usage
 from opensquilla.engine.types import DoneEvent
 from opensquilla.engine.usage import UsageTracker
 
@@ -53,6 +54,28 @@ def test_multi_turn_aggregates_in_snapshot():
     assert snap.output_tokens == 27
 
 
+def test_usage_snapshot_delta_is_one_turn_not_lifetime():
+    tracker = UsageTracker()
+    tracker.add("sess-B", input_tokens=10, output_tokens=20, model_id="gpt-test")
+    before = tracker.session_checkpoint("sess-B")
+    tracker.add(
+        "sess-B",
+        input_tokens=5,
+        output_tokens=7,
+        model_id="gpt-test",
+        billed_cost=0.01,
+    )
+
+    delta = tracker.session_delta_snapshot("sess-B", before)
+
+    assert delta is not None
+    assert delta.input_tokens == 5
+    assert delta.output_tokens == 7
+    assert delta.billed_cost == 0.01
+    assert delta.cost_usd == 0.01
+    assert _cost_source_for_usage(delta.cost_usd, delta.billed_cost) == "provider_billed"
+
+
 def test_stale_replay_roundtrips_through_json_and_live_tracker_wins():
     """DoneEvent embedded snapshot survives asdict+json round-trip; server-side
     replay-precedence rule: live tracker beats embedded for re-emitted events."""
@@ -82,7 +105,7 @@ def test_positional_construction_through_reasoning_content_leaves_session_totals
     # runtime_context_hash, runtime_context_chars, routed_tier, routing_source,
     # routing_confidence, baseline_model, routed_model, savings_pct, savings_usd,
     # cache_hit_active, total_savings_pct, total_savings_usd, cache_write_tokens,
-    # reasoning_content
+    # reasoning_content. Newer fields must remain after session_totals.
     done = DoneEvent(
         "hello", 1, 2, 0, 0, 1, 0.0, 0.0, "none", "gpt-test",
         None, 0, None, "none", 0.0, "", "", 0.0, 0.0,

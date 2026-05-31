@@ -276,6 +276,34 @@ def test_text_ref_hydrates_for_current_provider_call(tmp_path: Path) -> None:
     assert "hello from ref" in wrapped.text
 
 
+def test_preview_only_text_ref_uses_manifest_and_short_preview(tmp_path: Path) -> None:
+    payload = ("a" * 4_500 + "TAIL_SHOULD_NOT_APPEAR").encode("utf-8")
+    ref = _ref(tmp_path, payload, name="dump.txt", mime="text/plain")
+    material_path = tmp_path / "transcripts" / ref["scope"] / ref["sha256"]
+    ref["_provider_inline_policy"] = "preview_only"
+    ref["_material_estimated_tokens"] = 45_000
+    ref["_material_path"] = str(material_path)
+
+    out = TurnRunner._build_attachment_messages(
+        "read",
+        [ref],
+        media_root=tmp_path,
+    )
+
+    assert out is not None
+    wrapped = next(
+        b
+        for b in out[0].content
+        if isinstance(b, ContentBlockText) and b.text.startswith("<file ")
+    )
+    assert "[large text attachment materialized]" in wrapped.text
+    assert f"path: {material_path}" in wrapped.text
+    assert 'read_file(path="' in wrapped.text
+    assert "estimated_tokens: 45000" in wrapped.text
+    assert "[attachment preview truncated:" in wrapped.text
+    assert "TAIL_SHOULD_NOT_APPEAR" not in wrapped.text
+
+
 # ---------------------------------------------------------------------------
 # Test 5 — filename containing characters that would break the wrapper is
 # either escaped (XML attr-safe) or sanitised to a safe form.

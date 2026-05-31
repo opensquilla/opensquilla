@@ -236,6 +236,37 @@ def test_usage_status_only_estimates_transcript_context_for_requested_session() 
     assert context_status["contextTokens"] >= 1_500
 
 
+def test_usage_status_requested_compacted_session_prefers_active_transcript_context() -> None:
+    session = SimpleNamespace(
+        session_key="agent:webchat:compact",
+        status="finished",
+        input_tokens=1_296_184,
+        output_tokens=1_000,
+        context_tokens=1_296_184,
+        compaction_count=1,
+        model="deepseek-v4-flash",
+    )
+    sm = _FakeTranscriptSessionManager(
+        [session],
+        [
+            SimpleNamespace(token_count=36_000),
+            SimpleNamespace(token_count=184),
+        ],
+    )
+    ctx = _ctx(session_manager=sm, usage_tracker=UsageTracker())
+
+    unrequested = asyncio.run(_handle_usage_status(None, ctx))
+    assert sm.transcript_calls == 0
+    assert unrequested["sessions"][0]["contextStatus"]["contextTokens"] == 1_296_184
+
+    requested = asyncio.run(_handle_usage_status({"sessionKey": "agent:webchat:compact"}, ctx))
+    assert sm.transcript_calls == 1
+    context_status = requested["sessions"][0]["contextStatus"]
+    assert context_status["tokenSource"] == "transcript_estimate"
+    assert context_status["contextTokens"] == 36_184
+    assert context_status["pressure"] < 0.1
+
+
 def test_usage_status_exposes_session_timestamp_aliases() -> None:
     session = SimpleNamespace(
         session_key="agent:webchat:timed",
@@ -391,6 +422,49 @@ def test_usage_status_prefers_persisted_row_over_same_session_tracker_row() -> N
     assert row["billedCostUsd"] == 0.004
     assert row["costSource"] == "provider_billed"
     assert row["costEphemeral"] is False
+
+
+def test_usage_status_overlays_tracker_when_persisted_row_is_still_empty() -> None:
+    """Cover the done-event/read-after-write race seen in live meta runs."""
+
+    db_session = SimpleNamespace(
+        session_key="agent:webchat:stale",
+        status="running",
+        input_tokens=0,
+        output_tokens=0,
+        total_cost_usd=0.0,
+        billed_cost_usd=0.0,
+        estimated_cost_component_usd=0.0,
+        cost_source="none",
+        missing_cost_entries=0,
+        cache_read=0,
+        cache_write=0,
+        model="deepseek/deepseek-v4-pro",
+    )
+    sm = _FakeSessionManager([db_session])
+    tracker = UsageTracker()
+    tracker.add(
+        "agent:webchat:stale",
+        input_tokens=97_223,
+        output_tokens=25_486,
+        model_id="deepseek/deepseek-v4-pro-20260423",
+        cache_read_tokens=32_768,
+        billed_cost=0.132452324,
+    )
+
+    ctx = _ctx(session_manager=sm, usage_tracker=tracker)
+    payload = asyncio.run(_handle_usage_status(None, ctx))
+
+    [row] = payload["sessions"]
+    assert row["session"] == "agent:webchat:stale"
+    assert row["inputTokens"] == 97_223
+    assert row["outputTokens"] == 25_486
+    assert row["cacheReadTokens"] == 32_768
+    assert row["costUsd"] == 0.132452
+    assert row["billedCostUsd"] == 0.132452
+    assert row["costSource"] == "provider_billed"
+    assert row["costEphemeral"] is True
+    assert payload["totalCostUsd"] == 0.132452
 
 
 def test_usage_status_reads_real_session_manager_dict_rows_and_deduplicates_tracker() -> None:

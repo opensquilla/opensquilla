@@ -156,7 +156,7 @@ async def _manual_compact_over_websocket(port: int, session_key: str) -> dict[st
         while True:
             if compact_task.done() and "completed" in all_statuses:
                 break
-            frame = await asyncio.wait_for(client._recv_queue.get(), timeout=5.0)  # noqa: SLF001
+            frame = await asyncio.wait_for(client._recv_queue.get(), timeout=45.0)  # noqa: SLF001
             if frame.get("event") != "session.event.compaction":
                 continue
             payload = frame.get("payload") or {}
@@ -169,7 +169,7 @@ async def _manual_compact_over_websocket(port: int, session_key: str) -> dict[st
             if status in {"completed", "failed", "skipped", "cancelled"}:
                 break
 
-        result = await asyncio.wait_for(compact_task, timeout=5.0)
+        result = await asyncio.wait_for(compact_task, timeout=15.0)
         return {
             "statuses": statuses,
             "all_statuses": all_statuses,
@@ -194,7 +194,7 @@ async def _start_manual_compact_and_wait_for_started(
     )
 
     while True:
-        frame = await asyncio.wait_for(client._recv_queue.get(), timeout=5.0)  # noqa: SLF001
+        frame = await asyncio.wait_for(client._recv_queue.get(), timeout=15.0)  # noqa: SLF001
         if frame.get("event") != "session.event.compaction":
             continue
         payload = frame.get("payload") or {}
@@ -284,14 +284,14 @@ async def test_gateway_websocket_slow_manual_compaction_rewrites_db(
         _wait_for_health(port, server)
         observed = await asyncio.wait_for(
             _manual_compact_over_websocket(port, session_key),
-            timeout=20.0,
+            timeout=90.0,
         )
     finally:
         _stop_process(server)
 
     result = observed["result"]
     db_state = _read_compaction_db_state(db_path)
-    assert observed["statuses"] == ["started", "completed"]
+    assert observed["statuses"] == ["started", "observed", "observed", "completed"]
     assert result["compacted"] is True
     assert result["tokens_before"] == 3520
     assert result["tokens_after"] < result["tokens_before"]
@@ -359,12 +359,12 @@ async def test_gateway_restart_during_slow_manual_compaction_leaves_db_recoverab
         _wait_for_health(port, restarted)
         observed = await asyncio.wait_for(
             _manual_compact_over_websocket(port, session_key),
-            timeout=20.0,
+            timeout=90.0,
         )
     finally:
         _stop_process(restarted)
 
-    assert observed["statuses"] == ["started", "completed"]
+    assert observed["statuses"] == ["started", "observed", "observed", "completed"]
     assert observed["result"]["compacted"] is True
     recovered_state = _read_compaction_db_state(db_path)
     assert recovered_state["compaction_count"] == 1

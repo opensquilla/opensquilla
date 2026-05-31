@@ -46,10 +46,8 @@ const ConfigView = (() => {
       'Maximum debug.log size before rotation. Set to 0 to disable rotation in the stdlib handler.',
     'log_file_backup_count':
       'Number of rotated debug.log backups to retain.',
-    'agent_token_saving.tool_result_compression_mode':
-      'How tool outputs are compressed before being fed back to the model: "off", "auto" (heuristic), or "always". "auto" is a sane default.',
-    'agent_token_saving.tool_result_compression_enabled':
-      'Master switch for tool-result compression. Disable to send raw tool output verbatim — useful for debugging, costly otherwise.',
+    'agent_token_saving.tool_result_projection_max_inline_chars':
+      'Maximum inline size for canonical tokenjuice tool-result projections. Raw tool output is transient and is not stored.',
     'squilla_router.enabled':
       'Turn the ML-powered tier router on or off. When off, every request uses the default model regardless of complexity.',
     'squilla_router.rollout_phase':
@@ -120,14 +118,14 @@ const ConfigView = (() => {
             <h2 class="cfg-stage__title">Config</h2>
             <p class="cfg-stage__subtitle">Advanced gateway configuration. Use guided setup for provider, router, channels, and extras.</p>
           </div>
-          <div class="cfg-stage__actions">
-            <div class="cfg-mode-toggle" role="group" aria-label="Editor mode">
-              <button class="cfg-mode-btn ${_mode === 'form' ? 'is-active' : ''}" type="button" data-cfg-mode="form">Form</button>
-              <button class="cfg-mode-btn ${_mode === 'yaml' ? 'is-active' : ''}" type="button" data-cfg-mode="yaml">YAML</button>
+          <div class="cfg-stage__actions mobile-action-strip">
+            <div class="cfg-mode-toggle mobile-action-strip__item" role="group" aria-label="Editor mode">
+              <button class="cfg-mode-btn ${_mode === 'form' ? 'is-active' : ''}" type="button" data-cfg-mode="form" aria-pressed="${_mode === 'form' ? 'true' : 'false'}">Form</button>
+              <button class="cfg-mode-btn ${_mode === 'yaml' ? 'is-active' : ''}" type="button" data-cfg-mode="yaml" aria-pressed="${_mode === 'yaml' ? 'true' : 'false'}">YAML</button>
             </div>
-            <button class="cfg-btn cfg-btn--ghost" id="cfg-guided-setup" type="button" title="Open guided setup">${icons.config()}<span>Guided setup</span></button>
-            <button class="cfg-btn cfg-btn--ghost" id="cfg-reload" type="button" title="Reload config">${icons.refresh()}<span>Reload</span></button>
-            <button class="cfg-btn cfg-btn--ghost" id="cfg-save" type="button" title="Save config">${icons.check()}<span>Save</span></button>
+            <button class="cfg-btn cfg-btn--ghost mobile-action-strip__button" id="cfg-guided-setup" type="button" title="Open guided setup" aria-label="Open guided setup">${icons.config()}<span class="mobile-action-strip__label">Guided setup</span></button>
+            <button class="cfg-btn cfg-btn--ghost mobile-action-strip__button" id="cfg-reload" type="button" title="Reload config" aria-label="Reload config">${icons.refresh()}<span class="mobile-action-strip__label">Reload</span></button>
+            <button class="cfg-btn cfg-btn--ghost mobile-action-strip__button" id="cfg-save" type="button" title="Save config" aria-label="Save config">${icons.check()}<span class="mobile-action-strip__label">Save</span></button>
           </div>
         </header>
 
@@ -135,14 +133,14 @@ const ConfigView = (() => {
         <div id="cfg-form-view">
           <div class="cfg-toolbar">
             <div class="cfg-tabs" id="cfg-tab-bar" role="tablist" aria-label="Config sections">
-              ${_TABS.map(t => `<button class="cfg-tab${t.id === _activeTab ? ' is-active' : ''}" type="button" role="tab" aria-selected="${t.id === _activeTab ? 'true' : 'false'}" aria-controls="cfg-tab-${t.id}" data-tab="${t.id}">${_esc(t.label)}</button>`).join('')}
+              ${_TABS.map(t => `<button id="cfg-tab-btn-${t.id}" class="cfg-tab${t.id === _activeTab ? ' is-active' : ''}" type="button" role="tab" aria-selected="${t.id === _activeTab ? 'true' : 'false'}" aria-controls="cfg-tab-${t.id}" tabindex="${t.id === _activeTab ? '0' : '-1'}" data-tab="${t.id}">${_esc(t.label)}</button>`).join('')}
             </div>
             <label class="cfg-search-wrap" for="cfg-search">
               <span class="cfg-search-icon" aria-hidden="true">${icons.search()}</span>
               <input class="cfg-search-input" id="cfg-search" type="search" placeholder="Search keys & values…" value="${_esc(_searchText)}" autocomplete="off">
             </label>
           </div>
-          ${_TABS.map(t => `<div id="cfg-tab-${t.id}" class="tab-panel" role="tabpanel" style="${t.id === _activeTab ? '' : 'display:none'}"></div>`).join('')}
+          ${_TABS.map(t => `<div id="cfg-tab-${t.id}" class="tab-panel" role="tabpanel" aria-labelledby="cfg-tab-btn-${t.id}" tabindex="0" style="${t.id === _activeTab ? '' : 'display:none'}"></div>`).join('')}
         </div>
 
         <!-- YAML view -->
@@ -177,17 +175,8 @@ const ConfigView = (() => {
 
     // tab buttons
     _el.querySelectorAll('#cfg-tab-bar .cfg-tab').forEach(btn => {
-      btn.addEventListener('click', () => {
-        _activeTab = btn.dataset.tab;
-        _el.querySelectorAll('.cfg-tab').forEach(b => {
-          const active = b === btn;
-          b.classList.toggle('is-active', active);
-          b.setAttribute('aria-selected', active ? 'true' : 'false');
-        });
-        _el.querySelectorAll('.tab-panel').forEach(p => { p.style.display = 'none'; });
-        const panel = _el.querySelector('#cfg-tab-' + _activeTab);
-        if (panel) panel.style.display = '';
-      });
+      btn.addEventListener('click', () => _selectTab(btn.dataset.tab, { focus: false }));
+      btn.addEventListener('keydown', _onTabKeydown);
     });
 
     _el.querySelector('#cfg-reload').addEventListener('click', () => {
@@ -287,8 +276,36 @@ const ConfigView = (() => {
     _el.querySelector('#cfg-yaml-view').style.display = m === 'yaml' ? '' : 'none';
     _el.querySelectorAll('[data-cfg-mode]').forEach(btn => {
       btn.classList.toggle('is-active', btn.dataset.cfgMode === m);
+      btn.setAttribute('aria-pressed', btn.dataset.cfgMode === m ? 'true' : 'false');
     });
     _renderStickybar();
+  }
+
+  function _selectTab(tabId, { focus = true } = {}) {
+    if (!_el || !_TABS.some(t => t.id === tabId)) return;
+    _activeTab = tabId;
+    _el.querySelectorAll('.cfg-tab').forEach(b => {
+      const active = b.dataset.tab === tabId;
+      b.classList.toggle('is-active', active);
+      b.setAttribute('aria-selected', active ? 'true' : 'false');
+      b.tabIndex = active ? 0 : -1;
+      if (active && focus) b.focus();
+    });
+    _el.querySelectorAll('.tab-panel').forEach(p => { p.style.display = 'none'; });
+    const panel = _el.querySelector('#cfg-tab-' + _activeTab);
+    if (panel) panel.style.display = '';
+  }
+
+  function _onTabKeydown(event) {
+    const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (!keys.includes(event.key)) return;
+    const tabs = _TABS.map(t => t.id);
+    let idx = tabs.indexOf(_activeTab);
+    if (event.key === 'Home') idx = 0;
+    else if (event.key === 'End') idx = tabs.length - 1;
+    else idx = (idx + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    event.preventDefault();
+    _selectTab(tabs[idx]);
   }
 
   function _bindYamlDraftTracking() {

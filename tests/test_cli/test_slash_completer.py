@@ -93,12 +93,6 @@ def test_permissions_argument_completions_include_mode_descriptions() -> None:
     assert "sensitive paths bypassed" in meta["full"].lower()
 
 
-def test_tool_compress_argument_completions_show_modes_not_commands() -> None:
-    results = _completions_for("/tool-compress s")
-
-    assert results == ["status", "summarize"]
-
-
 def test_commands_without_argument_completions_do_not_fall_back_to_slash_words() -> None:
     results = _completions_for("/help ")
 

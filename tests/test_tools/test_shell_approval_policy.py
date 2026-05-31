@@ -393,6 +393,26 @@ async def test_workspace_lockdown_allows_configured_scratch_dir(tmp_path: Path) 
     assert target.read_text(encoding="utf-8") == "print('ok')"
 
 
+@pytest.mark.asyncio
+async def test_workspace_write_deny_globs_block_file_write(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "blocked" / "generated.txt"
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_write_deny_globs = ["blocked/**"]  # type: ignore[attr-defined]
+
+    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    with pytest.raises(ToolError, match="workspace write deny policy"):
+        await write_file(str(target), "nope")
+
+    assert not target.exists()
+    assert len(get_approval_queue().list_pending("exec")) == 0
+
+
 def test_tool_definitions_include_scratch_guidance_when_configured(tmp_path: Path) -> None:
     from opensquilla.tools.registry import get_default_registry
 
@@ -432,6 +452,52 @@ async def test_workspace_lockdown_blocks_obvious_outside_shell_redirection(
     assert result is not None
     assert result["status"] == "blocked"
     assert result["reason"] == "workspace_lockdown"
+
+
+@pytest.mark.asyncio
+async def test_workspace_write_deny_globs_block_shell_redirection(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_write_deny_globs = ["reports/*.txt"]  # type: ignore[attr-defined]
+
+    result = await shell._check_exec_approval(
+        "exec_command",
+        "echo ok > reports/out.txt",
+        str(workspace),
+        "command requires approval",
+        None,
+        False,
+    )
+
+    assert result is not None
+    assert result["status"] == "blocked"
+    assert result["reason"] == "workspace_write_deny"
+    assert result["matched_pattern"] == "reports/*.txt"
+
+
+@pytest.mark.asyncio
+async def test_workspace_write_deny_globs_block_direct_shell_command(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "reports" / "out.txt"
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_write_deny_globs = ["reports/*.txt"]  # type: ignore[attr-defined]
+
+    result = await shell.exec_command("echo ok > reports/out.txt", workdir=str(workspace))
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "workspace_write_deny"
+    assert not target.exists()
 
 
 @pytest.mark.asyncio

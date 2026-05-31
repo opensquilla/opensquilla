@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from opensquilla.provider import openai as openai_module
 from opensquilla.provider.openai import OpenAIProvider
 from opensquilla.provider.types import ChatConfig, DoneEvent, Message
 
@@ -127,6 +128,59 @@ def test_openrouter_deepseek_auto_cache_does_not_add_top_level_cache_control(mon
     assert "cache_control" not in payload
     assert len(payload["messages"][0]["content"]) == 1
     assert payload["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_openrouter_zai_auto_cache_requires_live_capability_proof(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    _patch_openai_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="z-ai/glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    cfg = ChatConfig(
+        system="stable base",
+        cache_breakpoints=[{"text": "stable base", "cache": "true"}],
+        cache_mode="auto",
+    )
+
+    _collect_done(provider, cfg)
+
+    payload = captured["payload"]
+    assert "cache_control" not in payload
+    assert payload["messages"][0] == {"role": "system", "content": "stable base"}
+
+
+def test_openrouter_payload_cache_shape_logs_fixed_prefix_item_hashes(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    _patch_openai_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-pro",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    cfg = ChatConfig(
+        system="stable base",
+        cache_breakpoints=[{"text": "stable base", "cache": "true"}],
+        cache_mode="auto",
+    )
+
+    log_events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        openai_module.log,
+        "debug",
+        lambda event, **payload: log_events.append((event, payload)),
+    )
+
+    _collect_done(provider, cfg)
+
+    event = next(
+        payload
+        for name, payload in log_events
+        if name == "openrouter.payload_cache_shape"
+    )
+    assert event["first_non_system_hash"]
+    assert event["non_system_prefix_item_hashes"] == [event["first_non_system_hash"]]
 
 
 def test_openrouter_anthropic_cache_off_does_not_add_cache_control(monkeypatch) -> None:

@@ -13,12 +13,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from opensquilla.cli.url_utils import normalize_gateway_url
 from opensquilla.paths import default_opensquilla_home, state_dir
 
 UNMANAGED_GATEWAY_RUNNING = "UNMANAGED_GATEWAY_RUNNING"
 MANAGED_GATEWAY_TARGET_MISMATCH = "MANAGED_GATEWAY_TARGET_MISMATCH"
+REMOTE_GATEWAY_UNAVAILABLE = "REMOTE_GATEWAY_UNAVAILABLE"
 
 
 def gateway_pidfile_path() -> Path:
@@ -46,13 +49,21 @@ class GatewayLifecycleResult:
     log_path: str = ""
     started_at: str | None = None
     exit_code_value: int = 0
+    remote: bool = False
+    gateway_url: str | None = None
+    url_override: str | None = None
+    health_url_override: str | None = None
 
     @property
     def url(self) -> str:
+        if self.url_override:
+            return self.url_override
         return _http_url(self.host, self.port)
 
     @property
     def health_url(self) -> str:
+        if self.health_url_override:
+            return self.health_url_override
         return f"{_http_url(self.probe_host or self.host, self.port)}/health"
 
     @property
@@ -76,6 +87,10 @@ class GatewayLifecycleResult:
             "pidfile": self.pidfile,
             "logPath": self.log_path,
         }
+        if self.remote:
+            payload["remote"] = True
+        if self.gateway_url:
+            payload["gatewayUrl"] = self.gateway_url
         if self.probe_host and self.probe_host != self.host:
             payload["probeHost"] = self.probe_host
         if self.pid is not None:
@@ -107,7 +122,7 @@ class GatewayLifecycleManager:
         self.host = host
         self.probe_host = _health_probe_host(host)
         self.port = port
-        self.config_path = config_path
+        self.config_path = str(config_path) if config_path else None
         self.health_timeout = health_timeout
         self.shutdown_timeout = shutdown_timeout
         self.poll_interval = poll_interval
@@ -372,6 +387,9 @@ class GatewayLifecycleManager:
             "requestedHost": self.host,
             "requestedPort": self.port,
         }
+        if self.config_path or record.get("configPath"):
+            details["recordedConfigPath"] = record.get("configPath")
+            details["requestedConfigPath"] = self.config_path
         return self._result(
             action,
             "target_mismatch",
@@ -430,7 +448,12 @@ class GatewayLifecycleManager:
             record_port = int(record.get("port", -1))
         except (TypeError, ValueError):
             return False
-        return record.get("host") == self.host and record_port == self.port
+        if record.get("host") != self.host or record_port != self.port:
+            return False
+        record_config_path = record.get("configPath")
+        if self.config_path is not None and record_config_path:
+            return bool(record_config_path == self.config_path)
+        return True
 
     def _record_pid(self, record: dict[str, Any]) -> int | None:
         value = record.get("pid")
@@ -447,7 +470,7 @@ class GatewayLifecycleManager:
         return value if isinstance(value, str) else None
 
     def _gateway_run_argv(self) -> list[str]:
-        return [
+        argv = [
             sys.executable,
             "-m",
             "opensquilla.cli.main",
@@ -458,6 +481,9 @@ class GatewayLifecycleManager:
             "--port",
             str(self.port),
         ]
+        if self.config_path:
+            argv.extend(["--config", self.config_path])
+        return argv
 
     def _spawn_gateway(self, argv: list[str]) -> subprocess.Popen[Any]:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -579,6 +605,63 @@ def _health_probe_host(host: str) -> str:
 
 def _http_url(host: str, port: int) -> str:
     return f"http://{_format_url_host(host)}:{port}"
+
+
+def remote_gateway_status(gateway_url: str, *, timeout: float = 0.5) -> GatewayLifecycleResult:
+    normalized = normalize_gateway_url(gateway_url)
+    base_url = _gateway_http_base_url(normalized)
+    attempts: list[dict[str, Any]] = []
+
+    for path in ("health", "healthz"):
+        health_url = f"{base_url}/{path}"
+        request = Request(health_url, method="GET")
+        try:
+            with urlopen(request, timeout=timeout) as response:  # noqa: S310 - operator-provided gateway URL.
+                status = int(response.status)
+                if 200 <= status < 300:
+                    return GatewayLifecycleResult(
+                        action="status",
+                        state="running",
+                        ok=True,
+                        managed=False,
+                        remote=True,
+                        gateway_url=normalized,
+                        url_override=base_url,
+                        health_url_override=health_url,
+                        details={"status": status},
+                    )
+                attempts.append({"url": health_url, "status": status})
+        except HTTPError as exc:
+            attempts.append({"url": health_url, "status": int(exc.code)})
+        except (OSError, URLError, TimeoutError) as exc:
+            attempts.append(
+                {
+                    "url": health_url,
+                    "errorType": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+
+    return GatewayLifecycleResult(
+        action="status",
+        state="unavailable",
+        ok=False,
+        managed=False,
+        remote=True,
+        code=REMOTE_GATEWAY_UNAVAILABLE,
+        message="Remote gateway is unavailable.",
+        details={"attempts": attempts},
+        exit_code_value=1,
+        gateway_url=normalized,
+        url_override=base_url,
+        health_url_override=f"{base_url}/health",
+    )
+
+
+def _gateway_http_base_url(normalized_gateway_url: str) -> str:
+    parsed = urlparse(normalized_gateway_url)
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    return urlunparse((scheme, parsed.netloc, "", "", "", ""))
 
 
 def _format_url_host(host: str) -> str:

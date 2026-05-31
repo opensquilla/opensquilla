@@ -203,6 +203,30 @@ async def test_stream_incomplete_resolves_on_retry() -> None:
 
 
 @pytest.mark.asyncio
+async def test_timeout_error_code_retries_when_message_lacks_timeout_token() -> None:
+    provider = _SequenceProvider(
+        [
+            [ProviderError(message="Request timed out: ", code="timeout")],
+            [ProviderText(text="ok"), _ok_done()],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_provider_retries=1,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 2
+    assert any(event.kind == "done" and event.text == "ok" for event in events)
+    assert not any(event.kind == "error" and event.code == "timeout" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_first_turn_provider_empty_response_error_surfaces_without_retry() -> None:
     provider = _SequenceProvider(
         [

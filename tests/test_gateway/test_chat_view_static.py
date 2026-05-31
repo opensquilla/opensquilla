@@ -1,10 +1,24 @@
+import re
 from pathlib import Path
 
 CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
 CHAT_CSS = Path("src/opensquilla/gateway/static/css/views/chat.css")
+APP_JS = Path("src/opensquilla/gateway/static/js/app.js")
 RPC_JS = Path("src/opensquilla/gateway/static/js/rpc.js")
 SAVINGS_FX_JS = Path("src/opensquilla/gateway/static/js/components/savings-fx.js")
 TASK_RUNTIME_PY = Path("src/opensquilla/gateway/task_runtime.py")
+
+
+def test_global_topbar_does_not_render_duplicate_chat_title() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    topbar_start = source.index('<header class="topbar"')
+    topbar_end = source.index('<main class="content"', topbar_start)
+    topbar_markup = source[topbar_start:topbar_end]
+
+    assert 'id="topbar-title"' not in topbar_markup
+    assert ">Chat</h1>" not in topbar_markup
+    assert 'id="conn-pill"' in topbar_markup
+    assert 'id="theme-toggle"' in topbar_markup
 
 
 def test_chat_history_passes_subagent_completion_provenance_to_renderer() -> None:
@@ -12,6 +26,127 @@ def test_chat_history_passes_subagent_completion_provenance_to_renderer() -> Non
 
     assert "provenanceSourceTool: msg.provenance_source_tool || ''" in source
     assert "provenanceSourceSessionKey: msg.provenance_source_session_key || ''" in source
+
+
+def test_chat_toolbar_has_no_tool_compress_selector() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "Tool " + "Compress" not in source
+    assert "tool" + "Compress" not in source
+    assert "tool-compress" not in source
+
+
+def test_chat_slash_menu_is_part_of_composer_and_width_capped() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    composer_start = source.index('<div class="chat-composer" id="chat-composer">')
+    composer_end = source.index('<input type="file" id="chat-file-input"', composer_start)
+    composer_markup = source[composer_start:composer_end]
+
+    assert 'id="chat-slash"' in composer_markup
+    assert composer_markup.index('id="chat-slash"') < composer_markup.index(
+        'class="chat-input-bar"'
+    )
+    slash_css = css[css.index(".chat-slash {") : css.index(".chat-slash-item {")]
+    assert "var(--chat-measure)" in slash_css
+
+    slash_desc_start = css.index(".chat-slash-desc {")
+    slash_desc = css[
+        slash_desc_start : css.index("/* ─── Per-bubble", slash_desc_start)
+    ]
+    assert "min-width: 0;" in slash_desc
+    assert "overflow: hidden;" in slash_desc
+    assert "text-overflow: ellipsis;" in slash_desc
+    assert "white-space: nowrap;" in slash_desc
+
+
+def test_chat_pending_attachment_preview_is_composer_width_capped() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    start = css.index(".chat-attachments {")
+    end = css.index(".chat-attachments.hidden", start)
+    block = css[start:end]
+
+    assert "box-sizing: border-box;" in block
+    assert "width: min(calc(100% - var(--sp-8)), var(--chat-measure));" in block
+    assert "margin: 0 auto var(--sp-2);" in block
+    assert "overflow-x: auto;" in block
+
+
+def test_chat_day_separator_stays_on_centered_chat_axis() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    start = css.index(".chat-day-sep {")
+    end = css.index(".chat-day-sep::before", start)
+    block = css[start:end]
+
+    assert "width: 100%;" in block
+    assert "max-width: var(--chat-measure);" in block
+    assert "margin: var(--sp-2) auto;" in block
+
+
+def test_chat_sent_attachment_images_render_as_separate_thumbnail_attachments() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    body_start = css.index(".msg.user .msg-body.msg-body--has-attachments {")
+    body_end = css.index(".msg.user .msg-body--has-attachments .msg-attachment-text", body_start)
+    body_block = css[body_start:body_end]
+    text_start = css.index(".msg.user .msg-body--has-attachments .msg-attachment-text {")
+    text_end = css.index(".msg.user .msg-body--has-attachments .msg-attachments", text_start)
+    text_block = css[text_start:text_end]
+    attachments_start = css.index(".msg.user .msg-body--has-attachments .msg-attachments {")
+    attachments_end = css.index(
+        ".msg.user .msg-body--has-attachments .msg-thumb",
+        attachments_start,
+    )
+    attachments_block = css[attachments_start:attachments_end]
+    thumb_start = css.index(".msg.user .msg-body--has-attachments .msg-thumb {")
+    thumb_end = css.index("/* ─── Pending Queue", thumb_start)
+    thumb_block = css[thumb_start:thumb_end]
+
+    assert "max-width: min(360px, 78%);" in body_block
+    assert "border: 0;" in body_block
+    assert "background: transparent;" in body_block
+    assert "max-width: min(360px, 100%);" in text_block
+    assert "max-width: 100%;" in attachments_block
+    assert "user-select: text;" in attachments_block
+    assert "width: min(260px, 42vw);" in thumb_block
+    assert "height: auto;" in thumb_block
+    assert "min-height:" not in thumb_block
+    assert "object-fit: contain;" in thumb_block
+    assert "background: transparent;" in thumb_block
+    assert "border-color: color-mix(in srgb, var(--border) 65%, transparent);" in thumb_block
+    assert "box-shadow: none;" in thumb_block
+    assert "var(--accent)" not in thumb_block
+
+
+def test_chat_non_image_message_attachments_render_download_links_when_data_exists() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    render_start = source.index("function _renderMessageAttachmentHtml(att)")
+    render_end = source.index("function _renderAttachmentPreview()", render_start)
+    render_body = source[render_start:render_end]
+
+    assert "function _escAttr(s)" in source
+    assert "function _attachmentDownloadHref(att, mime)" in source
+    assert "function _attachmentDownloadName(att)" in source
+    assert '<a class="msg-file-chip msg-file-chip--download"' in render_body
+    assert 'download="${_escAttr(downloadName)}"' in render_body
+    assert 'href="${_escAttr(downloadHref)}"' in render_body
+    assert '<span class="msg-file-chip msg-file-chip--disabled"' in render_body
+
+
+def test_chat_file_attachment_download_links_keep_chip_styling() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    chip_start = css.index(".msg-file-chip {")
+    chip_end = css.index(".msg-file-chip__icon", chip_start)
+    chip_block = css[chip_start:chip_end]
+    download_start = css.index(".msg-file-chip--download {")
+    download_end = css.index(".msg-file-chip--download:hover", download_start)
+    download_block = css[download_start:download_end]
+
+    assert "text-decoration: none;" in chip_block
+    assert "cursor: default;" in chip_block
+    assert "cursor: pointer;" in download_block
+    assert ".msg-file-chip--download:hover" in css
+    assert ".msg-file-chip--download:focus-visible" in css
+    assert ".msg-file-chip--disabled" in css
 
 
 def test_chat_tool_display_map_does_not_reference_removed_wrapper_tools() -> None:
@@ -41,7 +176,6 @@ def test_live_subagent_completion_event_uses_same_renderer() -> None:
     assert "session.event.subagent_completion" in source
     assert "_appendSubagentCompletion(payload)" in source
 
-
 def test_chat_renders_live_and_historical_artifacts_as_header_auth_downloads() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
@@ -55,9 +189,48 @@ def test_chat_renders_live_and_historical_artifacts_as_header_auth_downloads() -
     assert "Authorization" in source
 
 
+def test_chat_artifact_download_url_carries_query_fallback_auth() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    helper_start = source.index("function _artifactAuthenticatedDownloadUrl(raw, token)")
+    helper_end = source.index("  function _renderArtifacts", helper_start)
+    helper_body = source[helper_start:helper_end]
+    download_start = source.index("async function _downloadArtifact(artifact)")
+    download_end = source.index("  function _reconstructToolCalls", download_start)
+    download_body = source[download_start:download_end]
+
+    assert "_artifactAuthenticatedDownloadUrl(downloadUrl, token)" in download_body
+    assert "url.searchParams.set('sessionKey', _sessionKey)" in helper_body
+    assert "url.searchParams.set('token', token)" in helper_body
+    assert "headers['x-opensquilla-session-key'] = _sessionKey" in download_body
+    assert "headers['Authorization'] = `Bearer ${token}`" in download_body
+
+
+def test_chat_artifact_downloads_use_direct_links_to_preserve_user_activation() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    bind_start = source.index("function _bindHoverActions()")
+    bind_end = source.index("  function _truncate", bind_start)
+    bind_body = source[bind_start:bind_end]
+    render_start = source.index("function _renderArtifacts(artifacts)")
+    render_end = source.index("  async function _downloadArtifact", render_start)
+    render_body = source[render_start:render_end]
+
+    assert "if (artifactBtn.tagName === 'A') return;" in bind_body
+    assert (
+        "const downloadHref = _artifactAuthenticatedDownloadUrl(downloadUrl, token);"
+        in render_body
+    )
+    assert '<a class="msg-artifact-card msg-artifact-card--image"' in render_body
+    assert '<a class="msg-artifact-chip"' in render_body
+    assert 'href="${_escAttr(downloadHref)}"' in render_body
+    assert 'download="${_escAttr(name)}"' in render_body
+
+
 def test_chat_artifact_images_render_as_preview_cards_and_refresh_on_done() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")
+    preview_start = source.index("function _artifactPreviewUrl(artifact)")
+    preview_end = source.index("  function _renderArtifacts", preview_start)
+    preview_body = source[preview_start:preview_end]
     render_start = source.index("function _renderArtifacts(artifacts)")
     render_end = source.index("  async function _downloadArtifact", render_start)
     render_body = source[render_start:render_end]
@@ -68,6 +241,9 @@ def test_chat_artifact_images_render_as_preview_cards_and_refresh_on_done() -> N
     assert "function _isImageArtifact(artifact)" in source
     assert "function _artifactCategory(artifact)" in source
     assert "function _artifactPreviewUrl(artifact)" in source
+    assert "url.searchParams.set('sessionKey', _sessionKey)" in preview_body
+    assert "const token = (App.getAuthToken && App.getAuthToken()) || '';" in preview_body
+    assert "url.searchParams.set('token', token)" in preview_body
     assert "msg-artifact-gallery" in render_body
     assert "msg-artifact-files" in render_body
     assert "class=\"msg-artifact-card msg-artifact-card--image\"" in render_body
@@ -108,6 +284,54 @@ def test_chat_resets_stream_timeout_on_run_heartbeat() -> None:
     assert "_resetStreamIdleTimer();" in source
     assert "_DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000" in source
     assert "webui_stream_idle_grace_ms" in source
+
+
+def test_chat_shows_awaiting_model_hint_after_tool_result_heartbeat() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    heartbeat_start = source.index("_rpc.on('session.event.run_heartbeat'")
+    heartbeat_end = source.index("    }));", heartbeat_start)
+    heartbeat_body = source[heartbeat_start:heartbeat_end]
+    tool_result_start = source.index("function _appendToolResult(payload)")
+    tool_result_end = source.index("  // ── PR5", tool_result_start)
+    tool_result_body = source[tool_result_start:tool_result_end]
+
+    assert "const _AWAITING_MODEL_CLASS = 'awaiting-model';" in source
+    assert "function _showAwaitingModelHintAfterToolResult()" in source
+    assert "_markVisibleStreamEvent('tool_result');" in tool_result_body
+    assert "_showAwaitingModelHintAfterToolResult();" in heartbeat_body
+    assert "if (_streamBubble)" in heartbeat_body
+    assert "_showThinkingIndicator();" in heartbeat_body
+    assert ".msg.streaming.awaiting-model::after" in css
+    assert "content: 'waiting for model response...';" in css
+    assert "textContent = 'waiting for model response" not in source
+    assert "document.createTextNode('waiting for model response" not in source
+
+
+def test_chat_clears_awaiting_model_hint_on_next_visible_event_and_stream_reset() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    append_delta_start = source.index("function _appendDelta(text)")
+    append_delta_end = source.index("  function _flushPendingTextSegment", append_delta_start)
+    append_delta_body = source[append_delta_start:append_delta_end]
+    append_tool_start = source.index("function _appendToolCall(payload)")
+    append_tool_end = source.index("  function _appendToolResult(payload)", append_tool_start)
+    append_tool_body = source[append_tool_start:append_tool_end]
+    append_artifact_start = source.index("function _appendArtifact(payload)")
+    append_artifact_end = source.index("  function _renderStreamArtifacts", append_artifact_start)
+    append_artifact_body = source[append_artifact_start:append_artifact_end]
+    end_stream_start = source.index("function _endStreaming(opts)")
+    end_stream_end = source.index("  function _hasViewLocalStreamState", end_stream_start)
+    end_stream_body = source[end_stream_start:end_stream_end]
+    clear_state_start = source.index("function _clearViewLocalStreamState(reason)")
+    clear_state_end = source.index("  function _updateSendButton", clear_state_start)
+    clear_state_body = source[clear_state_start:clear_state_end]
+
+    assert "_markVisibleStreamEvent('text_delta');" in append_delta_body
+    assert "_markVisibleStreamEvent('tool_use_start');" in append_tool_body
+    assert "_markVisibleStreamEvent('artifact');" in append_artifact_body
+    assert "_clearAwaitingModelHint();" in end_stream_body
+    assert "_lastVisibleStreamEvent = '';" in end_stream_body
+    assert "_lastVisibleStreamEvent = '';" in clear_state_body
 
 
 def test_chat_tool_results_use_execution_status_for_state() -> None:
@@ -178,6 +402,77 @@ def test_chat_live_tool_result_provider_badge_is_web_search_only() -> None:
     assert "_injectProviderBadge" in guarded_block
 
 
+def test_chat_tool_result_can_retitle_coerced_tool_cards() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    live_start = source.index("function _appendToolResult(payload)")
+    live_end = source.index("    // Only show result preview", live_start)
+    live_body = source[live_start:live_end]
+    history_start = source.index("function _reconstructToolCalls(bubbleDiv, segments)")
+    history_end = source.index("  function _renderMessageTags", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "function _retitleToolCallDOM(details, name, input)" in source
+    assert (
+        "_retitleToolCallDOM(details, toolName, payload.arguments || payload.input || '')"
+        in live_body
+    )
+    assert "const resultToolName = seg.name || _toolNameById[toolId] || '';" in history_body
+    assert "_retitleToolCallDOM(details, resultToolName, seg.input || '')" in history_body
+
+
+def test_chat_tool_result_full_view_uses_stable_modal_class() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    build_start = source.index("function _buildToolResultDOM")
+    build_end = source.index("  function _appendToolCall", build_start)
+    build_body = source[build_start:build_end]
+
+    assert "class=\"chat-tool-result-full\"" in build_body
+    assert "style=\"white-space:pre-wrap" not in build_body
+    assert "viewBtn.type = 'button';" in build_body
+    assert "event.stopPropagation();" in build_body
+    assert ".chat-tool-result-full" in css
+    assert "overflow-wrap: anywhere;" in css
+    assert "max-width: min(" in css
+
+
+def test_chat_historical_tool_results_stringify_non_string_payloads() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("function _reconstructToolCalls(bubbleDiv, segments)")
+    history_end = source.index("  function _renderMessageTags", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "function _toolResultContent" in source
+    assert "const content = _toolResultContent(seg);" in history_body
+    assert "const content = _toolResultContent(payload);" in source
+    assert "JSON.stringify(raw, null, 2)" in source
+
+
+def test_router_control_is_hidden_from_regular_tool_cards() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    append_tool_start = source.index("function _appendToolCall(payload)")
+    append_tool_end = source.index("  function _appendToolResult(payload)", append_tool_start)
+    append_tool_body = source[append_tool_start:append_tool_end]
+    append_result_start = source.index("function _appendToolResult(payload)")
+    append_result_end = source.index(
+        "  // \u2500\u2500 PR5: meta-skill user_input form rendering",
+        append_result_start,
+    )
+    append_result_body = source[append_result_start:append_result_end]
+    history_start = source.index("function _reconstructToolCalls(bubbleDiv, segments)")
+    history_end = source.index("  function _renderMessageTags", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "function _isControlPlaneToolName(name)" in source
+    assert "return name === 'router_control';" in source
+    assert "if (_isControlPlaneToolName(name))" in append_tool_body
+    assert "tool_call.append.skip_control_plane" in append_tool_body
+    assert "if (_isControlPlaneToolName(toolName))" in append_result_body
+    assert "tool_result.append.skip_control_plane" in append_result_body
+    assert "if (_isControlPlaneToolName(seg.name || '')) continue;" in history_body
+    assert "if (_isControlPlaneToolName(resultToolName)) continue;" in history_body
+
+
 def test_chat_search_provider_badge_updates_running_web_search_cards() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
@@ -202,13 +497,54 @@ def test_chat_url_agent_query_resolves_default_webchat_session() -> None:
     assert "url.searchParams.delete('agent');" in source
 
 
+def test_chat_subscribe_does_not_advance_cursor_before_replayed_events() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("async function _subscribeSession()")
+    end = source.index("  async function _unsubscribeSession()", start)
+    body = source[start:end]
+
+    assert "Number(res.replayed_count || 0) <= 0" in body
+    assert "replayed_count" in body
+
+
+def test_chat_stream_seq_drops_only_seen_duplicates_not_late_unique_events() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "const _streamSeqSeenBySession = new Map();" in source
+    assert "const _STREAM_SEQ_SEEN_WINDOW = 800;" in source
+    assert "function _markSessionStreamSeqSeen(key, seq)" in source
+
+    start = source.index("function _acceptStreamSeq(payload)")
+    end = source.index("function _eventHasSpecificSessionHandler(event)", start)
+    body = source[start:end]
+
+    assert "return _markSessionStreamSeqSeen(key, seq);" in body
+    assert "seq <= lastSeq" not in body
+
+    marker_start = source.index("function _markSessionStreamSeqSeen(key, seq)")
+    marker_end = source.index("function _syncLastStreamSeqFromSession(key)", marker_start)
+    marker_body = source[marker_start:marker_end]
+    assert "if (seen.has(seq)) return false;" in marker_body
+    assert "seen.add(seq);" in marker_body
+    assert "_setSessionStreamSeq(key, seq);" in marker_body
+    assert "value < pruneBefore" in marker_body
+
+
 def test_chat_new_session_uses_current_agent_namespace() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
+    click_start = source.index("newBtn.addEventListener('click', () => {")
+    click_end = source.index("    // Export", click_start)
+    click_body = source[click_start:click_end]
+    slash_start = source.index("      case 'new_chat':")
+    slash_end = source.index("      case 'reset_session':", slash_start)
+    slash_body = source[slash_start:slash_end]
 
     assert "function _agentIdFromSessionKey(key)" in source
     assert "return _webchatSessionKey(_agentIdFromSessionKey(_sessionKey)," in source
     assert 'title="New chat session in the current agent"' in source
     assert "New chat session in the current agent: " in source
+    assert "_loadHistory(" not in click_body
+    assert "_loadHistory(" not in slash_body
 
 
 def test_chat_slash_menu_loads_web_chat_catalog_from_rpc() -> None:
@@ -235,7 +571,11 @@ def test_chat_slash_input_supports_literal_slash_escape() -> None:
     assert "if (text.startsWith('//')) {" in send_prefix
     assert "isLiteralSlash = true;" in send_prefix
     assert "text = text.slice(1);" in send_prefix
-    assert "if (!isLiteralSlash && text.startsWith('/')) {" in send_prefix
+    literal_idx = send_prefix.index("if (text.startsWith('//')) {")
+    normalize_idx = send_prefix.index("const normalized = await _normalizeOutgoingComposerPayload(")
+    slash_exec_guard_idx = send_prefix.index("if (!isLiteralSlash && text.startsWith('/')) {")
+    assert literal_idx < normalize_idx < slash_exec_guard_idx
+    assert "{ allowSlashCommand: isSlashCommand }" in send_prefix
     assert "await _executeSlashCommand(text)" in send_prefix
     assert "if (val.startsWith('//')) { _closeSlashMenu(); return; }" in source
 
@@ -249,17 +589,26 @@ def test_chat_slash_commands_are_blocked_while_streaming_after_literal_escape() 
     flag_idx = send_prefix.index("let isLiteralSlash = false;")
     literal_idx = send_prefix.index("if (text.startsWith('//')) {")
     flag_set_idx = send_prefix.index("isLiteralSlash = true;")
-    streaming_idx = send_prefix.index("if (_isStreaming) {")
+    normalize_idx = send_prefix.index("const normalized = await _normalizeOutgoingComposerPayload(")
+    streaming_idx = send_prefix.index(
+        "if (_isStreaming || _isCompactInFlightForCurrentSession()) {"
+    )
     execute_idx = send_prefix.index("await _executeSlashCommand(text)")
     real_slash_guard = "if (!isLiteralSlash && text.startsWith('/')) {"
     streaming_block_end = send_prefix.index(f"\n\n    {real_slash_guard}", streaming_idx)
     streaming_block = send_prefix[streaming_idx:streaming_block_end]
 
-    assert flag_idx < literal_idx < streaming_idx
-    assert literal_idx < flag_set_idx < streaming_idx
-    assert "text = text.slice(1);" in send_prefix[literal_idx:streaming_idx]
+    assert flag_idx < literal_idx < normalize_idx < streaming_idx
+    assert literal_idx < flag_set_idx < normalize_idx
+    assert "text = text.slice(1);" in send_prefix[literal_idx:normalize_idx]
+    assert "text = normalized.text;" in send_prefix[normalize_idx:streaming_idx]
+    assert (
+        "_pendingAttachments = normalized.attachments;"
+        in send_prefix[normalize_idx:streaming_idx]
+    )
     assert real_slash_guard in streaming_block
-    assert "Wait for the current response before running" in streaming_block
+    assert "const waitReason = _isCompactInFlightForCurrentSession()" in streaming_block
+    assert "Wait for ${waitReason} before running" in streaming_block
     assert "_executeSlashCommand" not in streaming_block
     assert streaming_idx < execute_idx
     assert real_slash_guard in send_prefix[streaming_idx:execute_idx]
@@ -275,6 +624,41 @@ def test_chat_slash_executor_handles_unknown_without_chat_send() -> None:
     assert "Unsupported command" in executor
     assert "return true;" in executor
     assert "chat.send" not in executor
+
+
+def test_chat_image_paste_prevents_default_only_after_attachment_acceptance() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    paste_start = source.index("const pasteHandler = (e) => {")
+    paste_end = source.index("    document.addEventListener('paste', pasteHandler);", paste_start)
+    paste_body = source[paste_start:paste_end]
+
+    assert "let consumedAttachment = false;" in paste_body
+    assert "if (file && _addAttachment(file)) consumedAttachment = true;" in paste_body
+    assert "if (consumedAttachment) e.preventDefault();" in paste_body
+    assert paste_body.index("_addAttachment(file)") < paste_body.index("e.preventDefault()")
+
+
+def test_chat_add_attachment_reports_acceptance_for_paste_handler() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    add_start = source.index("function _addAttachment(file)")
+    add_end = source.index(
+        "  async function _uploadAttachmentStaged(file, mime, localId)",
+        add_start,
+    )
+    add_body = source[add_start:add_end]
+
+    assert "return false;" in add_body[
+        add_body.index("if (!_isAllowedAttachmentMime(mime))") :
+        add_body.index("const hardCap = _attachmentHardCapBytes(mime);")
+    ]
+    assert "return false;" in add_body[
+        add_body.index("if (file.size > hardCap)") :
+        add_body.index("const localId = _nextAttachmentId++;")
+    ]
+    assert "reader.readAsDataURL(file);" in add_body
+    assert "reader.readAsDataURL(file);\n      return true;" in add_body
+    assert "_uploadAttachmentStaged(file, mime, localId).catch" in add_body
+    assert add_body.rstrip().endswith("return true;\n  }")
 
 
 def test_chat_usage_slash_commands_call_usage_rpcs() -> None:
@@ -362,6 +746,28 @@ def test_chat_maps_task_terminal_events_during_migration() -> None:
     assert "_sessionErrorMessage(payload)" in error_handler
 
 
+def test_chat_succeeded_task_without_done_falls_back_to_history_sync() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    wildcard_start = source.index("const terminalStatus = _taskTerminalStatus(rawEvent);")
+    wildcard_end = source.index(
+        "const normalized = _taskTerminalAsSessionEvent(rawEvent, rawPayload);"
+    )
+    terminal_handler = source[wildcard_start:wildcard_end]
+    fallback_start = source.index("function _scheduleSucceededTaskTerminalSync(payload = {})")
+    fallback_end = source.index("  function _taskTerminalAsSessionEvent", fallback_start)
+    fallback = source[fallback_start:fallback_end]
+
+    assert "rawEvent === 'task.succeeded'" in terminal_handler
+    assert "_scheduleSucceededTaskTerminalSync(rawPayload);" in terminal_handler
+    assert "let _streamGeneration = 0;" in source
+    assert "_streamGeneration += 1;" in source
+    assert "const streamGeneration = _streamGeneration;" in fallback
+    assert "_scheduleHistorySync();" in fallback
+    assert "if (_isStreaming && _streamGeneration === streamGeneration)" in fallback
+    assert "_endStreaming();" in fallback
+
+
 def test_chat_reconciles_terminal_session_changed_events() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
@@ -422,7 +828,9 @@ def test_chat_subscribe_uses_stream_replay_cursor() -> None:
     body = source[start:end]
 
     assert "let _lastStreamSeq = 0;" in source
-    assert "params.since_stream_seq = _lastStreamSeq;" in source
+    assert "const _streamSeqBySession = new Map();" in source
+    assert "params.since_stream_seq = _sessionStreamSeq(subscribeKey);" in source
+    assert "params.since_stream_seq = _lastStreamSeq;" not in source
     assert "if (_lastStreamSeq > 0) params.since_stream_seq = _lastStreamSeq;" not in body
     assert "function _acceptStreamSeq(payload)" in source
     assert "Session stream gap detected; reloading transcript." in source
@@ -437,6 +845,41 @@ def test_chat_stream_handlers_drop_replayed_duplicate_frames() -> None:
     assert "function _acceptStreamSeq(payload)" in source
     assert "if (!_acceptStreamSeq(payload)) return;" in body
     assert "_noteStreamSeq(payload);" not in body
+
+
+def test_chat_replayed_wait_events_do_not_bootstrap_live_thinking() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _subscribeRpcEvents() {")
+    end = source.index("  /* ── Chat History", start)
+    body = source[start:end]
+
+    assert "function _dropReplayedLiveWaitEvent(meta, payload, eventName)" in source
+    assert "_rpc.on('session.event.state_change', (payload, meta = {}) =>" in body
+    assert "_rpc.on('session.event.run_heartbeat', (payload, meta = {}) =>" in body
+    assert "_dropReplayedLiveWaitEvent(meta, payload, 'event.state_change')" in body
+    assert "_dropReplayedLiveWaitEvent(meta, payload, 'event.run_heartbeat')" in body
+
+    subscribe_start = source.index("async function _subscribeSession() {")
+    subscribe_end = source.index("  async function _unsubscribeSession()", subscribe_start)
+    subscribe_body = source[subscribe_start:subscribe_end]
+    assert "const subscribedState = _sessionRunStatus(res);" in subscribe_body
+    assert "_runStatusIsActive(subscribedState.status)" in subscribe_body
+
+
+def test_chat_stream_seq_cursor_is_scoped_per_session() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _acceptStreamSeq(payload)")
+    end = source.index("  function _showThinkingIndicator()", start)
+    body = source[start:end]
+
+    assert "function _sessionStreamSeq(key)" in source
+    assert "function _setSessionStreamSeq(key, seq)" in source
+    assert "function _syncLastStreamSeqFromSession(key)" in source
+    assert "function _markSessionStreamSeqSeen(key, seq)" in source
+    assert "const key = _sessionKeyFromPayload(payload) || _sessionKey || '';" in body
+    assert "return _markSessionStreamSeqSeen(key, seq);" in body
+    assert "seq <= lastSeq" not in body
+    assert "_syncLastStreamSeqFromSession(canonicalKey);" in source
 
 
 def test_chat_surfaces_persisted_run_state_in_header_and_session_picker() -> None:
@@ -462,23 +905,204 @@ def test_chat_resets_replay_cursor_after_stream_gap() -> None:
     body = source[start:end]
 
     assert "if (res && res.replay_complete === false)" in body
-    assert "_lastStreamSeq = typeof res.current_stream_seq === 'number'" in body
-    assert "? Math.max(_lastStreamSeq, res.current_stream_seq)" in body
-    assert ": _lastStreamSeq;" in body
-    assert body.index("_lastStreamSeq = typeof res.current_stream_seq") < body.index(
+    assert "_setSessionStreamSeq(subscribeKey, res.current_stream_seq);" in body
+    assert body.index("_setSessionStreamSeq(subscribeKey, res.current_stream_seq);") < body.index(
         "_loadHistory();"
     )
 
 
 def test_chat_empty_history_preserves_live_stream_bubble() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    start = source.index("async function _loadHistory() {")
-    end = source.index("      const existingByStableIdentity = new Map();", start)
+    start = source.index("function _renderHistoryMessages(messages")
+    end = source.index("    const existingByStableIdentity = new Map();", start)
     body = source[start:end]
 
-    assert "if (_isStreaming && _streamBubble)" in body
+    live_guard = "if (_isStreaming && ("
+    assert "const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');" in body
+    assert (
+        "const liveThinking = _isCurrentSessionThinkingIndicator(_thinkingEl) "
+        "? _thinkingEl : null;"
+    ) in body
+    assert live_guard in body
+    assert "_isCurrentSessionStreamBubble(_streamBubble)" in body
+    assert "|| liveRouterStrips.length > 0" in body
+    assert "|| liveUserAnchor" in body
+    assert "|| liveThinking" in body
+    assert (
+        "if (liveUserAnchor && !liveUserAnchor.isConnected) "
+        "_thread.appendChild(liveUserAnchor);"
+    ) in body
     assert "_thread.appendChild(_streamBubble);" in body
-    assert "return;" in body[body.index("if (_isStreaming && _streamBubble)") :]
+    assert "return;" in body[body.index(live_guard) :]
+
+
+def test_chat_live_stream_bubble_is_session_scoped() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "let _streamSessionKey = '';" in source
+    assert "function _isCurrentSessionStreamBubble(el)" in source
+    assert "streamKey === currentKey" in source
+    assert (
+        "_streamBubble.dataset.streamSessionKey = "
+        "_streamSessionKey || _sessionKey || '';"
+    ) in source
+    assert "if (_isStreaming && el === _streamBubble) return;" not in source
+
+
+def test_chat_session_switch_parks_and_restores_live_stream_state() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _switchToSession(key)")
+    end = source.index("  function _bindSessionChip()", start)
+    body = source[start:end]
+
+    assert "const _liveStreamStateBySession = new Map();" in source
+    assert "_parkCurrentSessionStreamState('session_switch');" in body
+    assert "_restoreLiveStreamStateForSession(_sessionKey);" in body
+    assert body.index("_parkCurrentSessionStreamState('session_switch');") < body.index(
+        "_persistSession(key);"
+    )
+    assert body.index("_restoreLiveStreamStateForSession(_sessionKey);") < body.index(
+        "_subscribeSession();"
+    )
+    assert "function _parkCurrentSessionStreamState(reason)" in source
+    assert "function _restoreLiveStreamStateForSession(key)" in source
+    assert "function _clearViewLocalStreamState(reason)" in source
+    assert "function _currentSessionLiveRouterStrips(key = _sessionKey || '')" in source
+    assert "function _currentSessionLiveUserAnchor(key = _sessionKey || '')" in source
+    assert "routerStrips," in source
+    assert "liveUserAnchor," in source
+    assert "_routerFxPauseScanTimers(el);" in source
+    assert "_routerFxResumeLiveStrip(el);" in source
+
+
+def test_chat_session_switch_preserves_live_router_strip_without_stream_bubble() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    has_start = source.index("function _hasViewLocalStreamState()")
+    has_end = source.index("function _parkCurrentSessionStreamState(reason)", has_start)
+    has_body = source[has_start:has_end]
+    assert (
+        "_currentSessionLiveRouterStrips("
+        "_streamSessionKey || _sessionKey || '').length"
+    ) in has_body
+    assert "_thinkingEl" in has_body
+    assert "_thinkingDelayTimer" in has_body
+
+    restore_start = source.index("function _restoreLiveStreamStateForSession(key)")
+    restore_end = source.index("function _clearViewLocalStreamState(reason)", restore_start)
+    restore_body = source[restore_start:restore_end]
+    assert (
+        "const routerStrips = Array.isArray(state.routerStrips) "
+        "? state.routerStrips : [];"
+    ) in restore_body
+    assert "const liveUserAnchor = state.liveUserAnchor || null;" in restore_body
+    assert "if (_thread && liveUserAnchor && !liveUserAnchor.isConnected)" in restore_body
+    assert "_insertLiveRouterStripForAnchor(el, liveUserAnchor, _streamBubble);" in restore_body
+    assert "_routerFxResumeLiveStrip(el);" in restore_body
+
+
+def test_chat_empty_history_keeps_live_router_only_running_view() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("function _renderHistoryMessages(messages")
+    history_end = source.index("const existingByStableIdentity = new Map();", history_start)
+    history_body = source[history_start:history_end]
+
+    assert (
+        "const liveRouterStrips = "
+        "_currentSessionLiveRouterStrips(_sessionKey || '');"
+    ) in history_body
+    assert (
+        "const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');"
+    ) in history_body
+    assert (
+        "_isCurrentSessionStreamBubble(_streamBubble)"
+    ) in history_body
+    assert "|| liveRouterStrips.length > 0" in history_body
+    assert "|| liveUserAnchor" in history_body
+    assert "|| liveThinking" in history_body
+    assert "_chatDiag('history.empty.keep_live_stream_view'" in history_body
+
+
+def test_chat_session_switch_preserves_live_user_anchor_for_router_restore() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    helper_start = source.index("function _currentSessionLiveUserAnchor(")
+    helper_end = source.index("function _insertLiveRouterStripForAnchor(", helper_start)
+    helper_body = source[helper_start:helper_end]
+    assert "const routerStrips = _currentSessionLiveRouterStrips(key);" in helper_body
+    assert "if (_isUserMessageElement(prev)) return prev;" in helper_body
+    assert "const streamAnchor = _routerFxUserMessageForAssistant(_streamBubble);" in helper_body
+    assert "return _isStreaming ? _routerFxLastUserMessage() : null;" in helper_body
+
+    park_start = source.index("function _parkCurrentSessionStreamState(reason)")
+    park_end = source.index("function _restoreLiveStreamStateForSession(key)", park_start)
+    park_body = source[park_start:park_end]
+    assert "const liveUserAnchor = _currentSessionLiveUserAnchor(key);" in park_body
+    assert "liveUserAnchor," in park_body
+    assert "if (liveUserAnchor && liveUserAnchor.parentNode) liveUserAnchor.remove();" in park_body
+
+    restore_start = source.index("function _restoreLiveStreamStateForSession(key)")
+    restore_end = source.index("function _clearViewLocalStreamState(reason)", restore_start)
+    restore_body = source[restore_start:restore_end]
+    assert "const liveUserAnchor = state.liveUserAnchor || null;" in restore_body
+    assert "_thread.appendChild(liveUserAnchor);" in restore_body
+    assert "_insertLiveRouterStripForAnchor(el, liveUserAnchor, _streamBubble);" in restore_body
+
+
+def test_chat_history_cleanup_keeps_live_user_anchor_during_streaming() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("function _renderHistoryMessages(messages")
+    history_end = source.index("function _appendHistoryDaySeparator", history_start)
+    history_body = source[history_start:history_end]
+
+    assert (
+        "const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');"
+    ) in history_body
+    assert "if (_isStreaming && el === liveUserAnchor) return;" in history_body
+
+
+def test_chat_router_restore_does_not_auto_settle_without_cached_decision() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    resume_start = source.index("function _routerFxResumeLiveStrip(wrap)")
+    resume_end = source.index("  // When output begins", resume_start)
+    resume_body = source[resume_start:resume_end]
+    assert "if (wrap._fxDecision) {" in resume_body
+    scan_cap = (
+        "wrap._fxScanCap = setTimeout(() => _routerFxFinishScan(wrap), "
+        "_ROUTER_FX_SCAN_MS);"
+    )
+    assert scan_cap in resume_body
+    assert "_chatDiag('router_scan.resume_without_decision'" in resume_body
+    assert resume_body.index("if (wrap._fxDecision) {") < resume_body.index(
+        "wrap._fxScanCap = setTimeout"
+    )
+
+    settle_start = source.index("function _routerFxSettleForOutput()")
+    settle_end = source.index("  // Lock an in-flight scanning strip", settle_start)
+    settle_body = source[settle_start:settle_end]
+    assert "if (wrap._fxDecision) {" in settle_body
+    assert "_routerFxFinishScan(wrap);" in settle_body
+    assert "_chatDiag('router_scan.keep_scanning_without_decision_on_output'" in settle_body
+
+
+def test_chat_session_events_drop_foreign_session_before_stream_seq_acceptance() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _dropForeignSessionPayload(event, payload)" in source
+    for event_name in (
+        "session.event.router_decision",
+        "session.event.text_delta",
+        "session.event.tool_use_start",
+        "session.event.tool_result",
+        "session.event.state_change",
+        "session.event.run_heartbeat",
+    ):
+        start = source.index(f"_rpc.on('{event_name}'")
+        end = source.index("    }));", start)
+        body = source[start:end]
+        assert "_dropForeignSessionPayload(" in body
+        assert body.index("_dropForeignSessionPayload(") < body.index("_acceptStreamSeq(payload)")
 
 
 def test_chat_task_succeeded_clears_run_state_without_session_done() -> None:
@@ -504,7 +1128,7 @@ def test_chat_tracks_background_task_groups_as_active_run_state() -> None:
     assert "_activeTaskGroups.size > 0" in source
 
 
-def test_chat_surfaces_compaction_outcome_toasts_without_noop_chatter() -> None:
+def test_chat_surfaces_compaction_lifecycle_status_and_exception_toasts() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     compact_block = source[
         source.index("case 'compact_context':") : source.index("case 'usage_status':")
@@ -514,33 +1138,314 @@ def test_chat_surfaces_compaction_outcome_toasts_without_noop_chatter() -> None:
     body = source[start:end]
 
     assert "function _showCompactionToast(payload, meta = {})" in source
-    assert "Checking whether compaction is needed..." not in compact_block
-    assert "Checking whether compaction is needed..." not in body
-    assert "No compaction needed" not in body
-    assert "_showCompactionToast({ ...(result || {}), source: 'manual'" not in compact_block
+    assert "_setCompactInFlight(true, compactKey);" in compact_block
+    assert "_syncCompactionSeparator(" in compact_block
+    assert "context compacting" in source
+    assert "_compactionStatusLabel(payload || {}, source, status)" in source
+    assert "Already within context budget; no compact was applied." in source
+    assert "Context compaction could not be applied" in source
+    assert "No compactable chat history yet." in source
+    assert "Context was left unchanged because no usable summary was produced." in source
+    assert "if (compactKey !== _sessionKey) return;" in compact_block
+    assert (
+        "_showCompactionToast({ ...(result || {}), key: compactKey, source: 'manual'"
+        in compact_block
+    )
     assert "session.event.compaction" in source
-    assert "Context compacted older messages to keep this session within budget" in source
+    assert "Context compacted older messages to keep this session within budget" not in source
+    assert "Continuing with temporary context compaction" in source
+    assert "Continuing with temporary context compaction for this turn" in body
     assert "Compact cancelled" in source
+    assert "function _compactionUserVisible(payload, source, status)" in source
+    assert "!_compactionUserVisible(payload || {}, source, status)" in source
+    assert "structured content noop" not in source.lower()
 
 
-def test_chat_compaction_token_details_are_success_only() -> None:
+def test_chat_compaction_uses_single_in_thread_separator_surface() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    start = source.index("function _showCompactionToast(payload, meta = {})")
+    end = source.index("  /* ── RPC Event Subscriptions", start)
+    body = source[start:end]
+
+    # The composer pill (#chat-compact-status) is gone; the in-thread context
+    # separator is the single compaction surface for every lifecycle state.
+    assert 'id="chat-compact-status"' not in source
+    assert "_compactStatusEl" not in source
+    assert "function _setCompactStatus(" not in source
+    assert "function _hideCompactStatus(" not in source
+
+    # Lightweight separator state + renderer remain; no metrics, phase cards,
+    # lifecycle chips, or rail panel are constructed.
+    assert "let _compactionSeparatorEl = null;" in source
+    assert "let _compactionSeparatorTimer = null;" in source
+    assert "function _syncCompactionSeparator(payload, status, source, overrides = {})" in source
+    assert "function _hideCompactionSeparator()" in source
+    assert "chat-context-rail__panel" not in source
+    assert "function _compactionLifecycleSteps(" not in source
+    assert "function _compactionMetricItems(" not in source
+
+    # Every lifecycle event renders through the one rail call; the branches below
+    # only drive non-UI side effects + the corner toasts.
+    assert "_syncCompactionSeparator(payload || {}, status, source);" in body
+    assert "function _compactionSkipMessage(payload, source)" in source
+    assert "if (_INTERNAL_COMPACTION_SKIP_REASONS.has(reason)) return '';" in source
+    assert "Request-scoped; session history was not rewritten" in source
+    assert "No usable summary was produced" in source
+    assert "status === 'emergency_ephemeral'" in body
+    assert "status === 'observed'" in body
+
+    # destroy() tears down the separator (the only surface) — no pill teardown remains.
+    assert "_hideCompactionSeparator();" in source[source.index("function destroy()") :]
+    assert "_hideCompactStatus(" not in source
+
+    # Pill/rail CSS removed; separator CSS is the only compaction thread surface.
+    assert ".chat-compact-status" not in css
+    assert ".chat-context-rail" not in css
+    assert ".chat-context-separator" in css
+    assert ".chat-context-separator::before" in css
+    assert ".chat-context-separator::after" in css
+    assert ".chat-context-separator--live span" in css
+    assert "contextSeparatorShimmer 2.2s linear infinite" in css
+    assert "@keyframes contextSeparatorShimmer" in css
+    assert "prefers-reduced-motion: reduce" in css
+    assert "contextPulse" not in css
+
+
+def test_chat_compaction_summary_separator_anchors_to_transcript_ids() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    sync_start = source.index(
+        "function _syncCompactionSeparator(payload, status, source, overrides = {})"
+    )
+    sync_end = source.index("function _compactFailureBlocksPending", sync_start)
+    sync_body = source[sync_start:sync_end]
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("_chatDiag('history.done'", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "function _renderCompactionSummarySeparators(messages)" in source
+    assert "function _clearCompactionSummarySeparators()" in source
+    assert "if (inserted > 0) _hideCompactionSeparator();" in sync_body
+    assert "covered_through_id" in source
+    assert "transcript_id" in source
+    assert "_renderCompactionSummarySeparators(messages);" in history_body
+    assert "history.scroll.compaction_summary_anchor" not in history_body
+    assert "_scrollHistoryAnchorIntoView(" not in history_body
+    assert "_placeCompactionRail(" not in history_body
+    assert "function _scheduleCompactionSeparatorRemoval(delayMs = 4500)" in source
+    assert "_scheduleCompactionSeparatorRemoval();" in sync_body
+    assert "status === 'skipped'" in sync_body
+
+
+def test_chat_compaction_separator_does_not_render_token_details() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    # The in-thread separator is intentionally terse; token/debug details stay
+    # out of the chat transcript visual surface.
+    assert "function _compactionTokenStats(" not in source
+    assert "function _compactionMetricItems(" not in source
+    assert "function _compactionLifecycleSteps(" not in source
+    sync_start = source.index(
+        "function _syncCompactionSeparator(payload, status, source, overrides = {})"
+    )
+    sync_end = source.index("function _compactFailureBlocksPending", sync_start)
+    sync_body = source[sync_start:sync_end]
+    assert "tokens_before" not in sync_body
+    assert "tokens_after" not in sync_body
+    assert "remaining_budget_tokens" not in sync_body
+
+    start = source.index("function _showCompactionToast(payload, meta = {})")
+    end = source.index("  /* ── RPC Event Subscriptions", start)
+    body = source[start:end]
+    skipped_start = body.index("if (status === 'skipped')")
+    skipped_end = body.index("const semanticNotice", skipped_start)
+    skipped_block = body[skipped_start:skipped_end]
+    # Skips settle silently — no token figures, no skip-message toast spam.
+    assert "_compactionTokenStats" not in skipped_block
+    assert "tokens_after" not in skipped_block
+    assert "UI.toast(" not in skipped_block
+    assert "_scheduleCompactionSeparatorRemoval();" in skipped_block
+
+
+def test_chat_semantic_memory_degraded_is_non_blocking_and_path_safe() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("function _showCompactionToast(payload, meta = {})")
     end = source.index("  /* ── RPC Event Subscriptions", start)
     body = source[start:end]
-    stats_start = source.index("function _compactionTokenStats(payload)")
-    stats_end = source.index("function _showCompactionToast(payload, meta = {})", stats_start)
-    stats_body = source[stats_start:stats_end]
-    skipped_start = body.index("if (status === 'skipped')")
-    skipped_end = body.index("if (status === 'failed'", skipped_start)
-    skipped_block = body[skipped_start:skipped_end]
 
-    assert "UI.toast(" not in skipped_block
-    assert "No compaction needed' + details" not in skipped_block
-    assert "payload && payload.tokens_after || 0" not in stats_body
-    assert body.index("_compactionTokenStats(payload || {})") > body.index(
-        "if (status === 'cancelled')"
+    assert "function _compactSemanticMemoryNotice(payload)" in source
+    assert "payload.semanticMemory || payload.semantic_memory" in source
+    assert "Memory saved; organizing" in source
+    assert "_syncCompactionSeparator(payload || {}, 'completed', source, {" in body
+    assert "label: 'context compacted'," in body
+    assert "UI.toast(semanticNotice" not in body
+    assert body.index("const semanticNotice = _compactSemanticMemoryNotice") < body.index(
+        "if (status === 'failed' || status === 'error')"
     )
+    assert "function _compactSafeMessageDetail(payload)" in source
+    assert "[memory checkpoint]" in source
+    assert "const safe = _compactSafeMessageDetail(payload || {});" in body
+    assert "payload.message ? ': ' + payload.message" not in body
+
+
+def test_chat_distill_failures_do_not_surface_as_blocking_memory_errors() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _showCompactionToast(payload, meta = {})")
+    end = source.index("  /* ── RPC Event Subscriptions", start)
+    body = source[start:end]
+    semantic_notice = body.index("const semanticNotice = _compactSemanticMemoryNotice")
+    failure_branch = body.index("if (status === 'failed' || status === 'error')")
+
+    assert semantic_notice < failure_branch
+    assert "Memory saved; organizing" in source
+    assert "flush failed" not in source.lower()
+    assert "bad json" not in source.lower()
+
+
+def test_chat_compact_inflight_uses_pending_queue_and_safe_terminal_drain() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    send_start = source.index("async function _onSend()")
+    send_end = source.index("  /* ── Streaming", send_start)
+    send_body = source[send_start:send_end]
+    toast_start = source.index("function _showCompactionToast(payload, meta = {})")
+    toast_end = source.index("  /* ── RPC Event Subscriptions", toast_start)
+    toast_body = source[toast_start:toast_end]
+
+    assert "let _compactInFlight = false;" in source
+    assert "function _isCompactInFlightForCurrentSession()" in source
+    assert "if (_isStreaming || _isCompactInFlightForCurrentSession())" in send_body
+    assert "const waitReason = _isCompactInFlightForCurrentSession()" in send_body
+    assert "_enqueuePendingInput(" in send_body
+    assert "'Message queued until compaction finishes'" in send_body
+    assert "'context compaction'" in send_body
+    assert "Wait for ${waitReason} or clear." in source
+    assert "_settleCompactInFlight(payload || {});" in toast_body
+    assert "status === 'completed'" in source
+    assert "status === 'skipped'" in source
+    assert "_schedulePendingDrainAfterTerminal();" in source
+    assert "status === 'failed' || status === 'error'" in toast_body
+    assert "status === 'cancelled'" in toast_body
+    assert "_settleCompactInFlight(payload || {}, { recoverPending: true })" in toast_body
+    assert "_schedulePendingDrainAfterTerminal();" not in toast_body[
+        toast_body.index("if (status === 'failed' || status === 'error')") :
+        toast_body.index("if (status === 'cancelled')")
+    ]
+    assert "_schedulePendingDrainAfterTerminal();" not in toast_body[
+        toast_body.index("if (status === 'cancelled')") :
+        toast_body.index("if (status !== 'completed')")
+    ]
+
+
+def test_chat_large_paste_guard_runs_before_queue_and_rpc_send() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    send_start = source.index("async function _onSend()")
+    send_end = source.index("  /* ── Streaming", send_start)
+    send_body = source[send_start:send_end]
+    normalize_start = source.index("async function _normalizeOutgoingComposerPayload(")
+    normalize_end = source.index("  function _addAttachment(file)", normalize_start)
+    normalize_body = source[normalize_start:normalize_end]
+
+    assert "const LARGE_PASTE_CHARS = 20_000;" in source
+    assert "const PAGE_DUMP_CHARS = 8_000;" in source
+    assert "function _normalizeOutgoingComposerPayload(" in source
+    assert "function _inputNormalizationProvenanceFromAttachments(" in source
+    normalize_call = "await _normalizeOutgoingComposerPayload("
+    assert normalize_call in send_body
+    assert send_body.count(normalize_call) == 1
+    assert send_body.index(normalize_call) < send_body.index(
+        "if (_isStreaming || _isCompactInFlightForCurrentSession())"
+    )
+    assert send_body.index(normalize_call) < send_body.index("_enqueuePendingInput(")
+    assert send_body.index(normalize_call) < send_body.index(
+        "await _executeSlashCommand(text)"
+    )
+    assert send_body.index(normalize_call) < send_body.index("const params = { message:")
+    provenance_call = (
+        "const normalizationProvenance = "
+        "_inputNormalizationProvenanceFromAttachments(_pendingAttachments);"
+    )
+    assert provenance_call in send_body
+    assert (
+        "if (normalizationProvenance) params.inputProvenance = normalizationProvenance;"
+        in send_body
+    )
+    assert send_body.index("const params = { message:") < send_body.index(provenance_call)
+    assert send_body.index(provenance_call) < send_body.index("_rpc.call('chat.send', params)")
+    assert "inputNormalization: {" in normalize_body
+    assert "materialEstimatedTokens," in normalize_body
+    assert "guardAction: 'generated_text_attachment'," in normalize_body
+
+
+def test_chat_pending_queue_can_store_normalized_attachments_explicitly() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    enqueue_start = source.index("function _enqueuePendingInput(")
+    enqueue_end = source.index("  function _drainQueueHead()", enqueue_start)
+    enqueue_body = source[enqueue_start:enqueue_end]
+
+    assert "attachmentsOverride = null" in source
+    assert "const queuedAttachments = attachmentsOverride || _pendingAttachments" in enqueue_body
+    assert "attachments: queuedAttachments.map((a) => ({ ...a }))" in enqueue_body
+
+
+def test_chat_manual_pending_enqueue_normalizes_large_pastes() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    current_start = source.index("async function _enqueueCurrentInput()")
+    current_end = source.index("  function _updateStopButton()", current_start)
+    current_body = source[current_start:current_end]
+
+    normalize_idx = current_body.index(
+        "const normalized = await _normalizeOutgoingComposerPayload("
+    )
+    enqueue_idx = current_body.index("_enqueuePendingInput(")
+
+    assert "let text = _textarea.value.trim();" in current_body
+    assert "let isLiteralSlash = false;" in current_body
+    assert "if (text.startsWith('//')) {" in current_body
+    assert "isLiteralSlash = true;" in current_body
+    assert "text = text.slice(1);" in current_body
+    assert "const isSlashCommand = !isLiteralSlash && text.startsWith('/');" in current_body
+    assert "{ allowSlashCommand: isSlashCommand }" in current_body
+    assert normalize_idx < enqueue_idx
+    assert "_pendingAttachments = normalized.attachments;" in current_body
+    assert (
+        "_enqueuePendingInput(text, null, 'the current response', normalized.attachments)"
+        in current_body
+    )
+
+
+def test_chat_large_paste_attachment_base64_is_computed_once() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    normalize_start = source.index("async function _normalizeOutgoingComposerPayload(")
+    normalize_end = source.index("  function _addAttachment(file)", normalize_start)
+    normalize_body = source[normalize_start:normalize_end]
+
+    assert "function _bytesToBase64(bytes)" in source
+    assert "const encoded = _bytesToBase64(bytes);" in normalize_body
+    assert "data: encoded," in normalize_body
+    assert "dataUrl: `data:text/plain;base64,${encoded}`" in normalize_body
+    assert "_encodeUtf8Base64(raw)" not in normalize_body
+
+
+def test_chat_compact_blocking_failure_preserves_pending_queue() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    toast_start = source.index("function _showCompactionToast(payload, meta = {})")
+    toast_end = source.index("  /* ── RPC Event Subscriptions", toast_start)
+    toast_body = source[toast_start:toast_end]
+    settle_start = source.index("function _settleCompactInFlight(payload = {}, options = {})")
+    settle_end = source.index("  // Programmatic textarea write", settle_start)
+    settle_body = source[settle_start:settle_end]
+
+    assert "function _compactFailureBlocksPending(payload)" in source
+    assert "compaction_insufficient" in source
+    assert "compaction_flush_failed" in source
+    assert "const preservePending = _compactFailureBlocksPending(payload || {});" in toast_body
+    assert (
+        "const keepPendingQueued = preservePending || (source !== 'manual' && _isStreaming);"
+        in toast_body
+    )
+    assert "preservePending: keepPendingQueued" in toast_body
+    assert "options && options.preservePending" in settle_body
+    assert "_popAllPendingIntoComposer();" in settle_body
+    assert "recovered = _pendingQueue.length > 0;" in settle_body
 
 
 def test_chat_clears_background_task_groups_on_state_reset_paths() -> None:
@@ -599,8 +1504,9 @@ def test_savings_popup_suppresses_only_the_model_switch_turn() -> None:
     assert "let suppressPopup = false;" in source
     assert "const identityChanged =" in source
     assert "suppressPopup = true;" in source
+    assert "const _savingsPopupTsByIdentity = new Map();" in source
     assert (
-        "if (!cacheHit && now - _savingsPopupLastTs < _SAVINGS_POPUP_COOLDOWN_MS) return;"
+        "if (!cacheHit && now - _identityLastTs < _SAVINGS_POPUP_COOLDOWN_MS) return;"
         in source
     )
     assert source.index("let suppressPopup = false;") < source.index(
@@ -615,6 +1521,1052 @@ def test_savings_popup_persists_cache_hit_active_to_turn_meta() -> None:
     assert "model: u.model || _usageModel || null," in source
     assert "routed_model: u.routed_model || null," in source
     assert "__savings_ui_suppressed: !!u.__savings_ui_suppressed," in source
+
+
+def test_savings_fx_cleanup_removes_floating_labels() -> None:
+    source = SAVINGS_FX_JS.read_text(encoding="utf-8")
+
+    assert "const _labels = new Set();" in source
+    assert "_labels.add(el);" in source
+    assert "_labels.delete(el);" in source
+    assert "for (const el of _labels)" in source
+    assert "window.SavingsFX.cleanup();" in CHAT_JS.read_text(encoding="utf-8")
+
+
+def test_turn_meta_and_router_share_model_display_normalization() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    attach_start = source.index("function _attachTurnMeta(")
+    attach_end = source.index("    if (hasTokens)", attach_start)
+    attach_body = source[attach_start:attach_end]
+    router_strip_start = source.index("function _routerFxStripProvider(name)")
+    router_strip_end = source.index("  // Promise resolved", router_strip_start)
+    router_strip_body = source[router_strip_start:router_strip_end]
+
+    assert "function _modelDisplayName(name)" in source
+    assert r"return stripped.replace(/-\d{8}$/, '');" in source
+    assert "const displayModel = _modelDisplayName(model);" in attach_body
+    assert "span.textContent = displayModel;" in attach_body
+    assert "return _modelDisplayName(name);" in router_strip_body
+
+
+def test_router_fx_header_names_ai_model_router() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert '<span class="title">AI model router</span>' in source
+    assert '<span class="title">model router</span>' not in source
+
+
+def test_router_fx_replay_without_live_strip_renders_settled_history() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    handler_start = source.index("async function _handleRouterDecision(payload) {")
+    handler_end = source.index("  // History-load entry point", handler_start)
+    handler_body = source[handler_start:handler_end]
+    subscription_start = source.index("function _subscribeRpcEvents() {")
+    subscription_end = source.index(
+        "    // Text delta: accumulate into streaming bubble", subscription_start
+    )
+    subscription_body = source[subscription_start:subscription_end]
+
+    assert "function _routerFxShouldAnimateIdentity" not in source
+    assert "shouldAnimate" not in handler_body
+    assert "_rpc.on('session.event.router_decision'" in subscription_body
+    assert "_handleRouterDecision(payload);" in subscription_body
+    assert (
+        "const liveStrip = _thread.querySelector('.router-fx[data-live=\"true\"]');"
+        in handler_body
+    )
+    assert "liveStrip._fxDecision = payload;" in handler_body
+    assert "_routerFxLock(liveStrip, payload);" in handler_body
+    assert "preSettled: true," in handler_body
+    assert "renderMode: 'history'," in handler_body
+    assert "_routerFxNormalizeSettledStrip(wrap, 'history', payload);" in handler_body
+    assert "_animateRouterFx(wrap, winnerIdx)" not in handler_body
+    assert "_animateRouterFxCloud(wrap)" not in handler_body
+    assert "router_decision.inserted_settled_strip" in handler_body
+
+
+def test_chat_diag_captures_stream_router_and_history_state() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "const _CHAT_DIAG_KEY = 'opensquilla.chat.debugLog';" in source
+    assert "window.OpenSquillaChatDiag" in source
+    assert "function _chatDiagDomSnapshot() {" in source
+    for marker in [
+        "send.start",
+        "event.router_decision",
+        "event.text_delta",
+        "router_scan.started",
+        "router_decision.cached_on_live_strip",
+        "stream.bubble.created",
+        "stream.flush.done",
+        "stream.end.start",
+        "history.loaded",
+        "history.done",
+    ]:
+        assert marker in source
+
+
+def test_chat_diag_is_opt_in_by_default() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _chatDiagEnabled() {")
+    end = source.index("function _chatDiagShortText", start)
+    body = source[start:end]
+
+    assert "window.localStorage.getItem(_CHAT_DIAG_ENABLED_KEY) === '1';" in body
+    assert "window.localStorage.getItem(_CHAT_DIAG_ENABLED_KEY) !== '0';" not in body
+    assert "return false;" in body
+    assert "window.localStorage.setItem(_CHAT_DIAG_ENABLED_KEY, '1');" in source
+
+
+def test_chat_history_requests_active_paginated_metadata() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("async function _loadEarlierHistory()", history_start)
+    history_body = source[history_start:history_end]
+    earlier_start = source.index("async function _loadEarlierHistory() {")
+    earlier_end = source.index("function _renderHistoryMessages(", earlier_start)
+    earlier_body = source[earlier_start:earlier_end]
+
+    assert "const CHAT_HISTORY_PAGE_SIZE = 50;" in source
+    assert "const requestSessionKey = _sessionKey;" in history_body
+    assert "const requestSeq = ++_historyRequestSeq;" in history_body
+    assert "sessionKey: requestSessionKey" in history_body
+    assert "limit: CHAT_HISTORY_PAGE_SIZE" in history_body
+    assert "includeCanonical: false" in history_body
+    assert "includeCanonical: false" in earlier_body
+    assert "includeCanonical: true" not in history_body
+    assert "includeCanonical: true" not in earlier_body
+    assert "includeSummaries: true" in history_body
+    assert "requestSessionKey !== _sessionKey || requestSeq !== _historyRequestSeq" in history_body
+    assert "_chatDiag('history.stale_response.drop'" in history_body
+
+
+def test_chat_history_load_earlier_uses_cursor_and_preserves_scroll() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("async function _loadEarlierHistory() {")
+    end = source.index("function _renderHistoryMessages(", start)
+    body = source[start:end]
+
+    assert "!_historyOldestCursor || _historyLoadingEarlier" in body
+    assert "const previousScrollHeight = _thread.scrollHeight;" in body
+    assert "const previousScrollTop = _thread.scrollTop;" in body
+    assert "before: _historyOldestCursor" in body
+    assert "_mergeHistoryMessagePages(olderMessages, _historyLoadedMessages)" in body
+    assert "preserveScroll: true" in body
+    assert "_chatDiag('history.load_earlier.stale_response.drop'" in body
+
+
+def test_chat_history_scope_row_surfaces_partial_compacted_and_error_states() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    start = source.index("function _renderHistoryScopeRow() {")
+    end = source.index("async function _loadHistory()", start)
+    body = source[start:end]
+
+    assert "chat-history-scope" in body
+    assert "Showing latest ${_historyLoadedMessages.length} messages." in body
+    assert "Older history is available." in body
+    assert "Older context was compacted for the model." in body
+    assert "Export the session for exact text." in body
+    assert "Load earlier" in body
+    assert "Retry history" in body
+    assert "btn.addEventListener('click', () => _loadEarlierHistory());" in body
+    assert ".chat-history-scope--partial" in css
+    assert ".chat-history-scope--compacted" in css
+    assert ".chat-history-scope--error" in css
+
+
+def test_chat_history_render_preserves_visible_messages_on_errors() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    initial_start = source.index("async function _loadHistory() {")
+    initial_end = source.index("async function _loadEarlierHistory()", initial_start)
+    initial_body = source[initial_start:initial_end]
+    earlier_start = source.index("async function _loadEarlierHistory() {")
+    earlier_end = source.index("function _renderHistoryMessages(", earlier_start)
+    earlier_body = source[earlier_start:earlier_end]
+
+    assert "_historyError = 'Could not load chat history.'" in initial_body
+    assert "_renderHistoryScopeRow();" in initial_body
+    assert "_thread.innerHTML = ''" not in initial_body
+    assert "_historyError = 'Could not load earlier history.'" in earlier_body
+    assert "_renderHistoryScopeRow();" in earlier_body
+    assert "_thread.innerHTML = ''" not in earlier_body
+
+
+def test_chat_history_scope_row_is_not_a_message_node() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _renderHistoryScopeRow() {")
+    end = source.index("async function _loadHistory()", start)
+    body = source[start:end]
+
+    assert "row.className = `chat-history-scope chat-history-scope--${tone}`;" in body
+    assert "row.className = `msg" not in body
+    assert "_thread.querySelectorAll('.chat-history-scope').forEach((el) => el.remove());" in source
+
+
+def test_router_fx_history_reuses_settled_strip_for_same_turn_identity() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("  /* ── Send Message", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "function _routerFxUserMessageForAssistant(referenceAssistant) {" in source
+    assert "const userMsg = _routerFxUserMessageForAssistant(div);" in history_body
+    assert "const userMsg = _routerFxLastUserMessage();" not in history_body
+    assert "el.dataset.sessionKey === (_sessionKey || '') && el.dataset.turnIndex" in source
+    assert "const routerIdentity = _routerFxUsageIdentity(savedUsage);" in source
+    assert "existingStrip.dataset.routerIdentity === routerIdentity" in source
+    assert "if (existingStrip) _routerFxRemoveStrip(existingStrip);" in source
+    assert "existingStrip.dataset.live" not in history_body
+    assert "routerStrip.dataset.turnIndex = String(_histUserIdx);" in source
+
+
+def test_router_fx_history_reanchors_stranded_strip() -> None:
+    # _appendHistoryElementInOrder re-appends only .msg elements, stranding any
+    # strip already rendered for a turn. The rebuild must match this turn's
+    # strip(s) by (session, turn index) and router identity — NOT by the live
+    # flag — keep the one whose identity matches, drop extras, and re-anchor the
+    # survivor beneath its user message, so the first chat never shows two grids.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("  /* ── Send Message", history_start)
+    history_body = source[history_start:history_end]
+
+    # Match by (session, turnIndex), independent of the data-live flag.
+    assert (
+        "const ownStrips = Array.from(_thread.querySelectorAll('.router-fx')).filter("
+        in history_body
+    )
+    assert "el.dataset.turnIndex === String(_histUserIdx)" in history_body
+    assert "el.dataset.routerIdentity === routerIdentity" in history_body
+    # Drop duplicates, re-anchor the survivor, normalize it into history state.
+    assert (
+        "ownStrips.forEach((el) => { if (el !== keep) _routerFxRemoveStrip(el); });"
+        in history_body
+    )
+    assert "_thread.insertBefore(keep, userMsg.nextSibling);" in history_body
+    assert "_routerFxNormalizeSettledStrip(keep, 'history', savedUsage);" in history_body
+    # The consolidation must precede the existingStrip probe so the relocated
+    # strip is what the reuse check sees.
+    assert history_body.index("const ownStrips =") < history_body.index(
+        "const placed = userMsg && userMsg.nextSibling;"
+    )
+    # Positional orphan backstop: outside an active stream, any strip not
+    # sitting directly beneath a user message (turn-index skew) is dropped so
+    # a stranded grid can never linger at the top.
+    assert "if (!_isStreaming) {" in history_body
+    assert "const prev = el.previousElementSibling;" in history_body
+    assert "if (!anchored) _routerFxRemoveStrip(el);" in history_body
+
+
+def test_router_fx_uses_fixed_model_slots_and_keeps_decoy_seed() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    builder_start = source.index("function _routerFxBuildGridCells(realEntries, seedKey) {")
+    builder_end = source.index("  function _buildRouterFxElement", builder_start)
+    builder_body = source[builder_start:builder_end]
+    live_start = source.index("async function _handleRouterDecision(payload) {")
+    live_end = source.index("  // History-load entry point", live_start)
+    live_body = source[live_start:live_end]
+
+    assert "const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11" in source
+    assert "function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp)" in source
+    assert "const replaySeed = _routerFxResolveLayoutSeed(_sessionKey);" in live_body
+    assert "const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);" in source
+    assert "const orderedRealEntries = realEntries.slice().sort" in builder_body
+    assert "const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];" in builder_body
+    assert "const orderedDecoys = _routerFxShuffle(decoys," in builder_body
+    assert "return _routerFxShuffle(cells, seedKey);" not in builder_body
+
+
+def test_router_fx_cells_have_equal_prominence_and_hide_roster() -> None:
+    # Every model cell must render identically; the panel must not reveal which
+    # names are the operator's actually-configured (active) models. So the old
+    # real/decoy visual distinction is gone (no breathing accent dot, no
+    # dimmed/italic decoys) AND the DOM no longer carries data-kind/data-tiers.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    # No DOM attribute leaks the real/decoy split.
+    assert "cell.dataset.kind" not in source
+    assert "cell.dataset.tiers" not in source
+    # No CSS differentiates real vs decoy cells; the "on the dial" dot is gone.
+    assert '[data-kind="real"]' not in css
+    assert '[data-kind="decoy"]' not in css
+    assert "router-fx-dot-idle" not in css
+    # Cells share one uniform colour; only the winner is emphasised.
+    cell_start = css.index(".router-fx-cell {")
+    cell_end = css.index("}", cell_start)
+    assert "color: var(--text);" in css[cell_start:cell_end]
+    assert ".router-fx-cell.win {" in css
+    # Winner keeps a self-contained lock dot (no longer inherited from a
+    # real-cell dot that no longer exists).
+    win_after = css.index(".router-fx-cell.win::after {")
+    win_after_end = css.index("}", win_after)
+    assert "content: '';" in css[win_after:win_after_end]
+    # Winner detection reads the in-memory grid-cell array, not a DOM attribute,
+    # so it still lands on the routed cell without exposing the rest. Pin the
+    # predicate (reads .kind off the array) and the cell-idx stamping that the
+    # positional DOM lookup relies on — so a refactor that broke landing fails.
+    assert "const cells = wrap._fxGridCells || [];" in source
+    assert "cells[i].kind === 'real'" in source
+    assert "cell.dataset.cellIdx = String(i);" in source
+
+
+def test_router_fx_decoy_pool_doubled_with_current_models() -> None:
+    # Roster expanded to >= 2x the previous 16, sourced from OpenRouter's
+    # highest-usage models (ordered by volume, highest first).
+    source = CHAT_JS.read_text(encoding="utf-8")
+    pool_start = source.index("const _ROUTER_FX_DECOY_POOL = [")
+    pool_end = source.index("];", pool_start)
+    pool = source[pool_start:pool_end]
+    names = re.findall(r"'([^']+)'", pool)
+    assert len(names) >= 32, f"expected >= 32 pooled models, found {len(names)}"
+    # Ordered by usage, highest first — the documented #1 leads.
+    assert names[0] == "deepseek-v4-flash"
+    for name in ("claude-sonnet-4.6", "glm-5.1", "qwen3.6-plus"):
+        assert name in names
+
+
+def test_router_fx_cloud_variant_renders_seeded_depth_field() -> None:
+    # The cloud variant builds a focal-depth nebula: each mote gets a seeded
+    # depth driving blur/scale/opacity TOGETHER (coherent optical depth, not a
+    # random tag cloud), deterministic per layout seed for history rebuilds.
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _routerFxBuildCloud(wrap, decision, seedKey) {" in source
+    build_start = source.index("function _routerFxBuildCloud(wrap, decision, seedKey) {")
+    build_end = source.index("function _settleRouterFxCloud(wrap) {", build_start)
+    body = source[build_start:build_end]
+    # Seeded RNG keyed off the layout seed → reproducible nebula.
+    assert "_routerFxMulberry32(_routerFxHashSeed((seedKey || '') + ':cloud'))" in body
+    # blur, scale, opacity all derive from the same depth d.
+    assert "const d = rng();" in body
+    assert "const blur = (d * 3.4).toFixed(2);" in body
+    assert "const scale = (1.22 - d * 0.62).toFixed(3);" in body
+    assert "const op = (0.92 - d * 0.64).toFixed(3);" in body
+    # Organic elliptical scatter (area-uniform radius at a random angle).
+    assert "const rad = Math.sqrt(rng());" in body
+    assert "Math.cos(ang)" in body and "Math.sin(ang)" in body
+    # Two layers so drift (outer) and rack-focus (inner) never fight.
+    assert "inner.className = 'router-fx-mote-i';" in body
+    assert "mote.appendChild(inner);" in body
+    assert "mote.classList.add('router-fx-mote--winner');" in body
+    assert "wrap._fxCloud = true;" in body
+    assert "wrap._fxWinnerEl = winnerEl;" in body
+    # Builder branches to the cloud and returns before the grid build.
+    assert "if (variant === 'cloud') {" in source
+    assert "_routerFxBuildCloud(wrap, decision, seedKey);" in source
+
+
+def test_router_fx_cloud_shows_pool_plus_winner_not_roster() -> None:
+    # Privacy: the cloud field is the public decoy pool + the (already-public)
+    # routed winner only — it must NOT render the operator's configured roster.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    build_start = source.index("function _routerFxBuildCloud(wrap, decision, seedKey) {")
+    build_end = source.index("function _settleRouterFxCloud(wrap) {", build_start)
+    body = source[build_start:build_end]
+
+    assert "_ROUTER_FX_DECOY_POOL.forEach(" in body
+    assert "const winnerName = _routerFxWinnerName(decision);" in body
+    # The roster builder is never consulted inside the cloud build.
+    assert "_routerFxRealEntries" not in body
+    assert "function _routerFxWinnerName(decision) {" in source
+
+
+def test_router_fx_cloud_rack_focus_dispatch_is_motion_opt_in() -> None:
+    # Cloud strips still have a live scan/lock path, but replay/history
+    # decisions must render settled instead of re-running rack-focus motion.
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _animateRouterFxCloud(wrap) {" in source
+    assert "function _settleRouterFxCloud(wrap) {" in source
+    anim_start = source.index("function _animateRouterFxCloud(wrap) {")
+    anim_end = source.index("// Anchor invariant", anim_start)
+    anim = source[anim_start:anim_end]
+    assert "if (!wrap._fxWinnerEl) { _settleRouterFxCloud(wrap); return; }" in anim
+    assert "prefers-reduced-motion" not in anim   # decoupled from OS reduce-motion
+    assert "wrap.dataset.state = 'playing';" in anim
+    assert "wrap.dataset.state = 'settled';" in anim
+    assert anim.index("'playing'") < anim.index("'settled'")
+    # Live strips lock through the cloud-specific settle path.
+    assert "wrap._fxCloud" in source
+    assert "if (wrap._fxCloud) _routerFxLockCloud(wrap, decision);" in source
+    lock_start = source.index("function _routerFxLockCloud(wrap, decision) {")
+    lock_end = source.index("function _routerFxLockGrid(wrap, decision) {", lock_start)
+    lock_cloud = source[lock_start:lock_end]
+    assert "_settleRouterFxCloud(wrap)" in lock_cloud
+
+    handler_start = source.index("async function _handleRouterDecision(payload) {")
+    handler_end = source.index("// History-load entry point", handler_start)
+    handler = source[handler_start:handler_end]
+    assert "_animateRouterFxCloud(wrap)" not in handler
+    assert "preSettled: true" in handler
+    assert "renderMode: 'history'" in handler
+
+
+def test_router_fx_cloud_css_rack_focus_states() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    # Borderless/organic: no rigid box — a radial mask dissolves the edges,
+    # and content-visibility keeps off-screen history strips cheap.
+    cloud_start = css.index('.router-fx[data-variant="cloud"] .router-fx-cloud {')
+    cloud_block = css[cloud_start:css.index("}", cloud_start)]
+    assert "border:" not in cloud_block          # no rigid rectangular boundary
+    assert "mask-image: radial-gradient(" in cloud_block
+    # content-visibility was removed — it paused animation on auto-scroll.
+    assert "content-visibility" not in cloud_block
+    # Two layers: OUTER owns position + (winner) glide; INNER owns the optics.
+    # NO perpetual motion — the panel must be still once settled / when output
+    # renders (the absolute red line), so there is no drift/breathe loop.
+    mote_start = css.index('.router-fx[data-variant="cloud"] .router-fx-mote {')
+    mote_block = css[mote_start:css.index("}", mote_start)]
+    assert "animation:" not in mote_block               # no perpetual drift
+    assert "will-change" not in mote_block              # not pinned permanently (perf)
+    assert "@keyframes router-fx-drift" not in css      # drift loop removed
+    assert "router-fx-winner-breathe" not in css        # breathe loop removed
+    assert '.router-fx[data-variant="cloud"] .router-fx-mote-i {' in css
+    # Defocus (ease-IN) and the winner resolve target the INNER; the winner's
+    # glide to focus is on the OUTER (left/top), so it travels, never teleports.
+    assert '.router-fx[data-variant="cloud"][data-state="playing"] .router-fx-mote-i {' in css
+    assert ('.router-fx[data-variant="cloud"][data-state="settled"] '
+            '.router-fx-mote--winner .router-fx-mote-i {') in css
+    assert '.router-fx[data-variant="cloud"] .router-fx-reticle {' in css
+    # Output start no longer freezes the winner-lock animation; once settled,
+    # the grid hides only the chase hammer.
+    assert '.router-fx[data-frozen="true"]' not in css
+    selector_hide = (".router-fx[data-state=\"settled\"] .router-fx-selector"
+                     " { opacity: 0 !important; }")
+    assert selector_hide in css
+    # Motion is opt-in via the toggle, so the cloud does NOT honour OS
+    # reduce-motion (no @media block suppressing the cloud motes).
+    assert "deliberately does NOT honour prefers-reduced-motion" in css
+
+
+def test_router_fx_cloud_view_toggle_is_not_exposed() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    popover_start = source.index('id="chat-toolbar-popover"')
+    popover_end = source.index("chat-input-wrap", popover_start)
+    popover = source[popover_start:popover_end]
+
+    assert 'id="toggle-router-cloud"' not in popover
+    assert "Cloud view" not in popover
+    assert "const routerCloudToggle = _el.querySelector('#toggle-router-cloud');" not in source
+    assert "routerCloudToggle.checked = _routerFx.variant === 'cloud';" not in source
+
+
+def test_router_fx_grid_labels_shrink_to_fit() -> None:
+    # Long model names (e.g. "gemini-3.1-flash-lite") must show in full, not
+    # clip at the cell edges: a post-insert measure shrinks the label font to
+    # fit its cell. Runs for every inserted strip via _routerFxInsertAnchored.
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _routerFxFitLabels(wrap) {" in source
+    measure_start = source.index("function _routerFxMeasureLabels(wrap) {")
+    measure_end = source.index("function _routerFxScheduleLabelFit(", measure_start)
+    measure = source[measure_start:measure_end]
+    assert "wrap.querySelectorAll('.router-fx-cell')" in measure
+    assert "const w = nm.scrollWidth;" in measure
+    assert "nm.style.fontSize = Math.max(7, base * (avail / w)).toFixed(1) + 'px';" in measure
+    fit_start = source.index("function _routerFxInstallLabelFit(wrap) {")
+    fit_end = source.index("function _routerFxInsertAnchored(", fit_start)
+    fit = source[fit_start:fit_end]
+    assert "new ResizeObserver(() => _routerFxScheduleLabelFit(wrap))" in fit
+    assert "document.fonts.ready" in fit
+    assert "_routerFxScheduleLabelFit(wrap);" in fit
+    # Invoked from the shared insert path so both live and history strips fit.
+    insert_start = source.index("function _routerFxInsertAnchored(")
+    insert_end = source.index("}", source.index("_thread.appendChild(wrap);", insert_start))
+    assert "_routerFxFitLabels(wrap);" in source[insert_start:insert_end]
+
+
+def test_router_fx_watching_indicator_deferred_until_panel_settles() -> None:
+    # The "squilla · Watching · N.Ns" indicator is RETAINED, but DEFERRED until
+    # the router panel has settled — so routing animates first and "Watching…"
+    # only shows afterwards (while the model is still generating). The timer
+    # starts at send so it reads total elapsed.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    # No longer suppressed.
+    assert "if (_routerFx.enabled && _routerFeatureEnabled) return;" not in source
+    # _showThinkingIndicatorNow defers while the panel is still scanning.
+    now_start = source.index("function _showThinkingIndicatorNow() {")
+    now_end = source.index("function _hideThinkingIndicator", now_start)
+    body = source[now_start:now_end]
+    assert "_thread.querySelector('.router-fx[data-scanning=\"true\"]')" in body
+    assert "_thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, 150);" in body
+    # The verb list (incl. "Watching") is unchanged.
+    assert "const SQUILLA_VERBS = ['Watching'," in source
+
+
+def test_router_fx_scan_to_lock_fills_the_wait() -> None:
+    # The routing visualisation starts shortly after SEND and animates
+    # continuously (JS-driven, ~170ms class/position swaps) until the decision
+    # locks it onto the winner. The small delay lets request-time compaction
+    # suppress the panel before a competing router flash appears.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    for fn in ("_routerFxBeginScan", "_routerFxScanRoam", "_routerFxStopScan",
+               "_routerFxLock", "_routerFxLockCloud", "_routerFxLockGrid"):
+        assert f"function {fn}(" in source
+    # Scan is gated on BOTH the viz pref and routing actually being on.
+    begin_start = source.index("function _routerFxBeginScan(")
+    begin_end = source.index("function _routerFxScanRoam(", begin_start)
+    begin = source[begin_start:begin_end]
+    assert "if (!_thread || !_routerFx.enabled || !_routerFeatureEnabled) {" in begin
+    assert "_chatDiag('router_scan.skip'" in begin
+    assert "return false;" in begin
+    # Scheduled from the send path.
+    assert (
+        "const routerScanStarted = _scheduleRouterFxBeginScan("
+        "userDiv, _routerFxResolveLayoutSeed(_sessionKey));"
+    ) in source
+    # The scan runs for a FIXED, hard-capped window (≤1s), then locks — not
+    # "roam until the decision WS event lands".
+    assert "const _ROUTER_FX_SCAN_MS = 600;" in source
+    cap = "wrap._fxScanCap = setTimeout(() => _routerFxFinishScan(wrap), _ROUTER_FX_SCAN_MS);"
+    assert cap in source
+    assert "function _routerFxFinishScan(wrap) {" in source
+    # The decision is CACHED on the in-flight strip; the cap (or output) locks it.
+    assert "liveStrip._fxDecision = payload;" in source
+    assert "if (liveStrip._fxFinished) {" in source
+    assert "_routerFxLock(wrap, wrap._fxDecision);" in source  # finish locks the cached winner
+    # Roam is JS-driven discrete swaps (cloud: .is-scan; grid: hammer hop).
+    roam_start = source.index("function _routerFxScanRoam(")
+    roam_end = source.index("function _routerFxStopScan(", roam_start)
+    roam = source[roam_start:roam_end]
+    assert "m.classList.toggle('is-scan', idx === i)" in roam
+    assert "wrap._fxScanTimer = setTimeout(step, isCloud ? 170 : 190);" in roam
+    # CSS gives the roaming focus a sharp accent pop.
+    scan_css = ('.router-fx[data-variant="cloud"][data-state="scanning"] '
+                '.router-fx-mote.is-scan .router-fx-mote-i {')
+    assert scan_css in css
+
+
+def test_chat_compaction_suppresses_current_turn_router_wait_panel() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "let _compactSuppressedRouterTurnIndex = '';" in source
+    assert "function _suppressRouterFxForCompaction(payload = {})" in source
+    assert "const _ROUTER_FX_START_DELAY_MS = 280;" in source
+    assert "function _scheduleRouterFxBeginScan(anchorDiv, seedKey)" in source
+    assert "function _cancelPendingRouterFxScan(reason = '')" in source
+
+    toast_start = source.index("function _showCompactionToast(payload, meta = {})")
+    started_start = source.index("if (status === 'started') {", toast_start)
+    started_end = source.index("if (status === 'observed') {", started_start)
+    started_body = source[started_start:started_end]
+    assert "_suppressRouterFxForCompaction(payload || {});" in started_body
+
+    observed_start = source.index("if (status === 'observed') {", toast_start)
+    observed_end = source.index("if (status === 'emergency_ephemeral') {", observed_start)
+    observed_body = source[observed_start:observed_end]
+    assert "_suppressRouterFxForCompaction(payload || {});" in observed_body
+
+    suppress_start = source.index("function _suppressRouterFxForCompaction(payload = {})")
+    suppress_end = source.index("function _showCompactionToast(payload, meta = {})", suppress_start)
+    suppress_body = source[suppress_start:suppress_end]
+    assert "_cancelPendingRouterFxScan('compaction');" in suppress_body
+
+    send_start = source.index("async function _onSend()")
+    send_end = source.index("    // Send", send_start)
+    send_body = source[send_start:send_end]
+    assert (
+        "_scheduleRouterFxBeginScan(userDiv, _routerFxResolveLayoutSeed(_sessionKey))"
+        in send_body
+    )
+    assert "_routerFxBeginScan(userDiv, _routerFxResolveLayoutSeed(_sessionKey))" not in send_body
+
+    begin_start = source.index("function _routerFxBeginScan(")
+    begin_end = source.index("function _routerFxScanRoam(", begin_start)
+    begin_body = source[begin_start:begin_end]
+    assert "_routerFxIsSuppressedForCompactionTurn(_routerFxCountUserMessages())" in begin_body
+
+    handler_start = source.index("async function _handleRouterDecision(payload) {")
+    handler_end = source.index("  // History-load entry point", handler_start)
+    handler_body = source[handler_start:handler_end]
+    assert "_routerFxIsSuppressedForCompactionTurn(turnIndex)" in handler_body
+    assert "router_decision.skip.compaction_suppressed" in handler_body
+
+
+def test_chat_compaction_suppresses_current_turn_thinking_indicator() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    show_start = source.index("function _showThinkingIndicatorNow() {")
+    show_end = source.index("function _hideThinkingIndicator", show_start)
+    show_body = source[show_start:show_end]
+    assert "thinking.defer.compaction_in_flight" in show_body
+    assert "_isCompactInFlightForCurrentSession()" in show_body
+
+    toast_start = source.index("function _showCompactionToast(payload, meta = {})")
+    started_start = source.index("if (status === 'started') {", toast_start)
+    started_end = source.index("if (status === 'observed') {", started_start)
+    started_body = source[started_start:started_end]
+    assert "_hideThinkingIndicator();" in started_body
+
+    observed_start = source.index("if (status === 'observed') {", toast_start)
+    observed_end = source.index("if (status === 'emergency_ephemeral') {", observed_start)
+    observed_body = source[observed_start:observed_end]
+    assert "_hideThinkingIndicator();" in observed_body
+
+    settle_start = source.index("function _settleCompactInFlight(payload = {}, options = {})")
+    settle_end = source.index("  // Programmatic textarea write", settle_start)
+    settle_body = source[settle_start:settle_end]
+    assert "if (_isStreaming && !_streamBubble) _showThinkingIndicator();" in settle_body
+
+
+def test_chat_history_refresh_preserves_active_thinking_indicator() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _isCurrentSessionThinkingIndicator(el)" in source
+    assert "_thinkingEl.dataset.sessionKey = _streamSessionKey || _sessionKey || '';" in source
+
+    render_start = source.index("function _renderHistoryMessages(messages, opts = {})")
+    render_end = source.index("function _appendHistoryDaySeparator", render_start)
+    render_body = source[render_start:render_end]
+    assert (
+        "const liveThinking = _isCurrentSessionThinkingIndicator(_thinkingEl) "
+        "? _thinkingEl : null;"
+    ) in render_body
+    assert (
+        "if (el !== _streamBubble && el !== liveUserAnchor && el !== liveThinking) "
+        "el.remove();"
+    ) in render_body
+    assert (
+        "if (liveThinking && !liveThinking.isConnected) "
+        "_thread.appendChild(liveThinking);"
+    ) in render_body
+    assert "if (_isStreaming && _isCurrentSessionThinkingIndicator(el)) return;" in render_body
+
+
+def test_router_fx_strip_survives_multistep_turn() -> None:
+    # History reorder moves .msg nodes. The router strip is a sibling, so the
+    # root fix is to move an attached strip together with its user message
+    # instead of preserving a separate live-strip path inside _loadHistory().
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "delete settledStrip.dataset.live;" not in source
+    assert "_routerFxFindAttachedStrip" not in source
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("  /* ── Send Message", history_start)
+    history_body = source[history_start:history_end]
+    assert "ownStrips.find((el) => el.dataset.live === 'true')" not in history_body
+    assert "if (_isStreaming && el.dataset.live === 'true') return;" not in history_body
+    assert "if (el.dataset.live === 'true') return;" not in history_body
+    # The reorder path moves a user message's attached router strip with that
+    # user message, so a long multi-step turn can't swap their positions.
+    append_start = source.index("function _appendHistoryElementInOrder(div)")
+    append_end = source.index("function _historyStableMessageIdentity", append_start)
+    append_body = source[append_start:append_end]
+    assert "const attachedRouterStrip = _routerFxStripImmediatelyAfterUser(div);" in append_body
+    assert "_restoreRouterFxAfterHistoryUser(div, attachedRouterStrip);" in append_body
+    assert "_thread.insertBefore(routerStrip, div.nextSibling);" in append_body
+    assert (
+        "const keep = ownStrips.find((el) => "
+        "el.dataset.routerIdentity === routerIdentity)"
+    ) in history_body
+    assert "_routerFxNormalizeSettledStrip(keep, 'history', savedUsage);" in history_body
+
+
+def test_router_decision_without_anchor_is_cached_for_history_replay() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "const _pendingRouterDecisions = new Map();" in source
+    assert "let _historyHydrating = false;" in source
+    assert "let _historyHasRendered = false;" in source
+    assert "function _cachePendingRouterDecision(payload)" in source
+    assert "function _flushPendingRouterDecisions()" in source
+
+    handler_start = source.index("async function _handleRouterDecision(payload)")
+    handler_end = source.index("    // No matching live scan means this decision", handler_start)
+    handler_body = source[handler_start:handler_end]
+    assert "if (!_historyHasRendered || _historyHydrating) {" in handler_body
+    assert "_chatDiag('router_decision.cached_during_history_hydration'" in handler_body
+    assert "_cachePendingRouterDecision(payload);" in handler_body
+    assert "_chatDiag('router_decision.cached_pending_anchor'" in source
+    assert "_chatDiag('router_decision.skip.no_anchor_user'" not in handler_body
+
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("function _appendHistoryDaySeparator", history_start)
+    history_body = source[history_start:history_end]
+    assert "_historyHydrating = true;" in history_body
+    assert "_historyHydrating = false;" in history_body
+    assert "_historyHasRendered = true;" in history_body
+    assert history_body.index("_historyHasRendered = true;") < history_body.index(
+        "_flushPendingRouterDecisions();"
+    )
+    assert "_flushPendingRouterDecisions();" in history_body
+
+
+def test_router_fx_settled_cleanup_clears_live_animation_state() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "function _routerFxNormalizeSettledStrip(wrap, renderMode, decision) {" in source
+    start = source.index("function _routerFxNormalizeSettledStrip(wrap, renderMode, decision) {")
+    end = source.index("function _routerFxDisconnectLabelFit(wrap) {", start)
+    body = source[start:end]
+
+    assert "_routerFxStopScan(wrap);" in body
+    assert "_routerFxClearAnimationTimers(wrap);" in body
+    assert "_routerFxClearVisualResidue(wrap);" in body
+    assert "wrap.dataset.state = 'settled';" in body
+    assert "delete wrap.dataset.live;" in body
+    assert "delete wrap.dataset.scanning;" in body
+    assert "_routerFxApplySettledSemantics(wrap, decision, wrap.dataset.renderMode);" in body
+    assert "_routerFxFitLabels(wrap);" in body
+
+    clear_start = source.index("function _routerFxClearVisualResidue(wrap) {")
+    clear_end = source.index("function _routerFxNormalizeSettledStrip", clear_start)
+    clear = source[clear_start:clear_end]
+    assert "selector.classList.remove('visible', 'lock', 'lock-impact')" in clear
+    assert ".router-fx-cell.pinging" in clear
+    assert ".router-fx-mote.is-scan" in clear
+    assert ".router-fx-burst" in clear
+
+    settle_start = source.index("function _settleRouterFxImmediate(wrap, winnerIdx, opts) {")
+    settle_end = source.index("function _routerFxFireBurst(grid, cell) {", settle_start)
+    settle = source[settle_start:settle_end]
+    assert "delete wrap.dataset.live;" in settle
+    assert "delete wrap.dataset.scanning;" in settle
+
+    cloud_start = source.index("function _settleRouterFxCloud(wrap) {")
+    cloud_end = source.index("// Live rack-focus", cloud_start)
+    cloud = source[cloud_start:cloud_end]
+    assert "delete wrap.dataset.live;" in cloud
+    assert "delete wrap.dataset.scanning;" in cloud
+
+
+def test_router_fx_config_refresh_prunes_stale_model_cache() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("async function _loadFeatureToggles() {")
+    end = source.index("  /* ── Session Chip", start)
+    body = source[start:end]
+
+    assert "Object.keys(_routerFxModels).forEach((tier) => {" in body
+    assert "if (!configTierSet.has(tier)) delete _routerFxModels[tier];" in body
+    assert "_routerFxConfigTiers = configTierSet;" in body
+
+
+def test_router_fx_settled_semantics_expose_render_mode_and_result() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert (
+        "wrap.dataset.renderMode = opts.renderMode || (opts.preSettled ? 'history' : 'live');"
+        in source
+    )
+    start = source.index("function _routerFxApplySettledSemantics(wrap, decision, renderMode) {")
+    end = source.index("function _routerFxClearVisualResidue(wrap) {", start)
+    body = source[start:end]
+
+    assert "wrap.dataset.renderMode = mode;" in body
+    assert "wrap.setAttribute('role', mode === 'live' ? 'status' : 'group');" in body
+    assert "wrap.setAttribute('aria-live', mode === 'live' ? 'polite' : 'off');" in body
+    assert "winnerName ? `Router selected ${winnerName}` : 'Router settled'" in body
+
+
+def test_done_stream_bubble_survives_until_history_persists_assistant() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "let _pendingFinalizedAssistantBubble = null;" in source
+    assert "function _markPendingFinalizedAssistantBubble(bubble, text)" in source
+    assert "function _isPendingFinalizedAssistantBubble(el)" in source
+    assert "function _historyStillWaitingForAssistant(messages)" in source
+
+    end_start = source.index("function _endStreaming(opts)")
+    end_end = source.index("_attachHoverActions(_streamBubble, 'assistant');", end_start)
+    end_body = source[end_start:end_end]
+    assert "_markPendingFinalizedAssistantBubble(_streamBubble, cleanedText);" in end_body
+    stamp_marker = "_stampHistoryElement(_streamBubble, '', 'assistant', cleanedText);"
+    mark_marker = "_markPendingFinalizedAssistantBubble(_streamBubble, cleanedText);"
+    assert end_body.index(stamp_marker) < end_body.index(mark_marker)
+
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("function _appendHistoryDaySeparator", history_start)
+    history_body = source[history_start:history_end]
+    assert "_chatDiag('history.empty.keep_pending_finalized_assistant'" in history_body
+    assert (
+        "if (_isPendingFinalizedAssistantBubble(el) && "
+        "_historyStillWaitingForAssistant(messages)) return;"
+    ) in history_body
+    assert "_clearPendingFinalizedAssistantBubble();" in history_body
+
+
+def test_generic_duplicate_stream_seq_is_classified_as_exact_handler_replay() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "function _eventHasSpecificSessionHandler(event)" in source
+    wildcard_start = source.index("_unsubs.push(_rpc.on('*', (rawEvent, rawPayload")
+    wildcard_end = source.index(
+        "      if (event.startsWith('session.event.task_group.')) return;",
+        wildcard_start,
+    )
+    wildcard_body = source[wildcard_start:wildcard_end]
+    assert "_eventHasSpecificSessionHandler(event)" in wildcard_body
+    assert "_chatDiag('event.generic.skip.specific_handler_stream_seq'" in wildcard_body
+    assert "_chatDiag('event.generic.drop.stream_seq'" in wildcard_body
+
+
+def test_savings_popup_does_not_fire_for_replayed_done_frames() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    wildcard_start = source.index("_unsubs.push(_rpc.on('*'")
+    wildcard_end = source.index("    // Connection state changes", wildcard_start)
+    body = source[wildcard_start:wildcard_end]
+
+    assert "(rawEvent, rawPayload, rawMeta = {})" in body
+    assert "const isReplayedFrame = !!(rawMeta && rawMeta.replayed);" in body
+    assert "_maybeFireSavingsPopup(_finishedBubble, u, { animate: !isReplayedFrame });" in body
+    assert body.index("isReplayedFrame") < body.index("_maybeFireSavingsPopup(")
+
+
+def test_tool_summary_exposes_visible_running_status() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    assert "function _setToolSummaryStatus(details, status)" in source
+    assert "function _visibleToolSummaryStatus(status)" in source
+    assert "return status === 'running' ? 'running' : '';" in source
+    build_start = source.index("function _buildToolCallDOM(")
+    build_end = source.index("function _retitleToolCallDOM", build_start)
+    build_body = source[build_start:build_end]
+    assert "statusSpan.className = 'chat-tools-status';" in build_body
+    assert "_applyToolSummaryStatus(statusSpan, isRunning ? 'running' : '');" in build_body
+    result_start = source.index("function _appendToolResult(payload)")
+    result_end = source.index(
+        "  // \u2500\u2500 PR5: meta-skill user_input form rendering",
+        result_start,
+    )
+    result_body = source[result_start:result_end]
+    assert "_setToolSummaryStatus(details, isError ? 'error' : 'done');" in result_body
+    assert "statusSpan.hidden = !visibleStatus;" in source
+
+
+def test_router_fx_settles_but_preserves_winner_animation_when_output_begins() -> None:
+    # The moment output renders, the panel should stop roaming, but the winner
+    # lock/settle animation must remain visible instead of becoming a static
+    # empty frame.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert "function _routerFxSettleForOutput() {" in source
+    fz_start = source.index("function _routerFxSettleForOutput() {")
+    fz = source[fz_start:source.index("// Lock an in-flight scanning strip", fz_start)]
+    assert "_routerFxFinishScan(wrap);" in fz
+    assert "_routerFxStopScan(wrap);" not in fz
+    assert "wrap.dataset.frozen = 'true';" not in fz
+    # It is invoked at the top of the stream-bubble (output) path.
+    esb = source[source.index("function _ensureStreamBubble() {"):]
+    esb = esb[:esb.index("function _newTextSegment")]
+    assert "_routerFxSettleForOutput();" in esb
+    assert '.router-fx[data-frozen="true"]' not in css
+
+
+def test_router_fx_history_mode_has_no_motion_effects() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert "function _routerFxStaticizeCompletedStrips(sessionKey) {" in source
+    end_start = source.index("function _endStreaming(opts) {")
+    end_body = source[end_start:source.index("function _hasViewLocalStreamState()", end_start)]
+    assert "_routerFxStaticizeCompletedStrips(_streamSessionKey || _sessionKey || '');" in end_body
+
+    assert '.router-fx[data-render-mode="history"]' in css
+    history_motion_start = css.index('.router-fx[data-render-mode="history"],')
+    history_motion = css[history_motion_start:css.index("}", history_motion_start)]
+    assert "animation: none !important;" in history_motion
+    assert "transition: none !important;" in history_motion
+
+
+def test_router_fx_history_and_turn_meta_preserve_observe_rollout_state() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("function _buildRouterFxFromUsage(usage, seedKey) {")
+    history_end = source.index("  /* ── RPC Event Subscriptions", history_start)
+    history_body = source[history_start:history_end]
+    store_start = source.index("_storeTurnMeta(_sessionKey, _metaIdx")
+    store_end = source.index("          });", store_start)
+    store_body = source[store_start:store_end]
+
+    assert "routing_applied: usage.routing_applied !== false," in history_body
+    assert "rollout_phase: usage.rollout_phase || 'full'," in history_body
+    assert "const observeMode = decision && decision.routing_applied === false;" in source
+    assert "routing_applied: u.routing_applied !== false," in store_body
+    assert "rollout_phase: u.rollout_phase || 'full'," in store_body
+
+
+def test_router_fx_mobile_grid_matches_explicit_cell_count() -> None:
+    """Mobile router-fx grid rows×cols stays in lockstep with the JS cell count.
+
+    The JS constant ``_ROUTER_FX_GRID_CELLS`` is 15 (5 cols × 3 rows on desktop);
+    mobile and tiny breakpoints collapse to 3×5 so no row ends short.
+    """
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    mobile_start = css.index("@media (max-width: 640px)")
+    tiny_start = css.index("@media (max-width: 380px)")
+    mobile_body = css[mobile_start:tiny_start]
+    tiny_body = css[tiny_start:]
+
+    assert "grid-template-columns: repeat(3, 1fr);" in mobile_body
+    assert "grid-template-rows: repeat(5, 28px);" in mobile_body
+    assert "grid-template-columns: repeat(3, 1fr);" in tiny_body
+    assert "grid-template-rows: repeat(5, 26px);" in tiny_body
+
+
+def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
+    # The router-fx ON/OFF state is a per-browser preference (theme.js style),
+    # NOT a gateway config write — distinct from the operator squilla_router
+    # toggle. Persisted under an opensquilla-* localStorage key, default ON.
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "const _ROUTER_FX_PREF_KEY = 'opensquilla-router-fx';" in source
+    assert "const _routerFx = { enabled: true, variant: 'default' };" in source
+    assert "function _routerFxLoadPref() {" in source
+    assert "function _routerFxSavePref() {" in source
+    assert "localStorage.getItem(_ROUTER_FX_PREF_KEY)" in source
+    assert "localStorage.setItem(_ROUTER_FX_PREF_KEY" in source
+    # Hydrated + switch synced on every render (inherits visibility/focus refresh).
+    assert "_routerFxLoadPref();" in source
+    assert "if (routerFxToggle) routerFxToggle.checked = _routerFx.enabled;" in source
+
+    # Load path: a stored pref must actually be PARSED and APPLIED back onto
+    # _routerFx (a no-op loader would silently reset a saved OFF to default-ON),
+    # validating types, and must swallow localStorage/JSON throws (private mode).
+    load_start = source.index("function _routerFxLoadPref() {")
+    load_end = source.index("function _routerFxSavePref() {", load_start)
+    load_body = source[load_start:load_end]
+    assert "const saved = JSON.parse(raw);" in load_body
+    assert "if (typeof saved.enabled === 'boolean') _routerFx.enabled = saved.enabled;" in load_body
+    assert "saved.variant" not in load_body
+    assert "_routerFx.variant = 'default';" in load_body
+    assert "} catch { /* keep defaults */ }" in load_body
+
+    # Save path: serialize the live pref and swallow quota/availability throws.
+    save_start = load_end
+    save_end = source.index("function _routerFxSortTiers(", save_start)
+    save_body = source[save_start:save_end]
+    assert "localStorage.setItem(_ROUTER_FX_PREF_KEY, JSON.stringify({" in save_body
+    assert "enabled: _routerFx.enabled," in save_body
+    assert "variant:" not in save_body
+    assert "} catch { /* preference is best-effort */ }" in save_body
+
+    # The toggle handler is client-side: it saves the pref and does NOT write
+    # gateway config (no config.patch.safe in the router-fx handler). ON re-renders
+    # historical strips via the rebuild; both branches give toast feedback.
+    fx_start = source.index("const routerFxToggle = _el.querySelector('#toggle-router-fx');")
+    fx_end = source.index("// Re-pull router config", fx_start)
+    fx_body = source[fx_start:fx_end]
+    assert "_routerFx.enabled = routerFxToggle.checked;" in fx_body
+    assert "_routerFxSavePref();" in fx_body
+    assert "config.patch.safe" not in fx_body
+    assert "_scheduleHistorySync();" in fx_body
+    assert "if (window.SavingsFX) window.SavingsFX.setEnabled(_routerFx.enabled);" in fx_body
+    assert "UI.toast('Visual effects: '" in fx_body
+
+
+def test_router_effects_default_on_and_cloud_choice_hidden() -> None:
+    chat_source = CHAT_JS.read_text(encoding="utf-8")
+    savings_source = (
+        Path("src/opensquilla/gateway/static/js/components/savings-fx.js")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "const _routerFx = { enabled: true, variant: 'default' };" in chat_source
+    assert (
+        "try { return window.localStorage.getItem(_PREF_KEY) !== '0'; } catch { return true; }"
+        in savings_source
+    )
+    assert "if (window.SavingsFX) window.SavingsFX.setEnabled(_routerFx.enabled);" in chat_source
+    assert 'id="toggle-savings-fx"' not in chat_source
+    assert "Savings FX" not in chat_source
+    assert "Visual effects" in chat_source
+    assert "Show router and savings effects" in chat_source
+    assert "Router effects" not in chat_source
+    assert "Router animation" not in chat_source
+    assert "Cloud view" not in chat_source
+
+
+def test_router_fx_render_gated_in_both_live_and_history_paths() -> None:
+    # The visualisation pref gates RENDER in both the live (router_decision) and
+    # history (rebuild) paths, ahead of all test-pinned lines. Tier/model
+    # bookkeeping stays warm in the live path; the gate sits after it and before
+    # the config await so a disabled panel short-circuits the 1.5s wait too.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    handler_start = source.index("async function _handleRouterDecision(payload) {")
+    handler_end = source.index("  // History-load entry point", handler_start)
+    handler_body = source[handler_start:handler_end]
+
+    pre_gate = (
+        "if (!_routerFx.enabled) {\n"
+        "      _chatDiag('router_decision.skip.disabled_pre_config'"
+    )
+    post_gate = (
+        "if (!_routerFx.enabled) {\n"
+        "      _chatDiag('router_decision.skip.disabled_post_config'"
+    )
+    assert pre_gate in handler_body
+    assert post_gate in handler_body
+    assert handler_body.index("_routerFxModels[tier.toLowerCase()] = String(payload.model);") < \
+        handler_body.index(pre_gate)
+    assert handler_body.index(pre_gate) < \
+        handler_body.index("await _routerFxAwaitConfig();")
+    # Re-checked AFTER the await as well — the user may flip OFF during the
+    # cold-start config wait, so the gate is symmetric on both sides.
+    assert handler_body.count("if (!_routerFx.enabled) {") >= 2
+    assert handler_body.index(post_gate) > \
+        handler_body.index("await _routerFxAwaitConfig();")
+    # History path gate returns null ahead of the operator gate (caller null-checks).
+    assert "if (!_routerFx.enabled) return null;" in source
+    assert source.index("if (!_routerFx.enabled) return null;") < \
+        source.index("if (_routerFxConfigTiers !== null && !_routerFeatureEnabled) return null;")
+
+
+def test_router_fx_disable_removes_all_strips_without_live_spare_path() -> None:
+    # Hiding the panel is a user-visible preference. The disabled path should
+    # remove router visuals directly instead of preserving a separate live-strip
+    # path that competes with history reorder repair.
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert (
+        "_thread.querySelectorAll('.router-fx').forEach((n) => _routerFxRemoveStrip(n));"
+        in source
+    )
+    assert ".router-fx:not([data-live=\"true\"])" not in source
+    history_start = source.index("async function _loadHistory() {")
+    history_end = source.index("  /* ── Send Message", history_start)
+    history_body = source[history_start:history_end]
+    assert "if (!_routerFx.enabled) {" in history_body
+    sweep = history_body[history_body.index("if (!_routerFx.enabled) {"):]
+    sweep = sweep[: sweep.index("_lastSavingsPopupIdentity")]
+    assert (
+        "_thread.querySelectorAll('.router-fx').forEach((el) => _routerFxRemoveStrip(el));"
+        in sweep
+    )
+    assert "dataset.live" not in sweep
+
+
+def test_router_fx_variant_seam_stamps_data_variant() -> None:
+    # data-variant on the .router-fx root is the style-variant seam (same idiom
+    # as data-state/source/observe). Only non-'default' is stamped, leaving the
+    # base look attribute-free. A documented CSS scaffold marks the extension
+    # point; no variant block ships yet.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    builder_start = source.index("function _buildRouterFxElement(decision, opts) {")
+    builder_end = source.index("  function ", builder_start + 1)
+    builder_body = source[builder_start:builder_end]
+
+    assert ("const variant = (opts.variant != null ? opts.variant : _routerFx.variant)"
+            " || 'default';") in builder_body
+    assert "if (variant && variant !== 'default') wrap.dataset.variant = variant;" in builder_body
+    assert "Router-fx style variants" in css
+    assert '.router-fx[data-variant="<name>"]' in css
+
+
+def test_router_fx_visualisation_toggle_markup_reuses_switch() -> None:
+    # The user-facing switch lives in the composer 'Composer settings' popover,
+    # reusing the existing .toggle-switch recipe verbatim (no fifth toggle CSS).
+    source = CHAT_JS.read_text(encoding="utf-8")
+    popover_start = source.index('id="chat-toolbar-popover"')
+    popover_end = source.index('chat-input-wrap', popover_start)
+    popover = source[popover_start:popover_end]
+
+    assert 'id="toggle-router-fx"' in popover
+    assert "Visual effects" in popover
+    assert "Show router and savings effects" in popover
+    assert "Router effects" not in popover
+    assert 'id="toggle-savings-fx"' not in popover
+    assert "Savings FX" not in popover
+    assert 'class="toggle-switch"' in popover
+    assert popover.count('class="toggle-track"') >= 2
 
 
 def test_chat_history_replays_turn_meta_to_restore_combo_streak() -> None:
@@ -686,15 +2638,91 @@ def test_chat_turn_complete_event_schedules_history_sync() -> None:
     assert "_scheduleHistorySync();" in helper
 
 
-def test_chat_ignores_replayed_compaction_toasts() -> None:
+def test_chat_turn_complete_event_schedules_pending_queue_drain_fallback() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    helper = source[
+        source.index("function _syncTerminalSessionChange(payload = {})") :
+        source.index(
+            "  function _activeTaskGroupRunState",
+            source.index("function _syncTerminalSessionChange(payload = {})"),
+        )
+    ]
+    scheduler = source[
+        source.index("function _schedulePendingDrainAfterTerminal()") :
+        source.index(
+            "  // Programmatic textarea write",
+            source.index("function _schedulePendingDrainAfterTerminal()"),
+        )
+    ]
+
+    assert "_schedulePendingDrainAfterTerminal();" in helper
+    assert "const recoverPending =" in helper
+    assert "_recoverPendingAfterTerminal(state.status);" in helper
+    assert (
+        "if (_isStreaming || _isCompactInFlightForCurrentSession() || "
+        "_pendingQueue.length === 0) return;"
+        in scheduler
+    )
+    assert "_drainQueueHead();" in scheduler
+
+
+def test_chat_failed_terminal_events_recover_pending_queue_to_composer() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    error_start = source.index("} else if (event.endsWith('.error')) {")
+    error_end = source.index("      }\n    }));", error_start)
+    error_body = source[error_start:error_end]
+    terminal_start = source.index("const terminalStatus = _taskTerminalStatus(rawEvent);")
+    terminal_end = source.index("      const normalized =", terminal_start)
+    terminal_body = source[terminal_start:terminal_end]
+
+    assert "function _recoverPendingAfterTerminal(status = 'failed')" in source
+    assert "_recoverPendingAfterTerminal(_normalizeRunStatus" in error_body
+    assert "_recoverPendingAfterTerminal(terminalRunStatus);" in terminal_body
+
+
+def test_chat_approval_pending_has_distinct_run_status() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    approval_start = source.index("function _setStreamIdlePausedForApproval(paused)")
+    approval_end = source.index("  function _resetStreamIdleTimer()", approval_start)
+    approval_body = source[approval_start:approval_end]
+
+    assert "approval_pending: 'Waiting for approval'" in source
+    assert "approval_pending: 'chip-warn'" in source
+    assert "_approvalPendingForCurrentSession" in source
+    assert "run_status: 'approval_pending'" in approval_body
+    assert "active_task: { status: 'approval_pending'" in approval_body
+
+
+def test_chat_replayed_compaction_terminal_restores_separator_without_toast() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("function _showCompactionToast(payload, meta = {})")
     end = source.index("  /* ── RPC Event Subscriptions", start)
     body = source[start:end]
 
     assert "function _showCompactionToast(payload, meta = {})" in source
-    assert "if (meta && meta.replayed) return;" in body
-    assert body.index("meta.replayed") < body.index("UI.toast('Compact failed'")
+    assert "function _compactionTerminalStatus(status)" in source
+    assert "const isReplay = !!(meta && meta.replayed);" in body
+    assert "if (isReplay && !_compactionTerminalStatus(status)) return;" in body
+    assert "if (meta && meta.replayed) return;" not in body
+    assert "if (!isReplay) UI.toast('Compact failed'" in body
+    assert "if (!isReplay) {\n        UI.toast(\n          'Compact cancelled'" in body
+
+
+def test_chat_manual_terminal_compaction_separator_persists_only_when_completed() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    sync_start = source.index(
+        "function _syncCompactionSeparator(payload, status, source, overrides = {})"
+    )
+    sync_end = source.index("function _clearCompactionSummarySeparators", sync_start)
+    sync_body = source[sync_start:sync_end]
+
+    assert "function _compactionSeparatorAnimated(status, overrides = {})" in source
+    assert "function _shouldPersistCompactionSeparator(status, source, overrides = {})" in source
+    assert "return source === 'manual' && status === 'completed';" in source
+    assert "const liveClass = _compactionSeparatorAnimated(status, overrides)" in sync_body
+    assert "filter(Boolean)" in sync_body
+    assert "if (_shouldPersistCompactionSeparator(status, source, overrides)) return;" in sync_body
+    assert "_scheduleCompactionSeparatorRemoval();" in sync_body
 
 
 def test_rpc_client_passes_event_meta_without_polluting_payload() -> None:
@@ -721,7 +2749,10 @@ def test_chat_history_reconciles_by_message_identity_without_clear_replace() -> 
     assert "const existingByFallbackIdentity = new Map();" in body
     assert "const consumedHistoryElements = new Set();" in body
     assert "data-message-id" in source
-    assert "_stampHistoryElement(div, stableIdentity, msg.role, displayText);" in body
+    assert (
+        "_stampHistoryElement(div, stableIdentity, msg.role, displayText, "
+        "_messageTranscriptId(msg));"
+    ) in body
     assert "let div = stableIdentity ? existingByStableIdentity.get(stableIdentity) : null;" in body
     assert "consumedHistoryElements," in body
     assert "consumedHistoryElements.add(div);" in body
@@ -729,7 +2760,7 @@ def test_chat_history_reconciles_by_message_identity_without_clear_replace() -> 
         "const existingByStableIdentity = new Map();"
     )
     assert "      _thread.innerHTML = '';" not in body[: body.index("if (messages.length === 0)")]
-    assert "if (_isStreaming && el === _streamBubble) return;" in body
+    assert "if (_isStreaming && _isCurrentSessionStreamBubble(el)) return;" in body
     assert "if (!consumedHistoryElements.has(el)) el.remove();" in body
 
 
@@ -741,10 +2772,16 @@ def test_chat_history_reorders_reused_nodes_to_match_transcript_order() -> None:
 
     assert "_thread.querySelectorAll('.chat-day-sep').forEach((el) => el.remove());" in body
     assert "function _appendHistoryElementInOrder(div)" in source
-    assert "if (_isStreaming && _streamBubble && div !== _streamBubble)" in source
+    assert (
+        "if (_isStreaming && _isCurrentSessionStreamBubble(_streamBubble) "
+        "&& div !== _streamBubble)"
+    ) in source
     assert "_thread.insertBefore(div, _streamBubble);" in source
     assert "_thread.appendChild(div);" in source
-    stamp_idx = body.index("_stampHistoryElement(div, stableIdentity, msg.role, displayText);")
+    stamp_idx = body.index(
+        "_stampHistoryElement(div, stableIdentity, msg.role, displayText, "
+        "_messageTranscriptId(msg));"
+    )
     reorder_idx = body.index("_appendHistoryElementInOrder(div);")
     assert stamp_idx < reorder_idx
 
@@ -863,6 +2900,32 @@ def test_approval_monitor_uses_adaptive_timeout_backoff() -> None:
     assert "setTimeout(async () =>" in source
     assert "_increasePollBackoff();" in source
     assert "setInterval(_poll, POLL_MS)" not in source
+
+
+def test_approval_monitor_sends_auth_headers() -> None:
+    source = Path("src/opensquilla/gateway/static/js/approval_monitor.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function _authHeaders(extra)" in source
+    assert "App.getAuthToken" in source
+    assert "window.App && App.getAuthToken" not in source
+    assert "typeof App !== 'undefined'" in source
+    assert "headers['Authorization'] = `Bearer ${token}`;" in source
+    assert "headers: _authHeaders()," in source
+    assert "headers: _authHeaders({ 'Content-Type': 'application/json' })" in source
+
+
+def test_approvals_view_sends_auth_headers() -> None:
+    source = Path("src/opensquilla/gateway/static/js/views/approvals.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function _authHeaders(extra)" in source
+    assert "App.getAuthToken" in source
+    assert "headers['Authorization'] = `Bearer ${token}`;" in source
+    assert "fetch('/api/approvals', { headers: _authHeaders() })" in source
+    assert "headers: _authHeaders({ 'Content-Type': 'application/json' })" in source
 
 
 def test_session_api_token_totals_load_independently_of_token_widget() -> None:
@@ -993,6 +3056,8 @@ def test_chat_task_lifecycle_events_are_session_scoped() -> None:
     terminal_body = source[terminal_start:terminal_end]
 
     assert "if (!_isCurrentSessionPayload(payload)) return;" in queued_body
+    assert "_currentRunStatus === 'running'" in queued_body
+    assert "_currentRunStatus === 'approval_pending'" in queued_body
     assert "if (!_isCurrentSessionPayload(payload)) return;" in running_body
     assert "if (!_isCurrentSessionPayload(rawPayload)) return;" in terminal_body
     queued_emit_start = runtime.index('await self._emit(\n            envelope.session_key,')

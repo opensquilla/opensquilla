@@ -10,10 +10,15 @@ import contextlib
 import json
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from opensquilla.skills.hub.defaults import (
+    build_default_skill_installer,
+    get_default_skill_router,
+    installed_skill_names,
+)
 from opensquilla.skills.types import SkillInstallSpec, SkillLayer
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError
@@ -139,6 +144,21 @@ def _find_install_spec(skill_name: str, install_id: str) -> SkillInstallSpec:
     raise ToolError(f"Install spec not found for skill '{skill_name}': {install_id}")
 
 
+def _community_result_to_dict(row: Any, installed: set[str]) -> dict[str, Any]:
+    identifier = getattr(row, "identifier", "") or getattr(row, "name", "")
+    name = getattr(row, "name", "")
+    return {
+        "name": name,
+        "description": getattr(row, "description", ""),
+        "version": getattr(row, "version", ""),
+        "author": getattr(row, "author", ""),
+        "source": getattr(row, "source_id", ""),
+        "trust_level": getattr(row, "trust_level", ""),
+        "identifier": identifier,
+        "installed": identifier in installed or name in installed,
+    }
+
+
 async def _run_install_argv(argv: list[str]) -> tuple[int, str, str, bool]:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -249,10 +269,128 @@ def create_skill_tools(loader: SkillLoader) -> None:
         return skill.content or f"(Skill '{name}' has no body content)"
 
     @tool(
+        name="skill_search_community",
+        description=(
+            "Search Community skill sources such as ClawHub. Use this when the user asks to "
+            "find, search, browse, or locate installable skills from the community marketplace."
+        ),
+        params={
+            "query": {
+                "type": "string",
+                "description": "Search query for Community skills.",
+            },
+            "source": {
+                "type": "string",
+                "description": (
+                    "Source id to search, usually 'clawhub'. Use 'all' to search all sources."
+                ),
+                "default": "clawhub",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return.",
+                "default": 10,
+            },
+        },
+        required=["query"],
+    )
+    async def skill_search_community(
+        query: str,
+        source: str = "clawhub",
+        limit: int = 10,
+    ) -> str:
+        clean_query = str(query or "").strip()
+        if not clean_query:
+            raise ToolError("query must not be empty")
+        try:
+            result_limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            result_limit = 10
+
+        source_id: str | None = str(source or "clawhub").strip() or "clawhub"
+        if source_id in {"all", "*"}:
+            source_id = None
+        router = get_default_skill_router()
+        results = await router.search(clean_query, limit=result_limit, source_id=source_id)
+        installed = installed_skill_names()
+        return json.dumps(
+            {
+                "status": "ok",
+                "query": clean_query,
+                "source": source_id or "all",
+                "results": [_community_result_to_dict(row, installed) for row in results],
+            }
+        )
+
+    @tool(
+        name="skill_install_community",
+        description=(
+            "Install a Community skill from ClawHub or another configured source. "
+            "Use only when the user clearly asked to install a specific skill identifier "
+            "or chose one exact result from skill_search_community. Do not use skill_create "
+            "for Community installs."
+        ),
+        params={
+            "identifier": {
+                "type": "string",
+                "description": (
+                    "Exact source identifier or slug returned by skill_search_community."
+                ),
+            },
+            "source": {
+                "type": "string",
+                "description": "Source id, usually 'clawhub'.",
+                "default": "clawhub",
+            },
+            "force": {
+                "type": "boolean",
+                "description": (
+                    "Override a dangerous security scan only after the user explicitly asks."
+                ),
+                "default": False,
+            },
+        },
+        required=["identifier"],
+        owner_only=True,
+    )
+    async def skill_install_community(
+        identifier: str,
+        source: str = "clawhub",
+        force: bool = False,
+    ) -> str:
+        if _loader is None:
+            raise ToolError("Skill loader not available")
+        clean_identifier = str(identifier or "").strip()
+        if not clean_identifier:
+            raise ToolError("identifier must not be empty")
+        source_id = str(source or "clawhub").strip() or "clawhub"
+
+        installer = build_default_skill_installer(managed_dir=_loader.managed_dir)
+        result = await installer.install(clean_identifier, source_id, force=bool(force))
+        if result.success:
+            _loader.invalidate_cache()
+
+        payload: dict[str, Any] = {
+            "status": "installed" if result.success else "failed",
+            "success": result.success,
+            "name": result.name,
+            "identifier": clean_identifier,
+            "source": source_id,
+            "message": result.message,
+        }
+        if result.path:
+            payload["path"] = result.path
+        if result.scan:
+            payload["scan_verdict"] = result.scan.verdict
+            payload["scan_findings"] = [finding.__dict__ for finding in result.scan.findings]
+        return json.dumps(payload)
+
+    @tool(
         name="install_skill_deps",
         description=(
             "Preview or install a skill dependency declared in skill metadata. "
-            "Supports brew, node, go, and uv install specs."
+            "Supports brew, node, go, and uv install specs. This does not install "
+            "Community skills; use skill_install_community for ClawHub installs."
         ),
         params={
             "skill_name": {
@@ -313,8 +451,9 @@ def create_skill_tools(loader: SkillLoader) -> None:
     @tool(
         name="skill_create",
         description=(
-            "Create a new skill in the workspace layer. "
-            "Writes a SKILL.md file with frontmatter and body content."
+            "Create a new local authored skill in the workspace layer. "
+            "Writes a SKILL.md file with frontmatter and body content. "
+            "Do not use this for Community or ClawHub installs."
         ),
         params={
             "name": {

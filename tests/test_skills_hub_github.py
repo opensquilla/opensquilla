@@ -113,14 +113,13 @@ async def test_fetch_legacy_identifier_keeps_support_and_downloads_directory(mon
 
 def test_default_gateway_router_exposes_github_without_token(monkeypatch) -> None:
     import opensquilla.gateway.rpc_skills as rpc_skills
+    from opensquilla.skills.hub import defaults
 
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    rpc_skills._default_router = None
-    rpc_skills._default_installer = None
+    defaults._default_router = None
 
     try:
         router = rpc_skills._get_default_router()
         assert "github" in router.source_ids
     finally:
-        rpc_skills._default_router = None
-        rpc_skills._default_installer = None
+        defaults._default_router = None

@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from opensquilla.bootstrap_types import BootstrapFileReport
-from opensquilla.engine.runtime import BootstrapSnapshot, TurnRunner
+from opensquilla.engine.runtime import BootstrapSnapshot, MemorySnapshot, TurnRunner
 from opensquilla.identity.workspace import filter_workspace_filenames_for_session
 from opensquilla.tools.types import ToolContext
 
@@ -133,6 +133,123 @@ def test_prompt_metadata_uses_effective_memory_retrieval_metadata(tmp_path) -> N
     assert metadata["embedding_model"] == "BAAI/bge-small-zh-v1.5"
     assert metadata["memory_retrieval_vector_weight"] == "0.7"
     assert metadata["memory_retrieval_text_weight"] == "0.3"
+
+
+def test_fresh_user_session_omits_live_daily_notes_from_dynamic_context(tmp_path) -> None:
+    (tmp_path / "AGENTS.md").write_text("agents\n", encoding="utf-8")
+    runner = TurnRunner(
+        provider_selector=None,
+        config=SimpleNamespace(
+            workspace_dir=str(tmp_path),
+            memory=SimpleNamespace(source="workspace"),
+            tools=SimpleNamespace(profile=None),
+        ),
+    )
+    runner._load_daily_notes = lambda _workspace_dir: {"2026-05-31.md": "stale Labubu context"}
+    metadata: dict[str, object] = {}
+
+    assembled = runner._assemble_prompt(
+        "main",
+        [],
+        session_key="agent:main:fresh",
+        prompt_metadata=metadata,
+        fresh_user_session=True,
+    )
+
+    dynamic = assembled[1] if isinstance(assembled, tuple) else ""
+    assert "## Recent Notes" not in dynamic
+    assert "stale Labubu context" not in dynamic
+    assert metadata["daily_notes_fresh_session_omitted"] is True
+    assert metadata["daily_notes_count_before_omit"] == 1
+
+
+def test_fresh_user_session_omits_snapshot_daily_notes_from_dynamic_context(tmp_path) -> None:
+    (tmp_path / "AGENTS.md").write_text("agents\n", encoding="utf-8")
+    runner = TurnRunner(
+        provider_selector=None,
+        config=SimpleNamespace(
+            workspace_dir=str(tmp_path),
+            memory=SimpleNamespace(source="workspace"),
+            tools=SimpleNamespace(profile=None),
+        ),
+    )
+    runner._memory_snapshots[("main", "agent:main:fresh")] = MemorySnapshot(
+        memory_md="stable memory",
+        daily_notes={"2026-05-31.md": "snapshot daily context"},
+    )
+    metadata: dict[str, object] = {}
+
+    assembled = runner._assemble_prompt(
+        "main",
+        [],
+        session_key="agent:main:fresh",
+        prompt_metadata=metadata,
+        fresh_user_session=True,
+    )
+
+    dynamic = assembled[1] if isinstance(assembled, tuple) else ""
+    full_prompt = "\n".join(assembled) if isinstance(assembled, tuple) else assembled
+    assert "snapshot daily context" not in dynamic
+    assert "stable memory" in full_prompt
+    assert metadata["daily_notes_fresh_session_omitted"] is True
+    assert metadata["daily_notes_count_before_omit"] == 1
+
+
+def test_non_fresh_user_session_omits_live_daily_notes_from_dynamic_context(tmp_path) -> None:
+    (tmp_path / "AGENTS.md").write_text("agents\n", encoding="utf-8")
+    runner = TurnRunner(
+        provider_selector=None,
+        config=SimpleNamespace(
+            workspace_dir=str(tmp_path),
+            memory=SimpleNamespace(source="workspace"),
+            tools=SimpleNamespace(profile=None),
+        ),
+    )
+    runner._load_daily_notes = lambda _workspace_dir: {"2026-05-31.md": "daily context"}
+    metadata: dict[str, object] = {}
+
+    assembled = runner._assemble_prompt(
+        "main",
+        [],
+        session_key="agent:main:existing",
+        prompt_metadata=metadata,
+    )
+
+    dynamic = assembled[1] if isinstance(assembled, tuple) else ""
+    assert "## Recent Notes" not in dynamic
+    assert "daily context" not in dynamic
+    assert metadata["daily_notes_omitted"] is True
+    assert metadata["daily_notes_policy_reason"] == "auto_injection_disabled"
+    assert metadata["daily_notes_count_before_omit"] == 1
+
+
+def test_daily_notes_auto_omit_preserves_memory_md(tmp_path) -> None:
+    (tmp_path / "AGENTS.md").write_text("agents\n", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text("stable curated memory\n", encoding="utf-8")
+    runner = TurnRunner(
+        provider_selector=None,
+        config=SimpleNamespace(
+            workspace_dir=str(tmp_path),
+            memory=SimpleNamespace(source="workspace"),
+            tools=SimpleNamespace(profile=None),
+        ),
+    )
+    runner._load_daily_notes = lambda _workspace_dir: {"2026-05-31.md": "daily context"}
+    metadata: dict[str, object] = {}
+
+    assembled = runner._assemble_prompt(
+        "main",
+        [],
+        session_key="agent:main:existing",
+        prompt_metadata=metadata,
+    )
+
+    full_prompt = "\n".join(assembled) if isinstance(assembled, tuple) else assembled
+    dynamic = assembled[1] if isinstance(assembled, tuple) else ""
+    assert "stable curated memory" in full_prompt
+    assert "daily context" not in dynamic
+    assert metadata["memory_md_present"] is True
+    assert metadata["daily_notes_omitted"] is True
 
 
 def test_stateless_bootstrap_context_skips_persona_memory_and_bootstrap(tmp_path) -> None:

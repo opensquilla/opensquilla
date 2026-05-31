@@ -38,27 +38,6 @@ metadata:
 
 Use the `gh` CLI to interact with GitHub repositories, issues, PRs, and CI.
 
-## When to Use
-
-✅ **USE this skill when:**
-
-- Checking PR status, reviews, or merge readiness
-- Viewing CI/workflow run status and logs
-- Creating, closing, or commenting on issues
-- Creating or merging pull requests
-- Querying GitHub API for repository data
-- Listing repos, releases, or collaborators
-
-## When NOT to Use
-
-❌ **DON'T use this skill when:**
-
-- Local git operations (commit, push, pull, branch) → use `git` directly
-- Non-GitHub repos (GitLab, Bitbucket, self-hosted) → different CLIs
-- Cloning repositories → use `git clone`
-- Reviewing actual code changes → use `coding-agent` skill
-- Complex multi-file diffs → use `coding-agent` or read files directly
-
 ## Setup
 
 ```bash

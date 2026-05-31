@@ -11,8 +11,12 @@ from opensquilla.onboarding.config_store import PersistResult, load_config, pers
 from opensquilla.onboarding.image_generation_specs import (
     image_generation_provider_catalog_payload,
 )
+from opensquilla.onboarding.memory_embedding_specs import (
+    memory_embedding_provider_catalog_payload,
+)
 from opensquilla.onboarding.mutations import (
     MutationResult,
+    disable_image_generation,
     upsert_channel,
     upsert_image_generation_provider,
     upsert_llm_provider,
@@ -26,46 +30,41 @@ from opensquilla.onboarding.router_specs import router_catalog_payload
 from opensquilla.onboarding.search_specs import search_provider_catalog_payload
 from opensquilla.onboarding.status import OnboardingStatus, get_onboarding_status
 
+IMAGE_GENERATION_SECTION_ALIASES = frozenset(
+    {"image", "image-generation", "image_generation"}
+)
+MEMORY_EMBEDDING_SECTION_ALIASES = frozenset(
+    {"memory", "memory-embedding", "memory_embedding"}
+)
 
-def _memory_embedding_catalog_payload() -> list[dict[str, Any]]:
-    return [
-        {
-            "providerId": "auto",
-            "label": "Auto (local BGE first)",
-            "requiresApiKey": False,
-            "requiresBaseUrl": False,
-        },
-        {
-            "providerId": "local",
-            "label": "Bundled BGE-small",
-            "requiresApiKey": False,
-            "requiresBaseUrl": False,
-        },
-        {
-            "providerId": "openai",
-            "label": "OpenAI",
-            "requiresApiKey": True,
-            "requiresBaseUrl": False,
-        },
-        {
-            "providerId": "openai-compatible",
-            "label": "OpenAI-compatible remote",
-            "requiresApiKey": True,
-            "requiresBaseUrl": False,
-        },
-        {
-            "providerId": "ollama",
-            "label": "Ollama",
-            "requiresApiKey": False,
-            "requiresBaseUrl": False,
-        },
-        {
-            "providerId": "none",
-            "label": "FTS-only",
-            "requiresApiKey": False,
-            "requiresBaseUrl": False,
-        },
-    ]
+_CATALOG_SECTION_ALIASES = {
+    "provider": "providers",
+    "providers": "providers",
+    "router": "routerProfiles",
+    "search": "searchProviders",
+    "channels": "channels",
+    "channel": "channels",
+    **{alias: "imageGenerationProviders" for alias in IMAGE_GENERATION_SECTION_ALIASES},
+    **{alias: "memoryEmbeddingProviders" for alias in MEMORY_EMBEDDING_SECTION_ALIASES},
+}
+
+
+def setup_catalog_payload(section: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "providers": provider_catalog_payload(),
+        "routerProfiles": router_catalog_payload(),
+        "searchProviders": search_provider_catalog_payload(),
+        "channels": channel_catalog_payload(),
+        "imageGenerationProviders": image_generation_provider_catalog_payload(),
+        "memoryEmbeddingProviders": memory_embedding_provider_catalog_payload(),
+    }
+    if section is None:
+        return payload
+    normalized = section.strip().lower()
+    key = _CATALOG_SECTION_ALIASES.get(normalized)
+    if key is None:
+        raise ValueError(f"unknown setup section: {section!r}")
+    return {key: payload[key]}
 
 
 class SetupEngine:
@@ -86,33 +85,7 @@ class SetupEngine:
         return get_onboarding_status(self.config)
 
     def catalog(self, section: str | None = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "providers": provider_catalog_payload(),
-            "routerProfiles": router_catalog_payload(),
-            "searchProviders": search_provider_catalog_payload(),
-            "channels": channel_catalog_payload(),
-            "imageGenerationProviders": image_generation_provider_catalog_payload(),
-            "memoryEmbeddingProviders": _memory_embedding_catalog_payload(),
-        }
-        if section is None:
-            return payload
-        normalized = section.strip().lower()
-        aliases = {
-            "provider": "providers",
-            "providers": "providers",
-            "router": "routerProfiles",
-            "search": "searchProviders",
-            "channels": "channels",
-            "channel": "channels",
-            "image-generation": "imageGenerationProviders",
-            "image_generation": "imageGenerationProviders",
-            "memory-embedding": "memoryEmbeddingProviders",
-            "memory_embedding": "memoryEmbeddingProviders",
-        }
-        key = aliases.get(normalized)
-        if key is None:
-            raise ValueError(f"unknown setup section: {section!r}")
-        return {key: payload[key]}
+        return setup_catalog_payload(section)
 
     def apply(self, section: str, payload: dict[str, Any]) -> MutationResult:
         normalized = section.strip().lower()
@@ -150,22 +123,28 @@ class SetupEngine:
             if not isinstance(entry, dict):
                 raise ValueError("channel payload must contain an entry object")
             res = upsert_channel(self.config, entry_payload=entry)
-        elif normalized in {"image-generation", "image_generation"}:
-            res = upsert_image_generation_provider(
-                self.config,
-                provider_id=str(payload["providerId"]),
-                primary=str(payload.get("primary", "")),
-                api_key=str(payload.get("apiKey", "")),
-                api_key_env=str(payload.get("apiKeyEnv", "")),
-                base_url=str(payload.get("baseUrl", "")),
-                enabled=bool(payload.get("enabled", True)),
-            )
-        elif normalized in {"memory-embedding", "memory_embedding"}:
+        elif normalized in IMAGE_GENERATION_SECTION_ALIASES:
+            enabled = bool(payload.get("enabled", True))
+            provider_id = str(payload.get("providerId", ""))
+            if not enabled and not provider_id:
+                res = disable_image_generation(self.config)
+            else:
+                res = upsert_image_generation_provider(
+                    self.config,
+                    provider_id=provider_id,
+                    primary=str(payload.get("primary", "")),
+                    api_key=str(payload.get("apiKey", "")),
+                    api_key_env=str(payload.get("apiKeyEnv", "")),
+                    base_url=str(payload.get("baseUrl", "")),
+                    enabled=enabled,
+                )
+        elif normalized in MEMORY_EMBEDDING_SECTION_ALIASES:
             res = upsert_memory_embedding(
                 self.config,
                 provider=str(payload["providerId"]),
                 model=payload.get("model"),
                 api_key=payload.get("apiKey"),
+                api_key_env=payload.get("apiKeyEnv"),
                 base_url=payload.get("baseUrl"),
                 onnx_dir=payload.get("onnxDir"),
             )

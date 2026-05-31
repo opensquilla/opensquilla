@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -17,7 +18,6 @@ from opensquilla.cli.gateway_rpc import (
 )
 from opensquilla.cli.output import emit_error, print_json
 from opensquilla.cli.ui import ACCENT, console
-from opensquilla.skills.hub.source import SkillSource
 
 skills_app = typer.Typer(help="Skill management - list, search, install, uninstall.")
 
@@ -123,7 +123,7 @@ def _load_skill_rows() -> list[dict[str, Any]]:
     )
     ctx = EligibilityContext.auto()
     rows: list[dict[str, Any]] = []
-    for skill in sorted(loader.load_all(), key=lambda x: x.name):
+    for skill in sorted(loader.get_user_invocable(), key=lambda x: x.name):
         provenance = getattr(skill, "provenance", None)
         rows.append(
             {
@@ -150,6 +150,28 @@ def _load_skill_rows() -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def inspect_compiled_dag(*, name: str, bundled_dir: Path | None = None) -> str:
+    """Return the compiled composition for a meta-skill as YAML text.
+
+    Helper used by both the CLI command and tests; isolating the logic
+    keeps the Typer command body minimal and verifiable.
+    """
+
+    import yaml as _yaml
+
+    from opensquilla.skills.loader import SkillLoader
+
+    loader = SkillLoader(bundled_dir=bundled_dir)
+    loader.invalidate_cache()
+    loader.load_all()
+    spec = loader.get_by_name(name)
+    if spec is None:
+        return f"skill {name!r} not loaded"
+    if spec.composition_raw is None:
+        return f"skill {name!r} has no composition (not a meta skill)"
+    return str(_yaml.safe_dump(spec.composition_raw, sort_keys=False))
 
 
 @skills_app.command("list")
@@ -190,18 +212,9 @@ def skills_search(
     """Search for skills across Community sources."""
 
     async def _search() -> None:
-        import os
+        from opensquilla.skills.hub.defaults import get_default_skill_router
 
-        from opensquilla.skills.hub.clawhub import ClawHubSource
-        from opensquilla.skills.hub.github import GitHubSource
-        from opensquilla.skills.hub.router import SourceRouter
-
-        sources: list[SkillSource] = [
-            ClawHubSource(token=os.environ.get("CLAWHUB_TOKEN")),
-            GitHubSource(token=os.environ.get("GITHUB_TOKEN")),
-        ]
-
-        router = SourceRouter(sources)
+        router = get_default_skill_router()
         results = await router.search(query, limit=20)
 
         if json_output:
@@ -336,20 +349,9 @@ def skills_install(
             )
             return
 
-        import os
+        from opensquilla.skills.hub.defaults import build_default_skill_installer
 
-        from opensquilla.skills.hub.clawhub import ClawHubSource
-        from opensquilla.skills.hub.github import GitHubSource
-        from opensquilla.skills.hub.installer import SkillInstaller
-        from opensquilla.skills.hub.router import SourceRouter
-
-        sources: list[SkillSource] = [
-            ClawHubSource(token=os.environ.get("CLAWHUB_TOKEN")),
-            GitHubSource(token=os.environ.get("GITHUB_TOKEN")),
-        ]
-
-        router = SourceRouter(sources)
-        installer = SkillInstaller(router=router)
+        installer = build_default_skill_installer()
 
         if not json_output:
             console.print(f"Installing '{identifier}' from {source}...")
@@ -397,10 +399,9 @@ def skills_uninstall(
             )
             return
 
-        from opensquilla.skills.hub.installer import SkillInstaller
-        from opensquilla.skills.hub.router import SourceRouter
+        from opensquilla.skills.hub.defaults import build_default_skill_installer
 
-        installer = SkillInstaller(router=SourceRouter())
+        installer = build_default_skill_installer()
         result = await installer.uninstall(name)
 
         if json_output:
@@ -416,6 +417,13 @@ def skills_uninstall(
             raise typer.Exit(1)
 
     asyncio.run(_uninstall())
+
+
+# ── Meta-skill sub-commands ───────────────────────────────────────────────
+
+from opensquilla.cli.skills_meta_cmd import meta_app  # noqa: E402
+
+skills_app.add_typer(meta_app, name="meta")
 
 
 # ── Tap sub-commands ──────────────────────────────────────────────────────
@@ -484,3 +492,12 @@ def skills_publish(
             console.print(f"[red]Failed:[/] {result.message}")
 
     asyncio.run(_publish())
+
+
+@skills_app.command("inspect")
+def cli_inspect(
+    name: str = typer.Argument(..., help="Meta-skill name to inspect"),
+) -> None:
+    """Print the compiled composition.steps for a meta-skill."""
+
+    typer.echo(inspect_compiled_dag(name=name))

@@ -1,6 +1,6 @@
 [project]
 name = "opensquilla"
-version = "0.2.1"
+version = "0.3.0"
 description = "OpenSquilla — microkernel Python agent runtime with MCP-native tools and multi-channel messaging"
 license = "Apache-2.0"
 readme = "README.md"
@@ -78,13 +78,6 @@ recommended = [
     "onnxruntime>=1.17",
     "tokenizers>=0.15",
 ]
-# Legacy aliases — channels are now part of base dependencies.
-# Kept as empty lists so existing scripts that pass `[feishu]` etc. keep resolving.
-feishu = []
-telegram = []
-dingtalk = []
-wecom = []
-qq = []
 matrix = ["matrix-nio>=0.25,<0.26", "markdown>=3.0"]
 matrix-e2e = ["matrix-nio[e2e]>=0.25,<0.26", "markdown>=3.0"]
 document-extras = [
@@ -105,16 +98,19 @@ exclude = [
     "src/opensquilla/scheduler/templates/*.md",
     "src/opensquilla/skills/bundled/**/THIRD_PARTY_NOTICES.md",
     "src/opensquilla/skills/bundled/**/references/*.md",
+    "src/opensquilla/skills/exp/**",
+    "src/opensquilla/skills/meta/META_SKILL_AUTHORING.md",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
+"migrations/" = "opensquilla/_migrations/"
 "src/opensquilla/skills/bundled/pptx/references/pptxgenjs.md" = "opensquilla/skills/bundled/pptx/references/pptxgenjs.md"
 "src/opensquilla/skills/bundled/pptx/references/python_pptx.md" = "opensquilla/skills/bundled/pptx/references/python_pptx.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-norecursedirs = ["tests/_private", ".omx", ".codex", ".claude"]
+norecursedirs = ["tests/_private", "tests/fixtures", ".omx", ".codex", ".claude"]
 markers = [
     "llm: marks tests that make real external model/provider API calls (deselect with '-m \"not llm\"')",
     "llm_smoke: low-cost live LLM smoke tests",
@@ -124,6 +120,7 @@ markers = [
     "llm_reasoning: live reasoning-capable model tests",
     "llm_gateway: live gateway/end-to-end runtime tests",
     "llm_image: live image-generation model API tests",
+    "llm_router_acc: live multi-model routing accuracy tests",
     "agent_context_boundary: agent context budget and compaction boundary tests",
     "local_golden: local opt-in synthetic complex-task golden tests",
     "webui_browser: real browser Web UI tests driven by Playwright",
@@ -142,6 +139,7 @@ select = ["E", "F", "I", "N", "W", "UP"]
 # example code meant to be copy-pasted verbatim; reformatting would
 # harm readability. E402 imports-after-sys.path-munge is intentional.
 "src/opensquilla/skills/bundled/skill-creator/scripts/*.py" = ["E501", "N806", "E402"]
+"src/opensquilla/skills/bundled/skill-creator-linter/scripts/*.py" = ["E402", "I001"]
 
 [tool.mypy]
 python_version = "3.12"

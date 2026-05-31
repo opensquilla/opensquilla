@@ -10,6 +10,12 @@ import structlog
 import yaml
 
 from opensquilla.paths import default_opensquilla_home
+from opensquilla.skills.meta.sop_compiler import (
+    SOPCompileError,
+)
+from opensquilla.skills.meta.sop_compiler import (
+    compile as _sop_compile,
+)
 from opensquilla.skills.types import (
     SkillInstallSpec,
     SkillLayer,
@@ -25,8 +31,17 @@ MAX_SKILL_FILE_BYTES = 256_000  # 256KB per SKILL.md
 MAX_SKILLS_PER_SOURCE = 200  # per layer cap
 
 # Bump when on-disk snapshot fields change so stale caches are invalidated
-# instead of silently losing new fields.
-_SNAPSHOT_SCHEMA_VERSION = 3
+# instead of silently losing new fields. v6 adds skill risk/capability metadata
+# for unattended meta-skill auto-enable decisions.
+_SNAPSHOT_SCHEMA_VERSION = 7
+
+
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -55,15 +70,36 @@ def _resolve_metadata(frontmatter: dict) -> SkillPlatformMeta | None:
     """Extract platform metadata from frontmatter."""
     raw_meta = frontmatter.get("metadata", {})
     if isinstance(raw_meta, dict):
-        # Namespace fallback: platform > opensquilla > openclaw > clawdbot > top-level.
-        # `clawdbot` accepts ClawHub-published skills without manual rewrite.
-        raw_meta = raw_meta.get(
+        # Namespace fallback: platform > openclaw > clawdbot > top-level.
+        # `opensquilla` overlays advisory fields such as risk/capabilities
+        # without erasing platform dependency metadata kept at the top level
+        # or in an upstream namespace.
+        base_meta = raw_meta.get(
             "platform",
-            raw_meta.get(
-                "opensquilla",
-                raw_meta.get("openclaw", raw_meta.get("clawdbot", raw_meta)),
-            ),
+            raw_meta.get("openclaw", raw_meta.get("clawdbot", raw_meta)),
         )
+        if not isinstance(base_meta, dict):
+            base_meta = {}
+        merged_meta = dict(base_meta)
+        opensquilla_meta = raw_meta.get("opensquilla", {})
+        if isinstance(opensquilla_meta, dict):
+            for key in (
+                "emoji",
+                "skillKey",
+                "primaryEnv",
+                "homepage",
+                "always",
+                "os",
+                "requires",
+                "install",
+                "risk",
+                "risk_level",
+                "riskLevel",
+                "capabilities",
+            ):
+                if key in opensquilla_meta:
+                    merged_meta[key] = opensquilla_meta[key]
+        raw_meta = merged_meta
     if not isinstance(raw_meta, dict):
         return None
 
@@ -105,9 +141,16 @@ def _resolve_metadata(frontmatter: dict) -> SkillPlatformMeta | None:
         primary_env=raw_meta.get("primaryEnv", ""),
         homepage=raw_meta.get("homepage", ""),
         always=bool(always_val) if always_val is not None else None,
-        os=raw_meta.get("os", []),
+        os=_string_list(raw_meta.get("os", [])),
         requires=requires,
         install=install_specs,
+        risk_level=str(
+            raw_meta.get("risk")
+            or raw_meta.get("risk_level")
+            or raw_meta.get("riskLevel")
+            or ""
+        ).strip().lower(),
+        capabilities=_string_list(raw_meta.get("capabilities", [])),
     )
 
 
@@ -175,6 +218,11 @@ class SkillLoader:
         """Public accessor for workspace skill directory."""
         return self._workspace_dir
 
+    @property
+    def managed_dir(self) -> Path | None:
+        """Public accessor for managed Community-installed skills."""
+        return self._managed_dir
+
     def invalidate_cache(self) -> None:
         """Clear cached skills so next load_all() re-scans from disk."""
         self._cached = None
@@ -241,6 +289,13 @@ class SkillLoader:
                     },
                     "metadata": {
                         "os": s.metadata.os if s.metadata else [],
+                        "emoji": s.metadata.emoji if s.metadata else "",
+                        "skill_key": s.metadata.skill_key if s.metadata else "",
+                        "primary_env": s.metadata.primary_env if s.metadata else "",
+                        "homepage": s.metadata.homepage if s.metadata else "",
+                        "always": s.metadata.always if s.metadata else None,
+                        "risk_level": s.metadata.risk_level if s.metadata else "",
+                        "capabilities": s.metadata.capabilities if s.metadata else [],
                         "requires_bins": s.metadata.requires.bins
                         if s.metadata and s.metadata.requires
                         else [],
@@ -269,6 +324,11 @@ class SkillLoader:
                     else None,
                     "requires_tools": s.requires_tools,
                     "fallback_for_toolsets": s.fallback_for_toolsets,
+                    "kind": s.kind,
+                    "meta_priority": s.meta_priority,
+                    "composition_raw": s.composition_raw,
+                    "final_text_mode": s.final_text_mode,
+                    "entrypoint": s.entrypoint,
                 }
                 for s in skills
             ],
@@ -321,6 +381,11 @@ class SkillLoader:
                     for i in raw_meta.get("install", [])
                 ]
                 meta = SkillPlatformMeta(
+                    emoji=raw_meta.get("emoji", ""),
+                    skill_key=raw_meta.get("skill_key", ""),
+                    primary_env=raw_meta.get("primary_env", ""),
+                    homepage=raw_meta.get("homepage", ""),
+                    always=raw_meta.get("always"),
                     os=raw_meta.get("os", []),
                     requires=SkillRequires(
                         bins=raw_meta.get("requires_bins", []),
@@ -328,6 +393,8 @@ class SkillLoader:
                         env=raw_meta.get("requires_env", []),
                     ),
                     install=install_specs,
+                    risk_level=str(raw_meta.get("risk_level", "")).strip().lower(),
+                    capabilities=raw_meta.get("capabilities", []),
                 )
 
             skills.append(
@@ -348,6 +415,15 @@ class SkillLoader:
                     provenance=_snapshot_provenance(s.get("provenance")),
                     requires_tools=s.get("requires_tools", []),
                     fallback_for_toolsets=s.get("fallback_for_toolsets", []),
+                    kind=s.get("kind", "skill"),
+                    meta_priority=int(s.get("meta_priority", 0) or 0),
+                    composition_raw=s.get("composition_raw"),
+                    final_text_mode=str(s.get("final_text_mode", "auto") or "auto"),
+                    entrypoint=(
+                        s["entrypoint"]
+                        if isinstance(s.get("entrypoint"), dict)
+                        else None
+                    ),
                 )
             )
         return skills
@@ -382,8 +458,48 @@ class SkillLoader:
                     if skill_dir.is_dir() and not skill_dir.name.startswith("."):
                         spec = self._load_skill(skill_dir, layer, root=dir_path)
                         if spec:
+                            prev = merged.get(spec.name)
+                            if prev is not None and prev.kind != spec.kind:
+                                # Higher layers override lower layers (per
+                                # the loader contract). Log loud so the
+                                # operator can spot accidental overrides
+                                # — but do NOT raise: an unhandled
+                                # RuntimeError here would break every
+                                # subsequent turn via skills_filter's
+                                # uncaught ``load_all()`` call.
+                                log.warning(
+                                    "skill.kind_override",
+                                    name=spec.name,
+                                    prev_kind=prev.kind,
+                                    new_kind=spec.kind,
+                                    prev_layer=prev.layer.value,
+                                    new_layer=spec.layer.value,
+                                    prev_path=str(getattr(prev, "base_dir", "")),
+                                    new_path=str(getattr(spec, "base_dir", "")),
+                                )
                             merged[spec.name] = spec
                             layer_count += 1
+
+        # Pass 1 cache: populate so `get_by_name` works for SOP compilation
+        # (compile needs to resolve referenced skills, which may not have
+        # been encountered yet when the meta_sop was loaded — meta_sop
+        # skills sort before their referenced regular skills in many cases).
+        self._cached = list(merged.values())
+
+        # Pass 2: compile any `kind: meta_sop` skills into normalised meta
+        # skills. Failures are logged and the offending skill is dropped
+        # from the loaded set (mirrors malformed regular skill handling).
+        for sop_name in [n for n, s in merged.items() if s.kind == "meta_sop"]:
+            sop_spec = merged[sop_name]
+            try:
+                merged[sop_name] = _sop_compile(sop_spec, skill_loader=self)
+            except SOPCompileError as exc:
+                log.warning(
+                    "sop_compile_failed",
+                    skill=sop_name,
+                    error=str(exc),
+                )
+                del merged[sop_name]
 
         skills = list(merged.values())
         self._cached = list(skills)
@@ -468,6 +584,29 @@ class SkillLoader:
             requires_tools = activation_meta.get("requires_tools", [])
             fallback_for_toolsets = activation_meta.get("fallback_for_toolsets", [])
 
+            # Meta-Skill fields (MVP): kind, meta_priority, composition_raw.
+            # Non-meta skills get the defaults; behavior unchanged.
+            kind_raw = frontmatter.get("kind", "skill")
+            kind = str(kind_raw) if isinstance(kind_raw, str) else "skill"
+            meta_priority_raw = frontmatter.get("meta_priority", 0)
+            try:
+                meta_priority = int(meta_priority_raw) if meta_priority_raw is not None else 0
+            except (TypeError, ValueError):
+                meta_priority = 0
+            composition_raw = frontmatter.get("composition")
+            if not isinstance(composition_raw, dict):
+                composition_raw = None
+
+            entrypoint_raw = frontmatter.get("entrypoint")
+            entrypoint = entrypoint_raw if isinstance(entrypoint_raw, dict) else None
+
+            # final_text_mode is a meta-skill-only optional field; non-meta
+            # skills keep the default "auto" but never consume it.
+            final_text_mode_raw = frontmatter.get("final_text_mode", "auto")
+            final_text_mode = (
+                str(final_text_mode_raw).strip() if final_text_mode_raw else "auto"
+            ) or "auto"
+
             return SkillSpec(
                 name=name,
                 description=description,
@@ -487,6 +626,11 @@ class SkillLoader:
                 fallback_for_toolsets=fallback_for_toolsets
                 if isinstance(fallback_for_toolsets, list)
                 else [],
+                kind=kind,
+                meta_priority=meta_priority,
+                composition_raw=composition_raw,
+                final_text_mode=final_text_mode,
+                entrypoint=entrypoint,
             )
         except Exception as exc:
             log.debug("skill.load_failed", dir=str(skill_dir), error=str(exc))
@@ -529,3 +673,13 @@ class SkillLoader:
             if skill.name == name:
                 return skill
         return None
+
+    def list_meta_specs(self) -> list[SkillSpec]:
+        """Return all loaded specs with kind == 'meta'.
+
+        Note: loader Pass 2 compiles authored 'meta_sop' specs into
+        'meta' shape before they reach this function, so meta_sop authors
+        ARE included. The helper exists to centralize that contract — do
+        not filter against 'meta_sop' here.
+        """
+        return [spec for spec in self.load_all() if spec.kind == "meta"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 import uuid
 from dataclasses import asdict, replace
@@ -14,6 +15,11 @@ from opensquilla.engine.cache_break_monitor import notify_compaction
 from opensquilla.engine.start_turn import start_turn_via_runtime
 from opensquilla.gateway import attachment_ingest as _attachment_ingest
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
+from opensquilla.gateway.input_normalization import (
+    infer_normalized_input_from_attachments,
+    materialize_generated_text_attachments,
+    normalize_incoming_text,
+)
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, RpcUnavailableError, get_dispatcher
 from opensquilla.gateway.session_events import build_sessions_changed_payload
 from opensquilla.gateway.session_services import (
@@ -29,11 +35,23 @@ from opensquilla.session.compaction import (
     call_compact_with_optional_config,
 )
 from opensquilla.session.compaction_lifecycle import (
-    flush_receipt_allows_destructive_compaction,
+    COMPACTION_CHUNK_SUMMARIZED_EVENT,
+    COMPACTION_PERSISTED_EVENT,
+    COMPACTION_SUMMARY_VERIFIED_EVENT,
+    COMPACTION_TRIGGERED_EVENT,
+    compaction_effect_payload,
+    compaction_lifecycle_payload,
+    compaction_memory_status,
+    compaction_result_payload,
+    durable_receipt_allows_destructive_compaction,
+    flush_receipt_is_successful_flush,
+    flush_receipt_status_for_compaction,
     flush_receipt_to_dict,
+    new_compaction_id,
     pre_compaction_flush_enabled,
+    pre_compaction_flush_requires_safe_receipt,
 )
-from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
+from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
 from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
 
 _d = get_dispatcher()
@@ -46,6 +64,96 @@ _MAX_STAGED_PDF_BYTES = _attachment_ingest.MAX_STAGED_PDF_BYTES
 _MAX_TEXT_ATTACHMENT_BYTES = _attachment_ingest.TEXT_ATTACHMENT_BYTES
 _MAX_TOTAL_ATTACHMENT_BYTES = _attachment_ingest.MAX_TOTAL_ATTACHMENT_BYTES
 _MAX_ATTACHMENTS = _attachment_ingest.MAX_ATTACHMENTS
+
+
+def _accepts_keyword_arg(func: Any, name: str) -> bool:
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in params or any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+    )
+
+
+def _clean_cancel_source(value: Any, default: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    safe = "".join(
+        ch if ch.isalnum() or ch in {"_", "-", ".", ":"} else "_"
+        for ch in text
+    )
+    return (safe.strip("_") or default)[:80]
+
+
+def _cancel_source_from_params(params: dict | None, default: str) -> str:
+    return _clean_cancel_source((params or {}).get("source"), default)
+
+
+async def _cancel_task_runtime(
+    task_runtime: Any,
+    *,
+    session_key: str,
+    source: str,
+    reason: str,
+) -> int:
+    cancel = getattr(task_runtime, "cancel")
+    kwargs: dict[str, Any] = {"session_key": session_key}
+    if _accepts_keyword_arg(cancel, "source"):
+        kwargs["source"] = source
+    if _accepts_keyword_arg(cancel, "reason"):
+        kwargs["reason"] = reason
+    return int(await cancel(**kwargs))
+
+
+async def _durable_receipt_allows_covered_destructive_compaction(
+    storage: Any,
+    session_key: str,
+    session_id: str | None,
+    entries: list[Any],
+) -> bool:
+    if not entries:
+        return True
+    from opensquilla.memory.checkpoint import (
+        checkpoint_coverage_hash,
+        checkpoint_turn_id,
+    )
+
+    list_receipts = getattr(storage, "list_memory_durable_receipts", None)
+    if not callable(list_receipts):
+        return False
+    receipts = await list_receipts(
+        session_key=session_key,
+        session_id=session_id,
+        scope="checkpoint",
+        status="checkpoint_saved",
+        coverage_turn_id=checkpoint_turn_id(entries),
+        coverage_hash=checkpoint_coverage_hash(entries),
+        coverage_entry_count=len(entries),
+        limit=1,
+    )
+    return any(durable_receipt_allows_destructive_compaction(receipt) for receipt in receipts)
+
+
+def _truncate_removed_entries(transcript: list[Any], max_messages: int) -> list[Any]:
+    if max_messages < 0:
+        return list(transcript)
+    if len(transcript) <= max_messages:
+        return []
+    if max_messages == 0:
+        return list(transcript)
+    return list(transcript[:-max_messages])
+
+
+def _truncate_checkpoint_scope_entries(
+    transcript: list[Any],
+    max_messages: int,
+) -> list[Any]:
+    removed_entries = _truncate_removed_entries(transcript, max_messages)
+    return removed_entries or list(transcript)
+
+
 _attachment_media_type = _attachment_ingest.attachment_media_type
 _normalize_attachments = _attachment_ingest.normalize_attachments
 _sniff_mime_from_bytes = _attachment_ingest.sniff_mime_from_bytes
@@ -58,6 +166,26 @@ def _trusted_elevated_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> str 
     if isinstance(value, str) and value in _ELEVATED_MODES and ctx.principal.is_owner:
         return value
     return None
+
+
+def _normalize_session_send_source_hint(params: dict[str, Any]) -> dict[str, Any]:
+    raw_hint = params.get("_source")
+    source_hint = dict(raw_hint) if isinstance(raw_hint, dict) else {}
+    caller_kind = str(
+        source_hint.get("caller_kind") or source_hint.get("callerKind") or ""
+    ).strip().lower()
+    channel_kind = str(
+        source_hint.get("channel_kind") or source_hint.get("channelKind") or ""
+    ).strip().lower()
+    if caller_kind:
+        source_hint.setdefault("caller_kind", caller_kind)
+    if channel_kind:
+        source_hint.setdefault("channel_kind", channel_kind)
+    if caller_kind == "cli" or channel_kind == "cli":
+        return source_hint
+    source_hint.setdefault("caller_kind", "web")
+    source_hint.setdefault("channel_kind", "web")
+    return source_hint
 
 
 _STREAM_IDLE_TIMEOUT_CODE = "stream_idle_timeout"
@@ -99,7 +227,12 @@ async def _drain_task_runtime_for_reset(task_runtime: Any, session_key: str) -> 
         except Exception:
             log.warning("sessions.reset.task_runtime_settle_failed", session_key=session_key)
 
-    await task_runtime.cancel(session_key=session_key)
+    await _cancel_task_runtime(
+        task_runtime,
+        session_key=session_key,
+        source="sessions_reset",
+        reason="session_reset",
+    )
 
     if not has_runtime_listing:
         return
@@ -248,6 +381,21 @@ def _require_key(params: dict | None) -> str:
     if not isinstance(key, str):
         raise ValueError("params.key must be a string")
     return canonicalize_session_key(key)
+
+
+def _effective_agent_id_for_session(session: Any | None, session_key: str) -> str:
+    """Prefer the explicit agent encoded in modern session keys.
+
+    Older WebChat paths could accidentally persist ``agent_id='main'`` for a
+    key such as ``agent:ops:webchat:...``.  Routing, workspace selection, and
+    memory lookup must follow the canonical session key in that case.
+    """
+
+    parsed = parse_agent_id(session_key)
+    stored = normalize_agent_id(getattr(session, "agent_id", None) or "main")
+    if parsed != "main":
+        return parsed
+    return stored
 
 
 def _context_window_tokens(params: dict | None, ctx: RpcContext) -> int:
@@ -428,6 +576,9 @@ def _active_task_summary(rows: list[Any]) -> dict[str, Any] | None:
     ]
     if not active:
         return None
+    running = [row for row in active if _enum_value(getattr(row, "status", None)) == "running"]
+    if running:
+        return _task_summary(_sorted_task_rows(running)[0])
     return _task_summary(_sorted_task_rows(active)[0])
 
 
@@ -513,6 +664,11 @@ def _create_session_key(agent_id: str, kind: object = None) -> str:
     if normalized_kind in {"cli", "webchat"}:
         return f"agent:{agent_id}:{normalized_kind}:{short_id}"
     return f"agent:{agent_id}:{short_id}"
+
+
+def _is_ephemeral_webchat_session_key(key: str) -> bool:
+    parts = key.split(":")
+    return len(parts) == 4 and parts[0] == "agent" and parts[2] == "webchat" and bool(parts[3])
 
 
 def _derive_source_metadata(session: Any) -> dict[str, Any]:
@@ -715,36 +871,28 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         raise ValueError("params.message is required")
 
     message_text: str = params["message"]
-    semantic_message_text = message_text
+    source_hint = _normalize_session_send_source_hint(params)
+    incoming_attachments = params.get("attachments", [])
+    normalized_input = normalize_incoming_text(
+        message_text,
+        source_hint=source_hint,
+        attachments=incoming_attachments if isinstance(incoming_attachments, list) else [],
+    )
+    message_text = normalized_input.message_text
+    semantic_message_text = normalized_input.semantic_message
+    combined_attachments = [
+        *normalized_input.generated_attachments,
+        *(incoming_attachments if isinstance(incoming_attachments, list) else []),
+    ]
     attachments_cfg = getattr(ctx.config, "attachments", None)
     persist_enabled = bool(getattr(attachments_cfg, "persist_transcripts", True))
     media_root = media_root_from_config(ctx.config)
-    session_id = key.split(":")[-1] or key
-    disk_budget = getattr(attachments_cfg, "transcript_disk_budget_bytes", None)
-    ingested_attachments = await _attachment_ingest.ingest_attachments(
-        message_text,
-        params.get("attachments", []),
-        failure_mode="raise",
-        material_root=media_root,
-        session_id=session_id,
-        disk_budget_bytes=disk_budget if isinstance(disk_budget, int) else None,
-    )
-    message_text = ingested_attachments.text
-    raw_attachments = ingested_attachments.attachments
-    # Evict consumed uuids only after the turn is accepted.
-    _consumed_file_uuids: list[str] = list(ingested_attachments.consumed_file_uuids)
     from opensquilla.session.models import SessionIntent
 
     try:
         session_intent = SessionIntent(params.get("intent", SessionIntent.CONTINUE.value))
     except ValueError as exc:
         raise ValueError(f"Invalid session intent: {params.get('intent')}") from exc
-    log.info(
-        "sessions.send.params",
-        session_key=key,
-        message_len=len(message_text),
-        attachments_count=len(raw_attachments),
-    )
 
     if ctx.session_manager is None:
         raise KeyError("No session manager available")
@@ -761,14 +909,65 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         session, _intent_applied = await ctx.session_manager.apply_intent(
             key,
             session_intent,
-            agent_id=normalize_agent_id(session.agent_id if session is not None else "main"),
+            agent_id=_effective_agent_id_for_session(session, key),
         )
     elif session_intent is not SessionIntent.CONTINUE:
         raise RuntimeError("Session intent handling requires SessionManager.apply_intent")
 
-    source_hint = params.get("_source") if isinstance(params, dict) else None
-    if not isinstance(source_hint, dict):
-        source_hint = {}
+    canonical_session_id = getattr(session, "session_id", None)
+    session_id = (
+        canonical_session_id
+        if isinstance(canonical_session_id, str) and canonical_session_id
+        else key.split(":")[-1] or key
+    )
+    disk_budget = getattr(attachments_cfg, "transcript_disk_budget_bytes", None)
+    ingested_attachments = await _attachment_ingest.ingest_attachments(
+        message_text,
+        combined_attachments,
+        failure_mode="raise",
+        material_root=media_root,
+        session_id=session_id,
+        disk_budget_bytes=disk_budget if isinstance(disk_budget, int) else None,
+    )
+    message_text = ingested_attachments.text
+    raw_attachments = ingested_attachments.attachments
+    inferred_normalized_input = None
+    if normalized_input.metadata.get("guard_action") == "none":
+        inferred_normalized_input = infer_normalized_input_from_attachments(
+            message_text,
+            raw_attachments,
+        )
+        if inferred_normalized_input is not None:
+            message_text = inferred_normalized_input.message_text
+            semantic_message_text = inferred_normalized_input.semantic_message
+
+    normalization_metadata = (
+        normalized_input.metadata
+        if normalized_input.metadata.get("guard_action") != "none"
+        else (
+            inferred_normalized_input.metadata
+            if inferred_normalized_input is not None
+            and inferred_normalized_input.metadata.get("guard_action") != "none"
+            else None
+        )
+    )
+    if normalization_metadata is not None:
+        raw_attachments = materialize_generated_text_attachments(
+            raw_attachments,
+            media_root=media_root,
+            session_id=session_id,
+            normalization_metadata=normalization_metadata,
+            disk_budget_bytes=disk_budget if isinstance(disk_budget, int) else None,
+        )
+    # Evict consumed uuids only after the turn is accepted.
+    _consumed_file_uuids: list[str] = list(ingested_attachments.consumed_file_uuids)
+    log.info(
+        "sessions.send.params",
+        session_key=key,
+        message_len=len(message_text),
+        attachments_count=len(raw_attachments),
+    )
+
     display_text = params.get("displayText") if source_hint.get("caller_kind") == "web" else None
     if display_text is not None and not isinstance(display_text, str):
         display_text = None
@@ -778,7 +977,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         build_web_route_envelope,
     )
 
-    agent_id = normalize_agent_id(session.agent_id if session is not None else "main")
+    agent_id = _effective_agent_id_for_session(session, key)
     if source_hint.get("caller_kind") == "cli" or source_hint.get("channel_kind") == "cli":
         route_envelope = build_cli_route_envelope(
             session_key=key,
@@ -806,10 +1005,17 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         route_envelope.metadata["elevated"] = elevated_hint
 
     capture_controls = _normalize_memory_capture_controls(params)
-    if capture_controls["input_provenance"] is not None:
+    input_provenance = capture_controls["input_provenance"]
+    if input_provenance is not None:
+        input_provenance = dict(input_provenance)
+    else:
+        input_provenance = dict(route_envelope.input_provenance)
+    if normalization_metadata is not None:
+        input_provenance["input_normalization"] = normalization_metadata
+    if input_provenance != route_envelope.input_provenance:
         route_envelope = replace(
             route_envelope,
-            input_provenance=capture_controls["input_provenance"],
+            input_provenance=input_provenance,
         )
     run_kind = capture_controls["run_kind"] or "session_turn"
 
@@ -818,9 +1024,13 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     # tear the append and leak an orphan user turn into the cleared transcript.
     _persist_lock = get_session_lock(ctx.turn_runner, key)
     persisted_entry: Any = None
+    fresh_user_session = False
 
     async def _persist_user_message() -> None:
-        nonlocal message_text, persisted_entry
+        nonlocal message_text, persisted_entry, fresh_user_session
+        get_transcript = getattr(ctx.session_manager, "get_transcript", None)
+        if callable(get_transcript):
+            fresh_user_session = not bool(await get_transcript(key))
         if raw_attachments:
             from opensquilla.gateway.transcripts import (
                 build_transcript_attachment_envelope,
@@ -901,6 +1111,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 no_memory_capture=bool(capture_controls["no_memory_capture"]),
                 semantic_message=semantic_message_text,
                 persisted_user_message_id=getattr(persisted_entry, "message_id", None),
+                fresh_user_session=fresh_user_session,
             )
         except Exception as exc:
             # Ensure the uuid eviction does NOT fire on this
@@ -1038,6 +1249,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 run_kind=run_kind,
                 no_memory_capture=capture_controls["no_memory_capture"],
                 semantic_message=semantic_message_text,
+                fresh_user_session=fresh_user_session,
             )
             stream_idle_timeout = _optional_positive_timeout(
                 ctx.config, "agent_stream_idle_timeout_seconds", 600.0
@@ -1054,18 +1266,6 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 event_dict = asdict(event)
                 event_kind = event_dict.pop("kind", event.__class__.__name__)
                 if event_kind in ("done", "error"):
-                    if (
-                        event_kind == "error"
-                        and event_dict.get("code")
-                        in {
-                            "provider_request_budget_exhausted",
-                            "provider_request_too_large",
-                            "current_turn_context_exhausted",
-                        }
-                    ):
-                        await _rollback_persisted_user_message(
-                            str(event_dict.get("code") or "provider_request_too_large")
-                        )
                     await _emit_terminal_once(f"session.event.{event_kind}", event_dict)
                 else:
                     await _emit_to_subscribers(ctx, key, f"session.event.{event_kind}", event_dict)
@@ -1218,7 +1418,12 @@ async def _handle_sessions_abort(params: dict | None, ctx: RpcContext) -> dict:
 
     task_runtime = getattr(ctx, "task_runtime", None)
     if task_runtime is not None:
-        cancelled_count = await task_runtime.cancel(session_key=key)
+        cancelled_count = await _cancel_task_runtime(
+            task_runtime,
+            session_key=key,
+            source=_cancel_source_from_params(params, "sessions_abort"),
+            reason="user_abort",
+        )
         return {"aborted": cancelled_count > 0, "key": key}
 
     # Cancel running agent task via registry
@@ -1321,49 +1526,6 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
 
     force = bool((params or {}).get("force", False))
 
-    if ctx.flush_service is None:
-        session = await storage.get_session(key)
-        if session is None:
-            raise KeyError(f"Session not found: {key}")
-        previous_session_id = session.session_id
-
-        # Fail-closed when flush is unavailable: refuse to clear a non-empty
-        # transcript without an explicit admin override. Empty transcripts are
-        # always safe to rotate (nothing to lose).
-        transcript = await ctx.session_manager.get_transcript(key)
-        if transcript and not force:
-            raise RpcHandlerError(
-                code="flush_unavailable",
-                message=(
-                    "Reset aborted: flush service is unavailable and the "
-                    "transcript is non-empty. Re-run with force=true (admin) "
-                    "to discard without backup."
-                ),
-                details={
-                    "key": key,
-                    "session_id": previous_session_id,
-                    "reason": "flush_service_disabled",
-                    "message_count": len(transcript),
-                },
-            )
-        if transcript and force and "operator.admin" not in ctx.principal.scopes:
-            raise RpcHandlerError(
-                code="permission_denied",
-                message="force=true on sessions.reset requires operator.admin scope.",
-                details={"key": key, "session_id": previous_session_id},
-            )
-
-        updated, rotated = await ctx.session_manager.apply_intent(key, SessionIntent.RESET_SAME_KEY)
-        new_epoch = await _increment_and_emit_epoch(ctx, storage, key)
-        return {
-            "key": key,
-            "reset": True,
-            "rotated": rotated,
-            "previous_session_id": previous_session_id,
-            "session_id": updated.session_id,
-            "epoch": new_epoch,
-        }
-
     registry = get_agent_task_registry()
     active = registry.get(key)
     if active is not None and not active.done():
@@ -1388,6 +1550,56 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
         agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
 
         transcript = await ctx.session_manager.get_transcript(key)
+
+        if ctx.flush_service is None:
+            # Fail-closed when flush is unavailable: refuse to clear a non-empty
+            # transcript without an explicit admin override or a covering
+            # checkpoint receipt. The whole read -> gate -> rotate window stays
+            # under the same per-session lock used by sends.
+            if transcript and not force:
+                checkpoint_safe = (
+                    await _durable_receipt_allows_covered_destructive_compaction(
+                        storage,
+                        key,
+                        previous_session_id,
+                        transcript,
+                    )
+                )
+                if not checkpoint_safe:
+                    raise RpcHandlerError(
+                        code="flush_unavailable",
+                        message=(
+                            "Reset aborted: flush service is unavailable and the "
+                            "transcript is non-empty. Re-run with force=true (admin) "
+                            "to discard without backup."
+                        ),
+                        details={
+                            "key": key,
+                            "session_id": previous_session_id,
+                            "reason": "flush_service_disabled",
+                            "message_count": len(transcript),
+                        },
+                    )
+            if transcript and force and "operator.admin" not in ctx.principal.scopes:
+                raise RpcHandlerError(
+                    code="permission_denied",
+                    message="force=true on sessions.reset requires operator.admin scope.",
+                    details={"key": key, "session_id": previous_session_id},
+                )
+
+            updated, rotated = await ctx.session_manager.apply_intent(
+                key,
+                SessionIntent.RESET_SAME_KEY,
+            )
+            new_epoch = await _increment_and_emit_epoch(ctx, storage, key)
+            return {
+                "key": key,
+                "reset": True,
+                "rotated": rotated,
+                "previous_session_id": previous_session_id,
+                "session_id": updated.session_id,
+                "epoch": new_epoch,
+            }
 
         if not transcript:
             updated, rotated = await ctx.session_manager.apply_intent(
@@ -1420,6 +1632,7 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
                 timeout=30.0,
                 message_window=0,
                 segment_mode="auto",
+                raw_capture_policy="required",
             )
         except Exception as exc:  # noqa: BLE001 — both LLM and raw-dump failed
             receipt = FlushReceipt(
@@ -1430,6 +1643,7 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
                 duration_ms=0,
                 raw_reason=None,
                 error=str(exc),
+                result_status="archive_failed",
             )
             raise RpcHandlerError(
                 code="flush_disk_error",
@@ -1441,17 +1655,33 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
                 },
             ) from exc
 
-        if not flush_receipt_allows_destructive_compaction(receipt):
+        durable_receipt_safe = await _durable_receipt_allows_covered_destructive_compaction(
+            storage,
+            key,
+            previous_session_id,
+            transcript,
+        )
+        memory_status = compaction_memory_status(
+            receipt,
+            deterministic_receipt_safe=durable_receipt_safe,
+            required=True,
+        )
+        if not memory_status.allows_destructive_compaction:
+            flush_status = flush_receipt_status_for_compaction(receipt, ctx.config)
             raise RpcHandlerError(
                 code="flush_disk_error",
                 message=(
-                    "Reset aborted: flush did not produce a complete LLM receipt."
+                    f"Reset aborted: flush status {flush_status!r} is not sufficient "
+                    "for destructive reset."
                 ),
                 details={
                     "flush_receipt": receipt.to_dict(),
                     "key": key,
                     "session_id": previous_session_id,
-                    "reason": "compaction_flush_failed",
+                    "reason": "destructive_reset_requires_safe_flush",
+                    "flush_receipt_status": flush_status,
+                    "memory_safety_status": memory_status.safety_status,
+                    "semantic_memory_status": memory_status.semantic_status,
                 },
             )
 
@@ -1530,7 +1760,7 @@ def _reset_response(
         "previous_session_id": previous_session_id,
         "session_id": session_id,
         "epoch": epoch,
-        "flush_receipt": receipt.to_dict(),
+        "flush_receipt": flush_receipt_to_dict(receipt),
     }
 
 
@@ -1584,20 +1814,82 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
     turn_runner = ctx.turn_runner
     lock = get_session_lock(turn_runner, key)
 
+    async def _publish_manual_compaction_event(**payload: Any) -> None:
+        status = str(payload.get("status") or "")
+        reason = payload.get("reason") or payload.get("skip_reason")
+        event_payload = {
+            "source": "manual",
+            "phase": "manual",
+            "context_window_tokens": context_window_tokens,
+            **compaction_effect_payload(
+                status=status,
+                source="manual",
+                reason=str(reason) if reason is not None else None,
+                user_visible=True,
+            ),
+            **payload,
+        }
+        notify_compaction(key, notify_listeners=False, **event_payload)
+        await _emit_to_subscribers(
+            ctx,
+            key,
+            "session.event.compaction",
+            dict(event_payload),
+        )
+
     async def _run_locked() -> dict[str, Any]:
         receipt = None
+        flush_receipt_status: str | None = None
+        compaction_id = new_compaction_id()
         storage = get_session_storage(ctx.session_manager)
         session = None
-        if storage is not None and await storage.get_session(key) is None:
-            raise KeyError(f"Session not found: {key}")
         if storage is not None:
             session = await storage.get_session(key)
-        notify_compaction(
-            key,
-            source="manual",
-            phase="manual",
+            if session is None:
+                if _is_ephemeral_webchat_session_key(key):
+                    await _publish_manual_compaction_event(
+                        status="started",
+                        **compaction_lifecycle_payload(
+                            compaction_id,
+                            COMPACTION_TRIGGERED_EVENT,
+                        ),
+                    )
+                    await _publish_manual_compaction_event(
+                        status="skipped",
+                        reason="empty_ephemeral_webchat_session",
+                        **compaction_lifecycle_payload(
+                            compaction_id,
+                            COMPACTION_TRIGGERED_EVENT,
+                        ),
+                    )
+                    return {
+                        "key": key,
+                        "compacted": False,
+                        "status": "skipped",
+                        "reason": "empty_ephemeral_webchat_session",
+                        "skip_reason": "empty_ephemeral_webchat_session",
+                        "applied": False,
+                        "durability": "none",
+                        "user_visible": True,
+                        "mode": "summary",
+                        "summary_len": 0,
+                        "summary_source": "none",
+                        "context_window_tokens": context_window_tokens,
+                        "tokens_before": 0,
+                        "tokens_after": 0,
+                        "remaining_budget_tokens": context_window_tokens,
+                        "removed_count": 0,
+                        "kept_count": 0,
+                        "chunk_count": 0,
+                        "coverage_status": "unknown",
+                        "missing_obligation_count": 0,
+                        "critical_carry_forward_count": 0,
+                        "state_kind": "text",
+                    }
+                raise KeyError(f"Session not found: {key}")
+        await _publish_manual_compaction_event(
             status="started",
-            context_window_tokens=context_window_tokens,
+            **compaction_lifecycle_payload(compaction_id, COMPACTION_TRIGGERED_EVENT),
         )
         transcript = []
         flush_enabled = pre_compaction_flush_enabled(ctx.config)
@@ -1621,6 +1913,10 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                         key=key,
                         reason="flush_service_unavailable",
                     )
+                    flush_receipt_status = flush_receipt_status_for_compaction(
+                        None,
+                        ctx.config,
+                    )
                 else:
                     agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
                     memory_cfg = getattr(getattr(ctx, "config", None), "memory", None)
@@ -1641,6 +1937,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                             timeout=flush_timeout,
                             message_window=0,
                             segment_mode="auto",
+                            raw_capture_policy="required",
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.warning(
@@ -1648,13 +1945,67 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                             key=key,
                             error=str(exc),
                         )
+                        flush_receipt_status = flush_receipt_status_for_compaction(
+                            None,
+                            ctx.config,
+                        )
                     else:
-                        if not flush_receipt_allows_destructive_compaction(receipt):
+                        flush_receipt_status = flush_receipt_status_for_compaction(
+                            receipt,
+                            ctx.config,
+                        )
+                        if not flush_receipt_is_successful_flush(receipt):
                             log.warning(
                                 "sessions.context_compact.flush_degraded",
                                 key=key,
+                                flush_receipt_status=flush_receipt_status,
                                 flush_receipt=flush_receipt_to_dict(receipt),
                             )
+                        else:
+                            log.info(
+                                "sessions.context_compact.flush_done",
+                                key=key,
+                                flush_receipt_status=flush_receipt_status,
+                                flush_receipt=flush_receipt_to_dict(receipt),
+                            )
+
+            if (
+                flush_enabled
+                and transcript
+                and pre_compaction_flush_requires_safe_receipt(ctx.config)
+            ):
+                durable_receipt_safe = False
+                if storage is not None:
+                    durable_receipt_safe = (
+                        await _durable_receipt_allows_covered_destructive_compaction(
+                            storage,
+                            key,
+                            getattr(session, "session_id", None) if session else None,
+                            transcript,
+                        )
+                    )
+                memory_status = compaction_memory_status(
+                    receipt,
+                    deterministic_receipt_safe=durable_receipt_safe,
+                    required=flush_enabled,
+                )
+                if not memory_status.allows_destructive_compaction:
+                    raise RpcHandlerError(
+                        code="CONTEXT_FLUSH_FAILED",
+                        message=(
+                            "Manual compaction aborted: flush receipt is not sufficient "
+                            "for destructive compaction."
+                        ),
+                        details={
+                            "flush_receipt": flush_receipt_to_dict(receipt),
+                            "key": key,
+                            "session_id": getattr(session, "session_id", None),
+                            "reason": "destructive_manual_compact_requires_safe_flush",
+                            "flush_receipt_status": flush_receipt_status,
+                            "memory_safety_status": memory_status.safety_status,
+                            "semantic_memory_status": memory_status.semantic_status,
+                        },
+                    )
 
             compaction_config = build_compaction_config_from_provider(
                 _resolve_compaction_provider(ctx, session),
@@ -1662,13 +2013,27 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                 compaction_config=getattr(getattr(ctx, "config", None), "compaction", None),
             )
 
+            chunk_count = 0
+            coverage_status = "unknown"
+            missing_obligation_count = 0
+            critical_carry_forward_count = 0
+            state_kind = "text"
+            skip_reason = ""
             compact_with_result = getattr(ctx.session_manager, "compact_with_result", None)
             if callable(compact_with_result):
+                compact_kwargs: dict[str, Any] = {
+                    "custom_instructions": custom_instructions,
+                }
+                if (
+                    flush_receipt_status is not None
+                    and _accepts_keyword_arg(compact_with_result, "flush_receipt_status")
+                ):
+                    compact_kwargs["flush_receipt_status"] = flush_receipt_status
                 result = await compact_with_result(
                     key,
                     context_window_tokens,
                     compaction_config,
-                    custom_instructions=custom_instructions,
+                    **compact_kwargs,
                 )
                 summary = getattr(result, "summary", "") or ""
                 removed_count = int(getattr(result, "removed_count", 0) or 0)
@@ -1679,6 +2044,25 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                 remaining_budget_tokens = int(
                     getattr(result, "remaining_budget_tokens", 0) or 0
                 )
+                chunk_count = int(getattr(result, "chunks_processed", 0) or 0)
+                coverage_status = str(getattr(result, "coverage_status", "unknown") or "unknown")
+                skip_reason = str(getattr(result, "skip_reason", "") or "")
+                missing_obligation_count = len(getattr(result, "missing_obligations", None) or [])
+                critical_carry_forward_count = len(
+                    getattr(result, "critical_carry_forward", None) or []
+                )
+                state_kind = str(getattr(result, "summary_format", "text") or "text")
+                if removed_count > 0 and summary:
+                    for event in (
+                        COMPACTION_CHUNK_SUMMARIZED_EVENT,
+                        COMPACTION_SUMMARY_VERIFIED_EVENT,
+                    ):
+                        observed_payload = compaction_lifecycle_payload(compaction_id, event)
+                        observed_payload.update(compaction_result_payload(result))
+                        await _publish_manual_compaction_event(
+                            status="observed",
+                            **observed_payload,
+                        )
             else:
                 compact = ctx.session_manager.compact
                 summary = await call_compact_with_optional_config(
@@ -1689,33 +2073,31 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                 )
                 removed_count = 1 if summary else 0
                 summary_source = "unknown"
+                skip_reason = "" if summary else "empty_summary"
                 kept_count = 0
                 tokens_before = 0
                 tokens_after = 0
                 remaining_budget_tokens = 0
         except asyncio.CancelledError:
-            notify_compaction(
-                key,
-                source="manual",
-                phase="manual",
+            await _publish_manual_compaction_event(
                 status="cancelled",
                 message="Compaction was cancelled.",
-                context_window_tokens=context_window_tokens,
+                **compaction_lifecycle_payload(compaction_id, COMPACTION_TRIGGERED_EVENT),
             )
             raise
         except Exception as exc:
-            notify_compaction(
-                key,
-                source="manual",
-                phase="manual",
+            await _publish_manual_compaction_event(
                 status="failed",
                 message=str(exc),
-                context_window_tokens=context_window_tokens,
+                **compaction_lifecycle_payload(compaction_id, COMPACTION_TRIGGERED_EVENT),
             )
             raise
         payload = {
             "key": key,
             "compacted": removed_count > 0,
+            "applied": removed_count > 0,
+            "durability": "durable" if removed_count > 0 else "none",
+            "user_visible": True,
             "mode": "summary",
             "summary_len": len(summary),
             "summary_source": summary_source,
@@ -1725,22 +2107,47 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             "remaining_budget_tokens": remaining_budget_tokens,
             "removed_count": removed_count,
             "kept_count": kept_count,
+            "chunk_count": chunk_count,
+            "coverage_status": coverage_status,
+            "missing_obligation_count": missing_obligation_count,
+            "critical_carry_forward_count": critical_carry_forward_count,
+            "state_kind": state_kind,
         }
+        if not removed_count:
+            payload["skip_reason"] = skip_reason or "empty_summary"
+            payload["reason"] = payload["skip_reason"]
         if receipt is not None:
             payload["flush_receipt"] = flush_receipt_to_dict(receipt)
-        notify_compaction(
-            key,
-            source="manual",
-            phase="manual",
-            status="completed" if removed_count > 0 else "skipped",
+        if flush_receipt_status is not None:
+            payload["flush_receipt_status"] = flush_receipt_status
+        final_event = (
+            COMPACTION_PERSISTED_EVENT
+            if removed_count > 0
+            else COMPACTION_TRIGGERED_EVENT
+        )
+        final_lifecycle_payload = compaction_lifecycle_payload(compaction_id, final_event)
+        final_lifecycle_payload.pop("coverage_status", None)
+        final_status = "completed" if removed_count > 0 else "skipped"
+        final_payload: dict[str, Any] = {}
+        if removed_count <= 0:
+            final_payload["reason"] = skip_reason or "empty_summary"
+        await _publish_manual_compaction_event(
+            status=final_status,
+            **final_payload,
             tokens_before=tokens_before,
             tokens_after=tokens_after,
             remaining_budget_tokens=remaining_budget_tokens,
             removed_count=removed_count,
             kept_count=kept_count,
+            chunk_count=chunk_count,
+            coverage_status=coverage_status,
+            missing_obligation_count=missing_obligation_count,
+            critical_carry_forward_count=critical_carry_forward_count,
+            state_kind=state_kind,
             summary_len=len(summary),
             summary_source=summary_source,
-            context_window_tokens=context_window_tokens,
+            flush_receipt_status=flush_receipt_status,
+            **final_lifecycle_payload,
         )
         return payload
 
@@ -1782,20 +2189,30 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
             # an admin force override. Empty transcripts are safe to truncate.
             transcript = await ctx.session_manager.get_transcript(key)
             if transcript and not force:
-                raise RpcHandlerError(
-                    code="flush_unavailable",
-                    message=(
-                        "Truncate aborted: flush service is unavailable and "
-                        "the transcript is non-empty. Re-run with force=true "
-                        "(admin) to truncate without backup."
-                    ),
-                    details={
-                        "key": key,
-                        "session_id": previous_session_id,
-                        "reason": "flush_service_disabled",
-                        "message_count": len(transcript),
-                    },
+                checkpoint_safe = (
+                    storage is not None
+                    and await _durable_receipt_allows_covered_destructive_compaction(
+                        storage,
+                        key,
+                        previous_session_id,
+                        _truncate_checkpoint_scope_entries(transcript, max_messages),
+                    )
                 )
+                if not checkpoint_safe:
+                    raise RpcHandlerError(
+                        code="flush_unavailable",
+                        message=(
+                            "Truncate aborted: flush service is unavailable and "
+                            "the transcript is non-empty. Re-run with force=true "
+                            "(admin) to truncate without backup."
+                        ),
+                        details={
+                            "key": key,
+                            "session_id": previous_session_id,
+                            "reason": "flush_service_disabled",
+                            "message_count": len(transcript),
+                        },
+                    )
             if transcript and force and "operator.admin" not in ctx.principal.scopes:
                 raise RpcHandlerError(
                     code="permission_denied",
@@ -1818,6 +2235,7 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
                         timeout=30.0,
                         message_window=0,
                         segment_mode="auto",
+                        raw_capture_policy="required",
                     )
                 except Exception as exc:  # noqa: BLE001 — both LLM and raw-dump failed
                     receipt = FlushReceipt(
@@ -1828,6 +2246,7 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
                         duration_ms=0,
                         raw_reason=None,
                         error=str(exc),
+                        result_status="archive_failed",
                     )
                     raise RpcHandlerError(
                         code="CONTEXT_FLUSH_FAILED",
@@ -1839,18 +2258,33 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
                         },
                     ) from exc
 
-                if not flush_receipt_allows_destructive_compaction(receipt):
+                durable_receipt_safe = await _durable_receipt_allows_covered_destructive_compaction(
+                    storage,
+                    key,
+                    previous_session_id,
+                    _truncate_checkpoint_scope_entries(transcript, max_messages),
+                )
+                memory_status = compaction_memory_status(
+                    receipt,
+                    deterministic_receipt_safe=durable_receipt_safe,
+                    required=True,
+                )
+                if not memory_status.allows_destructive_compaction:
+                    flush_status = flush_receipt_status_for_compaction(receipt, ctx.config)
                     raise RpcHandlerError(
                         code="CONTEXT_FLUSH_FAILED",
                         message=(
-                            "Truncate aborted: flush did not produce a complete "
-                            "LLM receipt."
+                            f"Truncate aborted: flush status {flush_status!r} is not "
+                            "sufficient for destructive truncate."
                         ),
                         details={
                             "flush_receipt": flush_receipt_to_dict(receipt),
                             "key": key,
                             "session_id": previous_session_id,
-                            "reason": "compaction_flush_failed",
+                            "reason": "destructive_truncate_requires_safe_flush",
+                            "flush_receipt_status": flush_status,
+                            "memory_safety_status": memory_status.safety_status,
+                            "semantic_memory_status": memory_status.semantic_status,
                         },
                     )
             else:
@@ -1873,7 +2307,7 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
             "after_count": result["after_count"],
         }
         if receipt is not None:
-            payload["flush_receipt"] = receipt.to_dict()
+            payload["flush_receipt"] = flush_receipt_to_dict(receipt)
         return payload
 
     if lock is None:

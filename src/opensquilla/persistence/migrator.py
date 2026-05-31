@@ -6,9 +6,12 @@ pending migrations before code paths depend on the new schema.
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import logging
 import os
 import sqlite3
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
@@ -42,6 +45,30 @@ def _to_yoyo_url(db_url: str) -> str:
     return "sqlite:///" + os.path.abspath(db_url)
 
 
+@contextlib.contextmanager
+def _yoyo_utf8_open() -> Iterator[None]:
+    """Force yoyo's Migration.load() to read .py migrations as UTF-8.
+
+    Why: yoyo's ``Migration.load`` calls ``open(self.path, "r")`` without an
+    explicit encoding, so on Windows locales whose default codec is not UTF-8
+    (e.g. zh-CN → GBK), any migration file containing non-ASCII docstrings
+    (em-dashes, Chinese, etc.) raises UnicodeDecodeError at gateway boot. Patch
+    the builtin scoped to the yoyo call window only.
+    """
+    real_open = builtins.open
+
+    def utf8_open(file, mode="r", *args, **kwargs):  # type: ignore[no-untyped-def]
+        if "b" not in mode and "encoding" not in kwargs:
+            kwargs["encoding"] = "utf-8"
+        return real_open(file, mode, *args, **kwargs)
+
+    builtins.open = utf8_open  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        builtins.open = real_open  # type: ignore[assignment]
+
+
 def apply_pending(db_url: str, migrations_dir: Path) -> list[str]:
     """Apply every migration in *migrations_dir* not yet recorded in *db_url*.
 
@@ -57,14 +84,15 @@ def apply_pending(db_url: str, migrations_dir: Path) -> list[str]:
     _ensure_sqlite_datetime_adapter()
     backend = get_backend(_to_yoyo_url(db_url))
     try:
-        migrations = read_migrations(str(path))
-        pending = backend.to_apply(migrations)
-        ids = [m.id for m in pending]
-        if not ids:
-            return []
+        with _yoyo_utf8_open():
+            migrations = read_migrations(str(path))
+            pending = backend.to_apply(migrations)
+            ids = [m.id for m in pending]
+            if not ids:
+                return []
 
-        with backend.lock():
-            backend.apply_migrations(pending)
+            with backend.lock():
+                backend.apply_migrations(pending)
         log.info("migrator.applied", extra={"count": len(ids), "ids": ids})
         return ids
     finally:

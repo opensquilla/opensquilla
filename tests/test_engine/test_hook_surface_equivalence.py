@@ -129,9 +129,8 @@ def _hook_emit(
          {"error_type": "ProviderResolutionError", "error_code": "no_provider", "error_chars": 19}),
         ("turn_end", 2, {"provider": "openrouter", "model": "gpt-x"},
          {"final_text_chars": 5, "segment_count": 0, "artifact_count": 0,
-          "error": False, "tool_compression_applied": False,
-          "tool_compression_calls": 0, "tool_compression_tokens_saved": 0,
-          "tool_result_store_writes": 0, "tool_result_store_skips": 0}),
+          "error": False, "tool_projection_applied": False,
+          "tool_projection_calls": 0, "tool_projection_tokens_saved": 0}),
         ("turn_cancelled", 2, None, {"partial_text_chars": 3}),
     ],
 )

@@ -46,6 +46,9 @@ class Cursor(AbstractAsyncContextManager["Cursor"], Protocol):
     @property
     def rowcount(self) -> int: ...
 
+    @property
+    def lastrowid(self) -> int | None: ...
+
     async def execute(self, sql: str, params: Iterable[Any] = ()) -> Cursor: ...
 
     async def executemany(
@@ -103,40 +106,51 @@ _prefer_native: bool | None = None
 
 
 class _AsyncCursor:
-    def __init__(self, cursor: sqlite3.Cursor) -> None:
+    def __init__(self, cursor: sqlite3.Cursor, lock: asyncio.Lock) -> None:
         self._cursor = cursor
+        self._lock = lock
 
     @property
     def rowcount(self) -> int:
         return self._cursor.rowcount
 
+    @property
+    def lastrowid(self) -> int | None:
+        return self._cursor.lastrowid
+
     async def execute(self, sql: str, params: Iterable[Any] = ()) -> _AsyncCursor:
-        self._cursor = await asyncio.to_thread(self._cursor.execute, sql, tuple(params))
+        async with self._lock:
+            self._cursor = await asyncio.to_thread(self._cursor.execute, sql, tuple(params))
         return self
 
     async def executemany(
         self, sql: str, seq_of_params: Iterable[Iterable[Any]]
     ) -> _AsyncCursor:
-        self._cursor = await asyncio.to_thread(
-            self._cursor.executemany,
-            sql,
-            cast(Any, seq_of_params),
-        )
+        async with self._lock:
+            self._cursor = await asyncio.to_thread(
+                self._cursor.executemany,
+                sql,
+                cast(Any, seq_of_params),
+            )
         return self
 
     async def fetchone(self) -> Any:
-        return await asyncio.to_thread(self._cursor.fetchone)
+        async with self._lock:
+            return await asyncio.to_thread(self._cursor.fetchone)
 
     async def fetchall(self) -> list[Any]:
-        return await asyncio.to_thread(self._cursor.fetchall)
+        async with self._lock:
+            return await asyncio.to_thread(self._cursor.fetchall)
 
     async def fetchmany(self, size: int | None = None) -> list[Any]:
-        if size is None:
-            return await asyncio.to_thread(self._cursor.fetchmany)
-        return await asyncio.to_thread(self._cursor.fetchmany, size)
+        async with self._lock:
+            if size is None:
+                return await asyncio.to_thread(self._cursor.fetchmany)
+            return await asyncio.to_thread(self._cursor.fetchmany, size)
 
     async def close(self) -> None:
-        await asyncio.to_thread(self._cursor.close)
+        async with self._lock:
+            await asyncio.to_thread(self._cursor.close)
 
     async def __aenter__(self) -> _AsyncCursor:
         return self
@@ -191,7 +205,7 @@ class _AsyncConnection:
     async def _execute(self, sql: str, params: Iterable[Any] = ()) -> _AsyncCursor:
         async with self._locked:
             cursor = await asyncio.to_thread(self._conn.execute, sql, tuple(params))
-        return _AsyncCursor(cursor)
+        return _AsyncCursor(cursor, self._locked)
 
     def execute(self, sql: str, params: Iterable[Any] = ()) -> _CursorProxy:
         return _CursorProxy(self._execute(sql, params))
@@ -205,7 +219,7 @@ class _AsyncConnection:
                 sql,
                 cast(Any, seq_of_params),
             )
-        return _AsyncCursor(cursor)
+        return _AsyncCursor(cursor, self._locked)
 
     def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]) -> _CursorProxy:
         return _CursorProxy(self._executemany(sql, seq_of_params))
@@ -229,7 +243,7 @@ class _AsyncConnection:
     async def cursor(self) -> _AsyncCursor:
         async with self._locked:
             cur = await asyncio.to_thread(self._conn.cursor)
-        return _AsyncCursor(cur)
+        return _AsyncCursor(cur, self._locked)
 
     async def enable_load_extension(self, enabled: bool) -> None:
         async with self._locked:

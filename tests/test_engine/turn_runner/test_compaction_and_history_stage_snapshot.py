@@ -118,17 +118,11 @@ def _patch_budget_resolvers(runner: TurnRunner) -> None:
     runner._resolve_agent_max_provider_retries = _retries.__get__(runner, TurnRunner)
 
 
-def _patch_thinking_compression(runner: TurnRunner) -> None:
+def _patch_thinking(runner: TurnRunner) -> None:
     def _resolve_turn_thinking(self, turn):  # noqa: ARG001, ARG002
         return False
 
-    def _resolve_tool_result_compression_mode(self, atc):  # noqa: ARG001, ARG002
-        return "off"
-
     runner._resolve_turn_thinking = _resolve_turn_thinking.__get__(runner, TurnRunner)
-    runner._resolve_tool_result_compression_mode = (
-        _resolve_tool_result_compression_mode.__get__(runner, TurnRunner)
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +305,7 @@ def _setup_runner(case: dict[str, Any]) -> tuple[TurnRunner, dict[str, list]]:
     )
     _patch_session_id(runner, "sess-1")
     _patch_budget_resolvers(runner)
-    _patch_thinking_compression(runner)
+    _patch_thinking(runner)
     _patch_memory_helpers(runner)
     _patch_observability(runner)
 

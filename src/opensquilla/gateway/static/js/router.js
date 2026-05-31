@@ -7,8 +7,8 @@ const Router = (() => {
   let _contentEl = null;
   let _currentDestroy = null;
 
-  function register(path, viewFn, destroyFn) {
-    _routes.set(path, { viewFn, destroyFn: destroyFn || null });
+  function register(path, viewFn, destroyFn, meta = {}) {
+    _routes.set(path, { viewFn, destroyFn: destroyFn || null, meta });
   }
 
   function init(basePath, contentEl) {
@@ -64,6 +64,11 @@ const Router = (() => {
       if (isActive) el.setAttribute('aria-current', 'page');
       else el.removeAttribute('aria-current');
     });
+
+    const title = route?.meta?.title || 'Not Found';
+    const titleEl = document.getElementById('topbar-title');
+    if (titleEl) titleEl.dataset.pageTitle = title;
+    document.title = title === 'OpenSquilla' ? 'OpenSquilla Control' : `${title} - OpenSquilla Control`;
   }
 
   function currentPath() { return _currentPath.split('?')[0]; }

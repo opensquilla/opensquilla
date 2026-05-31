@@ -25,7 +25,10 @@ from typing import Any
 import pytest
 
 from opensquilla.engine.runtime import TurnRunner
-from opensquilla.engine.types import ErrorEvent
+from opensquilla.engine.turn_runner.harness import _TurnRunnerAgentFactoryAdapter
+from opensquilla.engine.types import AgentConfig, ErrorEvent
+from opensquilla.tools.registry import ToolRegistry
+from opensquilla.tools.types import ToolContext
 
 # ---------------------------------------------------------------------------
 # Shared stubs
@@ -139,12 +142,15 @@ def _capture_locals_at_post_slice() -> dict[str, Any]:
         "agent_config_max_provider_retries": getattr(
             agent_config, "max_provider_retries", None
         ),
+        "agent_config_length_capped_continuations": getattr(
+            agent_config, "length_capped_continuations", None
+        ),
         "agent_config_system_prompt": getattr(agent_config, "system_prompt", None),
         "agent_config_model_id": getattr(agent_config, "model_id", None),
         "agent_config_cache_mode": getattr(agent_config, "cache_mode", None),
         "agent_config_thinking": getattr(agent_config, "thinking", None),
-        "agent_config_tool_result_compression_mode": getattr(
-            agent_config, "tool_result_compression_mode", None
+        "agent_config_tool_result_projection_max_inline_chars": getattr(
+            agent_config, "tool_result_projection_max_inline_chars", None
         ),
         "agent_config_flush_enabled": getattr(
             agent_config, "flush_enabled", None
@@ -206,6 +212,7 @@ def _patch_assemble_prompt(runner, base_prompt, prompt_metadata):
     def _assemble_prompt(
         self, agent_id, tool_defs, *, session_key=None, semantic_message=None,
         extra_context=None, prompt_metadata=None, bootstrap_context_mode=None,
+        fresh_user_session=False,
     ):  # noqa: ARG001
         if prompt_metadata is not None:
             prompt_metadata.update(pm_to_emit)
@@ -221,6 +228,7 @@ def _patch_run_pipeline(runner, turn_factory, provider):
         semantic_message=None, ingress_pipeline_steps=None,
         prev_assistant_text=None, prev_assistant_usage=None,
         history_user_texts=None, flags_text_override=None, tool_context=None,
+        normalization_metadata=None,
     ):  # noqa: ARG001
         return turn_factory(), provider
 
@@ -257,7 +265,7 @@ def _patch_session_id(runner, session_id):
 def _patch_budget_resolvers(runner, case):
     if case.get("max_iterations_raises"):
         def _raise_max_iter(self, session_key, max_iterations):  # noqa: ARG001, ARG002
-            raise ValueError("max_iterations must be an integer >= 1")
+            raise ValueError("max_iterations must be an integer >= 0")
 
         runner._resolve_agent_max_iterations = _raise_max_iter.__get__(
             runner, TurnRunner
@@ -297,20 +305,13 @@ def _patch_budget_resolvers(runner, case):
     runner._resolve_agent_max_provider_retries = _retries.__get__(runner, TurnRunner)
 
 
-def _patch_thinking_compression(runner, case):
+def _patch_thinking(runner, case):
     thinking_value = case["thinking"]
-    mode_value = case["compression_mode"]
 
     def _resolve_turn_thinking(self, turn):  # noqa: ARG001, ARG002
         return thinking_value
 
-    def _resolve_tool_result_compression_mode(self, agent_token_cfg):  # noqa: ARG001, ARG002
-        return mode_value
-
     runner._resolve_turn_thinking = _resolve_turn_thinking.__get__(runner, TurnRunner)
-    runner._resolve_tool_result_compression_mode = (
-        _resolve_tool_result_compression_mode.__get__(runner, TurnRunner)
-    )
 
 
 def _patch_memory_helpers(runner):
@@ -399,7 +400,6 @@ _CASE_BASE: dict[str, Any] = dict(
     request_timeout=120.0,
     max_provider_retries=3,
     thinking=False,
-    compression_mode="off",
     catalog_max_tokens=4096,
     catalog_context_window=200_000,
     catalog_capabilities=None,
@@ -421,35 +421,32 @@ def _case(case_id: str, **overrides: Any) -> tuple[str, dict[str, Any]]:
 
 _CORPUS: list[tuple[str, dict[str, Any]]] = [
     _case("success_all_defaults"),
-    _case("per_call_timeout", per_call_timeout=42.0, compression_mode="truncate"),
-    _case("env_var_timeout_proxy", runtime_timeout=99.0, compression_mode="truncate"),
+    _case("per_call_timeout", per_call_timeout=42.0),
+    _case("env_var_timeout_proxy", runtime_timeout=99.0),
     _case(
         "session_max_iterations",
         per_call_max_iterations=5,
         max_iterations=5,
-        compression_mode="truncate",
     ),
     _case(
         "no_model_catalog",
         model_catalog_present=False,
-        catalog_max_tokens=8192,
+        catalog_max_tokens=16384,
         catalog_context_window=200_000,
-        compression_mode="truncate",
     ),
     _case(
         "model_with_capabilities",
         thinking=True,
-        compression_mode="off",
         catalog_capabilities=SimpleNamespace(supports_reasoning=True),
     ),
-    _case("summarize_without_summary_model", compression_mode="off"),
+    _case("projection_limit_default"),
     _case("sync_manager_warm"),
     _case("private_memory_disabled", private_memory_allowed_value=False),
     _case("snapshot_already_exists", snapshot_pre_existing=True),
     _case(
-        "max_iterations_zero_raises",
+        "max_iterations_zero_unbounded",
         per_call_max_iterations=0,
-        max_iterations_raises=True,
+        max_iterations=0,
     ),
 ]
 
@@ -544,7 +541,7 @@ def _setup_runner(case: dict[str, Any]) -> TurnRunner:
     _patch_resolve_prompt_config(runner, "FINAL", None, None)
     _patch_session_id(runner, "sess-1")
     _patch_budget_resolvers(runner, case)
-    _patch_thinking_compression(runner, case)
+    _patch_thinking(runner, case)
     _patch_memory_helpers(runner)
     _patch_post_slice_probe(runner)
     _patch_observability(runner)
@@ -597,11 +594,12 @@ async def test_agent_bootstrap_stage_snapshot(
         "agent_config_tool_timeout": case["tool_timeout"],
         "agent_config_request_timeout": case["request_timeout"],
         "agent_config_max_provider_retries": case["max_provider_retries"],
+        "agent_config_length_capped_continuations": 1,
         "agent_config_system_prompt": "FINAL",
         "agent_config_model_id": "claude-sonnet-4.5",
         "agent_config_cache_mode": "off",
         "agent_config_thinking": case["thinking"],
-        "agent_config_tool_result_compression_mode": case["compression_mode"],
+        "agent_config_tool_result_projection_max_inline_chars": 60_000,
         "agent_config_flush_enabled": True,
         "effective_runtime_timeout": expected_runtime_timeout,
         "effective_max_iterations": expected_max_iterations,
@@ -646,3 +644,28 @@ async def test_sync_manager_warm_called(monkeypatch: pytest.MonkeyPatch) -> None
     assert sync_manager.warmed_keys == ["agent:main:s1"]
     assert captured is not None
     assert captured["sync_manager_label"] == "syncmgr"
+
+
+def test_agent_factory_forwards_registry_and_tool_context() -> None:
+    """meta_invoke dispatch needs the Agent to retain registry/context wiring."""
+
+    registry = ToolRegistry()
+    tool_context = ToolContext(is_owner=True, workspace_dir="/tmp")
+    runner = TurnRunner(
+        provider_selector=None,
+        tool_registry=registry,
+    )
+
+    agent = _TurnRunnerAgentFactoryAdapter(runner).build(
+        provider=_StubProvider("p"),
+        config=AgentConfig(),
+        tool_definitions=[],
+        tool_handler=None,
+        session_key="agent:main:s1",
+        turn_call_logger=None,
+        memory_sync_manager=None,
+        tool_context=tool_context,
+    )
+
+    assert agent._tool_registry is registry
+    assert agent._tool_context is tool_context

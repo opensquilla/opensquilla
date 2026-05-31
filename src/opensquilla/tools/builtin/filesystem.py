@@ -71,10 +71,23 @@ def _resolve_path(path: str) -> Path:
 
     Reads are always allowed; any workspace enforcement for writes happens in
     :func:`_gate_out_of_workspace_write` via the approval queue, not here.
+
+    Sandbox-visible alias paths (``/workspace/...`` from ``execute_code``
+    stdout, ``default_workspace_dir()/...`` from LLM training priors)
+    are translated back to the active host workspace before any
+    sensitive-path / workspace-strict enforcement runs. Without this,
+    model-guessed default-workspace paths are hard-blocked by the
+    sensitive_path check even though the same file written under the
+    gateway-configured workspace would be valid.
     """
+    from opensquilla.tools.path_aliases import resolve_workspace_alias
+
     raw = Path(path).expanduser()
     root = _workspace_root()
     reject_foreign_host_path(str(path), platform=os.name, workspace=root)
+    alias = resolve_workspace_alias(raw, root)
+    if alias is not None:
+        return alias
     if root is not None and not raw.is_absolute():
         return (root / raw).resolve(strict=False)
     return raw.resolve(strict=False) if raw.is_absolute() else raw
@@ -223,6 +236,45 @@ def _strict_read_workspace_root() -> Path | None:
     return Path(ctx.workspace_dir).expanduser().resolve(strict=False)
 
 
+def _strict_read_material_root() -> Path | None:
+    ctx = current_tool_context.get()
+    if (
+        ctx is None
+        or not ctx.workspace_strict
+        or not ctx.artifact_media_root
+        or not ctx.artifact_session_id
+    ):
+        return None
+
+    from opensquilla.attachment_refs import transcript_material_dir
+
+    return transcript_material_dir(
+        Path(ctx.artifact_media_root).expanduser(),
+        ctx.artifact_session_id,
+    ).resolve(strict=False)
+
+
+def _strict_read_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    workspace_root = _strict_read_workspace_root()
+    if workspace_root is not None:
+        roots.append(workspace_root)
+    material_root = _strict_read_material_root()
+    if material_root is not None:
+        roots.append(material_root)
+    return tuple(roots)
+
+
+def _is_within_any_root(candidate: Path, roots: tuple[Path, ...]) -> bool:
+    for root in roots:
+        try:
+            candidate.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _workspace_strict_read_block(
     tool_name: str,
     resolved: Path,
@@ -230,23 +282,23 @@ def _workspace_strict_read_block(
 ) -> dict[str, object] | None:
     """Return a block envelope when *resolved* escapes the strict workspace."""
 
-    root = _strict_read_workspace_root()
-    if root is None:
+    roots = _strict_read_roots()
+    if not roots:
         return None
     candidate = resolved.expanduser().resolve(strict=False)
-    try:
-        candidate.relative_to(root)
-    except ValueError:
+    if not _is_within_any_root(candidate, roots):
+        root_labels = ", ".join(str(root) for root in roots)
         return {
             "status": "blocked",
             "reason": "workspace_strict",
             "tool": tool_name,
             "path": original_path,
             "resolved_path": str(candidate),
-            "workspace": str(root),
+            "workspace": str(roots[0]),
+            "allowed_roots": [str(root) for root in roots],
             "message": (
-                f"{tool_name} blocked: {candidate} is outside active workspace "
-                f"{root}."
+                f"{tool_name} blocked: {candidate} is outside active read roots "
+                f"({root_labels})."
             ),
             "retryable": False,
         }
@@ -271,38 +323,42 @@ def _workspace_strict_candidate_marker(
     candidate: Path,
     original_path: str | None = None,
     strict_root: Path | None = None,
+    strict_roots: tuple[Path, ...] | None = None,
 ) -> str | None:
     """Return a per-candidate blocked marker for directory/search tools."""
 
-    root = strict_root if strict_root is not None else _strict_read_workspace_root()
-    if root is None:
+    roots = (strict_root,) if strict_root is not None else (strict_roots or _strict_read_roots())
+    if not roots:
         return None
     resolved = candidate.expanduser().resolve(strict=False)
-    try:
-        resolved.relative_to(root)
-    except ValueError:
-        return f"[blocked] {candidate}: outside active workspace {root}"
+    if not _is_within_any_root(resolved, roots):
+        root_labels = ", ".join(str(root) for root in roots)
+        return f"[blocked] {candidate}: outside active read roots ({root_labels})"
     return None
 
 
 def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) -> dict | None:
     """Return a hard-block envelope for sensitive host paths, unless fully elevated."""
-    from opensquilla.sandbox.sensitive_paths import build_block_envelope, is_sensitive_path
+    from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
     from opensquilla.tools.builtin.shell import _context_elevated_mode
 
     if _context_elevated_mode() == "full":
         return None
-    sensitive = is_sensitive_path(str(resolved))
+    sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
     if sensitive is None:
         return None
     return build_block_envelope(f"{tool_name} {original_path}", sensitive, tool_name=tool_name)
 
 
-def _is_sensitive_access_path(resolved: Path) -> bool:
-    from opensquilla.sandbox.sensitive_paths import is_sensitive_path
+def _is_sensitive_access_path(resolved: Path, workspace: Path | None = None) -> bool:
+    from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
     from opensquilla.tools.builtin.shell import _context_elevated_mode
 
-    return _context_elevated_mode() != "full" and is_sensitive_path(str(resolved)) is not None
+    root = workspace if workspace is not None else _workspace_root()
+    return (
+        _context_elevated_mode() != "full"
+        and sensitive_path_marker(str(resolved), workspace=root) is not None
+    )
 
 
 def _workspace_lockdown_roots() -> list[Path]:
@@ -354,18 +410,26 @@ async def _gate_out_of_workspace_write(
     of approval.
     """
     # Sensitive-path hard block — takes precedence over approval flow.
-    from opensquilla.sandbox.sensitive_paths import build_block_envelope, is_sensitive_path
+    from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
     from opensquilla.tools.builtin.shell import _context_elevated_mode
 
     elevated_full = _context_elevated_mode() == "full"
     if not elevated_full:
-        sensitive = is_sensitive_path(str(resolved))
+        sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
         if sensitive is not None:
             return build_block_envelope(
                 f"{tool_name} {original_path}", sensitive, tool_name=tool_name
             )
 
     _gate_workspace_lockdown_write(tool_name, resolved, original_path)
+    from opensquilla.tools.write_policy import gate_workspace_write_deny
+
+    gate_workspace_write_deny(
+        tool_name,
+        resolved,
+        original_path=original_path,
+        workspace=_workspace_root(),
+    )
 
     if not _is_outside_workspace(resolved):
         return None
@@ -773,18 +837,23 @@ async def list_dir(path: str) -> str:
         raise NotADirectoryError(f"Not a directory: {path}")
 
     loop = asyncio.get_event_loop()
-    strict_root = _strict_read_workspace_root()
+    strict_roots = _strict_read_roots()
+    workspace_root = _workspace_root()
 
     def _list() -> list[str]:
         dirs: list[str] = []
         files: list[str] = []
         blocked_entries: list[str] = []
         for entry in sorted(p.iterdir(), key=lambda e: e.name):
-            marker = _workspace_strict_candidate_marker("list_dir", entry, strict_root=strict_root)
+            marker = _workspace_strict_candidate_marker(
+                "list_dir",
+                entry,
+                strict_roots=strict_roots,
+            )
             if marker is not None:
                 blocked_entries.append(marker)
                 continue
-            if _is_sensitive_access_path(entry.resolve(strict=False)):
+            if _is_sensitive_access_path(entry.resolve(strict=False), workspace=workspace_root):
                 continue
             if entry.is_dir():
                 dirs.append(f"[dir]  {entry.name}/")
@@ -816,7 +885,8 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
     _gate_workspace_strict_read("glob_search", base, path or str(base))
 
     loop = asyncio.get_event_loop()
-    strict_root = _strict_read_workspace_root()
+    strict_roots = _strict_read_roots()
+    workspace_root = _workspace_root()
 
     def _glob() -> list[str]:
         matches: list[str] = []
@@ -824,12 +894,12 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
             marker = _workspace_strict_candidate_marker(
                 "glob_search",
                 candidate,
-                strict_root=strict_root,
+                strict_roots=strict_roots,
             )
             if marker is not None:
                 matches.append(marker)
                 continue
-            if _is_sensitive_access_path(candidate.resolve(strict=False)):
+            if _is_sensitive_access_path(candidate.resolve(strict=False), workspace=workspace_root):
                 continue
             matches.append(str(candidate))
         return matches
@@ -867,7 +937,8 @@ async def grep_search(
     _gate_workspace_strict_read("grep_search", base, path or str(base))
 
     loop = asyncio.get_event_loop()
-    strict_root = _strict_read_workspace_root()
+    strict_roots = _strict_read_roots()
+    workspace_root = _workspace_root()
 
     def _search() -> list[str]:
         try:
@@ -878,7 +949,7 @@ async def grep_search(
         results: list[str] = []
 
         def search_file(fp: Path) -> None:
-            if _is_sensitive_access_path(fp.resolve(strict=False)):
+            if _is_sensitive_access_path(fp.resolve(strict=False), workspace=workspace_root):
                 return
             try:
                 text = fp.read_text(encoding="utf-8", errors="replace")
@@ -899,7 +970,7 @@ async def grep_search(
                 marker = _workspace_strict_candidate_marker(
                     "grep_search",
                     fp,
-                    strict_root=strict_root,
+                    strict_roots=strict_roots,
                 )
                 if marker is not None:
                     results.append(marker)

@@ -422,7 +422,7 @@ async def build_memory_managers(
        - Resolve db_path (env override for ``main``, else per-agent path)
        - Build + initialize ``LongTermMemoryStore``
        - Resolve memory_dir + agent_workspace
-       - Build optional derived session source indexer
+       - Build optional derived session source indexer when enabled
        - Build + start ``MemorySyncManager``
        - Build ``MemoryRetriever`` (wired to sync_manager for search-time sync)
        - Build ``TurnCaptureService``
@@ -540,6 +540,7 @@ async def build_memory_managers(
                     agent_id=agent_id,
                 )
                 if session_storage is not None
+                and getattr(cfg, "session_source_enabled", False)
                 else None
             )
 

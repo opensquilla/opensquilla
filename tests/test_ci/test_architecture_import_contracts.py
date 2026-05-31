@@ -13,28 +13,35 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("agents", "onboarding"),
     ("agents", "session"),
     ("channels", "engine"),
+    ("channels", "contracts"),
     ("channels", "gateway"),
     ("channels", "session"),
     ("channels", "tools"),
     ("cli", "agents"),
+    ("cli", "contracts"),
     ("cli", "dist"),
     ("cli", "engine"),
     ("cli", "gateway"),
+    ("cli", "health"),
     ("cli", "memory"),
     ("cli", "mcp_server"),
     ("cli", "migration"),
     ("cli", "observability"),
     ("cli", "onboarding"),
+    ("cli", "persistence"),
     ("cli", "sandbox"),
     ("cli", "session"),
     ("cli", "skills"),
     ("cli", "tools"),
     ("engine", "agents"),
     ("engine", "channels"),
+    ("engine", "contracts"),
     ("engine", "gateway"),
     ("engine", "identity"),
     ("engine", "memory"),
     ("engine", "observability"),
+    ("engine", "persistence"),
+    ("engine", "plugins"),
     ("engine", "provider"),
     ("engine", "safety"),
     ("engine", "session"),
@@ -42,8 +49,12 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("engine", "squilla_router"),
     ("engine", "tools"),
     ("gateway", "agents"),
+    ("gateway", "application"),
+    ("gateway", "chat"),
     ("gateway", "channels"),
+    ("gateway", "contracts"),
     ("gateway", "engine"),
+    ("gateway", "health"),
     ("gateway", "identity"),
     ("gateway", "mcp"),
     ("gateway", "memory"),
@@ -66,6 +77,7 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("memory", "gateway"),
     ("memory", "identity"),
     ("memory", "provider"),
+    ("memory", "session"),
     ("memory", "tools"),
     ("migration", "gateway"),
     ("migration", "onboarding"),
@@ -73,7 +85,10 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("onboarding", "gateway"),
     ("onboarding", "provider"),
     ("onboarding", "search"),
+    ("persistence", "skills"),
     ("provider", "engine"),
+    ("router_control.py", "engine"),
+    ("sandbox", "application"),
     ("sandbox", "gateway"),
     ("sandbox", "safety"),
     ("sandbox", "tools"),
@@ -83,15 +98,23 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("scheduler", "engine"),
     ("scheduler", "gateway"),
     ("scheduler", "session"),
+    ("scheduler", "skills"),
     ("scheduler", "tools"),
     ("session", "compat"),
     ("session", "engine"),
     ("session", "gateway"),
     ("session", "memory"),
+    ("session", "persistence"),
     ("session", "provider"),
     ("session", "tools"),
+    ("skills", "engine"),
+    ("skills", "gateway"),
     ("skills", "memory"),
+    ("skills", "observability"),
+    ("skills", "persistence"),
+    ("skills", "provider"),
     ("skills", "safety"),
+    ("skills", "tools"),
     ("tools", "agents"),
     ("tools", "channels"),
     ("tools", "engine"),
@@ -116,6 +139,7 @@ APPROVED_CYCLIC_PACKAGES: frozenset[str] = frozenset({
     "mcp",
     "memory",
     "onboarding",
+    "persistence",
     "provider",
     "sandbox",
     "scheduler",
@@ -254,4 +278,16 @@ def test_new_packages_do_not_join_existing_circular_dependency_baseline() -> Non
     unexpected = cyclic_packages - APPROVED_CYCLIC_PACKAGES
     assert not unexpected, "Packages unexpectedly joined import cycles: " + ", ".join(
         sorted(unexpected)
+    )
+
+
+def test_contracts_package_stays_implementation_free() -> None:
+    actual_edges = _package_import_edges()
+    implementation_edges = {
+        target for source, target in actual_edges if source == "contracts"
+    }
+
+    assert not implementation_edges, (
+        "contracts must not import implementation packages: "
+        + ", ".join(sorted(implementation_edges))
     )

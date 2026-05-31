@@ -44,16 +44,16 @@ const UsageView = (() => {
                  burying it in the chart legend — it applies to the whole view's filtered set. -->
             <small class="usage-range-notice" id="usage-range-hint" aria-live="polite"></small>
           </div>
-          <div class="usage-stage__actions">
-            <div class="usage-currency" role="group" aria-label="Currency">
+          <div class="usage-stage__actions mobile-action-strip">
+            <div class="usage-currency mobile-action-strip__item" role="group" aria-label="Currency">
               <button class="usage-currency__btn" data-cur="USD" title="US Dollar">$ USD</button>
               <button class="usage-currency__btn" data-cur="CNY" title="Chinese Yuan">¥ CNY</button>
             </div>
-            <button class="btn btn--ghost" id="usage-export" title="Download CSV">
-              ${icons.download()}<span>Export</span>
+            <button class="btn btn--ghost mobile-action-strip__button" id="usage-export" title="Download CSV">
+              ${icons.download()}<span class="mobile-action-strip__label">Export</span>
             </button>
-            <button class="btn btn--ghost" id="usage-refresh" title="Refresh">
-              ${icons.refresh()}<span>Refresh</span>
+            <button class="btn btn--ghost mobile-action-strip__button" id="usage-refresh" title="Refresh">
+              ${icons.refresh()}<span class="mobile-action-strip__label">Refresh</span>
             </button>
           </div>
         </header>
@@ -83,15 +83,15 @@ const UsageView = (() => {
 
         <section class="usage-chart">
           <div class="usage-chart__head">
-            <div class="usage-segs" role="tablist" aria-label="Chart metric">
-              <button class="usage-seg is-active" data-mode="tokens" role="tab">Tokens</button>
-              <button class="usage-seg" data-mode="cost" role="tab">Cost</button>
+            <div class="usage-segs" role="group" aria-label="Chart metric">
+              <button class="usage-seg is-active" data-mode="tokens" aria-pressed="true">Tokens</button>
+              <button class="usage-seg" data-mode="cost" aria-pressed="false">Cost</button>
             </div>
-            <div class="usage-range" role="tablist" aria-label="Date range">
-              <button class="usage-range__btn${_range === 'all' ? ' is-active' : ''}" data-range="all" role="tab">All</button>
-              <button class="usage-range__btn${_range === '7' ? ' is-active' : ''}" data-range="7" role="tab">7d</button>
-              <button class="usage-range__btn${_range === '14' ? ' is-active' : ''}" data-range="14" role="tab">14d</button>
-              <button class="usage-range__btn${_range === '30' ? ' is-active' : ''}" data-range="30" role="tab">30d</button>
+            <div class="usage-range" role="group" aria-label="Date range">
+              <button class="usage-range__btn${_range === 'all' ? ' is-active' : ''}" data-range="all" aria-pressed="${_range === 'all' ? 'true' : 'false'}">All</button>
+              <button class="usage-range__btn${_range === '7' ? ' is-active' : ''}" data-range="7" aria-pressed="${_range === '7' ? 'true' : 'false'}">7d</button>
+              <button class="usage-range__btn${_range === '14' ? ' is-active' : ''}" data-range="14" aria-pressed="${_range === '14' ? 'true' : 'false'}">14d</button>
+              <button class="usage-range__btn${_range === '30' ? ' is-active' : ''}" data-range="30" aria-pressed="${_range === '30' ? 'true' : 'false'}">30d</button>
             </div>
           </div>
           <div class="usage-chart__legend" id="usage-bar-legend">
@@ -129,7 +129,11 @@ const UsageView = (() => {
     _el.querySelectorAll('.usage-seg').forEach(btn => {
       btn.addEventListener('click', () => {
         _chartMode = btn.dataset.mode;
-        _el.querySelectorAll('.usage-seg').forEach(b => b.classList.toggle('is-active', b === btn));
+        _el.querySelectorAll('.usage-seg').forEach(b => {
+          const active = b === btn;
+          b.classList.toggle('is-active', active);
+          b.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
         _renderChart();
         _renderChartCaption();
       });
@@ -191,6 +195,7 @@ const UsageView = (() => {
     if (!_el) return;
     _el.querySelectorAll('.usage-currency__btn').forEach(btn => {
       btn.classList.toggle('is-active', btn.dataset.cur === _currency);
+      btn.setAttribute('aria-pressed', btn.dataset.cur === _currency ? 'true' : 'false');
     });
   }
 
@@ -203,6 +208,7 @@ const UsageView = (() => {
     if (!_el) return;
     _el.querySelectorAll('.usage-range__btn').forEach(btn => {
       btn.classList.toggle('is-active', btn.dataset.range === _range);
+      btn.setAttribute('aria-pressed', btn.dataset.range === _range ? 'true' : 'false');
     });
   }
 
@@ -512,15 +518,15 @@ const UsageView = (() => {
         const timestamp = _sessionTimestamp(row);
         const modified = timestamp != null ? UI.relTime(timestamp) : '—';
         html += `<tr>
-          <td>${sessionLink}</td>
-          <td class="usage-mono usage-dim">${_esc(modified)}</td>
-          <td class="usage-mono">${_rowVal(row, 'input_tokens', 'inputTokens') != null ? Number(_rowVal(row, 'input_tokens', 'inputTokens')).toLocaleString() : '—'}</td>
-          <td class="usage-mono">${_rowVal(row, 'output_tokens', 'outputTokens') != null ? Number(_rowVal(row, 'output_tokens', 'outputTokens')).toLocaleString() : '—'}</td>
-          <td class="usage-mono usage-dim">${_rowVal(row, 'cache_read_tokens', 'cacheReadTokens') != null ? Number(_rowVal(row, 'cache_read_tokens', 'cacheReadTokens')).toLocaleString() : '—'}</td>
-          <td class="usage-mono usage-dim">${_rowVal(row, 'cache_write_tokens', 'cacheWriteTokens') != null ? Number(_rowVal(row, 'cache_write_tokens', 'cacheWriteTokens')).toLocaleString() : '—'}</td>
-          <td class="usage-mono usage-cost">${_fmtCost(cost)}</td>
-          <td>${_renderCostSourceBadge(row)}</td>
-          <td>${_renderModelCell(row)}</td>
+          <td data-label="Session">${sessionLink}</td>
+          <td data-label="Modified" class="usage-mono usage-dim">${_esc(modified)}</td>
+          <td data-label="Input" class="usage-mono">${_rowVal(row, 'input_tokens', 'inputTokens') != null ? Number(_rowVal(row, 'input_tokens', 'inputTokens')).toLocaleString() : '—'}</td>
+          <td data-label="Output" class="usage-mono">${_rowVal(row, 'output_tokens', 'outputTokens') != null ? Number(_rowVal(row, 'output_tokens', 'outputTokens')).toLocaleString() : '—'}</td>
+          <td data-label="Cache R" class="usage-mono usage-dim">${_rowVal(row, 'cache_read_tokens', 'cacheReadTokens') != null ? Number(_rowVal(row, 'cache_read_tokens', 'cacheReadTokens')).toLocaleString() : '—'}</td>
+          <td data-label="Cache W" class="usage-mono usage-dim">${_rowVal(row, 'cache_write_tokens', 'cacheWriteTokens') != null ? Number(_rowVal(row, 'cache_write_tokens', 'cacheWriteTokens')).toLocaleString() : '—'}</td>
+          <td data-label="Cost" class="usage-mono usage-cost">${_fmtCost(cost)}</td>
+          <td data-label="Source">${_renderCostSourceBadge(row)}</td>
+          <td data-label="Model">${_renderModelCell(row)}</td>
         </tr>`;
       });
     }
@@ -679,7 +685,7 @@ const UsageView = (() => {
     // Only show the expand caret when there is meaningful breakdown to reveal.
     // A single-model breakdown duplicates the visible row, so the caret was noise.
     if (bd && bd.length > 1) {
-      return `<button class="usage-model-toggle" data-session="${_esc(sessionKey)}">
+      return `<button class="usage-model-toggle" data-session="${_esc(sessionKey)}" aria-expanded="false">
         <span>${_esc(label)}</span><span class="usage-model-caret">▾</span>
       </button>`;
     }
@@ -770,6 +776,7 @@ const UsageView = (() => {
         if (next && next.classList.contains('usage-expand-row')) {
           next.remove();
           btn.classList.remove('open');
+          btn.setAttribute('aria-expanded', 'false');
           return;
         }
         const row = _visibleSessions().find(r => (_rowVal(r, 'session', 'sessionKey', 'key') || '') === sessionKey);
@@ -777,11 +784,13 @@ const UsageView = (() => {
         const expandTr = document.createElement('tr');
         expandTr.className = 'usage-expand-row';
         const td = document.createElement('td');
+        td.className = 'usage-expand-cell';
         td.colSpan = USAGE_SESSION_TABLE_COLUMNS.length;
         td.appendChild(_buildExpandedContent(row));
         expandTr.appendChild(td);
         tr.after(expandTr);
         btn.classList.add('open');
+        btn.setAttribute('aria-expanded', 'true');
       });
     });
   }

@@ -134,6 +134,7 @@ def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
 
 
 def _status_payload(ctx: RpcContext) -> dict[str, Any]:
+    from opensquilla.onboarding.next_steps import env_recovery_commands
     from opensquilla.onboarding.status import get_onboarding_status
 
     cfg = _active_config(ctx)
@@ -143,15 +144,27 @@ def _status_payload(ctx: RpcContext) -> dict[str, Any]:
         "hasConfig": s.has_config,
         "llmConfigured": s.llm_configured,
         "llmSource": s.llm_source,
+        "llmEnvKey": s.llm_env_key,
         "imageGenerationConfigured": s.image_generation_configured,
         "imageGenerationEnabled": s.image_generation_enabled,
         "imageGenerationSource": s.image_generation_source,
         "imageGenerationProvider": s.image_generation_provider,
         "imageGenerationPrimary": s.image_generation_primary,
+        "imageGenerationEnvKey": s.image_generation_env_key,
         "searchConfigured": s.search_configured,
+        "searchProvider": s.search_provider,
+        "searchSource": s.search_source,
+        "searchEnvKey": s.search_env_key,
+        "memoryEmbeddingConfigured": s.memory_embedding_configured,
+        "memoryEmbeddingProvider": s.memory_embedding_provider,
+        "memoryEmbeddingSource": s.memory_embedding_source,
+        "memoryEmbeddingEnvKey": s.memory_embedding_env_key,
         "channelCount": s.channel_count,
         "channelsConfigured": s.channels_configured,
         "needsOnboarding": s.needs_onboarding,
+        "sections": {name: state.value for name, state in s.sections.items()},
+        "sectionDetails": s.section_details,
+        "envRecoveryCommands": env_recovery_commands(s),
         "warnings": list(s.warnings),
     }
 
@@ -167,6 +180,9 @@ async def _onboarding_catalog(params: Any, ctx: RpcContext) -> dict[str, Any]:
     from opensquilla.onboarding.image_generation_specs import (
         image_generation_provider_catalog_payload,
     )
+    from opensquilla.onboarding.memory_embedding_specs import (
+        memory_embedding_provider_catalog_payload,
+    )
     from opensquilla.onboarding.provider_specs import provider_catalog_payload
     from opensquilla.onboarding.router_specs import router_catalog_payload
     from opensquilla.onboarding.search_specs import search_provider_catalog_payload
@@ -176,44 +192,7 @@ async def _onboarding_catalog(params: Any, ctx: RpcContext) -> dict[str, Any]:
         "channels": channel_catalog_payload(),
         "searchProviders": search_provider_catalog_payload(),
         "routerProfiles": router_catalog_payload(),
-        "memoryEmbeddingProviders": [
-            {
-                "providerId": "auto",
-                "label": "Auto (local BGE first)",
-                "requiresApiKey": False,
-                "requiresBaseUrl": False,
-            },
-            {
-                "providerId": "local",
-                "label": "Bundled BGE-small",
-                "requiresApiKey": False,
-                "requiresBaseUrl": False,
-            },
-            {
-                "providerId": "openai",
-                "label": "OpenAI",
-                "requiresApiKey": True,
-                "requiresBaseUrl": False,
-            },
-            {
-                "providerId": "openai-compatible",
-                "label": "OpenAI-compatible remote",
-                "requiresApiKey": True,
-                "requiresBaseUrl": False,
-            },
-            {
-                "providerId": "ollama",
-                "label": "Ollama",
-                "requiresApiKey": False,
-                "requiresBaseUrl": False,
-            },
-            {
-                "providerId": "none",
-                "label": "FTS-only",
-                "requiresApiKey": False,
-                "requiresBaseUrl": False,
-            },
-        ],
+        "memoryEmbeddingProviders": memory_embedding_provider_catalog_payload(),
         "imageGenerationProviders": image_generation_provider_catalog_payload(),
     }
 
@@ -369,6 +348,7 @@ async def _memory_embedding_configure(params: Any, ctx: RpcContext) -> dict[str,
         provider=provider,
         model=params.get("model", "") if isinstance(params, dict) else "",
         api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
+        api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
         base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
         onnx_dir=params.get("onnxDir", "") if isinstance(params, dict) else "",
     )

@@ -20,7 +20,7 @@ future AgentConfig-validation early-yield branch.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from opensquilla.engine.agent import Agent, ToolHandler
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from opensquilla.observability.turn_call_log import TurnCallLogger
     from opensquilla.provider.protocol import LLMProvider
     from opensquilla.provider.types import ModelCapabilities
+    from opensquilla.tools.types import ToolContext
 
 # ---------------------------------------------------------------------------
 # Value objects returned by the ports — typed frozen tuples that collapse
@@ -37,10 +38,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class _ResolvedBudgets:
-    """Six-field frozen value returned by ``TimeoutBudgetPort.resolve_budgets``."""
+    """Frozen value returned by ``TimeoutBudgetPort.resolve_budgets``."""
 
     runtime_timeout: float
     max_iterations: int
+    max_iterations_source: str
     iteration_timeout: float
     tool_timeout: float
     request_timeout: float
@@ -64,8 +66,6 @@ class _AgentConfigAuxiliaries:
     """
 
     thinking: bool | ThinkingLevel
-    tool_result_compression_mode: str
-    tool_result_compression_summary_model: str | None
     flush_workspace_dir: str
     tool_result_store_dir: str
     tool_result_store_session_id: str
@@ -77,12 +77,9 @@ class _AgentConfigAuxiliaries:
     flush_backoff_max_seconds: float
     flush_archive_max_bytes: int
     flush_compaction_requires_safe_receipt: bool
+    flush_compaction_safety_mode: Literal["protect", "best_effort", "block", "off"]
     # Agent-token-cfg-derived
-    tool_result_compression_enabled: bool
-    tool_result_compression_max_share: float
-    tool_result_compression_summary_max_tokens: int
-    tool_result_compression_summary_timeout_seconds: float
-    tool_result_compression_summary_input_max_chars: int
+    tool_result_projection_max_inline_chars: int
     tool_result_store_max_bytes: int
     tool_result_store_disk_budget_bytes: int
     tool_result_store_retention_seconds: int
@@ -131,7 +128,7 @@ class ModelCatalogPort(Protocol):
 
     Mirrors the inline three-call sequence with the fallback
     semantics: when ``self._model_catalog is None`` the inline body
-    computes ``max_tokens=user_override or 8192`` and
+    computes ``max_tokens=user_override or 16384`` and
     ``context_window=200_000`` and ``model_caps=None``. The adapter folds
     those defaults into the port so the stage body has no branching on
     catalog presence.
@@ -144,15 +141,13 @@ class ModelCatalogPort(Protocol):
 
 @runtime_checkable
 class AgentConfigBuilderPort(Protocol):
-    """Wraps the five ``TurnRunner`` helpers AgentConfig assembly needs.
+    """Wraps the ``TurnRunner`` helpers AgentConfig assembly needs.
 
     The inline body calls ``_resolve_turn_thinking(turn)``,
-    ``_resolve_tool_result_compression_mode(_agent_token_cfg)``,
-    ``_resolve_memory_source_dir(agent_id)``, and reads
-    ``media_root_from_config(self._config) / "tool-results"`` plus a
-    handful of ``getattr`` reads off ``_mem_cfg`` / ``_agent_token_cfg``.
+    ``_resolve_memory_source_dir(agent_id)``, and reads a handful of
+    ``getattr`` values off ``_mem_cfg`` / ``_agent_token_cfg``.
 
-    Folding all five into a single port keeps the stage body free of
+    Folding them into a single port keeps the stage body free of
     runtime imports. The adapter returns a typed
     ``_AgentConfigAuxiliaries`` value that the stage feeds straight into
     ``AgentConfig(...)``.
@@ -179,25 +174,6 @@ def _route_max_history_turns(metadata: dict[str, Any]) -> int:
             return 0
     return 0
 
-
-@runtime_checkable
-class SummarizerProviderPort(Protocol):
-    """Wraps ``TurnRunner._resolve_tool_result_summarizer_provider``.
-
-    Pure static helper today. Returns ``None`` when ``mode != "summarize"``;
-    otherwise returns either the current provider (no override) or a
-    wrapped ``_SelectorFallbackProvider`` around a model-overridden clone.
-    Defensive try/except already inside the helper.
-    """
-
-    def resolve(
-        self,
-        *,
-        mode: str,
-        cloned_selector: Any | None,
-        current_provider: Any,
-        summary_model: str | None,
-    ) -> Any | None: ...
 
 @runtime_checkable
 class MemorySnapshotPort(Protocol):
@@ -247,8 +223,8 @@ class AgentFactoryPort(Protocol):
         tool_handler: ToolHandler | None,
         session_key: str,
         turn_call_logger: TurnCallLogger | None,
-        tool_result_summarizer_provider: LLMProvider | None,
         memory_sync_manager: Any | None,
+        tool_context: ToolContext | None,
     ) -> Agent: ...
 
 # ---------------------------------------------------------------------------
@@ -279,6 +255,7 @@ class AgentBootstrapStageInput:
     session_id_for_log: str | None
     tool_handler: ToolHandler | None
     turn_call_logger: TurnCallLogger | None
+    tool_context: ToolContext | None
 
     # Per-turn inputs from _run_turn locals
     session_key: str
@@ -289,6 +266,7 @@ class AgentBootstrapStageInput:
     tool_timeout: float | None
     request_timeout: float | None
     max_provider_retries: int | None
+    length_capped_continuations: int | None
 
 @dataclass(frozen=True)
 class AgentBootstrapStageOutput:
@@ -318,6 +296,7 @@ class AgentBootstrapStageOutput:
     agent_config: AgentConfig
     effective_runtime_timeout: float
     effective_max_iterations: int
+    effective_max_iterations_source: str
     effective_iteration_timeout: float
     effective_tool_timeout: float
     effective_request_timeout: float
@@ -342,11 +321,7 @@ class AgentBootstrapStage:
     - ``model_catalog.lookup`` — synchronous catalog dict lookups; pure.
     - ``agent_config_builder.build_auxiliaries`` — synchronous reads of
       ``_mem_cfg`` / ``_agent_token_cfg`` plus
-      ``_resolve_memory_source_dir`` filesystem path resolution and
-      ``media_root_from_config`` path build. Idempotent.
-    - ``summarizer_provider.resolve`` — synchronous;
-      ``cloned_selector.clone()`` mutates internal selector state
-      (defensive try/except already present inside the helper).
+      ``_resolve_memory_source_dir`` filesystem path resolution.
     - ``memory_snapshot.warm_and_capture`` — async; calls
       ``sync_manager.warm_session`` (transcript-driven preload) and
       mutates ``self._memory_snapshots`` dict.
@@ -365,14 +340,12 @@ class AgentBootstrapStage:
         timeout_budget: TimeoutBudgetPort,
         model_catalog: ModelCatalogPort,
         agent_config_builder: AgentConfigBuilderPort,
-        summarizer_provider: SummarizerProviderPort,
         memory_snapshot: MemorySnapshotPort,
         agent_factory: AgentFactoryPort,
     ) -> None:
         self._timeout_budget = timeout_budget
         self._model_catalog = model_catalog
         self._agent_config_builder = agent_config_builder
-        self._summarizer_provider = summarizer_provider
         self._memory_snapshot = memory_snapshot
         self._agent_factory = agent_factory
 
@@ -398,15 +371,28 @@ class AgentBootstrapStage:
         # 2. Resolve max_tokens, context_window, capabilities from catalog
         catalog = self._model_catalog.lookup(inp.resolved_model)
 
-        # 3. Build AgentConfig auxiliaries (thinking, compression, store, mem cfg)
+        # 3. Build AgentConfig auxiliaries (thinking, projection, store, mem cfg)
         aux = self._agent_config_builder.build_auxiliaries(
             agent_id=inp.agent_id,
             session_key=inp.session_key,
             session_id_for_log=inp.session_id_for_log,
             turn=inp.turn,
         )
+        agent_metadata = inp.turn.metadata
+        agent_metadata["agent_max_iterations"] = budgets.max_iterations
+        agent_metadata["agent_max_iterations_source"] = budgets.max_iterations_source
 
         # 4. Construct AgentConfig (declarative, single call site)
+        #
+        # ``workspace_dir`` is sourced from the per-turn metadata key
+        # ``bootstrap_workspace_dir`` (written by ``_run_pipeline`` from
+        # the call-site's ToolContext/agent-resolved value — see
+        # runtime.py initial_metadata). This makes AgentConfig.workspace_dir
+        # the single authoritative source for downstream code (meta_invoke
+        # handler, sub-Agent factory, etc.). Without this, the bootstrap
+        # stage left workspace_dir=None, the meta_invoke fallback chain
+        # collapsed to ContextVar lookups, and sub-Agents ended up using
+        # the process default workspace instead of the configured one.
         agent_config = AgentConfig(
             max_iterations=budgets.max_iterations,
             system_prompt=inp.final_prompt,
@@ -415,11 +401,17 @@ class AgentBootstrapStage:
             cache_mode=inp.turn.metadata.get("cache_mode", "off"),
             skills_context_prompt=inp.turn.metadata.get("skills_context_prompt"),
             model_id=inp.resolved_model,
+            workspace_dir=inp.turn.metadata.get("bootstrap_workspace_dir") or None,
             timeout=budgets.runtime_timeout,
             iteration_timeout=budgets.iteration_timeout,
             tool_timeout=budgets.tool_timeout,
             request_timeout=budgets.request_timeout,
             max_provider_retries=budgets.max_provider_retries,
+            length_capped_continuations=(
+                inp.length_capped_continuations
+                if inp.length_capped_continuations is not None
+                else AgentConfig().length_capped_continuations
+            ),
             max_tokens=catalog.max_tokens,
             context_window_tokens=catalog.context_window,
             max_history_turns=_route_max_history_turns(inp.turn.metadata),
@@ -432,23 +424,12 @@ class AgentBootstrapStage:
             flush_compaction_requires_safe_receipt=(
                 aux.flush_compaction_requires_safe_receipt
             ),
+            flush_compaction_safety_mode=aux.flush_compaction_safety_mode,
             flush_workspace_dir=aux.flush_workspace_dir,
             model_capabilities=catalog.capabilities,
             thinking=aux.thinking,
-            tool_result_compression_enabled=aux.tool_result_compression_enabled,
-            tool_result_compression_mode=aux.tool_result_compression_mode,  # type: ignore[arg-type]
-            tool_result_compression_max_share=aux.tool_result_compression_max_share,
-            tool_result_compression_summary_model=(
-                aux.tool_result_compression_summary_model
-            ),
-            tool_result_compression_summary_max_tokens=(
-                aux.tool_result_compression_summary_max_tokens
-            ),
-            tool_result_compression_summary_timeout_seconds=(
-                aux.tool_result_compression_summary_timeout_seconds
-            ),
-            tool_result_compression_summary_input_max_chars=(
-                aux.tool_result_compression_summary_input_max_chars
+            tool_result_projection_max_inline_chars=(
+                aux.tool_result_projection_max_inline_chars
             ),
             tool_result_store_dir=aux.tool_result_store_dir,
             tool_result_store_session_id=aux.tool_result_store_session_id,
@@ -461,18 +442,10 @@ class AgentBootstrapStage:
             tool_result_store_retention_seconds=(
                 aux.tool_result_store_retention_seconds
             ),
-            metadata=inp.turn.metadata,
+            metadata=agent_metadata,
         )
 
-        # 5. Resolve tool-result summarizer provider (may wrap fallback)
-        summarizer = self._summarizer_provider.resolve(
-            mode=aux.tool_result_compression_mode,
-            cloned_selector=inp.cloned_selector,
-            current_provider=inp.provider,
-            summary_model=aux.tool_result_compression_summary_model,
-        )
-
-        # 6. Warm session and capture memory snapshot (async, dict-mutating)
+        # 5. Warm session and capture memory snapshot (async, dict-mutating)
         memory = await self._memory_snapshot.warm_and_capture(
             agent_id=inp.agent_id,
             session_key=inp.session_key,
@@ -486,8 +459,8 @@ class AgentBootstrapStage:
             tool_handler=inp.tool_handler,
             session_key=inp.session_key,
             turn_call_logger=inp.turn_call_logger,
-            tool_result_summarizer_provider=summarizer,
             memory_sync_manager=memory.sync_manager,
+            tool_context=inp.tool_context,
         )
 
         return StageOutcome.success(
@@ -496,6 +469,7 @@ class AgentBootstrapStage:
                 agent_config=agent_config,
                 effective_runtime_timeout=budgets.runtime_timeout,
                 effective_max_iterations=budgets.max_iterations,
+                effective_max_iterations_source=budgets.max_iterations_source,
                 effective_iteration_timeout=budgets.iteration_timeout,
                 effective_tool_timeout=budgets.tool_timeout,
                 effective_request_timeout=budgets.request_timeout,

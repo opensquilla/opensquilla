@@ -46,6 +46,15 @@ def _install_playwright(work_dir: Path) -> None:
         timeout=120,
     )
     assert result.returncode == 0, result.stderr or result.stdout
+    browser_result = subprocess.run(
+        [_npm(), "--prefix", str(work_dir), "exec", "playwright", "install", "chromium"],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert browser_result.returncode == 0, browser_result.stderr or browser_result.stdout
 
 
 def _wait_for_health(port: int, server: subprocess.Popen[str]) -> None:
@@ -85,6 +94,45 @@ def test_control_ui_loads_in_real_browser(tmp_path: Path) -> None:
     port = _free_port()
     server_script = tmp_path / "webui_smoke_server.py"
     browser_script = tmp_path / "webui_smoke_browser.js"
+    state_dir = tmp_path / "state"
+    proposal_dir = state_dir / "proposals" / "deadbeef"
+    proposal_dir.mkdir(parents=True)
+    (proposal_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: browser-audit-proposal\n"
+        "kind: meta\n"
+        "description: Browser smoke proposal.\n"
+        "triggers: [browser audit proposal]\n"
+        "composition:\n"
+        "  steps:\n"
+        "    - id: classify\n"
+        "      kind: llm_classify\n"
+        "      output_choices: [A, B]\n"
+        "      with: {text: x}\n"
+        "---\n"
+        "# browser-audit-proposal\n",
+        encoding="utf-8",
+    )
+    (proposal_dir / "gates.json").write_text(
+        json.dumps(
+            {
+                "auto_enable_eligible": True,
+                "auto_enable": {
+                    "status": "skipped",
+                    "reason": "risk_too_high",
+                    "risk_level": "medium",
+                    "max_risk": "low",
+                    "details": {
+                        "validation_profile": "static-safety-v2",
+                        "skills": ["artifact-writer"],
+                        "tools": [],
+                        "reasons": ["capability:artifact-writer:filesystem-write"],
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     server_script.write_text(
         textwrap.dedent(
             f"""
@@ -120,12 +168,26 @@ def test_control_ui_loads_in_real_browser(tmp_path: Path) -> None:
                 waitUntil: "domcontentloaded",
                 timeout: 30000,
               });
+              await page.waitForFunction(
+                () => document.querySelector("#conn-pill")?.textContent === "Connected",
+                { timeout: 15000 }
+              );
+              await page.locator('a[data-path="/skills"]').click();
+              await page.waitForSelector('[data-proposal-show="deadbeef"]', {
+                state: "attached",
+                timeout: 15000,
+              });
+              await page.locator('[data-proposal-show="deadbeef"]').click();
+              await page.waitForSelector('dialog[open] .sk-audit-grid', { timeout: 15000 });
+              const auditText = await page.locator('dialog[open]').innerText();
               const result = {
                 status: response ? response.status() : 0,
                 title: await page.title(),
                 appCount: await page.locator("#app").count(),
                 basePath: await page.locator("#opensquilla-data").getAttribute("data-base-path"),
                 authMode: await page.locator("#opensquilla-data").getAttribute("data-auth-mode"),
+                proposalButtons: await page.locator('[data-proposal-show="deadbeef"]').count(),
+                auditText,
                 pageErrors: errors,
               };
               await browser.close();
@@ -140,7 +202,7 @@ def test_control_ui_loads_in_real_browser(tmp_path: Path) -> None:
     )
 
     env = os.environ.copy()
-    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_STATE_DIR"] = str(state_dir)
     server = subprocess.Popen(
         [sys.executable, str(server_script)],
         cwd=Path.cwd(),
@@ -174,4 +236,9 @@ def test_control_ui_loads_in_real_browser(tmp_path: Path) -> None:
     assert payload["appCount"] == 1
     assert payload["basePath"] == "/control"
     assert payload["authMode"] == "none"
+    assert payload["proposalButtons"] == 1
+    assert "Auto-enable Audit" in payload["auditText"]
+    assert "static-safety-v2" in payload["auditText"]
+    assert "medium / low" in payload["auditText"]
+    assert "capability:artifact-writer:filesystem-write" in payload["auditText"]
     assert payload["pageErrors"] == []

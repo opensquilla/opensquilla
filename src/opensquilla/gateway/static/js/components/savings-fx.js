@@ -7,6 +7,17 @@ const SavingsFX = (() => {
   const _reducedMotion = () =>
     window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+  /* ── Enabled preference (persisted, DEFAULT ON) ──────────────────────── */
+  const _PREF_KEY = 'opensquilla.savingsFx';
+  let _enabled = (() => {
+    try { return window.localStorage.getItem(_PREF_KEY) !== '0'; } catch { return true; }
+  })();
+  function isEnabled() { return _enabled; }
+  function setEnabled(on) {
+    _enabled = !!on;
+    try { window.localStorage.setItem(_PREF_KEY, _enabled ? '1' : '0'); } catch {}
+  }
+
   // Density multiplier — keeps small screens legible without starving them
   // of particles (the prior 0.35 looked like "no effect at all" on phones).
   function _deviceMult() {
@@ -27,6 +38,7 @@ const SavingsFX = (() => {
   let _maxStreak = 0;
   let _streakIdentity = '';
   const _active  = new Set(); // live canvases
+  const _labels = new Set();
 
   /* ── Savings score 0–1 ───────────────────────────────────────────────── */
   // savings_usd scales with actual token count -> big context = more particles.
@@ -76,8 +88,12 @@ const SavingsFX = (() => {
     sub.textContent = 'this turn';
     el.appendChild(sub);
     document.body.appendChild(el);
+    _labels.add(el);
     // Keyframe runs 2.4s; add a 200ms grace so we never yank mid-fade-out.
-    setTimeout(() => { try { el.remove(); } catch (_) {} }, 2600);
+    setTimeout(() => {
+      try { el.remove(); } catch (_) {}
+      _labels.delete(el);
+    }, 2600);
   }
 
   /* ── Public API ──────────────────────────────────────────────────────── */
@@ -121,6 +137,7 @@ const SavingsFX = (() => {
   }
 
   function fire(bubble, u) {
+    if (!_enabled) return;          // Savings FX toggle (default on)
     /* Haptic (mobile) — vibration pattern scales with streak */
     if (_canVibrate()) {
       if (_streak >= 5)      navigator.vibrate([40, 20, 60, 20, 40]);
@@ -160,6 +177,8 @@ const SavingsFX = (() => {
   function cleanup() {
     for (const c of _active) { try { c.remove(); } catch (_) {} }
     _active.clear();
+    for (const el of _labels) { try { el.remove(); } catch (_) {} }
+    _labels.clear();
   }
 
   /* ── Border pulse (reduced-motion fallback) ──────────────────────────── */
@@ -306,7 +325,7 @@ const SavingsFX = (() => {
 
   function savingsLabel(savePct) { return _savingsLabel(savePct); }
 
-  return { fire, noteTurn, resetStreak, getStreak, savingsLabel, cleanup };
+  return { fire, noteTurn, resetStreak, getStreak, savingsLabel, cleanup, isEnabled, setEnabled };
 })();
 
 window.SavingsFX = SavingsFX;

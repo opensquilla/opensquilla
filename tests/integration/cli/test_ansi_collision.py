@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import io
 import sys
+from typing import Any, cast
 
 import pytest
 from ansi_assertions import (
@@ -53,6 +54,7 @@ from rich.text import Text
 from opensquilla.cli import ui as cli_ui
 from opensquilla.cli.repl.app import ChatApplication
 from opensquilla.cli.repl.stream import StreamingRenderer
+from opensquilla.cli.repl.terminal_surface import TerminalOutputHandle
 from opensquilla.engine.commands import Surface
 
 # --------------------------------------------------------------------------- #
@@ -75,6 +77,10 @@ def _fresh_chat_app() -> ChatApplication:
         input=DummyInput(),
         output=DummyOutput(),
     )
+
+
+def _output_handle(chat_app: ChatApplication) -> TerminalOutputHandle:
+    return TerminalOutputHandle(chat_app, approval_surface=Surface.CLI_GATEWAY)
 
 
 def _byte_buffer() -> io.BytesIO:
@@ -130,7 +136,7 @@ def _ansi_console(file: _BytesFile) -> Console:
     panel rendering is deterministic across test runs.
     """
     return Console(
-        file=file,
+        file=cast(Any, file),
         force_terminal=True,
         color_system="truecolor",
         width=80,
@@ -178,7 +184,7 @@ def test_no_ansi_collision_across_stream_slash_approval(monkeypatch) -> None:
         # synthetic /help panel, and from any stray Rich emission.
         monkeypatch.setattr(cli_ui.console, "file", sink, raising=True)
 
-        renderer = StreamingRenderer(title="assistant", chat_app=chat_app)
+        renderer = StreamingRenderer(title="assistant", output_handle=_output_handle(chat_app))
         # Stream chunk 1.
         await renderer.aappend_text("first chunk ")
 
@@ -340,7 +346,7 @@ def test_show_hide_cursor_pairs_balance_across_full_turn(monkeypatch) -> None:
         sink = _BytesFile()
         monkeypatch.setattr(cli_ui.console, "file", sink, raising=True)
 
-        renderer = StreamingRenderer(title="assistant", chat_app=chat_app)
+        renderer = StreamingRenderer(title="assistant", output_handle=_output_handle(chat_app))
 
         # Phase 1: open stream + two chunks.
         await renderer.aappend_text("hello ")
@@ -412,7 +418,7 @@ def test_help_panel_renders_outside_stream_window(monkeypatch) -> None:
 
         # Region 1: stream window.
         await chat_app.write_through("[STREAM-START]")
-        renderer = StreamingRenderer(title="assistant", chat_app=chat_app)
+        renderer = StreamingRenderer(title="assistant", output_handle=_output_handle(chat_app))
         await renderer.aappend_text("token-a ")
         await renderer.aappend_text("token-b ")
         renderer.finalize()

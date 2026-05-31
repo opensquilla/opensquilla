@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
+from opensquilla import __version__
 from opensquilla.gateway.approval_queue import get_approval_queue
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.control_ui import create_control_ui_routes
@@ -124,14 +125,20 @@ def create_gateway_app(
         uptime = int((time.time() - _start_time) * 1000)
         provider_name = None
         if provider_selector is not None:
-            try:
-                p = provider_selector.resolve()
-                provider_name = getattr(p, "name", None) or type(p).__name__
-            except Exception:
-                pass
+            # Report the *configured* provider id (e.g. "openrouter"), not the
+            # wire-protocol backend class. OpenAI-compatible providers
+            # (openrouter / deepseek / gemini) are all served by OpenAIProvider,
+            # so introspecting the instance would mislabel them as "openai".
+            provider_name = getattr(provider_selector, "active_provider_id", None)
+            if not provider_name:
+                try:
+                    p = provider_selector.resolve()
+                    provider_name = getattr(p, "name", None) or type(p).__name__
+                except Exception:
+                    pass
         return JSONResponse(
             {
-                "version": config.version,
+                "version": __version__,
                 "uptime_ms": uptime,
                 "status": "running",
                 "provider": provider_name,
@@ -509,7 +516,13 @@ def create_gateway_app(
 
     register_upload_routes(app, config=config, store=get_upload_store())
     from opensquilla.gateway.artifacts import register_artifact_routes  # noqa: PLC0415
+    from opensquilla.gateway.attachments import register_attachment_routes  # noqa: PLC0415
 
+    register_attachment_routes(
+        app,
+        config=config,
+        session_manager=session_manager,
+    )
     register_artifact_routes(
         app,
         config=config,

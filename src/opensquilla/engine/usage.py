@@ -2,9 +2,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 from .pricing import lookup_price
+
+_current_usage_scope: ContextVar[str | None] = ContextVar(
+    "opensquilla_usage_scope",
+    default=None,
+)
+
+
+@contextmanager
+def usage_scope(scope_key: str | None) -> Iterator[None]:
+    """Attribute UsageTracker.add calls in this context to scope_key."""
+    if not scope_key:
+        yield
+        return
+    token = _current_usage_scope.set(scope_key)
+    try:
+        yield
+    finally:
+        _current_usage_scope.reset(token)
 
 
 @dataclass
@@ -201,6 +222,42 @@ class SessionUsage:
         ]
 
 
+def _clone_session_usage(usage: SessionUsage) -> SessionUsage:
+    clone = SessionUsage(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        model_id=usage.model_id,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
+    )
+    if usage._per_model:
+        clone._per_model = {
+            mid: ModelUsage(
+                model_id=mu.model_id,
+                input_tokens=mu.input_tokens,
+                output_tokens=mu.output_tokens,
+                cache_read_tokens=mu.cache_read_tokens,
+                cache_write_tokens=mu.cache_write_tokens,
+                billed_cost=mu.billed_cost,
+            )
+            for mid, mu in usage._per_model.items()
+        }
+    return clone
+
+
+def _model_delta_cost(
+    *,
+    model_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    billed_cost: float,
+) -> float:
+    if billed_cost > 0.0:
+        return billed_cost
+    price = lookup_price(model_id)
+    return (input_tokens * price.input_per_m + output_tokens * price.output_per_m) / 1_000_000
+
+
 @dataclass
 class SessionTotalsSnapshot:
     """Point-in-time aggregate of a session's token usage and cost.
@@ -235,6 +292,7 @@ class UsageTracker:
 
     def __init__(self) -> None:
         self._sessions: dict[str, SessionUsage] = {}
+        self._scopes: dict[tuple[str, str], SessionUsage] = {}
 
     def add(
         self,
@@ -267,10 +325,37 @@ class UsageTracker:
         )
         if model_id:
             usage.model_id = model_id
+        scope_key = _current_usage_scope.get()
+        if scope_key:
+            scoped = self._scopes.get((session_key, scope_key))
+            if scoped is None:
+                scoped = SessionUsage(model_id=model_id)
+                self._scopes[(session_key, scope_key)] = scoped
+            scoped.add(
+                input_tokens,
+                output_tokens,
+                model_id=model_id,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                billed_cost=billed_cost,
+            )
+            if model_id:
+                scoped.model_id = model_id
 
     def get(self, session_key: str) -> SessionUsage | None:
         """Return accumulated usage for a session, or None."""
         return self._sessions.get(session_key)
+
+    def session_checkpoint(self, session_key: str) -> SessionUsage | None:
+        """Return an immutable-enough copy for later per-turn delta accounting."""
+        usage = self._sessions.get(session_key)
+        if usage is None:
+            return None
+        return _clone_session_usage(usage)
+
+    def get_scope(self, session_key: str, scope_key: str) -> SessionUsage | None:
+        """Return accumulated usage for a session within one attribution scope."""
+        return self._scopes.get((session_key, scope_key))
 
     def session_snapshot(self, session_key: str) -> SessionTotalsSnapshot | None:
         """Return the current SessionTotalsSnapshot for *session_key*, or None if unknown."""
@@ -278,6 +363,62 @@ class UsageTracker:
         if usage is None:
             return None
         return SessionTotalsSnapshot.from_session(usage)
+
+    def session_delta_snapshot(
+        self,
+        session_key: str,
+        checkpoint: SessionUsage | None,
+    ) -> SessionTotalsSnapshot | None:
+        """Return usage added since *checkpoint*.
+
+        Cost is computed from per-model deltas instead of subtracting two
+        session totals, because a later provider-billed call can change a
+        model's aggregate cost source from estimate to billed.
+        """
+        usage = self._sessions.get(session_key)
+        if usage is None:
+            return None
+        input_tokens = usage.input_tokens - (checkpoint.input_tokens if checkpoint else 0)
+        output_tokens = usage.output_tokens - (checkpoint.output_tokens if checkpoint else 0)
+        cache_read_tokens = usage.cache_read_tokens - (
+            checkpoint.cache_read_tokens if checkpoint else 0
+        )
+        cache_write_tokens = usage.cache_write_tokens - (
+            checkpoint.cache_write_tokens if checkpoint else 0
+        )
+        billed_cost = usage.billed_cost - (checkpoint.billed_cost if checkpoint else 0.0)
+        cost_usd = 0.0
+
+        if usage._per_model:
+            before_models = checkpoint._per_model if checkpoint and checkpoint._per_model else {}
+            for mid, mu in usage._per_model.items():
+                before = before_models.get(mid) if before_models else None
+                delta_input = mu.input_tokens - (before.input_tokens if before else 0)
+                delta_output = mu.output_tokens - (before.output_tokens if before else 0)
+                delta_billed = mu.billed_cost - (before.billed_cost if before else 0.0)
+                if delta_input or delta_output or delta_billed:
+                    cost_usd += _model_delta_cost(
+                        model_id=mid,
+                        input_tokens=max(0, delta_input),
+                        output_tokens=max(0, delta_output),
+                        billed_cost=max(0.0, delta_billed),
+                    )
+        else:
+            cost_usd = _model_delta_cost(
+                model_id=usage.model_id,
+                input_tokens=max(0, input_tokens),
+                output_tokens=max(0, output_tokens),
+                billed_cost=max(0.0, billed_cost),
+            )
+
+        return SessionTotalsSnapshot(
+            input_tokens=max(0, input_tokens),
+            output_tokens=max(0, output_tokens),
+            cache_read_tokens=max(0, cache_read_tokens),
+            cache_write_tokens=max(0, cache_write_tokens),
+            cost_usd=max(0.0, cost_usd),
+            billed_cost=max(0.0, billed_cost),
+        )
 
     def get_cost(self, session_key: str) -> float:
         """Return accumulated cost in USD for a session."""

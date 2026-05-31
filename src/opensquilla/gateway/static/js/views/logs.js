@@ -48,7 +48,7 @@ const LogsView = (() => {
 
     const levelChips = _LEVELS.map(l => {
       const isActive = _DEFAULT_LEVELS.has(l);
-      return `<button class="lg-level-btn lg-level-btn--${l.toLowerCase()}${isActive ? ' is-active' : ''}" data-level="${l}">
+      return `<button class="lg-level-btn lg-level-btn--${l.toLowerCase()}${isActive ? ' is-active' : ''}" data-level="${l}" aria-pressed="${isActive ? 'true' : 'false'}">
         <span class="lg-level-btn__dot"></span>
         <span class="lg-level-btn__label">${l}</span>
       </button>`;
@@ -81,7 +81,7 @@ const LogsView = (() => {
           </div>
           <div class="lg-search-wrap">
             <span class="lg-search-icon">${icons.search()}</span>
-            <input class="lg-search-input" type="search" id="logs-search" placeholder="Filter messages…" autocomplete="off" />
+            <input class="lg-search-input" type="search" id="logs-search" aria-label="Filter log messages" placeholder="Filter messages…" autocomplete="off" />
           </div>
           <label class="lg-toggle">
             <input type="checkbox" id="logs-auto-follow" checked />
@@ -91,7 +91,7 @@ const LogsView = (() => {
         </section>
 
         <section class="lg-stream" id="logs-display-wrap">
-          <div id="logs-display" class="lg-display">
+          <div id="logs-display" class="lg-display" role="log" aria-live="polite" aria-relevant="additions text">
             <div class="lg-display__placeholder">
               <span class="lg-spinner"></span>
               Loading logs…
@@ -107,9 +107,11 @@ const LogsView = (() => {
         if (_activeLevels.has(level)) {
           _activeLevels.delete(level);
           btn.classList.remove('is-active');
+          btn.setAttribute('aria-pressed', 'false');
         } else {
           _activeLevels.add(level);
           btn.classList.add('is-active');
+          btn.setAttribute('aria-pressed', 'true');
         }
         _renderStats();
         _renderLines();

@@ -45,6 +45,7 @@ class ToolContext:
     workspace_strict: bool = False
     scratch_dir: str | None = None
     workspace_lockdown: bool = False
+    workspace_write_deny_globs: list[str] = field(default_factory=list)
     session_key: str | None = None
     channel_kind: str | None = None
     channel_id: str | None = None
@@ -75,6 +76,10 @@ class ToolContext:
     tool_run_budget_policy: Any | None = None
     tool_run_budget_tracker_factory: Callable[[], Any] | None = None
     tool_run_budget_key: str | None = None
+    router_control_config: Any | None = None
+    router_control_hold_store: Any | None = None
+    router_control_replay_depth: int = 0
+    router_control_turn_hold_applied: bool = False
 
 
 # Request-scoped context — set by build_tool_handler before each dispatch.

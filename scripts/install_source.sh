@@ -43,7 +43,7 @@ Usage: bash scripts/install_source.sh [--profile recommended|core] [--extras nam
 
 Environment equivalents:
   OPENSQUILLA_INSTALL_PROFILE=recommended|core
-  OPENSQUILLA_INSTALL_EXTRAS=feishu,telegram
+  OPENSQUILLA_INSTALL_EXTRAS=matrix
   OPENSQUILLA_INSTALL_DRY_RUN=1
 HELP
             exit 0
@@ -69,7 +69,7 @@ fi
 dry_run="${OPENSQUILLA_INSTALL_DRY_RUN:-0}"
 profile="${cli_profile:-${OPENSQUILLA_INSTALL_PROFILE:-recommended}}"
 
-valid_extras=" feishu telegram dingtalk wecom qq matrix matrix-e2e document-extras "
+valid_extras=" matrix matrix-e2e document-extras "
 extras_csv="${OPENSQUILLA_INSTALL_EXTRAS:-}"
 if [[ -n "${cli_extras}" ]]; then
     extras_csv="${extras_csv}${extras_csv:+,}${cli_extras}"

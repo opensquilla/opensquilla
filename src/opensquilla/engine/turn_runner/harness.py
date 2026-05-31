@@ -12,6 +12,7 @@ the stage boundaries are ready to sequence.
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING, Any, cast
 
 from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
@@ -19,7 +20,6 @@ from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
     AgentFactoryPort,
     MemorySnapshotPort,
     ModelCatalogPort,
-    SummarizerProviderPort,
     TimeoutBudgetPort,
     _AgentConfigAuxiliaries,
     _MemorySnapshotResult,
@@ -168,6 +168,7 @@ class _TurnRunnerPromptAssemblerAdapter(PromptAssemblerPort):
         extra_context: dict[str, str] | None,
         prompt_metadata: dict[str, Any],
         bootstrap_context_mode: str | None,
+        fresh_user_session: bool = False,
     ) -> str | tuple[str, str]:
         return self._runner._assemble_prompt(
             agent_id,
@@ -177,6 +178,7 @@ class _TurnRunnerPromptAssemblerAdapter(PromptAssemblerPort):
             extra_context=extra_context,
             prompt_metadata=prompt_metadata,
             bootstrap_context_mode=bootstrap_context_mode,
+            fresh_user_session=fresh_user_session,
         )
 
 class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
@@ -206,6 +208,7 @@ class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
             history_user_texts=request.history_user_texts,
             flags_text_override=request.flags_text_override,
             tool_context=request.tool_context,
+            normalization_metadata=request.normalization_metadata,
         )
 
 class _TurnRunnerRouterContextAdapter(RouterContextPort):
@@ -337,11 +340,19 @@ class _TurnRunnerTimeoutBudgetAdapter(TimeoutBudgetPort):
             if timeout is not None
             else self._runner._resolve_agent_runtime_timeout(session_key)
         )
+        self._runner._last_agent_max_iterations_source = "unknown"
+        resolved_max_iterations = self._runner._resolve_agent_max_iterations(
+            session_key, max_iterations
+        )
+        max_iterations_source = getattr(
+            self._runner,
+            "_last_agent_max_iterations_source",
+            "unknown",
+        )
         return _ResolvedBudgets(
             runtime_timeout=runtime_timeout,
-            max_iterations=self._runner._resolve_agent_max_iterations(
-                session_key, max_iterations
-            ),
+            max_iterations=resolved_max_iterations,
+            max_iterations_source=max_iterations_source,
             iteration_timeout=self._runner._resolve_agent_iteration_timeout(
                 session_key, iteration_timeout
             ),
@@ -381,7 +392,7 @@ class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
                 model_id, provider_name=provider_name, base_url=base_url
             )
         else:
-            max_tokens = user_max_tokens if user_max_tokens > 0 else 8192
+            max_tokens = user_max_tokens if user_max_tokens > 0 else 16384
             context_window = 200_000
             capabilities = None
         return _ResolvedCatalog(
@@ -394,7 +405,6 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
     """Bind the five ``TurnRunner`` helpers AgentConfig assembly needs.
 
     The inline body calls ``_resolve_turn_thinking(turn)``,
-    ``_resolve_tool_result_compression_mode(_agent_token_cfg)``,
     ``_resolve_memory_source_dir(agent_id)``, and reads
     ``media_root_from_config(self._config) / "tool-results"`` plus a
     handful of ``getattr`` reads off ``_mem_cfg`` / ``_agent_token_cfg``.
@@ -423,18 +433,8 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
             else None
         )
         thinking = runner._resolve_turn_thinking(turn)
-        compression_mode = runner._resolve_tool_result_compression_mode(
-            agent_token_cfg
-        )
-        summary_model = getattr(
-            agent_token_cfg,
-            "tool_result_compression_summary_model",
-            None,
-        )
         return _AgentConfigAuxiliaries(
             thinking=thinking,
-            tool_result_compression_mode=compression_mode,
-            tool_result_compression_summary_model=summary_model,
             flush_workspace_dir=str(runner._resolve_memory_source_dir(agent_id)),
             tool_result_store_dir=str(
                 media_root_from_config(runner._config) / "tool-results"
@@ -459,29 +459,14 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
                 "flush_compaction_requires_safe_receipt",
                 False,
             ),
-            tool_result_compression_enabled=getattr(
-                agent_token_cfg,
-                "tool_result_compression_enabled",
-                True,
+            flush_compaction_safety_mode=getattr(
+                mem_cfg,
+                "flush_compaction_safety_mode",
+                "protect",
             ),
-            tool_result_compression_max_share=getattr(
+            tool_result_projection_max_inline_chars=getattr(
                 agent_token_cfg,
-                "tool_result_compression_max_share",
-                0.25,
-            ),
-            tool_result_compression_summary_max_tokens=getattr(
-                agent_token_cfg,
-                "tool_result_compression_summary_max_tokens",
-                1024,
-            ),
-            tool_result_compression_summary_timeout_seconds=getattr(
-                agent_token_cfg,
-                "tool_result_compression_summary_timeout_seconds",
-                20.0,
-            ),
-            tool_result_compression_summary_input_max_chars=getattr(
-                agent_token_cfg,
-                "tool_result_compression_summary_input_max_chars",
+                "tool_result_projection_max_inline_chars",
                 60_000,
             ),
             tool_result_store_max_bytes=getattr(
@@ -499,26 +484,6 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
                 "tool_result_store_retention_seconds",
                 7 * 24 * 60 * 60,
             ),
-        )
-
-class _TurnRunnerSummarizerProviderAdapter(SummarizerProviderPort):
-    """Bind ``TurnRunner._resolve_tool_result_summarizer_provider`` (static)."""
-
-    def resolve(
-        self,
-        *,
-        mode: str,
-        cloned_selector: Any | None,
-        current_provider: Any,
-        summary_model: str | None,
-    ) -> Any | None:
-        from opensquilla.engine.runtime import TurnRunner
-
-        return TurnRunner._resolve_tool_result_summarizer_provider(
-            mode=mode,
-            cloned_selector=cloned_selector,
-            current_provider=current_provider,
-            summary_model=summary_model,
         )
 
 class _TurnRunnerMemorySnapshotAdapter(MemorySnapshotPort):
@@ -589,8 +554,8 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
         tool_handler: ToolHandler | None,
         session_key: str,
         turn_call_logger: TurnCallLogger | None,
-        tool_result_summarizer_provider: LLMProvider | None,
         memory_sync_manager: Any | None,
+        tool_context: ToolContext | None,
     ) -> Agent:
         from opensquilla.engine.agent import Agent
 
@@ -602,9 +567,10 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
             usage_tracker=self._runner._usage_tracker,
             session_key=session_key,
             turn_call_logger=turn_call_logger,
-            tool_result_summarizer_provider=tool_result_summarizer_provider,
             memory_sync_manager=memory_sync_manager,
             session_flush_service=self._runner._session_flush_service,
+            tool_registry=self._runner._tool_registry,
+            tool_context=tool_context,
         )
 
 
@@ -762,17 +728,38 @@ class _TurnRunnerCompactionPersistAdapter(CompactionPersistPort):
         session_key: str,
         summary: str,
         kept_entries: list[Any],
+        compaction_id: str | None = None,
     ) -> None:
         from opensquilla.engine.cache_break_monitor import notify_compaction
+        from opensquilla.session.compaction_lifecycle import (
+            COMPACTION_PERSISTED_EVENT,
+            compaction_effect_payload,
+            compaction_lifecycle_payload,
+            new_compaction_id,
+        )
 
         session_manager = self._runner._session_manager
         if session_manager is None:
             return
-        await session_manager.persist_compaction_result(
-            session_key,
-            summary,
-            kept_entries,
-        )
+        persist_method = session_manager.persist_compaction_result
+        params = inspect.signature(persist_method).parameters
+        persist_kwargs: dict[str, Any] = {}
+        if "compaction_id" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            persist_kwargs["compaction_id"] = compaction_id
+        if "trigger_reason" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            persist_kwargs["trigger_reason"] = "agent_inline_overflow"
+        async with self._runner._session_write_context(session_key):
+            await persist_method(
+                session_key,
+                summary,
+                kept_entries,
+                **persist_kwargs,
+            )
+        compaction_id = compaction_id or new_compaction_id()
         notify_compaction(
             session_key,
             source="automatic",
@@ -780,6 +767,11 @@ class _TurnRunnerCompactionPersistAdapter(CompactionPersistPort):
             status="completed",
             kept_count=len(kept_entries),
             summary_len=len(summary or ""),
+            **compaction_effect_payload(status="completed"),
+            **compaction_lifecycle_payload(
+                compaction_id,
+                COMPACTION_PERSISTED_EVENT,
+            ),
         )
 
 class _TurnRunnerMemorySnapshotRefreshAdapter(MemorySnapshotRefreshPort):
@@ -950,7 +942,7 @@ class _TurnRunnerTranscriptAppendAdapter(TranscriptAppendPort):
             append_kwargs["turn_usage"] = turn_usage
         if _accepts_keyword_arg(session_manager.append_message, "token_count"):
             append_kwargs["token_count"] = token_count
-        await session_manager.append_message(session_key, **append_kwargs)
+        await self._runner._append_session_message(session_key, **append_kwargs)
         return True
 
 class _TurnRunnerTurnMemoryCaptureAdapter(TurnMemoryCapturePort):
@@ -1019,82 +1011,88 @@ class _TurnRunnerSessionTotalsAdapter(SessionTotalsPort):
         session_manager = self._runner._session_manager
         if session_manager is None:
             return None
-        current_session = await session_manager.get_session(session_key)
-        if current_session is None:
-            return None
+        async with self._runner._session_write_context(session_key):
+            current_session = await session_manager.get_session(session_key)
+            if current_session is None:
+                return None
 
-        done_total_tokens = done_event.input_tokens + done_event.output_tokens
-        event_cost_source = normalize_event_cost_source(
-            done_event.cost_source,
-            input_tokens=done_event.input_tokens,
-            output_tokens=done_event.output_tokens,
-            cache_read_tokens=done_event.cached_tokens,
-            cache_write_tokens=done_event.cache_write_tokens,
-            cost_usd=done_event.cost_usd,
-            billed_cost_usd=done_event.billed_cost,
-        )
-        next_total_cost = (
-            getattr(current_session, "total_cost_usd", 0.0) or 0.0
-        ) + done_event.cost_usd
-        next_billed_cost = (
-            getattr(current_session, "billed_cost_usd", 0.0) or 0.0
-        ) + done_event.billed_cost
-        next_estimated_component = (
-            getattr(current_session, "estimated_cost_component_usd", 0.0) or 0.0
-        )
-        if event_cost_source == "opensquilla_estimate":
-            next_estimated_component += done_event.cost_usd
-        next_missing_entries = (
-            getattr(current_session, "missing_cost_entries", 0) or 0
-        )
-        if event_cost_source == "unavailable":
-            next_missing_entries += 1
-        next_cost_source = rollup_cost_source(
-            billed_cost_usd=next_billed_cost,
-            estimated_cost_component_usd=next_estimated_component,
-            missing_cost_entries=next_missing_entries,
-        )
-        next_input_tokens = (
-            getattr(current_session, "input_tokens", 0) or 0
-        ) + done_event.input_tokens
-        next_output_tokens = (
-            getattr(current_session, "output_tokens", 0) or 0
-        ) + done_event.output_tokens
-        next_total_tokens = (
-            getattr(current_session, "total_tokens", 0) or 0
-        ) + done_total_tokens
-        next_estimated_cost = (
-            getattr(current_session, "estimated_cost_usd", 0.0) or 0.0
-        ) + done_event.cost_usd
-        next_cache_read = (
-            getattr(current_session, "cache_read", 0) or 0
-        ) + done_event.cached_tokens
-        next_cache_write = (
-            getattr(current_session, "cache_write", 0) or 0
-        ) + done_event.cache_write_tokens
-        next_model_override = done_event.model or getattr(
-            current_session, "model_override", None
-        )
+            done_total_tokens = done_event.input_tokens + done_event.output_tokens
+            event_cost_source = normalize_event_cost_source(
+                done_event.cost_source,
+                input_tokens=done_event.input_tokens,
+                output_tokens=done_event.output_tokens,
+                cache_read_tokens=done_event.cached_tokens,
+                cache_write_tokens=done_event.cache_write_tokens,
+                cost_usd=done_event.cost_usd,
+                billed_cost_usd=done_event.billed_cost,
+            )
+            next_total_cost = (
+                getattr(current_session, "total_cost_usd", 0.0) or 0.0
+            ) + done_event.cost_usd
+            next_billed_cost = (
+                getattr(current_session, "billed_cost_usd", 0.0) or 0.0
+            ) + done_event.billed_cost
+            next_estimated_component = (
+                getattr(current_session, "estimated_cost_component_usd", 0.0) or 0.0
+            )
+            if event_cost_source == "opensquilla_estimate":
+                next_estimated_component += done_event.cost_usd
+            elif event_cost_source == "mixed":
+                next_estimated_component += max(
+                    0.0,
+                    done_event.cost_usd - done_event.billed_cost,
+                )
+            next_missing_entries = (
+                getattr(current_session, "missing_cost_entries", 0) or 0
+            )
+            if event_cost_source == "unavailable":
+                next_missing_entries += 1
+            next_cost_source = rollup_cost_source(
+                billed_cost_usd=next_billed_cost,
+                estimated_cost_component_usd=next_estimated_component,
+                missing_cost_entries=next_missing_entries,
+            )
+            next_input_tokens = (
+                getattr(current_session, "input_tokens", 0) or 0
+            ) + done_event.input_tokens
+            next_output_tokens = (
+                getattr(current_session, "output_tokens", 0) or 0
+            ) + done_event.output_tokens
+            next_total_tokens = (
+                getattr(current_session, "total_tokens", 0) or 0
+            ) + done_total_tokens
+            next_estimated_cost = (
+                getattr(current_session, "estimated_cost_usd", 0.0) or 0.0
+            ) + done_event.cost_usd
+            next_cache_read = (
+                getattr(current_session, "cache_read", 0) or 0
+            ) + done_event.cached_tokens
+            next_cache_write = (
+                getattr(current_session, "cache_write", 0) or 0
+            ) + done_event.cache_write_tokens
+            next_model_override = done_event.model or getattr(
+                current_session, "model_override", None
+            )
 
-        # Persist the last actual model into usage metadata only.
-        # Writing it to session.model would pin future turns and
-        # silently bypass squilla-router routing.
-        await session_manager.update(
-            session_key,
-            input_tokens=next_input_tokens,
-            output_tokens=next_output_tokens,
-            total_tokens=next_total_tokens,
-            total_tokens_fresh=True,
-            estimated_cost_usd=next_estimated_cost,
-            total_cost_usd=next_total_cost,
-            billed_cost_usd=next_billed_cost,
-            estimated_cost_component_usd=next_estimated_component,
-            cost_source=next_cost_source,
-            missing_cost_entries=next_missing_entries,
-            cache_read=next_cache_read,
-            cache_write=next_cache_write,
-            model_override=next_model_override,
-        )
+            # Persist the last actual model into usage metadata only.
+            # Writing it to session.model would pin future turns and
+            # silently bypass squilla-router routing.
+            await session_manager.update(
+                session_key,
+                input_tokens=next_input_tokens,
+                output_tokens=next_output_tokens,
+                total_tokens=next_total_tokens,
+                total_tokens_fresh=True,
+                estimated_cost_usd=next_estimated_cost,
+                total_cost_usd=next_total_cost,
+                billed_cost_usd=next_billed_cost,
+                estimated_cost_component_usd=next_estimated_component,
+                cost_source=next_cost_source,
+                missing_cost_entries=next_missing_entries,
+                cache_read=next_cache_read,
+                cache_write=next_cache_write,
+                model_override=next_model_override,
+            )
         return CostRollupResult(
             input_tokens=next_input_tokens,
             output_tokens=next_output_tokens,

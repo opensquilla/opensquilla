@@ -51,6 +51,7 @@ class _RecordingPromptAssembler:
         extra_context,
         prompt_metadata,
         bootstrap_context_mode,
+        fresh_user_session=False,
     ):
         self.calls += 1
         self.last_kwargs = dict(
@@ -60,6 +61,7 @@ class _RecordingPromptAssembler:
             semantic_message=semantic_message,
             extra_context=extra_context,
             bootstrap_context_mode=bootstrap_context_mode,
+            fresh_user_session=fresh_user_session,
         )
         prompt_metadata.update(self.metadata_to_emit)
         return self.base_prompt
@@ -212,6 +214,7 @@ def _make_input(
     model=None,
     history_has_persisted_user=True,
     persist_input=False,
+    fresh_user_session=False,
     ingress_pipeline_steps=None,
 ):
     return PromptAssemblerStageInput(
@@ -231,6 +234,7 @@ def _make_input(
         model=model,
         history_has_persisted_user=history_has_persisted_user,
         persist_input=persist_input,
+        fresh_user_session=fresh_user_session,
         ingress_pipeline_steps=ingress_pipeline_steps,
     )
 
@@ -284,6 +288,16 @@ async def test_case01_plain_user_turn() -> None:
     assert o.squilla_router_tier == "T1"
     assert o.session_id_for_log == "session-id"
     assert o.trace_context_session_id == "session-id"
+
+
+@pytest.mark.asyncio
+async def test_prompt_assembler_forwards_fresh_user_session_flag():
+    prompt_assembler = _RecordingPromptAssembler()
+    stage = _make_stage(assembler=prompt_assembler)
+
+    await stage.run(_make_input(fresh_user_session=True))
+
+    assert prompt_assembler.last_kwargs["fresh_user_session"] is True
 
 
 @pytest.mark.asyncio

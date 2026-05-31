@@ -22,11 +22,22 @@ BuildDreamFn = Callable[[str], Any]
 DreamGuardFn = Callable[[], str | None]
 
 
+PostDreamHookFn = Callable[[str, str], Awaitable[None]]
+
+
 def make_memory_dream_handler(
     build_dream: BuildDreamFn,
     should_skip: DreamGuardFn | None = None,
+    post_dream_hook: PostDreamHookFn | None = None,
 ) -> Callable[[CronJob], Awaitable[HandlerResult]]:
-    """Factory: returns an async cron handler that runs Dream per agent."""
+    """Factory: returns an async cron handler that runs Dream per agent.
+
+    When ``post_dream_hook`` is provided it is invoked after the Dream
+    completes successfully, with the same ``agent_id`` plus the Dream
+    summary. Hook exceptions are logged but never poison the dream
+    HandlerResult — observability must not turn a successful dream into a
+    failed one.
+    """
 
     async def handle_memory_dream(job: CronJob) -> HandlerResult:
         agent_id = payload_agent_id(job.payload) or "main"
@@ -46,14 +57,21 @@ def make_memory_dream_handler(
             summary = (
                 f"dream agent={agent_id} "
                 f"processed={result.files_processed} "
-                f"deleted={result.files_deleted} "
-                f"phase1={result.phase1_status} "
-                f"phase2={result.phase2_status}"
+                f"evidence={result.evidence_status} "
+                f"apply={result.apply_status}"
             )
             logger.info(
                 "dream.run.complete",
                 extra={"agent_id": agent_id, "summary": summary},
             )
+            if post_dream_hook is not None:
+                try:
+                    await post_dream_hook(agent_id, summary)
+                except Exception:
+                    logger.exception(
+                        "dream.post_hook.failed",
+                        extra={"agent_id": agent_id},
+                    )
             return HandlerResult(summary=summary)
         except Exception as exc:
             logger.exception("dream.run.failed", extra={"agent_id": agent_id})

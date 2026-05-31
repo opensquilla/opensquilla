@@ -33,7 +33,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from opensquilla.gateway.attachment_ingest import (
+from opensquilla.contracts.attachments import (
     ALLOWED_MEDIA_TYPES,
     attachment_size_limit_for_mime,
     normalize_attachment_mime,

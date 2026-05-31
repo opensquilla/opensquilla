@@ -40,7 +40,7 @@ TIERS = {
     },
     "t1": {
         "provider": "openrouter",
-        "model": "deepseek/deepseek-v4-flash",
+        "model": "deepseek/deepseek-v4-pro",
         "description": "normal coding and agent tasks",
         "thinking_level": "high",
     },
@@ -940,7 +940,7 @@ def _post_json(url: str, payload: dict[str, Any], timeout: float = 5.0) -> dict[
 def _live_tier_model_map(live_model: str) -> dict[str, str]:
     live_tier_models = {
         "t0": os.environ.get("OPENSQUILLA_LIVE_LLM_T0_MODEL", "deepseek/deepseek-v4-flash").strip(),
-        "t1": os.environ.get("OPENSQUILLA_LIVE_LLM_T1_MODEL", "deepseek/deepseek-v4-flash").strip(),
+        "t1": os.environ.get("OPENSQUILLA_LIVE_LLM_T1_MODEL", "deepseek/deepseek-v4-pro").strip(),
         "t2": os.environ.get("OPENSQUILLA_LIVE_LLM_T2_MODEL", "z-ai/glm-5.1").strip(),
         "t3": os.environ.get(
             "OPENSQUILLA_LIVE_LLM_T3_MODEL",

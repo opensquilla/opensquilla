@@ -20,7 +20,7 @@ Adding a new section means writing one verifier here and registering it in
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from enum import StrEnum
 from typing import Any, cast
 
@@ -31,6 +31,8 @@ from opensquilla.onboarding.image_generation_specs import (
 )
 from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
+
+FIRST_RUN_REQUIRED_SECTIONS = frozenset({"llm"})
 
 
 class SectionStatus(StrEnum):
@@ -140,6 +142,39 @@ def image_generation_section_status(cfg: GatewayConfig) -> SectionStatus:
     return aggregate
 
 
+def memory_embedding_section_status(cfg: GatewayConfig) -> SectionStatus:
+    """Memory embedding is optional unless the operator selected remote mode.
+
+    The default ``auto`` path is considered locally usable because it falls
+    back to the bundled/on-device embedding stack. ``none`` is an explicit
+    opt-out. Remote embedding providers can use either a stored key or an
+    env-key reference. A configured but currently missing env var is degraded
+    rather than missing, matching the other onboarding key surfaces.
+    """
+    memory = getattr(cfg, "memory", None)
+    embedding = getattr(memory, "embedding", None)
+    if embedding is None:
+        return SectionStatus.OPTIONAL
+    provider = str(getattr(embedding, "requested_provider", "") or "auto")
+    if provider == "none":
+        return SectionStatus.OPTIONAL
+    if provider in {"auto", "local", "ollama"}:
+        return SectionStatus.OK
+    if provider in {"openai", "openai-compatible"}:
+        remote = getattr(embedding, "remote", None)
+        key = (
+            str(getattr(remote, "api_key", "") or "")
+            or str(getattr(embedding, "api_key", "") or "")
+        )
+        if key:
+            return SectionStatus.OK
+        env_key = str(getattr(remote, "api_key_env", "") or "").strip()
+        if env_key:
+            return SectionStatus.OK if os.environ.get(env_key) else SectionStatus.DEGRADED
+        return SectionStatus.MISSING
+    return SectionStatus.UNKNOWN
+
+
 def _image_generation_credential_state(
     cfg: GatewayConfig,
     provider_id: str,
@@ -152,9 +187,9 @@ def _image_generation_credential_state(
     Resolution order (each branch wins if it produces ``OK``):
       1. explicit ``provider_cfg.api_key`` (paste) -> ``OK``
       2. operator-explicit env_key resolved in ``os.environ`` -> ``OK``
-      3. spec default env_key resolved in ``os.environ`` -> ``OK``
-      4. matching LLM provider with an explicit ``api_key`` (image-gen reuses it) -> ``OK``
-      5. operator-explicit env_key declared but absent -> ``DEGRADED``
+      3. operator-explicit env_key declared but absent -> ``DEGRADED``
+      4. spec default env_key resolved in ``os.environ`` -> ``OK``
+      5. matching LLM provider with an explicit ``api_key`` (image-gen reuses it) -> ``OK``
       6. otherwise -> ``MISSING``
 
     Known tradeoff: the config schema does not record whether the operator
@@ -191,8 +226,12 @@ def _image_generation_credential_state(
         cfg_env_key = (getattr(provider_cfg, "api_key_env", "") or "").strip()
     explicit_env_key = cfg_env_key if cfg_env_key and cfg_env_key != spec_env_key else ""
 
-    if explicit_env_key and os.environ.get(explicit_env_key):
-        return SectionStatus.OK
+    if explicit_env_key:
+        return (
+            SectionStatus.OK
+            if os.environ.get(explicit_env_key)
+            else SectionStatus.DEGRADED
+        )
     if spec_env_key and os.environ.get(spec_env_key):
         return SectionStatus.OK
 
@@ -204,9 +243,23 @@ def _image_generation_credential_state(
         return SectionStatus.OK
 
     # Nothing produced an OK; classify how the operator left the provider.
-    if explicit_env_key:
-        return SectionStatus.DEGRADED
     return SectionStatus.MISSING
+
+
+def _image_generation_provider_has_operator_credential(
+    cfg: GatewayConfig,
+    provider_id: str,
+    spec: Any,
+) -> bool:
+    providers = getattr(getattr(cfg, "image_generation", None), "providers", None)
+    provider_cfg = getattr(providers, provider_id, None) if providers is not None else None
+    if provider_cfg is None:
+        return False
+    if getattr(provider_cfg, "api_key", ""):
+        return True
+    spec_env_key = (getattr(spec, "env_key", "") or "").strip()
+    cfg_env_key = (getattr(provider_cfg, "api_key_env", "") or "").strip()
+    return bool(cfg_env_key and cfg_env_key != spec_env_key)
 
 
 def section_verifiers() -> dict[str, Callable[[GatewayConfig], SectionStatus]]:
@@ -217,18 +270,25 @@ def section_verifiers() -> dict[str, Callable[[GatewayConfig], SectionStatus]]:
         "search": search_section_status,
         "channels": channels_section_status,
         "image_generation": image_generation_section_status,
+        "memory_embedding": memory_embedding_section_status,
     }
 
 
-def needs_onboarding(sections: dict[str, SectionStatus]) -> bool:
-    """Any non-OK, non-OPTIONAL section means onboarding has unfinished work.
+def needs_onboarding(
+    sections: dict[str, SectionStatus],
+    *,
+    required_sections: Collection[str] = FIRST_RUN_REQUIRED_SECTIONS,
+) -> bool:
+    """Required non-OK, non-OPTIONAL sections mean onboarding is still blocking.
 
-    DEGRADED is included so a missing env var surfaces on the next
-    ``--if-needed`` run rather than being silently treated as resolved.
+    Optional sections still surface their own action-required status through
+    ``OnboardingStatus.section_details`` but do not keep ``--if-needed`` in the
+    first-run wizard.
     """
     return any(
-        status not in (SectionStatus.OK, SectionStatus.OPTIONAL)
-        for status in sections.values()
+        sections.get(name, SectionStatus.UNKNOWN)
+        not in (SectionStatus.OK, SectionStatus.OPTIONAL)
+        for name in required_sections
     )
 
 
@@ -238,14 +298,26 @@ def _configured_image_generation_provider_ids(cfg: GatewayConfig) -> list[str]:
     fallbacks = list(getattr(image_cfg, "fallbacks", []) or [])
     default_primary = "openai/gpt-image-1"
     explicit_routing = bool(fallbacks) or bool(primary and primary != default_primary)
+    specs = [
+        spec
+        for spec in list_image_generation_provider_setup_specs()
+        if spec.runtime_supported
+    ]
+    explicit_provider_ids = [
+        spec.provider_id
+        for spec in specs
+        if _image_generation_provider_has_operator_credential(
+            cfg,
+            spec.provider_id,
+            spec,
+        )
+    ]
+    if not explicit_routing and explicit_provider_ids:
+        return explicit_provider_ids
     refs = (
         [primary, *fallbacks]
         if explicit_routing
-        else [
-            spec.default_model
-            for spec in list_image_generation_provider_setup_specs()
-            if spec.runtime_supported
-        ]
+        else [spec.default_model for spec in specs]
     )
     seen: set[str] = set()
     result: list[str] = []

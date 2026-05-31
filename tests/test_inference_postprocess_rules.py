@@ -133,4 +133,4 @@ def test_deep_conversation_context_floors_low_route_to_r1():
     )
 
     assert decision.route_class == "R1"
-    assert decision.selected_model == "deepseek/deepseek-v4-flash"
+    assert decision.selected_model == "deepseek/deepseek-v4-pro"

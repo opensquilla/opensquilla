@@ -477,7 +477,7 @@ const AgentsView = (() => {
 
   // ── Confirm dialogs (replace native confirm) ───────────────────────────
 
-  function _confirmModal(title, bodyHtml, primaryLabel = 'Confirm', primaryCls = 'btn-danger') {
+  function _confirmModal(title, bodyHtml, primaryLabel = 'Confirm', primaryCls = 'btn--danger') {
     return new Promise((resolve) => {
       let result = false;
       UI.modal(title, bodyHtml, [
@@ -501,7 +501,7 @@ const AgentsView = (() => {
       'Discard unsaved changes?',
       `<p>You have unsaved edits. Closing now will lose them.</p>`,
       'Discard',
-      'btn-danger'
+      'btn--danger'
     );
   }
 
@@ -511,7 +511,7 @@ const AgentsView = (() => {
       'Delete agent',
       `<p>Delete agent <strong>${_esc(id)}</strong>? Existing chats with this agent will keep working but become unmanaged.</p>`,
       'Delete',
-      'btn-danger'
+      'btn--danger'
     )) return;
     _rpc.call('agents.delete', { id }).then(() => {
       UI.toast('Agent deleted: ' + id, 'ok');

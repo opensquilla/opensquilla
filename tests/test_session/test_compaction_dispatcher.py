@@ -187,8 +187,8 @@ async def test_new_skips_when_only_cut_would_orphan_tool_result():
     request = CompactionRequest(
         session_id="boundary-start-test",
         entries=entries,
-        context_window_tokens=20,
-        config=CompactionConfig(safety_margin=0.5),
+        context_window_tokens=26,
+        config=CompactionConfig(safety_margin=1.0),
     )
 
     result = await compact_context_new(request)
@@ -196,6 +196,7 @@ async def test_new_skips_when_only_cut_would_orphan_tool_result():
     assert result.removed_count == 0
     assert result.summary_source == "skipped"
     assert result.kept_entries == entries
+    assert result.skip_reason == "no_safe_turn_boundary"
 
 
 @pytest.mark.asyncio
@@ -234,6 +235,7 @@ async def test_new_returns_skipped_when_within_budget():
     assert result.removed_count == 0
     assert result.summary_source == "skipped"
     assert result.kept_entries == entries
+    assert result.skip_reason == "within_compaction_budget"
 
 
 @pytest.mark.asyncio
@@ -248,3 +250,4 @@ async def test_new_empty_entries():
     assert result.removed_count == 0
     assert result.kept_entries == []
     assert result.summary == ""
+    assert result.skip_reason == "no_entries"

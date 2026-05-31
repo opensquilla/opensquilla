@@ -9,6 +9,7 @@ from opensquilla.session.compaction import (
     compact_context,
     estimate_entry_replay_tokens,
 )
+from opensquilla.session.compaction_lifecycle import compaction_effect_payload
 
 
 def _make_entries(n: int, tokens_each: int = 100) -> list[dict]:
@@ -20,6 +21,43 @@ def _make_entries(n: int, tokens_each: int = 100) -> list[dict]:
         }
         for i in range(n)
     ]
+
+
+def test_compaction_effect_payload_marks_automatic_noop_not_user_visible():
+    payload = compaction_effect_payload(
+        status="skipped",
+        source="automatic",
+        reason="within_compaction_budget",
+    )
+
+    assert payload == {
+        "applied": False,
+        "durability": "none",
+        "skip_reason": "within_compaction_budget",
+        "user_visible": False,
+    }
+
+
+def test_compaction_effect_payload_surfaces_non_benign_skip_reasons():
+    for reason in ("coverage_blocked", "empty_summary", "no_safe_turn_boundary"):
+        payload = compaction_effect_payload(
+            status="skipped",
+            source="automatic",
+            reason=reason,
+        )
+
+        assert payload["applied"] is False
+        assert payload["durability"] == "none"
+        assert payload["skip_reason"] == reason
+        assert payload["user_visible"] is True
+
+
+def test_compaction_effect_payload_marks_durable_completion_applied():
+    payload = compaction_effect_payload(status="completed", source="automatic")
+
+    assert payload["applied"] is True
+    assert payload["durability"] == "durable"
+    assert payload["user_visible"] is True
 
 
 @pytest.mark.asyncio
@@ -35,6 +73,7 @@ async def test_no_compaction_needed_small_context():
     assert result.removed_count == 0
     assert result.kept_entries == entries
     assert result.summary_source == "skipped"
+    assert result.skip_reason == "within_compaction_budget"
 
 
 @pytest.mark.asyncio
@@ -154,6 +193,7 @@ async def test_empty_entries():
     assert result.removed_count == 0
     assert result.kept_entries == []
     assert result.summary == ""
+    assert result.skip_reason == "no_entries"
 
 
 @pytest.mark.asyncio

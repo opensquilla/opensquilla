@@ -56,7 +56,7 @@
 
 [llm]
 provider = "openrouter"
-model = "deepseek/deepseek-v4-flash"
+model = "deepseek/deepseek-v4-pro"
 # api_key = ""          # OpenRouter API key; env OPENROUTER_API_KEY also works
 base_url = "https://openrouter.ai/api/v1"
 # proxy = ""            # e.g. http://127.0.0.1:7890
@@ -136,7 +136,7 @@ source = "workspace"
 
 [memory.dream]
 # Dream consolidation is safety-first by default. Background scheduling and
-# destructive MEMORY.md edits require explicit opt-in.
+# curated MEMORY.md writes require explicit opt-in.
 enabled = false
 preview_mode = true
 auto_schedule = false
@@ -203,7 +203,7 @@ thinking_level = "high"
 
 [squilla_router.tiers.t1]
 provider = "openrouter"
-model = "deepseek/deepseek-v4-flash"
+model = "deepseek/deepseek-v4-pro"
 description = "M tier: default balanced text model for normal agent work, coding assistance, debugging, and moderate analysis"
 supports_image = false
 thinking_level = "high"
@@ -241,17 +241,13 @@ thinking_level = "medium"
 # tier_profile = "dashscope"
 
 [agent_token_saving]
-# Compress oversized tool results before they are fed back into the model.
-# Raw tool responses still go to the turn-call log when that log is enabled.
-tool_result_compression_enabled = true
-# mode: "off" | "truncate" | "summarize"; unset keeps legacy enabled=true/false behavior.
-# "summarize" calls an optional cheap model before falling back to truncation on failure.
-# tool_result_compression_mode = "truncate"
-tool_result_compression_max_share = 0.25
-# tool_result_compression_summary_model = "z-ai/glm-4.5-air"
-# tool_result_compression_summary_max_tokens = 1024
-# tool_result_compression_summary_timeout_seconds = 20.0
-# tool_result_compression_summary_input_max_chars = 60000
+# Project fresh tool results with the built-in tokenjuice reducer before they
+# are fed back into the model. Raw tool responses remain available through the
+# tool-result store when configured by the gateway runtime.
+tool_result_projection_max_inline_chars = 60000
+tool_result_store_max_bytes = 8388608
+tool_result_store_disk_budget_bytes = 268435456
+tool_result_store_retention_seconds = 604800
 
 [compaction]
 enabled = true
@@ -298,3 +294,44 @@ default_mode = "bypass"                 # off | on | bypass | full
 # type = "slack"
 # token = "xoxb-..."
 # slack_channel_id = "C12345"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Meta-Skill subsystem
+# ─────────────────────────────────────────────────────────────────────────────
+
+[meta_skill]
+# Global runtime gate for model-visible meta-skill behavior. When false,
+# meta-skills stay installed for inventory/history tooling, but are not injected
+# into prompts, `meta_invoke` is not surfaced, and explicit `meta_invoke` calls
+# are rejected. Default: true.
+# enabled = true
+
+[meta_skill.persistence]
+# Whether to write meta-skill execution traces to SQLite (G4 traceable audit).
+# Disabling drops the writer to no-op; the CLI `skills meta runs ...` will
+# report no rows. Default: true.
+# enabled = true
+
+# How long (seconds) a 'running' row may live before boot cleanup marks it
+# 'failed' as an orphan from a crashed prior process. Only applies to rows
+# whose owner_pid differs from the current process pid. Default: 3600 (1h).
+# orphan_cleanup_age_seconds = 3600
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Meta-Skill auto-propose: unattended synthesis from co-occurrence patterns
+#
+# Two independent triggers feed the same library function
+# (skills.creator.auto_propose):
+#   * `enabled`           — schedule a recurring cron job (Path 1)
+#   * `on_dream_complete` — piggyback on memory-consolidation dreams (Path 2)
+# Both default OFF. Operators turn them on after reviewing how
+# meta-skill-creator's gated output looks once.
+# ─────────────────────────────────────────────────────────────────────────────
+[meta_skill.auto_propose]
+# enabled = false                  # Path 1 cron toggle
+# cron = "0 5 * * *"               # 5-field local-time cron; daily 05:00
+# window_days = 30                 # log-history window for co-occurrence
+# min_freq = 3                     # drop chains observed fewer than N times
+# top_k = 5                        # consider at most N patterns per fire
+# on_dream_complete = false        # Path 2 dream-hook toggle (independent)
+# agent_ids = ["main"]             # empty/omitted = all configured agents

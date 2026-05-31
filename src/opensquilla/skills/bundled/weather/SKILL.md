@@ -26,31 +26,32 @@ metadata:
           ],
       },
   }
+entrypoint:
+  command: python {baseDir}/scripts/weather_fetch.py
+  args:
+    - --location
+    - "{{ with.location | default(inputs.user_message) }}"
+    - --days
+    - "{{ with.days | default(3) }}"
+    - --timeout
+    - "{{ with.timeout | default(8) }}"
+    - --max-chars
+    - "{{ with.max_chars | default(2500) }}"
+  parse: json
+  timeout: 15
 ---
 
 # Weather Skill
 
 Get current weather conditions and forecasts.
 
-## When to Use
+## Meta-Skill Entrypoint
 
-✅ **USE this skill when:**
-
-- "What's the weather?"
-- "Will it rain today/tomorrow?"
-- "Temperature in [city]"
-- "Weather forecast for the week"
-- Travel planning weather checks
-
-## When NOT to Use
-
-❌ **DON'T use this skill when:**
-
-- Historical weather data → use weather archives/APIs
-- Climate analysis or trends → use specialized data sources
-- Hyper-local microclimate data → use local sensors
-- Severe weather alerts → check official NWS sources
-- Aviation/marine weather → use specialized services (METAR, etc.)
+Meta-skills can run this skill as `skill_exec` for a bounded JSON forecast
+without spawning an LLM sub-agent. The entrypoint extracts `DESTINATION:` from
+planner contracts, queries wttr.in, and returns compact `current`, `forecast`,
+`seasonal_hint`, and `errors` fields. Network failures are reported in
+`errors` while preserving a usable seasonal hint.
 
 ## Location
 

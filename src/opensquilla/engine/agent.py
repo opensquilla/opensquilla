@@ -12,6 +12,7 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -28,6 +29,7 @@ from opensquilla.engine.cache_break_monitor import (
 )
 from opensquilla.engine.fallback import FallbackPolicy, backoff_sleep
 from opensquilla.engine.history import limit_turns, repair_tool_pairing
+from opensquilla.engine.progress_watchdog import ProgressObservation, ProgressWatchdog
 from opensquilla.engine.session_sanitize import (
     SessionSanitizeResult,
     project_historical_tool_payloads,
@@ -35,14 +37,14 @@ from opensquilla.engine.session_sanitize import (
     session_payload_chars,
 )
 from opensquilla.engine.thinking import drop_reasoning
+from opensquilla.engine.tokenjuice_adapter import reduce_tool_result_with_tokenjuice
 from opensquilla.engine.tool_result_store import (
     ToolResultRecord,
     ToolResultStore,
     ToolResultStoreBudgetError,
 )
 from opensquilla.engine.tool_text_compat import strip_synthetic_tool_call_suffix
-from opensquilla.engine.tool_truncation import estimate_tokens as get_approx_tokens
-from opensquilla.engine.tool_truncation import truncate_result
+from opensquilla.engine.tool_token_estimate import estimate_tokens as get_approx_tokens
 from opensquilla.execution_status import (
     mark_execution_status_truncated,
     runtime_execution_status,
@@ -79,6 +81,7 @@ from opensquilla.result_budget import (
     compact_tool_result_content,
     resolve_budget_class,
 )
+from opensquilla.router_control import router_control_replay_event_from_payload
 from opensquilla.session.compaction import (
     CompactionConfig,
     CompactionRequest,
@@ -86,10 +89,20 @@ from opensquilla.session.compaction import (
     compact_context,
 )
 from opensquilla.session.compaction_lifecycle import (
+    COMPACTION_CHUNK_SUMMARIZED_EVENT,
+    COMPACTION_SUMMARY_VERIFIED_EVENT,
+    COMPACTION_TRIGGERED_EVENT,
+    compaction_effect_payload,
+    compaction_lifecycle_payload,
+    compaction_result_payload,
     flush_receipt_allows_destructive_compaction,
+    flush_receipt_is_successful_flush,
+    new_compaction_id,
 )
-from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
+from opensquilla.session.terminal_reply import build_terminal_reply
 from opensquilla.tool_boundary import AgentToolHandler as ToolHandler
+from opensquilla.tools.registry import ToolRegistry
+from opensquilla.tools.types import ToolContext, current_tool_context
 
 from .context import ContextAssembly
 from .subagent import SubagentManager, SubagentSpec
@@ -130,6 +143,26 @@ _PROVIDER_OUTPUT_CONTINUE_PROMPT = (
     "tool call from scratch."
 )
 
+_meta_invoke_depth: ContextVar[int] = ContextVar(
+    "opensquilla_meta_invoke_depth", default=0
+)
+_meta_invoke_turn_count: ContextVar[int] = ContextVar(
+    "opensquilla_meta_invoke_turn_count", default=0
+)
+
+
+def _cost_source_for_usage(cost_usd: float, billed_cost: float) -> str:
+    if billed_cost > 0.0 and abs(cost_usd - billed_cost) <= 1e-9:
+        return "provider_billed"
+    if billed_cost > 0.0:
+        return "mixed"
+    if cost_usd > 0.0:
+        return "opensquilla_estimate"
+    return "unavailable"
+
+MAX_META_INVOKE_DEPTH = 3
+MAX_META_INVOKE_PER_TURN = 8
+
 
 def _is_deepseek_model_id(model_id: str | None) -> bool:
     normalized = (model_id or "").strip().lower()
@@ -141,20 +174,21 @@ def _is_direct_deepseek_v4_model_id(model_id: str | None) -> bool:
     return normalized in {"deepseek-v4-flash", "deepseek-v4-pro"}
 
 
-_TOOL_RESULT_SUMMARY_SYSTEM = (
-    "You compress tool output before it is passed to another agent. Preserve exact "
-    "filenames, paths, ids, numbers, commands, error messages, and code-relevant snippets. "
-    "Do not invent facts. Keep the same language as the tool output when possible. "
-    "Return only the compressed tool result, with concise bullets when that helps."
-)
 _LARGE_JSON_TOOL_FIELD_KEYS: frozenset[str] = frozenset({"body", "body_base64"})
 _LARGE_JSON_TOOL_FIELD_CHARS = 20_000
 _TOOL_ARGUMENT_PROJECTION_PREFIX = "[tool_use_argument_projection]\n"
 _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted]\n"
 _INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX = "[invalid_provider_context_projection:"
 _INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY = "_invalid_provider_context_arguments"
+_AGGREGATE_TOOL_RESULT_MAX_SHARE = 0.25
 _TOOL_ARGUMENT_HEARTBEAT_CHARS = 4096
 _PROVIDER_CONTEXT_PROJECTION_REUSED_REASON = "provider_context_projection_reused"
+_PROVIDER_CONTEXT_REPAIR_PROMPT = (
+    "A previous tool call was rejected because it reused provider-only compacted "
+    "tool arguments. Regenerate the complete tool arguments from the available "
+    "source context and retry the tool call. Do not copy compacted placeholders."
+)
+_LARGE_CONTEXT_INVALID_RESPONSE_INPUT_TOKENS = 30_000
 _COMPACTED_TOOL_ARGUMENT_MARKERS = frozenset(
     {
         "_opensquilla_compacted_tool_arguments",
@@ -223,9 +257,7 @@ def _is_threshold_denial(result: ToolResult) -> bool:
     )
 
 
-_PENDING_APPROVAL_STATUSES: frozenset[str] = frozenset(
-    {"approval_required", "approval_pending"}
-)
+_PENDING_APPROVAL_STATUSES: frozenset[str] = frozenset({"approval_required", "approval_pending"})
 
 
 def _pending_approval_payload(content: str) -> dict[str, Any] | None:
@@ -351,6 +383,21 @@ class _IterationStreamTimeoutError(TimeoutError):
     """Raised when provider streaming exceeds the active Agent iteration budget."""
 
 
+def _is_large_context_invalid_response(
+    kind: _ProviderAttemptKind,
+    *,
+    input_tokens: int,
+) -> bool:
+    return (
+        kind
+        in {
+            _ProviderAttemptKind.REASONING_ONLY,
+            _ProviderAttemptKind.MALFORMED_EMPTY,
+        }
+        and input_tokens >= _LARGE_CONTEXT_INVALID_RESPONSE_INPUT_TOKENS
+    )
+
+
 @dataclass(frozen=True)
 class _ProviderAttemptClassification:
     kind: _ProviderAttemptKind
@@ -365,14 +412,20 @@ class _ProviderRetryPolicy:
     provider_failure_budgets: dict[ProviderFailureKind, int]
 
     @classmethod
-    def from_provider_budget(cls, max_provider_retries: int) -> _ProviderRetryPolicy:
+    def from_provider_budget(
+        cls,
+        max_provider_retries: int,
+        *,
+        length_capped_continuations: int = 1,
+    ) -> _ProviderRetryPolicy:
+        length_capped_continuations = max(1, length_capped_continuations)
         return cls(
             max_provider_retries=max_provider_retries,
             attempt_budgets={
                 _ProviderAttemptKind.REASONING_ONLY: 1,
                 _ProviderAttemptKind.MALFORMED_EMPTY: 1,
                 _ProviderAttemptKind.STREAM_INCOMPLETE: 1,
-                _ProviderAttemptKind.LENGTH_CAPPED: 1,
+                _ProviderAttemptKind.LENGTH_CAPPED: length_capped_continuations,
             },
             provider_failure_budgets={ProviderFailureKind.EMPTY_RESPONSE: 1},
         )
@@ -385,9 +438,8 @@ class _ProviderRetryPolicy:
         kind: _ProviderAttemptKind,
         used: dict[_ProviderAttemptKind, int],
     ) -> bool:
-        return (
-            self.max_provider_retries > 0
-            and used.get(kind, 0) < self.attempt_budgets.get(kind, 0)
+        return self.max_provider_retries > 0 and used.get(kind, 0) < self.attempt_budgets.get(
+            kind, 0
         )
 
     def can_retry_provider_failure(
@@ -470,6 +522,7 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
         model_capabilities=chat_cfg.model_capabilities,
         thinking_level=None,
         provider_request_max_chars=chat_cfg.provider_request_max_chars,
+        tool_choice=chat_cfg.tool_choice,
     )
 
 
@@ -543,9 +596,10 @@ class Agent:
         usage_tracker: Any | None = None,
         session_key: str | None = None,
         turn_call_logger: TurnCallLogger | None = None,
-        tool_result_summarizer_provider: LLMProvider | None = None,
         memory_sync_manager: Any | None = None,
         session_flush_service: Any | None = None,
+        tool_registry: ToolRegistry | None = None,
+        tool_context: ToolContext | None = None,
     ) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
@@ -556,7 +610,9 @@ class Agent:
         self._usage_tracker = usage_tracker
         self._session_key = session_key
         self._turn_call_logger = turn_call_logger
-        self._tool_result_summarizer_provider = tool_result_summarizer_provider
+        self._tool_registry: ToolRegistry | None = tool_registry
+        self._tool_context: ToolContext | None = tool_context
+        self._meta_run_writer = (self.config.metadata or {}).get("meta_run_writer")
         self._pending_warnings: list[WarningEvent] = []
 
         self._state: AgentState = AgentState.IDLE
@@ -576,6 +632,7 @@ class Agent:
         self._session_flush_service = session_flush_service
         self._last_compaction_refusal_reason: str | None = None
         self._tool_failure_loop_counts: dict[tuple[str, str], int] = {}
+        self._provider_tool_result_overrides: dict[str, ContentBlockToolResult] = {}
 
     def _context_overflow_error(self) -> ErrorEvent:
         reason = self._last_compaction_refusal_reason
@@ -826,6 +883,53 @@ class Agent:
             return False
 
     @staticmethod
+    def _tool_call_string_arg(
+        tool_call: ToolCall | None,
+        *names: str,
+    ) -> str | None:
+        if tool_call is None:
+            return None
+        for name in names:
+            value = tool_call.arguments.get(name)
+            if isinstance(value, str) and value.strip():
+                return value
+        return None
+
+    def _tokenjuice_max_inline_chars(self, fallback: int | None = None) -> int:
+        if fallback is not None and fallback > 0:
+            return max(1, int(fallback))
+        return max(1, int(self.config.tool_result_projection_max_inline_chars))
+
+    def _tokenjuice_tool_reduction(
+        self,
+        *,
+        tool_name: str,
+        content: str,
+        is_error: bool,
+        tool_use_id: str,
+        arguments: dict[str, Any] | None = None,
+        command: str | None = None,
+        cwd: str | None = None,
+        max_inline_chars: int | None = None,
+    ) -> str | None:
+        reduction = reduce_tool_result_with_tokenjuice(
+            tool_name=tool_name,
+            content=content,
+            is_error=is_error,
+            tool_use_id=tool_use_id,
+            arguments=arguments,
+            command=command,
+            cwd=cwd,
+            max_inline_chars=self._tokenjuice_max_inline_chars(max_inline_chars),
+        )
+        if reduction is None:
+            return None
+        self.config.metadata["tool_projection_backend"] = "tokenjuice"
+        if reduction.reducer:
+            self.config.metadata["tool_projection_tokenjuice_reducer"] = reduction.reducer
+        return reduction.inline_text
+
+    @staticmethod
     def _count_image_blocks(messages: list[Message]) -> int:
         count = 0
         for message in messages:
@@ -833,18 +937,6 @@ class Agent:
                 continue
             count += sum(1 for block in message.content if isinstance(block, ContentBlockImage))
         return count
-
-    def _tool_result_compression_mode(self) -> str:
-        mode = self.config.tool_result_compression_mode
-        if mode in {"off", "truncate", "summarize"}:
-            return mode
-        return "truncate" if self.config.tool_result_compression_enabled else "off"
-
-    def _tool_result_over_budget(self, text: str) -> bool:
-        budget_tokens = int(
-            self.config.context_window_tokens * self.config.tool_result_compression_max_share
-        )
-        return get_approx_tokens(text) > budget_tokens
 
     def _compact_aggregate_tool_results_for_provider(
         self,
@@ -858,9 +950,6 @@ class Agent:
         artifact-producing results unless a successful single result alone
         exceeds the provider request cap.
         """
-
-        if self._tool_result_compression_mode() == "off":
-            return messages
 
         tool_name_by_use_id: dict[str, str] = {}
         tool_result_refs: list[tuple[int, int, ContentBlockToolResult]] = []
@@ -889,12 +978,9 @@ class Agent:
         if len(tool_result_refs) <= 2:
             return messages
 
-        recent_ids = {
-            id(block)
-            for _message_index, _block_index, block in tool_result_refs[-2:]
-        }
+        recent_ids = {id(block) for _message_index, _block_index, block in tool_result_refs[-2:]}
         budget_tokens = int(
-            self.config.context_window_tokens * self.config.tool_result_compression_max_share
+            self.config.context_window_tokens * _AGGREGATE_TOOL_RESULT_MAX_SHARE
         )
         eligible_refs: list[tuple[int, int, ContentBlockToolResult, str, int]] = []
         total_tool_result_tokens = 0
@@ -930,9 +1016,7 @@ class Agent:
             head = content[:240]
             tail = content[-240:] if len(content) > 240 else ""
             omitted = max(0, len(content) - len(head) - len(tail))
-            handle_line = (
-                f"tool_result_handle: {stored.handle}\n" if stored is not None else ""
-            )
+            handle_line = f"tool_result_handle: {stored.handle}\n" if stored is not None else ""
             compacted = (
                 "[aggregate_tool_result_compacted]\n"
                 f"tool_use_id: {block.tool_use_id}\n"
@@ -1002,29 +1086,28 @@ class Agent:
         if saved_tokens == 0 and replacements:
             saved_tokens = 1
 
-        self.config.metadata["tool_aggregate_compression_applied"] = True
-        self.config.metadata["tool_aggregate_compression_calls"] = (
-            self.config.metadata.get("tool_aggregate_compression_calls", 0) + 1
+        self.config.metadata["tool_aggregate_projection_applied"] = True
+        self.config.metadata["tool_aggregate_projection_calls"] = (
+            self.config.metadata.get("tool_aggregate_projection_calls", 0) + 1
         )
-        self.config.metadata["tool_aggregate_compression_tokens_before"] = before_tokens
-        self.config.metadata["tool_aggregate_compression_tokens_after"] = after_tokens
-        self.config.metadata["tool_aggregate_compression_tokens_saved"] = saved_tokens
-        self.config.metadata["tool_compression_applied"] = True
-        self.config.metadata["tool_compression_calls"] = (
-            self.config.metadata.get("tool_compression_calls", 0) + len(replacements)
+        self.config.metadata["tool_aggregate_projection_tokens_before"] = before_tokens
+        self.config.metadata["tool_aggregate_projection_tokens_after"] = after_tokens
+        self.config.metadata["tool_aggregate_projection_tokens_saved"] = saved_tokens
+        self.config.metadata["tool_projection_applied"] = True
+        self.config.metadata["tool_projection_calls"] = self.config.metadata.get(
+            "tool_projection_calls", 0
+        ) + len(replacements)
+        self.config.metadata["tool_projection_tokens_before"] = (
+            self.config.metadata.get("tool_projection_tokens_before", 0) + before_tokens
         )
-        self.config.metadata["tool_compression_tokens_before"] = (
-            self.config.metadata.get("tool_compression_tokens_before", 0) + before_tokens
+        self.config.metadata["tool_projection_tokens_after"] = (
+            self.config.metadata.get("tool_projection_tokens_after", 0) + after_tokens
         )
-        self.config.metadata["tool_compression_tokens_after"] = (
-            self.config.metadata.get("tool_compression_tokens_after", 0) + after_tokens
-        )
-        self.config.metadata["tool_compression_tokens_saved"] = (
-            self.config.metadata.get("tool_compression_tokens_saved", 0)
-            + saved_tokens
+        self.config.metadata["tool_projection_tokens_saved"] = (
+            self.config.metadata.get("tool_projection_tokens_saved", 0) + saved_tokens
         )
         self._write_turn_call_log(
-            "tool_aggregate_compression",
+            "tool_aggregate_projection",
             original_tool_results=len(tool_result_refs),
             compacted_tool_results=len(replacements),
             tool_result_handles=stored_handles,
@@ -1047,9 +1130,7 @@ class Agent:
             return block.content if isinstance(block.content, str) else str(block.content)
 
         total_chars = sum(len(_content(block)) for _m, _b, block in tool_result_refs)
-        external_cap = self._tool_result_provider_request_max_chars(
-            ToolResultBudgetClass.EXTERNAL
-        )
+        external_cap = self._tool_result_provider_request_max_chars(ToolResultBudgetClass.EXTERNAL)
         external_chars = sum(
             len(_content(block))
             for _m, _b, block in tool_result_refs
@@ -1110,10 +1191,7 @@ class Agent:
                 and not _tool_result_content_has_artifact(content)
                 and (
                     single_over_budget
-                    or (
-                        self.config.context_window_tokens >= 64_000
-                        and id(block) not in recent_ids
-                    )
+                    or (self.config.context_window_tokens >= 64_000 and id(block) not in recent_ids)
                 )
             ):
                 replacement_content = self._tool_result_projection_for_provider(
@@ -1164,14 +1242,14 @@ class Agent:
                 )
             )
 
-        self.config.metadata["tool_absolute_compression_applied"] = True
-        self.config.metadata["tool_absolute_compression_calls"] = (
-            self.config.metadata.get("tool_absolute_compression_calls", 0) + 1
+        self.config.metadata["tool_provider_guard_projection_applied"] = True
+        self.config.metadata["tool_provider_guard_projection_calls"] = (
+            self.config.metadata.get("tool_provider_guard_projection_calls", 0) + 1
         )
-        self.config.metadata["tool_compression_applied"] = True
-        self.config.metadata["tool_compression_calls"] = (
-            self.config.metadata.get("tool_compression_calls", 0) + len(replacements)
-        )
+        self.config.metadata["tool_projection_applied"] = True
+        self.config.metadata["tool_projection_calls"] = self.config.metadata.get(
+            "tool_projection_calls", 0
+        ) + len(replacements)
         return compacted_messages
 
     def _tool_result_projection_for_provider(
@@ -1192,9 +1270,7 @@ class Agent:
             tool_use_id=tool_use_id,
             tool_name=tool_name,
         )
-        handle_line = (
-            f"tool_result_handle: {stored.handle}\n" if stored is not None else ""
-        )
+        handle_line = f"tool_result_handle: {stored.handle}\n" if stored is not None else ""
         if max_preview_chars <= 0:
             head = ""
             tail = ""
@@ -1301,8 +1377,8 @@ class Agent:
 
         self.config.metadata["tool_argument_provider_view_summaries_applied"] = True
         metadata_key = "tool_argument_provider_view_summaries"
-        self.config.metadata[metadata_key] = (
-            self.config.metadata.get(metadata_key, 0) + len(replacements)
+        self.config.metadata[metadata_key] = self.config.metadata.get(metadata_key, 0) + len(
+            replacements
         )
         self._write_turn_call_log(
             "tool_argument_provider_view_summary",
@@ -1368,89 +1444,12 @@ class Agent:
         )
         return record
 
-    @staticmethod
-    def _trim_summary_input(text: str, max_chars: int) -> str:
-        if max_chars <= 0 or len(text) <= max_chars:
-            return text
-        head_chars = int(max_chars * 0.70)
-        tail_chars = int(max_chars * 0.20)
-        omitted = len(text) - head_chars - tail_chars
-        marker = f"\n[...omitted {omitted} chars before summarization...]\n"
-        return text[:head_chars] + marker + text[-tail_chars:]
-
-    async def _summarize_tool_result(self, result: ToolResult) -> str | None:
-        provider = self._tool_result_summarizer_provider
-        if provider is None:
-            return None
-
-        summary_input = self._trim_summary_input(
-            result.content,
-            self.config.tool_result_compression_summary_input_max_chars,
-        )
-        prompt = (
-            f"Tool name: {result.tool_name}\n"
-            f"Original size: {len(result.content)} chars\n\n"
-            "Compress this tool result for the next reasoning step. Preserve actionable "
-            "details and any exact strings that may be needed later.\n\n"
-            f"{summary_input}"
-        )
-        cfg = ChatConfig(
-            max_tokens=self.config.tool_result_compression_summary_max_tokens,
-            temperature=0,
-            system=_TOOL_RESULT_SUMMARY_SYSTEM,
-            timeout=self.config.tool_result_compression_summary_timeout_seconds,
-        )
-        parts: list[str] = []
-        model = self.config.tool_result_compression_summary_model or self.config.model_id or ""
-        try:
-            async for event in provider.chat([Message(role="user", content=prompt)], config=cfg):
-                if isinstance(event, ProviderTextDelta):
-                    parts.append(event.text)
-                elif isinstance(event, ProviderErrorEvent):
-                    raise RuntimeError(event.message)
-                elif isinstance(event, ProviderDoneEvent) and not model:
-                    model = event.model
-        except Exception as exc:  # noqa: BLE001 - compression is best-effort
-            model_label = model or self.config.tool_result_compression_summary_model or "default"
-            _, message = sanitize_agent_error(
-                str(exc),
-                fallback_error_message=str(exc) or "tool result summary failed",
-            )
-            logger.warning(
-                "tool_result_summary_failed",
-                tool=result.tool_name,
-                model=model_label,
-                error=message,
-            )
-            self.config.tool_result_compression_enabled = False
-            self.config.tool_result_compression_mode = "off"
-            self._pending_warnings.append(
-                WarningEvent(
-                    code="tool_result_summary_failed",
-                    message=(
-                        f"Tool result summary model {model_label!r} failed: {message}. "
-                        "Falling back to truncation for this result."
-                    ),
-                )
-            )
-            return None
-
-        summary = "".join(parts).strip()
-        if not summary:
-            return None
-
-        header_model = f" via {model}" if model else ""
-        compressed = (
-            f"[Tool result summarized{header_model}: {len(result.content)} chars -> "
-            f"{len(summary)} chars]\n{summary}"
-        )
-        return truncate_result(
-            compressed,
-            self.config.context_window_tokens,
-            max_share=self.config.tool_result_compression_max_share,
-        )
-
-    async def _compress_tool_result(self, result: ToolResult) -> ToolResult:
+    async def _project_tool_result_for_llm(
+        self,
+        result: ToolResult,
+        *,
+        tool_call: ToolCall | None = None,
+    ) -> ToolResult:
         guarded_content, guarded = _omit_large_json_tool_fields(result.content)
         if guarded:
             result = ToolResult(
@@ -1464,39 +1463,37 @@ class Agent:
                     if result.execution_status is not None
                     else None
                 ),
+                terminates_turn=result.terminates_turn,
             )
             self.config.metadata["tool_json_guard_applied"] = True
             self.config.metadata["tool_json_guard_calls"] = (
                 self.config.metadata.get("tool_json_guard_calls", 0) + 1
             )
 
-        mode = self._tool_result_compression_mode()
-        if mode == "off" or not self._tool_result_over_budget(result.content):
+        self.config.metadata["tool_projection_attempts"] = (
+            self.config.metadata.get("tool_projection_attempts", 0) + 1
+        )
+        projected_content = self._tokenjuice_tool_reduction(
+            tool_name=result.tool_name,
+            content=result.content,
+            is_error=result.is_error,
+            tool_use_id=result.tool_use_id,
+            arguments=tool_call.arguments if tool_call is not None else None,
+            command=self._tool_call_string_arg(tool_call, "command"),
+            cwd=self._tool_call_string_arg(tool_call, "workdir", "cwd"),
+        )
+        if projected_content is None:
+            self.config.metadata["tool_projection_noops"] = (
+                self.config.metadata.get("tool_projection_noops", 0) + 1
+            )
+            self._write_turn_call_log(
+                "tool_projection_noop",
+                tool_use_id=result.tool_use_id,
+                name=result.tool_name,
+                original_chars=len(result.content),
+            )
             return result
 
-        compressed_content: str | None = None
-        applied_mode = mode
-        budget_class = resolve_budget_class(result.tool_name)
-        if budget_class is ToolResultBudgetClass.CONTROL:
-            compressed_content = compact_tool_result_content(
-                tool_name=result.tool_name,
-                content=result.content,
-                max_preview_chars=self.config.tool_result_compression_summary_input_max_chars,
-                budget_class=budget_class,
-                is_error=result.is_error,
-            )
-            applied_mode = "control_truncate"
-        if mode == "summarize" and compressed_content is None:
-            compressed_content = await self._summarize_tool_result(result)
-            if compressed_content is None:
-                applied_mode = "truncate"
-
-        if compressed_content is None:
-            compressed_content = truncate_result(
-                result.content,
-                self.config.context_window_tokens,
-                max_share=self.config.tool_result_compression_max_share,
-            )
         stored = self._store_tool_result_snapshot(
             result.content,
             tool_use_id=result.tool_use_id,
@@ -1504,39 +1501,135 @@ class Agent:
         )
         stored_handle = stored.handle if stored is not None else None
         if stored is not None:
-            compressed_content = (
+            projected_content = (
                 "[tool_result_projection]\n"
                 f"tool_result_handle: {stored.handle}\n"
                 f"sha256: {stored.sha256}\n"
                 f"original_chars: {stored.chars}\n"
-                f"{compressed_content}"
+                f"{projected_content}"
             )
 
         tokens_before = get_approx_tokens(result.content)
-        tokens_after = get_approx_tokens(compressed_content)
-        self.config.metadata["tool_compression_applied"] = True
-        self.config.metadata["tool_compression_calls"] = (
-            self.config.metadata.get("tool_compression_calls", 0) + 1
+        tokens_after = get_approx_tokens(projected_content)
+        self.config.metadata["tool_projection_applied"] = True
+        self.config.metadata["tool_projection_calls"] = (
+            self.config.metadata.get("tool_projection_calls", 0) + 1
         )
-        self.config.metadata["tool_compression_tokens_before"] = (
-            self.config.metadata.get("tool_compression_tokens_before", 0) + tokens_before
+        self.config.metadata["tool_projection_tokens_before"] = (
+            self.config.metadata.get("tool_projection_tokens_before", 0) + tokens_before
         )
-        self.config.metadata["tool_compression_tokens_after"] = (
-            self.config.metadata.get("tool_compression_tokens_after", 0) + tokens_after
+        self.config.metadata["tool_projection_tokens_after"] = (
+            self.config.metadata.get("tool_projection_tokens_after", 0) + tokens_after
         )
-        self.config.metadata["tool_compression_tokens_saved"] = (
-            self.config.metadata.get("tool_compression_tokens_saved", 0)
-            + max(0, tokens_before - tokens_after)
-        )
+        self.config.metadata["tool_projection_tokens_saved"] = self.config.metadata.get(
+            "tool_projection_tokens_saved", 0
+        ) + max(0, tokens_before - tokens_after)
 
         self._write_turn_call_log(
-            "tool_response_compression",
+            "tool_projection_applied",
             tool_use_id=result.tool_use_id,
             name=result.tool_name,
-            mode=applied_mode,
             tool_result_handle=stored_handle,
             original_chars=len(result.content),
-            compressed_chars=len(compressed_content),
+            projected_chars=len(projected_content),
+        )
+        return ToolResult(
+            tool_use_id=result.tool_use_id,
+            tool_name=result.tool_name,
+            content=projected_content,
+            is_error=result.is_error,
+            artifacts=list(result.artifacts),
+            execution_status=result.execution_status,
+            terminates_turn=result.terminates_turn,
+        )
+
+    async def _canonicalize_tool_result(
+        self,
+        result: ToolResult,
+        *,
+        tool_call: ToolCall | None = None,
+    ) -> ToolResult:
+        return await self._project_tool_result_for_llm(result, tool_call=tool_call)
+
+    def _record_provider_tool_result_projection(
+        self,
+        result: ToolResult,
+        projected_result: ToolResult,
+    ) -> None:
+        if projected_result.content != result.content:
+            self._provider_tool_result_overrides[result.tool_use_id] = ContentBlockToolResult(
+                tool_use_id=projected_result.tool_use_id,
+                content=projected_result.content,
+                is_error=projected_result.is_error,
+                execution_status=projected_result.execution_status,
+            )
+            return
+        self._provider_tool_result_overrides.pop(result.tool_use_id, None)
+
+    async def _project_tool_result_for_delivery(
+        self,
+        result: ToolResult,
+        *,
+        tool_call: ToolCall | None = None,
+    ) -> ToolResult:
+        if _pending_approval_payload(result.content) is not None:
+            self._provider_tool_result_overrides.pop(result.tool_use_id, None)
+            return result
+        projected_result = await self._project_tool_result_for_llm(
+            result,
+            tool_call=tool_call,
+        )
+        self._record_provider_tool_result_projection(result, projected_result)
+        return projected_result
+
+    def _tool_result_compression_mode(self) -> str:
+        mode = self.config.tool_result_compression_mode
+        if mode in {"off", "truncate", "summarize"}:
+            return mode
+        return "truncate" if self.config.tool_result_compression_enabled else "off"
+
+    def _tool_result_over_budget(self, text: str) -> bool:
+        budget_tokens = int(
+            self.config.context_window_tokens * self.config.tool_result_compression_max_share
+        )
+        return get_approx_tokens(text) > budget_tokens
+
+    async def _compress_tool_result(self, result: ToolResult) -> ToolResult:
+        """Compatibility wrapper for legacy compression callers.
+
+        The current runtime projects tool results with Tokenjuice. This helper
+        remains for embedded tests and callers that exercise the older
+        compression API directly.
+        """
+        guarded_content, guarded = _omit_large_json_tool_fields(result.content)
+        if guarded:
+            result = ToolResult(
+                tool_use_id=result.tool_use_id,
+                tool_name=result.tool_name,
+                content=guarded_content,
+                is_error=result.is_error,
+                artifacts=list(result.artifacts),
+                execution_status=(
+                    mark_execution_status_truncated(result.execution_status)
+                    if result.execution_status is not None
+                    else None
+                ),
+                terminates_turn=result.terminates_turn,
+            )
+        mode = self._tool_result_compression_mode()
+        if mode == "off" or not self._tool_result_over_budget(result.content):
+            return result
+
+        budget_tokens = int(
+            self.config.context_window_tokens * self.config.tool_result_compression_max_share
+        )
+        max_preview_chars = max(0, budget_tokens * 4)
+        compressed_content = compact_tool_result_content(
+            tool_name=result.tool_name,
+            content=result.content,
+            max_preview_chars=max_preview_chars,
+            budget_class=resolve_budget_class(result.tool_name),
+            is_error=result.is_error,
         )
         return ToolResult(
             tool_use_id=result.tool_use_id,
@@ -1549,6 +1642,7 @@ class Agent:
                 if result.execution_status is not None
                 else None
             ),
+            terminates_turn=result.terminates_turn,
         )
 
     # ------------------------------------------------------------------
@@ -1596,8 +1690,8 @@ class Agent:
     ) -> AsyncIterator[AgentEvent]:
         """Run one agent turn, yielding AgentEvents.
 
-        Explicit state machine — no recursion. Tool loop iterates up to
-        config.max_iterations times.
+        Explicit state machine — no recursion. Tool loop iterates until
+        the model finishes, unless config.max_iterations is a positive cap.
         """
         async for event in self._turn_generator(message, extra_messages, semantic_message):
             yield event
@@ -1609,8 +1703,34 @@ class Agent:
         semantic_message: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Async generator that drives the state machine."""
+        self._provider_tool_result_overrides = {}
+        self._current_turn_message = message
+        _meta_invoke_turn_count.set(0)
+
         # ------ IDLE → THINKING ------
         yield self._transition(AgentState.THINKING)
+
+        # PR7/9 E2E fix — consume meta_resolution's awaiting-branch
+        # outcomes. meta_resolution stages six distinct outcomes on
+        # ctx.metadata (resume / errors / cancelled / expired /
+        # race_lost / [trigger match for fresh turn]) and returns; the
+        # runtime owns the user-visible feedback for the first five so
+        # the turn terminates cleanly instead of falling through to the
+        # LLM (which would re-trigger meta_invoke and hit the
+        # awaiting-guard with an opaque message).
+        metadata = self.config.metadata or {}
+        meta_resume = metadata.get("meta_resume")
+        if meta_resume is not None:
+            async for ev in self._run_meta_resume(meta_resume):
+                yield ev
+            return
+        clarify_outcome = self._read_clarify_outcome(metadata)
+        if clarify_outcome is not None:
+            text, terminates = clarify_outcome
+            async for ev in self._emit_terminal_text(text, iterations=0):
+                yield ev
+            _ = terminates  # always terminates today; reserved for future
+            return
 
         # Use the system prompt from config (wired by gateway via identity.prompt)
         if self._context is None:
@@ -1670,10 +1790,6 @@ class Agent:
 
         # Build initial message list
         turn_messages: list[Message] = list(history)
-        # Keep large request-scoped context at a stable provider prefix. If
-        # history is allowed to move ahead of it after the first turn,
-        # prefix-based provider caches can no longer reuse that block.
-        request_context_insert_index = 0
         # Insert this turn's skills context BEFORE the user content so it
         # joins turn_messages permanently (persists into self._history at
         # turn end). Re-inserting a fresh skills_ctx into request_messages
@@ -1685,6 +1801,11 @@ class Agent:
         skills_context_message = self._skills_context_message()
         if skills_context_message is not None:
             turn_messages.append(skills_context_message)
+        # Keep persisted history and persisted skills as the provider-visible
+        # prefix. Request-scoped context can change every turn, so keep it near
+        # the current turn instead of letting it invalidate implicit prefix
+        # caches from messages[0].
+        request_context_insert_index = len(turn_messages)
         runtime_context_insert_index = len(turn_messages)
         if extra_messages:
             turn_messages.extend(extra_messages)
@@ -1701,9 +1822,7 @@ class Agent:
         )
         runtime_context = self._runtime_context_block()
         runtime_context_message = self._runtime_context_message(runtime_context)
-        request_context_message = self._request_context_message(
-            self.config.request_context_prompt
-        )
+        request_context_message = self._request_context_message(self.config.request_context_prompt)
         runtime_context_hash = hashlib.sha256(runtime_context.encode("utf-8")).hexdigest()[:16]
 
         chat_cfg = ChatConfig(
@@ -1723,6 +1842,7 @@ class Agent:
                 self.config.thinking if isinstance(self.config.thinking, ThinkingLevel) else None
             ),
             provider_request_max_chars=self._provider_request_proof_max_chars(),
+            tool_choice=None,
         )
         _thinking_fallback_done = False
 
@@ -1738,6 +1858,11 @@ class Agent:
         total_cached_tokens = 0
         total_cache_write_tokens = 0
         total_billed_cost = 0.0
+        usage_turn_baseline = (
+            self._usage_tracker.session_checkpoint(self._session_key)
+            if self._usage_tracker and self._session_key
+            else None
+        )
         turn_llm_calls = 0
         turn_tool_errors = 0
         last_actual_model = ""
@@ -1749,6 +1874,10 @@ class Agent:
         artifact_delivery_final_response_pending = False
         artifact_delivery_degraded_final_response = False
         artifact_delivery_final_response_artifacts: list[dict[str, Any]] = []
+        max_iterations_finalization_attempted = False
+        max_iterations_finalization_pending = False
+        max_iterations_finalization_message: Message | None = None
+        progress_watchdog = ProgressWatchdog(observe_only=True)
         _fallback = FallbackPolicy(
             max_retries=self.config.max_provider_retries,
             base_backoff_ms=self.config.retry_base_backoff_ms,
@@ -1774,9 +1903,7 @@ class Agent:
             return parsed if parsed > 0 else None
 
         def _turn_budget_error() -> ErrorEvent | None:
-            max_llm_calls = self._positive_int(
-                getattr(self.config, "max_turn_llm_calls", 0)
-            )
+            max_llm_calls = self._positive_int(getattr(self.config, "max_turn_llm_calls", 0))
             if max_llm_calls is not None and turn_llm_calls > max_llm_calls:
                 return ErrorEvent(
                     message=(
@@ -1785,9 +1912,7 @@ class Agent:
                     ),
                     code="turn_llm_call_budget_exceeded",
                 )
-            max_input = self._positive_int(
-                getattr(self.config, "max_turn_input_tokens", 0)
-            )
+            max_input = self._positive_int(getattr(self.config, "max_turn_input_tokens", 0))
             if max_input is not None and total_input_tokens > max_input:
                 return ErrorEvent(
                     message=(
@@ -1796,9 +1921,7 @@ class Agent:
                     ),
                     code="turn_input_token_budget_exceeded",
                 )
-            max_output = self._positive_int(
-                getattr(self.config, "max_turn_output_tokens", 0)
-            )
+            max_output = self._positive_int(getattr(self.config, "max_turn_output_tokens", 0))
             if max_output is not None and total_output_tokens > max_output:
                 return ErrorEvent(
                     message=(
@@ -1807,9 +1930,7 @@ class Agent:
                     ),
                     code="turn_output_token_budget_exceeded",
                 )
-            max_cost = _positive_float(
-                getattr(self.config, "max_turn_billed_cost_usd", 0.0)
-            )
+            max_cost = _positive_float(getattr(self.config, "max_turn_billed_cost_usd", 0.0))
             if max_cost is not None and total_billed_cost > max_cost:
                 return ErrorEvent(
                     message=(
@@ -1818,9 +1939,7 @@ class Agent:
                     ),
                     code="turn_billed_cost_budget_exceeded",
                 )
-            max_tool_errors = self._positive_int(
-                getattr(self.config, "max_turn_tool_errors", 0)
-            )
+            max_tool_errors = self._positive_int(getattr(self.config, "max_turn_tool_errors", 0))
             if max_tool_errors is not None and turn_tool_errors >= max_tool_errors:
                 return ErrorEvent(
                     message=(
@@ -1832,9 +1951,7 @@ class Agent:
             return None
 
         def _turn_llm_call_budget_error(next_call_number: int) -> ErrorEvent | None:
-            max_llm_calls = self._positive_int(
-                getattr(self.config, "max_turn_llm_calls", 0)
-            )
+            max_llm_calls = self._positive_int(getattr(self.config, "max_turn_llm_calls", 0))
             if max_llm_calls is None or next_call_number <= max_llm_calls:
                 return None
             return ErrorEvent(
@@ -1891,18 +2008,77 @@ class Agent:
 
         try:
             while True:
-                if iterations >= self.config.max_iterations:
-                    yield self._transition(AgentState.ERROR)
-                    terminal_error = ErrorEvent(
-                        message=(
-                            f"Reached max_iterations={self.config.max_iterations}. "
-                            "Increase --max-iterations or "
-                            "OPENSQUILLA_AGENT_MAX_ITERATIONS for longer tasks."
-                        ),
-                        code="max_iterations",
+                if (
+                    self.config.max_iterations > 0
+                    and iterations >= self.config.max_iterations
+                ):
+                    max_iterations_source = str(
+                        self.config.metadata.get(
+                            "agent_max_iterations_source", "agent_config"
+                        )
                     )
-                    yield terminal_error
-                    break
+                    if max_iterations_source == "session config":
+                        max_iterations_guidance = (
+                            "Set session agent_max_iterations=0 for unlimited tasks."
+                        )
+                    elif max_iterations_source == "gateway config":
+                        max_iterations_guidance = (
+                            "Set gateway agent_max_iterations=0 for unlimited tasks."
+                        )
+                    elif max_iterations_source.startswith("env "):
+                        max_iterations_guidance = (
+                            "Set OPENSQUILLA_AGENT_MAX_ITERATIONS=0 "
+                            "for unlimited tasks."
+                        )
+                    elif max_iterations_source == "explicit argument":
+                        max_iterations_guidance = (
+                            "Pass --max-iterations 0 or max_iterations=0 "
+                            "for unlimited tasks."
+                        )
+                    else:
+                        max_iterations_guidance = (
+                            "Set AgentConfig.max_iterations=0 for unlimited tasks."
+                        )
+                    if not max_iterations_finalization_attempted:
+                        max_iterations_finalization_attempted = True
+                        max_iterations_finalization_pending = True
+                        max_iterations_finalization_message = Message(
+                            role="user",
+                            content=(
+                                "The configured iteration limit has been reached. "
+                                "Do not call tools. Provide the best concise final "
+                                "answer from the work completed so far."
+                            ),
+                        )
+                        self._write_turn_call_log(
+                            "turn_policy_decision",
+                            action="finalize_partial",
+                            reason="max_iterations",
+                            code="max_iterations",
+                            iteration=iterations,
+                            max_iterations=self.config.max_iterations,
+                            max_iterations_source=max_iterations_source,
+                        )
+                    else:
+                        self._write_turn_call_log(
+                            "turn_policy_decision",
+                            action="partial",
+                            reason="max_iterations",
+                            code="max_iterations",
+                            iteration=iterations,
+                            max_iterations=self.config.max_iterations,
+                            max_iterations_source=max_iterations_source,
+                        )
+                        terminal_error = ErrorEvent(
+                            message=(
+                                f"Reached max_iterations={self.config.max_iterations} "
+                                f"from {max_iterations_source} after a finalization attempt. "
+                                f"{max_iterations_guidance}"
+                            ),
+                            code="max_iterations",
+                        )
+                        yield terminal_error
+                        break
 
                 # Check total turn deadline (if configured)
                 if _total_deadline is not None and _loop.time() > _total_deadline:
@@ -1928,7 +2104,8 @@ class Agent:
                 _retry_attempt = 0
                 _call_attempt = 0
                 _retry_policy = _ProviderRetryPolicy.from_provider_budget(
-                    _fallback.max_retries
+                    _fallback.max_retries,
+                    length_capped_continuations=self.config.length_capped_continuations,
                 )
                 _attempt_retries_used = _retry_policy.used_attempts()
                 _invalid_response_fallback_done = False
@@ -1950,18 +2127,31 @@ class Agent:
                     call_started_at = time.monotonic()
                     provider_tools_for_call = (
                         None
-                        if artifact_delivery_final_response_pending
+                        if (
+                            artifact_delivery_final_response_pending
+                            or max_iterations_finalization_pending
+                        )
                         else provider_tool_definitions
                     )
                     tools_supported_for_call = (
-                        tools_supported and not artifact_delivery_final_response_pending
+                        tools_supported
+                        and not artifact_delivery_final_response_pending
+                        and not max_iterations_finalization_pending
                     )
                     ignored_post_delivery_tool_use = False
+                    request_turn_messages = (
+                        [*turn_messages, max_iterations_finalization_message]
+                        if (
+                            max_iterations_finalization_pending
+                            and max_iterations_finalization_message is not None
+                        )
+                        else turn_messages
+                    )
                     (
                         request_messages,
                         request_sanitize_result,
                     ) = self._provider_request_messages_with_sanitize(
-                        turn_messages,
+                        request_turn_messages,
                         request_context_message=request_context_message,
                         request_context_insert_index=request_context_insert_index,
                         runtime_context_message=runtime_context_message,
@@ -2003,6 +2193,18 @@ class Agent:
                             yield terminal_error
                         break
 
+                    call_chat_cfg = chat_cfg
+                    forced_tool_choice = self.config.metadata.get("meta_match_tool_choice")
+                    if (
+                        forced_tool_choice is not None
+                        and provider_tools_for_call
+                        and request_messages
+                        and not _message_has_tool_result(request_messages[-1])
+                    ):
+                        call_chat_cfg = chat_cfg.model_copy(
+                            update={"tool_choice": forced_tool_choice}
+                        )
+
                     self._write_turn_call_log(
                         "llm_request",
                         call_id=call_id,
@@ -2010,7 +2212,7 @@ class Agent:
                         attempt=_call_attempt,
                         messages=request_messages,
                         tools=provider_tools_for_call,
-                        config=chat_cfg,
+                        config=call_chat_cfg,
                     )
                     turn_llm_calls += 1
                     cache_prompt_snapshot = None
@@ -2018,7 +2220,7 @@ class Agent:
                         cache_prompt_snapshot = record_prompt_state(
                             messages=request_messages,
                             tools=provider_tools_for_call,
-                            config=chat_cfg,
+                            config=call_chat_cfg,
                             model=self.config.model_id or "",
                         )
 
@@ -2028,7 +2230,7 @@ class Agent:
                         raw_stream = self.provider.chat(
                             request_messages,
                             tools=provider_tools_for_call,
-                            config=chat_cfg,
+                            config=call_chat_cfg,
                         )
                         async for raw_ev in self._stream_provider_events_with_deadline(
                             raw_stream,
@@ -2043,7 +2245,10 @@ class Agent:
 
                             elif isinstance(raw_ev, ProviderToolUseStart):
                                 if not tools_supported_for_call:
-                                    if artifact_delivery_final_response_pending:
+                                    if (
+                                        artifact_delivery_final_response_pending
+                                        or max_iterations_finalization_pending
+                                    ):
                                         ignored_post_delivery_tool_use = True
                                     continue
                                 pending_tools[raw_ev.tool_use_id] = _StreamAccumulator(
@@ -2074,29 +2279,28 @@ class Agent:
                                         acc.json_chars - last_heartbeat_chars
                                         >= _TOOL_ARGUMENT_HEARTBEAT_CHARS
                                     ):
-                                        tool_argument_heartbeat_chars[
-                                            raw_ev.tool_use_id
-                                        ] = acc.json_chars
+                                        tool_argument_heartbeat_chars[raw_ev.tool_use_id] = (
+                                            acc.json_chars
+                                        )
                                         yield RunHeartbeatEvent(
                                             phase="llm_tool_arguments",
                                             elapsed_ms=int(
                                                 (time.monotonic() - call_started_at) * 1000
                                             ),
                                             idle_ms=0,
-                                            message=(
-                                                f"Receiving {acc.tool_name} arguments"
-                                            ),
+                                            message=(f"Receiving {acc.tool_name} arguments"),
                                         )
 
                             elif isinstance(raw_ev, ToolUseEndEvent):
                                 if not tools_supported_for_call:
-                                    if artifact_delivery_final_response_pending:
+                                    if (
+                                        artifact_delivery_final_response_pending
+                                        or max_iterations_finalization_pending
+                                    ):
                                         ignored_post_delivery_tool_use = True
                                     continue
                                 acc = pending_tools.pop(raw_ev.tool_use_id, None)
-                                tool_argument_heartbeat_chars.pop(
-                                    raw_ev.tool_use_id, None
-                                )
+                                tool_argument_heartbeat_chars.pop(raw_ev.tool_use_id, None)
                                 if acc and acc.json_buf:
                                     arguments = acc.finish()
                                 else:
@@ -2252,17 +2456,20 @@ class Agent:
                             yield terminal_error
                         break
                     response_text = "".join(assistant_text_parts)
-                    if (
-                        artifact_delivery_final_response_pending
-                        and ignored_post_delivery_tool_use
-                        and not response_text.strip()
-                    ):
-                        response_text = self._artifact_delivery_final_response_text(
-                            artifact_delivery_final_response_artifacts
-                        )
-                        assistant_text_parts.append(response_text)
-                        attempt_user_visible_emitted = True
-                        yield TextDeltaEvent(text=response_text)
+                    if ignored_post_delivery_tool_use and not response_text.strip():
+                        if artifact_delivery_final_response_pending:
+                            response_text = self._artifact_delivery_final_response_text(
+                                artifact_delivery_final_response_artifacts
+                            )
+                        elif max_iterations_finalization_pending:
+                            response_text = (
+                                "I reached the configured iteration limit after completing "
+                                "the available tool step. Here is the best partial result so far."
+                            )
+                        if response_text:
+                            assistant_text_parts.append(response_text)
+                            attempt_user_visible_emitted = True
+                            yield TextDeltaEvent(text=response_text)
                     last_request_msg = request_messages[-1] if request_messages else None
                     post_tool_turn = _message_has_tool_result(last_request_msg)
                     stop_reason = (
@@ -2298,6 +2505,40 @@ class Agent:
                             iter_reasoning_tokens=iter_reasoning_tokens,
                             reasoning_chars=len(iter_reasoning_content or ""),
                         )
+
+                        large_context_invalid = _is_large_context_invalid_response(
+                            attempt_classification.kind,
+                            input_tokens=iter_input_tokens,
+                        )
+                        if large_context_invalid:
+                            if (
+                                not _invalid_response_fallback_done
+                                and self._switch_to_invalid_response_fallback(
+                                    attempt_classification.kind.value
+                                )
+                            ):
+                                _invalid_response_fallback_done = True
+                                yield WarningEvent(
+                                    code="provider_large_context_fallback",
+                                    message=(
+                                        "The provider returned no visible response for a "
+                                        "large input; trying a fallback provider once."
+                                    ),
+                                )
+                                _call_attempt += 1
+                                continue
+
+                            yield self._transition(AgentState.ERROR)
+                            terminal_error = ErrorEvent(
+                                message=(
+                                    "Provider returned no visible response for a large input. "
+                                    "Send the material as an attachment, summarize or shorten "
+                                    "the prompt, or use a stronger model."
+                                ),
+                                code="empty_response",
+                            )
+                            yield terminal_error
+                            break
 
                         if (
                             attempt_classification.kind == _ProviderAttemptKind.REASONING_ONLY
@@ -2345,8 +2586,7 @@ class Agent:
                             continue
 
                         if (
-                            attempt_classification.kind
-                            == _ProviderAttemptKind.STREAM_INCOMPLETE
+                            attempt_classification.kind == _ProviderAttemptKind.STREAM_INCOMPLETE
                             and not attempt_classification.user_visible_emitted
                             and _retry_policy.can_retry_attempt(
                                 _ProviderAttemptKind.STREAM_INCOMPLETE,
@@ -2445,6 +2685,27 @@ class Agent:
                             yield terminal_error
                             break
                         if attempt_classification.kind == _ProviderAttemptKind.LENGTH_CAPPED:
+                            visible_text = strip_synthetic_tool_call_suffix(
+                                response_text,
+                                [tc.tool_name for tc in tool_calls if tc.synthetic_from_text],
+                            )
+                            logger.warning(
+                                "provider.output_truncated_exhausted",
+                                session_key=self._session_key,
+                                model=last_actual_model or self.config.model_id or "",
+                                provider=type(self.provider).__name__,
+                                iteration=iterations,
+                                call_attempt=_call_attempt,
+                                attempt=_attempt_retries_used.get(
+                                    _ProviderAttemptKind.LENGTH_CAPPED, 0
+                                ),
+                                budget=_retry_policy.attempt_budgets.get(
+                                    _ProviderAttemptKind.LENGTH_CAPPED, 0
+                                ),
+                                tool_calls=len(tool_calls),
+                                visible_chars=len(visible_text),
+                                partial_preserved=bool(visible_text or final_text_parts),
+                            )
                             yield WarningEvent(
                                 code="provider_output_truncated",
                                 message=(
@@ -2515,24 +2776,48 @@ class Agent:
                         continue
 
                     if provider_error is not None:
+                        provider_error_status_code = (
+                            int(provider_error.code)
+                            if str(provider_error.code).isdigit()
+                            else None
+                        )
                         failure_kind = classify_provider_error(
                             provider_name=getattr(self.provider, "provider_name", ""),
-                            status_code=(
-                                int(provider_error.code)
-                                if str(provider_error.code).isdigit()
-                                else None
-                            ),
+                            status_code=provider_error_status_code,
                             raw_code=provider_error.code,
                             message=provider_error.message,
                         )
                         kind = _fallback.classify_error(
                             provider_error.message,
+                            provider_name=getattr(self.provider, "provider_name", ""),
+                            status_code=provider_error_status_code,
+                            raw_code=provider_error.code,
                         )
                         if artifact_delivery_final_response_pending:
                             yield _finish_artifact_delivery_degraded(
                                 reason=provider_error.message,
                                 code=provider_error.code,
                             )
+                            break
+                        if max_iterations_finalization_pending:
+                            response_text = (
+                                "I reached the configured iteration limit, and the "
+                                "provider could not generate an additional wrap-up. "
+                                "Returning the best partial result from completed work."
+                            )
+                            assistant_text_parts.append(response_text)
+                            provider_done_for_log = ProviderDoneEvent(stop_reason="stop")
+                            _got_done_event = True
+                            _got_error = False
+                            max_iterations_finalization_pending = False
+                            self._write_turn_call_log(
+                                "turn_policy_decision",
+                                action="partial_after_finalization_provider_error",
+                                reason="max_iterations",
+                                code="max_iterations",
+                                provider_error_code=provider_error.code,
+                            )
+                            yield TextDeltaEvent(text=response_text)
                             break
                         if (
                             failure_kind == ProviderFailureKind.EMPTY_RESPONSE
@@ -2570,8 +2855,8 @@ class Agent:
                             provider_compaction_window_tokens = (
                                 self._provider_budget_compaction_window_tokens(provider_error)
                             )
-                            provider_estimated_tokens = (
-                                self._provider_budget_estimated_tokens(provider_error)
+                            provider_estimated_tokens = self._provider_budget_estimated_tokens(
+                                provider_error
                             )
                             provider_compaction_refusal_reason = (
                                 self._last_compaction_refusal_reason
@@ -2640,9 +2925,7 @@ class Agent:
                                     self._last_compaction_refusal_reason
                                     != "provider_recent_tail_too_large"
                                 ):
-                                    self._last_compaction_refusal_reason = (
-                                        "compaction_not_smaller"
-                                    )
+                                    self._last_compaction_refusal_reason = "compaction_not_smaller"
                                 terminal_error = self._context_overflow_error()
                                 yield terminal_error
                                 break
@@ -2654,6 +2937,7 @@ class Agent:
                                 message="Context compacted; retrying the provider request.",
                             )
                             yield CompactionEvent(
+                                compaction_id=overflow_outcome.compaction_id,
                                 summary=overflow_outcome.summary,
                                 kept_entries=overflow_outcome.kept_entries,
                                 kept_count=len(overflow_outcome.messages),
@@ -2786,12 +3070,11 @@ class Agent:
                     # DoneEvent usage/cost accounting for this turn.
                     turn_messages = overflow_outcome.messages
                     if overflow_outcome.request_context_insert_index is not None:
-                        request_context_insert_index = (
-                            overflow_outcome.request_context_insert_index
-                        )
+                        request_context_insert_index = overflow_outcome.request_context_insert_index
                     if overflow_outcome.runtime_context_insert_index is not None:
                         runtime_context_insert_index = overflow_outcome.runtime_context_insert_index
                     yield CompactionEvent(
+                        compaction_id=overflow_outcome.compaction_id,
                         summary=overflow_outcome.summary,
                         kept_entries=overflow_outcome.kept_entries,
                         kept_count=len(overflow_outcome.messages),
@@ -2824,9 +3107,8 @@ class Agent:
                             if isinstance(self.config.thinking, ThinkingLevel)
                             else None
                         ),
-                        provider_request_max_chars=(
-                            self._provider_request_proof_max_chars()
-                        ),
+                        provider_request_max_chars=(self._provider_request_proof_max_chars()),
+                        tool_choice=chat_cfg.tool_choice,
                     )
 
                 assembled_text = "".join(assistant_text_parts)
@@ -2846,9 +3128,7 @@ class Agent:
                         preflight_tool_results[tc.tool_use_id] = resolved
                         if self._is_provider_context_projection_reuse_result(resolved):
                             terminal_projection_preflight_error = True
-                        resolved_tool_calls.append(
-                            self._sanitize_projected_tool_call_arguments(tc)
-                        )
+                        resolved_tool_calls.append(self._sanitize_projected_tool_call_arguments(tc))
                         continue
                     resolved_tool_calls.append(resolved)
                 tool_calls = resolved_tool_calls
@@ -2903,7 +3183,10 @@ class Agent:
 
                 # No tool calls → we're done
                 if not tool_calls:
+                    max_iterations_finalization_pending = False
                     break
+                tool_calls = [self._coerce_meta_tool_call(tc) for tc in tool_calls]
+                tool_calls = self._force_matched_meta_invoke_tool_calls(tool_calls)
 
                 tool_deadline = _loop.time() + self.config.iteration_timeout
 
@@ -2953,9 +3236,7 @@ class Agent:
                             res = ToolResult(
                                 tool_use_id=tc.tool_use_id,
                                 tool_name=tc.tool_name,
-                                content=(
-                                    f"Tool '{tc.tool_name}' timed out after {tool_timeout}s"
-                                ),
+                                content=(f"Tool '{tc.tool_name}' timed out after {tool_timeout}s"),
                                 is_error=True,
                                 execution_status=runtime_execution_status(
                                     "timeout",
@@ -3020,8 +3301,7 @@ class Agent:
                             )
                             if not done:
                                 if _loop.time() >= tool_deadline or (
-                                    _total_deadline is not None
-                                    and _loop.time() >= _total_deadline
+                                    _total_deadline is not None and _loop.time() >= _total_deadline
                                 ):
                                     for task, tc in list(task_to_tool_call.items()):
                                         if task in pending:
@@ -3136,13 +3416,26 @@ class Agent:
                         async with key_lock:
                             return await _run_after_key_lock()
 
-                    task_to_tool_call = {
-                        asyncio.create_task(_run_limited(tc)): tc for tc in batch
-                    }
+                    task_to_tool_call = {asyncio.create_task(_run_limited(tc)): tc for tc in batch}
                     async for event in _collect_tool_tasks(task_to_tool_call):
                         yield event
 
                 for tc in tool_calls:
+                    if tc.tool_name == "meta_invoke":
+                        async for event in _flush_parallel_batch(parallel_batch):
+                            yield event
+                        parallel_batch = []
+                        active_ctx = (
+                            current_tool_context.get()
+                            or self._tool_context
+                            or ToolContext()
+                        )
+                        async for ev in self._run_one_streaming(tc, active_ctx):
+                            if isinstance(ev, ToolResult):
+                                results_by_id[tc.tool_use_id] = ev
+                            else:
+                                yield ev
+                        continue
                     policy = _get_tool_concurrency_policy(
                         tc.tool_name,
                         tc.arguments,
@@ -3165,21 +3458,26 @@ class Agent:
                 # Emit results in original tool_calls order.
                 for tc in tool_calls:
                     result = results_by_id[tc.tool_use_id]
+                    result_tool_call = tc
                     for artifact in result.artifacts:
                         yield ArtifactEvent(**_artifact_event_kwargs(artifact))
-                    yield ToolResultEvent(
-                        tool_use_id=result.tool_use_id,
-                        tool_name=result.tool_name,
-                        result=result.content,
-                        is_error=result.is_error,
-                        arguments=tc.arguments,
-                        execution_status=result.execution_status,
+                    projected_result = await self._project_tool_result_for_delivery(
+                        result,
+                        tool_call=result_tool_call,
                     )
+                    yield ToolResultEvent(
+                        tool_use_id=projected_result.tool_use_id,
+                        tool_name=projected_result.tool_name,
+                        result=projected_result.content,
+                        is_error=projected_result.is_error,
+                        arguments=tc.arguments,
+                        execution_status=projected_result.execution_status,
+                    )
+                    replay_event = router_control_replay_event_from_payload(result.content)
+                    if replay_event is not None:
+                        yield replay_event
                     pending_approval = _pending_approval_payload(result.content)
-                    if (
-                        pending_approval is not None
-                        and not tc.arguments.get("approval_id")
-                    ):
+                    if pending_approval is not None and not tc.arguments.get("approval_id"):
                         await _wait_for_pending_approval_resolution(
                             pending_approval,
                             timeout=_cap_timeout_by_deadlines(self._approval_wait_timeout()),
@@ -3194,37 +3492,73 @@ class Agent:
                             origin_trace=tc.origin_trace,
                         )
                         result = await _run_one(retry_call)
+                        result_tool_call = retry_call
                         for artifact in result.artifacts:
                             yield ArtifactEvent(**_artifact_event_kwargs(artifact))
-                        yield ToolResultEvent(
-                            tool_use_id=result.tool_use_id,
-                            tool_name=result.tool_name,
-                            result=result.content,
-                            is_error=result.is_error,
-                            arguments=retry_arguments,
-                            execution_status=result.execution_status,
+                        projected_result = await self._project_tool_result_for_delivery(
+                            result,
+                            tool_call=result_tool_call,
                         )
+                        yield ToolResultEvent(
+                            tool_use_id=projected_result.tool_use_id,
+                            tool_name=projected_result.tool_name,
+                            result=projected_result.content,
+                            is_error=projected_result.is_error,
+                            arguments=retry_arguments,
+                            execution_status=projected_result.execution_status,
+                        )
+                        replay_event = router_control_replay_event_from_payload(result.content)
+                        if replay_event is not None:
+                            yield replay_event
                     executed_results.append(result)
                     while self._pending_warnings:
                         yield self._pending_warnings.pop(0)
-                    if self._is_turn_yield_result(result):
+                    if self._is_turn_yield_result(result) or result.terminates_turn:
                         turn_yielded = True
                     tool_result_blocks.append(
                         ContentBlockToolResult(
-                            tool_use_id=result.tool_use_id,
-                            content=result.content,
-                            is_error=result.is_error,
-                            execution_status=result.execution_status,
+                            tool_use_id=projected_result.tool_use_id,
+                            content=projected_result.content,
+                            is_error=projected_result.is_error,
+                            execution_status=projected_result.execution_status,
                         )
                     )
 
-                terminal_artifacts = self._terminal_artifact_delivery_artifacts(
-                    executed_results
-                )
+                terminal_artifacts = self._terminal_artifact_delivery_artifacts(executed_results)
                 if terminal_artifacts:
                     artifact_delivery_final_response_artifacts = terminal_artifacts
 
                 turn_tool_errors += sum(1 for result in executed_results if result.is_error)
+                first_tool_error = next(
+                    (result for result in executed_results if result.is_error),
+                    None,
+                )
+                watchdog_decision = progress_watchdog.observe(
+                    ProgressObservation(
+                        iteration=iterations,
+                        provider_call_count=turn_llm_calls,
+                        successful_tool_result=any(
+                            not result.is_error for result in executed_results
+                        ),
+                        user_visible_output=bool("".join(final_text_parts).strip()),
+                        artifact_completed=bool(terminal_artifacts),
+                        tool_error_signature=(
+                            None
+                            if first_tool_error is None
+                            else (
+                                f"{first_tool_error.tool_name}:"
+                                f"{str(first_tool_error.content)[:160]}"
+                            )
+                        ),
+                    )
+                )
+                if watchdog_decision.action != "observe":
+                    self._write_turn_call_log(
+                        "progress_watchdog",
+                        action=watchdog_decision.action,
+                        reason=watchdog_decision.reason,
+                        details=watchdog_decision.details,
+                    )
                 terminal_error = _turn_budget_error()
                 if terminal_error is not None:
                     if artifact_delivery_final_response_pending:
@@ -3330,32 +3664,58 @@ class Agent:
             done_cost = 0.0
             cost_source = "unavailable"
 
+        session_totals = (
+            self._usage_tracker.session_snapshot(self._session_key)
+            if self._usage_tracker and self._session_key
+            else None
+        )
+        turn_usage_delta = (
+            self._usage_tracker.session_delta_snapshot(self._session_key, usage_turn_baseline)
+            if self._usage_tracker and self._session_key
+            else None
+        )
+        done_input_tokens = total_input_tokens
+        done_output_tokens = total_output_tokens
+        done_cached_tokens = total_cached_tokens
+        done_cache_write_tokens = total_cache_write_tokens
+        done_billed_cost = total_billed_cost
+        if turn_usage_delta and (
+            turn_usage_delta.input_tokens
+            or turn_usage_delta.output_tokens
+            or turn_usage_delta.cache_read_tokens
+            or turn_usage_delta.cache_write_tokens
+            or turn_usage_delta.cost_usd
+            or turn_usage_delta.billed_cost
+        ):
+            done_input_tokens = turn_usage_delta.input_tokens
+            done_output_tokens = turn_usage_delta.output_tokens
+            done_cached_tokens = turn_usage_delta.cache_read_tokens
+            done_cache_write_tokens = turn_usage_delta.cache_write_tokens
+            done_cost = turn_usage_delta.cost_usd
+            done_billed_cost = turn_usage_delta.billed_cost
+            cost_source = _cost_source_for_usage(done_cost, done_billed_cost)
+
         has_usage = bool(
-            total_input_tokens
-            or total_output_tokens
+            done_input_tokens
+            or done_output_tokens
             or total_reasoning_tokens
-            or total_cached_tokens
-            or total_cache_write_tokens
-            or total_billed_cost
+            or done_cached_tokens
+            or done_cache_write_tokens
+            or done_billed_cost
         )
         if terminal_error is None or has_usage:
             if terminal_error is None:
                 yield self._transition(AgentState.DONE)
-            session_totals = (
-                self._usage_tracker.session_snapshot(self._session_key)
-                if self._usage_tracker and self._session_key
-                else None
-            )
             yield DoneEvent(
                 text="".join(final_text_parts),
-                input_tokens=total_input_tokens,
-                output_tokens=total_output_tokens,
+                input_tokens=done_input_tokens,
+                output_tokens=done_output_tokens,
                 reasoning_tokens=total_reasoning_tokens,
-                cached_tokens=total_cached_tokens,
-                cache_write_tokens=total_cache_write_tokens,
+                cached_tokens=done_cached_tokens,
+                cache_write_tokens=done_cache_write_tokens,
                 iterations=iterations,
                 cost_usd=done_cost,
-                billed_cost=total_billed_cost,
+                billed_cost=done_billed_cost,
                 cost_source=cost_source,
                 model=done_model,
                 runtime_context_hash=runtime_context_hash,
@@ -3447,16 +3807,44 @@ class Agent:
             runtime_context_message,
             runtime_context_insert_index,
         )
-        source_messages = self._strip_provider_context_marker_replay_for_provider(
-            source_messages
-        )
-        source_messages = self._compact_aggregate_tool_results_for_provider(
-            source_messages
-        )
-        source_messages = self._sanitize_projected_tool_use_arguments_for_provider(
-            source_messages
-        )
+        source_messages = self._apply_provider_tool_result_overrides(source_messages)
+        source_messages = self._strip_provider_context_marker_replay_for_provider(source_messages)
+        source_messages = self._compact_aggregate_tool_results_for_provider(source_messages)
+        source_messages = self._sanitize_projected_tool_use_arguments_for_provider(source_messages)
         return sanitize_session_messages(source_messages)
+
+    def _apply_provider_tool_result_overrides(self, messages: list[Message]) -> list[Message]:
+        if not self._provider_tool_result_overrides:
+            return messages
+
+        projected: list[Message] = []
+        changed = False
+        for message in messages:
+            if not isinstance(message.content, list):
+                projected.append(message)
+                continue
+            blocks: list[Any] = []
+            message_changed = False
+            for block in message.content:
+                if isinstance(block, ContentBlockToolResult):
+                    override = self._provider_tool_result_overrides.get(block.tool_use_id)
+                    if override is not None:
+                        blocks.append(override)
+                        message_changed = True
+                        continue
+                blocks.append(block)
+            if message_changed:
+                projected.append(
+                    Message(
+                        role=message.role,
+                        content=blocks,
+                        reasoning_content=message.reasoning_content,
+                    )
+                )
+                changed = True
+            else:
+                projected.append(message)
+        return projected if changed else messages
 
     @staticmethod
     def _provider_request_is_smaller(before: list[Message], after: list[Message]) -> bool:
@@ -3647,6 +4035,7 @@ class Agent:
                 runtime_context_insert_index=runtime_context_insert_index,
             )
 
+        compaction_id = new_compaction_id()
         # --- Pre-compaction flush; inline compaction can continue on degraded flush. ---
         flush_task: asyncio.Task | None = None
         self._consume_completed_flush_task()
@@ -3762,6 +4151,27 @@ class Agent:
                     indexed_chunk_count=getattr(receipt, "indexed_chunk_count", None),
                 )
                 self._flush_done_this_cycle = False
+                if self.config.flush_compaction_requires_safe_receipt:
+                    self._last_compaction_refusal_reason = reason
+                    if self._session_key:
+                        notify_compaction(
+                            self._session_key,
+                            source="automatic",
+                            phase="agent_inline_overflow",
+                            status="skipped",
+                            reason=reason,
+                            tokens_before=total_tokens,
+                            context_window_tokens=window_tokens,
+                            **compaction_effect_payload(
+                                status="skipped",
+                                reason=reason,
+                            ),
+                            **compaction_lifecycle_payload(
+                                compaction_id,
+                                COMPACTION_TRIGGERED_EVENT,
+                            ),
+                        )
+                    return None
 
         # --- Compaction ---
         entries = [
@@ -3789,6 +4199,11 @@ class Agent:
                 status="started",
                 tokens_before=total_tokens,
                 context_window_tokens=window_tokens,
+                **compaction_effect_payload(status="started"),
+                **compaction_lifecycle_payload(
+                    compaction_id,
+                    COMPACTION_TRIGGERED_EVENT,
+                ),
             )
 
         try:
@@ -3805,8 +4220,35 @@ class Agent:
                     reason=self._last_compaction_refusal_reason,
                     tokens_before=total_tokens,
                     context_window_tokens=window_tokens,
+                    **compaction_effect_payload(status="failed"),
+                    **compaction_lifecycle_payload(
+                        compaction_id,
+                        COMPACTION_TRIGGERED_EVENT,
+                    ),
                 )
             return None  # signal failure
+
+        if self._session_key and result.removed_count > 0 and result.summary:
+            for event in (
+                COMPACTION_CHUNK_SUMMARIZED_EVENT,
+                COMPACTION_SUMMARY_VERIFIED_EVENT,
+            ):
+                observed_payload = compaction_lifecycle_payload(compaction_id, event)
+                observed_payload.update(
+                    compaction_result_payload(
+                        result,
+                        tokens_before=total_tokens,
+                    )
+                )
+                notify_compaction(
+                    self._session_key,
+                    source="automatic",
+                    phase="agent_inline_overflow",
+                    status="observed",
+                    context_window_tokens=window_tokens,
+                    **compaction_effect_payload(status="observed"),
+                    **observed_payload,
+                )
 
         # Removing history without a replacement summary is equivalent to
         # bare truncation; reject it so the caller takes the existing
@@ -3829,6 +4271,11 @@ class Agent:
                     context_window_tokens=window_tokens,
                     removed_count=result.removed_count,
                     kept_count=len(result.kept_entries),
+                    **compaction_effect_payload(status="failed"),
+                    **compaction_lifecycle_payload(
+                        compaction_id,
+                        COMPACTION_TRIGGERED_EVENT,
+                    ),
                 )
             return None
 
@@ -3836,15 +4283,27 @@ class Agent:
         if result.removed_count == 0 and not result.summary and has_structured_content:
             await _await_flush_task()
             self._flush_done_this_cycle = False
+            skip_reason = result.skip_reason or "structured_content_noop"
             if self._session_key:
                 notify_compaction(
                     self._session_key,
                     source="automatic",
                     phase="agent_inline_overflow",
                     status="skipped",
-                    reason="structured_content_noop",
+                    reason=skip_reason,
                     tokens_before=total_tokens,
+                    tokens_after=result.tokens_after,
+                    remaining_budget_tokens=result.remaining_budget_tokens,
                     context_window_tokens=window_tokens,
+                    **compaction_effect_payload(
+                        status="skipped",
+                        reason=skip_reason,
+                        user_visible=False,
+                    ),
+                    **compaction_lifecycle_payload(
+                        compaction_id,
+                        COMPACTION_TRIGGERED_EVENT,
+                    ),
                 )
             return CompactionOutcome(messages=messages)
 
@@ -3886,6 +4345,7 @@ class Agent:
             summary=result.summary,
             kept_entries=kept_entries,
             removed_count=result.removed_count,
+            compaction_id=compaction_id,
             request_context_insert_index=adjusted_request_idx,
             runtime_context_insert_index=adjusted_runtime_idx,
         )
@@ -3912,15 +4372,14 @@ class Agent:
             logger.warning("memory_flush.background_failed", error=str(exc))
         else:
             mode = getattr(receipt, "mode", None)
-            if not flush_receipt_allows_destructive_compaction(receipt):
+            if not flush_receipt_is_successful_flush(receipt):
                 next_retry_seconds = self._ensure_flush_degraded_backoff()
                 logger.warning(
                     "memory_flush.degraded",
                     mode=mode,
+                    result_status=getattr(receipt, "result_status", None),
                     integrity_status=getattr(receipt, "integrity_status", None),
-                    output_coverage_status=getattr(
-                        receipt, "output_coverage_status", None
-                    ),
+                    output_coverage_status=getattr(receipt, "output_coverage_status", None),
                     obligation_status=getattr(receipt, "obligation_status", None),
                     raw_reason=getattr(receipt, "raw_reason", None),
                     next_retry_seconds=next_retry_seconds,
@@ -4039,8 +4498,7 @@ class Agent:
         if Agent._has_provider_context_argument_marker(arguments):
             return True
         return any(
-            isinstance(value, str)
-            and value.startswith(_INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX)
+            isinstance(value, str) and value.startswith(_INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX)
             for value in arguments.values()
         )
 
@@ -4081,10 +4539,7 @@ class Agent:
             next_content: list[Any] = []
             changed = False
             for block in message.content:
-                if (
-                    isinstance(block, ContentBlockToolUse)
-                    and block.id in blocked_tool_ids
-                ):
+                if isinstance(block, ContentBlockToolUse) and block.id in blocked_tool_ids:
                     stripped_blocks += 1
                     changed = True
                     continue
@@ -4107,6 +4562,15 @@ class Agent:
                     content=next_content,
                     reasoning_content=getattr(message, "reasoning_content", None),
                 )
+            )
+
+        if (
+            stripped_blocks
+            and stripped_messages
+            and stripped_messages[-1].role == "assistant"
+        ):
+            stripped_messages.append(
+                Message(role="user", content=_PROVIDER_CONTEXT_REPAIR_PROMPT)
             )
 
         self.config.metadata["tool_argument_projection_replay_stripped"] = (
@@ -4144,9 +4608,8 @@ class Agent:
 
     @staticmethod
     def _has_provider_context_argument_marker(arguments: dict[str, Any]) -> bool:
-        return (
-            arguments.get(_INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY) is True
-            or any(arguments.get(marker) is True for marker in _COMPACTED_TOOL_ARGUMENT_MARKERS)
+        return arguments.get(_INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY) is True or any(
+            arguments.get(marker) is True for marker in _COMPACTED_TOOL_ARGUMENT_MARKERS
         )
 
     @staticmethod
@@ -4307,8 +4770,7 @@ class Agent:
         )
         if (
             block_threshold > 0
-            and self._tool_failure_loop_counts.get(failure_signature, 0)
-            >= block_threshold - 1
+            and self._tool_failure_loop_counts.get(failure_signature, 0) >= block_threshold - 1
         ):
             return ToolResult(
                 tool_use_id=tc.tool_use_id,
@@ -4373,6 +4835,759 @@ class Agent:
                 self._tool_failure_loop_counts.clear()
         return result
 
+    def _matched_meta_skill_name_from_metadata(self) -> str | None:
+        metadata = self.config.metadata or {}
+        match = metadata.get("meta_match")
+        plan = getattr(match, "plan", None)
+        name = getattr(plan, "name", None)
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return None
+
+    def _coerce_meta_tool_call(self, tc: ToolCall) -> ToolCall:
+        tc = self._coerce_meta_skill_view_tool_call(tc)
+        return self._coerce_meta_invoke_tool_call(tc)
+
+    def _coerce_meta_invoke_tool_call(self, tc: ToolCall) -> ToolCall:
+        if tc.tool_name != "meta_invoke":
+            return tc
+        name = tc.arguments.get("name")
+        if isinstance(name, str) and name.strip():
+            return tc
+
+        raw = tc.arguments.get("_raw")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                parsed_name = parsed.get("name")
+                if isinstance(parsed_name, str) and parsed_name.strip():
+                    return ToolCall(
+                        tool_use_id=tc.tool_use_id,
+                        tool_name="meta_invoke",
+                        arguments={"name": parsed_name.strip()},
+                        synthetic_from_text=tc.synthetic_from_text,
+                        origin_trace=tc.origin_trace,
+                    )
+
+        matched_name = self._matched_meta_skill_name_from_metadata()
+        if matched_name is None or not (self.config.metadata or {}).get("meta_match_tool_choice"):
+            return tc
+
+        logger.info(
+            "agent.meta_invoke_arguments_coerced",
+            skill=matched_name,
+            tool_use_id=tc.tool_use_id,
+        )
+        return ToolCall(
+            tool_use_id=tc.tool_use_id,
+            tool_name="meta_invoke",
+            arguments={"name": matched_name},
+            synthetic_from_text=tc.synthetic_from_text,
+            origin_trace=tc.origin_trace,
+        )
+
+    def _force_matched_meta_invoke_tool_calls(
+        self,
+        tool_calls: list[ToolCall],
+    ) -> list[ToolCall]:
+        metadata = self.config.metadata or {}
+        if not metadata.get("meta_match_tool_choice"):
+            return tool_calls
+        matched_name = self._matched_meta_skill_name_from_metadata()
+        if not matched_name:
+            return tool_calls
+        for tc in tool_calls:
+            if (
+                tc.tool_name == "meta_invoke"
+                and isinstance(tc.arguments.get("name"), str)
+                and tc.arguments["name"].strip()
+            ):
+                return tool_calls
+        if not tool_calls:
+            return tool_calls
+
+        first = tool_calls[0]
+        logger.warning(
+            "agent.meta_match_forced_invoke_rewrite",
+            skill=matched_name,
+            original_tool=first.tool_name,
+            tool_use_id=first.tool_use_id,
+        )
+        return [
+            ToolCall(
+                tool_use_id=first.tool_use_id,
+                tool_name="meta_invoke",
+                arguments={"name": matched_name},
+                synthetic_from_text=first.synthetic_from_text,
+                origin_trace=first.origin_trace,
+            )
+        ]
+
+    def _coerce_meta_skill_view_tool_call(self, tc: ToolCall) -> ToolCall:
+        if tc.tool_name != "skill_view":
+            return tc
+        name = tc.arguments.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return tc
+        file_path = tc.arguments.get("file_path")
+        if file_path not in (None, "", "SKILL.md", "./SKILL.md"):
+            return tc
+
+        metadata = self.config.metadata or {}
+        skill_loader = metadata.get("skill_loader")
+        if skill_loader is None:
+            return tc
+        try:
+            skill_spec = skill_loader.get_by_name(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("agent.meta_skill_view_coerce_failed", skill=name, error=str(exc))
+            return tc
+
+        if (
+            skill_spec is None
+            or getattr(skill_spec, "kind", "skill") != "meta"
+            or getattr(skill_spec, "disable_model_invocation", False)
+        ):
+            return tc
+
+        logger.info(
+            "agent.meta_skill_view_coerced",
+            skill=name,
+            tool_use_id=tc.tool_use_id,
+        )
+        return ToolCall(
+            tool_use_id=tc.tool_use_id,
+            tool_name="meta_invoke",
+            arguments={"name": name},
+            synthetic_from_text=tc.synthetic_from_text,
+            origin_trace=tc.origin_trace,
+        )
+
+    async def _run_one_streaming(
+        self,
+        tc: ToolCall,
+        tool_context: Any,
+    ) -> AsyncIterator[AgentEvent | ToolResult]:
+        """Stream a meta_invoke tool call inline and return a terminal ToolResult."""
+
+        import opensquilla.skills.creator  # noqa: F401
+        from opensquilla.skills.creator.runtime_e2e import make_runtime_e2e_context
+        from opensquilla.skills.meta.enabled import is_meta_skill_enabled
+        from opensquilla.skills.meta.inputs import make_meta_inputs
+        from opensquilla.skills.meta.orchestrator import (
+            MetaOrchestrator,
+            make_agent_runner_from_parent,
+            make_llm_chat_from_provider,
+            make_tool_invoker_from_handler,
+        )
+        from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
+        from opensquilla.skills.meta.types import MetaMatch, MetaResult
+        from opensquilla.tools.dispatch import preflight_tool_call
+        from opensquilla.tools.types import current_tool_context
+
+        if not is_meta_skill_enabled(self.config):
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content="meta-skill is disabled by configuration",
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+
+        current_depth = _meta_invoke_depth.get()
+        turn_count = _meta_invoke_turn_count.get()
+        if current_depth >= MAX_META_INVOKE_DEPTH:
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content=(
+                    f"meta_invoke recursion depth limit reached "
+                    f"({MAX_META_INVOKE_DEPTH}); refusing nested call to "
+                    f"{tc.arguments.get('name', '<unknown>')!r}."
+                ),
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+        if turn_count >= MAX_META_INVOKE_PER_TURN:
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content=(
+                    f"meta_invoke per-turn invocation limit reached "
+                    f"({MAX_META_INVOKE_PER_TURN})."
+                ),
+                is_error=True,
+                terminates_turn=False,
+            )
+            return
+
+        depth_token = _meta_invoke_depth.set(current_depth + 1)
+        try:
+            _meta_invoke_turn_count.set(turn_count + 1)
+            if self._tool_registry is None:
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content="meta_invoke requires Agent to be constructed with tool_registry",
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
+
+            effective_ctx = current_tool_context.get() or tool_context
+            policy_err = await preflight_tool_call(
+                registry=self._tool_registry,
+                ctx=effective_ctx,
+                tool_call=tc,
+            )
+            if policy_err is not None:
+                yield policy_err
+                return
+
+            metadata = self.config.metadata or {}
+            skill_loader = metadata.get("skill_loader")
+            if skill_loader is None:
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content=(
+                        "meta_invoke unavailable: skill_loader missing from "
+                        "AgentConfig.metadata"
+                    ),
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
+
+            workspace_dir = (
+                getattr(effective_ctx, "workspace_dir", None)
+                or metadata.get("bootstrap_workspace_dir")
+                or getattr(self.config, "workspace_dir", None)
+            )
+            name = tc.arguments.get("name")
+            if not isinstance(name, str) or not name:
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content="meta_invoke requires a non-empty 'name' argument",
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
+
+            # Spec §10: "New meta_invoke while awaiting | Reject the new
+            # invocation". Without this guard the new run hits the
+            # partial unique index on (session_key) WHERE
+            # status='awaiting_user' deep inside try_claim_awaiting and
+            # the user sees an opaque "awaiting claim rejected" error
+            # instead of a clear "please finish or cancel the previous
+            # form" hint.
+            if (
+                self._meta_run_writer is not None
+                and self._session_key
+            ):
+                try:
+                    existing_awaiting = self._meta_run_writer.peek_awaiting(
+                        session_id=self._session_key,
+                    )
+                except Exception:  # noqa: BLE001 — fail-open
+                    existing_awaiting = None
+                if existing_awaiting is not None:
+                    yield ToolResult(
+                        tool_use_id=tc.tool_use_id,
+                        tool_name="meta_invoke",
+                        content=(
+                            f"Previous meta-skill ({existing_awaiting.step_id!r} "
+                            f"in run {existing_awaiting.run_id}) is still "
+                            "waiting for your answer. Please complete the "
+                            "form or reply 'cancel' before starting a new "
+                            "meta-skill."
+                        ),
+                        is_error=True,
+                        terminates_turn=True,
+                    )
+                    return
+
+            skill_spec = skill_loader.get_by_name(name)
+            if skill_spec is None or getattr(skill_spec, "kind", "skill") != "meta":
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content=f"meta_invoke: {name!r} is not a registered meta-skill",
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
+            if getattr(skill_spec, "disable_model_invocation", False):
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content=f"meta_invoke: {name!r} is not available for model invocation",
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
+
+            try:
+                plan = parse_meta_plan(skill_spec)
+            except MetaPlanError as exc:
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content=f"meta-skill {name!r} plan invalid: {exc}",
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
+            if plan is None:
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content=f"meta-skill {name!r} parsed to None",
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
+
+            runner = make_agent_runner_from_parent(
+                provider=self.provider,
+                base_config=self.config,
+                tool_definitions=self.tool_definitions,
+                tool_handler=self.tool_handler,
+                agent_factory=type(self),
+                workspace_dir=str(workspace_dir) if workspace_dir else None,
+                usage_tracker=self._usage_tracker,
+                session_key=self._session_key,
+            )
+            llm_chat = (
+                getattr(self, "_test_llm_chat_override", None)
+                or (
+                    make_llm_chat_from_provider(
+                        provider=self.provider,
+                        base_config=self.config,
+                        usage_tracker=self._usage_tracker,
+                        session_key=self._session_key,
+                    )
+                    if self.provider is not None
+                    else None
+                )
+            )
+            tool_invoker = (
+                make_tool_invoker_from_handler(tool_handler=self.tool_handler)
+                if self.tool_handler is not None
+                else None
+            )
+
+            memory_persist_enabled = True
+            orch = MetaOrchestrator(
+                agent_runner=runner,
+                skill_loader=skill_loader,
+                llm_chat=llm_chat,
+                tool_invoker=tool_invoker,
+                workspace_dir=str(workspace_dir) if workspace_dir else None,
+                run_writer=self._meta_run_writer,
+                triggered_by="soft_meta_invoke",
+                session_key=getattr(self, "_session_key", None),
+                turn_id=getattr(self, "_turn_id", None),
+                memory_persist_enabled=memory_persist_enabled,
+                usage_tracker=self._usage_tracker,
+            )
+
+            system_prompt = (
+                self._context.system_prompt
+                if self._context is not None
+                else self.config.system_prompt or ""
+            )
+            match = MetaMatch(
+                plan=plan,
+                inputs=make_meta_inputs(
+                    user_message=(
+                        getattr(self, "_current_turn_message", "")
+                        or metadata.get("user_message", "")
+                    ),
+                    system_prompt=system_prompt,
+                ),
+            )
+
+            result: MetaResult | None = None
+            from opensquilla.skills.creator.proposer import (
+                reset_runtime_e2e_context,
+                reset_smoke_fixture_context,
+                set_runtime_e2e_context,
+                set_smoke_fixture_context,
+            )
+
+            runtime_e2e_ctx = make_runtime_e2e_context(
+                provider=self.provider,
+                base_config=self.config,
+                skill_loader=skill_loader,
+                tool_definitions=self.tool_definitions,
+                tool_handler=self.tool_handler,
+                agent_factory=type(self),
+                llm_chat=llm_chat,
+                tool_invoker=tool_invoker,
+                workspace_dir=str(workspace_dir) if workspace_dir else None,
+                usage_tracker=self._usage_tracker,
+                session_key=getattr(self, "_session_key", None) or "",
+                tool_registry=self._tool_registry,
+                tool_context=effective_ctx,
+                system_prompt=system_prompt,
+                baseline_model=getattr(self.config, "model_id", "") or "",
+            )
+            runtime_e2e_token = set_runtime_e2e_context(runtime_e2e_ctx)
+            smoke_fixture_token = set_smoke_fixture_context({"llm_chat": llm_chat})
+            try:
+                async for ev in orch.iter_events(match):
+                    if isinstance(ev, MetaResult):
+                        result = ev
+                    elif isinstance(ev, TextDeltaEvent):
+                        continue
+                    else:
+                        yield ev
+            except Exception as exc:  # noqa: BLE001
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content=f"meta-skill {name!r} raised: {exc}",
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
+            finally:
+                reset_smoke_fixture_context(smoke_fixture_token)
+                reset_runtime_e2e_context(runtime_e2e_token)
+
+            if result is None:
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content="orchestrator produced no MetaResult sentinel",
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
+            # PR7: a paused MetaResult (awaiting user_input) is NOT a
+            # failure. Render the form description into assistant text
+            # so IM/CLI/Web fallbacks all see it; the surface-specific
+            # rich card (PR5/6) rides on the synthetic ToolResultEvent
+            # already emitted by the scheduler.
+            if result.paused:
+                from opensquilla.engine.turn_runner.turn_finalizer_stage import (
+                    render_paused_outcome,
+                )
+                paused_text = render_paused_outcome(result)
+                if paused_text:
+                    yield TextDeltaEvent(text=paused_text)
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content=(
+                        f"meta-skill {name!r} paused awaiting user input."
+                    ),
+                    is_error=False,
+                    terminates_turn=True,
+                )
+                return
+            if not result.ok:
+                yield self._format_meta_invoke_failure(tc, result, plan)
+                return
+            if result.final_text:
+                yield TextDeltaEvent(text=result.final_text)
+            yield ToolResult(
+                tool_use_id=tc.tool_use_id,
+                tool_name="meta_invoke",
+                content=(
+                    f"meta-skill {name!r} completed."
+                    if result.final_text
+                    else "(meta-skill completed with no output text)"
+                ),
+                is_error=False,
+                terminates_turn=True,
+            )
+        finally:
+            try:
+                _meta_invoke_depth.reset(depth_token)
+            except ValueError:
+                _meta_invoke_depth.set(current_depth)
+
+    async def _run_meta_resume(self, meta_resume: Any) -> AsyncIterator[Any]:
+        """Stream a meta-skill resume's events as a single turn.
+
+        ``meta_resume`` is the tuple ``(claim, parsed_fields)`` that
+        ``meta_resolution`` stashes on ctx.metadata after a successful
+        try_claim_resume CAS. We build a MetaOrchestrator with the same
+        wiring ``_run_one_streaming`` uses, then yield every event from
+        ``iter_resume_events`` followed by a synthetic DoneEvent so the
+        outer stream pipeline can finalize the turn.
+        """
+        from opensquilla.engine.types import DoneEvent
+        from opensquilla.skills.meta.orchestrator import (
+            MetaOrchestrator,
+            make_agent_runner_from_parent,
+            make_llm_chat_from_provider,
+            make_tool_invoker_from_handler,
+        )
+        from opensquilla.skills.meta.types import MetaResult
+        from opensquilla.tools.types import current_tool_context
+
+        try:
+            claim, parsed = meta_resume
+        except (TypeError, ValueError):
+            logger.warning("agent.meta_resume_malformed", extra={"value": str(meta_resume)})
+            return
+
+        metadata = self.config.metadata or {}
+        skill_loader = metadata.get("skill_loader")
+        if skill_loader is None or self._meta_run_writer is None:
+            logger.warning(
+                "agent.meta_resume_missing_deps",
+                extra={
+                    "has_loader": skill_loader is not None,
+                    "has_writer": self._meta_run_writer is not None,
+                },
+            )
+            return
+
+        # Drop the marker so a re-enter through this turn cannot re-resume.
+        if isinstance(metadata, dict):
+            metadata.pop("meta_resume", None)
+
+        effective_ctx = current_tool_context.get() or None
+        workspace_dir = (
+            (getattr(effective_ctx, "workspace_dir", None) if effective_ctx else None)
+            or metadata.get("bootstrap_workspace_dir")
+            or getattr(self.config, "workspace_dir", None)
+        )
+
+        runner = make_agent_runner_from_parent(
+            provider=self.provider,
+            base_config=self.config,
+            tool_definitions=self.tool_definitions,
+            tool_handler=self.tool_handler,
+            agent_factory=type(self),
+            workspace_dir=str(workspace_dir) if workspace_dir else None,
+            usage_tracker=self._usage_tracker,
+            session_key=self._session_key,
+        )
+        llm_chat = (
+            getattr(self, "_test_llm_chat_override", None)
+            or (
+                make_llm_chat_from_provider(
+                    provider=self.provider,
+                    base_config=self.config,
+                    usage_tracker=self._usage_tracker,
+                    session_key=self._session_key,
+                )
+                if self.provider is not None
+                else None
+            )
+        )
+        tool_invoker = (
+            make_tool_invoker_from_handler(tool_handler=self.tool_handler)
+            if self.tool_handler is not None
+            else None
+        )
+
+        orch = MetaOrchestrator(
+            agent_runner=runner,
+            skill_loader=skill_loader,
+            llm_chat=llm_chat,
+            tool_invoker=tool_invoker,
+            workspace_dir=str(workspace_dir) if workspace_dir else None,
+            run_writer=self._meta_run_writer,
+            triggered_by="resume",
+            session_key=getattr(self, "_session_key", None),
+            turn_id=getattr(self, "_turn_id", None),
+            memory_persist_enabled=True,
+            usage_tracker=self._usage_tracker,
+        )
+
+        result: Any = None
+        final_text_parts: list[str] = []
+        try:
+            async for ev in orch.iter_resume_events(
+                payload=claim,
+                filled_fields=parsed,
+            ):
+                if isinstance(ev, MetaResult):
+                    result = ev
+                    continue
+                # Stream nested AgentEvents through (TextDelta, ToolUseStart,
+                # ToolResult). Capture text deltas so we can render the
+                # final assistant text for the transcript / Done event.
+                from opensquilla.engine.types import TextDeltaEvent
+                if isinstance(ev, TextDeltaEvent) and ev.text:
+                    final_text_parts.append(ev.text)
+                yield ev
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("agent.meta_resume_failed", extra={"error": str(exc)})
+            yield DoneEvent(text="", input_tokens=0, output_tokens=0, iterations=0)
+            return
+
+        # Build the final assistant text. If the DAG re-paused, use the
+        # rendered form text; otherwise use the orchestrator's final_text.
+        if result is not None:
+            if result.paused:
+                from opensquilla.engine.turn_runner.turn_finalizer_stage import (
+                    render_paused_outcome,
+                )
+                final_text = render_paused_outcome(result)
+            else:
+                final_text = result.final_text or "".join(final_text_parts)
+            # Emit one synthetic TextDelta for any text not already streamed
+            # (re-pause path) so the transcript / surface sees it.
+            already_streamed = "".join(final_text_parts)
+            if final_text and final_text != already_streamed:
+                from opensquilla.engine.types import TextDeltaEvent
+                yield TextDeltaEvent(text=final_text)
+        else:
+            final_text = "".join(final_text_parts)
+
+        yield DoneEvent(
+            text=final_text,
+            input_tokens=0,
+            output_tokens=0,
+            iterations=1,
+            cost_usd=0.0,
+            cost_source="none",
+            model=self.config.model_id or "",
+        )
+
+    def _read_clarify_outcome(
+        self, metadata: dict[str, Any],
+    ) -> tuple[str, bool] | None:
+        """Translate meta_resolution awaiting-branch metadata into the
+        user-visible text dictated by spec §10.
+
+        Returns ``(text, terminates)`` on hit, ``None`` when no clarify
+        outcome is staged. Pops the consumed keys so the same turn can't
+        re-handle them and a re-entry into ``_turn_generator`` won't
+        echo a stale outcome.
+        """
+        # parse-failure (<3 strikes) — show error list + re-render form
+        errors = metadata.pop("meta_clarify_errors", None)
+        reprompt = metadata.pop("meta_clarify_reprompt", None)
+        if errors and reprompt is not None:
+            return self._render_clarify_errors(errors, reprompt), True
+
+        cancelled = metadata.pop("meta_clarify_cancelled", None)
+        reason = metadata.pop("meta_clarify_cancel_reason", "")
+        if cancelled is not None:
+            if reason == "parse_failure_limit":
+                return "无法解析回复，已取消上一轮收集。", True
+            return "好，已取消。", True
+
+        expired = metadata.pop("meta_clarify_expired", None)
+        if expired is not None:
+            return "上一轮收集已超时，请重新发起。", True
+
+        race_lost = metadata.pop("meta_clarify_race_lost", None)
+        if race_lost is not None:
+            return "你之前的回答已被处理。", True
+
+        return None
+
+    def _render_clarify_errors(
+        self, errors: Any, awaiting: Any,
+    ) -> str:
+        """Build the parse-error feedback block plus a re-rendered form.
+
+        ``errors`` is the ``list[str]`` returned by ``parse_clarify_reply``;
+        ``awaiting`` is the ``AwaitingPeek`` row whose ``awaiting_schema_json``
+        is reused to render the form a second time.
+        """
+        from opensquilla.engine.turn_runner.turn_finalizer_stage import (
+            _schema_language,
+            render_paused_outcome,
+        )
+        from opensquilla.skills.meta.plan_serde import (
+            clarify_config_from_jsonable,
+        )
+        from opensquilla.skills.meta.types import MetaPaused, MetaResult
+
+        try:
+            schema_payload = json.loads(awaiting.awaiting_schema_json or "{}")
+            cfg = clarify_config_from_jsonable(schema_payload)
+            language = _schema_language(cfg, cfg.intro)
+            lines: list[str] = [
+                "未能解析回复：" if language == "zh" else "I could not parse your reply:",
+            ]
+            for err in (errors or []):
+                lines.append(f"  - {err}")
+            synthetic = MetaResult(
+                ok=False,
+                paused=True,
+                paused_payload=MetaPaused(
+                    run_id=awaiting.run_id,
+                    step_id=awaiting.step_id,
+                    schema=cfg,
+                    intro=cfg.intro,
+                ),
+            )
+            form_text = render_paused_outcome(synthetic)
+            if form_text:
+                lines.append("")
+                lines.append(form_text)
+        except Exception:  # noqa: BLE001 — best-effort re-render
+            lines = ["未能解析回复："]
+            for err in (errors or []):
+                lines.append(f"  - {err}")
+            lines.append("")
+            lines.append("请按上次的表单格式重新回答，或回 '取消' 终止。")
+        return "\n".join(lines)
+
+    async def _emit_terminal_text(
+        self, text: str, *, iterations: int,
+    ) -> AsyncIterator[Any]:
+        """Yield ``TextDeltaEvent(text)`` + a minimal ``DoneEvent`` so the
+        stream consumer + transcript treat this as a full assistant turn."""
+        from opensquilla.engine.types import DoneEvent, TextDeltaEvent
+        if text:
+            yield TextDeltaEvent(text=text)
+        yield DoneEvent(
+            text=text,
+            input_tokens=0,
+            output_tokens=0,
+            iterations=iterations,
+            cost_usd=0.0,
+            cost_source="none",
+            model=self.config.model_id or "",
+        )
+
+    def _format_meta_invoke_failure(
+        self,
+        tc: ToolCall,
+        result: Any,
+        plan: Any,
+    ) -> ToolResult:
+        per_step_cap = 1200
+        lines: list[str] = [
+            f"Meta-skill `{getattr(plan, 'name', '?')}` failed at step "
+            f"`{result.failed_step_id}`",
+            "",
+            f"Error: {result.error}",
+            "",
+            "Partial outputs:",
+        ]
+        for sid, text in (result.step_outputs or {}).items():
+            if sid == result.failed_step_id:
+                continue
+            snippet = text if len(text) <= per_step_cap else text[:per_step_cap] + "..."
+            lines.extend([f"- {sid}:", snippet, ""])
+        lines.append(f"Original meta-skill requested: {tc.arguments.get('name', '')}")
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name="meta_invoke",
+            content="\n".join(lines),
+            is_error=True,
+            terminates_turn=False,
+        )
+
     # ------------------------------------------------------------------
     # Subagent factory
     # ------------------------------------------------------------------
@@ -4436,6 +5651,7 @@ class Agent:
             max_turn_output_tokens=self.config.max_turn_output_tokens,
             max_turn_billed_cost_usd=self.config.max_turn_billed_cost_usd,
             max_turn_tool_errors=self.config.max_turn_tool_errors,
+            length_capped_continuations=self.config.length_capped_continuations,
             context_window_tokens=self.config.context_window_tokens,
             workspace_dir=spec.workspace_dir or self.config.workspace_dir,
             flush_enabled=self.config.flush_enabled,
@@ -4447,20 +5663,9 @@ class Agent:
             flush_compaction_requires_safe_receipt=(
                 self.config.flush_compaction_requires_safe_receipt
             ),
-            tool_result_compression_enabled=self.config.tool_result_compression_enabled,
-            tool_result_compression_mode=self.config.tool_result_compression_mode,
-            tool_result_compression_max_share=self.config.tool_result_compression_max_share,
-            tool_result_compression_summary_model=(
-                self.config.tool_result_compression_summary_model
-            ),
-            tool_result_compression_summary_max_tokens=(
-                self.config.tool_result_compression_summary_max_tokens
-            ),
-            tool_result_compression_summary_timeout_seconds=(
-                self.config.tool_result_compression_summary_timeout_seconds
-            ),
-            tool_result_compression_summary_input_max_chars=(
-                self.config.tool_result_compression_summary_input_max_chars
+            flush_compaction_safety_mode=self.config.flush_compaction_safety_mode,
+            tool_result_projection_max_inline_chars=(
+                self.config.tool_result_projection_max_inline_chars
             ),
             tool_result_provider_request_max_chars=(
                 self.config.tool_result_provider_request_max_chars
@@ -4469,12 +5674,8 @@ class Agent:
             tool_use_argument_provider_request_max_chars=(
                 self.config.tool_use_argument_provider_request_max_chars
             ),
-            tool_use_argument_projection_enabled=(
-                self.config.tool_use_argument_projection_enabled
-            ),
-            tool_failure_loop_block_threshold=(
-                self.config.tool_failure_loop_block_threshold
-            ),
+            tool_use_argument_projection_enabled=(self.config.tool_use_argument_projection_enabled),
+            tool_failure_loop_block_threshold=(self.config.tool_failure_loop_block_threshold),
             max_safe_tool_concurrency=self.config.max_safe_tool_concurrency,
             tool_result_external_keep_recent=self.config.tool_result_external_keep_recent,
             tool_result_store_dir=self.config.tool_result_store_dir,
@@ -4482,12 +5683,8 @@ class Agent:
             tool_result_store_session_key=self.config.tool_result_store_session_key,
             tool_result_store_agent_id=self.config.tool_result_store_agent_id,
             tool_result_store_max_bytes=self.config.tool_result_store_max_bytes,
-            tool_result_store_disk_budget_bytes=(
-                self.config.tool_result_store_disk_budget_bytes
-            ),
-            tool_result_store_retention_seconds=(
-                self.config.tool_result_store_retention_seconds
-            ),
+            tool_result_store_disk_budget_bytes=(self.config.tool_result_store_disk_budget_bytes),
+            tool_result_store_retention_seconds=(self.config.tool_result_store_retention_seconds),
         )
         return Agent(
             provider=self.provider,
@@ -4495,7 +5692,6 @@ class Agent:
             tool_definitions=filtered_defs,
             tool_handler=_subagent_tool_handler,
             subagent_manager=SubagentManager(spawn_depth=depth),
-            tool_result_summarizer_provider=self._tool_result_summarizer_provider,
         )
 
     async def spawn_subagent(self, spec: SubagentSpec) -> str:

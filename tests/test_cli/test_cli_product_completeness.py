@@ -18,7 +18,7 @@ class FakeGatewayClient:
     sessions_payload: dict[str, Any] = {"sessions": [], "count": 0}
     cost_payload: dict[str, Any] = {"breakdown": [], "totalCostUsd": 0.0}
 
-    async def connect(self, url: str) -> None:
+    async def connect(self, url: str, *, token=None) -> None:
         type(self).calls.append(("connect", url))
 
     async def close(self) -> None:
@@ -64,7 +64,7 @@ class FakeGatewayClient:
 
 
 class FailingConnectGatewayClient(FakeGatewayClient):
-    async def connect(self, url: str) -> None:
+    async def connect(self, url: str, *, token=None) -> None:
         raise SystemExit("gateway offline")
 
 
@@ -160,6 +160,23 @@ def test_config_get_explicit_config_path_wins(tmp_path: Path):
 
     assert result.exit_code == 0, result.stdout
     assert "explicit/model" in result.stdout
+
+
+def test_config_set_explicit_config_path_persists_to_target(tmp_path: Path):
+    target = tmp_path / "explicit.toml"
+    target.write_text("log_file_enabled = false\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["config", "set", "log_file_enabled", "true", "--config", str(target)],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Config:" in result.stdout
+    assert "Restart the gateway" in result.stdout
+    check = runner.invoke(app, ["config", "get", "log_file_enabled", "--config", str(target)])
+    assert check.exit_code == 0, check.stdout
+    assert "True" in check.stdout
 
 
 def test_gateway_json_errors_go_to_stderr(monkeypatch):
@@ -561,6 +578,10 @@ def test_memory_search_and_show_use_gateway_rpcs(monkeypatch):
         },
     }
 
+    search_default = runner.invoke(
+        app,
+        ["memory", "search", "alpha", "--limit", "3", "--json"],
+    )
     search = runner.invoke(
         app,
         ["memory", "search", "alpha", "--limit", "3", "--source", "sessions", "--json"],
@@ -583,12 +604,17 @@ def test_memory_search_and_show_use_gateway_rpcs(monkeypatch):
         ],
     )
 
+    assert search_default.exit_code == 0, search_default.stdout
     assert search.exit_code == 0, search.stdout
     assert search_table.exit_code == 0, search_table.stdout
     assert show.exit_code == 0, show.stdout
     assert "Source" in search_table.stdout
     assert "sessions" in search_table.stdout
     assert json.loads(show.stdout)["content"] == "line"
+    assert (
+        "memory.search",
+        {"query": "alpha", "agentId": "main", "limit": 3, "source": "memory"},
+    ) in fake.calls
     assert (
         "memory.search",
         {"query": "alpha", "agentId": "main", "limit": 3, "source": "sessions"},
@@ -599,7 +625,7 @@ def test_memory_search_and_show_use_gateway_rpcs(monkeypatch):
     ) in fake.calls
 
 
-def test_memory_index_and_raw_fallback_commands_use_admin_rpcs(monkeypatch):
+def test_memory_index_raw_fallback_and_repair_commands_use_admin_rpcs(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.rpc_payloads = {
         "memory.index": {"agentId": "main", "force": True},
@@ -616,6 +642,29 @@ def test_memory_index_and_raw_fallback_commands_use_admin_rpcs(monkeypatch):
             "truncated": False,
             "content": "raw",
         },
+        "memory.repair.list": {
+            "agentId": "main",
+            "count": 1,
+            "items": [
+                {
+                    "summaryId": 7,
+                    "sessionKey": "agent:main:thread-1",
+                    "compactionId": "cmp-1",
+                    "flushReceiptStatus": "degraded_forensic",
+                }
+            ],
+        },
+        "memory.repair.show": {
+            "agentId": "main",
+            "sessionKey": "agent:main:thread-1",
+            "compactionId": "cmp-1",
+            "entries": [{"role": "user", "content": "preimage fact"}],
+        },
+        "memory.repair.run": {
+            "agentId": "main",
+            "count": 1,
+            "results": [{"compactionId": "cmp-1", "status": "repaired"}],
+        },
     }
 
     index = runner.invoke(app, ["memory", "index", "--agent", "main", "--force", "--json"])
@@ -624,15 +673,63 @@ def test_memory_index_and_raw_fallback_commands_use_admin_rpcs(monkeypatch):
         app,
         ["memory", "raw-fallbacks", "show", "memory/.raw_fallbacks/raw.md", "--json"],
     )
+    repair_listed = runner.invoke(app, ["memory", "repair", "list", "--json"])
+    repair_shown = runner.invoke(
+        app,
+        [
+            "memory",
+            "repair",
+            "show",
+            "--session-key",
+            "agent:main:thread-1",
+            "--compaction-id",
+            "cmp-1",
+            "--json",
+        ],
+    )
+    repair_run = runner.invoke(
+        app,
+        [
+            "memory",
+            "repair",
+            "run",
+            "--session-key",
+            "agent:main:thread-1",
+            "--compaction-id",
+            "cmp-1",
+            "--json",
+        ],
+    )
 
     assert index.exit_code == 0, index.stdout
     assert listed.exit_code == 0, listed.stdout
     assert shown.exit_code == 0, shown.stdout
+    assert repair_listed.exit_code == 0, repair_listed.stdout
+    assert repair_shown.exit_code == 0, repair_shown.stdout
+    assert repair_run.exit_code == 0, repair_run.stdout
     assert ("memory.index", {"agentId": "main", "force": True}) in fake.calls
     assert ("memory.raw_fallbacks.list", {"agentId": "main"}) in fake.calls
     assert (
         "memory.raw_fallbacks.show",
         {"path": "memory/.raw_fallbacks/raw.md", "agentId": "main"},
+    ) in fake.calls
+    assert ("memory.repair.list", {"agentId": "main", "limit": 50}) in fake.calls
+    assert (
+        "memory.repair.show",
+        {
+            "agentId": "main",
+            "sessionKey": "agent:main:thread-1",
+            "compactionId": "cmp-1",
+        },
+    ) in fake.calls
+    assert (
+        "memory.repair.run",
+        {
+            "agentId": "main",
+            "limit": 50,
+            "sessionKey": "agent:main:thread-1",
+            "compactionId": "cmp-1",
+        },
     ) in fake.calls
 
 
@@ -743,6 +840,63 @@ def test_channels_status_and_logout_use_existing_rpcs(monkeypatch):
     assert ("channels.logout", {"name": "slack"}) in fake.calls
 
 
+def test_runtime_diagnostics_commands_can_target_configured_gateway(
+    tmp_path: Path, monkeypatch
+):
+    fake = _install_fake_gateway(monkeypatch)
+    target = tmp_path / "custom.toml"
+    target.write_text('host = "0.0.0.0"\nport = 19999\n', encoding="utf-8")
+    fake.rpc_payloads = {
+        "channels.status": {
+            "channels": [{"name": "slack", "status": "connected", "connected": True}]
+        },
+        "providers.status": {"activeProvider": "openrouter", "providers": [], "count": 0},
+        "search.status": {
+            "activeProvider": "duckduckgo",
+            "provider": "duckduckgo",
+            "configured": True,
+            "buildable": True,
+        },
+        "diagnostics.status": {"diagnostics_enabled": {"effective": True}},
+        "doctor.memory.status": {"backend": "sqlite", "status": "ok"},
+    }
+
+    channels = runner.invoke(
+        app, ["channels", "status", "slack", "--json", "--config", str(target)]
+    )
+    providers = runner.invoke(app, ["providers", "status", "--json", "--config", str(target)])
+    search = runner.invoke(app, ["search", "status", "--json", "--config", str(target)])
+    diagnostics = runner.invoke(
+        app, ["diagnostics", "status", "--json", "--config", str(target)]
+    )
+    memory = runner.invoke(app, ["memory", "status", "--json", "--config", str(target)])
+
+    assert channels.exit_code == 0, channels.stdout
+    assert providers.exit_code == 0, providers.stdout
+    assert search.exit_code == 0, search.stdout
+    assert diagnostics.exit_code == 0, diagnostics.stdout
+    assert memory.exit_code == 0, memory.stdout
+    connected_urls = [value for method, value in fake.calls if method == "connect"]
+    assert connected_urls == ["ws://127.0.0.1:19999/ws"] * 5
+
+
+def test_runtime_diagnostics_commands_use_gateway_config_env_path(
+    tmp_path: Path, monkeypatch
+):
+    fake = _install_fake_gateway(monkeypatch)
+    target = tmp_path / "env-config.toml"
+    target.write_text('host = "127.0.0.1"\nport = 20001\n', encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    fake.rpc_payloads = {
+        "providers.status": {"activeProvider": "openrouter", "providers": [], "count": 0},
+    }
+
+    result = runner.invoke(app, ["providers", "status", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    assert ("connect", "ws://127.0.0.1:20001/ws") in fake.calls
+
+
 def test_cost_json_returns_gateway_payload(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     fake.cost_payload = {
@@ -815,3 +969,22 @@ def test_search_query_json_exits_nonzero_on_diagnostic_failure(monkeypatch):
 
     assert result.exit_code == 1
     assert json.loads(result.stdout)["error"]["message"] == "network down"
+
+
+def test_doctor_json_uses_gateway_doctor_rpc(monkeypatch):
+    fake = _install_fake_gateway(monkeypatch)
+    fake.rpc_payloads = {
+        "doctor.status": {
+            "status": "ready",
+            "ready": True,
+            "summary": "Ready",
+            "counts": {"error": 0, "warn": 0, "info": 0, "ok": 1},
+            "findings": [],
+        }
+    }
+
+    result = runner.invoke(app, ["doctor", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    assert json.loads(result.stdout)["ready"] is True
+    assert ("doctor.status", {"agentId": "main", "deep": True}) in fake.calls

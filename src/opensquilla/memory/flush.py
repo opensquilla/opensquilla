@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
 from pathlib import Path
@@ -9,6 +10,10 @@ from typing import Any
 
 SILENT_REPLY_TOKEN = "[SILENT_REPLY_TOKEN]"
 DEFAULT_FLUSH_ARCHIVE_MAX_BYTES = 800_000
+FLUSH_RESERVED_PATH_PREFIXES = ("memory/.raw_fallbacks/", "memory/.checkpoints/")
+FLUSH_RESERVED_PATHS = frozenset(
+    {"MEMORY.md", "AGENTS.md", "USER.md", "SOUL.md", "TOOLS.md"}
+)
 
 FLUSH_SYSTEM_PROMPT_TEMPLATE = """\
 Pre-compaction memory flush.
@@ -53,6 +58,25 @@ class MemoryFlushPlan:
     soft_threshold_tokens: int = 4000
     force_flush_transcript_bytes: int = 2_000_000
     reserve_tokens_floor: int = 1000
+
+
+def validate_flush_save_arguments(
+    arguments: Mapping[str, Any],
+    *,
+    relative_path: str,
+) -> str | None:
+    """Return a denial reason unless a flush save appends to the exact plan path."""
+    path = arguments.get("path")
+    mode = arguments.get("mode")
+    if (
+        not isinstance(path, str)
+        or path != relative_path
+        or mode != "append"
+        or any(path.startswith(prefix) for prefix in FLUSH_RESERVED_PATH_PREFIXES)
+        or path in FLUSH_RESERVED_PATHS
+    ):
+        return f"Flush may only append to {relative_path}."
+    return None
 
 
 @dataclass(frozen=True)

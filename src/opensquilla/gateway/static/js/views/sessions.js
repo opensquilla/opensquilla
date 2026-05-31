@@ -291,7 +291,8 @@ const SessionsView = (() => {
         html += `<th class="sess-table__cell--actions"></th>`;
       } else if (sortable.includes(col.key)) {
         const arrow = _sortCol === col.key ? (_sortAsc ? ' ▲' : ' ▼') : '';
-        html += `<th class="sess-th-sort" data-sort="${col.key}">${col.label}<span class="sess-table__arrow">${arrow}</span></th>`;
+        const ariaSort = _sortCol === col.key ? (_sortAsc ? 'ascending' : 'descending') : 'none';
+        html += `<th class="sess-th-sort" aria-sort="${ariaSort}"><button type="button" class="sess-th-sort__btn" data-sort="${col.key}">${col.label}<span class="sess-table__arrow" aria-hidden="true">${arrow}</span></button></th>`;
       } else {
         html += `<th>${col.label}</th>`;
       }
@@ -323,9 +324,9 @@ const SessionsView = (() => {
         <td class="sess-mono">${row.message_count != null ? Number(row.message_count).toLocaleString() : '—'}</td>
         <td class="sess-mono sess-dim">${_esc(modified)}</td>
         <td class="sess-table__cell--actions">
-          <button class="sess-iconbtn" data-open-key="${_esc(row.key)}" title="Open chat">${icons.chat()}</button>
-          <button class="sess-iconbtn" data-copy-key="${_esc(row.key)}" title="Copy session key">${icons.copy()}</button>
-          <button class="sess-iconbtn sess-iconbtn--danger" data-del-key="${_esc(row.key)}" title="Delete">${icons.trash()}</button>
+          <button class="sess-iconbtn" data-open-key="${_esc(row.key)}" title="Open chat" aria-label="Open chat for ${_esc(row.key)}">${icons.chat()}</button>
+          <button class="sess-iconbtn" data-copy-key="${_esc(row.key)}" title="Copy session key" aria-label="Copy session key ${_esc(row.key)}">${icons.copy()}</button>
+          <button class="sess-iconbtn sess-iconbtn--danger" data-del-key="${_esc(row.key)}" title="Delete" aria-label="Delete session ${_esc(row.key)}">${icons.trash()}</button>
         </td>
       </tr>`;
     });
@@ -391,9 +392,9 @@ const SessionsView = (() => {
     });
 
     // Bind sort headers
-    wrap.querySelectorAll('th.sess-th-sort').forEach(th => {
-      th.addEventListener('click', () => {
-        const col = th.dataset.sort;
+    wrap.querySelectorAll('[data-sort]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const col = btn.dataset.sort;
         if (_sortCol === col) {
           _sortAsc = !_sortAsc;
         } else {
@@ -499,7 +500,7 @@ const SessionsView = (() => {
        <p class="sess-modal__warn"><small>The transcript will not be flushed to disk; use <code>/reset</code> first if you want a backup.</small></p>`,
       [
         {
-          label: 'Delete all', cls: 'btn-danger', onClick: async () => {
+          label: 'Delete all', cls: 'btn--danger', onClick: async () => {
             // Backend sessions.delete (rpc_sessions.py:1466) accepts {keys:[...]}
             // for batch deletion and returns {deleted: [...], errors: [...]}.
             // One round-trip instead of N preserves partial-failure semantics
@@ -532,7 +533,7 @@ const SessionsView = (() => {
        <p class="sess-modal__warn"><small>The transcript will not be flushed to disk; use <code>/reset</code> first if you want a backup.</small></p>`,
       [
         {
-          label: 'Delete', cls: 'btn-danger', onClick: async () => {
+          label: 'Delete', cls: 'btn--danger', onClick: async () => {
             try {
               const res = await _rpc.call('sessions.delete', { key });
               const errors = Array.isArray(res?.errors) ? res.errors : [];

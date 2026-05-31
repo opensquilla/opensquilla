@@ -1218,6 +1218,51 @@ def test_gemini_stream_tool_call_without_index_is_tolerated(monkeypatch: Any) ->
     assert done.model == "gemini-2.5-flash"
 
 
+def test_openai_compat_sends_required_tool_choice_when_configured(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="gpt-test",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    tool = ToolDefinition(
+        name="meta_invoke",
+        description="Invoke a meta-skill.",
+        input_schema=ToolInputSchema(properties={"name": {"type": "string"}}, required=["name"]),
+    )
+
+    _collect_events(provider, ChatConfig(tool_choice="required"), tools=[tool])
+
+    assert captured["payload"]["tool_choice"] == "required"
+
+
+def test_openai_compat_sends_named_function_tool_choice_when_configured(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="gpt-test",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    tool = ToolDefinition(
+        name="meta_invoke",
+        description="Invoke a meta-skill.",
+        input_schema=ToolInputSchema(properties={"name": {"type": "string"}}, required=["name"]),
+    )
+    tool_choice = {"type": "function", "function": {"name": "meta_invoke"}}
+
+    _collect_events(provider, ChatConfig(tool_choice=tool_choice), tools=[tool])
+
+    assert captured["payload"]["tool_choice"] == tool_choice
+
+
 def test_gemini_stream_multiple_tool_calls_without_indexes_stay_separate(
     monkeypatch: Any,
 ) -> None:

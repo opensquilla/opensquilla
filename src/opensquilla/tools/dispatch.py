@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import weakref
 from collections.abc import Sequence
 from typing import Any
@@ -33,6 +34,7 @@ from opensquilla.result_budget import (
     ToolResultBudgetTracker,
     ToolRunBudgetExceededError,
     ToolRunBudgetPolicy,
+    ToolRunBudgetReservation,
     ToolRunBudgetTracker,
     clamp_tool_arguments,
 )
@@ -54,7 +56,7 @@ from opensquilla.tools.types import (
 
 log = structlog.get_logger("opensquilla.tools.dispatch")
 
-__all__ = ["build_tool_handler"]
+__all__ = ["build_tool_handler", "preflight_tool_call"]
 
 _TOOL_ARGUMENT_PROJECTION_PREFIX = "[tool_use_argument_projection]\n"
 _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted]\n"
@@ -137,6 +139,44 @@ def _build_envelope_result(
         ),
         is_error=True,
         execution_status=normalize_execution_status(status),
+    )
+
+
+async def _emit_webresearch_tool_run_diagnostics(
+    *,
+    tool_call: ToolCall,
+    effective_ctx: ToolContext | None,
+    reservation: ToolRunBudgetReservation,
+    run_budget_tracker: ToolRunBudgetTracker,
+    started_at: float,
+    raw_result: Any,
+    exception: BaseException | None,
+) -> None:
+    if not reservation.counted_as_external_text:
+        return
+    snapshot = await run_budget_tracker.snapshot()
+    if exception is None:
+        status = "ok"
+    elif isinstance(exception, ToolRunBudgetExceededError):
+        status = "budget_exhausted"
+    else:
+        status = "error"
+    result_chars = 0
+    if raw_result is not None:
+        result_chars = len(raw_result if isinstance(raw_result, str) else str(raw_result))
+    log.debug(
+        "dispatch.webresearch_tool_run_diagnostics",
+        tool=tool_call.tool_name,
+        tool_use_id=tool_call.tool_use_id,
+        agent_id=effective_ctx.agent_id if effective_ctx else None,
+        session_key=effective_ctx.session_key if effective_ctx else None,
+        status=status,
+        tool_wall_time_ms=round((time.monotonic() - started_at) * 1000, 3),
+        result_chars=result_chars,
+        reserved_external_text_chars=reservation.reserved_external_text_chars,
+        counted_as_search=reservation.counted_as_search,
+        counted_as_fetch=reservation.counted_as_fetch,
+        **snapshot,
     )
 
 
@@ -344,6 +384,49 @@ def _resolve_registry_miss(
     )
 
 
+async def preflight_tool_call(
+    *,
+    registry: ToolRegistry,
+    ctx: ToolContext | None,
+    tool_call: ToolCall,
+    known_skill_names: set[str] | frozenset[str] | None = None,
+) -> ToolResult | None:
+    """Return a denial envelope when a tool call fails dispatch preflight."""
+    known = frozenset(known_skill_names or ())
+
+    injection_envelope = _check_injection_guard(tool_call, ctx)
+    if injection_envelope is not None:
+        return injection_envelope
+
+    registered = registry.get(tool_call.tool_name)
+    if registered is None:
+        return _resolve_registry_miss(tool_call, known, ctx)
+
+    non_executable_arguments = _check_non_executable_arguments(tool_call, ctx)
+    if non_executable_arguments is not None:
+        return non_executable_arguments
+
+    dispatch_input = DispatchInput(
+        tool_call=tool_call,
+        ctx=ctx,
+        registered=registered,
+        known_skill_names=known,
+        registry=registry,
+    )
+
+    def _emit_policy_log(log_event: dict) -> None:
+        event = log_event.get("event", "dispatch.policy_block")
+        fields = {k: v for k, v in log_event.items() if k != "event"}
+        log.warning(event, **fields)
+
+    decision = run_chain_with_emit(dispatch_input, emit=_emit_policy_log)
+    if not decision.allowed:
+        if decision.envelope is None:
+            raise RuntimeError("PolicyCheck returned a denial without an envelope")
+        return decision.envelope
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public factory
 # ---------------------------------------------------------------------------
@@ -510,6 +593,7 @@ def build_tool_handler(
             return envelope
 
         token = current_tool_context.set(effective_ctx)
+        tool_started_at = time.monotonic()
         raw_result: Any = None
         exception: BaseException | None = None
         artifact_start = (
@@ -545,6 +629,15 @@ def build_tool_handler(
                                 error=str(hook_exc),
                             )
                 if not isinstance(exception, asyncio.CancelledError):
+                    await _emit_webresearch_tool_run_diagnostics(
+                        tool_call=tool_call,
+                        effective_ctx=effective_ctx,
+                        reservation=reservation,
+                        run_budget_tracker=run_budget_tracker,
+                        started_at=tool_started_at,
+                        raw_result=raw_result,
+                        exception=exception,
+                    )
                     # 7. Single finalisation point.
                     return await finalize(
                         tool_call,

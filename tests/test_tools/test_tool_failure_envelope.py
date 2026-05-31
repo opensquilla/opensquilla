@@ -99,3 +99,30 @@ def test_safe_tool_error_instance_message_preserves_five_key_shape() -> None:
     assert envelope["error_class"] == "SafeToolError"
     assert "PDF file not found" in envelope["user_message"]
     assert "secret" not in envelope["user_message"]
+
+
+def test_image_attachment_path_safe_tool_error_is_not_generic_internal_error() -> None:
+    envelope = build_tool_failure_envelope(
+        SafeToolError(
+            "Image path is not accessible by the image tool: ab367.png. "
+            "Pass a real local file path or HTTP(S) URL. If this is a chat attachment, "
+            "answer from the attached image directly instead of calling the image tool.",
+            "resolved=/secret/workspace/ab367.png",
+        ),
+        "image",
+    )
+
+    assert set(envelope) == {
+        "status",
+        "tool",
+        "error_class",
+        "user_message",
+        "retry_allowed",
+    }
+    assert envelope["tool"] == "image"
+    assert envelope["error_class"] == "SafeToolError"
+    assert envelope["retry_allowed"] is False
+    assert "not accessible by the image tool" in envelope["user_message"]
+    assert "chat attachment" in envelope["user_message"]
+    assert "internal error" not in envelope["user_message"]
+    assert "secret" not in envelope["user_message"]

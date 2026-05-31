@@ -16,6 +16,7 @@ from opensquilla.artifacts import (
     ArtifactStore,
     artifact_payload,
 )
+from opensquilla.tools.path_aliases import resolve_workspace_alias
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
@@ -194,7 +195,10 @@ async def publish_artifact(
     workspace = Path(ctx.workspace_dir).resolve()
     reject_foreign_host_path(path, platform=os.name, workspace=workspace)
     raw_path = Path(path)
-    target = (raw_path if raw_path.is_absolute() else workspace / raw_path).resolve()
+    alias_target = resolve_workspace_alias(raw_path, workspace)
+    target = (
+        alias_target or (raw_path if raw_path.is_absolute() else workspace / raw_path)
+    ).resolve()
     try:
         target.relative_to(workspace)
     except ValueError as exc:

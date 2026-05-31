@@ -53,11 +53,21 @@ const ApprovalMonitor = (() => {
     _pollDelayMs = Math.min(POLL_MAX_MS, Math.max(POLL_MS, _pollDelayMs * 2));
   }
 
+  function _authHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    const token = (typeof App !== 'undefined' && App.getAuthToken && App.getAuthToken()) || '';
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return headers;
+  }
+
   async function _poll() {
     if (_pollBusy) return;
     _pollBusy = true;
     try {
-      const resp = await fetch('/api/approvals', { cache: 'no-store' });
+      const resp = await fetch('/api/approvals', {
+        cache: 'no-store',
+        headers: _authHeaders(),
+      });
       if (!resp.ok) {
         _setBadge(0);
         _increasePollBackoff();
@@ -114,7 +124,10 @@ const ApprovalMonitor = (() => {
 
     const inline = document.getElementById('approval-inline');
     if (!inline) return;
-    inline.textContent = count === 1 ? 'Approval required' : `${count} approvals required`;
+    const inlineText = count === 1 ? 'Approval required' : `${count} approvals required`;
+    inline.textContent = inlineText;
+    inline.setAttribute('aria-label', inlineText);
+    inline.title = inlineText;
     inline.classList.toggle('hidden', count <= 0);
     if (!inline.dataset.bound) {
       inline.dataset.bound = '1';
@@ -185,7 +198,7 @@ const ApprovalMonitor = (() => {
     try {
       const resp = await fetch('/api/approvals/resolve', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: _authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);

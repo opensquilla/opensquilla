@@ -253,9 +253,13 @@ def _patch_approval_plan(
 ) -> tuple[dict[str, object] | None, _PatchApprovalPlan | None]:
     """Return a hard block or a patch-level approval plan when one is needed."""
 
-    from opensquilla.sandbox.sensitive_paths import build_block_envelope, is_sensitive_path
+    from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
     from opensquilla.tools.builtin import filesystem
     from opensquilla.tools.builtin.shell import _context_elevated_mode
+    from opensquilla.tools.write_policy import (
+        match_workspace_write_deny,
+        workspace_write_deny_block,
+    )
 
     elevated_mode = _context_elevated_mode()
     elevated_full = elevated_mode == "full"
@@ -274,7 +278,7 @@ def _patch_approval_plan(
             }
         )
         if not elevated_full:
-            sensitive = is_sensitive_path(str(resolved))
+            sensitive = sensitive_path_marker(str(resolved), workspace=workspace)
             if sensitive is not None:
                 return (
                     build_block_envelope(
@@ -284,6 +288,14 @@ def _patch_approval_plan(
                     ),
                     None,
                 )
+
+        deny_match = match_workspace_write_deny(
+            resolved,
+            original_path=op.path,
+            workspace=workspace,
+        )
+        if deny_match is not None:
+            return workspace_write_deny_block("apply_patch", deny_match), None
 
         outside_workspace = filesystem._is_outside_workspace(resolved)
         memory_source_path = filesystem._memory_source_rel_path(resolved)

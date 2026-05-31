@@ -1,6 +1,6 @@
 ---
 name: multi-search-engine
-description: "Query the web through multiple search engines (Brave, Tavily, SerpAPI, DuckDuckGo, Bing, Baidu, Sogou, 360) with a single CLI surface. Trigger when the user asks for a research search, fact lookup, source discovery, or wants to compare engines for coverage. The skill aggregates per-engine result lists and normalizes them into a uniform JSON shape for downstream analysis. API-key engines gate themselves on the relevant environment variable; engines requiring no key always run."
+description: "Query the web through multiple search engines (Brave, Tavily, SerpAPI, DuckDuckGo, Bing, Baidu, Sogou, 360) with a single CLI surface. Trigger when the user asks for a research search, fact lookup, source discovery, or wants to compare engines for coverage. The skill aggregates per-engine result lists and normalizes them into a uniform JSON shape for downstream skills (deep-research is the primary consumer). API-key engines gate themselves on the relevant environment variable; engines requiring no key always run."
 homepage: ""
 provenance:
   origin: clawhub-mit0
@@ -15,6 +15,18 @@ metadata:
         "requires": { "anyBins": ["python", "python3"] },
       },
   }
+entrypoint:
+  command: python {baseDir}/scripts/search.py
+  args:
+    - --query
+    - "{{ with.query | default(inputs.user_message) }}"
+    - --engines
+    - "{{ with.engines | default(['brave', 'duckduckgo']) | join(',') }}"
+    - --limit
+    - "{{ with.max_results | default(25) }}"
+    - --json
+  parse: json
+  timeout: 60
 ---
 
 # multi-search-engine
@@ -24,19 +36,17 @@ returning a normalized result list. Built on `httpx` and `beautifulsoup4`
 (both already in OpenSquilla default dependencies, so no extra install
 beyond `pip install opensquilla`).
 
-## When to use
+## Use cases
 
-- Broad source discovery where you want diverse engine coverage
+- Building a `deep-research` round with diverse engine coverage
 - Fact-check a claim against >1 engine
 - Compare what Bing returns vs DuckDuckGo for the same query
-- Search Chinese-language sources via Baidu/Sogou/360 alongside global
-  engines
+- Search Chinese-language sources via Baidu/Sogou/360 alongside global engines
 
-## When NOT to use
+## Limitations
 
-- A single engine is sufficient — call its API directly
-- The user wants headless-browser-driven scraping with full DOM rendering
-  — this skill is HTTP-only
+- A single engine sufficient → call its API directly instead
+- Need headless-browser DOM rendering → this skill is HTTP-only
 
 ## Quick start
 
@@ -63,7 +73,7 @@ Output:
     }
   ],
   "errors": [
-    {"engine": "brave", "reason": "BRAVE_API_KEY not set; skipping"}
+    {"engine": "brave", "reason": "BRAVE_SEARCH_API_KEY/BRAVE_API_KEY not set; skipping"}
   ]
 }
 ```
@@ -77,7 +87,7 @@ Output:
 | `baidu` | no | — | Chinese-language web |
 | `sogou` | no | — | Chinese-language web |
 | `360` | no | — | Chinese-language web |
-| `brave` | yes | `BRAVE_API_KEY` | High-quality results, generous free tier |
+| `brave` | yes | `BRAVE_SEARCH_API_KEY` or legacy `BRAVE_API_KEY` | High-quality results, generous free tier |
 | `tavily` | yes | `TAVILY_API_KEY` | Designed for AI agents, returns clean JSON |
 | `serpapi` | yes | `SERPAPI_API_KEY` | Aggregator across many engines |
 

@@ -39,9 +39,20 @@ class FallbackPolicy:
     max_backoff_ms: int = 30_000
 
     @staticmethod
-    def classify_error(message: str) -> ProviderErrorKind:
+    def classify_error(
+        message: str,
+        *,
+        provider_name: str = "openrouter",
+        status_code: int | None = None,
+        raw_code: str = "",
+    ) -> ProviderErrorKind:
         """Classify a provider error message into a retry category."""
-        kind = classify_provider_error("openrouter", None, message=message)
+        kind = classify_provider_error(
+            provider_name,
+            status_code,
+            raw_code=raw_code,
+            message=message,
+        )
         return _FAILURE_KIND_MAP.get(kind, ProviderErrorKind.UNKNOWN)
 
     def should_retry(self, kind: ProviderErrorKind, attempt: int) -> bool:

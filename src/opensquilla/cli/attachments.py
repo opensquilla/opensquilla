@@ -7,13 +7,13 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from opensquilla.gateway.attachment_ingest import (
+from opensquilla.contracts.attachments import (
     IMAGE_ATTACHMENT_BYTES,
     MAX_STAGED_PDF_BYTES,
     TEXT_ATTACHMENT_BYTES,
     can_stage_attachment_mime,
 )
-from opensquilla.gateway.attachment_ingest import (
+from opensquilla.contracts.attachments import (
     attachment_size_limit_for_mime as _policy_attachment_size_limit_for_mime,
 )
 

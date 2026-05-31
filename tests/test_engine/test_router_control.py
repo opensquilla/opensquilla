@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import copy
+from types import SimpleNamespace
+
+import pytest
+
+from opensquilla.engine.pipeline import TurnContext
+from opensquilla.engine.steps.squilla_router import apply_squilla_router
+from opensquilla.gateway.config import (
+    ROUTER_TIER_PROFILE_IDS,
+    SquillaRouterConfig,
+    _router_tier_profile_defaults,
+)
+from opensquilla.router_control import (
+    RouterControlHoldStore,
+    RouterControlValidationError,
+    build_router_control_targets,
+    render_router_control_prompt_block,
+    resolve_router_control_target,
+)
+
+
+def _router_cfg(tiers: dict) -> SquillaRouterConfig:
+    return SquillaRouterConfig(
+        enabled=True,
+        rollout_phase="full",
+        require_router_runtime=False,
+        auto_thinking=False,
+        tiers=tiers,
+        default_tier="t1" if "t1" in tiers else next(iter(tiers)),
+    )
+
+
+def test_router_control_targets_generalize_to_every_profile() -> None:
+    for profile in sorted(ROUTER_TIER_PROFILE_IDS):
+        tiers = _router_tier_profile_defaults(profile)
+        targets = build_router_control_targets(_router_cfg(tiers))
+        target_ids = {target.target_id for target in targets}
+
+        for tier_name, tier_cfg in tiers.items():
+            if tier_cfg.get("image_only"):
+                assert f"tier:{tier_name}" not in target_ids
+                assert f"model:{tier_cfg['model']}" not in target_ids
+                continue
+            assert f"tier:{tier_name}" in target_ids
+            assert f"model:{tier_cfg['model']}" in target_ids
+
+
+def test_duplicate_exact_model_target_resolves_to_strongest_text_tier() -> None:
+    cfg = _router_cfg(
+        {
+            "t0": {"provider": "openrouter", "model": "same/model", "supports_image": False},
+            "t1": {"provider": "openrouter", "model": "other/model", "supports_image": False},
+            "t3": {"provider": "openrouter", "model": "same/model", "supports_image": False},
+        }
+    )
+
+    target = resolve_router_control_target(cfg, "model:same/model")
+
+    assert target.tier == "t3"
+    assert target.model == "same/model"
+    assert target.duplicate_model_resolution is True
+
+
+def test_natural_language_aliases_are_rejected_by_local_validation() -> None:
+    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+
+    with pytest.raises(RouterControlValidationError):
+        resolve_router_control_target(cfg, "Claude Opus 4.7")
+
+
+def test_hold_store_expires_by_explicit_turn_count_and_sliding_idle_time() -> None:
+    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+    target = resolve_router_control_target(cfg, "tier:t3")
+    store = RouterControlHoldStore()
+    store.set_hold(
+        "agent:main:test",
+        target,
+        evidence="use t3",
+        now_monotonic=100.0,
+        turns_remaining=1,
+        ttl_seconds=10.0,
+    )
+
+    first = store.get_valid("agent:main:test", now_monotonic=101.0, decrement=True)
+    assert first is not None
+    assert first.tier == "t3"
+    assert store.get_valid("agent:main:test", now_monotonic=102.0) is None
+
+    store.set_hold(
+        "agent:main:test",
+        target,
+        evidence="use t3 again",
+        now_monotonic=100.0,
+        ttl_seconds=10.0,
+    )
+    assert store.get_valid("agent:main:test", now_monotonic=109.0, decrement=True) is not None
+    assert store.get_valid("agent:main:test", now_monotonic=118.0) is not None
+    assert store.get_valid("agent:main:test", now_monotonic=119.0) is None
+
+
+def test_hold_store_deepcopy_preserves_session_identity_for_ttl_refresh() -> None:
+    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+    target = resolve_router_control_target(cfg, "tier:t3")
+    store = RouterControlHoldStore()
+    store.set_hold(
+        "agent:main:test",
+        target,
+        evidence="use t3",
+        now_monotonic=100.0,
+        ttl_seconds=10.0,
+    )
+
+    copied = copy.deepcopy(store)
+
+    assert copied is store
+    assert copied.get_valid("agent:main:test", now_monotonic=109.0, decrement=True) is not None
+    assert store.get_valid("agent:main:test", now_monotonic=118.0) is not None
+    assert store.get_valid("agent:main:test", now_monotonic=119.0) is None
+
+
+@pytest.mark.asyncio
+async def test_squilla_router_refreshes_hold_idle_ttl_through_copied_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+    target = resolve_router_control_target(cfg, "tier:t3")
+    store = RouterControlHoldStore()
+    store.set_hold(
+        "agent:main:test-refresh",
+        target,
+        evidence="use t3",
+        now_monotonic=100.0,
+        ttl_seconds=10.0,
+    )
+    now = [109.0]
+    monkeypatch.setattr("opensquilla.router_control.time.monotonic", lambda: now[0])
+
+    metadata = copy.deepcopy({"router_control_hold_store": store})
+    ctx = TurnContext(
+        message="continue this",
+        session_key="agent:main:test-refresh",
+        config=SimpleNamespace(squilla_router=cfg),
+        provider=None,
+        model="default-model",
+        tool_defs=[],
+        system_prompt="system",
+        metadata=metadata,
+    )
+
+    out = await apply_squilla_router(ctx)
+
+    assert out.metadata["routing_source"] == "router_control_hold"
+    now[0] = 118.0
+    assert store.get_valid("agent:main:test-refresh") is not None
+    now[0] = 119.0
+    assert store.get_valid("agent:main:test-refresh") is None
+
+
+@pytest.mark.asyncio
+async def test_squilla_router_applies_hold_before_normal_classification(monkeypatch) -> None:
+    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+    target = resolve_router_control_target(cfg, "tier:t3")
+    store = RouterControlHoldStore()
+    store.set_hold("agent:main:test", target, evidence="use t3")
+
+    def fail_strategy(_cfg: object) -> object:
+        raise AssertionError("router classification should not run while hold is valid")
+
+    monkeypatch.setattr("opensquilla.engine.steps.squilla_router._get_strategy", fail_strategy)
+    ctx = TurnContext(
+        message="review this",
+        session_key="agent:main:test",
+        config=SimpleNamespace(squilla_router=cfg),
+        provider=None,
+        model="default-model",
+        tool_defs=[],
+        system_prompt="system",
+        metadata={"router_control_hold_store": store},
+    )
+
+    out = await apply_squilla_router(ctx)
+
+    assert out.model == "anthropic/claude-opus-4.7"
+    assert out.metadata["routing_source"] == "router_control_hold"
+    assert out.metadata["router_control_hold_applied"] is True
+    assert out.metadata["router_control_target_tier"] == "t3"
+
+
+@pytest.mark.asyncio
+async def test_image_attachments_bypass_text_hold(monkeypatch) -> None:
+    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+    target = resolve_router_control_target(cfg, "tier:t3")
+    store = RouterControlHoldStore()
+    store.set_hold("agent:main:test-image", target, evidence="use t3")
+
+    def fail_strategy(_cfg: object) -> object:
+        raise AssertionError("image route should not classify")
+
+    monkeypatch.setattr("opensquilla.engine.steps.squilla_router._get_strategy", fail_strategy)
+    ctx = TurnContext(
+        message="what is in this image?",
+        session_key="agent:main:test-image",
+        config=SimpleNamespace(squilla_router=cfg),
+        provider=None,
+        model="default-model",
+        tool_defs=[],
+        system_prompt="system",
+        attachments=[{"mime": "image/png"}],
+        metadata={"router_control_hold_store": store},
+    )
+
+    out = await apply_squilla_router(ctx)
+
+    assert out.metadata["routing_source"] == "image_route"
+    assert out.metadata.get("router_control_hold_applied") is not True
+    assert out.model == "moonshotai/kimi-k2.6"
+
+
+def test_prompt_block_contains_canonical_targets_not_aliases() -> None:
+    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+
+    block = render_router_control_prompt_block(cfg)
+
+    assert "router_control" in block
+    assert "tier:t3" in block
+    assert "model:anthropic/claude-opus-4.7" in block
+    assert "must choose one target_id exactly" in block

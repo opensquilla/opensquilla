@@ -58,6 +58,7 @@ def search_list(
 def search_status(
     provider: str | None = typer.Argument(None, help="Optional search provider id"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Show runtime search provider diagnostics from the running gateway."""
 
@@ -67,7 +68,7 @@ def search_status(
             params["provider"] = provider
         return await client.call("search.status", params)
 
-    payload = run_gateway_sync(_run, json_output=json_output)
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if json_output:
         print_json(payload)
         return

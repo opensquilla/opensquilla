@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import structlog.testing
 
 from opensquilla.engine import Agent, AgentConfig, ThinkingLevel, ToolResult
 from opensquilla.engine.runtime import TurnRunner
@@ -59,6 +60,16 @@ class _FallbackSequenceProvider(_SequenceProvider):
     def fallback_after_invalid_response(self, reason: str) -> bool:
         self.fallback_reasons.append(reason)
         return True
+
+
+def _large_reasoning_only_done() -> ProviderDone:
+    return ProviderDone(
+        stop_reason="stop",
+        input_tokens=35_000,
+        output_tokens=2,
+        reasoning_tokens=2,
+        reasoning_content="internal",
+    )
 
 
 class _SelectorClone:
@@ -343,6 +354,70 @@ async def test_clean_empty_done_can_switch_to_selector_fallback() -> None:
 
 
 @pytest.mark.asyncio
+async def test_large_reasoning_only_uses_fallback_before_same_model_retry() -> None:
+    provider = _FallbackSequenceProvider(
+        [
+            [_large_reasoning_only_done()],
+            [
+                ProviderText(text="ok"),
+                ProviderDone(stop_reason="stop", input_tokens=4, output_tokens=1),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert provider.fallback_reasons == ["reasoning_only"]
+    assert len(provider.calls) == 2
+    assert not any(
+        event.kind == "warning" and event.code == "provider_reasoning_only_retry"
+        for event in events
+    )
+    assert any(
+        event.kind == "warning" and event.code == "provider_large_context_fallback"
+        for event in events
+    )
+    assert any(event.kind == "done" and event.text == "ok" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_large_empty_response_without_fallback_surfaces_clear_error() -> None:
+    provider = _SequenceProvider(
+        [[ProviderDone(stop_reason="stop", input_tokens=35_000, output_tokens=0)]]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_provider_retries=1,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 1
+    error = next(event for event in events if event.kind == "error")
+    assert error.code == "empty_response"
+    assert "large input" in error.message
+    assert "attachment" in error.message
+    assert "summarize" in error.message or "shorten" in error.message
+    assert "stronger model" in error.message
+    assert not any(
+        event.kind == "warning" and event.code == "provider_empty_retry"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_incomplete_tool_stream_errors_without_running_tool() -> None:
     provider = _SequenceProvider(
         [
@@ -543,6 +618,101 @@ async def test_length_capped_visible_text_continues_once_before_terminal() -> No
     assert done.text == "partial answer finished"
     assert done.input_tokens == 15
     assert done.output_tokens == 10
+
+
+@pytest.mark.asyncio
+async def test_length_capped_visible_text_uses_configured_continuation_budget() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="part one "),
+                ProviderDone(stop_reason="length", input_tokens=1, output_tokens=2),
+            ],
+            [
+                ProviderText(text="part two "),
+                ProviderDone(stop_reason="length", input_tokens=3, output_tokens=4),
+            ],
+            [
+                ProviderText(text="part three "),
+                ProviderDone(stop_reason="length", input_tokens=5, output_tokens=6),
+            ],
+            [
+                ProviderText(text="done"),
+                ProviderDone(stop_reason="stop", input_tokens=7, output_tokens=8),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            length_capped_continuations=3,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 4
+    assert sum(
+        1
+        for event in events
+        if event.kind == "warning" and event.code == "provider_output_continue"
+    ) == 3
+    assert not any(event.kind == "error" for event in events)
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "part one part two part three done"
+    assert done.input_tokens == 16
+    assert done.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_length_capped_exhaustion_records_partial_diagnostics() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="first partial "),
+                ProviderDone(stop_reason="length", input_tokens=1, output_tokens=2),
+            ],
+            [
+                ProviderText(text="second partial "),
+                ProviderDone(stop_reason="length", input_tokens=3, output_tokens=4),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            length_capped_continuations=1,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 2
+    assert any(event.kind == "text_delta" and event.text == "first partial " for event in events)
+    assert any(event.kind == "text_delta" and event.text == "second partial " for event in events)
+    assert any(
+        event.kind == "warning" and event.code == "provider_output_continue"
+        for event in events
+    )
+    assert any(
+        event.kind == "error" and event.code == "provider_output_truncated"
+        for event in events
+    )
+    exhausted = [
+        event
+        for event in captured
+        if event.get("event") == "provider.output_truncated_exhausted"
+    ]
+    assert exhausted
+    assert exhausted[-1]["attempt"] == 1
+    assert exhausted[-1]["budget"] == 1
+    assert exhausted[-1]["visible_chars"] == len("second partial ")
+    assert exhausted[-1]["partial_preserved"] is True
 
 
 @pytest.mark.asyncio

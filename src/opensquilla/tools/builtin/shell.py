@@ -182,6 +182,21 @@ def _without_shell_null_redirections(command: str) -> str:
     return _SHELL_NULL_REDIRECT_RE.sub(" ", command)
 
 
+def _workdir_is_configured_workspace(workdir: str | None) -> bool:
+    if not workdir:
+        return False
+    ctx = current_tool_context.get()
+    workspace_dir = getattr(ctx, "workspace_dir", None) if ctx is not None else None
+    if not workspace_dir:
+        return False
+    try:
+        cwd = Path(workdir).expanduser().resolve(strict=False)
+        workspace = Path(workspace_dir).expanduser().resolve(strict=False)
+        return cwd == workspace or workspace in cwd.parents
+    except (OSError, RuntimeError):
+        return False
+
+
 def _sensitive_shell_block(
     tool_name: str,
     command: str,
@@ -194,8 +209,11 @@ def _sensitive_shell_block(
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_in_text
 
     checked_command = _without_shell_null_redirections(command)
-    checked_text = f"{workdir} {checked_command}" if workdir else checked_command
-    marker = sensitive_path_in_text(checked_text)
+    include_workdir = bool(workdir) and not _workdir_is_configured_workspace(workdir)
+    checked_text = f"{workdir} {checked_command}" if include_workdir else checked_command
+    ctx = current_tool_context.get()
+    workspace = ctx.workspace_dir if ctx is not None else None
+    marker = sensitive_path_in_text(checked_text, workspace=workspace)
     if marker is not None:
         return json.dumps(
             build_block_envelope(checked_text, marker, tool_name=tool_name),
@@ -252,6 +270,15 @@ def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:
     return path.resolve(strict=False)
 
 
+def _shell_write_targets(command: str) -> list[str]:
+    targets: list[str] = []
+    redirection_pattern = r"(?:^|\s)(?:\d?>{1,2}|&>{1,2})\s*(['\"]?)([^'\"\s|&;]+)\1"
+    targets.extend(match.group(2) for match in re.finditer(redirection_pattern, command))
+    tee_pattern = r"(?:^|\s)tee(?:\s+-[A-Za-z]+)*\s+(['\"]?)([^'\"\s|&;]+)\1"
+    targets.extend(match.group(2) for match in re.finditer(tee_pattern, command))
+    return targets
+
+
 def _workspace_lockdown_shell_block(
     tool_name: str,
     command: str,
@@ -260,12 +287,7 @@ def _workspace_lockdown_shell_block(
     roots = _workspace_lockdown_roots()
     if not roots:
         return None
-    targets: list[str] = []
-    redirection_pattern = r"(?:^|\s)(?:\d?>{1,2}|&>{1,2})\s*(['\"]?)([^'\"\s|&;]+)\1"
-    targets.extend(match.group(2) for match in re.finditer(redirection_pattern, command))
-    tee_pattern = r"(?:^|\s)tee(?:\s+-[A-Za-z]+)*\s+(['\"]?)([^'\"\s|&;]+)\1"
-    targets.extend(match.group(2) for match in re.finditer(tee_pattern, command))
-    for target in targets:
+    for target in _shell_write_targets(command):
         resolved = _resolve_shell_write_target(target, workdir)
         if _path_inside_any_root(resolved, roots):
             continue
@@ -283,6 +305,35 @@ def _workspace_lockdown_shell_block(
             ),
             "retryable": False,
         }
+    return None
+
+
+def _workspace_write_deny_shell_block(
+    tool_name: str,
+    command: str,
+    workdir: str | None,
+) -> dict[str, object] | None:
+    from opensquilla.tools.write_policy import (
+        match_workspace_write_deny,
+        workspace_write_deny_block,
+    )
+
+    ctx = current_tool_context.get()
+    workspace = (
+        Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+        if ctx is not None and ctx.workspace_dir
+        else None
+    )
+    for target in _shell_write_targets(command):
+        resolved = _resolve_shell_write_target(target, workdir)
+        deny_match = match_workspace_write_deny(
+            resolved,
+            original_path=target,
+            workspace=workspace,
+            ctx=ctx,
+        )
+        if deny_match is not None:
+            return workspace_write_deny_block(tool_name, deny_match, command=command)
     return None
 
 
@@ -582,6 +633,9 @@ async def exec_command(
     lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)
+    deny_block = _workspace_write_deny_shell_block("exec_command", command, cwd)
+    if deny_block is not None:
+        return json.dumps(deny_block, ensure_ascii=False)
 
     # Warnlist: two-step approval flow
     if result.needs_approval:
@@ -733,6 +787,9 @@ async def background_process(
     lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)
+    deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
+    if deny_block is not None:
+        return json.dumps(deny_block, ensure_ascii=False)
     if result.needs_approval:
         prior_elevation = _approval_elevation_state()
         approval_response: dict[str, object] | None = None
@@ -1229,7 +1286,11 @@ async def _check_exec_approval(
             sensitive_target_in_command,
         )
 
-        sensitive = sensitive_target_in_command(command)
+        sensitive = sensitive_target_in_command(
+            command,
+            workspace=ctx.workspace_dir if ctx is not None else None,
+            cwd=workdir,
+        )
         if sensitive is not None:
             log.warning(
                 "shell_sensitive_path_blocked",
@@ -1248,6 +1309,17 @@ async def _check_exec_approval(
             resolved_path=lockdown_block.get("resolved_path"),
         )
         return lockdown_block
+
+    deny_block = _workspace_write_deny_shell_block(tool_name, command, workdir)
+    if deny_block is not None:
+        log.warning(
+            "shell_workspace_write_deny_blocked",
+            command=_audit_command(command),
+            tool=tool_name,
+            resolved_path=deny_block.get("resolved_path"),
+            matched_pattern=deny_block.get("matched_pattern"),
+        )
+        return deny_block
 
     # /elevated full — trusted operator has taken explicit responsibility.
     # Approvals are skipped entirely.

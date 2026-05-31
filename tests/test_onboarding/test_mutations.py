@@ -82,6 +82,22 @@ def test_upsert_memory_embedding_remote_redacts_key():
     assert res.public_payload["remote"]["api_key"] == REDACTED_PLACEHOLDER
 
 
+def test_upsert_memory_embedding_remote_can_use_env_key_reference():
+    cfg = GatewayConfig()
+    res = upsert_memory_embedding(
+        cfg,
+        provider="openai",
+        model="text-embedding-3-small",
+        api_key_env="OPENAI_EMBEDDINGS_API_KEY",
+        base_url="https://api.openai.com/v1",
+    )
+
+    remote = res.config.memory.embedding.remote
+    assert remote.api_key in {"", None}
+    assert remote.api_key_env == "OPENAI_EMBEDDINGS_API_KEY"
+    assert res.public_payload["remote"]["api_key_env"] == "OPENAI_EMBEDDINGS_API_KEY"
+
+
 def test_upsert_memory_embedding_auto_can_store_remote_fallback():
     cfg = GatewayConfig()
     res = upsert_memory_embedding(
@@ -451,6 +467,32 @@ def test_upsert_search_provider_can_use_env_key_reference():
     assert res.public_payload["api_key_source"] == "env"
 
 
+def test_upsert_search_provider_accepts_webui_string_max_results():
+    cfg = GatewayConfig()
+    res = upsert_search_provider(
+        cfg,
+        provider_id="duckduckgo",
+        max_results="5",
+    )
+
+    assert res.config.search_provider == "duckduckgo"
+    assert res.config.search_max_results == 5
+
+
+def test_upsert_search_provider_clears_env_key_for_no_key_provider():
+    cfg = GatewayConfig(search_provider="brave", search_api_key_env="BRAVE_SEARCH_API_KEY")
+
+    res = upsert_search_provider(
+        cfg,
+        provider_id="duckduckgo",
+        api_key_env="BRAVE_SEARCH_API_KEY",
+    )
+
+    assert res.config.search_provider == "duckduckgo"
+    assert res.config.search_api_key_env == ""
+    assert res.public_payload["api_key_source"] == "none"
+
+
 def test_upsert_image_generation_provider_configures_openrouter(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     cfg = GatewayConfig()
@@ -476,6 +518,22 @@ def test_upsert_image_generation_provider_can_use_matching_llm_key(monkeypatch):
     assert res.config.image_generation.enabled is True
     assert res.config.image_generation.providers.openrouter.api_key == ""
     assert res.public_payload["api_key_source"] == "llm_fallback"
+
+
+def test_upsert_image_generation_provider_can_disable_without_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = GatewayConfig()
+
+    res = upsert_image_generation_provider(
+        cfg,
+        provider_id="openrouter",
+        primary="openrouter/google/gemini-3.1-flash-image-preview",
+        enabled=False,
+    )
+
+    assert res.config.image_generation.enabled is False
+    assert res.config.image_generation.primary == "openrouter/google/gemini-3.1-flash-image-preview"
+    assert res.public_payload["api_key_source"] == "none"
 
 
 def test_upsert_image_generation_provider_rejects_wrong_primary_provider():

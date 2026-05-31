@@ -44,7 +44,7 @@ def test_comprehensive_savings_uses_input_output_and_reasoning_prices() -> None:
     assert result.pct == pytest.approx(98.4)
 
 
-def test_tool_compression_restores_only_the_input_baseline() -> None:
+def test_tool_projection_restores_only_the_input_baseline() -> None:
     event = DoneEvent(
         input_tokens=1000,
         output_tokens=200,
@@ -55,7 +55,7 @@ def test_tool_compression_restores_only_the_input_baseline() -> None:
     base = _compute_comprehensive_turn_savings(event, {}, TEXT_TIERS, "deepseek/deepseek-v4-flash")
     compressed = _compute_comprehensive_turn_savings(
         event,
-        {"tool_compression_tokens_saved": 1000},
+        {"tool_projection_tokens_saved": 1000},
         TEXT_TIERS,
         "deepseek/deepseek-v4-flash",
     )

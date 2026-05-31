@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from opensquilla.gateway.attachment_ingest import (
+from opensquilla.contracts.attachments import (
     ALLOWED_MEDIA_TYPES,
     MAX_ATTACHMENT_BYTES,
     attachment_size_limit_for_mime,

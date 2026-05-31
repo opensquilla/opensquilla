@@ -38,6 +38,41 @@ def test_session_stream_registry_reports_incomplete_replay() -> None:
     assert [event.stream_seq for event in replay.events] == [2, 3]
 
 
+def test_session_stream_registry_preserves_meta_step_control_events() -> None:
+    registry = SessionStreamRegistry(max_events_per_session=5)
+    registry.record(
+        "agent:main:test",
+        "session.event.tool_use_start",
+        {"tool_name": "meta-step:writing_plan", "tool_use_id": "meta_step_writing_plan"},
+    )
+    registry.record(
+        "agent:main:test",
+        "session.event.tool_result",
+        {
+            "tool_name": "meta-step:writing_plan",
+            "tool_use_id": "meta_step_writing_plan",
+            "result": "ok",
+        },
+    )
+    for index in range(10):
+        registry.record(
+            "agent:main:test",
+            "session.event.text_delta",
+            {"text": f"chunk-{index}"},
+        )
+
+    replay = registry.replay("agent:main:test", 0)
+
+    tool_events = [
+        event for event in replay.events
+        if event.payload.get("tool_name") == "meta-step:writing_plan"
+    ]
+    assert [event.event_name for event in tool_events] == [
+        "session.event.tool_use_start",
+        "session.event.tool_result",
+    ]
+
+
 def test_session_stream_registry_reports_reset_when_client_cursor_is_ahead() -> None:
     registry = SessionStreamRegistry(max_events_per_session=5)
 

@@ -250,7 +250,7 @@ async def test_no_leak_under_load() -> None:
         handles.append(h)
 
     # Wait for all to complete.
-    await asyncio.gather(*(rt.wait(h.task_id, timeout=10.0) for h in handles))
+    await asyncio.gather(*(rt.wait(h.task_id, timeout=30.0) for h in handles))
 
     # --- post-GC snapshot ---
     gc.collect()

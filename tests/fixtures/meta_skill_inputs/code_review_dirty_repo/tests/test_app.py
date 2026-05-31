@@ -1,5 +1,4 @@
 import pytest
-
 from src.app import build_charge_payload, normalize_amount
 
 

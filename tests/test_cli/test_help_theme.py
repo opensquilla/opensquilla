@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
+from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import click
+from rich.console import Console
 from typer import rich_utils
 from typer.testing import CliRunner
 
@@ -107,6 +110,42 @@ def test_help_theme_supports_click_make_metavar_without_context(monkeypatch) -> 
     output = click.unstyle(result.output)
     assert "--provider TEXT" in output
     assert "--router MODE" in output
+
+
+def test_help_theme_accepts_typer_vendored_click_parameters() -> None:
+    option = SimpleNamespace(
+        param_type_name="option",
+        name="provider",
+        opts=["--provider"],
+        secondary_opts=[],
+        metavar=None,
+        type=SimpleNamespace(name="text"),
+        required=False,
+        help="Provider id to configure.",
+    )
+    argument = SimpleNamespace(
+        param_type_name="argument",
+        name="section_arg",
+        opts=["section_arg"],
+        secondary_opts=[],
+        metavar="SECTION",
+        type=SimpleNamespace(name="text"),
+        required=False,
+        help="Section to configure.",
+    )
+    console = Console(file=StringIO(), force_terminal=False, color_system=None)
+
+    rich_utils._print_options_panel(
+        name="Options",
+        params=[option, argument],
+        ctx=click.Context(click.Command("demo")),
+        markup_mode="rich",
+        console=console,
+    )
+
+    output = click.unstyle(console.file.getvalue())
+    assert "--provider TEXT" in output
+    assert "SECTION" in output
 
 
 def test_cli_brand_surfaces_do_not_use_cyan() -> None:

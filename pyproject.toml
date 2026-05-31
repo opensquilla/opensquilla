@@ -108,7 +108,7 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-norecursedirs = ["tests/_private", ".omx", ".codex", ".claude"]
+norecursedirs = ["tests/_private", "tests/fixtures", ".omx", ".codex", ".claude"]
 markers = [
     "llm: marks tests that make real external model/provider API calls (deselect with '-m \"not llm\"')",
     "llm_smoke: low-cost live LLM smoke tests",

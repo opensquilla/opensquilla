@@ -26,7 +26,6 @@ SELECTED_SKILLS = [
     "meta-document-to-decision",
     "meta-web-research-to-report",
     "meta-daily-operator-brief",
-    "meta-family-day-coordinator",
     "meta-competitive-intel",
     "meta-job-search-pipeline",
     "meta-kid-project-planner",
@@ -39,7 +38,6 @@ def test_lifestyle_catalog_covers_selected_meta_skills_without_exclusions() -> N
         "document_vendor_decision",
         "web_research_parent_esim",
         "daily_operator_morning_plan",
-        "family_school_errand_day",
         "competitive_intel_competitor_week",
         "job_search_tailor_pack",
         "kid_project_balcony_plants",
@@ -54,7 +52,6 @@ def test_selected_meta_skills_are_grounded_in_clawhub_top100_components() -> Non
         "meta-document-to-decision": ["Word / DOCX", "Excel / XLSX", "Pdf"],
         "meta-web-research-to-report": ["Multi Search Engine", "Word / DOCX"],
         "meta-daily-operator-brief": ["Weather", "Multi Search Engine", "Elite Longterm Memory"],
-        "meta-family-day-coordinator": ["Weather", "Elite Longterm Memory", "Caldav Calendar"],
         "meta-competitive-intel": ["Multi Search Engine", "Excel / XLSX", "Word / DOCX"],
         "meta-job-search-pipeline": ["Multi Search Engine", "Excel / XLSX", "Word / DOCX"],
         "meta-kid-project-planner": ["Multi Search Engine", "Weather", "PowerPoint / PPTX"],
@@ -76,7 +73,7 @@ def test_lifestyle_prompts_are_conversational_and_realistic() -> None:
     assert all("benchmark:" not in prompt.lower() for prompt in prompts)
     assert all("OpenSquilla" not in prompt and "OpenClaw" not in prompt for prompt in prompts)
     assert any("爸妈" in prompt for prompt in prompts)
-    assert any("幼儿园" in prompt for prompt in prompts)
+    assert any("科学课" in prompt for prompt in prompts)
     assert any("报价" in prompt or "供应商" in prompt for prompt in prompts)
     assert any("今天" in prompt for prompt in prompts)
     assert any("小红书" in prompt for prompt in prompts)
@@ -117,15 +114,6 @@ MISSING_FIELDS:
 DATE_SCOPE: today
 TIMEZONE: Asia/Shanghai
 LOCATION: Shanghai
-NEEDS_CLARIFICATION: yes
-MISSING_FIELDS:
-  - none
-""",
-        "meta-family-day-coordinator": """
-DATE_SCOPE: tomorrow
-LOCATION: Hangzhou
-FIXED_EVENTS:
-  - pickup at 17:00
 NEEDS_CLARIFICATION: yes
 MISSING_FIELDS:
   - none
@@ -177,7 +165,6 @@ def test_lifestyle_meta_skills_handle_missing_memory_skill_with_failover(
 ) -> None:
     expectations = {
         "meta-daily-operator-brief": ("memory_recall", "memory_recall_fallback"),
-        "meta-family-day-coordinator": ("family_memory", "family_memory_fallback"),
     }
 
     for skill_name, (step_id, fallback_id) in expectations.items():
@@ -234,18 +221,6 @@ def test_new_lifestyle_meta_skills_hide_runtime_failures_and_reply_inline(
                 "risks/tradeoffs",
                 "evidence limits",
                 "next steps for tonight",
-            ],
-        },
-        "meta-family-day-coordinator": {
-            "final": "family_plan_audit",
-            "fallbacks": {
-                "family_memory": "family_memory_fallback",
-                "weather": "weather_fallback",
-            },
-            "required": [
-                "Pickup, Dropoff & Errands / 接送和跑腿",
-                "Meals, Health & Sleep / 吃饭健康睡眠",
-                "Data limits / 数据限制",
             ],
         },
     }
@@ -704,33 +679,6 @@ def test_competitive_intel_prompt_resolves_ahead_of_daily_brief(tmp_path: Path) 
 
     assert matches
     assert matches[0][1] == "meta-competitive-intel"
-
-
-def test_family_day_coordinator_prioritizes_realistic_parent_schedule() -> None:
-    raw = Path(
-        "src/opensquilla/skills/bundled/meta-family-day-coordinator/SKILL.md"
-    ).read_text(encoding="utf-8")
-
-    assert "tonight / before-bed prep pass" in raw
-    assert 'final_text_mode: "step:family_plan_audit"' in raw
-    assert "family_plan_audit" in raw
-    assert "Return the complete final plan inline in chat" in raw
-    assert "Do not create, save, export, attach" in raw
-    assert "Never mention workflow, meta-skill, tool names" in raw
-    assert "path/workspace/meta-skill/weather problem" in raw
-    assert "Never compress errands into the" in raw
-    assert "pre-dropoff window" in raw
-    assert "dropoff first" in raw
-    assert "live weather was not verified" in raw
-    assert "without runtime/tool chatter" in raw
-    assert "Allergy guidance should be operational" in raw
-    assert "without inventing prescriptions, medicine names, dosage, or allergy severity" in raw
-    assert "Do not upgrade \"peanut allergy / 花生过敏\" into \"severe allergy" in raw
-    assert "Do not name allergy medicines, emergency injectors, drug classes" in raw
-    assert "按医生/家庭既有方案准备已开具的过敏药物或应急用品" in raw
-    assert "Pickup, Dropoff & Errands / 接送和跑腿" in raw
-    assert "Reminders / 要提醒谁" in raw
-    assert "only pasted / 仅根据" in raw
 
 
 def test_kid_project_preferences_do_not_block_on_optional_context() -> None:

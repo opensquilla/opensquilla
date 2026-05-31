@@ -120,7 +120,7 @@ def test_pytest_default_collection_excludes_private_agent_artifacts() -> None:
     pytest_options = config["tool"]["pytest"]["ini_options"]
     excluded = set(pytest_options.get("norecursedirs", []))
 
-    assert {"tests/_private", ".omx", ".codex", ".claude"} <= excluded
+    assert {"tests/_private", "tests/fixtures", ".omx", ".codex", ".claude"} <= excluded
 
 
 def test_public_testing_guidance_documents_the_private_boundary() -> None:

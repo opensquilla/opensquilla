@@ -60,9 +60,9 @@ def test_render_paused_outcome_uses_english_labels_for_english_pauses():
 
     text = render_paused_outcome(result)
 
-    assert "Please reply with the following fields:" in text
+    assert "Please reply with these fields:" in text
     assert "[required]" in text
-    assert "Example reply format:" in text
+    assert "Reply format example:" in text
     assert "Or reply cancel / stop to cancel." in text
     assert "请回复" not in text
 

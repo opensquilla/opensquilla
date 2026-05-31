@@ -64,7 +64,7 @@ async def test_rpc_skill_install_uses_loader_managed_dir_and_list_sees_skill(
 
     assert captured["managed_dir"] == managed_dir
     assert installed["success"] is True
-    assert installed["path"].endswith("/plotter")
+    assert Path(installed["path"]).name == "plotter"
     row = next(skill for skill in listed["skills"] if skill["name"] == "plotter")
     assert row["layer"] == "managed"
     assert row["description"] == "Installed from chat"

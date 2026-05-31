@@ -190,7 +190,7 @@ async def test_skill_install_community_uses_loader_managed_dir_and_invalidates_c
     assert installer.calls == [("plotter", "clawhub", False)]
     assert payload["status"] == "installed"
     assert payload["success"] is True
-    assert payload["path"].endswith("/plotter")
+    assert Path(payload["path"]).name == "plotter"
     assert skill_loader._cached is None
 
 

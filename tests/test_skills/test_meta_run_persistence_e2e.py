@@ -146,7 +146,10 @@ async def test_cancellation_marks_cancelled(writer_db) -> None:
         session_key=None, turn_id=None,
     )
 
+    dispatch_started = asyncio.Event()
+
     async def slow_dispatch(*args, **kwargs):
+        dispatch_started.set()
         await asyncio.sleep(10)
         if False:
             yield None
@@ -165,7 +168,7 @@ async def test_cancellation_marks_cancelled(writer_db) -> None:
             pass
 
     task = asyncio.create_task(consume())
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(dispatch_started.wait(), timeout=2.0)
     task.cancel()
     try:
         await task

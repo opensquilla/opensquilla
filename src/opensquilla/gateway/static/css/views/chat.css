@@ -1274,6 +1274,7 @@
   max-width: min(520px, 100%);
   padding: var(--sp-2) var(--sp-3);
   text-align: left;
+  text-decoration: none;
   width: 100%;
 }
 
@@ -1296,6 +1297,7 @@
   min-width: min(300px, 78vw);
   padding: var(--sp-2);
   text-align: left;
+  text-decoration: none;
   transition: border-color var(--transition), transform var(--transition), background var(--transition);
 }
 

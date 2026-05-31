@@ -891,6 +891,7 @@ const ChatView = (() => {
     _thread.addEventListener('click', (ev) => {
       const artifactBtn = ev.target.closest('[data-artifact-download]');
       if (artifactBtn) {
+        if (artifactBtn.tagName === 'A') return;
         ev.preventDefault();
         ev.stopPropagation();
         _downloadArtifact({
@@ -7744,10 +7745,23 @@ const ChatView = (() => {
     }
   }
 
+  function _artifactAuthenticatedDownloadUrl(raw, token) {
+    if (!raw) return '';
+    try {
+      const url = new URL(raw, window.location.origin);
+      if (_sessionKey) url.searchParams.set('sessionKey', _sessionKey);
+      if (token) url.searchParams.set('token', token);
+      return url.pathname + url.search + url.hash;
+    } catch {
+      return raw;
+    }
+  }
+
   function _renderArtifacts(artifacts) {
     if (!Array.isArray(artifacts) || artifacts.length === 0) return '';
     let html = '<div class="msg-artifacts">';
     let openGroup = '';
+    const token = (App.getAuthToken && App.getAuthToken()) || '';
     const closeGroup = () => {
       if (!openGroup) return;
       html += '</div>';
@@ -7767,23 +7781,24 @@ const ChatView = (() => {
       const mime = artifact && artifact.mime ? String(artifact.mime) : 'artifact';
       const size = artifact && artifact.size ? `${Math.max(1, Math.round(Number(artifact.size) / 1024))} KB` : '';
       const downloadUrl = _artifactDownloadUrl(artifact || {});
+      const downloadHref = _artifactAuthenticatedDownloadUrl(downloadUrl, token);
       const meta = [mime, size].filter(Boolean).join(' · ');
       if (_isImageArtifact(artifact)) {
         const previewUrl = _artifactPreviewUrl(artifact || {});
-        html += `<button type="button" class="msg-artifact-card msg-artifact-card--image" data-artifact-category="${_esc(category)}" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="Download ${_esc(name)}">
+        html += `<a class="msg-artifact-card msg-artifact-card--image" href="${_escAttr(downloadHref)}" download="${_escAttr(name)}" data-artifact-category="${_escAttr(category)}" data-artifact-download="${_escAttr(downloadUrl)}" data-artifact-id="${_escAttr(artifact?.id || '')}" data-artifact-name="${_escAttr(name)}" title="Download ${_escAttr(name)}">
           ${previewUrl ? `<img class="msg-artifact-preview" src="${_esc(previewUrl)}" alt="${_esc(name)}" loading="lazy">` : '<span class="msg-artifact-preview msg-artifact-preview--empty" aria-hidden="true"></span>'}
           <span class="msg-artifact-card__body">
             <span class="msg-artifact-card__name">${_esc(name)}</span>
             <span class="msg-artifact-card__meta">${_esc(meta)}</span>
           </span>
           <span class="msg-artifact-card__action" aria-hidden="true">Download</span>
-        </button>`;
+        </a>`;
       } else {
-        html += `<button type="button" class="msg-artifact-chip" data-artifact-category="${_esc(category)}" data-artifact-download="${_esc(downloadUrl)}" data-artifact-id="${_esc(artifact?.id || '')}" data-artifact-name="${_esc(name)}" title="${_esc(name)}">
+        html += `<a class="msg-artifact-chip" href="${_escAttr(downloadHref)}" download="${_escAttr(name)}" data-artifact-category="${_escAttr(category)}" data-artifact-download="${_escAttr(downloadUrl)}" data-artifact-id="${_escAttr(artifact?.id || '')}" data-artifact-name="${_escAttr(name)}" title="${_escAttr(name)}">
           <span class="msg-file-chip__icon" aria-hidden="true">${_esc(_artifactCategoryLabel(category))}</span>
           <span class="msg-file-chip__name">${_esc(name)}</span>
           <span class="msg-file-chip__meta">${_esc(meta)}</span>
-        </button>`;
+        </a>`;
       }
     });
     closeGroup();
@@ -7792,12 +7807,13 @@ const ChatView = (() => {
   }
 
   async function _downloadArtifact(artifact) {
-    const downloadUrl = _artifactDownloadUrl(artifact);
+    let downloadUrl = _artifactDownloadUrl(artifact);
     if (!downloadUrl) return;
     const headers = {};
     const token = (App.getAuthToken && App.getAuthToken()) || '';
     if (token) headers['Authorization'] = `Bearer ${token}`;
     if (_sessionKey) headers['x-opensquilla-session-key'] = _sessionKey;
+    downloadUrl = _artifactAuthenticatedDownloadUrl(downloadUrl, token);
     const response = await fetch(downloadUrl, {
       method: 'GET',
       headers: headers,

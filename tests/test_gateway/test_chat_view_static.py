@@ -189,6 +189,42 @@ def test_chat_renders_live_and_historical_artifacts_as_header_auth_downloads() -
     assert "Authorization" in source
 
 
+def test_chat_artifact_download_url_carries_query_fallback_auth() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    helper_start = source.index("function _artifactAuthenticatedDownloadUrl(raw, token)")
+    helper_end = source.index("  function _renderArtifacts", helper_start)
+    helper_body = source[helper_start:helper_end]
+    download_start = source.index("async function _downloadArtifact(artifact)")
+    download_end = source.index("  function _reconstructToolCalls", download_start)
+    download_body = source[download_start:download_end]
+
+    assert "_artifactAuthenticatedDownloadUrl(downloadUrl, token)" in download_body
+    assert "url.searchParams.set('sessionKey', _sessionKey)" in helper_body
+    assert "url.searchParams.set('token', token)" in helper_body
+    assert "headers['x-opensquilla-session-key'] = _sessionKey" in download_body
+    assert "headers['Authorization'] = `Bearer ${token}`" in download_body
+
+
+def test_chat_artifact_downloads_use_direct_links_to_preserve_user_activation() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    bind_start = source.index("function _bindHoverActions()")
+    bind_end = source.index("  function _truncate", bind_start)
+    bind_body = source[bind_start:bind_end]
+    render_start = source.index("function _renderArtifacts(artifacts)")
+    render_end = source.index("  async function _downloadArtifact", render_start)
+    render_body = source[render_start:render_end]
+
+    assert "if (artifactBtn.tagName === 'A') return;" in bind_body
+    assert (
+        "const downloadHref = _artifactAuthenticatedDownloadUrl(downloadUrl, token);"
+        in render_body
+    )
+    assert '<a class="msg-artifact-card msg-artifact-card--image"' in render_body
+    assert '<a class="msg-artifact-chip"' in render_body
+    assert 'href="${_escAttr(downloadHref)}"' in render_body
+    assert 'download="${_escAttr(name)}"' in render_body
+
+
 def test_chat_artifact_images_render_as_preview_cards_and_refresh_on_done() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")

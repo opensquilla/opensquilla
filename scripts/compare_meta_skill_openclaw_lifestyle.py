@@ -94,8 +94,8 @@ DAILY_OPERATOR_RUBRIC: tuple[RubricCriterion, ...] = (
     criterion("data_limits", "States connector/data limits.", r"missing connector", r"数据限制", r"only pasted", r"仅根据"),
 )
 
-ACCOUNT_WATCH_RUBRIC: tuple[RubricCriterion, ...] = (
-    criterion("account_scope", "Names the watched accounts and requested dimensions.", r"ByteDance", r"小红书", r"账号", r"账户", r"dimension", r"维度"),
+COMPETITIVE_INTEL_RUBRIC: tuple[RubricCriterion, ...] = (
+    criterion("target_scope", "Names the monitored targets and requested dimensions.", r"ByteDance", r"小红书", r"账号", r"账户", r"dimension", r"维度"),
     criterion("signal_table", "Creates a signal table or structured account-by-dimension list.", r"signal", r"信号", r"table", r"表", r"pricing", r"产品", r"hiring", r"招聘"),
     criterion("baseline_diff", "Separates new/changed/unchanged signals against the pasted baseline.", r"new", r"changed", r"unchanged", r"新增", r"变化", r"基线"),
     criterion("strength_verdict", "Classifies signal strength or urgency.", r"URGENT", r"HIGH", r"MED", r"LOW", r"紧急", r"高", r"中", r"低"),
@@ -210,8 +210,8 @@ LIFESTYLE_COMPARISON_CASES: list[ComparisonCase] = [
         ),
     ),
     ComparisonCase(
-        case_id="account_watch_competitor_week",
-        skill_name="meta-account-watch",
+        case_id="competitive_intel_competitor_week",
+        skill_name="meta-competitive-intel",
         scenario="lifestyle_primary",
         prompt=(
             "帮我盯一下这两个对手最近有没有值得提醒老板的动作：小红书和得物。"
@@ -222,17 +222,17 @@ LIFESTYLE_COMPARISON_CASES: list[ComparisonCase] = [
             "哪些和基线相比有变化，信号强度，高中低优先级，今天该跟进谁。"
         ),
         expected_advantage=(
-            "OpenSquilla + Squilla Router should activate account-watch, combine "
+            "OpenSquilla + Squilla Router should activate competitive-intel, combine "
             "multi-search, summarization, memory/baseline diff, and optional export "
             "logic, then beat OpenClaw + t3 Opus 4.7 on grounded competitive signal "
             "triage and next actions."
         ),
         optimization_if_not_better=(
-            "If OpenSquilla does not beat OpenClaw, strengthen account-watch so pasted "
+            "If OpenSquilla does not beat OpenClaw, strengthen competitive-intel so pasted "
             "baselines always produce an explicit new/changed/unchanged section, "
             "signal-strength labels, and concrete sales/BD follow-ups."
         ),
-        rubric=ACCOUNT_WATCH_RUBRIC,
+        rubric=COMPETITIVE_INTEL_RUBRIC,
         failure_modes=(
             "Gives a generic competitor overview without account-by-dimension signals.",
             "Fails to diff against the pasted baseline.",
@@ -332,7 +332,7 @@ ENGLISH_LIFESTYLE_PROMPTS: dict[str, str] = {
         "three priorities, time blocks, risks, weather/commute implications, who to follow "
         "up with, and what you cannot directly read and can only infer from what I pasted."
     ),
-    "account_watch_competitor_week": (
+    "competitive_intel_competitor_week": (
         "Please help me keep an eye on two competitors and tell me whether anything is worth "
         "flagging to my boss: Xiaohongshu and Dewu. We build a youth consumer community. "
         "The baseline I gave my boss last time was: Xiaohongshu seemed focused on monetization "

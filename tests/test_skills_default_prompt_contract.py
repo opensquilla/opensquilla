@@ -25,7 +25,7 @@ DEFAULTS = {
     "http-fetch",
     "latex-compile",
     "memory",
-    "meta-account-watch",
+    "meta-competitive-intel",
     "meta-daily-operator-brief",
     "meta-document-to-decision",
     "meta-job-search-pipeline",

@@ -27,7 +27,7 @@ SELECTED_SKILLS = [
     "meta-web-research-to-report",
     "meta-daily-operator-brief",
     "meta-family-day-coordinator",
-    "meta-account-watch",
+    "meta-competitive-intel",
     "meta-job-search-pipeline",
     "meta-kid-project-planner",
 ]
@@ -40,7 +40,7 @@ def test_lifestyle_catalog_covers_selected_meta_skills_without_exclusions() -> N
         "web_research_parent_esim",
         "daily_operator_morning_plan",
         "family_school_errand_day",
-        "account_watch_competitor_week",
+        "competitive_intel_competitor_week",
         "job_search_tailor_pack",
         "kid_project_balcony_plants",
     }
@@ -55,7 +55,7 @@ def test_selected_meta_skills_are_grounded_in_clawhub_top100_components() -> Non
         "meta-web-research-to-report": ["Multi Search Engine", "Word / DOCX"],
         "meta-daily-operator-brief": ["Weather", "Multi Search Engine", "Elite Longterm Memory"],
         "meta-family-day-coordinator": ["Weather", "Elite Longterm Memory", "Caldav Calendar"],
-        "meta-account-watch": ["Multi Search Engine", "Excel / XLSX", "Word / DOCX"],
+        "meta-competitive-intel": ["Multi Search Engine", "Excel / XLSX", "Word / DOCX"],
         "meta-job-search-pipeline": ["Multi Search Engine", "Excel / XLSX", "Word / DOCX"],
         "meta-kid-project-planner": ["Multi Search Engine", "Weather", "PowerPoint / PPTX"],
     }
@@ -193,8 +193,8 @@ def test_new_lifestyle_meta_skills_hide_runtime_failures_and_reply_inline(
     tmp_path: Path,
 ) -> None:
     expectations = {
-        "meta-account-watch": {
-            "final": "deliver_watch_brief",
+        "meta-competitive-intel": {
+            "final": "deliver_intel_brief",
             "fallbacks": {
                 "recall_baseline": "recall_baseline_fallback",
                 "web_research": "web_research_fallback",
@@ -321,21 +321,21 @@ def test_job_search_pipeline_preserves_language_and_source_truth() -> None:
     assert "参与 AI 客服试点，但不是负责人" in raw
 
 
-def test_account_watch_final_audit_and_export_gate(tmp_path: Path) -> None:
-    plan = _bundled_meta_plan("meta-account-watch", tmp_path)
+def test_competitive_intel_final_audit_and_export_gate(tmp_path: Path) -> None:
+    plan = _bundled_meta_plan("meta-competitive-intel", tmp_path)
     step_by_id = {step.id: step for step in plan.steps}
 
-    assert plan.final_text_mode == "step:watch_brief_audit"
-    assert "watch_brief_audit" in step_by_id
-    assert "deliver_watch_brief" in step_by_id["watch_brief_audit"].depends_on
-    assert "extract_signals" in step_by_id["watch_brief_audit"].depends_on
+    assert plan.final_text_mode == "step:intel_brief_audit"
+    assert "intel_brief_audit" in step_by_id
+    assert "deliver_intel_brief" in step_by_id["intel_brief_audit"].depends_on
+    assert "extract_signals" in step_by_id["intel_brief_audit"].depends_on
 
     xlsx_when = step_by_id["signals_xlsx"].when or ""
     assert "表格" not in xlsx_when
     assert "导出" in xlsx_when
     assert "xlsx" in xlsx_when
 
-    audit_text = json.dumps(step_by_id["watch_brief_audit"].with_args, ensure_ascii=False)
+    audit_text = json.dumps(step_by_id["intel_brief_audit"].with_args, ensure_ascii=False)
     assert "Remove runtime commentary" in audit_text
     assert "Remove artifact or attachment claims" in audit_text
     assert "Do not claim that a file was generated" in audit_text
@@ -343,8 +343,8 @@ def test_account_watch_final_audit_and_export_gate(tmp_path: Path) -> None:
     assert "source limit" in audit_text
 
 
-def test_account_watch_summarizes_web_without_non_executable_skill(tmp_path: Path) -> None:
-    plan = _bundled_meta_plan("meta-account-watch", tmp_path)
+def test_competitive_intel_summarizes_web_without_non_executable_skill(tmp_path: Path) -> None:
+    plan = _bundled_meta_plan("meta-competitive-intel", tmp_path)
     step_by_id = {step.id: step for step in plan.steps}
 
     summarize_web = step_by_id["summarize_web"]
@@ -355,36 +355,90 @@ def test_account_watch_summarizes_web_without_non_executable_skill(tmp_path: Pat
     assert "Do not expose tool names" in summarize_text
 
 
-def test_account_watch_propagates_pasted_baseline_and_context_without_clarify(
-    tmp_path: Path,
-) -> None:
-    plan = _bundled_meta_plan("meta-account-watch", tmp_path)
+def test_competitive_intel_uses_llm_search_strategy_before_search(tmp_path: Path) -> None:
+    plan = _bundled_meta_plan("meta-competitive-intel", tmp_path)
     step_by_id = {step.id: step for step in plan.steps}
 
-    assert "watch_context" in step_by_id
+    search_strategy = step_by_id["search_strategy"]
+    assert search_strategy.kind == "llm_chat"
+    strategy_text = json.dumps(search_strategy.with_args, ensure_ascii=False)
+    assert "SEARCH_QUERY:" in strategy_text
+    assert "FALLBACK_SEARCH_QUERY:" in strategy_text
+    assert "ACCOUNT_DIMENSION_GRID" in strategy_text
+    assert "Do not include internal context keys" in strategy_text
+    assert "Kimi / Moonshot AI" in strategy_text
+    assert "MiniMax / 海螺AI / abab" in strategy_text
 
-    watch_context = step_by_id["watch_context"]
-    assert watch_context.kind == "llm_chat"
-    context_text = json.dumps(watch_context.with_args, ensure_ascii=False)
+    web_research = step_by_id["web_research"]
+    assert "search_strategy" in web_research.depends_on
+    assert "intel_context" in web_research.depends_on
+    assert "search_strategy" in json.dumps(web_research.with_args, ensure_ascii=False)
+    assert "ACCOUNT_DIMENSION_GRID" not in json.dumps(web_research.with_args, ensure_ascii=False)
+
+    for index in (1, 2, 3):
+        query_step = step_by_id[f"target_search_query_{index}"]
+        assert query_step.kind == "llm_chat"
+        query_text = json.dumps(query_step.with_args, ensure_ascii=False)
+        ordinal = "1st" if index == 1 else "2nd" if index == 2 else "3rd"
+        assert f"{ordinal} target" in query_text
+        assert "Include only this one monitored target" in query_text
+        assert "Do not include other monitored targets" in query_text
+
+        search_step = step_by_id[f"web_research_target_{index}"]
+        assert search_step.skill == "multi-search-engine"
+        assert search_step.when == (
+            f"'NO_TARGET' not in outputs.get('target_search_query_{index}', '')"
+        )
+        assert f"target_search_query_{index}" in search_step.depends_on
+
+    status_text = json.dumps(step_by_id["research_status"].with_args, ensure_ascii=False)
+    assert "web_research_target_1" in status_text
+    assert "for a monitored target" in status_text
+
+    retry = step_by_id["web_research_retry"]
+    assert retry.skill == "multi-search-engine"
+    assert retry.when == "outputs.get('research_status', '') != 'SEARCH_OK'"
+    assert "search_retry_query" in retry.depends_on
+
+    audit_text = json.dumps(step_by_id["intel_brief_audit"].with_args, ensure_ascii=False)
+    assert "SEARCH_UNAVAILABLE" in audit_text
+    assert "检索不可用 / source unavailable" in audit_text
+
+
+def test_competitive_intel_propagates_pasted_baseline_and_context_without_clarify(
+    tmp_path: Path,
+) -> None:
+    plan = _bundled_meta_plan("meta-competitive-intel", tmp_path)
+    step_by_id = {step.id: step for step in plan.steps}
+
+    assert "intel_context" in step_by_id
+
+    intel_context = step_by_id["intel_context"]
+    assert intel_context.kind == "llm_chat"
+    context_text = json.dumps(intel_context.with_args, ensure_ascii=False)
     assert "inputs.user_message" in context_text
     assert "PASTED_BASELINE" in context_text
     assert "ACCOUNT_DIMENSION_GRID" in context_text
     assert "AUDIENCE" in context_text
 
     for step_id in (
-        "web_research",
+        "search_strategy",
         "summarize_web",
         "enrich_accounts",
         "extract_signals",
         "baseline_diff",
         "recommend_actions",
-        "deliver_watch_brief",
-        "watch_brief_audit",
+        "deliver_intel_brief",
+        "intel_brief_audit",
     ):
         step = step_by_id[step_id]
-        assert "watch_context" in step.depends_on
+        assert "intel_context" in step.depends_on
         step_text = json.dumps(step.with_args, ensure_ascii=False)
-        assert "watch_context" in step_text
+        assert "intel_context" in step_text
+
+    web_research = step_by_id["web_research"]
+    assert "intel_context" in web_research.depends_on
+    assert "search_strategy" in json.dumps(web_research.with_args, ensure_ascii=False)
 
     baseline_text = json.dumps(step_by_id["baseline_diff"].with_args, ensure_ascii=False)
     assert "PASTED_BASELINE" in baseline_text
@@ -395,10 +449,10 @@ def test_account_watch_propagates_pasted_baseline_and_context_without_clarify(
     assert "emit one row per requested account × dimension" in extract_text
 
 
-def test_account_watch_final_audit_avoids_source_limited_overclaim(tmp_path: Path) -> None:
-    plan = _bundled_meta_plan("meta-account-watch", tmp_path)
+def test_competitive_intel_final_audit_avoids_source_limited_overclaim(tmp_path: Path) -> None:
+    plan = _bundled_meta_plan("meta-competitive-intel", tmp_path)
     step_by_id = {step.id: step for step in plan.steps}
-    audit_text = json.dumps(step_by_id["watch_brief_audit"].with_args, ensure_ascii=False)
+    audit_text = json.dumps(step_by_id["intel_brief_audit"].with_args, ensure_ascii=False)
 
     assert "未见已核验新增" in audit_text
     assert "not proof that nothing changed" in audit_text
@@ -572,7 +626,7 @@ def test_lifestyle_meta_skills_have_natural_language_activation_cues() -> None:
             "what i should order",
         ],
         "meta-daily-operator-brief": ["今天先帮我排一下", "前三优先级"],
-        "meta-account-watch": ["盯一下这两个对手", "销售群里的简报", "和基线相比"],
+        "meta-competitive-intel": ["盯一下这两个对手", "销售群里的简报", "和基线相比"],
     }
 
     for skill_name, cues in expectations.items():
@@ -607,22 +661,22 @@ def test_english_lifestyle_prompts_trigger_target_meta_skills(tmp_path: Path) ->
         assert case.prompt
 
 
-def test_account_watch_outranks_daily_brief_for_competitor_followup_prompts(
+def test_competitive_intel_outranks_daily_brief_for_competitor_followup_prompts(
     tmp_path: Path,
 ) -> None:
-    account_plan = _bundled_meta_plan("meta-account-watch", tmp_path)
+    account_plan = _bundled_meta_plan("meta-competitive-intel", tmp_path)
     daily_plan = _bundled_meta_plan("meta-daily-operator-brief", tmp_path)
 
     assert account_plan.priority > daily_plan.priority
 
 
-def test_account_watch_prompt_resolves_ahead_of_daily_brief(tmp_path: Path) -> None:
+def test_competitive_intel_prompt_resolves_ahead_of_daily_brief(tmp_path: Path) -> None:
     from opensquilla.engine.steps.meta_resolution import _trigger_matches
 
     prompt = next(
         case.prompt
         for case in LIFESTYLE_COMPARISON_CASES
-        if case.case_id == "account_watch_competitor_week"
+        if case.case_id == "competitive_intel_competitor_week"
     )
     loader = SkillLoader(
         bundled_dir=Path("src/opensquilla/skills/bundled"),
@@ -630,7 +684,7 @@ def test_account_watch_prompt_resolves_ahead_of_daily_brief(tmp_path: Path) -> N
     )
 
     matches = []
-    for skill_name in ("meta-account-watch", "meta-daily-operator-brief"):
+    for skill_name in ("meta-competitive-intel", "meta-daily-operator-brief"):
         spec = loader.get_by_name(skill_name)
         assert spec is not None
         plan = parse_meta_plan(spec)
@@ -649,7 +703,7 @@ def test_account_watch_prompt_resolves_ahead_of_daily_brief(tmp_path: Path) -> N
     matches.sort(key=lambda item: (-item[0], item[1]))
 
     assert matches
-    assert matches[0][1] == "meta-account-watch"
+    assert matches[0][1] == "meta-competitive-intel"
 
 
 def test_family_day_coordinator_prioritizes_realistic_parent_schedule() -> None:
@@ -866,7 +920,7 @@ def test_lifestyle_score_rewards_strong_answers_over_t3_generic_answers() -> Non
         Weather adjustments. Meal/health/sleep/hydration notes.
         Remind teacher and dad. Optional reminder schedule. Missing data limits.
         """,
-        "account_watch_competitor_week": """
+        "competitive_intel_competitor_week": """
         Account scope: Xiaohongshu and Dewu. Signal table by account and dimension:
         pricing, product, hiring, partnerships. Baseline diff: new / changed /
         unchanged. Strength verdict HIGH / MED / LOW. Next actions for sales/BD.

@@ -88,6 +88,45 @@ async def test_extract_partial_fields_only():
     assert result.fields == {"destination": "Shanghai"}
 
 
+@pytest.mark.asyncio
+async def test_extract_uses_trusted_context_for_references():
+    """Replies like 'as above' should have bounded prior context available."""
+    fields = (
+        ClarifyField(name="accounts", type="string", required=True),
+        ClarifyField(name="dimensions", type="string", required=True),
+    )
+    schema = _schema(*fields)
+
+    async def _chat(system: str, user: str) -> str:
+        assert "<trusted_context>" in user
+        assert "月之暗面" in user
+        assert "全部关注" in user
+        assert "Use <trusted_context>" in system
+        return json.dumps({
+            "accounts": "月之暗面, minimax",
+            "dimensions": "PRICING, PRODUCT, LEADERSHIP, HIRING, NEWS",
+        })
+
+    result = await extract(
+        reply_text="账号上面已经提过了，维度全部关注",
+        schema=schema,
+        active_fields=fields,
+        llm_chat=_chat,
+        context={
+            "original_user_message": "盯一下月之暗面和minimax",
+            "prior_step_outputs": {
+                "preferences": "ACCOUNTS:\n  - 月之暗面\n  - minimax",
+            },
+        },
+    )
+
+    assert result.errors == []
+    assert result.fields == {
+        "accounts": "月之暗面, minimax",
+        "dimensions": "PRICING, PRODUCT, LEADERSHIP, HIRING, NEWS",
+    }
+
+
 # ── key whitelist ──
 
 @pytest.mark.asyncio

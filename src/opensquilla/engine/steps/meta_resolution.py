@@ -178,6 +178,60 @@ def _chat_pending_fields(schema, awaiting):
     return tuple(schema.fields)  # all filled — defensive (shouldn't reach here)
 
 
+def _json_object(raw: str) -> dict[str, Any]:
+    import json as _json
+
+    try:
+        parsed = _json.loads(raw or "{}")
+    except Exception:  # noqa: BLE001
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _clip_context_value(value: Any, *, max_chars: int = 2000) -> Any:
+    if isinstance(value, str):
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars] + "...[truncated]"
+    if isinstance(value, dict):
+        return {
+            str(k): _clip_context_value(v, max_chars=max_chars)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_clip_context_value(v, max_chars=max_chars) for v in value[:20]]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _clip_context_value(str(value), max_chars=max_chars)
+
+
+def _clarify_extract_context(awaiting, active_fields) -> dict[str, Any]:
+    """Build bounded prior context for nl_extract reference resolution.
+
+    This context is advisory only: ``clarify_nl_extract`` still white-lists
+    returned keys against ``active_fields`` and re-runs field validators.
+    """
+
+    inputs = _json_object(awaiting.inputs_json)
+    step_outputs = _json_object(awaiting.step_outputs_json)
+    already_filled = _json_object(awaiting.awaiting_filled_json)
+    context: dict[str, Any] = {
+        "awaiting_step_id": awaiting.step_id,
+        "active_field_names": [getattr(f, "name", "") for f in active_fields],
+    }
+    user_message = inputs.get("user_message")
+    if isinstance(user_message, str) and user_message.strip():
+        context["original_user_message"] = _clip_context_value(user_message)
+    collected = inputs.get("collected")
+    if isinstance(collected, dict) and collected:
+        context["already_collected"] = _clip_context_value(collected)
+    if already_filled:
+        context["already_filled"] = _clip_context_value(already_filled)
+    if step_outputs:
+        context["prior_step_outputs"] = _clip_context_value(step_outputs)
+    return context
+
+
 def _deserialize_awaiting_schema(schema_json: str):
     """Re-create a ClarifyStepConfig from the awaiting_schema_json column."""
     import json as _json  # noqa: PLC0415
@@ -619,6 +673,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                             active_fields=active,
                             llm_chat=nl_chat,
                             tier=schema.nl_extract_tier,
+                            context=_clarify_extract_context(awaiting, active),
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.warning(

@@ -2929,28 +2929,43 @@ async def test_drain_agent_runner_uses_done_event_text_when_deltas_absent() -> N
     assert result.step_outputs["a"] == "final answer from done"
 
 
-def test_bundled_account_watch_has_quality_gate_and_exports() -> None:
+def test_bundled_competitive_intel_has_quality_gate_and_exports() -> None:
     bundled = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "bundled"
-    skill_path = bundled / "meta-account-watch" / "SKILL.md"
+    skill_path = bundled / "meta-competitive-intel" / "SKILL.md"
     assert skill_path.is_file()
     loader = SkillLoader(
         bundled_dir=bundled,
-        snapshot_path=Path("/tmp/_account_watch_snap.json"),
+        snapshot_path=Path("/tmp/_competitive_intel_snap.json"),
     )
     loader.invalidate_cache()
     specs = {s.name: s for s in loader.load_all()}
-    skill = specs["meta-account-watch"]
+    skill = specs["meta-competitive-intel"]
     plan = parse_meta_plan(skill)
     assert plan is not None
     assert [s.id for s in plan.steps] == [
         "preferences",
-        "watch_clarify",
+        "intel_clarify",
         "depth",
-        "watch_context",
+        "intel_context",
         "recall_baseline",
         "recall_baseline_fallback",
+        "search_strategy",
         "web_research",
         "web_research_fallback",
+        "target_search_query_1",
+        "web_research_target_1",
+        "web_research_target_1_fallback",
+        "target_search_query_2",
+        "web_research_target_2",
+        "web_research_target_2_fallback",
+        "target_search_query_3",
+        "web_research_target_3",
+        "web_research_target_3_fallback",
+        "research_status",
+        "search_retry_query",
+        "web_research_retry",
+        "web_research_retry_fallback",
+        "research_status_final",
         "summarize_web",
         "deep_dive",
         "enrich_accounts",
@@ -2959,11 +2974,11 @@ def test_bundled_account_watch_has_quality_gate_and_exports() -> None:
         "verdict",
         "recommend_actions",
         "signals_xlsx",
-        "deliver_watch_brief",
-        "watch_brief_audit",
+        "deliver_intel_brief",
+        "intel_brief_audit",
         "store_brief",
         "store_brief_fallback",
         "export_docx",
     ]
     step_ids = {s.id for s in plan.steps}
-    assert {"baseline_diff", "watch_brief_audit", "signals_xlsx", "export_docx"} <= step_ids
+    assert {"baseline_diff", "intel_brief_audit", "signals_xlsx", "export_docx"} <= step_ids

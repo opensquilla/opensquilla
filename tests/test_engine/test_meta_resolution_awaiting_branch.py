@@ -429,6 +429,112 @@ async def test_nl_extract_maps_natural_language_to_enum_choice(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_nl_extract_receives_prior_step_context_for_referential_replies(tmp_path):
+    writer = _writer(tmp_path)
+    cfg = ClarifyStepConfig(
+        mode="form",
+        fields=(
+            ClarifyField(name="accounts", type="string", required=True),
+            ClarifyField(name="dimensions", type="string", required=True),
+            ClarifyField(
+                name="time_window",
+                type="enum",
+                choices=("LAST_WEEK", "LAST_MONTH", "LAST_QUARTER"),
+                default="LAST_MONTH",
+            ),
+        ),
+        timeout_hours=24,
+        cancel_keywords=(),
+        nl_extract=True,
+    )
+    plan = MetaPlan(
+        name="t",
+        triggers=(),
+        priority=0,
+        steps=(
+            MetaStep(
+                id="watch_clarify",
+                skill="watch_clarify",
+                kind="user_input",
+                clarify_config=cfg,
+            ),
+        ),
+    )
+    snapshot = to_jsonable(plan)
+    preferences = (
+        "ACCOUNTS:\n"
+        "  - 月之暗面\n"
+        "  - minimax\n"
+        "MISSING_FIELDS:\n"
+        "  - dimensions\n"
+        "  - time_window"
+    )
+    with writer._lock:
+        writer._conn.execute(
+            "INSERT INTO meta_skill_runs "
+            "(run_id, meta_skill_name, meta_skill_digest, plan_snapshot_json, "
+            " triggered_by, session_key, status, started_at_ms, inputs_json, "
+            " awaiting_step_id, awaiting_schema_json, awaiting_since, "
+            " awaiting_filled_json, step_outputs_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "r1",
+                "t",
+                "d",
+                json.dumps(snapshot),
+                "soft_meta_invoke",
+                "S1",
+                "awaiting_user",
+                0,
+                json.dumps({
+                    "user_message": "帮我盯一下月之暗面和minimax",
+                    "collected": {},
+                }),
+                "watch_clarify",
+                json.dumps(snapshot["plan"]["steps"][0]["clarify_config"]),
+                time.time(),
+                "{}",
+                json.dumps({"preferences": preferences}, ensure_ascii=False),
+            ),
+        )
+        writer._conn.commit()
+
+    async def _nl_chat(system, user):
+        assert "<trusted_context>" in user
+        assert "帮我盯一下月之暗面和minimax" in user
+        assert "MISSING_FIELDS" in user
+        assert "time_window" in user
+        assert "上面已经提过了" in user
+        return json.dumps({
+            "accounts": "月之暗面, minimax",
+            "dimensions": "PRICING, PRODUCT, LEADERSHIP, HIRING, NEWS",
+        })
+
+    loader = MagicMock()
+    loader.load_all.return_value = []
+    ctx = SimpleNamespace(
+        message="1. 上面已经提过了；2. 这些都关注一下；",
+        session_key="S1",
+        metadata={
+            "skill_loader": loader,
+            "meta_run_writer": writer,
+            "meta_llm_chat": _nl_chat,
+        },
+        system_prompt="",
+        config=SimpleNamespace(squilla_router=SimpleNamespace(tiers={})),
+        surface_kind="cli",
+    )
+
+    out = await meta_resolution(ctx)
+    assert "meta_resume" in out.metadata
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {
+        "accounts": "月之暗面, minimax",
+        "dimensions": "PRICING, PRODUCT, LEADERSHIP, HIRING, NEWS",
+    }
+
+
+@pytest.mark.asyncio
 async def test_nl_extract_disabled_when_flag_false(tmp_path):
     """nl_extract: false (default) → no LLM fallback, even if llm_chat is wired."""
     writer = _writer(tmp_path)

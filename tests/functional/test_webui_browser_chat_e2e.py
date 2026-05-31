@@ -2392,6 +2392,290 @@ def test_image_paste_consumes_attachment_without_inserting_wsl_path_text_in_real
     assert payload["pageErrors"] == [], payload
 
 
+def test_chat_image_attachment_layout_stays_aligned_in_real_browser(
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_image_attachment_layout_server.py"
+    browser_script = tmp_path / "webui_image_attachment_layout_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            async function waitRpc(page) {
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+            }
+
+            async function installMocks(page) {
+              await page.evaluate(() => {
+                window.__attachmentLayout = { sends: [] };
+                const rpc = App.getRpc();
+                const originalCall = rpc.call.bind(rpc);
+                rpc.call = (method, params = {}) => {
+                  if (method === "tools.search_provider") {
+                    return Promise.resolve({ provider: "none" });
+                  }
+                  if (method === "config.get") {
+                    return Promise.resolve({
+                      permissions: { default_mode: "ask" },
+                      squilla_router: { enabled: false, rollout_phase: "off", tiers: {} },
+                    });
+                  }
+                  if (method === "chat.history") {
+                    return Promise.resolve({
+                      messages: [],
+                      history_scope: "complete",
+                      has_more: false,
+                    });
+                  }
+                  if (method === "sessions.messages.subscribe") {
+                    return Promise.resolve({
+                      subscribed: true,
+                      key: params.key,
+                      current_stream_seq: 0,
+                      replay_complete: true,
+                      replayed_count: 0,
+                      run_status: "idle",
+                    });
+                  }
+                  if (method === "chat.send") {
+                    window.__attachmentLayout.sends.push(params);
+                    return Promise.resolve({ task_id: "attachment-layout-task" });
+                  }
+                  return originalCall(method, params);
+                };
+              });
+            }
+
+            async function pasteWideImage(page) {
+              await page.evaluate(async () => {
+                const canvas = document.createElement("canvas");
+                canvas.width = 1600;
+                canvas.height = 120;
+                const ctx = canvas.getContext("2d");
+                ctx.fillStyle = "#101014";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = "#ff6a00";
+                ctx.fillRect(0, 54, canvas.width, 12);
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "28px sans-serif";
+                ctx.fillText("ultra wide screenshot", 40, 48);
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+                const file = new File([blob], "wide-screenshot.png", { type: "image/png" });
+                const event = new Event("paste", { bubbles: true, cancelable: true });
+                Object.defineProperty(event, "clipboardData", {
+                  value: {
+                    items: [
+                      { type: "image/png", getAsFile: () => file },
+                    ],
+                    getData: () => "",
+                  },
+                });
+                document.dispatchEvent(event);
+              });
+              await page.waitForSelector("#chat-attach-preview:not(.hidden) .attachment-thumb", {
+                timeout: 5000,
+              });
+            }
+
+            async function measure(page, viewport) {
+              await page.setViewportSize({ width: viewport.width, height: viewport.height });
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await waitRpc(page);
+              await installMocks(page);
+              await page.evaluate(() =>
+                Router.navigate("/chat?session=agent:main:webchat:attachment-layout")
+              );
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await pasteWideImage(page);
+              const pending = await page.evaluate(() => {
+                const box = (selector) => {
+                  const el = document.querySelector(selector);
+                  const r = el.getBoundingClientRect();
+                  return {
+                    left: r.left,
+                    right: r.right,
+                    top: r.top,
+                    bottom: r.bottom,
+                    width: r.width,
+                    height: r.height,
+                    visible:
+                      r.width > 0 &&
+                      r.height > 0 &&
+                      getComputedStyle(el).display !== "none" &&
+                      getComputedStyle(el).visibility !== "hidden",
+                  };
+                };
+                return {
+                  width: window.innerWidth,
+                  scrollWidth: document.documentElement.scrollWidth,
+                  preview: box("#chat-attach-preview"),
+                  input: box(".chat-input-bar"),
+                  composer: box("#chat-composer"),
+                  thumb: box("#chat-attach-preview .attachment-thumb"),
+                  remove: box("#chat-attach-preview .attachment-remove"),
+                };
+              });
+
+              await page.locator("#chat-textarea").fill("这是什么");
+              await page.locator("#chat-btn-send").click();
+              await page.waitForFunction(
+                () => window.__attachmentLayout?.sends?.length === 1,
+                { timeout: 5000 }
+              );
+              await page.waitForSelector(".msg.user .msg-thumb", { timeout: 5000 });
+              const sent = await page.evaluate(() => {
+                const box = (selector) => {
+                  const el = document.querySelector(selector);
+                  const r = el.getBoundingClientRect();
+                  return {
+                    left: r.left,
+                    right: r.right,
+                    top: r.top,
+                    bottom: r.bottom,
+                    width: r.width,
+                    height: r.height,
+                    visible:
+                      r.width > 0 &&
+                      r.height > 0 &&
+                      getComputedStyle(el).display !== "none" &&
+                      getComputedStyle(el).visibility !== "hidden",
+                  };
+                };
+                return {
+                  width: window.innerWidth,
+                  scrollWidth: document.documentElement.scrollWidth,
+                  body: box(".msg.user .msg-body--has-attachments"),
+                  text: box(".msg.user .msg-attachment-text"),
+                  attachments: box(".msg.user .msg-attachments"),
+                  thumb: box(".msg.user .msg-thumb"),
+                  sendAttachmentCount: window.__attachmentLayout.sends[0].attachments?.length || 0,
+                  sendMessage: window.__attachmentLayout.sends[0].message || "",
+                };
+              });
+              return { name: viewport.name, pending, sent };
+            }
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage();
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+              const viewports = [
+                { name: "desktop", width: 1365, height: 768 },
+                { name: "wide", width: 2048, height: 900 },
+                { name: "mobile", width: 390, height: 844 },
+              ];
+              const layouts = [];
+              for (const viewport of viewports) layouts.push(await measure(page, viewport));
+              await browser.close();
+              console.log(JSON.stringify({ layouts, pageErrors: errors }));
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/chat"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    assert payload["pageErrors"] == []
+    layouts = {item["name"]: item for item in payload["layouts"]}
+    for name, item in layouts.items():
+        pending = item["pending"]
+        sent = item["sent"]
+        assert pending["scrollWidth"] <= pending["width"], (name, pending)
+        assert sent["scrollWidth"] <= sent["width"], (name, sent)
+        assert pending["preview"]["visible"], (name, pending)
+        assert pending["remove"]["visible"], (name, pending)
+        assert pending["preview"]["left"] >= 0, (name, pending)
+        assert pending["preview"]["right"] <= pending["width"], (name, pending)
+        assert pending["thumb"]["right"] <= pending["preview"]["right"], (name, pending)
+        assert sent["sendAttachmentCount"] == 1, (name, sent)
+        assert sent["sendMessage"] == "这是什么", (name, sent)
+        assert sent["text"]["width"] < sent["thumb"]["width"], (name, sent)
+        assert sent["thumb"]["height"] >= 96, (name, sent)
+        assert sent["thumb"]["right"] <= sent["width"], (name, sent)
+        assert sent["attachments"]["right"] <= sent["body"]["right"] + 1, (name, sent)
+        if name == "mobile":
+            assert pending["preview"]["left"] >= pending["composer"]["left"], (name, pending)
+            assert pending["preview"]["right"] <= pending["composer"]["right"], (name, pending)
+        else:
+            assert abs(pending["preview"]["left"] - pending["input"]["left"]) <= 1, (
+                name,
+                pending,
+            )
+            assert abs(pending["preview"]["right"] - pending["input"]["right"]) <= 1, (
+                name,
+                pending,
+            )
+            assert sent["thumb"]["width"] >= 450, (name, sent)
+
+
 def test_completed_reconnect_without_replay_refreshes_history_in_real_browser(
     tmp_path: Path,
 ) -> None:

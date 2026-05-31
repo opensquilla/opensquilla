@@ -1045,8 +1045,12 @@
 .chat-attachments {
   display: flex;
   gap: var(--sp-2);
+  box-sizing: border-box;
+  width: min(calc(100% - var(--sp-8)), var(--chat-measure));
+  margin: 0 auto var(--sp-2);
   padding: var(--sp-2) var(--sp-4);
-  border-top: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   flex-shrink: 0;
   overflow-x: auto;
   background: var(--bg-surface);
@@ -1346,7 +1350,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-  max-width: min(360px, 72%);
+  max-width: min(640px, 78%);
   padding: 0;
 }
 
@@ -1357,7 +1361,7 @@
   box-shadow: var(--shadow-sm);
   color: #fff;
   line-height: 1.6;
-  max-width: 100%;
+  max-width: min(360px, 100%);
   min-height: 32px;
   min-width: 56px;
   padding: var(--sp-2) var(--sp-4);
@@ -1366,12 +1370,20 @@
 
 .msg.user .msg-body--has-attachments .msg-attachments {
   justify-content: flex-end;
+  max-width: 100%;
   margin: 0;
 }
 
 .msg.user .msg-body--has-attachments .msg-thumb {
-  max-width: min(280px, 65vw);
+  width: min(520px, 70vw);
+  height: auto;
+  max-width: 100%;
   max-height: 260px;
+  min-height: 96px;
+  object-fit: contain;
+  background: transparent;
+  border-color: color-mix(in srgb, var(--border) 65%, transparent);
+  box-shadow: none;
 }
 
 /* ─── Pending Queue (Bug 2c / Proposal C) ──────────────────────────────── */
@@ -2343,6 +2355,13 @@
 }
 
 @media (max-width: 480px) {
+  .chat-attachments {
+    width: calc(100% - var(--sp-4));
+    margin-bottom: 6px;
+    padding-left: var(--sp-2);
+    padding-right: var(--sp-2);
+  }
+
   .chat-input-bar {
     gap: 4px;
     padding-left: var(--sp-3);

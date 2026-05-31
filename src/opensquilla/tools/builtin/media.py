@@ -76,13 +76,19 @@ def configure_image_generation(
     name="image",
     description=(
         "Analyze an image using a vision-capable model. "
-        "Accepts a local file path or HTTP(S) URL. "
+        "Accepts only a real local file path or HTTP(S) URL. "
+        "Do not call this tool for images already attached to the current chat turn; "
+        "use the attachment content directly. "
         "Returns the model's text analysis of the image."
     ),
     params={
         "path": {
             "type": "string",
-            "description": "Local file path or HTTP(S) URL to the image.",
+            "description": (
+                "Real local file path or HTTP(S) URL to the image. "
+                "Do not pass a chat attachment display name or a filename visible "
+                "inside a screenshot."
+            ),
         },
         "prompt": {
             "type": "string",
@@ -119,7 +125,7 @@ async def image(path: str, prompt: str = "Describe this image") -> str:
         img = Image.open(io.BytesIO(image_bytes))
         img.verify()
     except Exception as exc:
-        raise ToolError(f"Image appears corrupt or unreadable: {exc}") from exc
+        raise SafeToolError(f"Image appears corrupt or unreadable: {exc}") from exc
 
     # Try provider vision call; graceful fallback if unavailable
     b64_data = base64.b64encode(image_bytes).decode()
@@ -143,23 +149,27 @@ async def image(path: str, prompt: str = "Describe this image") -> str:
 async def _read_image_file(path: str) -> tuple[bytes, str]:
     p = _resolve_media_path(path)
     if not p.exists():
-        raise ToolError(f"Image file not found: {path}")
+        raise SafeToolError(
+            f"Image path is not accessible by the image tool: {path}. "
+            "Pass a real local file path or HTTP(S) URL. If this is a chat attachment, "
+            "answer from the attached image directly instead of calling the image tool."
+        )
     ext = p.suffix.lstrip(".").lower()
     if ext == "pdf":
         loop = asyncio.get_event_loop()
         rendered_bytes = await loop.run_in_executor(None, _render_pdf_first_page_png, p)
         if len(rendered_bytes) > _IMAGE_SIZE_LIMIT:
-            raise ToolError("Rendered PDF page exceeds 20MB image size limit")
+            raise SafeToolError("Rendered PDF page exceeds 20MB image size limit")
         return rendered_bytes, "image/png"
     if ext not in _SUPPORTED_IMAGE_FORMATS:
-        raise ToolError(
+        raise SafeToolError(
             f"Unsupported image format: {ext}. "
             f"Supported: {', '.join(sorted(_SUPPORTED_IMAGE_FORMATS))}"
         )
     loop = asyncio.get_event_loop()
     image_bytes: bytes = await loop.run_in_executor(None, p.read_bytes)
     if len(image_bytes) > _IMAGE_SIZE_LIMIT:
-        raise ToolError("Image exceeds 20MB size limit")
+        raise SafeToolError("Image exceeds 20MB size limit")
     media_type = _ext_to_mime(ext)
     return image_bytes, media_type
 

@@ -8,7 +8,7 @@ import pytest
 from reportlab.pdfgen import canvas
 
 from opensquilla.tools.builtin import media
-from opensquilla.tools.types import ToolContext, current_tool_context
+from opensquilla.tools.types import SafeToolError, ToolContext, current_tool_context
 
 
 def _write_pdf(path: Path) -> None:
@@ -52,3 +52,53 @@ async def test_image_tool_renders_workspace_pdf_before_vision_call(
         "payload_prefix": seen["payload_prefix"],
     }
     assert seen["payload_prefix"]
+
+
+@pytest.mark.asyncio
+async def test_image_tool_reports_attachment_display_name_as_safe_path_error(
+    tmp_path: Path,
+) -> None:
+    token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
+    try:
+        with pytest.raises(SafeToolError) as exc_info:
+            await media.image(
+                "ab367eca88278bd6905ff705e3fee0b2907b86fbda389d9ed3f9c9d86f4603f5.png",
+                "describe this image",
+            )
+    finally:
+        current_tool_context.reset(token)
+
+    message = exc_info.value.user_message
+    assert "not accessible by the image tool" in message
+    assert "local file path or HTTP(S) URL" in message
+    assert "chat attachment" in message
+
+
+@pytest.mark.asyncio
+async def test_image_tool_reports_unsupported_format_as_safe_error(tmp_path: Path) -> None:
+    source = tmp_path / "notes.txt"
+    source.write_text("not an image", encoding="utf-8")
+
+    token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
+    try:
+        with pytest.raises(SafeToolError) as exc_info:
+            await media.image("notes.txt", "describe this image")
+    finally:
+        current_tool_context.reset(token)
+
+    assert "Unsupported image format" in exc_info.value.user_message
+
+
+@pytest.mark.asyncio
+async def test_image_tool_reports_corrupt_image_as_safe_error(tmp_path: Path) -> None:
+    source = tmp_path / "broken.png"
+    source.write_bytes(b"not a png")
+
+    token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
+    try:
+        with pytest.raises(SafeToolError) as exc_info:
+            await media.image("broken.png", "describe this image")
+    finally:
+        current_tool_context.reset(token)
+
+    assert "corrupt or unreadable" in exc_info.value.user_message

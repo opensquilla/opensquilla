@@ -60,6 +60,46 @@ def test_chat_slash_menu_is_part_of_composer_and_width_capped() -> None:
     assert "white-space: nowrap;" in slash_desc
 
 
+def test_chat_pending_attachment_preview_is_composer_width_capped() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    start = css.index(".chat-attachments {")
+    end = css.index(".chat-attachments.hidden", start)
+    block = css[start:end]
+
+    assert "box-sizing: border-box;" in block
+    assert "width: min(calc(100% - var(--sp-8)), var(--chat-measure));" in block
+    assert "margin: 0 auto var(--sp-2);" in block
+    assert "overflow-x: auto;" in block
+
+
+def test_chat_sent_attachment_images_are_decoupled_from_text_bubble_width() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    body_start = css.index(".msg.user .msg-body.msg-body--has-attachments {")
+    body_end = css.index(".msg.user .msg-body--has-attachments .msg-attachment-text", body_start)
+    body_block = css[body_start:body_end]
+    text_start = css.index(".msg.user .msg-body--has-attachments .msg-attachment-text {")
+    text_end = css.index(".msg.user .msg-body--has-attachments .msg-attachments", text_start)
+    text_block = css[text_start:text_end]
+    attachments_start = css.index(".msg.user .msg-body--has-attachments .msg-attachments {")
+    attachments_end = css.index(".msg.user .msg-body--has-attachments .msg-thumb", attachments_start)
+    attachments_block = css[attachments_start:attachments_end]
+    thumb_start = css.index(".msg.user .msg-body--has-attachments .msg-thumb {")
+    thumb_end = css.index("/* ─── Pending Queue", thumb_start)
+    thumb_block = css[thumb_start:thumb_end]
+
+    assert "max-width: min(640px, 78%);" in body_block
+    assert "max-width: min(360px, 100%);" in text_block
+    assert "max-width: 100%;" in attachments_block
+    assert "width: min(520px, 70vw);" in thumb_block
+    assert "height: auto;" in thumb_block
+    assert "min-height: 96px;" in thumb_block
+    assert "object-fit: contain;" in thumb_block
+    assert "background: transparent;" in thumb_block
+    assert "border-color: color-mix(in srgb, var(--border) 65%, transparent);" in thumb_block
+    assert "box-shadow: none;" in thumb_block
+    assert "var(--accent)" not in thumb_block
+
+
 def test_chat_tool_display_map_does_not_reference_removed_wrapper_tools() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("const _TOOL_EMOJI = {")

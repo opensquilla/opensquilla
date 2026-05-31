@@ -265,6 +265,31 @@ def test_chat_tool_result_can_retitle_coerced_tool_cards() -> None:
     assert "_retitleToolCallDOM(details, resultToolName, seg.input || '')" in history_body
 
 
+def test_router_control_is_hidden_from_regular_tool_cards() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    append_tool_start = source.index("function _appendToolCall(payload)")
+    append_tool_end = source.index("  function _appendToolResult(payload)", append_tool_start)
+    append_tool_body = source[append_tool_start:append_tool_end]
+    append_result_start = source.index("function _appendToolResult(payload)")
+    append_result_end = source.index(
+        "  // \u2500\u2500 PR5: meta-skill user_input form rendering",
+        append_result_start,
+    )
+    append_result_body = source[append_result_start:append_result_end]
+    history_start = source.index("function _reconstructToolCalls(bubbleDiv, segments)")
+    history_end = source.index("  function _renderMessageTags", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "function _isControlPlaneToolName(name)" in source
+    assert "return name === 'router_control';" in source
+    assert "if (_isControlPlaneToolName(name))" in append_tool_body
+    assert "tool_call.append.skip_control_plane" in append_tool_body
+    assert "if (_isControlPlaneToolName(toolName))" in append_result_body
+    assert "tool_result.append.skip_control_plane" in append_result_body
+    assert "if (_isControlPlaneToolName(seg.name || '')) continue;" in history_body
+    assert "if (_isControlPlaneToolName(resultToolName)) continue;" in history_body
+
+
 def test_chat_search_provider_badge_updates_running_web_search_cards() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
@@ -1112,6 +1137,16 @@ def test_savings_popup_persists_cache_hit_active_to_turn_meta() -> None:
     assert "__savings_ui_suppressed: !!u.__savings_ui_suppressed," in source
 
 
+def test_savings_fx_cleanup_removes_floating_labels() -> None:
+    source = SAVINGS_FX_JS.read_text(encoding="utf-8")
+
+    assert "const _labels = new Set();" in source
+    assert "_labels.add(el);" in source
+    assert "_labels.delete(el);" in source
+    assert "for (const el of _labels)" in source
+    assert "window.SavingsFX.cleanup();" in CHAT_JS.read_text(encoding="utf-8")
+
+
 def test_turn_meta_and_router_share_model_display_normalization() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     attach_start = source.index("function _attachTurnMeta(")
@@ -1610,6 +1645,35 @@ def test_router_fx_scan_to_lock_fills_the_wait() -> None:
     assert scan_css in css
 
 
+def test_chat_compaction_suppresses_current_turn_router_wait_panel() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "let _compactSuppressedRouterTurnIndex = '';" in source
+    assert "function _suppressRouterFxForCompaction(payload = {})" in source
+
+    toast_start = source.index("function _showCompactionToast(payload, meta = {})")
+    started_start = source.index("if (status === 'started') {", toast_start)
+    started_end = source.index("if (status === 'observed') {", started_start)
+    started_body = source[started_start:started_end]
+    assert "_suppressRouterFxForCompaction(payload || {});" in started_body
+
+    observed_start = source.index("if (status === 'observed') {", toast_start)
+    observed_end = source.index("if (status === 'emergency_ephemeral') {", observed_start)
+    observed_body = source[observed_start:observed_end]
+    assert "_suppressRouterFxForCompaction(payload || {});" in observed_body
+
+    begin_start = source.index("function _routerFxBeginScan(")
+    begin_end = source.index("function _routerFxScanRoam(", begin_start)
+    begin_body = source[begin_start:begin_end]
+    assert "_routerFxIsSuppressedForCompactionTurn(_routerFxCountUserMessages())" in begin_body
+
+    handler_start = source.index("async function _handleRouterDecision(payload) {")
+    handler_end = source.index("  // History-load entry point", handler_start)
+    handler_body = source[handler_start:handler_end]
+    assert "_routerFxIsSuppressedForCompactionTurn(turnIndex)" in handler_body
+    assert "router_decision.skip.compaction_suppressed" in handler_body
+
+
 def test_router_fx_strip_survives_multistep_turn() -> None:
     # History reorder moves .msg nodes. The router strip is a sibling, so the
     # root fix is to move an attached strip together with its user message
@@ -1755,7 +1819,7 @@ def test_done_stream_bubble_survives_until_history_persists_assistant() -> None:
 def test_generic_duplicate_stream_seq_is_classified_as_exact_handler_replay() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     assert "function _eventHasSpecificSessionHandler(event)" in source
-    wildcard_start = source.index("_unsubs.push(_rpc.on('*', (rawEvent, rawPayload) => {")
+    wildcard_start = source.index("_unsubs.push(_rpc.on('*', (rawEvent, rawPayload")
     wildcard_end = source.index(
         "      if (event.startsWith('session.event.task_group.')) return;",
         wildcard_start,
@@ -1764,6 +1828,18 @@ def test_generic_duplicate_stream_seq_is_classified_as_exact_handler_replay() ->
     assert "_eventHasSpecificSessionHandler(event)" in wildcard_body
     assert "_chatDiag('event.generic.skip.specific_handler_stream_seq'" in wildcard_body
     assert "_chatDiag('event.generic.drop.stream_seq'" in wildcard_body
+
+
+def test_savings_popup_does_not_fire_for_replayed_done_frames() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    wildcard_start = source.index("_unsubs.push(_rpc.on('*'")
+    wildcard_end = source.index("    // Connection state changes", wildcard_start)
+    body = source[wildcard_start:wildcard_end]
+
+    assert "(rawEvent, rawPayload, rawMeta = {})" in body
+    assert "const isReplayedFrame = !!(rawMeta && rawMeta.replayed);" in body
+    assert "_maybeFireSavingsPopup(_finishedBubble, u, { animate: !isReplayedFrame });" in body
+    assert body.index("isReplayedFrame") < body.index("_maybeFireSavingsPopup(")
 
 
 def test_tool_summary_exposes_visible_running_status() -> None:

@@ -27,6 +27,7 @@ const SavingsFX = (() => {
   let _maxStreak = 0;
   let _streakIdentity = '';
   const _active  = new Set(); // live canvases
+  const _labels = new Set();
 
   /* ── Savings score 0–1 ───────────────────────────────────────────────── */
   // savings_usd scales with actual token count -> big context = more particles.
@@ -76,8 +77,12 @@ const SavingsFX = (() => {
     sub.textContent = 'this turn';
     el.appendChild(sub);
     document.body.appendChild(el);
+    _labels.add(el);
     // Keyframe runs 2.4s; add a 200ms grace so we never yank mid-fade-out.
-    setTimeout(() => { try { el.remove(); } catch (_) {} }, 2600);
+    setTimeout(() => {
+      try { el.remove(); } catch (_) {}
+      _labels.delete(el);
+    }, 2600);
   }
 
   /* ── Public API ──────────────────────────────────────────────────────── */
@@ -160,6 +165,8 @@ const SavingsFX = (() => {
   function cleanup() {
     for (const c of _active) { try { c.remove(); } catch (_) {} }
     _active.clear();
+    for (const el of _labels) { try { el.remove(); } catch (_) {} }
+    _labels.clear();
   }
 
   /* ── Border pulse (reduced-motion fallback) ──────────────────────────── */

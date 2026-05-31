@@ -1755,6 +1755,211 @@ def test_completed_reconnect_without_replay_refreshes_history_in_real_browser(
     assert after["pageErrors"] == [], after
 
 
+def test_replayed_savings_done_restores_reply_without_replaying_popup_in_real_browser(
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_savings_replay_server.py"
+    browser_script = tmp_path / "webui_savings_replay_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            async function waitRpc(page) {
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+            }
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await waitRpc(page);
+
+              await page.evaluate(() => {
+                window.__savingsReplayTest = {
+                  fireCalls: 0,
+                  sessionKey: "agent:main:webchat:savings-replay",
+                };
+                const originalFire = window.SavingsFX.fire.bind(window.SavingsFX);
+                window.SavingsFX.fire = (...args) => {
+                  window.__savingsReplayTest.fireCalls += 1;
+                  return originalFire(...args);
+                };
+                const rpc = App.getRpc();
+                const originalCall = rpc.call.bind(rpc);
+                rpc.call = (method, params = {}) => {
+                  if (method === "tools.search_provider") {
+                    return Promise.resolve({ provider: "none" });
+                  }
+                  if (method === "config.get") {
+                    return Promise.resolve({
+                      permissions: { default_mode: "ask" },
+                      squilla_router: {
+                        enabled: true,
+                        rollout_phase: "full",
+                        tiers: {
+                          t1: { model: "openrouter/deepseek-v4-flash" },
+                        },
+                      },
+                    });
+                  }
+                  if (method === "chat.history") {
+                    return Promise.resolve({
+                      messages: [],
+                      history_scope: "complete",
+                      has_more: false,
+                    });
+                  }
+                  if (method === "sessions.messages.subscribe") {
+                    return Promise.resolve({
+                      subscribed: true,
+                      key: params.key,
+                      current_stream_seq: 0,
+                      replay_complete: true,
+                      replayed_count: 0,
+                      run_status: "idle",
+                    });
+                  }
+                  return originalCall(method, params);
+                };
+              });
+
+              await page.evaluate(() =>
+                Router.navigate("/chat?session=agent:main:webchat:savings-replay")
+              );
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+
+              await page.evaluate(() => {
+                const rpc = App.getRpc();
+                const ls = rpc._listeners;
+                const sessionKey = window.__savingsReplayTest.sessionKey;
+                const deltaHandlers = ls.get("session.event.text_delta");
+                if (deltaHandlers) {
+                  deltaHandlers.forEach(h => h({
+                    session_key: sessionKey,
+                    stream_seq: 41,
+                    text: "replayed savings answer",
+                  }));
+                }
+                const wildHandlers = ls.get("*");
+                if (wildHandlers) {
+                  wildHandlers.forEach(h => h("session.event.done", {
+                    session_key: sessionKey,
+                    stream_seq: 42,
+                    text: "replayed savings answer",
+                    input_tokens: 17800,
+                    output_tokens: 661,
+                    model: "openrouter/deepseek-v4-flash",
+                    routed_model: "openrouter/deepseek-v4-flash",
+                    routed_tier: "t1",
+                    routing_source: "squilla_router",
+                    routing_applied: true,
+                    total_savings_pct: 97,
+                    total_savings_usd: 0.01,
+                  }, { replayed: true }));
+                }
+              });
+
+              await page.waitForFunction(
+                () => Array.from(document.querySelectorAll(".msg.assistant"))
+                  .some(el => el.textContent.includes("replayed savings answer")),
+                { timeout: 5000 }
+              );
+              await page.waitForTimeout(300);
+              const payload = await page.evaluate(() => ({
+                assistantHasReply: Array.from(document.querySelectorAll(".msg.assistant"))
+                  .some(el => el.textContent.includes("replayed savings answer")),
+                savedChipVisible: Array.from(document.querySelectorAll(".msg-meta__saved"))
+                  .some(el => el.textContent.includes("Saved")),
+                fireCalls: window.__savingsReplayTest.fireCalls,
+                floatingLabels: document.querySelectorAll(".savings-float").length,
+              }));
+
+              await browser.close();
+              console.log(JSON.stringify({ ...payload, pageErrors: errors }));
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    assert payload["assistantHasReply"] is True, payload
+    assert payload["savedChipVisible"] is True, payload
+    assert payload["fireCalls"] == 0, payload
+    assert payload["floatingLabels"] == 0, payload
+    assert payload["pageErrors"] == [], payload
+
+
 def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
     if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
         pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")

@@ -315,6 +315,8 @@ const ChatView = (() => {
   let _pendingDrainAfterTerminalTimer = null;
   let _compactInFlight = false;
   let _compactInFlightKey = '';
+  let _compactSuppressedRouterSessionKey = '';
+  let _compactSuppressedRouterTurnIndex = '';
   let _lastCompactionToastSig = '';
   let _lastCompactionToastAt = 0;
   let _compactStatusEl = null;
@@ -525,7 +527,10 @@ const ChatView = (() => {
   function _resetSavingsPopupCooldown() {
     _savingsPopupLastTs = 0;
     _lastSavingsPopupIdentity = '';
-    if (window.SavingsFX) window.SavingsFX.resetStreak();
+    if (window.SavingsFX) {
+      window.SavingsFX.resetStreak();
+      window.SavingsFX.cleanup();
+    }
   }
 
   // Token widget accumulator
@@ -3194,6 +3199,27 @@ const ChatView = (() => {
     return '';
   }
 
+  function _routerFxIsSuppressedForCompactionTurn(turnIndex) {
+    if (!_compactSuppressedRouterTurnIndex) return false;
+    if (String(turnIndex || '') !== _compactSuppressedRouterTurnIndex) return false;
+    return !_compactSuppressedRouterSessionKey || _compactSuppressedRouterSessionKey === _sessionKey;
+  }
+
+  function _suppressRouterFxForCompaction(payload = {}) {
+    if (!_thread) return;
+    const turnIndex = String(_routerFxCountUserMessages());
+    if (!turnIndex || turnIndex === '0') return;
+    const key = String(payload && payload.key || _sessionKey || '');
+    _compactSuppressedRouterSessionKey = key;
+    _compactSuppressedRouterTurnIndex = turnIndex;
+    _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((el) => {
+      const sameSession = !key || !el.dataset.sessionKey || el.dataset.sessionKey === key;
+      const sameTurn = !el.dataset.turnIndex || el.dataset.turnIndex === turnIndex;
+      if (sameSession && sameTurn) _routerFxRemoveStrip(el);
+    });
+    _chatDiag('router_scan.suppressed_for_compaction', { key, turnIndex });
+  }
+
   function _showCompactionToast(payload, meta = {}) {
     if (meta && meta.replayed) return;
     let status = String(payload && payload.status || '').toLowerCase();
@@ -3205,6 +3231,7 @@ const ChatView = (() => {
     _syncCompactionRail(payload || {}, status, source);
     if (status === 'started') {
       _setCompactInFlight(true, payload && payload.key || _sessionKey);
+      _suppressRouterFxForCompaction(payload || {});
       _setCompactStatus('started', _compactionStatusMessage(payload || {}, source, status), {
         tone: 'info',
         detail: _compactionStatusDetail(payload || {}, source, status),
@@ -3212,6 +3239,7 @@ const ChatView = (() => {
       return;
     }
     if (status === 'observed') {
+      _suppressRouterFxForCompaction(payload || {});
       if (_isCompactInFlightForCurrentSession()) {
         _setCompactStatus('started', _compactionProgressMessage(payload || {}), {
           tone: 'info',
@@ -4132,6 +4160,12 @@ const ChatView = (() => {
   // ~170ms), so it renders regardless of any CSS-animation quirk — and it
   // fills the wait instead of trailing it, replacing the "Watching" placeholder.
   function _routerFxBeginScan(anchorDiv, seedKey) {
+    if (_routerFxIsSuppressedForCompactionTurn(_routerFxCountUserMessages())) {
+      _chatDiag('router_scan.skip.compaction_suppressed', {
+        turnIndex: String(_routerFxCountUserMessages()),
+      });
+      return false;
+    }
     // Only scan when the router is actually going to route (else no decision
     // arrives to lock it). Both flags: user wants the viz AND routing is on.
     if (!_thread || !_routerFx.enabled || !_routerFeatureEnabled) {
@@ -4473,6 +4507,21 @@ const ChatView = (() => {
     if (payload.model) {
       _routerFxModels[tier.toLowerCase()] = String(payload.model);
     }
+    const turnIndex = _routerFxCountUserMessages();
+    if (_routerFxIsSuppressedForCompactionTurn(turnIndex)) {
+      if (_thread) {
+        _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((el) => {
+          if (!el.dataset.turnIndex || el.dataset.turnIndex === String(turnIndex)) {
+            _routerFxRemoveStrip(el);
+          }
+        });
+      }
+      _chatDiag('router_decision.skip.compaction_suppressed', {
+        payload: _chatDiagSummarizePayload(payload),
+        turnIndex: String(turnIndex),
+      });
+      return;
+    }
     // User-pref gate: visualisation hidden. Tier/model bookkeeping above is
     // kept warm so re-enabling shows correct names without a config round-trip;
     // skip the config await and all DOM work below. (Render-only gate — never
@@ -4544,7 +4593,6 @@ const ChatView = (() => {
     // or after the user-visible turn already settled. Preserve the panel shape
     // but render it as a settled historical result; never replay the choice
     // animation for an already-finished turn.
-    const turnIndex = _routerFxCountUserMessages();
     const replaySeed = _routerFxResolveLayoutSeed(_sessionKey);
     const wrap = _buildRouterFxElement(payload, {
       preSettled: true,
@@ -4920,7 +4968,8 @@ const ChatView = (() => {
     }));
 
     // Wildcard listener for done + error events (tool events handled by dedicated listeners above)
-    _unsubs.push(_rpc.on('*', (rawEvent, rawPayload) => {
+    _unsubs.push(_rpc.on('*', (rawEvent, rawPayload, rawMeta = {}) => {
+      const isReplayedFrame = !!(rawMeta && rawMeta.replayed);
       const terminalStatus = _taskTerminalStatus(rawEvent);
       if (terminalStatus) {
         if (!_isCurrentSessionPayload(rawPayload)) return;
@@ -5052,7 +5101,7 @@ const ChatView = (() => {
         }
 
         // Attach per-turn savings chips to the just-finished assistant bubble
-        _maybeFireSavingsPopup(_finishedBubble, u);
+        _maybeFireSavingsPopup(_finishedBubble, u, { animate: !isReplayedFrame });
 
         // Attach model + session token footer below the assistant bubble
         _attachTurnMeta(_finishedBubble, _usageModel, u.input_tokens | 0, u.output_tokens | 0, u);
@@ -5144,7 +5193,7 @@ const ChatView = (() => {
   // server reports a real squilla-router routed savings percentage or an
   // active provider/OpenSquilla cache hit. Cache hits do not increment the
   // savings streak unless the turn also has routed savings.
-  function _maybeFireSavingsPopup(bubble, u) {
+  function _maybeFireSavingsPopup(bubble, u, opts = {}) {
     u = u || {};
     const now = Date.now();
     const identityModel = u.routed_model || u.model || '';
@@ -5168,6 +5217,7 @@ const ChatView = (() => {
     // visible same-identity savings turn continue combo.
     window.SavingsFX.noteTurn(u);
     if (suppressPopup) return;
+    if (opts.animate === false) return;
 
     const hasTier  = !!(u.routed_tier && u.routing_source && u.routing_source !== 'none');
     const turnSavedPct = (typeof u.total_savings_pct === 'number' && u.total_savings_pct > 0)
@@ -6925,6 +6975,10 @@ const ChatView = (() => {
     return name || 'tool';
   }
 
+  function _isControlPlaneToolName(name) {
+    return name === 'router_control';
+  }
+
   function _buildToolCallDOM(name, toolId, input, isRunning) {
     const displayName = _toolDisplayName(name, input);
     const preview = _truncate(
@@ -7141,6 +7195,10 @@ const ChatView = (() => {
     if (!payload) return;
     _chatDiag('tool_call.append.start', _chatDiagSummarizePayload(payload));
     const name = payload.name || payload.tool_name || 'tool';
+    if (_isControlPlaneToolName(name)) {
+      _chatDiag('tool_call.append.skip_control_plane', { name });
+      return;
+    }
     try { if (name && name.startsWith('meta-step:')) console.log('[meta-step] start', name); } catch (e) {}
     const input = typeof payload.input === 'string'
       ? payload.input
@@ -7220,6 +7278,13 @@ const ChatView = (() => {
     const isError = _toolResultIsError(payload);
     const toolId = payload.tool_use_id || '';
     let toolName = payload.name || payload.tool_name || '';
+    if (_isControlPlaneToolName(toolName)) {
+      _chatDiag('tool_result.append.skip_control_plane', {
+        toolId,
+        toolName,
+      });
+      return;
+    }
 
     const bubble = _ensureStreamBubble();
     _markVisibleStreamEvent('tool_result');
@@ -7694,6 +7759,7 @@ const ChatView = (() => {
           Markdown.bindHighlight(textDiv);
           body.appendChild(textDiv);
         } else if (seg.type === 'tool_use') {
+          if (_isControlPlaneToolName(seg.name || '')) continue;
           if (_findToolDetailsById(body, seg.tool_use_id || '')) continue;
           const details = _buildToolCallDOM(seg.name || 'tool', seg.tool_use_id || '', seg.input || '', false);
           body.appendChild(details);
@@ -7702,6 +7768,7 @@ const ChatView = (() => {
           const isError = _toolResultIsError(seg);
           const content = seg.result || '';
           const resultToolName = seg.name || _toolNameById[toolId] || '';
+          if (_isControlPlaneToolName(resultToolName)) continue;
 
           if (toolId) {
             const details = _findToolDetailsById(body, toolId);

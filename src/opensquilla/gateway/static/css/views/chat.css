@@ -589,14 +589,31 @@
   position: relative;
 }
 
-.chat-msg--streaming .chat-msg-text::after,
-.msg.streaming .msg-body:not(:has(.msg-text-seg:not(:empty)))::after,
-.msg.streaming .msg-text-seg:not(:empty):last-of-type::after {
-  content: '\25CD';
-  display: inline-block;
-  color: var(--accent);
-  animation: blink 1.2s ease-in-out infinite;
-  margin-left: 2px;
+/* Streaming indicator — one spinning shrimp anchored inside the bubble,
+   at the bottom of .msg-body. Applies the whole time the assistant turn is
+   in flight (text streaming OR tool execution), so the affordance does not
+   vanish when control moves between text deltas and tool calls. The
+   :not(.awaiting-model) guard lets the pre-first-token "waiting for model
+   response..." text on .msg.streaming.awaiting-model::after be the only
+   marker during the wait, then the shrimp takes over once tokens start. */
+.msg.streaming:not(.awaiting-model) .msg-body::after {
+  content: '';
+  display: block;
+  width: 1.1em;
+  height: 1.1em;
+  margin-top: 6px;
+  position: relative;
+  left: 0;
+  background-image: url('../../img/opensquilla-mark.png');
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  /* Wheel kinematics: ~1.1em diameter → ~3.46em circumference per spin. The
+     forward traverse covers ~4 rotations (1440°) over 5s, then the return
+     interpolates back to 0° — so the spin direction reverses with the swim
+     direction, matching a real rolling wheel instead of a sliding one. The
+     two are baked into one keyframes so they stay synchronized. */
+  animation: shrimp-roll 10s linear infinite;
 }
 
 .msg.streaming.awaiting-model::after {
@@ -620,9 +637,9 @@
   50%      { opacity: 0.48; }
 }
 
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.2; }
+@keyframes shrimp-roll {
+  0%, 100% { left: 0;                  transform: rotate(0deg); }
+  50%      { left: calc(100% - 1.1em); transform: rotate(1440deg); }
 }
 
 /* Interrupted-turn marker. Appended to the .msg-body when a streaming

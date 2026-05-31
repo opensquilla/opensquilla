@@ -60,7 +60,11 @@ def _seed_history(log_dir: Path) -> Path:
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
     home = args.home.expanduser().resolve()
     log_dir = args.log_dir.expanduser().resolve() if args.log_dir else home / "logs"
-    proposals_dir = args.proposals_dir.expanduser().resolve() if args.proposals_dir else home / "proposals"
+    proposals_dir = (
+        args.proposals_dir.expanduser().resolve()
+        if args.proposals_dir
+        else home / "proposals"
+    )
     workspace_dir = args.workspace.expanduser().resolve() if args.workspace else home / "workspace"
     home.mkdir(parents=True, exist_ok=True)
     workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -78,7 +82,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     # to this isolated state root.
     from opensquilla.engine.agent import Agent
     from opensquilla.engine.types import AgentConfig
-    from opensquilla.gateway.boot import build_services, _make_auto_propose_tool_context
+    from opensquilla.gateway.boot import _make_auto_propose_tool_context, build_services
     from opensquilla.gateway.config import GatewayConfig
     from opensquilla.scheduler.auto_propose_handler import make_auto_propose_handler
     from opensquilla.scheduler.types import CronJob, SessionTarget
@@ -315,7 +319,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 or bool(job.get("runs"))
                 for job in target_jobs
             )
-            if target_jobs and target_finished:
+            if target_jobs and target_finished and (
+                not args.wait_for_proposal or proposals_now
+            ):
                 return last
             if asyncio.get_running_loop().time() >= deadline:
                 return last
@@ -334,7 +340,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         )
         job = CronJob(
             id=f"live-auto-propose-{args.trigger}",
-            name=f"auto_propose:main",
+            name="auto_propose:main",
             cron_expr="* * * * *",
             schedule_raw="* * * * *",
             handler_key="auto_propose",
@@ -376,7 +382,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     if proposals_dir.is_dir():
         for sub in sorted(proposals_dir.iterdir()):
             gates_path = sub / "gates.json"
-            gates = json.loads(gates_path.read_text(encoding="utf-8")) if gates_path.is_file() else {}
+            gates = (
+                json.loads(gates_path.read_text(encoding="utf-8"))
+                if gates_path.is_file()
+                else {}
+            )
             proposals.append({
                 "id": sub.name,
                 "skill": (sub / "SKILL.md").read_text(encoding="utf-8")[:400]
@@ -420,6 +430,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cron", default="* * * * *")
     parser.add_argument("--via-handler", action="store_true")
     parser.add_argument("--actual-scheduler", action="store_true")
+    parser.add_argument(
+        "--wait-for-proposal",
+        action="store_true",
+        help=(
+            "For --actual-scheduler, wait until at least one proposal directory "
+            "exists instead of returning as soon as a scheduled run starts."
+        ),
+    )
     parser.add_argument("--wait-seconds", type=float, default=120.0)
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--seed-history", action="store_true")

@@ -166,6 +166,7 @@ def test_creator_preserves_required_triggers_and_prior_step_context(monkeypatch)
     skill_md = proposer.meta_skill_assemble("p1_sequential", slots_json)
     assert "kind: skill_exec\n      skill: \"history-explorer\"" in skill_md
     assert "kind: skill_exec\n      skill: \"git-diff\"" in skill_md
+    assert "kind: llm_chat\n      skill: \"summarize\"" in skill_md
     assert "outputs.history_scan" in skill_md
     assert "outputs.diff_capture" in skill_md
 
@@ -184,6 +185,21 @@ def test_creator_dag_passes_raw_user_request_to_slot_filling(tmp_path) -> None:
     user_intent = str(fill_slots.tool_args["user_intent"])
     assert "inputs.user_message" in user_intent
     assert "outputs.clarify_intent" in user_intent
+
+
+def test_creator_runtime_e2e_uses_candidate_trigger_prompt(tmp_path) -> None:
+    """Runtime E2E should exercise the candidate skill, not the outer creator
+    request that produced it."""
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    creator_spec = loader.get_by_name("meta-skill-creator")
+    assert creator_spec is not None
+    plan = parse_meta_plan(creator_spec)
+    assert plan is not None
+
+    runtime_e2e = {step.id: step for step in plan.steps}["runtime_e2e"]
+    assert runtime_e2e.tool_args["skill_md"] == "{{ outputs.assemble }}"
+    assert runtime_e2e.tool_args["eval_prompts"] == ""
 
 
 def test_manual_creator_persist_auto_enables_when_setting_is_on(tmp_path) -> None:
@@ -347,7 +363,10 @@ async def test_orchestrator_drives_creator_dag_end_to_end(tmp_path, monkeypatch)
     )
     match = MetaMatch(
         plan=plan,
-        inputs={"user_message": "compose a meta-skill that does X then Y"},
+        inputs={
+            "user_message": "compose a meta-skill that does X then Y",
+            "system_prompt": "Unattended meta-skill auto-propose run.",
+        },
     )
 
     final_result = None

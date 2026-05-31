@@ -34,8 +34,8 @@ composition:
 {%- else %}
 {%- set branch_kind = "agent" %}
 {%- endif %}
-{%- if branch_kind == "skill_exec" %}
-      kind: skill_exec
+{%- if branch_kind in ["skill_exec", "llm_chat"] %}
+      kind: {{ branch_kind }}
 {%- endif %}
       skill: {{ b.skill | tojson }}
       read_only: true
@@ -63,8 +63,8 @@ composition:
 {%- else %}
 {%- set merge_kind = "agent" %}
 {%- endif %}
-{%- if merge_kind == "skill_exec" %}
-      kind: skill_exec
+{%- if merge_kind in ["skill_exec", "llm_chat"] %}
+      kind: {{ merge_kind }}
 {%- endif %}
       skill: {{ merge.skill | tojson }}
       read_only: true
@@ -96,8 +96,8 @@ composition:
 {%- else %}
 {%- set tail_kind = "agent" %}
 {%- endif %}
-{%- if tail_kind == "skill_exec" %}
-      kind: skill_exec
+{%- if tail_kind in ["skill_exec", "llm_chat"] %}
+      kind: {{ tail_kind }}
 {%- endif %}
       skill: {{ tail.skill | tojson }}
       read_only: true

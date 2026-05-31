@@ -596,17 +596,17 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                 ctx.metadata["meta_clarify_cancel_reason"] = "user_cancel"
                 return ctx
 
-            parsed, errors = parse_clarify_reply(
-                ctx.message, schema,
-                surface=getattr(ctx, "surface_kind", "unknown"),
-            )
-            if errors and schema.nl_extract:
-                # PR9: opt-in LLM fallback. Run ONLY when the
-                # deterministic parser failed. Validators are reapplied
-                # inside extract() so prompt-injection in user_message
-                # cannot bypass type/range/choice constraints.
+            parsed: dict[str, Any] = {}
+            errors: list[str] = []
+            nl_attempted = False
+            if schema.nl_extract:
+                # PR9+: when explicitly enabled, prefer LLM extraction over
+                # deterministic text parsing. Validators are reapplied inside
+                # extract() so prompt-injection in user_message cannot bypass
+                # type/range/choice constraints.
                 nl_chat = ctx.metadata.get("meta_llm_chat")
                 if nl_chat is not None:
+                    nl_attempted = True
                     active = (
                         _chat_pending_fields(schema, awaiting)
                         if schema.mode == "chat"
@@ -625,9 +625,19 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                             "meta_resolution.nl_extract_failed",
                             error=str(exc),
                         )
+                        errors = [f"nl_extract failed: {exc}"]
                     else:
                         if not nl_result.errors and nl_result.fields:
                             parsed, errors = nl_result.fields, []
+                        else:
+                            errors = nl_result.errors or [
+                                "nl_extract: no fields extracted",
+                            ]
+            if not parsed and (not schema.nl_extract or not nl_attempted):
+                parsed, errors = parse_clarify_reply(
+                    ctx.message, schema,
+                    surface=getattr(ctx, "surface_kind", "unknown"),
+                )
             if errors:
                 failure_count = writer.increment_parse_failures(
                     run_id=awaiting.run_id,

@@ -3799,9 +3799,9 @@ class TurnRunner:
         initial_metadata: dict[str, Any] = {
             "skill_loader": self._skill_loader,
             "meta_run_writer": getattr(self, "_meta_run_writer", None),
-            # PR9: meta_resolution's awaiting branch calls this when the
-            # deterministic clarify_text parser fails and the SKILL.md
-            # has ``nl_extract: true``. None disables the LLM fallback.
+            # PR9+: meta_resolution's awaiting branch calls this first when
+            # the SKILL.md has ``nl_extract: true``. None keeps clarify reply
+            # parsing on the deterministic compatibility path.
             "meta_llm_chat": self._make_meta_llm_chat(provider, session_key),
             "router_control_hold_store": self._router_control_hold_store,
             # Surface the resolved per-agent workspace so the meta_invoke

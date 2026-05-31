@@ -130,6 +130,49 @@ def test_clarify_copy_renders_against_inputs_and_outputs():
 
 
 @pytest.mark.asyncio
+async def test_english_pause_filters_cjk_cancel_keywords_and_prompts():
+    cfg = ClarifyStepConfig(
+        mode="form",
+        fields=(
+            ClarifyField(
+                name="topic",
+                type="string",
+                required=True,
+                prompt="报告主题 / Report topic",
+            ),
+        ),
+        intro="报告主题或决策场景还不够明确。",
+        cancel_keywords=("算了", "取消", "cancel", "stop"),
+    )
+    dao = MagicMock()
+    dao.try_claim_awaiting.return_value = True
+
+    with pytest.raises(MetaPaused) as exc:
+        await run_user_input_step(
+            _step(cfg),
+            inputs={
+                "user_message": "Please research this.",
+                "user_language": "en",
+                "collected": {},
+            },
+            outputs={},
+            run_id="r1",
+            session_id="S1",
+            dao=dao,
+            now=lambda: 1700000000.0,
+        )
+
+    paused = exc.value
+    assert paused.language == "en"
+    assert paused.schema.intro == (
+        "A few required details are still missing. Please provide the fields "
+        "below so I can continue."
+    )
+    assert paused.schema.fields[0].prompt == "Report topic"
+    assert paused.schema.cancel_keywords == ("cancel", "stop")
+
+
+@pytest.mark.asyncio
 async def test_cas_failure_does_not_raise_meta_paused():
     """When the DAO rejects the claim, the executor signals a normal failure
     by raising RuntimeError. The orchestrator treats it as a regular step

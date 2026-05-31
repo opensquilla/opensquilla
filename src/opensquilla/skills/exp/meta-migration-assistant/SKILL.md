@@ -116,14 +116,14 @@ composition:
           If the text contains "CommonJS" and "native ESM", return exactly
           CJS_TO_ESM even if other benchmark/context words appear first.
     - id: fetch_guide
-      skill: deep-research
+      kind: skill_exec
+      skill: multi-search-engine
       depends_on: [classify, migration_clarify]
-      route:
-        - when: "'OPENAI_V0_TO_V1' in outputs.classify"
-          to: github
-        - when: "outputs.classify in ('PY2_TO_PY3', 'VUE2_TO_VUE3', 'REACT_CLASS_TO_HOOKS', 'CJS_TO_ESM')"
-          to: multi-search-engine
       with:
+        max_results: 8
+        engines:
+          - duckduckgo
+          - brave
         query: |
           Authoritative migration guide for the user's actual migration.
           Classifier verdict: {{ outputs.classify }}.
@@ -141,7 +141,6 @@ composition:
 
           User request:
           {{ inputs.user_message | xml_escape | truncate(500) }}
-          Return the most relevant excerpt with source URL(s).
     - id: repo_context
       kind: skill_exec
       skill: git-diff

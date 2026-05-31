@@ -139,7 +139,7 @@ class MetaPaused(Exception):  # noqa: N818
     convention.
     """
 
-    __slots__ = ("run_id", "step_id", "schema", "intro")
+    __slots__ = ("run_id", "step_id", "schema", "intro", "language")
 
     def __init__(
         self,
@@ -148,12 +148,14 @@ class MetaPaused(Exception):  # noqa: N818
         step_id: str,
         schema: ClarifyStepConfig,
         intro: str = "",
+        language: str = "",
     ) -> None:
         super().__init__(f"meta-skill paused at step {step_id!r}")
         self.run_id = run_id
         self.step_id = step_id
         self.schema = schema
         self.intro = intro
+        self.language = language
 
 
 @dataclass(frozen=True)

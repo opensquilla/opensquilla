@@ -9,6 +9,7 @@ draining the sub-Agent runner with the same prompt.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
@@ -19,6 +20,85 @@ from opensquilla.skills.meta.templating import (
     render_with_args,
 )
 from opensquilla.skills.meta.types import MetaStep
+
+
+def _with_language_instruction(system_prompt: str, inputs: dict[str, Any]) -> str:
+    instruction = str(inputs.get("language_instruction") or "").strip()
+    if not instruction:
+        return system_prompt
+    return f"{system_prompt.rstrip()}\n\n{instruction}"
+
+
+def _format_llm_chat_context(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _build_llm_chat_user_message(rendered_args: dict[str, Any]) -> str:
+    base = str(
+        rendered_args.get("task")
+        or rendered_args.get("prompt")
+        or rendered_args.get("text")
+        or "",
+    )
+    context_parts: list[str] = []
+    for key, value in rendered_args.items():
+        if key in {"system", "task", "prompt", "text"}:
+            continue
+        formatted = _format_llm_chat_context(value).strip()
+        if formatted:
+            context_parts.append(f"{key}:\n{formatted}")
+    if context_parts:
+        return f"{base.rstrip()}\n\nContext:\n" + "\n\n".join(context_parts)
+    return base
+
+
+def _strict_choice(raw: str, choices: list[str]) -> str | None:
+    """Return a choice only when the model reply is an unambiguous label."""
+    if not choices:
+        return None
+    text = raw.strip()
+    if text in choices:
+        return text
+    stripped = text.strip("'\"`.,!? \t\r\n")
+    if stripped in choices:
+        return stripped
+    upper = stripped.upper()
+    for choice in choices:
+        if upper == choice.upper():
+            return choice
+    return None
+
+
+async def _repair_choice_with_llm(
+    *,
+    llm_chat: Callable[[str, str], Awaitable[str]],
+    choices: list[str],
+    original_system_prompt: str,
+    original_user_message: str,
+    raw_reply: str,
+) -> str | None:
+    """Ask the LLM to repair a non-label classifier reply into one exact label."""
+    choices_str = " | ".join(choices)
+    system_prompt = (
+        "You repair classifier outputs. Choose exactly one valid label from "
+        f"this closed set: {choices_str}\n"
+        "Return only the label. Do not explain."
+    )
+    user_message = (
+        "Original classifier system prompt:\n"
+        f"{original_system_prompt}\n\n"
+        "Original classifier user message:\n"
+        f"{original_user_message}\n\n"
+        "Classifier reply to repair:\n"
+        f"{raw_reply}"
+    )
+    repaired = await llm_chat(system_prompt, user_message)
+    return _strict_choice(repaired, choices)
 
 
 async def _drain_agent_runner(
@@ -97,6 +177,21 @@ async def run_llm_classify_step(
         )
     else:
         raw = await llm_chat(system_prompt, user_message)
+        strict = _strict_choice(raw, choices)
+        if strict is not None:
+            return strict
+        try:
+            repaired = await _repair_choice_with_llm(
+                llm_chat=llm_chat,
+                choices=choices,
+                original_system_prompt=system_prompt,
+                original_user_message=user_message,
+                raw_reply=raw,
+            )
+        except Exception:  # noqa: BLE001 - degraded mode falls back to legacy coercion.
+            repaired = None
+        if repaired is not None:
+            return repaired
     return _coerce_to_choice(raw, choices)
 
 
@@ -115,12 +210,8 @@ async def run_llm_chat_step(
         rendered_args.get("system")
         or "You are a precise workflow step. Reply only with the requested deliverable.",
     )
-    user_message = str(
-        rendered_args.get("task")
-        or rendered_args.get("prompt")
-        or rendered_args.get("text")
-        or "",
-    )
+    system_prompt = _with_language_instruction(system_prompt, inputs)
+    user_message = _build_llm_chat_user_message(rendered_args)
     if not user_message.strip():
         raise RuntimeError(f"step {step.id!r} (kind=llm_chat) has no task/prompt/text")
 

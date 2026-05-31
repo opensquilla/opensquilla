@@ -188,14 +188,22 @@ def evaluate_when(
         raise ValueError(f"when references undefined variable: {exc}") from exc
 
 
-def format_step_prompt(skill_name: str, args: dict[str, Any]) -> str:
+def format_step_prompt(
+    skill_name: str,
+    args: dict[str, Any],
+    *,
+    language_instruction: str = "",
+) -> str:
     """Render the user-message payload that drives one sub-Agent turn."""
 
     if not args:
-        return (
+        prompt = (
             f"Run the {skill_name} skill with no arguments. "
             "Produce the deliverable described in its SKILL.md."
         )
+        if language_instruction.strip():
+            prompt = f"{prompt}\n\n{language_instruction.strip()}"
+        return prompt
 
     lines = [f"Invoke the {skill_name} skill with the following arguments:"]
     for key, value in args.items():
@@ -207,6 +215,8 @@ def format_step_prompt(skill_name: str, args: dict[str, Any]) -> str:
         "\nWhen the work is complete, reply with the final deliverable as plain text. "
         "If the skill produced a file, include the absolute path on the last line.",
     )
+    if language_instruction.strip():
+        lines.append(f"\n{language_instruction.strip()}")
     return "\n".join(lines)
 
 

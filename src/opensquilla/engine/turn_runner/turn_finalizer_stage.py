@@ -153,7 +153,9 @@ def render_paused_outcome(result: MetaResult) -> str:
         return result.final_text or ""
     payload = result.paused_payload
     schema = payload.schema
-    language = _schema_language(schema, payload.intro)
+    language = str(getattr(payload, "language", "") or "").lower()
+    if language not in {"en", "zh"}:
+        language = _schema_language(schema, payload.intro)
     lines: list[str] = []
     if payload.intro or schema.intro:
         lines.append(payload.intro or schema.intro)

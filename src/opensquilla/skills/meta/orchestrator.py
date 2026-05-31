@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -46,6 +47,7 @@ from opensquilla.skills.meta.executors.llm_classify import (
 )
 from opensquilla.skills.meta.executors.skill_exec import run_skill_exec_step
 from opensquilla.skills.meta.executors.tool_call import run_tool_call_step
+from opensquilla.skills.meta.inputs import language_instruction_for_user_message
 from opensquilla.skills.meta.scheduler import run_dag
 from opensquilla.skills.meta.templating import (
     _coerce_to_choice,  # noqa: F401 — re-exported for tests/back-compat
@@ -62,6 +64,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 slog = structlog.get_logger(__name__)
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 # ---------------------------------------------------------------------------
 # Injected-dependency protocols
@@ -226,6 +229,10 @@ class MetaOrchestrator:
         # value the caller already put there.
         if "workspace_dir" not in match.inputs:
             match.inputs["workspace_dir"] = self._workspace_dir or ""
+        if "language_instruction" not in match.inputs:
+            match.inputs["language_instruction"] = language_instruction_for_user_message(
+                str(match.inputs.get("user_message") or ""),
+            )
 
         run_id: str | None = None
         loop = asyncio.get_running_loop()
@@ -328,8 +335,13 @@ class MetaOrchestrator:
                     if item.ok:
                         item.final_text = await self._resolve_final_text(
                             plan=match.plan,
+                            inputs=match.inputs,
                             current_final_text=item.final_text,
                             step_outputs=item.step_outputs,
+                        )
+                        item.final_text = await self._repair_final_text_language(
+                            match.inputs,
+                            item.final_text,
                         )
                     final_result = item
                 yield item
@@ -684,6 +696,10 @@ class MetaOrchestrator:
 
         inputs.setdefault("collected", {})
         inputs["collected"][payload.awaiting_step_id] = filled_clean
+        if "language_instruction" not in inputs:
+            inputs["language_instruction"] = language_instruction_for_user_message(
+                str(inputs.get("user_message") or ""),
+            )
 
         cfg = clarify_config_from_jsonable(schema_dict)
         outputs[payload.awaiting_step_id] = render_clarify_summary(
@@ -792,8 +808,13 @@ class MetaOrchestrator:
                     if ev.ok:
                         ev.final_text = await self._resolve_final_text(
                             plan=plan,
+                            inputs=inputs,
                             current_final_text=ev.final_text,
                             step_outputs=ev.step_outputs,
+                        )
+                        ev.final_text = await self._repair_final_text_language(
+                            inputs,
+                            ev.final_text,
                         )
                     final = ev
                 yield ev
@@ -819,6 +840,7 @@ class MetaOrchestrator:
         self,
         *,
         plan: MetaPlan,
+        inputs: dict[str, Any],
         current_final_text: str,
         step_outputs: dict[str, str],
     ) -> str:
@@ -855,7 +877,7 @@ class MetaOrchestrator:
         if self._llm_chat is None or not step_outputs:
             return current_final_text
         try:
-            summary = await self._summarize_step_outputs(plan, step_outputs)
+            summary = await self._summarize_step_outputs(plan, inputs, step_outputs)
         except Exception as exc:  # noqa: BLE001 — best-effort UX layer
             log.warning(
                 "orchestrator.final_text_summarize_failed skill=%s error=%s",
@@ -877,6 +899,7 @@ class MetaOrchestrator:
     async def _summarize_step_outputs(
         self,
         plan: MetaPlan,
+        inputs: dict[str, Any],
         step_outputs: dict[str, str],
     ) -> str:
         """One-shot LLM call to render step_outputs as a short Markdown summary.
@@ -914,6 +937,9 @@ class MetaOrchestrator:
             "deliverables (Chinese if outputs are Chinese, English "
             "otherwise)."
         )
+        language_instruction = str(inputs.get("language_instruction") or "").strip()
+        if language_instruction:
+            system_prompt = f"{system_prompt}\n\n{language_instruction}"
         snippets: list[str] = []
         for sid, raw in step_outputs.items():
             truncated = (raw or "")[:1200]
@@ -923,6 +949,38 @@ class MetaOrchestrator:
             + ("\n\n".join(snippets) if snippets else "(no step outputs)")
         )
         return (await self._llm_chat(system_prompt, user_msg)).strip()
+
+    async def _repair_final_text_language(
+        self,
+        inputs: dict[str, Any],
+        text: str,
+    ) -> str:
+        """Best-effort final guard for template/LLM language leakage."""
+
+        if (
+            self._llm_chat is None
+            or str(inputs.get("user_language") or "").lower() != "en"
+            or not _CJK_RE.search(text or "")
+        ):
+            return text
+        system_prompt = (
+            "You are a precise localization pass for a meta-skill result. "
+            "Return only the rewritten user-facing answer. Translate every "
+            "Chinese prose, heading, label, and summary into English. Preserve "
+            "Markdown structure, code identifiers, file paths, URLs, JSON keys, "
+            "and factual content. Do not add new claims."
+        )
+        language_instruction = str(inputs.get("language_instruction") or "").strip()
+        if language_instruction:
+            system_prompt = f"{system_prompt}\n\n{language_instruction}"
+        user_message = (
+            "User request:\n"
+            f"{str(inputs.get('user_message') or '')[:1600]}\n\n"
+            "Current answer to localize:\n"
+            f"{text[:12000]}"
+        )
+        repaired = (await self._llm_chat(system_prompt, user_message)).strip()
+        return repaired or text
 
 
 def _merge_clarify_defaults(

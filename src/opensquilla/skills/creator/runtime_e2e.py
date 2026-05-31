@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -88,6 +89,59 @@ def _normalise_winner(value: object) -> str:
         "single-model": "baseline",
     }
     return aliases.get(raw, raw)
+
+
+def _is_git_repo(path: Path) -> bool:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def _prepare_runtime_workspace(root: Path, workspace_dir: str | None) -> Path:
+    if workspace_dir:
+        candidate = Path(workspace_dir).expanduser().resolve()
+        if candidate.is_dir() and _is_git_repo(candidate):
+            return candidate
+
+    runtime_workspace = root / "runtime-workspace"
+    runtime_workspace.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "init"],
+        cwd=runtime_workspace,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "runtime-e2e@example.test"],
+        cwd=runtime_workspace,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Runtime E2E"],
+        cwd=runtime_workspace,
+        check=True,
+    )
+    sample = runtime_workspace / "README.md"
+    sample.write_text("# Runtime E2E fixture\n\nbaseline\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=runtime_workspace, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=runtime_workspace,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    sample.write_text(
+        "# Runtime E2E fixture\n\nbaseline\n\ncandidate change\n",
+        encoding="utf-8",
+    )
+    return runtime_workspace
 
 
 def _baseline_invalid_reason(baseline: dict[str, Any]) -> str:
@@ -316,10 +370,12 @@ def make_runtime_e2e_context(
         match_name = re.search(r"^name:\s*\"?([\w\-]+)\"?\s*$", skill_md, re.MULTILINE)
         skill_name = match_name.group(1) if match_name else "candidate"
         with tempfile.TemporaryDirectory(prefix="opensquilla-meta-e2e-") as tmp:
+            tmp_path = Path(tmp)
             candidate_root = Path(tmp) / "candidate-skills"
             skill_dir = candidate_root / skill_name
             skill_dir.mkdir(parents=True)
             (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+            runtime_workspace = _prepare_runtime_workspace(tmp_path, workspace_dir)
 
             from opensquilla.skills.loader import SkillLoader
 
@@ -359,7 +415,7 @@ def make_runtime_e2e_context(
                 tool_definitions=tool_definitions or [],
                 tool_handler=tool_handler,
                 agent_factory=agent_factory,
-                workspace_dir=workspace_dir,
+                workspace_dir=str(runtime_workspace),
                 usage_tracker=usage_tracker,
                 session_key=f"{session_key}:runtime_e2e:meta",
             )
@@ -368,17 +424,23 @@ def make_runtime_e2e_context(
                 skill_loader=candidate_loader,
                 llm_chat=llm_chat,
                 tool_invoker=tool_invoker,
-                workspace_dir=workspace_dir,
+                workspace_dir=str(runtime_workspace),
                 triggered_by="runtime_e2e_gate",
                 session_key=f"{session_key}:runtime_e2e:meta",
                 usage_tracker=usage_tracker,
             )
+            runtime_inputs = make_meta_inputs(
+                user_message=prompt,
+                system_prompt=(
+                    system_prompt
+                    or getattr(base_config, "system_prompt", "")
+                    or ""
+                ),
+            )
+            runtime_inputs["workspace_dir"] = str(runtime_workspace)
             runtime_match = MetaMatch(
                 plan=candidate_plan,
-                inputs=make_meta_inputs(
-                    user_message=prompt,
-                    system_prompt=system_prompt or getattr(base_config, "system_prompt", "") or "",
-                ),
+                inputs=runtime_inputs,
             )
             runtime_result = await runtime_orch.run(runtime_match)
             return {

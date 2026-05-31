@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -69,7 +70,7 @@ def test_natural_language_aliases_are_rejected_by_local_validation() -> None:
         resolve_router_control_target(cfg, "Claude Opus 4.7")
 
 
-def test_hold_store_expires_by_turn_count_and_time() -> None:
+def test_hold_store_expires_by_explicit_turn_count_and_sliding_idle_time() -> None:
     cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
     target = resolve_router_control_target(cfg, "tier:t3")
     store = RouterControlHoldStore()
@@ -92,10 +93,69 @@ def test_hold_store_expires_by_turn_count_and_time() -> None:
         target,
         evidence="use t3 again",
         now_monotonic=100.0,
-        turns_remaining=3,
-        ttl_seconds=1.0,
+        ttl_seconds=10.0,
     )
-    assert store.get_valid("agent:main:test", now_monotonic=102.0) is None
+    assert store.get_valid("agent:main:test", now_monotonic=109.0, decrement=True) is not None
+    assert store.get_valid("agent:main:test", now_monotonic=118.0) is not None
+    assert store.get_valid("agent:main:test", now_monotonic=119.0) is None
+
+
+def test_hold_store_deepcopy_preserves_session_identity_for_ttl_refresh() -> None:
+    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+    target = resolve_router_control_target(cfg, "tier:t3")
+    store = RouterControlHoldStore()
+    store.set_hold(
+        "agent:main:test",
+        target,
+        evidence="use t3",
+        now_monotonic=100.0,
+        ttl_seconds=10.0,
+    )
+
+    copied = copy.deepcopy(store)
+
+    assert copied is store
+    assert copied.get_valid("agent:main:test", now_monotonic=109.0, decrement=True) is not None
+    assert store.get_valid("agent:main:test", now_monotonic=118.0) is not None
+    assert store.get_valid("agent:main:test", now_monotonic=119.0) is None
+
+
+@pytest.mark.asyncio
+async def test_squilla_router_refreshes_hold_idle_ttl_through_copied_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+    target = resolve_router_control_target(cfg, "tier:t3")
+    store = RouterControlHoldStore()
+    store.set_hold(
+        "agent:main:test-refresh",
+        target,
+        evidence="use t3",
+        now_monotonic=100.0,
+        ttl_seconds=10.0,
+    )
+    now = [109.0]
+    monkeypatch.setattr("opensquilla.router_control.time.monotonic", lambda: now[0])
+
+    metadata = copy.deepcopy({"router_control_hold_store": store})
+    ctx = TurnContext(
+        message="continue this",
+        session_key="agent:main:test-refresh",
+        config=SimpleNamespace(squilla_router=cfg),
+        provider=None,
+        model="default-model",
+        tool_defs=[],
+        system_prompt="system",
+        metadata=metadata,
+    )
+
+    out = await apply_squilla_router(ctx)
+
+    assert out.metadata["routing_source"] == "router_control_hold"
+    now[0] = 118.0
+    assert store.get_valid("agent:main:test-refresh") is not None
+    now[0] = 119.0
+    assert store.get_valid("agent:main:test-refresh") is None
 
 
 @pytest.mark.asyncio

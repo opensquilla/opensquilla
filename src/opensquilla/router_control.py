@@ -7,7 +7,8 @@ import time
 from dataclasses import dataclass, fields, is_dataclass
 from typing import Any
 
-DEFAULT_HOLD_TURNS = 4
+# Zero means no turn-count cap; the hold expires after an idle TTL.
+DEFAULT_HOLD_TURNS = 0
 DEFAULT_HOLD_TTL_SECONDS = 600.0
 
 
@@ -35,15 +36,19 @@ class RouterControlHold:
     target_id: str
     evidence: str
     started_at_monotonic: float
+    last_activity_at_monotonic: float | None = None
     turns_remaining: int = DEFAULT_HOLD_TURNS
     ttl_seconds: float = DEFAULT_HOLD_TTL_SECONDS
     source: str = "router_control_tool"
     duplicate_model_resolution: bool = False
 
     def is_expired(self, now_monotonic: float) -> tuple[bool, str | None]:
-        if self.turns_remaining <= 0:
+        if self.turns_remaining < 0:
             return True, "turn_count"
-        if now_monotonic - self.started_at_monotonic >= self.ttl_seconds:
+        last_activity = self.last_activity_at_monotonic
+        if last_activity is None:
+            last_activity = self.started_at_monotonic
+        if now_monotonic - last_activity >= self.ttl_seconds:
             return True, "ttl"
         return False, None
 
@@ -167,6 +172,13 @@ class RouterControlHoldStore:
     def __init__(self) -> None:
         self._holds: dict[str, RouterControlHold] = {}
 
+    def __deepcopy__(self, memo: dict[int, object]) -> RouterControlHoldStore:
+        # TurnRunner copies routing metadata before running the bounded router step,
+        # but the hold store is session state and must preserve identity so applying
+        # a hold can refresh its idle TTL for follow-up turns.
+        memo[id(self)] = self
+        return self
+
     def build_targets(self, router_cfg: object | None) -> list[RouterControlTarget]:
         return build_router_control_targets(router_cfg)
 
@@ -180,13 +192,15 @@ class RouterControlHoldStore:
         turns_remaining: int = DEFAULT_HOLD_TURNS,
         ttl_seconds: float = DEFAULT_HOLD_TTL_SECONDS,
     ) -> RouterControlHold:
+        now = time.monotonic() if now_monotonic is None else now_monotonic
         hold = RouterControlHold(
             tier=target.tier,
             model=target.model,
             provider=target.provider,
             target_id=target.target_id,
             evidence=str(evidence or "").strip(),
-            started_at_monotonic=time.monotonic() if now_monotonic is None else now_monotonic,
+            started_at_monotonic=now,
+            last_activity_at_monotonic=now,
             turns_remaining=turns_remaining,
             ttl_seconds=ttl_seconds,
             duplicate_model_resolution=target.duplicate_model_resolution,
@@ -213,8 +227,11 @@ class RouterControlHoldStore:
             self._holds.pop(session_key, None)
             return None
         if decrement:
-            hold.turns_remaining -= 1
-            if hold.turns_remaining <= 0:
+            hold.last_activity_at_monotonic = now
+            had_turn_limit = hold.turns_remaining > 0
+            if hold.turns_remaining > 0:
+                hold.turns_remaining -= 1
+            if hold.turns_remaining < 0 or (had_turn_limit and hold.turns_remaining == 0):
                 self._holds.pop(session_key, None)
         return hold
 

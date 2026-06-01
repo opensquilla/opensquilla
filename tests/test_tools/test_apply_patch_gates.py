@@ -9,6 +9,7 @@ import pytest
 
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.sandbox import sensitive_paths
+from opensquilla.sandbox.integration import reset_runtime
 from opensquilla.tools.builtin import patch as patch_tool
 from opensquilla.tools.registry import get_default_registry
 from opensquilla.tools.types import (
@@ -454,6 +455,43 @@ async def test_apply_patch_elevated_full_skips_outside_workspace_approval(
         )
     finally:
         current_tool_context.reset(token)
+
+    assert result == "Applied patch: 1 file(s) modified"
+    assert outside.read_text(encoding="utf-8") == "new\n"
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_run_mode_full_skips_sandbox_wrapper_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_runtime()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("old\n", encoding="utf-8")
+    monkeypatch.setattr(patch_tool, "_default_patch_root", lambda: tmp_path.resolve())
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            workspace_dir=str(workspace),
+            run_mode="full",
+            session_key="agent:main:test",
+        )
+    )
+    try:
+        result = await patch_tool.apply_patch(
+            """*** Begin Patch
+*** Update File: outside.txt
+@@@ -1,1 +1,1 @@@
+-old
++new
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
 
     assert result == "Applied patch: 1 file(s) modified"
     assert outside.read_text(encoding="utf-8") == "new\n"

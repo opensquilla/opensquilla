@@ -21,6 +21,7 @@ from opensquilla.sandbox.integration import (
 )
 from opensquilla.sandbox.types import DenialResult, SandboxRequest
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import full_host_access_active
 from opensquilla.tools.types import ToolError, current_tool_context
 
 # Destructive Python patterns that must go through the same approval flow as
@@ -254,10 +255,8 @@ async def execute_code(
     if not code.strip():
         raise ToolError("Code must not be empty")
 
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
-
     sensitive_access = _check_code_sensitive_access(code)
-    if sensitive_access is not None and _context_elevated_mode() != "full":
+    if sensitive_access is not None and not full_host_access_active():
         reason, marker = sensitive_access
         if reason == "sensitive_payload":
             from opensquilla.tools.builtin.web import _sensitive_body_block

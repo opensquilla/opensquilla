@@ -42,6 +42,7 @@ from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy,
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import current_run_mode, full_host_access_active
 from opensquilla.tools.types import (
     CallerKind,
     InteractionMode,
@@ -152,27 +153,12 @@ def _sandbox_effectively_off() -> bool:
 
 
 def _context_run_mode() -> str | None:
-    ctx = current_tool_context.get()
-    if ctx is None:
-        return None
-    if ctx.run_mode in ("standard", "trusted", "full"):
-        return ctx.run_mode
-    if ctx.session_key:
-        with contextlib.suppress(Exception):
-            mode = get_approval_queue().get_run_mode(ctx.session_key)
-            if mode in ("standard", "trusted", "full"):
-                ctx.run_mode = mode
-                return mode
-    if ctx.elevated == "full":
-        return "full"
-    if ctx.elevated in ("on", "bypass"):
-        return "trusted"
-    return None
+    return current_run_mode()
 
 
 def _context_elevated_mode() -> str | None:
     """Legacy compatibility: only Full Host Access counts as elevated."""
-    return "full" if _context_run_mode() == "full" else None
+    return "full" if full_host_access_active() else None
 
 
 def _consume_host_once_current_call() -> bool:
@@ -185,7 +171,7 @@ def _consume_host_once_current_call() -> bool:
 def _host_execution_allowed() -> bool:
     if _consume_host_once_current_call():
         return True
-    return _context_run_mode() == "full"
+    return full_host_access_active()
 
 
 def _without_shell_null_redirections(command: str) -> str:
@@ -296,7 +282,7 @@ def _sandbox_path_access_enabled() -> bool:
     runtime = get_runtime()
     if runtime is None or not runtime.effective.sandbox_enabled:
         return False
-    return _context_run_mode() != "full"
+    return not full_host_access_active()
 
 
 def _workspace_root_for_path_access() -> Path | None:

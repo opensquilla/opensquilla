@@ -10,6 +10,7 @@ from opensquilla.sandbox.integration import get_runtime, run_under_backend, sand
 from opensquilla.sandbox.policy import build_policy, select_level
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import full_host_access_active
 from opensquilla.tools.types import current_tool_context
 
 
@@ -40,7 +41,11 @@ def _reject_foreign_git_path(path: str) -> None:
 
 async def _run_git(*args: str, cwd: str | None = None) -> str:
     runtime = get_runtime()
-    if runtime is not None and runtime.effective.sandbox_enabled:
+    if (
+        runtime is not None
+        and runtime.effective.sandbox_enabled
+        and not full_host_access_active()
+    ):
         ctx = current_tool_context.get()
         if cwd:
             workspace = Path(cwd).expanduser().resolve()

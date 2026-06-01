@@ -18,6 +18,7 @@ from opensquilla.sandbox.integration import get_runtime, sandboxed
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import full_host_access_active
 from opensquilla.tools.types import ToolError, WorkspaceAccessError, current_tool_context
 from opensquilla.tools.write_tracking import record_workspace_file_write
 
@@ -226,15 +227,9 @@ def _sandbox_path_access_enabled() -> bool:
     runtime = get_runtime()
     if runtime is None or not runtime.effective.sandbox_enabled:
         return False
-    if _full_host_access_active():
+    if full_host_access_active():
         return False
     return True
-
-
-def _full_host_access_active() -> bool:
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
-
-    return _context_elevated_mode() == "full"
 
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
@@ -344,7 +339,7 @@ def _strict_read_material_root() -> Path | None:
 
 
 def _strict_read_roots() -> tuple[Path, ...]:
-    if _full_host_access_active():
+    if full_host_access_active():
         return tuple()
     roots: list[Path] = []
     workspace_root = _strict_read_workspace_root()
@@ -431,9 +426,8 @@ def _workspace_strict_candidate_marker(
 def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) -> dict | None:
     """Return a hard-block envelope for sensitive host paths, unless fully elevated."""
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
 
-    if _context_elevated_mode() == "full":
+    if full_host_access_active():
         return None
     sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
     if sensitive is None:
@@ -443,11 +437,10 @@ def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) 
 
 def _is_sensitive_access_path(resolved: Path, workspace: Path | None = None) -> bool:
     from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
 
     root = workspace if workspace is not None else _workspace_root()
     return (
-        _context_elevated_mode() != "full"
+        not full_host_access_active()
         and sensitive_path_marker(str(resolved), workspace=root) is not None
     )
 
@@ -502,9 +495,8 @@ async def _gate_out_of_workspace_write(
     """
     # Sensitive-path hard block — takes precedence over approval flow.
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
 
-    elevated_full = _context_elevated_mode() == "full"
+    elevated_full = full_host_access_active()
     if not elevated_full:
         sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
         if sensitive is not None:

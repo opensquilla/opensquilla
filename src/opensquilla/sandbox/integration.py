@@ -491,6 +491,11 @@ def sandboxed(
             cwd_raw = cwd_factory(bound_args) if cwd_factory else bound_args.get("workdir")
             cwd = Path(cwd_raw) if isinstance(cwd_raw, str) and cwd_raw else None
 
+            from opensquilla.tools.run_mode import full_host_access_active
+
+            if full_host_access_active():
+                return await fn(*args, **kwargs)
+
             decision, policy, request = await gate_action(
                 action_kind=kind,
                 argv=argv,

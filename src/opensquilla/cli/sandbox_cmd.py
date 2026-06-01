@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
 
 import typer
 
@@ -13,6 +12,7 @@ from opensquilla.onboarding.config_store import (
     persist_config,
     resolve_config_path,
 )
+from opensquilla.sandbox.run_mode import RunMode, run_mode_config_patch
 from opensquilla.sandbox.status import status_payload as _status_payload
 
 sandbox_app = typer.Typer(help="Show or change the default sandbox posture.")
@@ -32,26 +32,23 @@ def _resolve_path(config_path: Path | None) -> Path:
     return target
 
 
-def _apply_posture(config: Any, posture: Literal["on", "bypass", "full"]) -> Any:
-    if posture == "on":
-        config.sandbox.sandbox = True
-        config.sandbox.security_grading = True
-        config.permissions.default_mode = "off"
-        return config
-    config.sandbox.sandbox = False
-    config.sandbox.security_grading = False
-    config.permissions.default_mode = posture
+def _apply_run_mode(config, run_mode: RunMode):
+    patch = run_mode_config_patch(run_mode)
+    config.sandbox.run_mode = patch.run_mode.value
+    config.sandbox.sandbox = patch.sandbox
+    config.sandbox.security_grading = patch.security_grading
+    config.permissions.default_mode = patch.permissions_default_mode
     return config
 
 
-def _write_posture(config_path: Path | None, posture: Literal["on", "bypass", "full"]) -> None:
+def _write_run_mode(config_path: Path | None, run_mode: RunMode) -> None:
     target = _resolve_path(config_path)
-    config = _apply_posture(load_config(target), posture)
+    config = _apply_run_mode(load_config(target), run_mode)
     persist_config(config, path=target, restart_required=True)
     payload = _status_payload(config, restart_required=True)
     typer.echo(
-        "Sandbox posture set to "
-        f"{payload['posture']}. Restart the gateway for running processes to apply it."
+        "Sandbox run mode set to "
+        f"{payload['run_mode_label']}. Restart the gateway for running processes to apply it."
     )
 
 
@@ -69,7 +66,8 @@ def sandbox_status(
         print_json(payload)
         return
     typer.echo(f"Config: {target}")
-    typer.echo(f"Posture: {payload['posture']}")
+    typer.echo(f"Run mode: {payload['run_mode_label']} ({payload['run_mode']})")
+    typer.echo(f"Execution target: {payload['execution_target']}")
     typer.echo(
         "Sandbox: "
         f"sandbox={payload['sandbox']['sandbox']} "
@@ -78,13 +76,18 @@ def sandbox_status(
     typer.echo(f"Permissions default: {payload['permissions']['default_mode']}")
 
 
-@sandbox_app.command("bypass")
+@sandbox_app.command("bypass", hidden=True)
 def sandbox_bypass(
     config_path: Path | None = typer.Option(None, "--config"),
 ) -> None:
-    """Disable runtime sandboxing and auto-grant approvals except sensitive paths."""
+    """Removed legacy command."""
 
-    _write_posture(config_path, "bypass")
+    typer.echo(
+        "`sandbox bypass` was removed because it used to disable sandboxing.\n"
+        "Use `opensquilla sandbox trust` to stay sandboxed with fewer prompts,\n"
+        "or `opensquilla sandbox full` for full host access."
+    )
+    raise typer.Exit(1)
 
 
 @sandbox_app.command("full")
@@ -93,7 +96,7 @@ def sandbox_full(
 ) -> None:
     """Disable runtime sandboxing and skip approval and sensitive-path gates."""
 
-    _write_posture(config_path, "full")
+    _write_run_mode(config_path, RunMode.FULL)
 
 
 @sandbox_app.command("on")
@@ -102,7 +105,16 @@ def sandbox_on(
 ) -> None:
     """Restore the default sandboxed posture."""
 
-    _write_posture(config_path, "on")
+    _write_run_mode(config_path, RunMode.STANDARD)
+
+
+@sandbox_app.command("trust")
+def sandbox_trust(
+    config_path: Path | None = typer.Option(None, "--config"),
+) -> None:
+    """Keep sandboxing enabled while using the trusted sandbox run mode."""
+
+    _write_run_mode(config_path, RunMode.TRUSTED)
 
 
 @sandbox_app.command("reset")
@@ -111,4 +123,4 @@ def sandbox_reset(
 ) -> None:
     """Reset sandbox posture to OpenSquilla defaults."""
 
-    _write_posture(config_path, "bypass")
+    _write_run_mode(config_path, RunMode.STANDARD)

@@ -49,6 +49,11 @@ from opensquilla.sandbox.governance import (
     gate_execution,
     on_successful_exec,
 )
+from opensquilla.sandbox.path_validation import (
+    decide_path_access,
+    normalize_mount_access,
+    normalize_path,
+)
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
 from opensquilla.sandbox.stale_output_cache import StaleOutputCache, get_stale_output_cache
 from opensquilla.sandbox.types import (
@@ -57,6 +62,7 @@ from opensquilla.sandbox.types import (
     DenialReason,
     DenialResult,
     FollowupTag,
+    MountSpec,
     SandboxBackendError,
     SandboxPolicy,
     SandboxRequest,
@@ -277,6 +283,48 @@ def _resolve_workspace(runtime: SandboxRuntime, cwd: str | None) -> Path:
     return Path.cwd()
 
 
+def _session_mounts_for_policy(workspace: Path) -> tuple[MountSpec, ...]:
+    try:
+        from opensquilla.tools.types import current_tool_context
+
+        ctx = current_tool_context.get()
+    except Exception:  # pragma: no cover - defensive
+        ctx = None
+    raw_mounts = getattr(ctx, "sandbox_mounts", None) if ctx is not None else None
+    if not isinstance(raw_mounts, list):
+        return ()
+
+    mounts: list[MountSpec] = []
+    for item in raw_mounts:
+        if not isinstance(item, dict):
+            continue
+        raw_path = item.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        access = normalize_mount_access(item.get("access"))
+        try:
+            host_path = normalize_path(raw_path)
+            decision = decide_path_access(
+                host_path,
+                workspace=workspace,
+                mounts=(),
+                write=access == "rw",
+            )
+        except (OSError, RuntimeError):
+            continue
+        if decision.status == "blocked":
+            continue
+        mounts.append(
+            MountSpec(
+                host_path=host_path,
+                sandbox_path=host_path,
+                mode=access,
+                required=False,
+            )
+        )
+    return tuple(mounts)
+
+
 def build_request(
     *,
     action_kind: str,
@@ -371,6 +419,7 @@ async def gate_action(
         workspace,
         rt.settings,
         trusted=(hints is None or hints.trusted_source),
+        session_mounts=_session_mounts_for_policy(workspace),
     )
     request = build_request(
         action_kind=action_kind,

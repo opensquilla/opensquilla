@@ -15,6 +15,7 @@ from xml.etree import ElementTree as ET
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
 from opensquilla.sandbox.integration import get_runtime, sandboxed
+from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, WorkspaceAccessError, current_tool_context
@@ -221,6 +222,65 @@ def _is_outside_workspace(resolved: Path) -> bool:
         return True
 
 
+def _sandbox_path_access_enabled() -> bool:
+    runtime = get_runtime()
+    if runtime is None or not runtime.effective.sandbox_enabled:
+        return False
+    ctx = current_tool_context.get()
+    if ctx is not None and (ctx.run_mode == "full" or ctx.elevated == "full"):
+        return False
+    return True
+
+
+def _active_sandbox_mounts() -> list[dict[str, object]]:
+    ctx = current_tool_context.get()
+    mounts = getattr(ctx, "sandbox_mounts", None) if ctx is not None else None
+    return mounts if isinstance(mounts, list) else []
+
+
+def _path_access_required_envelope(decision: MountDecision) -> dict[str, object]:
+    return {
+        "status": "path_access_required",
+        "path": decision.normalized_path,
+        "access": decision.access,
+        "message": (
+            "This path is outside the current sandbox view. "
+            "Add it as a mount to continue sandboxed."
+        ),
+    }
+
+
+def _path_access_blocked_envelope(decision: MountDecision) -> dict[str, object]:
+    return {
+        "status": "blocked",
+        "reason": "sensitive_path",
+        "path": decision.normalized_path,
+        "message": decision.reason,
+    }
+
+
+def _sandbox_path_access_envelope(
+    resolved: Path,
+    *,
+    write: bool,
+) -> dict[str, object] | None:
+    if not _sandbox_path_access_enabled():
+        return None
+    if _memory_source_rel_path(resolved) is not None:
+        return None
+    decision = decide_path_access(
+        resolved,
+        workspace=_workspace_root(),
+        mounts=_active_sandbox_mounts(),
+        write=write,
+    )
+    if decision.status == "allowed":
+        return None
+    if decision.status == "blocked":
+        return _path_access_blocked_envelope(decision)
+    return _path_access_required_envelope(decision)
+
+
 def _strict_read_workspace_root() -> Path | None:
     """Return the read-containment root when workspace-strict mode is active.
 
@@ -420,6 +480,9 @@ async def _gate_out_of_workspace_write(
             return build_block_envelope(
                 f"{tool_name} {original_path}", sensitive, tool_name=tool_name
             )
+    path_access = _sandbox_path_access_envelope(resolved, write=True)
+    if path_access is not None:
+        return path_access
 
     _gate_workspace_lockdown_write(tool_name, resolved, original_path)
     from opensquilla.tools.write_policy import gate_workspace_write_deny
@@ -482,6 +545,9 @@ async def read_file(path: str, offset: int | None = None, limit: int | None = No
     blocked = _sensitive_access_block("read_file", p, path)
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(p, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("read_file", p, path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
@@ -537,6 +603,9 @@ async def read_spreadsheet(
     blocked = _sensitive_access_block("read_spreadsheet", p, path)
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(p, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("read_spreadsheet", p, path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
@@ -830,6 +899,9 @@ async def list_dir(path: str) -> str:
     blocked = _sensitive_access_block("list_dir", p, path)
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(p, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("list_dir", p, path)
     if not p.exists():
         raise FileNotFoundError(f"Path not found: {path}")
@@ -882,6 +954,9 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
     blocked = _sensitive_access_block("glob_search", base, path or str(base))
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(base, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("glob_search", base, path or str(base))
 
     loop = asyncio.get_event_loop()
@@ -934,6 +1009,9 @@ async def grep_search(
     blocked = _sensitive_access_block("grep_search", base, path or str(base))
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(base, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("grep_search", base, path or str(base))
 
     loop = asyncio.get_event_loop()

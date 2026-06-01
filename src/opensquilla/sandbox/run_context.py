@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from opensquilla.sandbox.path_validation import normalize_mount_access
 from opensquilla.sandbox.run_mode import RunMode, config_run_mode, normalize_run_mode
 
 RUN_CONTEXT_ORIGIN_KEY = "sandbox_run_context"
@@ -88,7 +89,7 @@ def _mounts_from_payload(value: Any) -> tuple[MountGrant, ...]:
         mounts.append(
             MountGrant(
                 path=path,
-                access=_string_value(item.get("access"), "ro") or "ro",
+                access=normalize_mount_access(_string_value(item.get("access"), "ro")),
                 scope=_string_value(item.get("scope"), "chat") or "chat",
             )
         )

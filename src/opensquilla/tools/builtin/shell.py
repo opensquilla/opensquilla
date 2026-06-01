@@ -36,6 +36,7 @@ from opensquilla.sandbox.integration import (
     get_runtime,
     run_under_backend,
 )
+from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.sandbox.policy import build_policy, select_level
 from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy, SandboxRequest
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
@@ -268,6 +269,66 @@ def _path_inside_any_root(path: Path, roots: list[Path]) -> bool:
         except ValueError:
             continue
     return False
+
+
+def _path_access_required_envelope(decision: MountDecision) -> dict[str, object]:
+    return {
+        "status": "path_access_required",
+        "path": decision.normalized_path,
+        "access": decision.access,
+        "message": (
+            "This path is outside the current sandbox view. "
+            "Add it as a mount to continue sandboxed."
+        ),
+    }
+
+
+def _path_access_blocked_envelope(decision: MountDecision) -> dict[str, object]:
+    return {
+        "status": "blocked",
+        "reason": "sensitive_path",
+        "path": decision.normalized_path,
+        "message": decision.reason,
+    }
+
+
+def _sandbox_path_access_enabled() -> bool:
+    runtime = get_runtime()
+    if runtime is None or not runtime.effective.sandbox_enabled:
+        return False
+    return _context_run_mode() != "full"
+
+
+def _workspace_root_for_path_access() -> Path | None:
+    ctx = current_tool_context.get()
+    if ctx is not None and ctx.workspace_dir:
+        return Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+    runtime = get_runtime()
+    if runtime is not None:
+        return runtime.workspace.expanduser().resolve(strict=False)
+    return None
+
+
+def _active_sandbox_mounts() -> list[dict[str, object]]:
+    ctx = current_tool_context.get()
+    mounts = getattr(ctx, "sandbox_mounts", None) if ctx is not None else None
+    return mounts if isinstance(mounts, list) else []
+
+
+def _sandbox_workdir_access_envelope(workdir: str | None) -> dict[str, object] | None:
+    if not workdir or not _sandbox_path_access_enabled():
+        return None
+    decision = decide_path_access(
+        workdir,
+        workspace=_workspace_root_for_path_access(),
+        mounts=_active_sandbox_mounts(),
+        write=True,
+    )
+    if decision.status == "allowed":
+        return None
+    if decision.status == "blocked":
+        return _path_access_blocked_envelope(decision)
+    return _path_access_required_envelope(decision)
 
 
 def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:
@@ -676,6 +737,9 @@ async def exec_command(
     sensitive_block = _sensitive_shell_block("exec_command", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
+    path_access = _sandbox_workdir_access_envelope(cwd)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
     lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)
@@ -795,6 +859,9 @@ async def background_process(
     sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
+    path_access = _sandbox_workdir_access_envelope(cwd)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
     lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)

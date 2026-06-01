@@ -1,0 +1,88 @@
+---
+name: nano-banana-pro
+description: "Generate or edit a single image via OpenRouter (google/gemini-3.1-flash-image-preview by default). Accepts a text prompt and optional --input-image for image-to-image editing. Trigger when the user asks for an AI image, illustration, concept art, product render, or wants to modify an existing image."
+provenance:
+  origin: clawhub-mit0
+  license: MIT-0
+  upstream_url: https://clawhub.ai/steipete/nano-banana-pro
+  upstream_version: "1.0.1"
+  maintained_by: OpenSquilla
+  modifications: "Rewired from Google Gemini SDK to OpenRouter /v1/chat/completions; pure-stdlib HTTP client."
+metadata:
+  opensquilla:
+    risk: medium
+    capabilities: [network-read, filesystem-write]
+    requires:
+      anyBins: ["python", "python3"]
+      envAny: ["OPENROUTER_API_KEY"]
+entrypoint:
+  command: python {baseDir}/scripts/generate_image.py
+  args:
+    - --prompt
+    - "{{ with.prompt }}"
+    - --filename
+    - "{{ with.filename }}"
+    - --aspect-ratio
+    - "{{ with.aspect_ratio | default('1:1') }}"
+    - --image-size
+    - "{{ with.image_size | default('1K') }}"
+    - --model
+    - "{{ with.model | default('google/gemini-3.1-flash-image-preview') }}"
+    - --max-retries
+    - "{{ with.max_retries | default(0) }}"
+    - --fallback-model
+    - "{{ with.fallback_model | default('') }}"
+    - --placeholder-on-fail
+    - "{{ with.placeholder_on_fail | default('no') }}"
+  parse: text
+  timeout: 600
+---
+
+# nano-banana-pro — single-image generator via OpenRouter
+
+Generates one PNG from a text prompt (optionally seeded with an input
+image for editing). Used by `meta-short-drama` for per-shot first-frame
+generation, but standalone for any single-image request.
+
+## Inputs (`with:`)
+
+| key | required | default | notes |
+|---|---|---|---|
+| `prompt` | yes | — | Plain English prompt. Append `--ar 9:16` etc. as text. |
+| `filename` | yes | — | Output path. Relative resolves against process cwd. |
+| `aspect_ratio` | no | `1:1` | One of `1:1`, `3:2`, `2:3`, `4:3`, `3:4`, `16:9`, `9:16`. |
+| `image_size` | no | `1K` | `1K`, `2K`, `4K`. Higher = slower + costlier. |
+| `model` | no | `google/gemini-3.1-flash-image-preview` | Any OpenRouter image-capable model. |
+| `max_retries` | no | `0` | Extra retries on the primary `model` before moving on to `fallback_model`. |
+| `fallback_model` | no | `""` | Tried ONCE after the primary exhausts retries. Empty disables it. Common pick: `google/gemini-3-pro-image-preview`. |
+| `placeholder_on_fail` | no | `no` | `yes` / `no`. When every model refuses, write a 720x1280 solid-colour PNG with a "Scene placeholder" label so a downstream merge step still has a file in this slot. |
+
+To pass an input image for edit mode, invoke the script directly with
+`--input-image PATH`. The meta-skill engine does not route input images
+through `with:` by convention; for edit workflows call the script.
+
+## Auth
+
+Reads `OPENROUTER_API_KEY` from the process environment. The gateway
+already injects it from `.env` if configured. No Google Gemini key
+needed.
+
+## Output
+
+Prints the absolute path of the saved PNG on stdout. Non-zero exit on
+any error; stderr carries the diagnostic.
+
+## Cost / latency
+
+- 1K ~ 4-8s
+- 2K ~ 8-15s
+- 4K ~ 20-40s
+- Use 1K for draft, 4K only when the prompt is locked.
+
+## Common failures
+
+- `OPENROUTER_API_KEY not set` → check `.env` or `$env:OPENROUTER_API_KEY`.
+- `OpenRouter returned no image` → the model rejected the prompt
+  (content moderation or unsupported request). Rewrite prompt; check
+  IP-safety rules in `ai-video-script`.
+- `OpenRouter HTTP 402 / 429` → out of credits / rate-limited.

@@ -1840,7 +1840,7 @@
 /*
  * Composer-state controls live inside a popover anchored to a single gear
  * button in the input bar. The trigger glows accent only when at least one
- * control is in a non-default state: bypass on OR router off.
+ * control is in a non-default state: trusted/full run mode OR router off.
  */
 .chat-toolbar-wrap {
   position: relative;
@@ -1875,8 +1875,12 @@
   transition: background 200ms var(--ease-press, cubic-bezier(.2,.7,.2,1)),
               box-shadow 200ms ease;
 }
-/* Bypass — danger/warn red-orange tint, the only safety-critical signal. */
-.chat-toolbar-trigger.has-dot-bypass .chat-toolbar-trigger-dots i[data-dot="bypass"] {
+/* Run Mode — accent for trusted, danger for full. */
+.chat-toolbar-trigger.has-dot-run-mode .chat-toolbar-trigger-dots i[data-dot="run-mode"] {
+  background: var(--accent);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.chat-toolbar-trigger.has-dot-run-mode-full .chat-toolbar-trigger-dots i[data-dot="run-mode"] {
   background: var(--danger);
   box-shadow: 0 0 4px color-mix(in srgb, var(--danger) 70%, transparent);
 }
@@ -1948,6 +1952,42 @@
   color: var(--text);
   font-size: var(--fs-sm);
   white-space: nowrap;
+}
+
+.chat-run-mode-control {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.chat-run-mode-segment {
+  appearance: none;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  min-height: 24px;
+  padding: 0 var(--sp-2);
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.chat-run-mode-segment:hover {
+  color: var(--text);
+}
+
+.chat-run-mode-segment.is-active {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.chat-run-mode-segment.is-danger {
+  color: var(--danger);
 }
 
 /* ─── Chat Toolbar (feature toggle pills) ──────────────────────────────── */

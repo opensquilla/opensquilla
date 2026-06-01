@@ -3,9 +3,6 @@
 const ApprovalMonitor = (() => {
   const POLL_MS = 1500;
   const POLL_MAX_MS = 30000;
-  const ELEVATED_MODE_KEY = 'opensquilla.elevatedMode';
-  const ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version';
-  const ELEVATED_MODE_STORAGE_VERSION = '2';
   let _timer = null;
   let _modal = null;
   let _busy = false;
@@ -163,7 +160,6 @@ const ApprovalMonitor = (() => {
         <div class="modal-foot">
           <button class="btn btn--primary" data-approval-action="once" title="Approve only this pending tool call">Approve This Time</button>
           ${canAlways ? '<button class="btn btn--ghost" data-approval-action="always" title="Remember this operation type for future matching intents">Always Allow This Type</button>' : ''}
-          <button class="btn btn--warn" data-approval-action="bypass" title="Enable approval bypass in this browser session and approve this pending tool call">Bypass Approvals</button>
           <button class="btn btn--danger" data-approval-action="deny">Deny</button>
         </div>
       </div>`;
@@ -171,11 +167,10 @@ const ApprovalMonitor = (() => {
     overlay.querySelectorAll('[data-approval-action]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const action = btn.dataset.approvalAction;
-        const approved = action === 'once' || action === 'always' || action === 'bypass';
+        const approved = action === 'once' || action === 'always';
         const allowAlways = action === 'always';
         const rememberIntent = action === 'always';
-        const elevatedMode = action === 'bypass' ? 'bypass' : '';
-        _resolve(item, approved, allowAlways, rememberIntent, elevatedMode, overlay);
+        _resolve(item, approved, allowAlways, rememberIntent, overlay);
       });
     });
 
@@ -183,7 +178,7 @@ const ApprovalMonitor = (() => {
     _modal = overlay;
   }
 
-  async function _resolve(item, approved, allowAlways, rememberIntent, elevatedMode, overlay) {
+  async function _resolve(item, approved, allowAlways, rememberIntent, overlay) {
     if (_busy) return;
     _busy = true;
     overlay.querySelectorAll('button').forEach((btn) => { btn.disabled = true; });
@@ -194,7 +189,6 @@ const ApprovalMonitor = (() => {
       allowAlways,
       rememberIntent,
     };
-    if (elevatedMode) body.elevatedMode = elevatedMode;
     try {
       const resp = await fetch('/api/approvals/resolve', {
         method: 'POST',
@@ -202,10 +196,9 @@ const ApprovalMonitor = (() => {
         body: JSON.stringify(body),
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      if (elevatedMode) _setBrowserElevated(elevatedMode);
       _closeModal();
       UI.toast(
-        elevatedMode ? 'Approval bypass enabled' : (approved ? 'Approval granted' : 'Approval denied'),
+        approved ? 'Approval granted' : 'Approval denied',
         approved ? 'info' : 'warn',
         2500
       );
@@ -222,20 +215,6 @@ const ApprovalMonitor = (() => {
   function _closeModal() {
     if (_modal) _modal.remove();
     _modal = null;
-  }
-
-  function _setBrowserElevated(mode) {
-    const normalized = mode === 'full' || mode === 'bypass' || mode === 'on' ? mode : '';
-    try {
-      if (normalized) {
-        localStorage.setItem(ELEVATED_MODE_KEY, normalized);
-        localStorage.setItem(ELEVATED_MODE_VERSION_KEY, ELEVATED_MODE_STORAGE_VERSION);
-      } else {
-        localStorage.removeItem(ELEVATED_MODE_KEY);
-        localStorage.removeItem(ELEVATED_MODE_VERSION_KEY);
-      }
-    } catch {}
-    window.dispatchEvent(new CustomEvent('opensquilla:elevated-mode', { detail: { mode: normalized } }));
   }
 
   function _approvalCommand(item) {

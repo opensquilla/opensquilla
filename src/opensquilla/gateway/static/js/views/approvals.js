@@ -1,9 +1,6 @@
 /** OpenSquilla Web UI — Approvals view. */
 
 const ApprovalsView = (() => {
-  const ELEVATED_MODE_KEY = 'opensquilla.elevatedMode';
-  const ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version';
-  const ELEVATED_MODE_STORAGE_VERSION = '2';
   let _el = null;
   let _rpc = null;
   let _unsubs = [];
@@ -99,7 +96,7 @@ const ApprovalsView = (() => {
               <div class="stat-hint">${_esc(activeOpt.desc)}</div>
             </div>
             <div class="stat">
-              <div class="stat-label">Effective execution mode</div>
+              <div class="stat-label">Run Mode</div>
               <div class="stat-value mono">${_esc(executionMode.label)}</div>
               <div class="stat-hint">${_esc(executionMode.desc)}</div>
             </div>
@@ -150,20 +147,17 @@ const ApprovalsView = (() => {
             const id = btn.dataset.apprId;
             const namespace = btn.dataset.apprNs || 'exec';
             const decision = btn.dataset.decision;
-            const approved = decision === 'approve' || decision === 'always' || decision === 'bypass';
+            const approved = decision === 'approve' || decision === 'always';
             const allowAlways = btn.dataset.decision === 'always';
             const rememberIntent = btn.dataset.decision === 'always';
-            const elevatedMode = decision === 'bypass' ? 'bypass' : '';
             const body = { id, namespace, approved, allowAlways, rememberIntent };
-            if (elevatedMode) body.elevatedMode = elevatedMode;
             fetch('/api/approvals/resolve', {
               method: 'POST',
               headers: _authHeaders({ 'Content-Type': 'application/json' }),
               body: JSON.stringify(body)
             }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
               .then(() => {
-                if (elevatedMode) _setBrowserElevated(elevatedMode);
-                UI.toast((elevatedMode ? 'Approval bypass enabled' : (approved ? 'Approved' : 'Denied')) + ': ' + id, 'info');
+                UI.toast((approved ? 'Approved' : 'Denied') + ': ' + id, approved ? 'info' : 'warn');
                 _loadData();
               })
               .catch(err => UI.toast('Failed: ' + err.message, 'err'));
@@ -174,44 +168,35 @@ const ApprovalsView = (() => {
   }
 
   async function _loadExecutionModeSummary() {
-    const sessionMode = _browserElevatedMode();
-    if (sessionMode) return _executionModeSummary('Session', sessionMode);
-    let globalMode = '';
+    let sessionKey = '';
     try {
       if (_rpc?.waitForConnection && _rpc.state !== 'connected') {
         await _withTimeout(_rpc.waitForConnection(), 1000);
       }
-      const cfg = _rpc?.call ? await _rpc.call('config.get') : null;
-      globalMode = _normalizeElevatedMode(cfg?.permissions?.default_mode);
+      sessionKey = localStorage.getItem('opensquilla_active_session') || '';
+      if (sessionKey && _rpc?.call) {
+        const ctx = await _rpc.call('sandbox.run_context.get', { sessionKey });
+        return _runModeSummary(ctx);
+      }
     } catch {}
-    if (globalMode) return _executionModeSummary('Global', globalMode);
     return {
-      label: 'Approval prompts',
-      desc: 'Risky tool calls will open approval prompts.',
+      label: 'Run Mode is controlled by the current chat',
+      desc: 'Open Chat to change the session run mode.',
     };
   }
 
-  function _executionModeSummary(scope, mode) {
-    const label = `${scope} ${String(mode).toUpperCase()}`;
-    if (mode === 'bypass') {
-      return {
-        label,
-        desc: scope === 'Session'
-          ? 'Approval prompts are currently bypassed for this browser chat session.'
-          : 'Approval prompts are currently bypassed by the global permission mode.',
-      };
-    }
-    if (mode === 'full') {
-      return {
-        label,
-        desc: scope === 'Session'
-          ? 'Approval and sensitive-path prompts are bypassed for this browser chat session.'
-          : 'Approval and sensitive-path prompts are bypassed by the global permission mode.',
-      };
-    }
+  function _runModeSummary(ctx) {
+    const mode = _normalizeRunMode(ctx?.runMode || ctx?.run_mode);
+    const label = ctx?.runModeLabel || {
+      standard: 'Standard',
+      trusted: 'Trusted',
+      full: 'Full',
+    }[mode];
     return {
-      label,
-      desc: 'Host execution is enabled; risky tool calls still use approval prompts.',
+      label: `${label} Run Mode`,
+      desc: mode === 'full'
+        ? 'Current chat is using Full Run Mode.'
+        : 'Current chat is using sandboxed execution.',
     };
   }
 
@@ -231,19 +216,11 @@ const ApprovalsView = (() => {
     });
   }
 
-  function _browserElevatedMode() {
-    let mode = '';
-    let version = '';
-    try {
-      mode = localStorage.getItem(ELEVATED_MODE_KEY) || '';
-      version = localStorage.getItem(ELEVATED_MODE_VERSION_KEY) || '';
-    } catch {}
-    if (mode === 'full' && version !== ELEVATED_MODE_STORAGE_VERSION) return 'bypass';
-    return _normalizeElevatedMode(mode);
-  }
-
-  function _normalizeElevatedMode(mode) {
-    return mode === 'on' || mode === 'bypass' || mode === 'full' ? mode : '';
+  function _normalizeRunMode(mode) {
+    const value = String(mode || '').trim().toLowerCase().replace(/_/g, '-');
+    if (value === 'trusted' || value === 'trust' || value === 'trusted-sandbox') return 'trusted';
+    if (value === 'full' || value === 'full-host-access' || value === 'host') return 'full';
+    return 'standard';
   }
 
   function _renderApproval(item) {
@@ -274,7 +251,6 @@ const ApprovalsView = (() => {
       <div class="ap-card__actions">
         <button class="btn btn--primary" data-appr-id="${_esc(item.id || '')}" data-appr-ns="${_esc(item.namespace || 'exec')}" data-decision="approve">${icons.check()}<span>Approve once</span></button>
         ${canAlways ? `<button class="btn btn--ghost" data-appr-id="${_esc(item.id || '')}" data-appr-ns="${_esc(item.namespace || 'exec')}" data-decision="always">Always allow this type</button>` : ''}
-        <button class="btn btn--warn" data-appr-id="${_esc(item.id || '')}" data-appr-ns="${_esc(item.namespace || 'exec')}" data-decision="bypass" title="Bypass approval prompts while keeping sensitive-path checks">Bypass approvals</button>
         <button class="btn btn--danger" data-appr-id="${_esc(item.id || '')}" data-appr-ns="${_esc(item.namespace || 'exec')}" data-decision="deny">${icons.x()}<span>Deny</span></button>
       </div>
     </article>`;
@@ -329,20 +305,6 @@ const ApprovalsView = (() => {
     } catch {
       return String(args);
     }
-  }
-
-  function _setBrowserElevated(mode) {
-    const normalized = mode === 'full' || mode === 'bypass' || mode === 'on' ? mode : '';
-    try {
-      if (normalized) {
-        localStorage.setItem(ELEVATED_MODE_KEY, normalized);
-        localStorage.setItem(ELEVATED_MODE_VERSION_KEY, ELEVATED_MODE_STORAGE_VERSION);
-      } else {
-        localStorage.removeItem(ELEVATED_MODE_KEY);
-        localStorage.removeItem(ELEVATED_MODE_VERSION_KEY);
-      }
-    } catch {}
-    window.dispatchEvent(new CustomEvent('opensquilla:elevated-mode', { detail: { mode: normalized } }));
   }
 
   return { render, destroy };

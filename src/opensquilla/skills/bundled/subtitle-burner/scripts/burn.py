@@ -30,7 +30,6 @@ import sys
 from glob import glob
 from pathlib import Path
 
-
 _WINGET_FFMPEG_GLOB = (
     "Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_*/"
     "ffmpeg-*-full_build/bin"
@@ -58,8 +57,7 @@ def _probe_resolution(ffmpeg_bin: str, video_path: Path) -> tuple[int, int] | No
                 "-of", "csv=s=x:p=0",
                 str(video_path),
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=10,
             check=False,
         )
@@ -232,8 +230,7 @@ def main() -> int:
     try:
         proc = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
         )
     except FileNotFoundError as exc:

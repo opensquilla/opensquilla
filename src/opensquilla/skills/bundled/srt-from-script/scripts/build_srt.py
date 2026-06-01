@@ -22,7 +22,6 @@ import re
 import sys
 from pathlib import Path
 
-
 _SHOT_RE = re.compile(
     r"===\s*SHOT_(\d+)\s*===(.*?)(?====\s*SHOT_\d+\s*===|\Z)",
     re.DOTALL,

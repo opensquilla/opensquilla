@@ -140,6 +140,24 @@ select = ["E", "F", "I", "N", "W", "UP"]
 # harm readability. E402 imports-after-sys.path-munge is intentional.
 "src/opensquilla/skills/bundled/skill-creator/scripts/*.py" = ["E501", "N806", "E402"]
 "src/opensquilla/skills/bundled/skill-creator-linter/scripts/*.py" = ["E402", "I001"]
+# meta-short-drama subprocess scripts: long lines hold argv arrays,
+# ffmpeg filter graphs, Chinese error strings, and OpenRouter payload
+# field comments meant to stay readable as one unit.
+"src/opensquilla/skills/bundled/ai-video-script/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/nano-banana-pro/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/seedance-2-prompt/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/srt-from-script/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/subtitle-burner/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/text-file-write/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/title-card-image/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/video-merger/scripts/*.py" = ["E501"]
+# video-merger src/ is vendored from upstream MIT-0 clawhub package; keep
+# its Chinese docstrings + ffmpeg argv lines unwrapped.
+"src/opensquilla/skills/bundled/video-merger/src/*.py" = ["E501", "F401"]
+"src/opensquilla/skills/bundled/video-still-animator/scripts/*.py" = ["E501"]
+# meta-short-drama DAG generator: template strings embed YAML blocks
+# whose original line breaks must be preserved.
+"scripts/_gen_meta_short_drama.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"

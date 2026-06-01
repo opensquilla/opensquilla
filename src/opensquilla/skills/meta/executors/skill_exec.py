@@ -281,7 +281,7 @@ async def run_skill_exec_step(
             proc.communicate(input=stdin_bytes),
             timeout=timeout,
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         # Kill the still-running child so we don't leak a process.
         try:
             proc.kill()
@@ -289,7 +289,7 @@ async def run_skill_exec_step(
             pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         raise RuntimeError(
             f"skill {effective_skill!r} timed out after {timeout}s",

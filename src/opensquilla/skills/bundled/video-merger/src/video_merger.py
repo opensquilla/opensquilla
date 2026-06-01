@@ -8,9 +8,6 @@ import shutil
 import subprocess
 import tempfile
 from glob import glob
-from pathlib import Path
-from typing import List, Optional, Tuple
-
 
 # Common Windows install locations to probe when PATH inheritance fails
 # (the gateway can launch this skill as a subprocess on a shell whose PATH
@@ -73,7 +70,7 @@ class VideoMerger:
             except Exception as e:
                 raise RuntimeError(f"未找到{tool}，请先安装ffmpeg：https://ffmpeg.org/download.html") from e
 
-    def get_sorted_videos(self, input_dir: str) -> List[str]:
+    def get_sorted_videos(self, input_dir: str) -> list[str]:
         """
         按文件名数字前缀排序获取视频列表
         :param input_dir: 分镜头视频所在目录
@@ -83,15 +80,15 @@ class VideoMerger:
         for f in os.listdir(input_dir):
             if f.lower().endswith(".mp4") and re.match(r"^\d+_", f):
                 videos.append(os.path.join(input_dir, f))
-        
+
         if not videos:
             raise ValueError(f"目录 {input_dir} 下未找到符合命名规则（数字_开头）的MP4文件")
-        
+
         # 按数字序号排序
         videos.sort(key=lambda x: int(re.match(r"^(\d+)_", os.path.basename(x)).group(1)))
         return videos
 
-    def get_video_info(self, video_path: str) -> Tuple[int, int, float]:
+    def get_video_info(self, video_path: str) -> tuple[int, int, float]:
         """
         获取视频信息：宽度、高度、时长
         :param video_path: 视频路径
@@ -108,10 +105,10 @@ class VideoMerger:
         width, height, duration = result.stdout.strip().split("\n")[:3]
         return int(width), int(height), float(duration)
 
-    def merge(self, 
-              input_dir: str, 
-              output_path: str, 
-              resolution: Optional[str] = None,
+    def merge(self,
+              input_dir: str,
+              output_path: str,
+              resolution: str | None = None,
               transition_duration: float = 0.5,
               fps: int = 24,
               crf: int = 22,
@@ -149,7 +146,7 @@ class VideoMerger:
             # 先无损拼接所有片段
             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
                 temp_raw = f.name
-            
+
             cmd_concat = [
                 self.ffmpeg_path, "-y", "-f", "concat", "-safe", "0",
                 "-i", concat_file,
@@ -199,7 +196,7 @@ class VideoMerger:
                      input_dir: str,
                      output_dir: str,
                      chunk_duration: int = 60,
-                     resolution: Optional[str] = None,
+                     resolution: str | None = None,
                      transition_duration: float = 0.5,
                      fps: int = 24,
                      crf: int = 22,
@@ -271,7 +268,7 @@ class VideoMerger:
         return True
 
     def _merge_single_chunk(self,
-                            video_list: List[str],
+                            video_list: list[str],
                             output_path: str,
                             resolution: str,
                             transition_duration: float = 0.5,
@@ -291,7 +288,7 @@ class VideoMerger:
             # 先无损拼接所有片段
             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
                 temp_raw = f.name
-            
+
             cmd_concat = [
                 self.ffmpeg_path, "-y", "-f", "concat", "-safe", "0",
                 "-i", concat_file,

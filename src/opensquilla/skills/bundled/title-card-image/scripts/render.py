@@ -18,7 +18,6 @@ import os
 import sys
 from pathlib import Path
 
-
 _CJK_FONT_CANDIDATES = (
     # Windows
     r"C:\Windows\Fonts\msyh.ttc",

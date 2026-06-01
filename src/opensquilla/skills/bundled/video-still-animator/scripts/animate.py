@@ -29,7 +29,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 WINGET_FFMPEG_GLOB = (
     "Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_*/"
     "ffmpeg-*-full_build/bin/ffmpeg.exe"
@@ -103,7 +102,7 @@ def main() -> int:
         "-loop", "1",
         "-i", str(src),
         "-f", "lavfi",
-        "-i", f"anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
         "-filter_complex", vf,
         "-map", "[v]",
         "-map", "1:a",
@@ -119,8 +118,7 @@ def main() -> int:
     try:
         proc = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
         )
     except FileNotFoundError as exc:

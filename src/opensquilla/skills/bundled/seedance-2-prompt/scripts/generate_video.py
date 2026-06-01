@@ -45,9 +45,9 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
 TERMINAL_STATES = {
@@ -98,11 +98,11 @@ class Provider:
     submit_path: str
     polls_url_in_response: bool  # True = use submit response's polling_url;
                                  # False = construct from id
-    build_payload: Callable[["Args"], dict]
+    build_payload: Callable[[Args], dict]
     extract_url: Callable[[dict], str | None]
 
 
-def _build_openrouter_payload(args: "Args") -> dict:
+def _build_openrouter_payload(args: Args) -> dict:
     user_prompt = args.prompt
     payload: dict = {
         "model": args.model,
@@ -135,7 +135,7 @@ def _build_openrouter_payload(args: "Args") -> dict:
     return payload
 
 
-def _build_volcengine_payload(args: "Args") -> dict:
+def _build_volcengine_payload(args: Args) -> dict:
     """Volcengine ARK / BytePlus ModelArk shape — content[] array."""
     content: list = [{"type": "text", "text": args.prompt}]
     # First-frame image

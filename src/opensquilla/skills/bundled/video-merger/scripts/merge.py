@@ -4,18 +4,20 @@ Video Merger Command Line Interface
 视频拼接工具命令行入口
 """
 import argparse
-import sys
 import os
+import sys
+
 # 添加项目根目录到Python路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.video_merger import VideoMerger
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="Multi-segment short video auto-merger tool",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("--input", "-i", required=True, 
+    parser.add_argument("--input", "-i", required=True,
                         help="Directory containing segmented videos (filenames must start with numeric prefix)")
     parser.add_argument("--output", "-o", required=True,
                         help="Output video file path (full mode) or directory path (chunk mode)")
@@ -24,7 +26,7 @@ def main():
                         help="Output mode: full (single complete video) / chunk (multiple segmented videos)")
     parser.add_argument("--chunk-duration", type=int, default=60,
                         help="Target duration per chunk in seconds (only for chunk mode)")
-    parser.add_argument("--resolution", "-r", 
+    parser.add_argument("--resolution", "-r",
                         help="Custom output resolution, e.g. 1080x1920, defaults to original resolution")
     parser.add_argument("--transition", "-t", type=float, default=0.5,
                         help="Fade in/out transition duration in seconds")
@@ -44,7 +46,7 @@ def main():
 
     try:
         merger = VideoMerger(ffmpeg_path=args.ffmpeg_path, ffprobe_path=args.ffprobe_path)
-        
+
         if args.mode == "full":
             success = merger.merge(
                 input_dir=args.input,
@@ -66,7 +68,7 @@ def main():
                 crf=args.crf,
                 preset=args.preset
             )
-            
+
         sys.exit(0 if success else 1)
     except Exception as e:
         print(f"❌ 错误：{str(e)}", file=sys.stderr)

@@ -533,19 +533,22 @@ Examples:
 
 ## Testing Strategy
 
-`/home/lrk/opensquilla/tests` is the full project test suite and should be treated as the implementation gate. The current baseline is expected to pass before sandbox development starts.
+`/home/lrk/opensquilla/tests` is the full project test directory, but this sandbox migration does not require every test in that directory to pass before or after the work. The hard gate is the sandbox-relevant test matrix: existing sandbox tests, old tests whose assertions are intentionally migrated from `bypass/elevated` to Run Mode, and focused gateway/CLI/tool tests touched by this feature.
 
 Implementation should follow this test discipline:
 
-1. Before feature work, run the full suite from the repository root using the project test command, currently `pytest tests` because `pyproject.toml` points pytest at `tests`.
-2. If the pre-change suite does not pass on the unchanged baseline, stop sandbox feature development. Do not continue by building on a red baseline. If any preparatory edits were already made, revert only those own edits, then report the baseline failure separately.
-3. During development, use focused tests for fast feedback, but do not treat focused tests as sufficient.
-4. After implementation, run the full `tests` suite again. If anything fails, fix the implementation code until the full suite passes.
-5. Do not modify unrelated tests to make the suite pass. Existing non-sandbox tests are not part of the sandbox change surface.
-6. After the implementation passes the existing full suite, add the new sandbox-focused tests needed for this feature. If those new tests fail, fix the implementation code, not unrelated tests.
-7. Existing tests must not be loosened, deleted, skipped, or rewritten merely to make the new sandbox work pass.
+1. Use the project test command, currently `uv run pytest`, not bare `pytest`.
+2. Before feature work, run the focused sandbox baseline from the repository root:
+   `uv run pytest tests/test_sandbox tests/test_cli/test_sandbox_cmd.py tests/test_gateway/test_chat_static_assets.py tests/test_application/test_approval_rpc.py tests/test_gateway/test_rpc_approvals.py -q`.
+3. If this focused sandbox baseline fails on the unchanged code, stop sandbox feature development. If any preparatory edits were already made, revert only those own edits, then report the focused baseline failure.
+4. Full `uv run pytest tests` is useful as a diagnostic snapshot, but it is not a blocking gate for this sandbox migration. If it fails in unrelated areas, record the failures and continue; do not edit unrelated tests to make them pass.
+5. During development, use temporary tests under `.sandbox-tmp-tests/` and focused existing tests for fast feedback.
+6. After each implementation task, the focused tests named for that task must pass.
+7. Before adding permanent new sandbox tests, rerun the sandbox-relevant focused matrix. If it fails, fix implementation code or the explicitly migrated sandbox-semantic tests.
+8. Add the new sandbox-focused tests needed for this feature under `tests/test_sandbox/`. If those new tests fail, fix the implementation code, not unrelated tests.
+9. Existing tests must not be loosened, deleted, skipped, or rewritten merely to make the new sandbox work pass. The only allowed edits to old tests are tests that directly lock the old `bypass/elevated` sandbox semantics or the old Windows auto-noop expectation.
 
-The existing sandbox tests are the baseline and should not be rewritten or loosened. New tests may be added alongside them to cover new behavior, using the same style, fixtures, and assertion patterns as nearby tests.
+The existing sandbox tests are the core baseline and should not be rewritten or loosened. New tests may be added alongside them to cover new behavior, using the same style, fixtures, and assertion patterns as nearby tests.
 
 Additive test coverage should include:
 

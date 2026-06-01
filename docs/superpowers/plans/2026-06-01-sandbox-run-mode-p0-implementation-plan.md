@@ -31,7 +31,7 @@ In scope:
 - Approvals surfaces remove `Bypass Approvals`.
 - First slice of external path access and mount validation.
 - Native Windows backend entry named `windows_restricted_token`, with fail-closed behavior when helper/setup is unavailable.
-- Additive sandbox-focused tests after existing full suite is green.
+- Additive sandbox-focused tests after the sandbox-relevant focused matrix is green.
 
 Out of scope for this plan:
 
@@ -162,20 +162,24 @@ This directory is ignored by the existing `.*` ignore rule and must never be com
 
 ## Test Gate Rules
 
-- Before implementation, run full baseline: `pytest tests`.
-- If baseline fails before feature work, stop sandbox development.
-- If any preparatory edits were made before discovering the baseline failure, revert only those own edits and report the baseline failure.
+- Use `uv run pytest`, not bare `pytest`, because the project expects the repository-local environment.
+- Before implementation, run the sandbox-relevant baseline:
+  `uv run pytest tests/test_sandbox tests/test_cli/test_sandbox_cmd.py tests/test_gateway/test_chat_static_assets.py tests/test_application/test_approval_rpc.py tests/test_gateway/test_rpc_approvals.py -q`.
+- If that focused baseline fails before feature work, stop sandbox development.
+- If any preparatory edits were made before discovering the focused baseline failure, revert only those own edits and report the focused baseline failure.
+- A full `uv run pytest tests` run may be used as a diagnostic snapshot, but it is not a blocking gate for this sandbox migration.
+- If the full suite fails in unrelated areas, record the failures and continue. Do not edit unrelated tests to make it pass.
 - During development, temporary tests may be placed in `.sandbox-tmp-tests/` and run directly.
 - After each implementation task, run the focused existing tests named in that task.
-- After implementation but before adding new permanent sandbox tests, run `pytest tests`.
-- If that full suite fails, fix implementation code. Do not modify unrelated tests to make it pass.
-- After existing full suite is green, add important new sandbox tests to `tests/test_sandbox/`.
+- After implementation but before adding new permanent sandbox tests, rerun the sandbox-relevant focused matrix.
+- If that focused matrix fails, fix implementation code or the explicitly migrated sandbox-semantic tests. Do not modify unrelated tests to make it pass.
+- After the focused matrix is green, add important new sandbox tests to `tests/test_sandbox/`.
 - If new sandbox tests fail, fix implementation code.
-- Final gate is `pytest tests` passing.
+- Final gate is the focused sandbox matrix plus the new sandbox tests passing.
 
 ---
 
-### Task 0: Baseline Gate And Temporary Test Workspace
+### Task 0: Focused Baseline Gate And Temporary Test Workspace
 
 **Files:**
 - Create locally only: `.sandbox-tmp-tests/`
@@ -191,15 +195,23 @@ git status --short
 
 Expected: either no output, or only user-owned changes unrelated to this implementation. If there are unrelated user changes, do not touch them.
 
-- [ ] **Step 2: Run full baseline**
+- [ ] **Step 2: Run focused sandbox baseline**
 
 Run:
 
 ```bash
-pytest tests
+uv run pytest tests/test_sandbox tests/test_cli/test_sandbox_cmd.py tests/test_gateway/test_chat_static_assets.py tests/test_application/test_approval_rpc.py tests/test_gateway/test_rpc_approvals.py -q
 ```
 
-Expected: PASS. If this fails before sandbox work starts, stop. Revert only own preparatory edits, then report the baseline failure.
+Expected: PASS. If this focused baseline fails before sandbox work starts, stop. Revert only own preparatory edits, then report the focused baseline failure.
+
+Optional diagnostic only:
+
+```bash
+timeout 300 uv run pytest tests
+```
+
+Expected: useful health snapshot. Failure in unrelated areas is recorded but does not block sandbox work.
 
 - [ ] **Step 3: Create temporary test directory**
 
@@ -298,7 +310,7 @@ def test_normalize_run_mode_accepts_user_facing_spellings() -> None:
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_run_mode_core.py -q
+uv run pytest .sandbox-tmp-tests/test_run_mode_core.py -q
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'opensquilla.sandbox.run_mode'`.
@@ -523,7 +535,7 @@ Keep `normalize_permission_mode()` for old config parsing; do not let `bypass` c
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_run_mode_core.py -q
+uv run pytest .sandbox-tmp-tests/test_run_mode_core.py -q
 ```
 
 Expected: PASS.
@@ -533,7 +545,7 @@ Expected: PASS.
 Run:
 
 ```bash
-pytest tests/test_sandbox/test_policy_network.py tests/test_sandbox/test_windows_auto_backend.py -q
+uv run pytest tests/test_sandbox/test_policy_network.py tests/test_sandbox/test_windows_auto_backend.py -q
 ```
 
 Expected: PASS. If failures are due to new run-mode field serialization, fix implementation code.
@@ -642,7 +654,7 @@ def test_sandbox_status_reports_run_mode(tmp_path: Path) -> None:
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_sandbox_cli_run_modes.py -q
+uv run pytest .sandbox-tmp-tests/test_sandbox_cli_run_modes.py -q
 ```
 
 Expected: FAIL because `trust` is not implemented and `bypass` still succeeds.
@@ -771,7 +783,7 @@ assert cfg.permissions.default_mode == "off"
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_sandbox_cli_run_modes.py tests/test_cli/test_sandbox_cmd.py -q
+uv run pytest .sandbox-tmp-tests/test_sandbox_cli_run_modes.py tests/test_cli/test_sandbox_cmd.py -q
 ```
 
 Expected: PASS.
@@ -870,7 +882,7 @@ async def test_saved_context_wins_over_later_global_default() -> None:
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_run_context_rpc.py -q
+uv run pytest .sandbox-tmp-tests/test_run_context_rpc.py -q
 ```
 
 Expected: FAIL because `opensquilla.sandbox.run_context` does not exist.
@@ -1162,7 +1174,7 @@ If `_source.runMode` is present and owner-owned, update Run Context through `set
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_run_context_rpc.py -q
+uv run pytest .sandbox-tmp-tests/test_run_context_rpc.py -q
 ```
 
 Expected: PASS.
@@ -1172,7 +1184,7 @@ Expected: PASS.
 Run:
 
 ```bash
-pytest tests/test_gateway/test_rpc_sessions.py tests/test_gateway/test_rpc_chat_clarify_submit.py -q
+uv run pytest tests/test_gateway/test_rpc_sessions.py tests/test_gateway/test_rpc_chat_clarify_submit.py -q
 ```
 
 Expected: PASS.
@@ -1274,7 +1286,7 @@ async def test_ordinary_approval_result_does_not_carry_elevated_mode(monkeypatch
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_trusted_sandbox_execution.py -q
+uv run pytest .sandbox-tmp-tests/test_trusted_sandbox_execution.py -q
 ```
 
 Expected: FAIL because old shell approval/elevated code still treats bypass/trust as host elevation.
@@ -1452,7 +1464,7 @@ In `src/opensquilla/tools/builtin/code_exec.py`:
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_trusted_sandbox_execution.py tests/test_sandbox/test_escalate_backend_denial.py tests/test_gateway/test_rpc_approvals.py -q
+uv run pytest .sandbox-tmp-tests/test_trusted_sandbox_execution.py tests/test_sandbox/test_escalate_backend_denial.py tests/test_gateway/test_rpc_approvals.py -q
 ```
 
 Expected: PASS.
@@ -1535,7 +1547,7 @@ def test_webui_removes_bypass_approval_shortcuts() -> None:
 Run:
 
 ```bash
-pytest tests/test_gateway/test_chat_static_assets.py::test_chat_run_mode_control_replaces_elevated_bypass_copy tests/test_gateway/test_chat_static_assets.py::test_webui_removes_bypass_approval_shortcuts -q
+uv run pytest tests/test_gateway/test_chat_static_assets.py::test_chat_run_mode_control_replaces_elevated_bypass_copy tests/test_gateway/test_chat_static_assets.py::test_webui_removes_bypass_approval_shortcuts -q
 ```
 
 Expected: FAIL.
@@ -1637,7 +1649,7 @@ In `src/opensquilla/gateway/static/css/views/chat.css`:
 Run:
 
 ```bash
-pytest tests/test_gateway/test_chat_static_assets.py tests/test_gateway/test_webui_typography_static.py -q
+uv run pytest tests/test_gateway/test_chat_static_assets.py tests/test_gateway/test_webui_typography_static.py -q
 ```
 
 Expected: PASS.
@@ -1716,7 +1728,7 @@ def test_workspace_path_is_already_allowed(tmp_path: Path) -> None:
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_path_access_request.py -q
+uv run pytest .sandbox-tmp-tests/test_path_access_request.py -q
 ```
 
 Expected: FAIL because module does not exist.
@@ -1872,7 +1884,7 @@ In `shell.py`, if `workdir` is outside workspace/mounts, return the same `path_a
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_path_access_request.py -q
+uv run pytest .sandbox-tmp-tests/test_path_access_request.py -q
 ```
 
 Expected: PASS.
@@ -1882,7 +1894,7 @@ Expected: PASS.
 Run:
 
 ```bash
-pytest tests/test_sandbox/test_sensitive_paths.py tests/test_tools/test_sandbox_network_hint.py -q
+uv run pytest tests/test_sandbox/test_sensitive_paths.py tests/test_tools/test_sandbox_network_hint.py -q
 ```
 
 Expected: PASS.
@@ -1990,7 +2002,7 @@ def test_windows_auto_fails_closed_when_restricted_token_unavailable(monkeypatch
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_windows_restricted_token_backend.py -q
+uv run pytest .sandbox-tmp-tests/test_windows_restricted_token_backend.py -q
 ```
 
 Expected: FAIL because `WindowsRestrictedTokenBackend` does not exist and current Windows auto disables sandbox.
@@ -2151,7 +2163,7 @@ Modify `tests/test_sandbox/test_windows_auto_backend.py`:
 Run:
 
 ```bash
-pytest .sandbox-tmp-tests/test_windows_restricted_token_backend.py tests/test_sandbox/test_windows_auto_backend.py -q
+uv run pytest .sandbox-tmp-tests/test_windows_restricted_token_backend.py tests/test_sandbox/test_windows_auto_backend.py -q
 ```
 
 Expected: PASS on non-Windows through monkeypatching. Native Windows smoke testing is manual unless a Windows runner is available.
@@ -2167,18 +2179,18 @@ git commit -m "feat: add windows restricted-token sandbox backend"
 
 ---
 
-### Task 8: Run Existing Full Suite Before Adding New Permanent Tests
+### Task 8: Run Focused Regression Gate Before Adding New Permanent Tests
 
 **Files:**
 - No new permanent tests yet.
 - `.sandbox-tmp-tests/` may remain ignored locally.
 
-- [ ] **Step 1: Run full existing suite**
+- [ ] **Step 1: Run focused sandbox regression matrix**
 
 Run:
 
 ```bash
-pytest tests
+uv run pytest tests/test_sandbox tests/test_cli/test_sandbox_cmd.py tests/test_gateway/test_chat_static_assets.py tests/test_application/test_approval_rpc.py tests/test_gateway/test_rpc_approvals.py tests/test_gateway/test_rpc_sessions.py tests/test_gateway/test_rpc_chat_clarify_submit.py tests/test_tools/test_sandbox_network_hint.py -q
 ```
 
 Expected: PASS.
@@ -2189,7 +2201,17 @@ If this fails:
 - Do not edit unrelated tests.
 - Only adjust `tests/test_cli/test_sandbox_cmd.py`, `tests/test_gateway/test_chat_static_assets.py`, or `tests/test_sandbox/test_windows_auto_backend.py` if the failure is directly caused by their old sandbox semantics or Windows backend expectation.
 
-- [ ] **Step 2: Check no temp tests are tracked**
+- [ ] **Step 2: Optionally record full-suite health**
+
+Run when time permits:
+
+```bash
+timeout 300 uv run pytest tests
+```
+
+Expected: diagnostic output only. Unrelated failures do not block this sandbox migration.
+
+- [ ] **Step 3: Check no temp tests are tracked**
 
 Run:
 
@@ -2284,7 +2306,7 @@ Create `tests/test_sandbox/test_path_access.py` using the important assertions f
 Run:
 
 ```bash
-pytest tests/test_sandbox/test_run_modes.py tests/test_sandbox/test_run_context.py tests/test_sandbox/test_path_access.py -q
+uv run pytest tests/test_sandbox/test_run_modes.py tests/test_sandbox/test_run_context.py tests/test_sandbox/test_path_access.py -q
 ```
 
 Expected: PASS.
@@ -2300,22 +2322,32 @@ git commit -m "test: cover sandbox run mode behavior"
 
 ---
 
-### Task 10: Final Verification And Cleanup
+### Task 10: Final Focused Verification And Cleanup
 
 **Files:**
 - No code changes unless verification finds implementation bugs.
 
-- [ ] **Step 1: Run full suite**
+- [ ] **Step 1: Run final focused sandbox gate**
 
 Run:
 
 ```bash
-pytest tests
+uv run pytest tests/test_sandbox tests/test_cli/test_sandbox_cmd.py tests/test_gateway/test_chat_static_assets.py tests/test_application/test_approval_rpc.py tests/test_gateway/test_rpc_approvals.py tests/test_gateway/test_rpc_sessions.py tests/test_gateway/test_rpc_chat_clarify_submit.py tests/test_tools/test_sandbox_network_hint.py -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 2: Remove temporary tests**
+- [ ] **Step 2: Optionally record full-suite health**
+
+Run when time permits:
+
+```bash
+timeout 300 uv run pytest tests
+```
+
+Expected: diagnostic output only. Record unrelated failures separately.
+
+- [ ] **Step 3: Remove temporary tests**
 
 Run:
 
@@ -2378,8 +2410,8 @@ Spec coverage:
 - Approval surfaces remove bypass shortcut: Task 5.
 - External path access asks for mount first: Task 6.
 - Windows restricted-token backend current scope: Task 7.
-- Test gate before/after development: Task 0, Task 8, Task 10.
-- Temporary tests during development, permanent tests after full suite green: Task 0, Task 8, Task 9.
+- Focused sandbox test gate before/after development: Task 0, Task 8, Task 10.
+- Temporary tests during development, permanent tests after the focused sandbox matrix is green: Task 0, Task 8, Task 9.
 
 Known follow-up plans:
 

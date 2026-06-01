@@ -101,7 +101,17 @@ def create_gateway_app(
 
     async def api_sessions(request: Request) -> JSONResponse:
         ctx = _make_ctx(request)
-        result = await dispatcher.dispatch("_http", "sessions.list", None, ctx)
+        params: dict[str, object] = {}
+        raw_limit = request.query_params.get("limit")
+        if raw_limit:
+            try:
+                params["limit"] = int(raw_limit)
+            except ValueError:
+                return JSONResponse({"error": "limit must be an integer"}, status_code=400)
+        view = request.query_params.get("view")
+        if view:
+            params["view"] = view
+        result = await dispatcher.dispatch("_http", "sessions.list", params or None, ctx)
         if result.ok:
             return JSONResponse(result.payload or {"sessions": []})
         msg = result.error.message if result.error else "error"

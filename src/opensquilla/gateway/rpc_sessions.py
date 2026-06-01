@@ -29,6 +29,7 @@ from opensquilla.gateway.session_services import (
     set_session_epoch,
 )
 from opensquilla.gateway.session_streams import get_session_streams
+from opensquilla.gateway.session_view import build_session_view_item
 from opensquilla.paths import media_root_from_config
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
@@ -808,7 +809,15 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
         }
         row.update(_derive_source_metadata(s))
         task_rows = task_rows_by_session.get(canonicalize_session_key(s.session_key), [])
-        row.update(_task_state_summary(task_rows))
+        task_summary = _task_state_summary(task_rows)
+        view_fields = build_session_view_item(
+            s,
+            entry_count=entry_count,
+            task_rows=task_rows,
+            now_ms=now_ms,
+        )
+        row.update(task_summary)
+        row.update(view_fields)
         result.append(row)
 
     return {"sessions": result, "count": len(result), "ts": now_ms}

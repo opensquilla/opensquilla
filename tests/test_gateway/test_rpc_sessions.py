@@ -658,6 +658,343 @@ class TestSessionsCreate:
 
 
 class TestSessionsList:
+    @staticmethod
+    def _assert_contract_base(row: dict[str, object]) -> None:
+        for key in (
+            "key",
+            "agent_id",
+            "agentId",
+            "status",
+            "updated_at",
+            "updatedAt",
+            "message_count",
+            "entry_count",
+            "effectiveAgentId",
+            "sessionKind",
+            "surface",
+            "conversationKind",
+            "title",
+            "groupLabel",
+            "messageCount",
+            "runStatus",
+            "interactive",
+        ):
+            assert key in row
+
+    @pytest.mark.asyncio
+    async def test_list_contract_webchat_row(self, dispatcher):
+        session = FakeSession(session_key="agent:main:webchat:default")
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["effectiveAgentId"] == "main"
+        assert row["sessionKind"] == "chat"
+        assert row["surface"] == "webchat"
+        assert row["conversationKind"] == "direct"
+        assert row["groupLabel"] == "Web chat"
+        assert row["messageCount"] == row["message_count"]
+        assert row["runStatus"] == "idle"
+        assert row["interactive"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_contract_cli_current_tui_compatible_row(self, dispatcher):
+        session = FakeSession(session_key="agent:main:cli:a1b2c3d4")
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "chat"
+        assert row["surface"] == "cli"
+        assert row["conversationKind"] == "main"
+        assert row["groupLabel"] == "CLI"
+        assert row["interactive"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_contract_main_agent_chat_row(self, dispatcher):
+        session = FakeSession(session_key="agent:ops:main", agent_id="ops")
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["effectiveAgentId"] == "ops"
+        assert row["sessionKind"] == "chat"
+        assert row["surface"] == "unknown"
+        assert row["conversationKind"] == "main"
+        assert row["groupLabel"] == "Chats"
+        assert row["interactive"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_contract_direct_agent_chat_row(self, dispatcher):
+        session = FakeSession(session_key="agent:main:direct:user-1")
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "chat"
+        assert row["surface"] == "unknown"
+        assert row["conversationKind"] == "direct"
+        assert row["groupLabel"] == "Chats"
+        assert row["interactive"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_contract_slack_channel_thread_row(self, dispatcher):
+        thread_id = "1717000000.000100"
+        session = FakeSession(
+            session_key=f"agent:main:slack:group:C123:thread:{thread_id}",
+            last_channel="slack",
+            last_to="C123",
+            last_thread_id=thread_id,
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "channel"
+        assert row["surface"] == "slack"
+        assert row["conversationKind"] == "group"
+        assert row["thread"] == {"id": thread_id, "kind": "thread"}
+        assert row["channel"] is None
+        assert row["channelContext"] == {
+            "name": "slack",
+            "id": "C123",
+            "threadId": thread_id,
+        }
+        assert row["groupLabel"] == "Slack"
+        assert row["interactive"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_contract_preserves_legacy_channel_field(self, dispatcher):
+        session = FakeSession(
+            session_key="agent:main:slack:group:C123",
+            channel="slack",
+            last_to="C123",
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["channel"] == "slack"
+        assert row["channelContext"] == {"name": "slack", "id": "C123"}
+
+    @pytest.mark.asyncio
+    async def test_list_contract_telegram_topic_row(self, dispatcher):
+        session = FakeSession(
+            session_key="agent:main:telegram:group:chat-1:topic:topic-9",
+            last_channel="telegram",
+            last_to="chat-1",
+            last_thread_id="topic-9",
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "channel"
+        assert row["surface"] == "telegram"
+        assert row["conversationKind"] == "group"
+        assert row["thread"] == {"id": "topic-9", "kind": "topic"}
+        assert row["groupLabel"] == "Telegram"
+
+    @pytest.mark.asyncio
+    async def test_list_contract_subagent_task_row(self, dispatcher):
+        parent_key = "agent:main:webchat:default"
+        session = FakeSession(
+            session_key="agent:main:subagent:760b927a",
+            parent_session_key=parent_key,
+            spawned_by="task-123",
+            origin={"kind": "subagent", "spawnDepth": 1},
+        )
+        manager = FakeSessionManager([session])
+        manager._storage._agent_tasks[session.session_key] = [
+            SimpleNamespace(
+                task_id="task-123",
+                status="running",
+                queue_mode="followup",
+                run_kind="subagent",
+                source_kind="subagent",
+                created_at=100,
+                started_at=110,
+                finished_at=None,
+                terminal_reason=None,
+            )
+        ]
+        ctx = make_ctx(session_manager=manager, task_runtime=None)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "task"
+        assert row["surface"] == "subagent"
+        assert row["conversationKind"] == "unknown"
+        assert row["runStatus"] == "running"
+        assert row["interactive"] is False
+        assert row["parent"] == {
+            "key": parent_key,
+            "taskId": "task-123",
+            "spawnDepth": 1,
+        }
+
+    @pytest.mark.asyncio
+    async def test_list_contract_run_status_matches_legacy_interrupted_state(
+        self, dispatcher
+    ):
+        session = FakeSession(session_key="agent:main:webchat:interrupted")
+        manager = FakeSessionManager([session])
+        manager._storage._agent_tasks[session.session_key] = [
+            SimpleNamespace(
+                task_id="task-abandoned",
+                status="abandoned",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=100,
+                started_at=110,
+                finished_at=120,
+                terminal_reason="process_restart",
+            )
+        ]
+        ctx = make_ctx(session_manager=manager, task_runtime=None)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["run_status"] == "interrupted"
+        assert row["runStatus"] == "interrupted"
+
+    @pytest.mark.asyncio
+    async def test_list_contract_cron_isolated_row(self, dispatcher):
+        session = FakeSession(
+            session_key="cron:daily-summary:run:abc123",
+            display_name="Daily summary",
+            origin={
+                "kind": "cron",
+                "jobId": "daily-summary",
+                "sessionTarget": "isolated",
+            },
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "cron"
+        assert row["surface"] == "cron"
+        assert row["groupLabel"] == "Cron"
+        assert row["interactive"] is False
+        assert row["cron"] == {
+            "jobId": "daily-summary",
+            "sessionTarget": "isolated",
+        }
+
+    @pytest.mark.asyncio
+    async def test_list_contract_cron_delivery_keeps_feishu_channel_identity(
+        self, dispatcher
+    ):
+        session_key = "agent:main:feishu:group:oc_123"
+        session = FakeSession(
+            session_key=session_key,
+            last_channel="feishu",
+            last_to="oc_123",
+            origin={
+                "kind": "channel",
+                "cron": {
+                    "jobId": "launch-check",
+                    "sessionTarget": "session",
+                    "targetSessionKey": session_key,
+                },
+            },
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "channel"
+        assert row["surface"] == "feishu"
+        assert row["conversationKind"] == "group"
+        assert row["channel"] is None
+        assert row["channelContext"] == {"name": "feishu", "id": "oc_123"}
+        assert row["cron"] == {
+            "jobId": "launch-check",
+            "sessionTarget": "session",
+            "targetSessionKey": session_key,
+        }
+
+    @pytest.mark.asyncio
+    async def test_list_contract_legacy_agent_mismatch_uses_effective_agent(
+        self, dispatcher
+    ):
+        session = FakeSession(
+            session_key="agent:kid-project:webchat:test",
+            agent_id="main",
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["agentId"] == "main"
+        assert row["effectiveAgentId"] == "kid-project"
+        assert row["sessionKind"] == "chat"
+        assert row["surface"] == "webchat"
+        assert row["conversationKind"] == "direct"
+        assert row["interactive"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_contract_unknown_fallback_row(self, dispatcher):
+        session = FakeSession(
+            session_key="legacy-weird-session",
+            session_id="legacy-weird-session-id",
+            status="running",
+            display_name=None,
+            origin=None,
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "unknown"
+        assert row["surface"] == "unknown"
+        assert row["conversationKind"] == "unknown"
+        assert row["title"] == "legacy-weird-session"
+        assert row["groupLabel"] == "Other"
+        assert row["runStatus"] == "idle"
+        assert row["interactive"] is False
+
     @pytest.mark.asyncio
     async def test_list_includes_source_and_delivery_metadata(self, dispatcher):
         session = FakeSession(

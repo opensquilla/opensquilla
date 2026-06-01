@@ -214,7 +214,9 @@ Transcript/message count for display.
 
 `status`
 
-Persisted session lifecycle status.
+Persisted session lifecycle status. Current backend values include `running`,
+`done`, `failed`, `killed`, and `timeout`. Frontend should treat this as a
+backend lifecycle string and use `runStatus` for idle/running turn badges.
 
 `runStatus`
 
@@ -320,7 +322,7 @@ become the primary UI path.
   "groupLabel": "Web chat",
   "updatedAt": 1760000000000,
   "messageCount": 42,
-  "status": "idle",
+  "status": "done",
   "runStatus": "idle",
   "parent": null,
   "cron": null
@@ -342,7 +344,7 @@ become the primary UI path.
   "groupLabel": "CLI",
   "updatedAt": 1760000000000,
   "messageCount": 12,
-  "status": "idle",
+  "status": "done",
   "runStatus": "idle"
 }
 ```
@@ -387,7 +389,7 @@ become the primary UI path.
   "groupLabel": "Cron",
   "updatedAt": 1760000000000,
   "messageCount": 4,
-  "status": "idle",
+  "status": "done",
   "runStatus": "idle",
   "cron": {
     "jobId": "daily-summary",
@@ -414,7 +416,7 @@ its original visual identity.
   "groupLabel": "Feishu",
   "updatedAt": 1760000000000,
   "messageCount": 31,
-  "status": "idle",
+  "status": "done",
   "runStatus": "idle",
   "channel": {
     "name": "feishu",
@@ -447,7 +449,7 @@ its original visual identity.
   "groupLabel": "Slack",
   "updatedAt": 1760000000000,
   "messageCount": 16,
-  "status": "idle",
+  "status": "done",
   "runStatus": "idle",
   "channel": {
     "name": "slack",
@@ -475,7 +477,7 @@ another agent, the UI must show `effectiveAgentId`.
   "groupLabel": "Web chat",
   "updatedAt": 1760000000000,
   "messageCount": 5,
-  "status": "idle",
+  "status": "done",
   "runStatus": "idle"
 }
 ```

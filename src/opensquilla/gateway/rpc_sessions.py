@@ -31,7 +31,7 @@ from opensquilla.gateway.session_services import (
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.paths import media_root_from_config
 from opensquilla.sandbox.run_context import get_run_context, set_run_mode
-from opensquilla.sandbox.run_mode import normalize_run_mode
+from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
     call_compact_with_optional_config,
@@ -59,6 +59,7 @@ from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_ag
 _d = get_dispatcher()
 log = structlog.get_logger(__name__)
 _ELEVATED_MODES = frozenset({"full"})
+_TRUSTED_ELEVATED_ALIASES = frozenset({"on", "bypass"})
 
 _ALLOWED_MEDIA_TYPES = _attachment_ingest.ALLOWED_MEDIA_TYPES
 _MAX_ATTACHMENT_BYTES = _attachment_ingest.MAX_ATTACHMENT_BYTES
@@ -172,9 +173,17 @@ def _trusted_elevated_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> str 
 
 def _trusted_run_mode_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> Any | None:
     value = source_hint.get("runMode") or source_hint.get("run_mode")
-    if not isinstance(value, str) or not ctx.principal.is_owner:
+    if isinstance(value, str) and ctx.principal.is_owner:
+        return normalize_run_mode(value)
+
+    elevated = source_hint.get("elevated")
+    if not isinstance(elevated, str) or not ctx.principal.is_owner:
         return None
-    return normalize_run_mode(value)
+    if elevated in _TRUSTED_ELEVATED_ALIASES:
+        return RunMode.TRUSTED
+    if elevated == "full":
+        return RunMode.FULL
+    return None
 
 
 def _normalize_session_send_source_hint(params: dict[str, Any]) -> dict[str, Any]:

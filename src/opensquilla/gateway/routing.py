@@ -371,19 +371,26 @@ def tool_context_from_envelope(
         denied_tools = set(SUBAGENT_TOOL_DENY)
     source_kind = envelope.metadata.get("tool_source_kind") or envelope.source_kind.value
     source_name = envelope.metadata.get("tool_source_name") or envelope.source_name
-    elevated = envelope.metadata.get("elevated") or default_elevated
-    if elevated != "full" or not is_owner:
-        elevated = None
+    legacy_elevated = envelope.metadata.get("elevated")
+    elevated = None
     run_mode_value = envelope.metadata.get("run_mode")
-    if elevated == "full":
-        run_mode = RunMode.FULL
-    else:
+    if run_mode_value:
         try:
-            run_mode = normalize_run_mode(run_mode_value) if run_mode_value else None
+            run_mode = normalize_run_mode(run_mode_value)
         except ValueError:
             run_mode = None
         if run_mode == RunMode.FULL and not is_owner:
             run_mode = None
+    elif legacy_elevated in ("on", "bypass") and is_owner:
+        run_mode = RunMode.TRUSTED
+    elif legacy_elevated == "full" and is_owner:
+        run_mode = RunMode.FULL
+    elif default_elevated == "full" and is_owner:
+        run_mode = RunMode.FULL
+    else:
+        run_mode = None
+    if run_mode == RunMode.FULL and is_owner:
+        elevated = "full"
     sandbox_mounts = envelope.metadata.get("sandbox_mounts")
     if not isinstance(sandbox_mounts, list):
         sandbox_mounts = []

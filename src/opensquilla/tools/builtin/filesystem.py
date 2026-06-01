@@ -281,6 +281,18 @@ def _sandbox_path_access_envelope(
     return _path_access_required_envelope(decision)
 
 
+def _active_sandbox_mount_allows(resolved: Path, *, write: bool) -> bool:
+    if not _sandbox_path_access_enabled():
+        return False
+    decision = decide_path_access(
+        resolved,
+        workspace=_workspace_root(),
+        mounts=_active_sandbox_mounts(),
+        write=write,
+    )
+    return decision.status == "allowed"
+
+
 def _strict_read_workspace_root() -> Path | None:
     """Return the read-containment root when workspace-strict mode is active.
 
@@ -497,6 +509,8 @@ async def _gate_out_of_workspace_write(
     if not _is_outside_workspace(resolved):
         return None
     if _memory_source_rel_path(resolved) is not None:
+        return None
+    if _active_sandbox_mount_allows(resolved, write=True):
         return None
     from opensquilla.tools.builtin.shell import (
         _approval_elevation_state,

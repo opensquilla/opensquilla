@@ -16,6 +16,11 @@ from opensquilla.tools.builtin import shell
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
 
+class _InlineExecutorLoop:
+    async def run_in_executor(self, executor: object, func: object, *args: object) -> object:
+        return func(*args)  # type: ignore[operator]
+
+
 @contextmanager
 def tool_context(
     workspace: Path,
@@ -142,6 +147,74 @@ async def test_filesystem_write_outside_workspace_requests_rw_mount(tmp_path: Pa
     assert payload["path"] == str(outside.resolve(strict=False))
     assert payload["access"] == "rw"
     assert not outside.exists()
+
+
+@pytest.mark.asyncio
+async def test_existing_rw_mount_allows_write_file_without_legacy_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    target = mounted / "out.txt"
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(
+        workspace,
+        sandbox_mounts=[{"path": str(mounted), "access": "rw"}],
+    ):
+        result = await fs.write_file(str(target), "x")
+
+    assert "Written 1 bytes" in result
+    assert target.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.asyncio
+async def test_existing_rw_mount_allows_edit_file_without_legacy_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    target = mounted / "out.txt"
+    target.write_text("old\n", encoding="utf-8")
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(
+        workspace,
+        sandbox_mounts=[{"path": str(mounted), "access": "rw"}],
+    ):
+        result = await fs.edit_file(str(target), "old", "new")
+
+    assert "Edited" in result
+    assert target.read_text(encoding="utf-8") == "new\n"
+
+
+@pytest.mark.asyncio
+async def test_existing_ro_mount_write_requests_rw_mount_not_legacy_approval(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    target = mounted / "out.txt"
+
+    with tool_context(
+        workspace,
+        sandbox_mounts=[{"path": str(mounted), "access": "ro"}],
+    ):
+        payload = json.loads(await fs.write_file(str(target), "x"))
+
+    assert payload["status"] == "path_access_required"
+    assert payload["path"] == str(target.resolve(strict=False))
+    assert payload["access"] == "rw"
+    assert "approval" not in payload["status"]
+    assert not target.exists()
 
 
 @pytest.mark.asyncio

@@ -625,6 +625,10 @@ OpenSquilla is inspired by
 content is attributed in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
+Community contributors are acknowledged in
+[`CONTRIBUTORS.md`](CONTRIBUTORS.md), including release-specific attribution
+notes for squash-merged or replayed work.
+
 ---
 
 ## Contributing

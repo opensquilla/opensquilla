@@ -161,7 +161,8 @@ async def test_run_invokes_helper_and_serializes_request(
     payload = json.loads(helper_argv[3])
     assert payload["argv"] == ["cmd", "/c", "echo", "ok"]
     assert payload["cwd"] == str(tmp_path)
-    assert payload["env"] == {"PATH": r"C:\Windows\System32", "SECRET": "not-forwarded"}
+    assert payload["env"] == {"PATH": r"C:\Windows\System32"}
+    assert "SECRET" not in payload["env"]
     assert payload["policy"]["network"] == "none"
     assert payload["timeout"] == 5.0
     assert captured["kwargs"] == {

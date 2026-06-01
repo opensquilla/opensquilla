@@ -108,9 +108,17 @@ def _payload_for_request(request: SandboxRequest) -> dict[str, Any]:
     return {
         "argv": list(request.argv),
         "cwd": str(request.cwd),
-        "env": dict(request.env),
+        "env": _allowed_env(request),
         "policy": request.policy.summary(),
         "timeout": request.policy.limits.wall_timeout_s,
+    }
+
+
+def _allowed_env(request: SandboxRequest) -> dict[str, str]:
+    return {
+        key: value
+        for key in request.policy.env_allowlist
+        if isinstance((value := request.env.get(key)), str)
     }
 
 

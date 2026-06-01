@@ -997,6 +997,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             key,
             run_mode_hint,
             config=ctx.config,
+            workspace=workspace_dir,
         )
     else:
         run_context = await get_run_context(

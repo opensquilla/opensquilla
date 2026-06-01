@@ -177,12 +177,13 @@ async def set_run_mode(
     run_mode: RunMode | str,
     *,
     config: Any,
+    workspace: str | None = None,
 ) -> RunContext:
     existing = await get_run_context(
         session_manager,
         session_key,
         config=config,
-        workspace=None,
+        workspace=workspace,
     )
     updated = RunContext(
         run_mode=normalize_run_mode(run_mode),

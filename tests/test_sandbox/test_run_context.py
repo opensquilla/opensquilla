@@ -48,6 +48,30 @@ async def test_run_context_initializes_from_global_default_and_persists_override
 
 
 @pytest.mark.asyncio
+async def test_set_run_mode_persists_first_workspace_and_preserves_origin_keys() -> None:
+    from opensquilla.sandbox.run_context import set_run_mode
+
+    manager = _SessionManager()
+    manager.node.origin = {"other": {"kept": True}}
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+
+    updated = await set_run_mode(
+        manager,
+        manager.node.session_key,
+        RunMode.TRUSTED,
+        config=config,
+        workspace="/tmp/ws",
+    )
+
+    assert updated.workspace == "/tmp/ws"
+    assert manager.node.origin["other"] == {"kept": True}
+    assert manager.node.origin["sandbox_run_context"]["workspace"] == "/tmp/ws"
+
+
+@pytest.mark.asyncio
 async def test_saved_context_wins_over_later_global_default() -> None:
     from opensquilla.sandbox.run_context import get_run_context
 
@@ -68,3 +92,35 @@ async def test_saved_context_wins_over_later_global_default() -> None:
     assert ctx.run_mode == RunMode.STANDARD
     assert ctx.workspace == "/tmp/old"
     assert ctx.source == "saved"
+
+
+@pytest.mark.asyncio
+async def test_rpc_run_context_get_reports_missing_session() -> None:
+    from opensquilla.gateway.auth import Principal
+    from opensquilla.gateway.rpc import RpcContext
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_run_context_get
+
+    manager = _SessionManager()
+    config = SimpleNamespace(
+        workspace_dir="/tmp/ws",
+        agents=[],
+        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+    ctx = RpcContext(
+        conn_id="c",
+        principal=Principal(
+            role="operator",
+            scopes=frozenset(["operator.read"]),
+            is_owner=True,
+            authenticated=True,
+        ),
+        session_manager=manager,
+        config=config,
+    )
+
+    with pytest.raises(KeyError, match="Session not found"):
+        await _handle_sandbox_run_context_get(
+            {"sessionKey": "agent:main:webchat:missing"},
+            ctx,
+        )

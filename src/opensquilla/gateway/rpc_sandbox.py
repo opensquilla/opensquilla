@@ -39,18 +39,29 @@ def _require_session_manager(ctx: RpcContext) -> Any:
     return manager
 
 
+async def _session_for_key(session_manager: Any, session_key: str) -> Any | None:
+    get_session = getattr(session_manager, "get_session", None)
+    if callable(get_session):
+        return await get_session(session_key)
+
+    storage = get_session_storage(session_manager)
+    if storage is not None:
+        return await storage.get_session(session_key)
+    return None
+
+
 async def _workspace_for_session(
     session_manager: Any,
     session_key: str,
     config: Any,
 ) -> str | None:
     agent_id = parse_agent_id(session_key)
-    storage = get_session_storage(session_manager)
-    if storage is not None:
-        session = await storage.get_session(session_key)
-        session_agent_id = getattr(session, "agent_id", None)
-        if isinstance(session_agent_id, str) and session_agent_id:
-            agent_id = session_agent_id
+    session = await _session_for_key(session_manager, session_key)
+    if session is None:
+        raise KeyError(f"Session not found: {session_key}")
+    session_agent_id = getattr(session, "agent_id", None)
+    if isinstance(session_agent_id, str) and session_agent_id:
+        agent_id = session_agent_id
     workspace = resolve_agent_workspace_dir(agent_id, config)
     return str(workspace) if workspace is not None else None
 
@@ -99,5 +110,6 @@ async def _handle_sandbox_run_context_set(params: dict | None, ctx: RpcContext) 
         session_key,
         run_mode,
         config=ctx.config,
+        workspace=await _workspace_for_session(manager, session_key, ctx.config),
     )
     return _payload(context)

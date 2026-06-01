@@ -150,12 +150,40 @@ Default scopes should be narrow:
 
 | Item | Default Scope | May Expand To |
 | --- | --- | --- |
-| Run Mode | current chat | global default, only by explicit user action |
+| Run Mode | current chat | global default for new chats, or explicit user reset |
 | Workspace | current chat | recent workspace |
 | Mount | current chat | current workspace |
 | Domain | current chat | current workspace |
 | Package domain bundle | current workspace | not global by default |
 | Host Once | one execution | never persistent |
+
+## Resume And Restart Semantics
+
+A chat's Run Context should behave like part of the chat, not like a live mirror of the latest global gateway default.
+
+The global default only initializes new chats. Once a chat has a Run Context, reopening that chat after a gateway restart should load the chat's saved Run Context first. If the user created a chat under `Standard-Sandbox`, then later restarts the gateway with a looser default such as `Full Host Access`, the old chat still semantically remains `Standard-Sandbox` until the user explicitly changes that chat.
+
+Legacy or migrated chats may not have a saved Run Context. Those chats should initialize from the current global default once, and explain/audit should record that the value came from migration/default initialization rather than an explicit old chat setting.
+
+Current gateway capability still bounds execution. If a saved chat asks for sandbox execution but the current gateway has sandboxing disabled, unavailable, or degraded below the required level, OpenSquilla should enter a mismatch state and fail closed. It must not silently run the old sandbox chat on the host.
+
+The rule is asymmetric:
+
+- if current gateway policy is stricter than the saved chat context, the stricter policy can pause or constrain execution;
+- if current gateway policy is looser than the saved chat context, the old chat must not silently loosen.
+
+The mismatch UI should offer explicit recovery actions:
+
+- Re-enable Sandbox
+- Switch This Chat to `Full Host Access`
+- Keep Blocked
+- Start New Chat With Current Default
+
+Example status text:
+
+> This chat was last configured as `Standard-Sandbox`, but sandbox is disabled in the current gateway.
+
+In short: an existing chat keeps its saved mode; execution proceeds only when the current gateway can satisfy that mode or the user explicitly changes the chat.
 
 ## Tool Execution Flow
 
@@ -417,6 +445,10 @@ Additive test coverage should include:
 - package install bundles are limited to the matching ecosystem and workspace.
 - explicit network-tool tests keep their existing expectations unless a dedicated network-tool migration is approved.
 - session Run Context changes apply to the next call without gateway restart.
+- old chats with saved `Standard-Sandbox` do not become host/full when the global default later changes to `Full Host Access`.
+- saved sandbox Run Context with sandbox unavailable or disabled produces mismatch/fail-closed behavior, not host execution.
+- legacy chats without saved Run Context initialize from the current global default and record that source.
+- stricter current gateway policy can constrain saved session context; looser policy cannot silently expand it.
 - sandbox-enabled execution does not silently degrade to noop unless an explicit, documented user setting allows that posture.
 
 ## ROI
@@ -448,7 +480,8 @@ Additive test coverage should include:
 
 ## Implementation Planning Notes
 
-- Session Run Context should use gateway runtime/session state first. Workspace-scoped grants should use the same persistence boundary as existing approval settings unless implementation planning finds a narrower local store already exists.
+- Session Run Context should use gateway runtime/session state first and persist enough state to survive gateway restarts. Global defaults initialize new chats; they do not overwrite saved chat context.
+- Workspace-scoped grants should use the same persistence boundary as existing approval settings unless implementation planning finds a narrower local store already exists.
 - Existing CLI posture commands should be compatibility shims around the new Run Modes. They should not introduce a fourth mode.
 - Migration should update all user-facing old-mode copy: Chat composer, Approvals, global approval modal, Config help, slash command help, API errors, and tool context comments.
 - The first package bundle slice should cover Python, Node, Rust, and Go package managers. GitHub release/source downloads should be added only where a recognized package operation needs them.

@@ -152,6 +152,18 @@ def test_route_run_mode_metadata_reaches_tool_context() -> None:
     assert ctx.elevated is None
 
 
+def test_non_owner_full_run_mode_metadata_does_not_reach_tool_context() -> None:
+    envelope = build_cli_route_envelope(
+        session_key="agent:main:cli",
+        run_mode="full",
+    )
+
+    ctx = tool_context_from_envelope(envelope, is_owner=False)
+
+    assert ctx.run_mode is None
+    assert ctx.elevated is None
+
+
 def test_owner_cron_route_carries_owner_principal_for_task_runtime() -> None:
     cron_job = SimpleNamespace(id="job-owner", name="owner", creator_is_owner=True)
 

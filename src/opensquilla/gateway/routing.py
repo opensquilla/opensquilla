@@ -382,6 +382,8 @@ def tool_context_from_envelope(
             run_mode = normalize_run_mode(run_mode_value) if run_mode_value else None
         except ValueError:
             run_mode = None
+        if run_mode == RunMode.FULL and not is_owner:
+            run_mode = None
     sandbox_mounts = envelope.metadata.get("sandbox_mounts")
     if not isinstance(sandbox_mounts, list):
         sandbox_mounts = []

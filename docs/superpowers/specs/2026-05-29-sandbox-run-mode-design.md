@@ -533,7 +533,17 @@ Examples:
 
 ## Testing Strategy
 
-The existing sandbox tests are the baseline and should not be rewritten or loosened. New tests may be added alongside them to cover new behavior.
+`/home/lrk/opensquilla/tests` is the full project test suite and should be treated as the implementation gate. The current baseline is expected to pass before sandbox development starts.
+
+Implementation should follow this test discipline:
+
+1. Before feature work, run the full suite from the repository root using the project test command, currently `pytest tests` because `pyproject.toml` points pytest at `tests`.
+2. If the pre-change suite does not pass on the unchanged baseline, stop sandbox feature development. Do not continue by building on a red baseline. If any preparatory edits were already made, revert only those own edits, then report the baseline failure separately.
+3. During development, use focused tests for fast feedback, but do not treat focused tests as sufficient.
+4. After implementation, run the full `tests` suite again. If anything fails, fix the implementation or the newly added tests until the full suite passes.
+5. Existing tests must not be loosened, deleted, skipped, or rewritten merely to make the new sandbox work pass.
+
+The existing sandbox tests are the baseline and should not be rewritten or loosened. New tests may be added alongside them to cover new behavior, using the same style, fixtures, and assertion patterns as nearby tests.
 
 Additive test coverage should include:
 

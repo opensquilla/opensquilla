@@ -50,6 +50,23 @@ async def _session_for_key(session_manager: Any, session_key: str) -> Any | None
     return None
 
 
+async def _ensure_session_for_set(session_manager: Any, session_key: str) -> Any | None:
+    session = await _session_for_key(session_manager, session_key)
+    if session is not None:
+        return session
+
+    agent_id = parse_agent_id(session_key)
+    get_or_create = getattr(session_manager, "get_or_create", None)
+    if callable(get_or_create):
+        result = await get_or_create(session_key, agent_id=agent_id)
+        return result[0] if isinstance(result, tuple) else result
+
+    create = getattr(session_manager, "create", None)
+    if callable(create):
+        return await create(session_key, agent_id=agent_id)
+    return None
+
+
 async def _workspace_for_session(
     session_manager: Any,
     session_key: str,
@@ -104,6 +121,9 @@ async def _handle_sandbox_run_context_set(params: dict | None, ctx: RpcContext) 
             "sandbox.run_context.set requires owner principal.",
         )
     manager = _require_session_manager(ctx)
+    session = await _ensure_session_for_set(manager, session_key)
+    if session is None:
+        raise KeyError(f"Session not found: {session_key}")
     run_mode = normalize_run_mode(params.get("runMode"))
     context = await set_run_mode(
         manager,

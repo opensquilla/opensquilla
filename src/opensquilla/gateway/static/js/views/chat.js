@@ -14,14 +14,14 @@ const ChatView = (() => {
 
   const _RUN_MODE_DEFAULT = 'standard';
   const _RUN_MODE_LABELS = {
-    standard: 'Standard',
-    trusted: 'Trusted',
-    full: 'Full',
+    standard: 'Standard-Sandbox',
+    trusted: 'Trusted-Sandbox',
+    full: 'Full Host Access',
   };
   const _RUN_MODE_TITLES = {
-    standard: 'Standard: sandboxed execution, risky actions ask.',
-    trusted: 'Trusted: sandboxed execution, routine approvals skipped, boundary changes ask.',
-    full: 'Full: host execution without per-command prompts.',
+    standard: 'Sandboxed execution. Risky actions ask before running.',
+    trusted: 'Sandboxed execution with fewer routine prompts. Boundary changes still ask.',
+    full: 'Host execution without per-command prompts. Use only for trusted workspaces.',
   };
   let _runMode = _RUN_MODE_DEFAULT;
   let _runModeRequestSeq = 0;
@@ -1222,13 +1222,22 @@ const ChatView = (() => {
                 <div class="chat-toolbar-popover-inner" id="chat-toolbar">
                   <div class="chat-toolbar-row">
                     <span class="chat-toolbar-row-label">Run Mode</span>
-                    <div class="chat-run-mode-control" id="chat-run-mode-control" role="group" aria-label="Run Mode">
-                      <button type="button" class="chat-run-mode-segment" data-run-mode="standard"
-                              title="Standard: sandboxed execution, risky actions ask.">Standard</button>
-                      <button type="button" class="chat-run-mode-segment" data-run-mode="trusted"
-                              title="Trusted: sandboxed execution, routine approvals skipped, boundary changes ask.">Trusted</button>
-                      <button type="button" class="chat-run-mode-segment" data-run-mode="full"
-                              title="Full: host execution without per-command prompts.">Full</button>
+                    <div class="chat-run-mode-control" id="chat-run-mode-control">
+                      <button type="button" class="chat-run-mode-trigger" id="chat-run-mode-trigger"
+                              aria-haspopup="listbox" aria-expanded="false" aria-controls="chat-run-mode-menu"
+                              data-run-mode="standard" data-run-mode-help="Sandboxed execution. Risky actions ask before running.">
+                        <span class="chat-run-mode-current">Standard-Sandbox</span>
+                        <span class="chat-run-mode-chevron" aria-hidden="true"></span>
+                      </button>
+                      <div class="chat-run-mode-menu hidden" id="chat-run-mode-menu" role="listbox" aria-label="Run Mode choices">
+                        <button type="button" class="chat-run-mode-option" role="option" data-run-mode="standard"
+                                data-run-mode-help="Sandboxed execution. Risky actions ask before running.">Standard-Sandbox</button>
+                        <button type="button" class="chat-run-mode-option" role="option" data-run-mode="trusted"
+                                data-run-mode-help="Sandboxed execution with fewer routine prompts. Boundary changes still ask.">Trusted-Sandbox</button>
+                        <button type="button" class="chat-run-mode-option" role="option" data-run-mode="full"
+                                data-run-mode-help="Host execution without per-command prompts. Use only for trusted workspaces.">Full Host Access</button>
+                      </div>
+                      <div class="chat-run-mode-tooltip hidden" id="chat-run-mode-tooltip" role="tooltip"></div>
                     </div>
                   </div>
                   <div class="chat-toolbar-row">
@@ -1327,13 +1336,7 @@ const ChatView = (() => {
 
   function _bindToolbarPills() {
     if (_runModeControl) {
-      _runModeControl.querySelectorAll('[data-run-mode]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const mode = _normalizeRunMode(btn.dataset.runMode);
-          if (mode === _runMode) return;
-          _setRunMode(mode, { toast: true, sync: true });
-        });
-      });
+      _bindRunModePicker();
       _updateRunModeControl();
     }
 
@@ -2144,6 +2147,110 @@ const ChatView = (() => {
     });
   }
 
+  function _runModeHelp(mode) {
+    const normalized = _normalizeRunMode(mode);
+    return _RUN_MODE_TITLES[normalized] || _RUN_MODE_TITLES.standard;
+  }
+
+  function _showRunModeTooltip(anchor) {
+    if (!_el || !anchor) return;
+    const tip = _el.querySelector('#chat-run-mode-tooltip');
+    if (!tip) return;
+    const mode = _normalizeRunMode(anchor.dataset.runMode || _runMode);
+    tip.textContent = anchor.dataset.runModeHelp || _runModeHelp(mode);
+    tip.classList.remove('hidden');
+    const rect = anchor.getBoundingClientRect();
+    const tipRect = tip.getBoundingClientRect();
+    const margin = 10;
+    let left = rect.left + rect.width / 2 - tipRect.width / 2;
+    left = Math.max(margin, Math.min(left, window.innerWidth - tipRect.width - margin));
+    let top = rect.top - tipRect.height - 8;
+    tip.dataset.placement = 'top';
+    if (top < margin) {
+      top = rect.bottom + 8;
+      tip.dataset.placement = 'bottom';
+    }
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+  }
+
+  function _hideRunModeTooltip() {
+    const tip = _el && _el.querySelector('#chat-run-mode-tooltip');
+    if (!tip) return;
+    tip.classList.add('hidden');
+  }
+
+  function _bindRunModePicker() {
+    const control = _runModeControl;
+    const trigger = control && control.querySelector('#chat-run-mode-trigger');
+    const menu = control && control.querySelector('#chat-run-mode-menu');
+    if (!control || !trigger || !menu) return;
+
+    let open = false;
+    let docHandlers = null;
+
+    const close = () => {
+      if (!open) return;
+      open = false;
+      menu.classList.add('hidden');
+      trigger.classList.remove('is-open');
+      trigger.setAttribute('aria-expanded', 'false');
+      if (docHandlers) {
+        document.removeEventListener('mousedown', docHandlers.click, true);
+        document.removeEventListener('keydown', docHandlers.key);
+        docHandlers = null;
+      }
+    };
+
+    const show = () => {
+      if (open) return;
+      open = true;
+      menu.classList.remove('hidden');
+      trigger.classList.add('is-open');
+      trigger.setAttribute('aria-expanded', 'true');
+      docHandlers = {
+        click: (e) => {
+          if (control.contains(e.target)) return;
+          close();
+        },
+        key: (e) => {
+          if (e.key === 'Escape') { e.stopPropagation(); close(); }
+        },
+      };
+      setTimeout(() => {
+        if (!open) return;
+        document.addEventListener('mousedown', docHandlers.click, true);
+        document.addEventListener('keydown', docHandlers.key);
+      }, 0);
+    };
+
+    trigger.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (open) close(); else show();
+    });
+
+    control.querySelectorAll('.chat-run-mode-option').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = _normalizeRunMode(btn.dataset.runMode);
+        close();
+        if (mode === _runMode) return;
+        _setRunMode(mode, { toast: true, sync: true });
+      });
+    });
+
+    control.querySelectorAll('[data-run-mode]').forEach((node) => {
+      node.addEventListener('mouseenter', () => _showRunModeTooltip(node));
+      node.addEventListener('focus', () => _showRunModeTooltip(node));
+      node.addEventListener('mouseleave', _hideRunModeTooltip);
+      node.addEventListener('blur', _hideRunModeTooltip);
+    });
+
+    _unsubs.push(() => {
+      close();
+      _hideRunModeTooltip();
+    });
+  }
+
   function _normalizeRunMode(mode) {
     const value = String(mode || '').trim().toLowerCase().replace(/_/g, '-');
     if (value === 'trusted' || value === 'trust' || value === 'trusted-sandbox') return 'trusted';
@@ -2207,13 +2314,21 @@ const ChatView = (() => {
     if (!control) return;
     _runModeControl = control;
     const active = _normalizeRunMode(_runMode);
-    control.querySelectorAll('[data-run-mode]').forEach((btn) => {
+    const trigger = control.querySelector('#chat-run-mode-trigger');
+    const current = control.querySelector('.chat-run-mode-current');
+    if (trigger) {
+      trigger.dataset.runMode = active;
+      trigger.dataset.runModeHelp = _runModeHelp(active);
+      trigger.classList.toggle('is-danger', active === 'full');
+    }
+    if (current) current.textContent = _RUN_MODE_LABELS[active] || _RUN_MODE_LABELS.standard;
+    control.querySelectorAll('.chat-run-mode-option').forEach((btn) => {
       const mode = _normalizeRunMode(btn.dataset.runMode);
       const selected = mode === active;
       btn.classList.toggle('is-active', selected);
       btn.classList.toggle('is-danger', mode === 'full' && selected);
-      btn.setAttribute('aria-pressed', selected ? 'true' : 'false');
-      btn.title = _RUN_MODE_TITLES[mode] || _RUN_MODE_TITLES.standard;
+      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+      btn.dataset.runModeHelp = _runModeHelp(mode);
     });
   }
 

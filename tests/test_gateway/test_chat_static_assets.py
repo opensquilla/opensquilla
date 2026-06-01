@@ -78,6 +78,7 @@ def test_chat_input_accept_attribute_matches_allowlist() -> None:
 def test_chat_run_mode_control_replaces_elevated_bypass_copy() -> None:
     source = _read_chat_js()
     config_source = _read_config_js()
+    chat_css = _read_chat_css()
 
     assert '<span class="chat-toolbar-row-label">Run Mode</span>' in source
     assert '<span class="chat-toolbar-row-label">Approvals</span>' not in source
@@ -86,14 +87,27 @@ def test_chat_run_mode_control_replaces_elevated_bypass_copy() -> None:
     assert '<span class="chat-toolbar-row-label">Visual effects</span>' in source
     assert "Workspace" not in source[source.index('id="chat-toolbar"'):]
     assert "Open Sandbox" not in source[source.index('id="chat-toolbar"'):]
+    assert 'id="chat-run-mode-trigger"' in source
+    assert 'id="chat-run-mode-menu"' in source
+    assert 'class="chat-run-mode-current"' in source
+    assert "chat-run-mode-option" in source
+    assert "chat-run-mode-tooltip" in source
+    assert ".chat-run-mode-tooltip" in chat_css
     assert "sandbox.run_context.get" in source
     assert "sandbox.run_context.set" in source
-    assert "Standard" in source
-    assert "Trusted" in source
-    assert "Full" in source
-    assert "sandboxed execution, risky actions ask" in source
-    assert "sandboxed execution, routine approvals skipped, boundary changes ask" in source
-    assert "host execution without per-command prompts" in source
+    assert "Standard-Sandbox" in source
+    assert "Trusted-Sandbox" in source
+    assert "Full Host Access" in source
+    assert "Sandboxed execution. Risky actions ask before running." in source
+    assert (
+        "Sandboxed execution with fewer routine prompts. Boundary changes still ask."
+        in source
+    )
+    assert "Host execution without per-command prompts. Use only for trusted workspaces." in source
+    assert 'title="Standard:' not in source
+    assert 'title="Trusted:' not in source
+    assert 'title="Full:' not in source
+    assert "chat-run-mode-segment" not in source
     assert "_source.runMode" in source
     assert "_source.elevated" not in source
     assert "opensquilla sandbox on|trust|full|reset" in config_source

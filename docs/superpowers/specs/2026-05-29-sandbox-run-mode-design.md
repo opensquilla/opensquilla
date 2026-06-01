@@ -50,14 +50,42 @@ OpenSquilla exposes three run modes:
 
 The important product rule is that bypassing approvals is not the same as host execution. `Trusted-Sandbox` means "ask less while still sandboxed." `Full Host Access` is the only global mode that runs directly on the host.
 
-Legacy wording should be mapped at the boundary:
+Legacy persisted state should be mapped at the compatibility boundary:
 
 - old `off` -> `Standard-Sandbox`
 - old `bypass` -> `Trusted-Sandbox`
 - old `full` -> `Full Host Access`
 - old `on`, if it meant host execution with approval, should not be presented as a new user-facing mode
 
+This legacy mapping is for old saved config, API payloads, and chat state. It is not a reason to keep `bypass` as a supported CLI command.
+
 The core runtime should move toward `RunMode`, `ExecutionTarget`, `ApprovalBehavior`, `OperationProfile`, and `Grant` concepts instead of spreading old `elevated` semantics further.
+
+## Trusted-Sandbox Prompt Contract
+
+`Trusted-Sandbox` is the mode for users who want fewer interruptions without giving up sandbox protection. It should be enough for the common "do the work, but ask me at important boundaries" workflow.
+
+It should skip ordinary prompts for recognized operations that stay inside the current sandbox boundary:
+
+- normal reads and searches inside the workspace or approved mounts
+- normal writes inside the workspace or approved read-write mounts
+- medium-risk but recognized development commands that still execute sandboxed
+- package manager operations when the matching package-install domain bundle is already granted for this workspace
+- operations covered by a narrow `Always Allow This Type` grant
+
+It must still ask, or reject, when the operation changes the boundary or raises impact:
+
+- adding a new mount
+- changing a mount from read-only to read-write
+- accessing an unknown domain
+- granting a package-install domain bundle
+- creating or widening an `Always Allow This Type` rule
+- touching sensitive paths or credentials
+- destructive or suspicious shell behavior
+- unknown operations that cannot be confidently classified
+- Host Once after a sandbox-related failure
+
+In short, `Trusted-Sandbox` means "do not ask me about routine sandboxed work." It does not mean "stop asking" and does not mean "run on the host."
 
 ## CLI Run Mode Commands
 
@@ -73,13 +101,19 @@ Recommended canonical commands:
 
 `opensquilla sandbox status` should display the global default Run Mode, backend availability, network/domain guard state, and whether a gateway restart or live reload is still needed. It should stop presenting the primary state as old `posture=bypass`.
 
-Compatibility aliases can remain for scripts, but their output should say what they now mean:
+There should be no supported `bypass` alias. Current OpenSquilla uses `sandbox bypass` to disable runtime sandboxing and skip ordinary approvals, while the new design uses `Trusted-Sandbox` for "less prompting but still sandboxed." Reusing the word would silently change the safety meaning for existing users and scripts.
 
-| Alias | New Meaning |
-| --- | --- |
-| `opensquilla sandbox trusted` | alias for `trust` |
-| `opensquilla sandbox bypass` | deprecated alias for `trust`, not host execution |
-| `opensquilla sandbox reset` | reset to `on` unless a separate install-profile decision says otherwise |
+If a user runs `opensquilla sandbox bypass`, the CLI should fail without changing config and show a migration message:
+
+```text
+`sandbox bypass` was removed because it used to disable sandboxing.
+Use `opensquilla sandbox trust` to stay sandboxed with fewer prompts,
+or `opensquilla sandbox full` for full host access.
+```
+
+`opensquilla sandbox trusted` should also not be documented as a normal alias. Keeping the canonical set to `on`, `trust`, `full`, `status`, and `reset` makes the CLI match OpenSquilla's existing short-command style without creating extra vocabulary.
+
+`opensquilla sandbox reset` should reset to `on` unless a separate install-profile decision says otherwise.
 
 Do not add a prominent `sandbox off` command. If old config or slash-command code sees `off`, treat it as legacy "normal sandboxed approvals" and map it to `Standard-Sandbox`; do not teach users that "off" is a safe label for the new model.
 
@@ -506,8 +540,9 @@ Additive test coverage should include:
 - `Trusted-Sandbox` resolves to sandbox execution, never host execution.
 - `Full Host Access` is the only global host execution mode.
 - CLI `sandbox trust` maps to `Trusted-Sandbox` and keeps sandbox execution enabled.
-- CLI `sandbox bypass` remains only as a deprecated alias for `trust`.
+- CLI `sandbox bypass` fails with a migration message and does not change config.
 - CLI `sandbox full` is the only canonical CLI path to `Full Host Access`.
+- `Trusted-Sandbox` skips routine sandboxed prompts but still asks for boundary expansion, unknown domains, sensitive paths, unknown suspicious operations, and Host Once.
 - ordinary approval payloads do not contain Host Once.
 - Host Once appears only after a sandbox-related failure.
 - Host Once grants are one-use and fingerprint-bound.
@@ -537,7 +572,7 @@ Additive test coverage should include:
 ### P0
 
 1. Replace `bypass/elevated` user semantics with the three Run Modes.
-2. Migrate CLI sandbox commands to the short OpenSquilla-style commands `on`, `trust`, and `full`, with `bypass` kept only as a deprecated alias.
+2. Migrate CLI sandbox commands to the short OpenSquilla-style commands `on`, `trust`, and `full`; remove `bypass` as a supported mode and make the old command fail with a migration message.
 3. Add session Run Context so frontend changes apply without gateway restart.
 4. Migrate Chat composer gear from old `Execution mode`/bypass behavior to `Run Mode`, while preserving Router and Visual effects and avoiding Workspace/Sandbox-page shortcuts in the composer.
 5. Migrate Approvals and global approval modal away from `Bypass Approvals -> elevatedMode=bypass`.
@@ -565,7 +600,7 @@ Additive test coverage should include:
 
 - Session Run Context should use gateway runtime/session state first and persist enough state to survive gateway restarts. Global defaults initialize new chats; they do not overwrite saved chat context.
 - Workspace-scoped grants should use the same persistence boundary as existing approval settings unless implementation planning finds a narrower local store already exists.
-- CLI posture commands should keep the existing short-command style. `on`, `trust`, and `full` are the canonical commands; `trusted` and `bypass` are aliases. They should not introduce a fourth mode.
+- CLI posture commands should keep the existing short-command style. `on`, `trust`, and `full` are the canonical commands. `bypass` should not be an alias because it previously meant disabling sandboxing; if invoked, it should fail with a clear migration message.
 - Keep old `elevated` strings at compatibility boundaries only. New policy code should reason in Run Mode, execution target, approval behavior, operation profile, and grant scope.
 - The Windows backend should be introduced as a new backend adapter plus helper boundary, not by spreading Windows-specific process, ACL, or firewall code through unrelated tools.
 - Migration should update all user-facing old-mode copy: Chat composer, Approvals, global approval modal, Config help, slash command help, API errors, and tool context comments.

@@ -68,11 +68,13 @@
 
 **优化后设计**
 
-旧 bypass 被吸收为 `Trusted-Sandbox`：
+旧保存状态里的 bypass 只在迁移边界上解释为 `Trusted-Sandbox`：
 
 - 跳过普通审批。
 - 继续在沙箱中执行。
 - 不跳过新挂载、新域名、敏感路径、Host Once 等边界决策。
+
+CLI 不再把 `bypass` 作为正式命令或别名。因为旧 `sandbox bypass` 的真实含义是关掉 runtime sandbox，新设计里的 `trust` 则是仍然沙箱执行。继续复用这个词会让用户和脚本误判安全含义。
 
 `Bypass Approvals` 不再作为普通 approval 主按钮出现。如果保留“少问我”的入口，也必须叫成 `Switch to Trusted-Sandbox`，并明确说明仍然沙箱执行。
 
@@ -567,7 +569,15 @@ Config help、`/permissions`、`/elevated` 仍然在解释旧模型：
 - `Trusted-Sandbox`
 - `Full Host Access`
 
-旧 `/elevated` 可以保留兼容，但不作为主入口宣传。旧 `on` 不作为新模式暴露。
+CLI 主命令收敛为：
+
+- `opensquilla sandbox on`
+- `opensquilla sandbox trust`
+- `opensquilla sandbox full`
+- `opensquilla sandbox status`
+- `opensquilla sandbox reset`
+
+旧 `/elevated` 可以保留兼容，但不作为主入口宣传。旧 `on` 不作为新模式暴露。旧 `opensquilla sandbox bypass` 不做静默 alias，而是报错并提示用户选择 `trust` 或 `full`。
 
 **优化后优势**
 
@@ -585,6 +595,8 @@ Config help、`/permissions`、`/elevated` 仍然在解释旧模型：
 
 - Trusted-Sandbox 永远 sandbox execution。
 - Full Host Access 是唯一全局 host execution。
+- `sandbox bypass` 报错并提示迁移，不修改配置。
+- Trusted-Sandbox 跳过日常沙箱内确认，但新挂载、未知域名、敏感路径、可疑 unknown、Host Once 仍然询问或拒绝。
 - 普通 approval 不含 Host Once。
 - Host Once 只在沙箱失败后出现。
 - approval 通过不等于 host execution。
@@ -610,11 +622,12 @@ Config help、`/permissions`、`/elevated` 仍然在解释旧模型：
 P0：
 
 1. 三档 Run Mode 替代 elevated/bypass。
-2. Session Run Context 实时生效。
-3. Chat composer gear 迁移到轻量 Run Mode 控制，保留 Router / Visual effects，不加入 Workspace 或 Open Sandbox。
-4. Approvals 和 modal 移除旧 bypass host 入口。
-5. 外部路径 Path Access Request。
-6. Host Once 只在沙箱失败后出现。
+2. CLI 收敛到 `on`、`trust`、`full`，旧 `bypass` 报错提示迁移。
+3. Session Run Context 实时生效。
+4. Chat composer gear 迁移到轻量 Run Mode 控制，保留 Router / Visual effects，不加入 Workspace 或 Open Sandbox。
+5. Approvals 和 modal 移除旧 bypass host 入口。
+6. 外部路径 Path Access Request。
+7. Host Once 只在沙箱失败后出现。
 
 P1：
 
@@ -641,7 +654,7 @@ P3：
 | 主题 | 优化前不足 | 优化后优势 |
 | --- | --- | --- |
 | 模式命名 | elevated/bypass/full 混杂 | 三档 Run Mode 语义清楚 |
-| bypass | 少问审批等于绕过沙箱 | Trusted-Sandbox 少问但仍沙箱 |
+| bypass | 少问审批等于绕过沙箱 | CLI bypass 移除；旧状态迁移为 Trusted-Sandbox |
 | host exec | 多入口、难审计 | 只有 Full Host Access 和 Host Once |
 | 普通 approval | 批准后可能 host 执行 | 批准后仍按当前 policy 执行 |
 | Host Once | 语义不够产品化 | 沙箱失败后的一次性补救 |

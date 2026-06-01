@@ -2,11 +2,15 @@
 
 Date: 2026-05-29
 
+Revision: v2, 2026-06-01
+
 ## Goal
 
 OpenSquilla should make sandbox behavior understandable, live-editable, and safer by default. The current `bypass` / `elevated` / `full` vocabulary mixes two different ideas: whether to ask the user, and where the command actually runs. This design separates those ideas, keeps normal work inside the sandbox, and gives users clear recovery paths when the sandbox needs more access.
 
 The design follows the layered style used by Codex and Claude Code: permission decisions, sandbox execution, network/path boundaries, and user approvals are separate layers. It does not copy Claude Code's complex auto-classifier as a first step. OpenSquilla should first make deterministic policy, runtime state, and UI semantics correct.
+
+The current UI has already started moving toward this model by showing an `Execution mode` row in Chat and an `Effective execution mode` summary in Approvals. Those surfaces still read and write the old elevated/bypass state, so this design treats them as migration targets rather than finished behavior.
 
 ## Non-Goals
 
@@ -15,6 +19,7 @@ The design follows the layered style used by Codex and Claude Code: permission d
 - Do not make `Trusted-Sandbox` run commands on the host.
 - Do not show host execution as a normal approval option before a sandbox attempt.
 - Do not replace or rewrite the existing `tests/test_sandbox` suite. New tests may be added around the new behavior.
+- Do not make Squilla Router session-scoped as part of this sandbox work. It can remain visible beside sandbox controls, but its existing config path stays out of the sandbox Run Context unless a separate router-session design is approved.
 
 ## User-Facing Modes
 
@@ -39,12 +44,17 @@ The core runtime should move toward `RunMode`, `ExecutionTarget`, `ApprovalBehav
 
 ## Frontend Placement
 
-The chat composer gear remains the quick control for the current chat session. It should stay light and only show controls that affect the next user turn:
+The app now has a global topbar center slot that Chat uses for session identity and run status. That topbar slot should remain mostly read-only: it may show current state, but it should not become the primary sandbox configuration surface.
+
+The chat composer gear remains the quick control for the current chat session. It should stay light and only expose settings that are likely to affect the next user turn or the immediate chat experience:
 
 - `Run Mode`
 - `Workspace`
 - `Squilla Router`
+- `Visual effects`
 - `Open Sandbox...`
+
+`Run Mode` and `Workspace` are sandbox Run Context controls. `Squilla Router` stays in the same popover for convenience but continues to use the existing router configuration path. `Visual effects` is a local UI preference and is not part of sandbox policy.
 
 Advanced sandbox management belongs in a new sidebar page:
 
@@ -57,6 +67,8 @@ The UI style should match the current OpenSquilla control-center look: restraine
 ## Sandbox Page
 
 The `Sandbox` page is the productized control center for execution boundaries.
+
+It should be registered as a standard Control view, using the same standard view wrapper as Overview, Health, Config, and Approvals. This matters because standard views clear Chat-specific topbar center content when the user leaves Chat.
 
 ### Status
 
@@ -127,11 +139,12 @@ The gateway should keep a session-scoped `Run Context`. It is the current runtim
 - workspace
 - mounted directories
 - allowed domains and domain bundles
-- Squilla Router state
 - recent sandbox doctor summary
 - temporary grants
 
 Changes from the chat gear or Sandbox page update the session Run Context and apply to future tool calls without restarting the gateway. They do not affect already-running commands.
+
+Squilla Router can remain visible in the same composer popover, but it is not owned by sandbox Run Context in this phase. Router continues to use the existing router configuration mechanism unless another design explicitly makes router behavior session-scoped.
 
 Default scopes should be narrow:
 
@@ -158,6 +171,8 @@ Every tool call should pass through the same conceptual pipeline:
 8. Record explain/audit information.
 
 `Standard-Sandbox` and `Trusted-Sandbox` both execute in the sandbox. `Full Host Access` executes on the host.
+
+Approving a risky operation should not implicitly become permission to run that operation on the host. Approval answers "may this operation proceed under the resolved policy." Host execution is allowed only by `Full Host Access` or by a Host Once grant created after a sandbox-related failure.
 
 ## Operation Profile And Hints
 
@@ -214,6 +229,10 @@ Normal approvals should offer:
 - Deny This Type
 
 `Always Allow This Type` must bind to the Operation Profile, not just the tool name. A useful grant includes the tool, operation kind, target scope, execution target, network need, workspace or session, and expiry/scope. Approving one shell command must not approve every future shell command.
+
+Current approval surfaces also need migration. `ApprovalsView` and the global approval modal should stop offering `Bypass Approvals` as `elevatedMode=bypass`. If a shortcut remains, it should be framed as switching the session to `Trusted-Sandbox`, and it must keep execution sandboxed.
+
+The Approvals page may keep an execution-mode summary, but it should read the new Run Context instead of old elevated/localStorage state.
 
 ## Host Once
 
@@ -307,6 +326,8 @@ If validation is uncertain, fail closed.
 
 Sandboxed execution should not get arbitrary network access. OpenSquilla should expose `Allowed Domains`, not a general network mode.
 
+In the first implementation slice, Allowed Domains apply to sandboxed shell/code/package-manager egress and package-install bundles. Existing explicit network tools that currently use the network action path, such as `web_fetch` or `http_request`, should keep their current `network.http` behavior unless a separate migration explicitly brings them under domain approval. This keeps existing sandbox network tests stable while still improving the highest-risk shell/code egress path.
+
 Rules:
 
 - allow explicit domains
@@ -385,12 +406,16 @@ Additive test coverage should include:
 - ordinary approval payloads do not contain Host Once.
 - Host Once appears only after a sandbox-related failure.
 - Host Once grants are one-use and fingerprint-bound.
+- approving a normal risky operation does not implicitly switch execution to host.
+- Chat Run Mode changes no longer send `elevatedMode=bypass` for `Trusted-Sandbox`.
+- Approvals and global approval modal no longer use bypass to imply host execution.
 - external paths trigger Path Access Request before host fallback.
 - sensitive paths cannot be mounted through symlinks, case tricks, ancestors, junctions, or WSL/Windows path variants.
 - unknown operations do not become low risk by default.
 - hints influence Operation Profile classification but cannot directly authorize.
 - unapproved domains pause or fail closed.
 - package install bundles are limited to the matching ecosystem and workspace.
+- explicit network-tool tests keep their existing expectations unless a dedicated network-tool migration is approved.
 - session Run Context changes apply to the next call without gateway restart.
 - sandbox-enabled execution does not silently degrade to noop unless an explicit, documented user setting allows that posture.
 
@@ -400,28 +425,31 @@ Additive test coverage should include:
 
 1. Replace `bypass/elevated` user semantics with the three Run Modes.
 2. Add session Run Context so frontend changes apply without gateway restart.
-3. Add external path mount requests with cross-platform validation.
-4. Make Host Once a sandbox-failure-only fallback.
+3. Migrate Chat composer gear from old `Execution mode`/bypass behavior to `Run Mode`, add Workspace, preserve Router and Visual effects, and add `Open Sandbox...`.
+4. Migrate Approvals and global approval modal away from `Bypass Approvals -> elevatedMode=bypass`.
+5. Add external path mount requests with cross-platform validation.
+6. Make Host Once a sandbox-failure-only fallback.
 
 ### P1
 
-5. Make Operation Profile and hints drive policy classification.
-6. Add Allowed Domains and package-install domain bundles.
-7. Add `Control -> Sandbox` page.
-8. Add doctor/explain surfaces for sandbox status and decisions.
+7. Make Operation Profile and hints drive policy classification.
+8. Add Allowed Domains and package-install domain bundles for sandboxed shell/code/package-manager egress.
+9. Add `Control -> Sandbox` page.
+10. Add doctor/explain surfaces for sandbox status and decisions.
 
 ### P2
 
-9. Strengthen backend isolation with resource limits, `no_new_privs`, seccomp or platform equivalents, and better fail-closed behavior.
-10. Consider worktree/session isolation for coding workflows.
+11. Strengthen backend isolation with resource limits, `no_new_privs`, seccomp or platform equivalents, and better fail-closed behavior.
+12. Consider worktree/session isolation for coding workflows.
 
 ### P3
 
-11. Defer broad Claude-style auto classification until deterministic policy and UI semantics are stable.
+13. Defer broad Claude-style auto classification until deterministic policy and UI semantics are stable.
 
 ## Implementation Planning Notes
 
 - Session Run Context should use gateway runtime/session state first. Workspace-scoped grants should use the same persistence boundary as existing approval settings unless implementation planning finds a narrower local store already exists.
 - Existing CLI posture commands should be compatibility shims around the new Run Modes. They should not introduce a fourth mode.
+- Migration should update all user-facing old-mode copy: Chat composer, Approvals, global approval modal, Config help, slash command help, API errors, and tool context comments.
 - The first package bundle slice should cover Python, Node, Rust, and Go package managers. GitHub release/source downloads should be added only where a recognized package operation needs them.
 - Cross-platform path validation should have platform-neutral unit tests using path resolver abstractions plus platform-specific tests gated by OS where the behavior depends on Windows junctions, UNC paths, drive letters, WSL mapping, or macOS `/private` aliases.

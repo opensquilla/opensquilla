@@ -1,424 +1,673 @@
-# OpenSquilla 沙箱设计：远程更新后的新旧对比
+# OpenSquilla 沙箱优化前后对比
 
 日期：2026-06-01
 
-## 结论
+本文对比的是：
 
-原设计的核心判断仍然成立，而且当前代码进一步证明这件事必须做：
+- **优化前**：当前 OpenSquilla 沙箱和权限模型的现状。
+- **优化后**：`2026-05-29-sandbox-run-mode-design.md` v2 设计落地后的目标状态。
 
-- `bypass` 仍然和 host execution 混在一起。
-- Chat 前端已经把旧的 `Bypass Off` 文案改成了 `Execution mode`，但底层行为仍然是 `/elevated bypass`。
-- Approvals 页新增了 `Effective execution mode` 摘要，这说明产品上已经开始感知“审批策略”和“执行模式”是两回事。
-- 侧边栏结构仍然适合新增 `Control -> Sandbox`，但新的 topbar/chat 布局要求原 spec 的前端落点更精确。
+本文只关注沙箱优化本身的产品和技术差异：现在的问题是什么，优化后怎么变好。
 
-所以原 spec 不需要推翻，但需要做一次 v2 修订。修订重点不是后端大方向，而是：
+## 一句话结论
 
-1. 明确当前 `topbar-center` 和 composer gear 的职责边界。
-2. 明确现有 `Visual effects` 不属于沙箱控制，不要被 sandbox spec 误删。
-3. 明确 Approvals 页和全局 approval modal 都要从旧 `Bypass Approvals` 迁移。
-4. 明确 Squilla Router 可以继续保留现有配置路径，不必强绑进 sandbox Run Context。
-5. 明确 Allowed Domains 不能破坏现有 `network.http` / `web_fetch` 测试语义。
+优化前，OpenSquilla 的最大问题不是“没有沙箱”，而是 **审批、bypass、host exec、沙箱边界被揉在一起**。用户点一个看起来像“少问我”的按钮，实际可能让命令绕过沙箱直接跑到宿主机。
 
-## 当前代码状态
+优化后，系统会变成三层清晰模型：
 
-### 1. 主导航已经有标准视图包装
+1. **Run Mode** 决定整体运行姿态。
+2. **Run Context** 保存当前会话的 workspace、mounts、domains、grants。
+3. **Operation Profile** 判断每次工具调用到底在做什么。
 
-当前 `app.js` 用 `_renderStandardView()` 包装除 Chat 外的大多数页面。这个包装会先清空 `topbar-center`，再渲染页面，见 `src/opensquilla/gateway/static/js/app.js:31` 到 `src/opensquilla/gateway/static/js/app.js:52`。
+最终效果是：默认仍在沙箱里工作；需要扩大边界时清楚询问；只有用户明确选择 `Full Host Access` 或沙箱失败后的 `Host Once`，才会跑到宿主机。
 
-这对 Sandbox 页有直接影响：新增 `/sandbox` route 时应该走 `_renderStandardView(SandboxView, ...)`，这样从 Chat 切到 Sandbox 时，Chat 专属的 session chip、run status、context warning 不会残留。
+## 1. 执行模式语义
 
-当前侧边栏仍然是：
+**优化前不足**
 
-- Chat
-- Control: Overview, Health, Channels, Skills, Sessions, Agents, Usage, Cron
-- Settings: Config, Logs, Approvals
+当前模型里有 `off`、`on`、`bypass`、`full`、`elevated` 这些词。它们同时表达三件事：
 
-代码位置见 `src/opensquilla/gateway/static/js/app.js:70` 到 `src/opensquilla/gateway/static/js/app.js:87`。
+- 要不要问用户。
+- 要不要绕过沙箱。
+- 要不要绕过敏感路径检查。
 
-原 spec 说把 Sandbox 放在 `Control -> Health` 后面仍然合适。需要补充的是：当前代码还没有 `/sandbox` route，也没有 Sandbox nav item；实现时要同时加 route、nav item、icon 和 view registration。
+这导致用户很难判断自己到底开了什么权限。比如 `bypass` 听起来像“跳过审批弹窗”，但当前 shell 执行逻辑里它也会绕过 sandbox backend，变成 host exec。
 
-### 2. Chat 顶部结构已经变了
+**优化后设计**
 
-旧分析时，Chat session chip、run status、context warning 都在 Chat 页面自己的 header 里。现在它们被移到了全局 topbar 的 center slot：
+只暴露三个用户能理解的 Run Mode：
 
-- `App.getTopbarCenter()` 暴露 topbar center。
-- Chat 渲染时把 session chip、copy、run status、context warning 放进去。
-- 标准页面渲染时会清掉这个 slot。
+- `Standard-Sandbox`
+- `Trusted-Sandbox`
+- `Full Host Access`
 
-代码见 `src/opensquilla/gateway/static/js/app.js:216` 到 `src/opensquilla/gateway/static/js/app.js:224`，以及 `src/opensquilla/gateway/static/js/views/chat.js:1182` 到 `src/opensquilla/gateway/static/js/views/chat.js:1195`。
+它们分别对应：
 
-这意味着原 spec 里“聊天输入框功能键只放 Run Mode / Workspace / Squilla Router / Open Sandbox...”的方向仍然可用，但需要更精确：
+| Run Mode | 执行位置 | 审批行为 |
+| --- | --- | --- |
+| `Standard-Sandbox` | Sandbox | 普通风险会问 |
+| `Trusted-Sandbox` | Sandbox | 普通审批少问，但边界扩展仍问 |
+| `Full Host Access` | Host | 不逐条询问 |
 
-- `topbar-center` 是会话身份和运行状态区，不建议塞复杂设置。
-- composer gear 是“下一次执行前的快捷设置”区，仍然适合放 Run Mode、Workspace、Router。
-- 如果未来想让 Run Mode 更显眼，可以在 topbar-center 只显示一个只读状态 chip，但编辑入口仍然放在 composer gear 或 Sandbox 页。
+**优化后优势**
 
-### 3. Composer gear 现在已经不是纯 sandbox 控制
+用户不需要理解内部的 `elevated`。看名字就能知道：
 
-当前 composer gear 里有三行：
+- 前两个仍然是沙箱。
+- 只有 `Full Host Access` 是宿主机。
+
+这直接消除“我只是想少点确认，结果命令裸跑宿主机”的误解。
+
+## 2. Bypass 行为
+
+**优化前不足**
+
+当前 Chat 里虽然显示的是 `Execution mode`，但点击后仍然是启用 `/elevated bypass`。确认文案也明确说它允许 host execution。Approvals 页面和全局 approval modal 里还有 `Bypass Approvals` 按钮，它会传 `elevatedMode=bypass`。
+
+结果是 bypass 变成一条绕过沙箱的捷径。
+
+**优化后设计**
+
+旧 bypass 被吸收为 `Trusted-Sandbox`：
+
+- 跳过普通审批。
+- 继续在沙箱中执行。
+- 不跳过新挂载、新域名、敏感路径、Host Once 等边界决策。
+
+`Bypass Approvals` 不再作为普通 approval 主按钮出现。如果保留“少问我”的入口，也必须叫成 `Switch to Trusted-Sandbox`，并明确说明仍然沙箱执行。
+
+**优化后优势**
+
+用户可以获得更顺滑的体验，但不会因为少点一次确认就丢掉沙箱隔离。
+
+## 3. Host 执行入口
+
+**优化前不足**
+
+host execution 有多个入口：
+
+- `/elevated on`
+- `/elevated bypass`
+- `/elevated full`
+- 普通 approval 通过后设置本次 host 权限
+- approval modal 里的 `Bypass Approvals`
+- session elevated mode
+
+入口越多，越难判断一个命令为什么跑到了宿主机。
+
+**优化后设计**
+
+host execution 只剩两种合法入口：
+
+1. `Full Host Access`
+   - 用户主动选择全局宿主机访问。
+   - 不逐条询问。
+   - UI 必须明显提示高风险。
+
+2. `Host Once`
+   - 先在沙箱里跑过。
+   - 失败原因像沙箱限制。
+   - 用户只批准这一次。
+   - 与原操作指纹绑定，用完即失效。
+
+**优化后优势**
+
+host 执行变得可审计、可解释、可控。用户不会在普通审批里被引导去绕过沙箱。
+
+## 4. 普通审批
+
+**优化前不足**
+
+当前普通 approval 通过后，shell 层会把这次调用提升成 host execution。也就是说，“同意这个危险命令”会被解释成“允许这个命令在宿主机执行”。
+
+这两个含义不应该绑定。
+
+**优化后设计**
+
+普通 approval 只回答：
+
+> 这个操作是否可以在当前 resolved policy 下继续？
+
+如果当前 Run Mode 是 `Standard-Sandbox` 或 `Trusted-Sandbox`，通过审批后仍然应该在沙箱中执行。
+
+普通 approval 选项：
+
+- Approve Once
+- Always Allow This Type
+- Deny
+- Deny This Type
+
+不会出现 `Run on Host`。
+
+**优化后优势**
+
+审批变成“是否允许这个操作”，不是“是否切到宿主机”。权限含义更小，风险更低。
+
+## 5. Host Once
+
+**优化前不足**
+
+当前已经有 backend denial escalation 的路径，但整体语义不够产品化。用户看不到清晰的“先沙箱失败，再单次宿主机补救”的流程。
+
+**优化后设计**
+
+Host Once 是一个明确的失败恢复动作：
+
+1. 先尝试沙箱执行。
+2. 后端判断失败是否由沙箱限制导致。
+3. 如果适合，弹出 Host Once 请求。
+4. 用户选择 `Run on Host Once` 或 `Keep Blocked`。
+5. 批准只对原命令、原参数、原操作画像有效。
+
+**优化后优势**
+
+可用性保留了，但系统不会一开始就诱导用户关闭沙箱。
+
+## 6. Chat 输入框功能键
+
+**优化前不足**
+
+当前 composer gear 里有：
 
 - `Execution mode`
 - `Squilla Router`
 - `Visual effects`
 
-代码见 `src/opensquilla/gateway/static/js/views/chat.js:1213` 到 `src/opensquilla/gateway/static/js/views/chat.js:1244`。
+但没有 workspace 快捷入口，也没有清晰的三档 Run Mode。`Execution mode` 实际还是旧 bypass toggle。
 
-这和原 spec 的一句话有冲突：原 spec 写得像是 composer gear 只能放 `Run Mode / Workspace / Squilla Router / Open Sandbox...`。现在应该改成：
+**优化后设计**
 
-> composer gear 可以继续承载当前已有的轻量会话设置；其中 sandbox 相关控制只新增 Run Mode、Workspace 和 Open Sandbox，不把 Mounts、Domains、Doctor、Rules 塞进去。现有 Visual effects 是非沙箱的外观设置，保留但需要视觉上弱化或分组，避免用户误以为它影响安全边界。
+composer gear 保持轻量，但内容变成：
 
-推荐的新 composer gear 内容：
+- `Run Mode`
+- `Workspace`
+- `Squilla Router`
+- `Visual effects`
+- `Open Sandbox...`
 
-- Run Mode
+其中：
+
+- `Run Mode` 和 `Workspace` 是沙箱相关。
+- `Squilla Router` 保留现有产品入口。
+- `Visual effects` 是前端偏好，不参与沙箱。
+- `Open Sandbox...` 跳转到完整管理页。
+
+**优化后优势**
+
+用户在发下一条消息前能快速确认：
+
+- 当前是不是沙箱。
+- 当前在哪个 workspace 里执行。
+- 是否要进入完整 Sandbox 管理页。
+
+同时不会把挂载、域名、doctor、规则管理都塞进聊天输入框。
+
+## 7. Topbar 职责
+
+**优化前不足**
+
+现在 Chat 已经把 session chip、run status、context warning 放到全局 topbar center。这个区域如果继续被塞进更多配置项，会很快变乱。
+
+**优化后设计**
+
+topbar center 只做只读会话状态：
+
+- 当前 session
+- run status
+- context warning
+- 可选的 Run Mode 状态 chip
+
+真正修改 Run Mode、Workspace、Mounts、Domains 的入口仍然在 composer gear 和 Sandbox 页。
+
+**优化后优势**
+
+界面层次清楚：
+
+- topbar 是状态。
+- composer gear 是快捷设置。
+- Sandbox 页是完整管理。
+
+## 8. Sandbox 侧边栏页面
+
+**优化前不足**
+
+现在没有专门的 Sandbox 页面。用户要理解沙箱状态，需要在 Config、Health、Approvals、Chat 之间来回找：
+
+- Config 里是底层开关。
+- Health 里有 doctor。
+- Approvals 里有审批。
+- Chat 里有 execution mode。
+
+这些信息分散，用户很难知道“沙箱到底是不是生效了”。
+
+**优化后设计**
+
+新增 `Control -> Sandbox` 页面，放在 Health 后面。
+
+页面分区：
+
+- Status
 - Workspace
-- Squilla Router
-- Visual effects
-- Open Sandbox...
+- Mounts
+- Allowed Domains
+- Rules & Activity
 
-其中前两项属于 sandbox run context；Router 保留现有产品行为；Visual effects 是纯前端偏好；Open Sandbox 是跳转入口。
+这个页面用标准 view wrapper 渲染，离开 Chat 时会清掉 Chat 专属 topbar 内容。
 
-### 4. `Execution mode` 名字已经接近新设计，但行为还是旧设计
+**优化后优势**
 
-Chat 里现在的按钮文案是 `Execution mode`，默认显示 `Approval prompts`，但点击后仍然弹出：
+用户有一个稳定入口回答：
 
-> This allows host execution without approval prompts in this browser session. This maps to /elevated bypass.
+- 沙箱后端是否可用。
+- 当前 workspace 是什么。
+- 挂载了哪些目录。
+- 允许了哪些域名。
+- 最近为什么被拦。
+- 哪些规则可以撤销。
 
-代码见 `src/opensquilla/gateway/static/js/views/chat.js:1321` 到 `src/opensquilla/gateway/static/js/views/chat.js:1343`。
+## 9. Workspace
 
-这说明 UI 已经从 “Bypass Off” 迈向 “Execution mode”，但它仍然把 bypass 和 host execution 绑在一起。原 spec 的三档 Run Mode 设计仍然是正确方向，但需要把当前 UI 迁移点写得更具体：
+**优化前不足**
 
-- 把 `Execution mode` 行改成 `Run Mode`。
-- 当前按钮不再是一个 bypass toggle，而是三档选择器。
-- `Standard-Sandbox` 和 `Trusted-Sandbox` 都不能调用旧 `/api/elevated-mode` 去启用 host。
-- 切到 `Full Host Access` 时才进入 host execution。
-- 旧 localStorage key `opensquilla.elevatedMode` 只能作为迁移读取，不应继续作为新状态源。
+当前 workspace 主要来自配置或默认目录。用户在对话中说“看 `/home/usr1/1`”时，系统没有产品化路径去问“要不要把这个目录加入沙箱可见范围”。
 
-### 5. Approvals 页新增了执行模式摘要
+如果直接 host exec，风险太大；如果直接失败，体验又差。
 
-当前 Approvals 页已经并列展示：
+**优化后设计**
 
-- pending 数量
-- approval strategy
-- effective execution mode
+Workspace 变成 session Run Context 的一部分：
 
-代码见 `src/opensquilla/gateway/static/js/views/approvals.js:69` 到 `src/opensquilla/gateway/static/js/views/approvals.js:105`。
+- Chat gear 可以快速切换 workspace。
+- Sandbox 页可以管理 recent workspaces。
+- 修改后下一次工具调用生效，不需要重启 gateway。
 
-这是好变化，说明产品已经承认两层含义：
+**优化后优势**
 
-- approval strategy：怎么处理审批请求
-- execution mode：命令在哪里、以什么姿态执行
+用户能在 UI 中切项目目录；agent 也能在沙箱里访问用户指定的项目，而不是靠 host bypass。
 
-但现在 `effective execution mode` 仍然从旧 localStorage/global config 的 elevated mode 推导，见 `src/opensquilla/gateway/static/js/views/approvals.js:176` 到 `src/opensquilla/gateway/static/js/views/approvals.js:245`。
+## 10. 外部路径访问
 
-原 spec 需要补一条：
+**优化前不足**
 
-> Approvals 页的 `Effective execution mode` 应该改为读取新的 Run Context，而不是读旧 elevated/localStorage/default_mode。这个摘要可以保留，因为它是新设计的天然展示位。
+用户输入外部路径时，系统没有明确的 Path Access Request。模型或工具要么失败，要么倾向于找 host 执行绕路。
 
-### 6. Approvals 页面和全局 modal 仍有 `Bypass Approvals`
+**优化后设计**
 
-当前 Approvals 列表每条 pending request 有：
+当用户明确要求查看或修改沙箱外路径，比如 `/home/usr1/1`：
 
-- Approve once
-- Always allow this type
-- Bypass approvals
+1. 先判断路径是否在当前 workspace 或已挂载目录内。
+2. 不在的话，后端校验路径。
+3. 安全则询问是否加入挂载。
+4. 看/分析默认只读。
+5. 明确修改才提供读写。
+6. 加挂载后继续沙箱执行。
+
+**优化后优势**
+
+系统优先扩大沙箱可见范围，而不是绕开沙箱。用户想处理外部项目时，体验更自然，风险也更小。
+
+## 11. 挂载目录安全校验
+
+**优化前不足**
+
+OpenSquilla 已经有 extra mounts 概念，但如果挂载校验不够强，用户或配置可能把 `.ssh`、云凭证、Docker socket、系统目录挂进沙箱。
+
+这等于给沙箱开后门。
+
+**优化后设计**
+
+路径校验必须跨平台、后端执行、fail closed：
+
+- 展开 `~`
+- 转绝对路径
+- resolve symlink
+- 检查 ancestor
+- 处理大小写不敏感文件系统
+- 处理 Windows drive letter
+- 处理 UNC/network path
+- 处理 Windows junction/reparse point
+- 处理 WSL path
+- 处理 macOS `/private` alias
+- 处理容器内外路径映射
+
+敏感路径默认硬拦：
+
+- `/etc`、`/proc`、`/sys`、`/dev`
+- Docker/Podman socket
+- SSH/GPG
+- AWS/GCP/Azure/Cloudflare credentials
+- GitHub/Git credential stores
+- browser profiles
+- password manager stores
+- keychains/private certs
+- shell history/token caches
+
+**优化后优势**
+
+用户仍然能灵活挂载普通项目目录，但敏感凭证和系统边界不会因为配置失误暴露给 agent。
+
+## 12. 网络访问
+
+**优化前不足**
+
+当前 shell/code 沙箱遇到网络问题时，主要给提示：没有网络，使用 `http_request`/`web_fetch`，或者用 bypass。这个体验容易把用户推向绕过沙箱。
+
+同时，直接做“开全网”又违背沙箱思想。
+
+**优化后设计**
+
+UI 不提供 `Open Internet` 这种开关，只提供 `Allowed Domains`：
+
+- 允许具体域名。
+- 允许受控 wildcard。
+- 拒绝过宽 wildcard。
+- 默认拒绝 localhost、private network、metadata service。
+- 重定向到未允许域名时重新拦截。
+- HTTP 需要更强提醒。
+
+第一阶段只约束 sandboxed shell/code/package-manager egress，不改现有 explicit network tool 的测试语义。
+
+**优化后优势**
+
+网络不是全开，而是按任务开放窄通道。用户能完成依赖安装、下载等常见工作，但数据外传风险明显降低。
+
+## 13. Package Install Bundle
+
+**优化前不足**
+
+`pip install`、`npm install`、`cargo fetch`、`go mod download` 这类操作常常需要多个域名。如果每个域名都问一次，用户会被打扰到想直接关掉沙箱。
+
+**优化后设计**
+
+为常见包管理器提供 domain bundle：
+
+- Python package indexes
+- Node package registry
+- Rust crates
+- Go modules
+- 必要时的 GitHub release/source download
+
+bundle 绑定到：
+
+- workspace
+- operation kind
+- package ecosystem
+- sandbox execution
+
+**优化后优势**
+
+不会每个域名都问；也不会变成全网放行。它是一条“只为依赖安装开放”的窄通道。
+
+## 14. Operation Profile
+
+**优化前不足**
+
+当前策略主要按工具名或 action tag 判断。比如 shell 可能是：
+
+- `ls`
+- `pip install`
+- `rm -rf`
+- `curl | sh`
+- 修改系统服务
+
+它们都是 shell，但风险完全不同。
+
+**优化后设计**
+
+每次工具调用先生成 Operation Profile：
+
+- 工具是什么。
+- 操作类型是什么。
+- 目标路径在哪里。
+- 是否需要网络。
+- 是否触及敏感边界。
+- 风险等级是什么。
+- 识别置信度如何。
+
+**优化后优势**
+
+同一个工具可以按真实动作走不同策略。允许一次 `git status` 不会等于允许所有 shell。
+
+## 15. Hints
+
+**优化前不足**
+
+`LevelHints` 已经存在，但使用很浅。比如 `needs_network` 没有真正变成 allowed domain 或 package bundle 的决策入口。
+
+**优化后设计**
+
+hints 只做分类证据，不做授权凭证：
+
+- `needs_network` 触发域名检查。
+- `writes_outside_workspace` 触发挂载或拒绝。
+- `crosses_trust_boundary` 即使 Trusted 也要问。
+- `high_impact` 提升风险。
+- `trusted_source` 只能降低误报，不能绕过敏感边界。
+
+**优化后优势**
+
+hints 终于有用，但不会因为 hint 写得“可信”就自动放权。
+
+## 16. 未识别操作
+
+**优化前不足**
+
+规则覆盖不了所有实际命令。复杂 shell、变量、重定向、脚本下载执行都可能让分类失败。
+
+如果识别失败被当成普通操作，会有安全洞。
+
+**优化后设计**
+
+unknown 分三类：
+
+- `unknown_normal`
+- `unknown_suspicious`
+- `unknown_sensitive`
+
+识别失败不能直接低风险。遇到 sudo、curl|sh、base64 exec、凭证路径、Docker socket、metadata endpoint 等迹象时，要强询问或拒绝。
+
+**优化后优势**
+
+系统在不确定时保守处理，不会因为规则没写到就默认放行。
+
+## 17. Approvals 页面和弹窗
+
+**优化前不足**
+
+Approvals 页和全局 approval modal 仍然提供 `Bypass Approvals`。用户在处理一个 pending request 时，很容易顺手把整个 session 推到旧 bypass/host 模式。
+
+**优化后设计**
+
+普通 approval 只处理当前操作：
+
+- Approve Once
+- Always Allow This Type
 - Deny
+- Deny This Type
 
-代码见 `src/opensquilla/gateway/static/js/views/approvals.js:274` 到 `src/opensquilla/gateway/static/js/views/approvals.js:278`。
+`Effective execution mode` 摘要保留，但读取新的 Run Context。
 
-全局 approval modal 也有 `Bypass Approvals`，代码见 `src/opensquilla/gateway/static/js/approval_monitor.js:154` 到 `src/opensquilla/gateway/static/js/approval_monitor.js:178`。
+如果要切 Run Mode，应通过明确的 Run Mode 控件，而不是通过某条 approval 的危险快捷按钮。
 
-原 spec 已经说普通审批不应该出现 Host Once，也说 bypass 不等于 host execution。但现在需要更明确地覆盖这两个具体前端入口：
+**优化后优势**
 
-- `Bypass Approvals` 不能继续传 `elevatedMode: "bypass"`。
-- 普通审批卡片推荐只保留 Approve Once / Always Allow This Type / Deny / Deny This Type。
-- 如果产品仍想提供“少问我”入口，它应该是“Switch to Trusted-Sandbox”，并且必须说明仍在沙箱内执行。
-- 这个入口最好不在每条 approval 的主按钮里，否则会鼓励用户在压力下扩大权限。
+审批页面不再是绕过沙箱的入口。用户可以清楚地区分“批准这次操作”和“改变整个会话的运行模式”。
 
-### 7. Router 当前是全局 config patch，不是 session Run Context
+## 18. Always Allow This Type
 
-当前 Chat gear 的 Squilla Router toggle 调用的是 `config.patch.safe`，修改：
+**优化前不足**
 
-- `squilla_router.enabled`
-- `squilla_router.rollout_phase`
+如果 “Always Allow” 只按工具名或命令粗匹配，用户允许一次 shell 后，可能无意中放开很多不相关操作。
 
-代码见 `src/opensquilla/gateway/static/js/views/chat.js:1352` 到 `src/opensquilla/gateway/static/js/views/chat.js:1365`。
+**优化后设计**
 
-原 spec 把 `Squilla Router state` 放进 session Run Context。远程更新后，这一点建议修订：
+Always Allow 绑定 Operation Profile：
 
-- Sandbox Run Context 不应该强行接管 Router。
-- composer gear 仍然显示 Router，因为它是现有主界面控制。
-- 但 Router 可以继续走现有 `config.patch.safe` 路径，除非后续另开“Router session scope”设计。
-- Sandbox 的 P0/P1 不应该因为 Router session 化而变重。
+- tool
+- operation kind
+- target scope
+- execution target
+- network requirement
+- workspace/session
+- TTL 或作用域
 
-换句话说，新 spec 里应该把 “Run Context 包含 Squilla Router state” 改成：
+**优化后优势**
 
-> composer gear 同屏展示 Squilla Router，但 sandbox Run Context 只负责 execution/mount/domain/grant；Router 继续使用现有配置机制，除非另一个需求明确要 session-level router。
+用户允许的是“这类操作”，不是“这个工具从此都能干任何事”。
 
-### 8. Config 文案仍然是旧权限模型
+## 19. Doctor / Explain
 
-当前 Config help 仍然写着：
+**优化前不足**
 
-- `sandbox.sandbox`: use `opensquilla sandbox on|bypass|full`
-- `permissions.default_mode`: `bypass` is out-of-box local posture, `on` uses host execution, `full` bypasses sensitive paths
+Health 有 doctor，但沙箱相关状态和具体拦截原因不够集中。用户看见失败时，往往不知道是：
 
-代码见 `src/opensquilla/gateway/static/js/views/config.js:69` 到 `src/opensquilla/gateway/static/js/views/config.js:74`。
+- 后端缺依赖。
+- 网络被拦。
+- 路径没挂载。
+- 敏感路径被拒。
+- 命令自己失败。
 
-原 spec 应该补充：迁移不仅是 Chat 和 Approvals，还包括 Config help 文案、slash command help 文案和 tool context 注释。否则用户会在不同界面看到两套冲突语义。
+**优化后设计**
 
-### 9. `/permissions` 和 `/elevated` 已经统一到 slash-command registry
+Doctor 负责沙箱健康：
 
-当前 `/permissions` 的 choices 仍然是旧模型：
+- backend 是否可用
+- 是否退化 noop
+- network guard 是否可用
+- mounts 是否安全
+- 配置是否需要重启
 
-- `on`: Host exec, approvals required
-- `bypass`: Host exec, approvals auto-granted
-- `full`: Host exec, approvals skipped
+Explain 负责单次决策原因：
 
-代码见 `src/opensquilla/engine/commands.py:334` 到 `src/opensquilla/engine/commands.py:347`。
+- 为什么直接执行。
+- 为什么询问。
+- 为什么拒绝。
+- 为什么要求挂载。
+- 为什么要求域名授权。
+- 为什么 Host Once 可用或不可用。
 
-原 spec 有“legacy wording should be mapped at the boundary”，但现在需要更具体：
+**优化后优势**
 
-- `/permissions` 应该成为 `/run-mode` 或保留 `/permissions` 但显示三档 Run Mode。
-- `/elevated` alias 可以保留兼容，但不应该继续作为新帮助里的主要词。
-- 旧 `on` 不应作为新模式暴露。
-- 旧 `bypass` 应迁移成 `Trusted-Sandbox`。
-- 旧 `full` 应迁移成 `Full Host Access`。
+用户不是只看到“失败”，而是看到“为什么失败”和“下一步怎么修”。
 
-### 10. 后端仍然把 approval 和 host execution 绑在一起
+## 20. Config 和 slash command 文案
 
-当前 shell 工具的注释和逻辑非常明确：
+**优化前不足**
 
-- `_elevate_current_call` 表示“本次调用允许 host execution”，见 `src/opensquilla/tools/builtin/shell.py:118` 到 `src/opensquilla/tools/builtin/shell.py:125`。
-- `/elevated on|bypass|full` 会绕过 sandbox backend，见 `src/opensquilla/tools/builtin/shell.py:663` 到 `src/opensquilla/tools/builtin/shell.py:670`。
-- `bypass` 会跳过审批并设置 `_elevate_current_call`，见 `src/opensquilla/tools/builtin/shell.py:1335` 到 `src/opensquilla/tools/builtin/shell.py:1345`。
-- 普通 approval 通过后也会设置 `_elevate_current_call`，见 `src/opensquilla/tools/builtin/shell.py:1481` 到 `src/opensquilla/tools/builtin/shell.py:1485`。
+Config help、`/permissions`、`/elevated` 仍然在解释旧模型：
 
-这正是原 spec 要解决的核心问题。原 spec 不需要改方向，但应该在“迁移目标”里点名这些现有入口：
+- `on` 是 host exec with approval。
+- `bypass` 是 host exec with auto approval。
+- `full` 是 host exec 且跳过敏感路径。
 
-- `ToolContext.elevated`
-- approval queue session elevated mode
-- `/api/elevated-mode`
-- `_elevate_current_call`
-- approval resolve 的 `elevatedMode`
-- Chat localStorage `opensquilla.elevatedMode`
+这会和新 UI 的 Run Mode 冲突。
 
-否则 implementation plan 容易只改前端文案，而没有真正拆开执行目标和审批行为。
+**优化后设计**
 
-### 11. `LevelHints` 仍然很浅，原 hints 设计仍然需要
+所有用户可见文案统一到三档：
 
-当前 `LevelHints` 有字段：
+- `Standard-Sandbox`
+- `Trusted-Sandbox`
+- `Full Host Access`
 
-- `trusted_source`
-- `needs_network`
-- `writes_outside_workspace`
-- `crosses_trust_boundary`
-- `high_impact`
+旧 `/elevated` 可以保留兼容，但不作为主入口宣传。旧 `on` 不作为新模式暴露。
 
-代码见 `src/opensquilla/sandbox/policy.py:43` 到 `src/opensquilla/sandbox/policy.py:57`。
+**优化后优势**
 
-但规则主要仍按 action tag 走，`needs_network` 没有直接参与网络策略。当前 `_resolve_network()` 是：
+用户不会在 Chat、Config、Approvals、CLI 看到四套不同说法。
 
-- `DISABLED` -> `HOST`
-- `network.*` 且 `STANDARD` -> `HOST`
-- 其他 -> `NONE`
+## 21. 测试策略
 
-见 `src/opensquilla/sandbox/policy.py:148` 到 `src/opensquilla/sandbox/policy.py:155`。
+**优化前不足**
 
-原 spec 说 hints 应该进入 Operation Profile，这一点仍然成立。
+已有 `tests/test_sandbox` 覆盖了一部分 sandbox 行为，但它没有覆盖新 Run Mode 语义，也没有防止 `Trusted-Sandbox` 被接回 host exec。
 
-### 12. 网络设计要避开现有测试语义
+**优化后设计**
 
-当前测试明确要求：
+不改原有测试、不放松原有断言，只新增覆盖：
 
-- `network.http` 在 STANDARD 下保留 `NetworkMode.HOST`
-- `shell.exec` / `code.exec` 在 STANDARD 下 `NetworkMode.NONE`
-
-见 `tests/test_sandbox/test_policy_network.py`。
-
-这和原 spec 的 “Allowed Domains” 不一定冲突，但原 spec 表述偏宽，容易让实现误伤现有测试。建议修订为：
-
-> P1 的 Allowed Domains / package bundle 首先约束 sandboxed shell/code/package-manager egress。现有显式网络工具如 `web_fetch`、`http_request` 的 `network.http -> HOST` 语义不在 P0 改动范围内；如果未来要统一给网络工具也加域名审批，需要另开迁移并新增测试，而不是改松现有 `tests/test_sandbox`。
-
-这样可以同时满足用户要求：可以补 sandbox 测试，但不要改原有测试。
-
-## 原 spec 逐项判断
-
-| 原 spec 部分 | 是否仍有效 | 是否建议修改 | 说明 |
-| --- | --- | --- | --- |
-| Goal | 有效 | 小改 | 可以补一句“当前 UI 已经出现 Execution mode 摘要，但仍基于旧 elevated”。 |
-| Non-Goals | 有效 | 小改 | 增加“不把 Router session 化作为本阶段目标”。 |
-| User-Facing Modes | 有效 | 不改核心 | 三档命名和语义仍然正确。 |
-| Frontend Placement | 部分有效 | 必改 | 当前有 topbar-center 和 Visual effects，需要更新 composer gear 描述。 |
-| Sandbox Page | 有效 | 小改 | 新增 route 应走 `_renderStandardView`，位置仍在 Health 后。 |
-| Run Context | 部分有效 | 必改 | Router 不建议放进 sandbox Run Context。 |
-| Tool Execution Flow | 有效 | 小改 | 加一句当前 approval grant 不能再隐式 host。 |
-| Operation Profile And Hints | 有效 | 不改核心 | 当前 LevelHints 状态证明这块仍然必要。 |
-| Approval Matrix | 有效 | 小改 | 明确覆盖 Approvals 页和 ApprovalMonitor modal。 |
-| Host Once | 有效 | 不改核心 | 当前 `escalate_backend_denial` 类路径说明这块有落点。 |
-| External Path Access | 有效 | 不改核心 | 当前没有 UI 支持，仍然是新能力。 |
-| Cross-Platform Path Validation | 有效 | 不改核心 | 用户强调后仍应保留。 |
-| Allowed Domains | 部分有效 | 必改 | 要避免破坏 `network.http -> HOST` 的既有测试。 |
-| Doctor And Explain | 有效 | 小改 | Health 页已经有 doctor.status，Sandbox 页应复用。 |
-| Testing Strategy | 有效 | 小改 | 明确只新增测试，不改现有 test expectations。 |
-| ROI | 基本有效 | 小改 | Router session 化不进 ROI；UI migration 优先级上升。 |
-
-## 建议写入原 spec 的修订
-
-### 修订 1：Frontend Placement
-
-旧表达：
-
-> The chat composer gear remains the quick control ... only show Run Mode, Workspace, Squilla Router, Open Sandbox...
-
-建议改成：
-
-> The current app has a global topbar center slot used by Chat for session identity and run status. Sandbox editing controls should stay in the composer gear, while topbar center may show read-only state only. The composer gear already contains non-sandbox controls such as Visual effects; sandbox-related additions must stay limited to Run Mode, Workspace, and Open Sandbox, preserving existing Router and Visual effects rows without turning the popover into a full security console.
-
-### 修订 2：Sandbox route
-
-补充：
-
-> `Control -> Sandbox` should be registered as a standard view, using the same `_renderStandardView` pattern as Overview, Health, Config, and Approvals, so Chat-specific topbar content is cleared when navigating away from Chat.
-
-### 修订 3：Run Context
-
-旧表达包含：
-
-> Squilla Router state
-
-建议改成：
-
-> Sandbox Run Context owns run mode, workspace, mounts, allowed domains, package bundles, temporary grants, and doctor/explain summary. Squilla Router remains visible in the same composer popover for convenience, but continues to use its existing router configuration path unless a separate router-session design is approved.
-
-原因：当前 Router toggle 写的是 `config.patch.safe`，把它强行并入 sandbox Run Context 会扩大本需求范围。
-
-### 修订 4：Approval UI migration
-
-补充：
-
-> Both `ApprovalsView` and `ApprovalMonitor` must migrate away from `Bypass Approvals -> elevatedMode=bypass`. Ordinary approvals should not offer a host-like bypass action. If a shortcut remains, it must be framed as switching the session to `Trusted-Sandbox`, and it must keep execution sandboxed.
-
-### 修订 5：Config and slash command wording
-
-补充：
-
-> Migration must update all user-facing copies of the old model: Config help, `/permissions` and `/elevated` command descriptions, Chat localStorage state, Approvals summaries, and API errors from `/api/elevated-mode`.
-
-### 修订 6：Allowed Domains scope
-
-补充：
-
-> Allowed Domains are first applied to sandboxed shell/code/package-manager egress and package install bundles. Existing explicit network tools that currently resolve to `NetworkMode.HOST` are not changed in the first implementation slice, because current sandbox tests depend on that behavior.
-
-### 修订 7：Testing
-
-补充：
-
-> Additive tests should include current frontend migration surfaces where practical: Chat no longer sends `elevatedMode=bypass` for `Trusted-Sandbox`, Approvals/ApprovalMonitor no longer use bypass to imply host execution, and explicit network-tool tests keep their existing expectations.
-
-## 新旧设计对比
-
-### 旧版设计
-
-旧版设计假设前端仍接近这个形态：
-
-- Chat 页面内部有自己的 header。
-- composer gear 主要只有 Approvals / Router。
-- Approvals 页只是审批策略和 pending list。
-- Router 与 sandbox 快捷设置可以一起进入 session Run Context。
-
-在这个假设下，把 `Run Mode / Workspace / Squilla Router / Open Sandbox...` 都塞进 composer gear 是合理的。
-
-### 当前代码后的新版设计
-
-当前代码更像这样：
-
-- App 有全局 topbar。
-- Chat 独占 topbar center，用于 session chip、run status、context warning。
-- composer gear 已经成为轻量设置 popover，包含 Execution mode、Router、Visual effects。
-- Approvals 页已经有 execution mode 摘要。
-- Approvals modal 和 page 仍然提供 Bypass Approvals。
-
-所以新版设计应变成：
-
-- topbar-center：只读会话状态，不作为 sandbox 配置主入口。
-- composer gear：轻量快捷配置，包含 Run Mode、Workspace、Router、Visual effects、Open Sandbox。
-- Sandbox page：完整沙箱管理，仍在 Control 组 Health 后。
-- Approvals page：显示审批策略和 Run Mode 摘要，但不负责切换到 host。
-- Approval modal：只处理当前请求，不鼓励全局 bypass。
-
-## 实现风险更新
-
-### 风险 1：只改文案，不改执行语义
-
-当前 Chat 已经把按钮叫 `Execution mode`，但点击后仍然是 host execution bypass。实现时如果只把文案换成 `Trusted-Sandbox`，安全问题不会解决。
-
-必须同时拆开：
-
-- 是否问用户
-- 是否进 sandbox
-- 是否允许 host fallback
-
-### 风险 2：Approvals 页会继续把 bypass 传播回 Chat
-
-Approvals 页和 ApprovalMonitor 都会写 localStorage 并触发 `opensquilla:elevated-mode` 事件。即使 Chat gear 改了，如果这两个入口没改，用户仍可从审批弹窗把 session 推回旧 host bypass。
-
-### 风险 3：Router 被误纳入 sandbox P0
-
-Router 当前是全局 config toggle。强行 session 化会扩大需求，拖慢 sandbox 核心目标。推荐保持现状，只在 UI 上同处一个 popover。
-
-### 风险 4：Allowed Domains 误伤 web_fetch/http_request
-
-当前测试保留 `network.http -> HOST`。如果实现者把所有 network action 都改成 allowlist，会违反“不动原有 tests_sandbox”的要求。第一阶段只新增 shell/code/package-manager 相关域名控制。
-
-### 风险 5：topbar-center 残留
-
-新增 Sandbox 页如果不走标准 view wrapper，从 Chat 切过去可能残留 Chat session controls。实现 route 时要复用 `_renderStandardView`。
-
-## 建议的新版 ROI
-
-### P0
-
-1. 拆开 `Run Mode` 和旧 `elevated`：`Trusted-Sandbox` 不能 host exec。
-2. 新增 session sandbox Run Context：Run Mode、Workspace、Mounts、Domains、Grants 实时生效。
-3. 改 Chat composer gear：`Execution mode` -> `Run Mode`，新增 Workspace，保留 Router / Visual effects，添加 `Open Sandbox...`。
-4. 改 ApprovalsView 和 ApprovalMonitor：移除旧 `Bypass Approvals -> elevatedMode=bypass` 语义。
-5. 外部路径先走 Path Access Request，不直接 host fallback。
-
-### P1
-
-6. 新增 `Control -> Sandbox` 标准页面，放在 Health 后。
-7. Operation Profile + hints 接入策略。
-8. Allowed Domains + package install bundles，但第一阶段不改变现有 explicit network tool 测试语义。
-9. doctor/explain 复用 Health 的 doctor.status，并在 Sandbox 页展示更完整细节。
-
-### P2
-
-10. 后端硬隔离增强。
-11. worktree/session 隔离。
-
-### P3
-
-12. Claude 式复杂 auto classifier 继续延后。
-
-## 是否需要修改原 spec
-
-需要，但不是重写。
-
-建议对 `2026-05-29-sandbox-run-mode-design.md` 做 v2 patch，重点改这些小节：
-
-- `Frontend Placement`
-- `Run Context`
-- `Approval Matrix`
-- `Allowed Domains`
-- `Testing Strategy`
-- `ROI`
-- 新增 `Current UI Migration Targets`
-
-不建议改动这些核心结论：
-
-- 三档 Run Mode。
-- bypass 不等于 host exec。
+- Trusted-Sandbox 永远 sandbox execution。
+- Full Host Access 是唯一全局 host execution。
+- 普通 approval 不含 Host Once。
 - Host Once 只在沙箱失败后出现。
-- hints 进入 Operation Profile，不直接授权。
-- 外部路径优先问是否挂载。
-- Cross-platform path validation 必须全面。
+- approval 通过不等于 host execution。
+- 外部路径先 Path Access Request。
+- 敏感路径不能通过 symlink/junction/大小写/ancestor 绕过。
+- package bundle 只能用于对应 ecosystem/workspace。
+- explicit network tool 的现有测试语义保持不变。
+
+**优化后优势**
+
+这次改动不会靠文档记忆防回退，而是用新增测试防止以后又把 bypass 接回 host。
+
+## 22. ROI 变化
+
+**优化前 ROI 问题**
+
+如果先做 backend 资源限制、seccomp、worktree 等底层能力，但不先拆清执行语义，用户仍然会通过 bypass/approval 走到 host。
+
+底层沙箱再强，也会被产品语义绕开。
+
+**优化后 ROI 排序**
+
+P0：
+
+1. 三档 Run Mode 替代 elevated/bypass。
+2. Session Run Context 实时生效。
+3. Chat composer gear 迁移到 Run Mode + Workspace。
+4. Approvals 和 modal 移除旧 bypass host 入口。
+5. 外部路径 Path Access Request。
+6. Host Once 只在沙箱失败后出现。
+
+P1：
+
+1. Sandbox 页面。
+2. Operation Profile + hints。
+3. Allowed Domains + package bundles。
+4. Doctor / Explain。
+
+P2：
+
+1. 资源限制、seccomp/no_new_privs 等硬隔离增强。
+2. worktree/session 隔离。
+
+P3：
+
+1. Claude 式复杂 auto classifier。
+
+**优化后优势**
+
+先堵住“语义绕过沙箱”这条最大路径，再补强底层隔离。投入顺序更合理。
+
+## 总体对比表
+
+| 主题 | 优化前不足 | 优化后优势 |
+| --- | --- | --- |
+| 模式命名 | elevated/bypass/full 混杂 | 三档 Run Mode 语义清楚 |
+| bypass | 少问审批等于绕过沙箱 | Trusted-Sandbox 少问但仍沙箱 |
+| host exec | 多入口、难审计 | 只有 Full Host Access 和 Host Once |
+| 普通 approval | 批准后可能 host 执行 | 批准后仍按当前 policy 执行 |
+| Host Once | 语义不够产品化 | 沙箱失败后的一次性补救 |
+| Chat gear | Execution mode 仍是旧 bypass | Run Mode + Workspace 快捷控制 |
+| Sandbox 页面 | 没有统一管理入口 | Control -> Sandbox 集中管理 |
+| Workspace | 不够灵活 | 会话级切换，下一次调用生效 |
+| 外部路径 | 易失败或倾向 host | 优先询问挂载 |
+| 挂载校验 | 配置可能开后门 | 跨平台解析，敏感路径硬拦 |
+| 网络 | 无网络提示容易推向 bypass | Allowed Domains 窄通道 |
+| 依赖安装 | 域名逐个问很烦 | package bundle 降低噪音 |
+| 工具分类 | 按工具/action 太粗 | Operation Profile 看真实操作 |
+| hints | 存在但作用浅 | 用于分类，不直接授权 |
+| unknown | 规则外容易模糊 | unknown 保守分类 |
+| Approvals | Bypass Approvals 是危险入口 | 只处理当前请求 |
+| Always Allow | 可能按工具过宽 | 绑定具体操作画像 |
+| Doctor/Explain | 状态和原因分散 | 健康与决策可解释 |
+| 文案 | 多套旧概念 | 全部统一到三档模式 |
+| 测试 | 未覆盖新语义 | 只新增测试防退化 |
+
+## 最终判断
+
+这次优化最重要的收益不是“多加一个 UI 页面”，而是把 OpenSquilla 的沙箱从“有执行隔离能力，但容易被 bypass 语义绕开”变成：
+
+> 默认沙箱执行，边界扩展明确询问，host 执行只有清楚、少数、可审计的入口。
+
+这也是为什么 P0 应该先做 Run Mode、Run Context、approval 迁移、Path Access Request 和 Host Once，而不是先追更复杂的 classifier 或更大的 backend 改造。

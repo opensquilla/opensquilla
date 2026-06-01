@@ -15,6 +15,7 @@ class RunMode(StrEnum):
 
 @dataclass(frozen=True)
 class RunModeConfigPatch:
+    run_mode: RunMode
     sandbox: bool
     security_grading: bool
     permissions_default_mode: str
@@ -71,11 +72,13 @@ def run_mode_config_patch(mode: Any) -> RunModeConfigPatch:
     normalized = normalize_run_mode(mode)
     if normalized == RunMode.FULL:
         return RunModeConfigPatch(
+            run_mode=normalized,
             sandbox=False,
             security_grading=False,
             permissions_default_mode="full",
         )
     return RunModeConfigPatch(
+        run_mode=normalized,
         sandbox=True,
         security_grading=True,
         permissions_default_mode="off",

@@ -5,6 +5,7 @@ import types
 from opensquilla.sandbox.run_mode import (
     RunMode,
     approval_behavior,
+    config_run_mode,
     execution_target,
     legacy_state_to_run_mode,
     normalize_run_mode,
@@ -36,6 +37,20 @@ def test_legacy_bypass_state_maps_to_trusted_without_preserving_host_bypass() ->
     )
 
     assert mode == RunMode.TRUSTED
+
+
+def test_trusted_patch_round_trips_through_config_run_mode() -> None:
+    patch = run_mode_config_patch(RunMode.TRUSTED)
+    config = types.SimpleNamespace(
+        sandbox=types.SimpleNamespace(
+            run_mode=patch.run_mode,
+            sandbox=patch.sandbox,
+            security_grading=patch.security_grading,
+        ),
+        permissions=types.SimpleNamespace(default_mode=patch.permissions_default_mode),
+    )
+
+    assert config_run_mode(config) == RunMode.TRUSTED
 
 
 def test_configured_default_elevated_only_returns_full() -> None:

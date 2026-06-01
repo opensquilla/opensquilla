@@ -13,6 +13,14 @@ latest `main` release point. When that requires replacing the active
 `dev` branch, the previous branch will be archived and contributors
 will be asked to rebase or retarget open pull requests.
 
+## Attribution On Squash Or Replay
+
+When maintainer cleanup, replay, or squash merging collapses contributor
+commits, keep the final non-empty commit attributable with `Co-authored-by:`
+trailers for every human contributor whose work is included. Preserve pull
+request author attribution and commit author attribution separately when they
+differ.
+
 ## Default Checks
 
 Install development dependencies:

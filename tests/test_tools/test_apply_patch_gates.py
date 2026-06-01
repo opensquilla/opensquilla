@@ -30,6 +30,23 @@ def _reset_approval_queue():
     reset_approval_queue()
 
 
+@pytest.fixture(autouse=True)
+def _run_patch_executor_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _run_in_executor_inline(self, executor, func, *args):
+        future = self.create_future()
+        try:
+            future.set_result(func(*args))
+        except Exception as exc:  # pragma: no cover - exercised by awaiting callers
+            future.set_exception(exc)
+        return future
+
+    monkeypatch.setattr(
+        patch_tool.asyncio.BaseEventLoop,
+        "run_in_executor",
+        _run_in_executor_inline,
+    )
+
+
 def test_apply_patch_schema_exposes_optional_approval_id() -> None:
     registered = get_default_registry().get("apply_patch")
 
@@ -444,7 +461,7 @@ async def test_apply_patch_elevated_full_skips_outside_workspace_approval(
 
 
 @pytest.mark.asyncio
-async def test_apply_patch_unattended_bypass_skips_outside_workspace_approval(
+async def test_apply_patch_unattended_bypass_requires_outside_workspace_approval(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -473,9 +490,12 @@ async def test_apply_patch_unattended_bypass_skips_outside_workspace_approval(
     finally:
         current_tool_context.reset(token)
 
-    assert result == "Applied patch: 1 file(s) modified"
-    assert outside.read_text(encoding="utf-8") == "new\n"
-    assert get_approval_queue().list_pending("exec") == []
+    payload = json.loads(result)
+    assert payload["status"] == "approval_required"
+    assert outside.read_text(encoding="utf-8") == "old\n"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["params"]["toolName"] == "apply_patch"
 
 
 @pytest.mark.asyncio

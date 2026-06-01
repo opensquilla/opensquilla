@@ -263,7 +263,6 @@ def _patch_approval_plan(
 
     elevated_mode = _context_elevated_mode()
     elevated_full = elevated_mode == "full"
-    elevated_bypass = elevated_mode == "bypass"
     op_summary: list[dict[str, str]] = []
     outside_paths: list[str] = []
     workspace = filesystem._workspace_root()
@@ -299,11 +298,7 @@ def _patch_approval_plan(
 
         outside_workspace = filesystem._is_outside_workspace(resolved)
         memory_source_path = filesystem._memory_source_rel_path(resolved)
-        if (
-            not (elevated_full or elevated_bypass)
-            and outside_workspace
-            and memory_source_path is None
-        ):
+        if not elevated_full and outside_workspace and memory_source_path is None:
             outside_paths.append(str(resolved))
 
     if not outside_paths:

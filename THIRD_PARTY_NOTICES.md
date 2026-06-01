@@ -85,6 +85,7 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 - `meta-job-search-pipeline`
 - `meta-kid-project-planner`
 - `meta-paper-write`
+- `meta-short-drama`
 - `meta-skill-creator`
 - `meta-web-research-to-report`
 - `multi-search-engine`
@@ -111,8 +112,13 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 - `stack-trace-python-probe`
 - `stack-trace-rust-probe`
 - `sub-agent`
+- `srt-from-script`
+- `subtitle-burner`
 - `summarize`
+- `text-file-write`
+- `title-card-image`
 - `tmux`
+- `video-still-animator`
 - `weather`
 - `xlsx`
 
@@ -193,12 +199,16 @@ SOFTWARE.
 ## ClawHub-derived bundled skill descriptors
 
 - Component: SKILL.md frontmatter and instruction text for these bundled skills:
+  - `ai-video-script`
   - `deep-research`
   - `docx`
   - `html-to-pdf`
   - `multi-search-engine`
+  - `nano-banana-pro`
   - `pdf-toolkit`
   - `pptx`
+  - `seedance-2-prompt`
+  - `video-merger`
   - `xlsx`
 - Upstream registry: https://clawhub.ai
 - License: MIT-0 (Public-domain-equivalent; no attribution required, but

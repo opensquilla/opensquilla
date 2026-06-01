@@ -15,6 +15,7 @@ from opensquilla.skills.loader import SkillLoader
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
 DEFAULTS = {
+    "ai-video-script",
     "cron",
     "deep-research",
     "docx",
@@ -31,9 +32,11 @@ DEFAULTS = {
     "meta-job-search-pipeline",
     "meta-kid-project-planner",
     "meta-paper-write",
+    "meta-short-drama",
     "meta-skill-creator",
     "meta-web-research-to-report",
     "multi-search-engine",
+    "nano-banana-pro",
     "nano-pdf",
     "paper-abstract-author",
     "paper-citation-planner",
@@ -47,10 +50,17 @@ DEFAULTS = {
     "paper-source-curator",
     "pdf-toolkit",
     "pptx",
+    "seedance-2-prompt",
     "skill-creator",
+    "srt-from-script",
     "sub-agent",
+    "subtitle-burner",
     "summarize",
+    "text-file-write",
+    "title-card-image",
     "tmux",
+    "video-merger",
+    "video-still-animator",
     "weather",
     "xlsx",
 }

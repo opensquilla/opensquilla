@@ -26,6 +26,8 @@ export function createDispatcher(h) {
       case "block.update": return h.blockUpdate(m);
       case "block.retype": return h.blockRetype(m);
       case "block.end": return h.blockEnd(m);
+      case "prompt.echo": return h.promptEcho?.(m);
+      case "model.text": return h.modelText?.(m);
       case "scrollback.write": return h.scrollback?.(m);
       case "shutdown": return h.shutdown(m);
       default: return h.unknown(m);

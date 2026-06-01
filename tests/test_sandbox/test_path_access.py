@@ -98,6 +98,46 @@ def test_write_request_asks_for_rw_mount(tmp_path: Path) -> None:
     assert decision.access == "rw"
 
 
+def test_most_specific_rw_mount_allows_write_under_ro_parent(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    target = child / "out.txt"
+
+    decision = decide_path_access(
+        target,
+        workspace=workspace,
+        mounts=[
+            {"path": str(parent), "access": "ro"},
+            {"path": str(child), "access": "rw"},
+        ],
+        write=True,
+    )
+
+    assert decision.status == "allowed"
+    assert decision.access == "rw"
+
+
+def test_most_specific_ro_mount_requests_write_under_rw_parent(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    target = child / "out.txt"
+
+    decision = decide_path_access(
+        target,
+        workspace=workspace,
+        mounts=[
+            {"path": str(parent), "access": "rw"},
+            {"path": str(child), "access": "ro"},
+        ],
+        write=True,
+    )
+
+    assert decision.status == "request"
+    assert decision.access == "rw"
+
+
 @pytest.mark.asyncio
 async def test_existing_ro_mount_allows_filesystem_read_and_list(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
@@ -215,6 +255,28 @@ async def test_existing_ro_mount_write_requests_rw_mount_not_legacy_approval(
     assert payload["access"] == "rw"
     assert "approval" not in payload["status"]
     assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_grep_search_does_not_follow_workspace_symlink_to_unmounted_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_file = outside / "secret.txt"
+    outside_file.write_text("needle secret-token\n", encoding="utf-8")
+    link = workspace / "linked-secret.txt"
+    link.symlink_to(outside_file)
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(workspace):
+        result = await fs.grep_search("needle", path=str(workspace))
+
+    assert "secret-token" not in result
+    assert "outside current sandbox view" in result or "No matches" in result
 
 
 @pytest.mark.asyncio

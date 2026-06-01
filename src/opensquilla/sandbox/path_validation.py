@@ -92,9 +92,16 @@ def decide_path_access(
             access=access,
         )
 
-    for mount_root, mount_access in _iter_mount_roots(mounts):
-        if not is_relative_to_path(normalized, mount_root):
-            continue
+    matching_mounts = [
+        (mount_root, mount_access)
+        for mount_root, mount_access in _iter_mount_roots(mounts)
+        if is_relative_to_path(normalized, mount_root)
+    ]
+    if matching_mounts:
+        _mount_root, mount_access = max(
+            matching_mounts,
+            key=lambda item: len(item[0].parts),
+        )
         if not write or mount_access == "rw":
             return MountDecision(
                 status="allowed",

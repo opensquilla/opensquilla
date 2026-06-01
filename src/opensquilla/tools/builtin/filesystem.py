@@ -281,6 +281,18 @@ def _sandbox_path_access_envelope(
     return _path_access_required_envelope(decision)
 
 
+def _sandbox_path_access_marker(candidate: Path, *, write: bool) -> str | None:
+    envelope = _sandbox_path_access_envelope(
+        candidate.resolve(strict=False),
+        write=write,
+    )
+    if envelope is None:
+        return None
+    if envelope.get("status") == "blocked":
+        return f"[blocked] {candidate}: {envelope.get('message') or 'sensitive path'}"
+    return f"[blocked] {candidate}: outside current sandbox view"
+
+
 def _active_sandbox_mount_allows(resolved: Path, *, write: bool) -> bool:
     if not _sandbox_path_access_enabled():
         return False
@@ -1041,6 +1053,10 @@ async def grep_search(
         results: list[str] = []
 
         def search_file(fp: Path) -> None:
+            marker = _sandbox_path_access_marker(fp, write=False)
+            if marker is not None:
+                results.append(marker)
+                return
             if _is_sensitive_access_path(fp.resolve(strict=False), workspace=workspace_root):
                 return
             try:

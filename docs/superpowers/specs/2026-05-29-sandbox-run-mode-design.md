@@ -533,22 +533,19 @@ Examples:
 
 ## Testing Strategy
 
-`/home/lrk/opensquilla/tests` is the full project test directory, but this sandbox migration does not require every test in that directory to pass before or after the work. The hard gate is the sandbox-relevant test matrix: existing sandbox tests, old tests whose assertions are intentionally migrated from `bypass/elevated` to Run Mode, and focused gateway/CLI/tool tests touched by this feature.
+`/home/lrk/opensquilla/tests` is the full project test directory, but this sandbox migration does not require the full suite to pass before development starts or after development finishes. The implementation owner chooses the test set based on the files and behavior touched. The expectation is not "run everything until unrelated failures are fixed"; it is "run the tests that give real confidence in the sandbox change, report unrelated baseline failures honestly, and do not edit unrelated tests to create a false green state."
 
 Implementation should follow this test discipline:
 
 1. Use the project test command, currently `uv run pytest`, not bare `pytest`.
-2. Before feature work, run the focused sandbox baseline from the repository root:
-   `uv run pytest tests/test_sandbox tests/test_cli/test_sandbox_cmd.py tests/test_gateway/test_chat_static_assets.py tests/test_application/test_approval_rpc.py tests/test_gateway/test_rpc_approvals.py -q`.
-3. If this focused sandbox baseline fails on the unchanged code, stop sandbox feature development. If any preparatory edits were already made, revert only those own edits, then report the focused baseline failure.
-4. Full `uv run pytest tests` is useful as a diagnostic snapshot, but it is not a blocking gate for this sandbox migration. If it fails in unrelated areas, record the failures and continue; do not edit unrelated tests to make them pass.
-5. During development, use temporary tests under `.sandbox-tmp-tests/` and focused existing tests for fast feedback.
-6. After each implementation task, the focused tests named for that task must pass.
-7. Before adding permanent new sandbox tests, rerun the sandbox-relevant focused matrix. If it fails, fix implementation code or the explicitly migrated sandbox-semantic tests.
-8. Add the new sandbox-focused tests needed for this feature under `tests/test_sandbox/`. If those new tests fail, fix the implementation code, not unrelated tests.
-9. Existing tests must not be loosened, deleted, skipped, or rewritten merely to make the new sandbox work pass. The only allowed edits to old tests are tests that directly lock the old `bypass/elevated` sandbox semantics or the old Windows auto-noop expectation.
+2. There is no required pre-change full-suite baseline gate and no required post-change full-suite gate.
+3. The implementation owner decides which tests to run for each task. Good defaults are the directly touched sandbox, CLI, gateway, approval, tool, and frontend-static tests.
+4. Full `uv run pytest tests` is optional diagnostic evidence only. If it fails in unrelated areas, record the failures and continue; do not edit unrelated tests to make them pass.
+5. New tests that are important to the sandbox feature can be added directly under `tests/test_sandbox/` during the implementation task that introduces the behavior.
+6. If a selected sandbox-relevant test fails because of the new implementation, fix the implementation code or the explicitly migrated sandbox-semantic test.
+7. Existing tests must not be loosened, deleted, skipped, or rewritten merely to make the new sandbox work pass. The only allowed edits to old tests are tests that directly lock the old `bypass/elevated` sandbox semantics or the old Windows auto-noop expectation.
 
-The existing sandbox tests are the core baseline and should not be rewritten or loosened. New tests may be added alongside them to cover new behavior, using the same style, fixtures, and assertion patterns as nearby tests.
+The existing sandbox tests are the core regression coverage and should not be rewritten or loosened. New tests may be added alongside them to cover new behavior, using the same style, fixtures, and assertion patterns as nearby tests.
 
 Additive test coverage should include:
 

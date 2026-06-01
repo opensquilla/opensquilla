@@ -589,20 +589,19 @@ CLI 主命令收敛为：
 
 已有 `tests/test_sandbox` 覆盖了一部分 sandbox 行为，但它没有覆盖新 Run Mode 语义，也没有防止 `Trusted-Sandbox` 被接回 host exec。
 
-另外，开发流程如果只跑单个新测试，就可能出现“沙箱功能自己绿了，但旧的沙箱/CLI/前端入口被破坏”的情况。`/home/lrk/opensquilla/tests` 是全项目测试目录，但当前沙箱迁移不要求这个目录下所有测试都作为阻塞门槛通过。
+另外，开发流程如果只跑单个新测试，就可能出现“沙箱功能自己绿了，但旧的沙箱/CLI/前端入口被破坏”的情况。`/home/lrk/opensquilla/tests` 是全项目测试目录，但当前沙箱迁移不要求开发前或开发后全量测试通过。
 
 **优化后设计**
 
-开发门禁改成“相关矩阵必须绿，全量测试只做观察”：
+开发门禁改成“实现者按风险选测试，不要求全量基线”：
 
 1. 测试命令使用项目方式 `uv run pytest`，不是裸 `pytest`。
-2. 开发前先跑沙箱相关基线：`tests/test_sandbox`、`tests/test_cli/test_sandbox_cmd.py`、`tests/test_gateway/test_chat_static_assets.py`、`tests/test_application/test_approval_rpc.py`、`tests/test_gateway/test_rpc_approvals.py`。
-3. 如果开发前这个相关基线不通过，先停止沙箱开发；如果已经有自己的预备改动，就只撤回自己的改动，然后单独处理相关基线失败。
-4. 全量 `uv run pytest tests` 可以作为健康快照，但不是这次沙箱迁移的阻塞门槛。它如果在 Feishu、packaging、系统依赖、live smoke 等无关区域失败，只记录，不因此停掉沙箱开发。
-5. 开发中可以用 `.sandbox-tmp-tests/` 的临时测试加快反馈，临时测试不提交。
-6. 每个任务结束后，必须跑该任务列出的 focused tests。
-7. 实现完成后，先跑沙箱相关矩阵；相关矩阵通过后，再把重要的新沙箱测试补充到 `tests/test_sandbox/`。
-8. 新增沙箱测试失败时，修实现代码，不改无关测试。
+2. 开发前不要求全量 `tests` 通过，也不要求固定的 focused baseline 通过。
+3. 开发后不要求全量 `tests` 通过。
+4. 测试范围由实现者根据实际改动决定。一般优先跑被触碰的 sandbox、CLI、gateway、approval、tool、frontend static 测试。
+5. 全量 `uv run pytest tests` 只是可选健康快照；如果 Feishu、packaging、系统依赖、live smoke 等无关区域失败，只记录，不因此停掉沙箱开发。
+6. 如果需要新增测试，重要的沙箱测试可以直接写进 `tests/test_sandbox/`，不用先放临时测试目录。
+7. 新增或选中的沙箱相关测试失败时，修实现代码，不改无关测试。
 
 原有测试不随意改、不删、不放松断言。允许修改的旧测试只有三类：旧 CLI sandbox/bypass 语义测试、旧前端 bypass/elevated 静态测试、旧 Windows auto-noop 预期测试。沙箱新能力的测试风格跟附近测试保持一致：
 

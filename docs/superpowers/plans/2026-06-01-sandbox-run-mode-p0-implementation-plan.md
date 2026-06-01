@@ -31,7 +31,7 @@ In scope:
 - Approvals surfaces remove `Bypass Approvals`.
 - First slice of external path access and mount validation.
 - Native Windows backend entry named `windows_restricted_token`, with fail-closed behavior when helper/setup is unavailable.
-- Additive sandbox-focused tests after the sandbox-relevant focused matrix is green.
+- Additive sandbox-focused tests are added directly under `tests/test_sandbox/` as the relevant behavior is implemented.
 
 Out of scope for this plan:
 
@@ -150,40 +150,30 @@ Existing tests that are allowed to change because they explicitly lock the old s
 
 Do not modify unrelated tests.
 
-Final permanent sandbox tests should be added under:
+Sandbox tests should be added directly under:
 
 - `tests/test_sandbox/`
 
-Temporary development-only tests go under:
+Tests introduced for a task should live with that task's commit when they are useful long-term. Do not create a separate test directory.
 
-- `.sandbox-tmp-tests/`
-
-This directory is ignored by the existing `.*` ignore rule and must never be committed.
-
-## Test Gate Rules
+## Test Decision Rules
 
 - Use `uv run pytest`, not bare `pytest`, because the project expects the repository-local environment.
-- Before implementation, run the sandbox-relevant baseline:
-  `uv run pytest tests/test_sandbox tests/test_cli/test_sandbox_cmd.py tests/test_gateway/test_chat_static_assets.py tests/test_application/test_approval_rpc.py tests/test_gateway/test_rpc_approvals.py -q`.
-- If that focused baseline fails before feature work, stop sandbox development.
-- If any preparatory edits were made before discovering the focused baseline failure, revert only those own edits and report the focused baseline failure.
-- A full `uv run pytest tests` run may be used as a diagnostic snapshot, but it is not a blocking gate for this sandbox migration.
-- If the full suite fails in unrelated areas, record the failures and continue. Do not edit unrelated tests to make it pass.
-- During development, temporary tests may be placed in `.sandbox-tmp-tests/` and run directly.
-- After each implementation task, run the focused existing tests named in that task.
-- After implementation but before adding new permanent sandbox tests, rerun the sandbox-relevant focused matrix.
-- If that focused matrix fails, fix implementation code or the explicitly migrated sandbox-semantic tests. Do not modify unrelated tests to make it pass.
-- After the focused matrix is green, add important new sandbox tests to `tests/test_sandbox/`.
-- If new sandbox tests fail, fix implementation code.
-- Final gate is the focused sandbox matrix plus the new sandbox tests passing.
+- There is no required pre-development full-suite baseline gate.
+- There is no required post-development full-suite baseline gate.
+- The implementation owner chooses tests based on the files and behavior touched by each task.
+- Full `uv run pytest tests` is optional diagnostic evidence only. If it fails in unrelated areas, record the failures and continue.
+- Do not edit unrelated tests to make the suite pass.
+- Add important new sandbox tests directly to `tests/test_sandbox/`.
+- If a selected sandbox-relevant test fails because of this work, fix the implementation code or the explicitly migrated sandbox-semantic test.
+- The final handoff must list exactly which tests were run, which passed, and any unrelated known failures that were observed.
 
 ---
 
-### Task 0: Focused Baseline Gate And Temporary Test Workspace
+### Task 0: Worktree And Test Selection Check
 
 **Files:**
-- Create locally only: `.sandbox-tmp-tests/`
-- Do not commit: `.sandbox-tmp-tests/**`
+- No file changes.
 
 - [ ] **Step 1: Verify worktree**
 
@@ -195,37 +185,19 @@ git status --short
 
 Expected: either no output, or only user-owned changes unrelated to this implementation. If there are unrelated user changes, do not touch them.
 
-- [ ] **Step 2: Run focused sandbox baseline**
+- [ ] **Step 2: Decide the first task's tests**
 
-Run:
-
-```bash
-uv run pytest tests/test_sandbox tests/test_cli/test_sandbox_cmd.py tests/test_gateway/test_chat_static_assets.py tests/test_application/test_approval_rpc.py tests/test_gateway/test_rpc_approvals.py -q
-```
-
-Expected: PASS. If this focused baseline fails before sandbox work starts, stop. Revert only own preparatory edits, then report the focused baseline failure.
-
-Optional diagnostic only:
+Choose tests based on the next task's touched files. For Task 1, a good first command after writing the test is:
 
 ```bash
-timeout 300 uv run pytest tests
+uv run pytest tests/test_sandbox/test_run_modes.py -q
 ```
 
-Expected: useful health snapshot. Failure in unrelated areas is recorded but does not block sandbox work.
+Expected: this command initially fails before implementation and passes after Task 1 implementation.
 
-- [ ] **Step 3: Create temporary test directory**
+- [ ] **Step 3: Commit**
 
-Run:
-
-```bash
-mkdir -p .sandbox-tmp-tests
-```
-
-Expected: directory exists and is not shown by `git status --short`.
-
-- [ ] **Step 4: Commit baseline marker only if needed**
-
-No commit is required for Task 0 unless a plan executor creates tracked documentation notes. Runtime code must not change in this task.
+No commit is required for Task 0. Runtime code must not change in this task.
 
 ---
 
@@ -236,11 +208,11 @@ No commit is required for Task 0 unless a plan executor creates tracked document
 - Modify: `src/opensquilla/sandbox/config.py`
 - Modify: `src/opensquilla/sandbox/status.py`
 - Modify: `src/opensquilla/permissions.py`
-- Temporary test: `.sandbox-tmp-tests/test_run_mode_core.py`
+- Test: `tests/test_sandbox/test_run_modes.py`
 
-- [ ] **Step 1: Write temporary failing tests**
+- [ ] **Step 1: Write failing tests**
 
-Create `.sandbox-tmp-tests/test_run_mode_core.py`:
+Create `tests/test_sandbox/test_run_modes.py`:
 
 ```python
 from __future__ import annotations
@@ -305,12 +277,12 @@ def test_normalize_run_mode_accepts_user_facing_spellings() -> None:
     assert normalize_run_mode("full-host-access") == RunMode.FULL
 ```
 
-- [ ] **Step 2: Run temporary test to verify failure**
+- [ ] **Step 2: Run test to verify failure**
 
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_run_mode_core.py -q
+uv run pytest tests/test_sandbox/test_run_modes.py -q
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'opensquilla.sandbox.run_mode'`.
@@ -530,12 +502,12 @@ def configured_default_elevated(config: Any) -> str | None:
 
 Keep `normalize_permission_mode()` for old config parsing; do not let `bypass` create host execution.
 
-- [ ] **Step 7: Run temporary test**
+- [ ] **Step 7: Run test**
 
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_run_mode_core.py -q
+uv run pytest tests/test_sandbox/test_run_modes.py -q
 ```
 
 Expected: PASS.
@@ -555,7 +527,7 @@ Expected: PASS. If failures are due to new run-mode field serialization, fix imp
 Run:
 
 ```bash
-git add src/opensquilla/sandbox/run_mode.py src/opensquilla/sandbox/config.py src/opensquilla/sandbox/status.py src/opensquilla/permissions.py
+git add tests/test_sandbox/test_run_modes.py src/opensquilla/sandbox/run_mode.py src/opensquilla/sandbox/config.py src/opensquilla/sandbox/status.py src/opensquilla/permissions.py
 git commit -m "feat: add sandbox run mode core"
 ```
 
@@ -566,11 +538,11 @@ git commit -m "feat: add sandbox run mode core"
 **Files:**
 - Modify: `src/opensquilla/cli/sandbox_cmd.py`
 - Modify: `tests/test_cli/test_sandbox_cmd.py`
-- Temporary test: `.sandbox-tmp-tests/test_sandbox_cli_run_modes.py`
+- Test: `tests/test_sandbox/test_cli_run_modes.py`
 
-- [ ] **Step 1: Write temporary CLI behavior tests**
+- [ ] **Step 1: Write CLI behavior tests**
 
-Create `.sandbox-tmp-tests/test_sandbox_cli_run_modes.py`:
+Create `tests/test_sandbox/test_cli_run_modes.py`:
 
 ```python
 from __future__ import annotations
@@ -649,12 +621,12 @@ def test_sandbox_status_reports_run_mode(tmp_path: Path) -> None:
     assert data["sandbox"]["run_mode"] == "trusted"
 ```
 
-- [ ] **Step 2: Run temporary tests to verify current failure**
+- [ ] **Step 2: Run tests to verify current failure**
 
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_sandbox_cli_run_modes.py -q
+uv run pytest tests/test_sandbox/test_cli_run_modes.py -q
 ```
 
 Expected: FAIL because `trust` is not implemented and `bypass` still succeeds.
@@ -783,7 +755,7 @@ assert cfg.permissions.default_mode == "off"
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_sandbox_cli_run_modes.py tests/test_cli/test_sandbox_cmd.py -q
+uv run pytest tests/test_sandbox/test_cli_run_modes.py tests/test_cli/test_sandbox_cmd.py -q
 ```
 
 Expected: PASS.
@@ -793,7 +765,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add src/opensquilla/cli/sandbox_cmd.py tests/test_cli/test_sandbox_cmd.py
+git add tests/test_sandbox/test_cli_run_modes.py src/opensquilla/cli/sandbox_cmd.py tests/test_cli/test_sandbox_cmd.py
 git commit -m "feat: migrate sandbox cli run modes"
 ```
 
@@ -808,11 +780,11 @@ git commit -m "feat: migrate sandbox cli run modes"
 - Modify: `src/opensquilla/gateway/rpc_sessions.py`
 - Modify: `src/opensquilla/gateway/routing.py`
 - Modify: `src/opensquilla/tools/types.py`
-- Temporary test: `.sandbox-tmp-tests/test_run_context_rpc.py`
+- Test: `tests/test_sandbox/test_run_context.py`
 
-- [ ] **Step 1: Write temporary Run Context tests**
+- [ ] **Step 1: Write Run Context tests**
 
-Create `.sandbox-tmp-tests/test_run_context_rpc.py`:
+Create `tests/test_sandbox/test_run_context.py`:
 
 ```python
 from __future__ import annotations
@@ -877,12 +849,12 @@ async def test_saved_context_wins_over_later_global_default() -> None:
     assert ctx.source == "saved"
 ```
 
-- [ ] **Step 2: Run temporary tests to verify failure**
+- [ ] **Step 2: Run tests to verify failure**
 
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_run_context_rpc.py -q
+uv run pytest tests/test_sandbox/test_run_context.py -q
 ```
 
 Expected: FAIL because `opensquilla.sandbox.run_context` does not exist.
@@ -1169,12 +1141,12 @@ route_envelope.metadata["sandbox_mounts"] = [grant.__dict__ for grant in run_con
 
 If `_source.runMode` is present and owner-owned, update Run Context through `set_run_mode()` before building the route.
 
-- [ ] **Step 8: Run temporary tests**
+- [ ] **Step 8: Run tests**
 
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_run_context_rpc.py -q
+uv run pytest tests/test_sandbox/test_run_context.py -q
 ```
 
 Expected: PASS.
@@ -1194,7 +1166,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add src/opensquilla/sandbox/run_context.py src/opensquilla/gateway/rpc_sandbox.py src/opensquilla/gateway/rpc/__init__.py src/opensquilla/gateway/rpc_sessions.py src/opensquilla/gateway/routing.py src/opensquilla/tools/types.py
+git add tests/test_sandbox/test_run_context.py src/opensquilla/sandbox/run_context.py src/opensquilla/gateway/rpc_sandbox.py src/opensquilla/gateway/rpc/__init__.py src/opensquilla/gateway/rpc_sessions.py src/opensquilla/gateway/routing.py src/opensquilla/tools/types.py
 git commit -m "feat: add sandbox session run context"
 ```
 
@@ -1209,11 +1181,11 @@ git commit -m "feat: add sandbox session run context"
 - Modify: `src/opensquilla/gateway/rpc_approvals.py`
 - Modify: `src/opensquilla/tools/builtin/shell.py`
 - Modify: `src/opensquilla/tools/builtin/code_exec.py`
-- Temporary test: `.sandbox-tmp-tests/test_trusted_sandbox_execution.py`
+- Test: `tests/test_sandbox/test_trusted_sandbox_execution.py`
 
-- [ ] **Step 1: Write temporary behavior tests**
+- [ ] **Step 1: Write behavior tests**
 
-Create `.sandbox-tmp-tests/test_trusted_sandbox_execution.py`:
+Create `tests/test_sandbox/test_trusted_sandbox_execution.py`:
 
 ```python
 from __future__ import annotations
@@ -1281,12 +1253,12 @@ async def test_ordinary_approval_result_does_not_carry_elevated_mode(monkeypatch
         queue.close()
 ```
 
-- [ ] **Step 2: Run temporary tests to verify failure**
+- [ ] **Step 2: Run tests to verify failure**
 
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_trusted_sandbox_execution.py -q
+uv run pytest tests/test_sandbox/test_trusted_sandbox_execution.py -q
 ```
 
 Expected: FAIL because old shell approval/elevated code still treats bypass/trust as host elevation.
@@ -1459,12 +1431,12 @@ In `src/opensquilla/tools/builtin/code_exec.py`:
 - Destructive Python approval must not imply host execution.
 - Keep actual Python subprocess sandboxed when runtime sandbox is enabled and run mode is standard/trusted.
 
-- [ ] **Step 9: Run temporary and existing tests**
+- [ ] **Step 9: Run selected tests**
 
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_trusted_sandbox_execution.py tests/test_sandbox/test_escalate_backend_denial.py tests/test_gateway/test_rpc_approvals.py -q
+uv run pytest tests/test_sandbox/test_trusted_sandbox_execution.py tests/test_sandbox/test_escalate_backend_denial.py tests/test_gateway/test_rpc_approvals.py -q
 ```
 
 Expected: PASS.
@@ -1474,7 +1446,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add src/opensquilla/application/approval_queue.py src/opensquilla/application/approval_rpc.py src/opensquilla/gateway/app.py src/opensquilla/gateway/rpc_approvals.py src/opensquilla/tools/builtin/shell.py src/opensquilla/tools/builtin/code_exec.py src/opensquilla/sandbox/integration.py
+git add tests/test_sandbox/test_trusted_sandbox_execution.py src/opensquilla/application/approval_queue.py src/opensquilla/application/approval_rpc.py src/opensquilla/gateway/app.py src/opensquilla/gateway/rpc_approvals.py src/opensquilla/tools/builtin/shell.py src/opensquilla/tools/builtin/code_exec.py src/opensquilla/sandbox/integration.py
 git commit -m "feat: keep trusted sandbox approvals sandboxed"
 ```
 
@@ -1674,11 +1646,11 @@ git commit -m "feat: migrate web ui to sandbox run mode"
 - Modify: `src/opensquilla/sandbox/integration.py`
 - Modify: `src/opensquilla/tools/builtin/filesystem.py`
 - Modify: `src/opensquilla/tools/builtin/shell.py`
-- Temporary test: `.sandbox-tmp-tests/test_path_access_request.py`
+- Test: `tests/test_sandbox/test_path_access.py`
 
-- [ ] **Step 1: Write temporary path validation tests**
+- [ ] **Step 1: Write path validation tests**
 
-Create `.sandbox-tmp-tests/test_path_access_request.py`:
+Create `tests/test_sandbox/test_path_access.py`:
 
 ```python
 from __future__ import annotations
@@ -1723,12 +1695,12 @@ def test_workspace_path_is_already_allowed(tmp_path: Path) -> None:
     assert decision.status == "allowed"
 ```
 
-- [ ] **Step 2: Run temporary tests to verify failure**
+- [ ] **Step 2: Run tests to verify failure**
 
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_path_access_request.py -q
+uv run pytest tests/test_sandbox/test_path_access.py -q
 ```
 
 Expected: FAIL because module does not exist.
@@ -1879,12 +1851,12 @@ In `src/opensquilla/tools/builtin/filesystem.py`, when a requested absolute path
 
 In `shell.py`, if `workdir` is outside workspace/mounts, return the same `path_access_required` envelope before attempting host execution.
 
-- [ ] **Step 6: Run temporary tests**
+- [ ] **Step 6: Run tests**
 
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_path_access_request.py -q
+uv run pytest tests/test_sandbox/test_path_access.py -q
 ```
 
 Expected: PASS.
@@ -1904,7 +1876,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add src/opensquilla/sandbox/path_validation.py src/opensquilla/sandbox/run_context.py src/opensquilla/sandbox/policy.py src/opensquilla/sandbox/integration.py src/opensquilla/tools/builtin/filesystem.py src/opensquilla/tools/builtin/shell.py
+git add tests/test_sandbox/test_path_access.py src/opensquilla/sandbox/path_validation.py src/opensquilla/sandbox/run_context.py src/opensquilla/sandbox/policy.py src/opensquilla/sandbox/integration.py src/opensquilla/tools/builtin/filesystem.py src/opensquilla/tools/builtin/shell.py
 git commit -m "feat: request sandbox mounts for external paths"
 ```
 
@@ -1919,11 +1891,11 @@ git commit -m "feat: request sandbox mounts for external paths"
 - Modify: `src/opensquilla/sandbox/config.py`
 - Modify: `src/opensquilla/sandbox/integration.py`
 - Modify: `tests/test_sandbox/test_windows_auto_backend.py`
-- Temporary test: `.sandbox-tmp-tests/test_windows_restricted_token_backend.py`
+- Test: `tests/test_sandbox/test_windows_restricted_token_backend.py`
 
-- [ ] **Step 1: Write temporary backend selection tests**
+- [ ] **Step 1: Write backend selection tests**
 
-Create `.sandbox-tmp-tests/test_windows_restricted_token_backend.py`:
+Create `tests/test_sandbox/test_windows_restricted_token_backend.py`:
 
 ```python
 from __future__ import annotations
@@ -1997,12 +1969,12 @@ def test_windows_auto_fails_closed_when_restricted_token_unavailable(monkeypatch
         )
 ```
 
-- [ ] **Step 2: Run temporary tests to verify failure**
+- [ ] **Step 2: Run tests to verify failure**
 
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_windows_restricted_token_backend.py -q
+uv run pytest tests/test_sandbox/test_windows_restricted_token_backend.py -q
 ```
 
 Expected: FAIL because `WindowsRestrictedTokenBackend` does not exist and current Windows auto disables sandbox.
@@ -2152,7 +2124,7 @@ Modify `src/opensquilla/sandbox/integration.py`:
 
 Modify `tests/test_sandbox/test_windows_auto_backend.py`:
 
-- Replace `test_windows_auto_backend_disables_sandbox_runtime` with tests matching temporary tests:
+- Replace `test_windows_auto_backend_disables_sandbox_runtime` with tests matching tests:
   - auto selects `windows_restricted_token` when available;
   - auto fails closed when unavailable.
 
@@ -2163,7 +2135,7 @@ Modify `tests/test_sandbox/test_windows_auto_backend.py`:
 Run:
 
 ```bash
-uv run pytest .sandbox-tmp-tests/test_windows_restricted_token_backend.py tests/test_sandbox/test_windows_auto_backend.py -q
+uv run pytest tests/test_sandbox/test_windows_restricted_token_backend.py tests/test_sandbox/test_windows_auto_backend.py -q
 ```
 
 Expected: PASS on non-Windows through monkeypatching. Native Windows smoke testing is manual unless a Windows runner is available.
@@ -2173,189 +2145,81 @@ Expected: PASS on non-Windows through monkeypatching. Native Windows smoke testi
 Run:
 
 ```bash
-git add src/opensquilla/sandbox/backend/windows_restricted_token.py src/opensquilla/sandbox/backend/windows_restricted_token_helper.py src/opensquilla/sandbox/backend/__init__.py src/opensquilla/sandbox/config.py src/opensquilla/sandbox/integration.py tests/test_sandbox/test_windows_auto_backend.py
+git add tests/test_sandbox/test_windows_restricted_token_backend.py src/opensquilla/sandbox/backend/windows_restricted_token.py src/opensquilla/sandbox/backend/windows_restricted_token_helper.py src/opensquilla/sandbox/backend/__init__.py src/opensquilla/sandbox/config.py src/opensquilla/sandbox/integration.py tests/test_sandbox/test_windows_auto_backend.py
 git commit -m "feat: add windows restricted-token sandbox backend"
 ```
 
 ---
 
-### Task 8: Run Focused Regression Gate Before Adding New Permanent Tests
+### Task 8: Test Coverage Review
 
 **Files:**
-- No new permanent tests yet.
-- `.sandbox-tmp-tests/` may remain ignored locally.
+- Modify only if needed: `tests/test_sandbox/*.py`
+- Modify only if needed: `tests/test_cli/test_sandbox_cmd.py`
+- Modify only if needed: `tests/test_gateway/test_chat_static_assets.py`
 
-- [ ] **Step 1: Run focused sandbox regression matrix**
+- [ ] **Step 1: Review tests added during implementation**
 
-Run:
+Confirm the implementation tasks already added the important sandbox tests directly under `tests/test_sandbox/`:
 
-```bash
-uv run pytest tests/test_sandbox tests/test_cli/test_sandbox_cmd.py tests/test_gateway/test_chat_static_assets.py tests/test_application/test_approval_rpc.py tests/test_gateway/test_rpc_approvals.py tests/test_gateway/test_rpc_sessions.py tests/test_gateway/test_rpc_chat_clarify_submit.py tests/test_tools/test_sandbox_network_hint.py -q
-```
+- run-mode mapping and legacy `bypass` migration behavior;
+- session Run Context resume/default behavior;
+- Trusted-Sandbox staying sandboxed;
+- Host Once only after sandbox backend failure;
+- external path and sensitive mount validation;
+- Windows restricted-token backend selection/fail-closed behavior.
 
-Expected: PASS.
+Expected: each implemented behavior has either a new `tests/test_sandbox/` test or an intentionally migrated old semantic test.
 
-If this fails:
+- [ ] **Step 2: Add missing sandbox tests directly if needed**
 
-- Fix implementation code.
-- Do not edit unrelated tests.
-- Only adjust `tests/test_cli/test_sandbox_cmd.py`, `tests/test_gateway/test_chat_static_assets.py`, or `tests/test_sandbox/test_windows_auto_backend.py` if the failure is directly caused by their old sandbox semantics or Windows backend expectation.
+If a requirement above lacks coverage, add the missing test directly to the closest `tests/test_sandbox/` file. Do not create `.sandbox-tmp-tests/`.
 
-- [ ] **Step 2: Optionally record full-suite health**
-
-Run when time permits:
-
-```bash
-timeout 300 uv run pytest tests
-```
-
-Expected: diagnostic output only. Unrelated failures do not block this sandbox migration.
-
-- [ ] **Step 3: Check no temp tests are tracked**
-
-Run:
-
-```bash
-git status --short
-```
-
-Expected: no `.sandbox-tmp-tests/` entries.
-
----
-
-### Task 9: Add Permanent Sandbox Tests
-
-**Files:**
-- Create: `tests/test_sandbox/test_run_modes.py`
-- Create: `tests/test_sandbox/test_run_context.py`
-- Create: `tests/test_sandbox/test_path_access.py`
-- Modify only if needed: `tests/test_sandbox/test_escalate_backend_denial.py`
-
-- [ ] **Step 1: Add permanent run-mode tests**
-
-Create `tests/test_sandbox/test_run_modes.py` with the important assertions from `.sandbox-tmp-tests/test_run_mode_core.py`, plus:
-
-```python
-def test_trusted_run_mode_never_maps_to_host_execution() -> None:
-    from opensquilla.sandbox.run_mode import RunMode, execution_target
-
-    assert execution_target(RunMode.TRUSTED) == "sandbox"
-```
-
-- [ ] **Step 2: Add permanent Run Context tests**
-
-Create `tests/test_sandbox/test_run_context.py` with:
-
-```python
-from __future__ import annotations
-
-from types import SimpleNamespace
-
-import pytest
-
-from opensquilla.sandbox.run_context import get_run_context, set_run_mode
-from opensquilla.sandbox.run_mode import RunMode
-
-
-class _SessionManager:
-    def __init__(self, origin=None):
-        self.node = SimpleNamespace(session_key="s1", origin=origin)
-
-    async def get_session(self, session_key: str):
-        return self.node
-
-    async def update(self, session_key: str, **fields):
-        for key, value in fields.items():
-            setattr(self.node, key, value)
-        return self.node
-
-
-def _config(mode: str):
-    return SimpleNamespace(
-        sandbox=SimpleNamespace(run_mode=mode, sandbox=mode != "full", security_grading=mode != "full"),
-        permissions=SimpleNamespace(default_mode="full" if mode == "full" else "off"),
-    )
-
-
-@pytest.mark.asyncio
-async def test_saved_context_beats_looser_global_default() -> None:
-    manager = _SessionManager(origin={"sandbox_run_context": {"run_mode": "standard"}})
-
-    context = await get_run_context(manager, "s1", config=_config("full"), workspace="/tmp/ws")
-
-    assert context.run_mode == RunMode.STANDARD
-    assert context.source == "saved"
-
-
-@pytest.mark.asyncio
-async def test_set_run_mode_persists_to_origin() -> None:
-    manager = _SessionManager()
-
-    context = await set_run_mode(manager, "s1", RunMode.TRUSTED, config=_config("standard"))
-
-    assert context.run_mode == RunMode.TRUSTED
-    assert manager.node.origin["sandbox_run_context"]["run_mode"] == "trusted"
-```
-
-- [ ] **Step 3: Add permanent path access tests**
-
-Create `tests/test_sandbox/test_path_access.py` using the important assertions from `.sandbox-tmp-tests/test_path_access_request.py`.
-
-- [ ] **Step 4: Run new sandbox tests**
-
-Run:
+Run the tests selected for the files changed in this step. Example:
 
 ```bash
 uv run pytest tests/test_sandbox/test_run_modes.py tests/test_sandbox/test_run_context.py tests/test_sandbox/test_path_access.py -q
 ```
 
-Expected: PASS.
+Expected: selected tests pass, or implementation code is fixed until they pass.
 
-- [ ] **Step 5: Commit permanent tests**
+- [ ] **Step 3: Commit coverage additions if any**
 
-Run:
+Run with exact paths that changed:
 
 ```bash
 git add tests/test_sandbox/test_run_modes.py tests/test_sandbox/test_run_context.py tests/test_sandbox/test_path_access.py
 git commit -m "test: cover sandbox run mode behavior"
 ```
 
+If Task 8 only reviewed existing tests and changed nothing, no commit is required.
+
 ---
 
-### Task 10: Final Focused Verification And Cleanup
+### Task 9: Final Verification And Cleanup
 
 **Files:**
 - No code changes unless verification finds implementation bugs.
 
-- [ ] **Step 1: Run final focused sandbox gate**
+- [ ] **Step 1: Choose and run final verification tests**
 
-Run:
+Choose tests based on the files changed in this branch. A typical final command for this migration is:
 
 ```bash
 uv run pytest tests/test_sandbox tests/test_cli/test_sandbox_cmd.py tests/test_gateway/test_chat_static_assets.py tests/test_application/test_approval_rpc.py tests/test_gateway/test_rpc_approvals.py tests/test_gateway/test_rpc_sessions.py tests/test_gateway/test_rpc_chat_clarify_submit.py tests/test_tools/test_sandbox_network_hint.py -q
 ```
 
-Expected: PASS.
+Expected: selected sandbox-relevant tests pass. If a selected test fails because of this branch, fix implementation code or the explicitly migrated sandbox-semantic test.
 
 - [ ] **Step 2: Optionally record full-suite health**
 
-Run when time permits:
+Run only if useful:
 
 ```bash
 timeout 300 uv run pytest tests
 ```
 
-Expected: diagnostic output only. Record unrelated failures separately.
-
-- [ ] **Step 3: Remove temporary tests**
-
-Run:
-
-```bash
-rm -rf .sandbox-tmp-tests
-```
-
-Expected: no tracked changes.
+Expected: diagnostic output only. Full-suite failure in unrelated areas does not block this sandbox migration.
 
 - [ ] **Step 3: Check old bypass strings**
 
@@ -2410,8 +2274,8 @@ Spec coverage:
 - Approval surfaces remove bypass shortcut: Task 5.
 - External path access asks for mount first: Task 6.
 - Windows restricted-token backend current scope: Task 7.
-- Focused sandbox test gate before/after development: Task 0, Task 8, Task 10.
-- Temporary tests during development, permanent tests after the focused sandbox matrix is green: Task 0, Task 8, Task 9.
+- Test selection is implementation-owner controlled rather than a fixed full-suite gate: Task 0, Task 8, Task 9.
+- New important sandbox tests are added directly under `tests/test_sandbox/`: Task 1 through Task 8.
 
 Known follow-up plans:
 

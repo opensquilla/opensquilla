@@ -16,6 +16,7 @@ from opensquilla.paths import state_dir
 
 VALID_APPROVAL_MODES = frozenset({"auto-approve", "auto-deny", "prompt"})
 VALID_ELEVATED_MODES = frozenset({"on", "bypass", "full"})
+VALID_RUN_MODES = frozenset({"standard", "trusted", "full"})
 
 
 @dataclass
@@ -53,7 +54,7 @@ class ApprovalQueue:
         self._poll_interval = max(0.01, float(poll_interval))
         self._global_settings = ApprovalSettings()
         self._node_settings: dict[str, ApprovalSettings] = {}
-        self._session_elevated_modes: dict[str, str] = {}
+        self._session_run_modes: dict[str, str] = {}
 
         self._db_path = Path(db_path or os.fspath(_DEFAULT_APPROVAL_QUEUE_PATH))
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -259,11 +260,7 @@ class ApprovalQueue:
         entry._event.set()
         self._pending[approval_id] = entry
 
-        if approved and elevated_mode in VALID_ELEVATED_MODES:
-            entry.params["elevatedMode"] = elevated_mode
-            session_key = str(entry.params.get("sessionKey") or "").strip()
-            if session_key:
-                self.set_elevated_mode(session_key, elevated_mode)
+        del elevated_mode
 
         if approved and entry.namespace == "exec" and (allow_always or remember_intent):
             self._persist_command_intent(entry.params, allow_always=allow_always)
@@ -351,21 +348,38 @@ class ApprovalQueue:
         ]
 
     def set_elevated_mode(self, session_key: str, mode: str | None) -> None:
+        """Legacy compatibility wrapper for session run mode."""
         key = session_key.strip()
         if not key:
             raise ValueError("session_key is required")
         if mode in (None, "", "off"):
-            self._session_elevated_modes.pop(key, None)
+            self._session_run_modes.pop(key, None)
             return
         if mode not in VALID_ELEVATED_MODES:
             raise ValueError("mode must be one of: on, bypass, full, off")
-        self._session_elevated_modes[key] = mode
+        self.set_run_mode(key, "full" if mode == "full" else "trusted")
 
     def get_elevated_mode(self, session_key: str | None) -> str | None:
+        """Legacy compatibility wrapper returning only full host access."""
+        mode = self.get_run_mode(session_key)
+        return "full" if mode == "full" else None
+
+    def set_run_mode(self, session_key: str, mode: str | None) -> None:
+        key = session_key.strip()
+        if not key:
+            raise ValueError("session_key is required")
+        if mode in (None, "", "off"):
+            self._session_run_modes.pop(key, None)
+            return
+        if mode not in VALID_RUN_MODES:
+            raise ValueError("mode must be one of: full, standard, trusted, off")
+        self._session_run_modes[key] = mode
+
+    def get_run_mode(self, session_key: str | None) -> str | None:
         key = (session_key or "").strip()
         if not key:
             return None
-        return self._session_elevated_modes.get(key)
+        return self._session_run_modes.get(key)
 
     def resolve_pending_for_session(
         self,

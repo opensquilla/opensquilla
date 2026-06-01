@@ -339,8 +339,6 @@ def create_gateway_app(
             "allowAlways": bool(body.get("allowAlways", False)),
             "rememberIntent": bool(body.get("rememberIntent", False)),
         }
-        if namespace != "plugin" and body.get("elevatedMode") in ("on", "bypass", "full"):
-            resolve_params["elevatedMode"] = body.get("elevatedMode")
         result = await dispatcher.dispatch(
             "_http",
             method,

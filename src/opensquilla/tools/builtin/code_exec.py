@@ -278,28 +278,16 @@ async def execute_code(
     # Destructive-Python gate — mirrors the shell warnlist approval flow.
     warning = _check_code_destructive(code)
     if warning is not None:
-        from opensquilla.tools.builtin.shell import (
-            _approval_elevation_state,
-            _check_exec_approval,
-            _restore_approval_elevation,
-        )
+        from opensquilla.tools.builtin.shell import _check_exec_approval
 
-        prior_elevation = _approval_elevation_state()
-        approval_response: dict[str, object] | None = None
-        approval_granted = False
-        try:
-            approval_response = await _check_exec_approval(
-                tool_name="execute_code",
-                command=code[:200],
-                workdir=None,
-                warning=warning,
-                approval_id=approval_id,
-                background=False,
-            )
-            approval_granted = approval_response is None and _approval_elevation_state()
-        finally:
-            if not approval_granted:
-                _restore_approval_elevation(prior_elevation)
+        approval_response = await _check_exec_approval(
+            tool_name="execute_code",
+            command=code[:200],
+            workdir=None,
+            warning=warning,
+            approval_id=approval_id,
+            background=False,
+        )
         if approval_response is not None:
             return json.dumps(approval_response)
 
@@ -327,10 +315,14 @@ async def execute_code(
 
     safe_env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
 
-    from opensquilla.tools.builtin.shell import _elevated_mode
+    from opensquilla.tools.builtin.shell import (
+        _consume_host_once_current_call,
+        _host_execution_allowed,
+        _host_once_current_call,
+    )
 
-    elevated_bypass = _elevated_mode() in ("on", "bypass", "full")
-    if runtime is None or (runtime.effective.sandbox_enabled and not elevated_bypass):
+    host_execution = _host_execution_allowed()
+    if runtime is None or (runtime.effective.sandbox_enabled and not host_execution):
         decision, _policy, request = await gate_action(
             action_kind="code.exec",
             argv=(python_bin, "-c", code),
@@ -362,6 +354,8 @@ async def execute_code(
             )
             if isinstance(escalation, DenialResult):
                 return json.dumps(escalation.to_dict())
+            _host_once_current_call.set(True)
+            _consume_host_once_current_call()
             try:
                 proc = await asyncio.create_subprocess_exec(
                     python_bin, "-c", code,
@@ -395,6 +389,8 @@ async def execute_code(
                     returncode=-1, stdout="", stderr=f"Execution error: {exc}",
                     timed_out=False, elapsed_ms=0,
                 )
+            finally:
+                _host_once_current_call.set(False)
         elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
         stdout = sandbox_result.stdout
         stderr = sandbox_result.stderr

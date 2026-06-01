@@ -115,14 +115,14 @@ class _SpawnedBackgroundProcess:
     cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list)
 
 
-# Task-local flag: set inside _check_exec_approval when the user actually
-# approved (once / always / auto-approve / intent-cache). Implies
-# "permission to run this specific call on the host", bypassing the sandbox
-# backend for the current tool invocation. Does NOT leak to subsequent
-# tool calls — contextvars are async-task scoped.
-_elevate_current_call: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "_elevate_current_call", default=False
+# Task-local flag for a single host rerun after the sandbox backend itself
+# denied execution and the operator approved that host-once escalation.
+_host_once_current_call: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_host_once_current_call", default=False
 )
+# Legacy private alias for tests/callers that reset the task-local grant.
+# Semantics are now host-once, not ordinary approval elevation.
+_elevate_current_call = _host_once_current_call
 
 
 def _audit_command(command: str) -> str:
@@ -150,32 +150,41 @@ def _sandbox_effectively_off() -> bool:
     return runtime is None or not bool(getattr(effective, "sandbox_enabled", False))
 
 
-def _context_elevated_mode() -> str | None:
+def _context_run_mode() -> str | None:
     ctx = current_tool_context.get()
     if ctx is None:
         return None
-    if ctx.elevated in ("on", "bypass", "full"):
-        return ctx.elevated
+    if ctx.run_mode in ("standard", "trusted", "full"):
+        return ctx.run_mode
     if ctx.session_key:
         with contextlib.suppress(Exception):
-            mode = get_approval_queue().get_elevated_mode(ctx.session_key)
-            if mode in ("on", "bypass", "full"):
-                ctx.elevated = mode
+            mode = get_approval_queue().get_run_mode(ctx.session_key)
+            if mode in ("standard", "trusted", "full"):
+                ctx.run_mode = mode
                 return mode
+    if ctx.elevated == "full":
+        return "full"
+    if ctx.elevated in ("on", "bypass"):
+        return "trusted"
     return None
 
 
-def _elevated_mode() -> str | None:
-    """Return the active elevation, preferring the per-call approval grant.
+def _context_elevated_mode() -> str | None:
+    """Legacy compatibility: only Full Host Access counts as elevated."""
+    return "full" if _context_run_mode() == "full" else None
 
-    Precedence (highest first):
-    1. Approval-granted elevation (per-call contextvar)
-    2. ``ToolContext.elevated`` (``/elevated on|full`` slash command)
-    """
-    if _elevate_current_call.get():
-        _elevate_current_call.set(False)
-        return "on"
-    return _context_elevated_mode()
+
+def _consume_host_once_current_call() -> bool:
+    if not _host_once_current_call.get():
+        return False
+    _host_once_current_call.set(False)
+    return True
+
+
+def _host_execution_allowed() -> bool:
+    if _consume_host_once_current_call():
+        return True
+    return _context_run_mode() == "full"
 
 
 def _without_shell_null_redirections(command: str) -> str:
@@ -338,11 +347,11 @@ def _workspace_write_deny_shell_block(
 
 
 def _approval_elevation_state() -> bool:
-    return _elevate_current_call.get()
+    return _host_once_current_call.get()
 
 
 def _restore_approval_elevation(value: bool) -> None:
-    _elevate_current_call.set(value)
+    _host_once_current_call.set(value)
 
 
 def _resolve_exec_timeout(timeout: float | int | None) -> float:
@@ -660,14 +669,10 @@ async def exec_command(
         merged_env.update(env)
     effective_timeout = _resolve_exec_timeout(timeout)
 
-    # /elevated on|bypass|full — route exec around the sandbox backend so host
-    # paths are actually reachable. Approval is still handled above (elevated
-    # on still goes through approval; bypass and full skip it at
-    # _check_exec_approval).
-    elevated_bypass = _elevated_mode() in ("on", "bypass", "full")
+    host_execution = _host_execution_allowed()
 
     runtime = get_runtime()
-    if runtime is not None and runtime.effective.sandbox_enabled and not elevated_bypass:
+    if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
         decision, policy, request = await gate_action(
             action_kind="shell.exec",
             argv=("exec_command", command),
@@ -683,7 +688,7 @@ async def exec_command(
             policy=request.policy,
             stdin=None,
             env=dict(merged_env),
-            reason=request.reason,
+            reason=getattr(request, "reason", ""),
         )
         try:
             sandbox_result = await run_under_backend(backend_request, runtime=runtime)
@@ -695,6 +700,8 @@ async def exec_command(
             )
             if isinstance(escalation, DenialResult):
                 return json.dumps(escalation.to_dict())
+            _host_once_current_call.set(True)
+            _consume_host_once_current_call()
             try:
                 proc = await asyncio.create_subprocess_shell(
                     command,
@@ -715,14 +722,16 @@ async def exec_command(
                 return f"exit_code={proc.returncode}\n{output}"
             except Exception as e:
                 return f"[error] {e}"
+            finally:
+                _host_once_current_call.set(False)
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr
         output = _append_sandbox_network_hint(output)
         return f"exit_code={sandbox_result.returncode}\n{output}"
 
-    if elevated_bypass:
-        log.info("shell_exec_elevated_host", command=_audit_command(command))
+    if host_execution:
+        log.info("shell_exec_host", command=_audit_command(command), run_mode=_context_run_mode())
 
     try:
         with tempfile.TemporaryFile() as output_file:
@@ -815,10 +824,10 @@ async def background_process(
                 )
             return json.dumps(approval_response)
 
-    elevated_bypass = _elevated_mode() in ("on", "bypass", "full")
+    host_execution = _host_execution_allowed()
 
     runtime = get_runtime()
-    if runtime is not None and runtime.effective.sandbox_enabled and not elevated_bypass:
+    if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
         decision, policy, request = await gate_action(
             action_kind="shell.background",
             argv=("background_process", command),
@@ -867,8 +876,12 @@ async def background_process(
         session.collector_task = asyncio.create_task(_collect_restricted())
         return _background_process_result(session)
 
-    if elevated_bypass:
-        log.info("background_process_elevated_host", command=_audit_command(command))
+    if host_execution:
+        log.info(
+            "background_process_host",
+            command=_audit_command(command),
+            run_mode=_context_run_mode(),
+        )
 
     session_id = str(uuid.uuid4())[:8]
 
@@ -1239,18 +1252,6 @@ def _wait_for_inline_browser_approval(background: bool) -> bool:
     return ctx is not None and ctx.caller_kind is CallerKind.WEB
 
 
-def _apply_approval_elevated_mode(entry: object) -> None:
-    params = getattr(entry, "params", None)
-    if not isinstance(params, dict):
-        return
-    mode = params.get("elevatedMode")
-    if mode not in ("on", "bypass", "full"):
-        return
-    ctx = current_tool_context.get()
-    if ctx is not None and ctx.is_owner:
-        ctx.elevated = mode
-
-
 async def _check_exec_approval(
     tool_name: str,
     command: str,
@@ -1271,16 +1272,14 @@ async def _check_exec_approval(
         "mode": "background" if background else "foreground",
     }
 
-    elevated_mode = _context_elevated_mode()
-    elevated_full = elevated_mode == "full"
-    elevated_bypass = elevated_mode == "bypass"
-    sandbox_off_requires_approval = (
-        _sandbox_effectively_off() and not elevated_full and not elevated_bypass
-    )
+    run_mode = _context_run_mode()
+    run_mode_full = run_mode == "full"
+    run_mode_trusted = run_mode == "trusted"
+    sandbox_off_requires_approval = _sandbox_effectively_off() and not run_mode_full
 
     # Sensitive-path hard block. Only /elevated full bypasses; ordinary
     # approval cannot override.
-    if not elevated_full:
+    if not run_mode_full:
         from opensquilla.sandbox.sensitive_paths import (
             build_block_envelope,
             sensitive_target_in_command,
@@ -1321,27 +1320,24 @@ async def _check_exec_approval(
         )
         return deny_block
 
-    # /elevated full — trusted operator has taken explicit responsibility.
-    # Approvals are skipped entirely.
-    if elevated_full:
+    # Full Host Access — trusted operator has taken explicit responsibility.
+    # Approvals are skipped entirely and later execution is allowed on host.
+    if run_mode_full:
         log.info(
-            "shell_approval_skipped_elevated_full",
+            "shell_approval_skipped_run_mode_full",
             command=_audit_command(command),
             tool=tool_name,
         )
-        _elevate_current_call.set(True)
         return None
 
-    # /elevated bypass — auto-approve all warned commands, but the sensitive
-    # path block above still applies (so SSH keys, /etc, etc. remain
-    # protected). This is the user-friendly "trust me for normal stuff" mode.
-    if elevated_bypass:
+    # Trusted-Sandbox skips routine warnlist approval, while still executing
+    # through the sandbox when the runtime has a backend enabled.
+    if run_mode_trusted and not sandbox_off_requires_approval:
         log.info(
-            "shell_approval_skipped_elevated_bypass",
+            "shell_approval_skipped_run_mode_trusted",
             command=_audit_command(command),
             tool=tool_name,
         )
-        _elevate_current_call.set(True)
         return None
 
     if settings.mode == "auto-deny":
@@ -1359,11 +1355,10 @@ async def _check_exec_approval(
             command=_audit_command(command),
             tool=tool_name,
             mode=settings.mode,
-            elevated_mode=elevated_mode,
+            run_mode=run_mode,
         )
 
     if settings.mode == "auto-approve" and not sandbox_off_requires_approval:
-        _elevate_current_call.set(True)
         return None
 
     if ctx is not None and ctx.interaction_mode is InteractionMode.UNATTENDED:
@@ -1385,7 +1380,6 @@ async def _check_exec_approval(
                 command=_audit_command(command),
                 tool=tool_name,
             )
-            _elevate_current_call.set(True)
             return None
 
     if approval_id is None:
@@ -1397,7 +1391,6 @@ async def _check_exec_approval(
                 pass
             entry = queue.get(approval_id)
             if entry.approved:
-                _apply_approval_elevated_mode(entry)
                 try:
                     queue.consume(approval_id)
                 except ValueError as exc:
@@ -1408,7 +1401,6 @@ async def _check_exec_approval(
                     command=_audit_command(command),
                     inline=True,
                 )
-                _elevate_current_call.set(True)
                 return None
             return {
                 "status": "approval_denied",
@@ -1474,12 +1466,8 @@ async def _check_exec_approval(
             "message": "Approval was denied.",
         }
     try:
-        _apply_approval_elevated_mode(entry)
         queue.consume(approval_id)
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
     log.info("shell_approval_granted", approval_id=approval_id, command=_audit_command(command))
-    # User explicitly approved this call — grant per-call host execution so
-    # the approved rm/destructive op can actually reach the host target.
-    _elevate_current_call.set(True)
     return None

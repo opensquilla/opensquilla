@@ -130,9 +130,6 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         raise ValueError("params.approved is required")
     allow_always = bool(params.get("allowAlways", False))
     remember_intent = bool(params.get("rememberIntent", False))
-    elevated_mode = params.get("elevatedMode")
-    if elevated_mode not in ("on", "bypass", "full") or not ctx.principal.is_owner:
-        elevated_mode = None
     queue = get_approval_queue()
     return approval_resolve_rpc_payload(
         queue,
@@ -140,7 +137,7 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         bool(params["approved"]),
         allow_always=allow_always,
         remember_intent=remember_intent,
-        elevated_mode=elevated_mode,
+        elevated_mode=None,
     )
 
 

@@ -28,6 +28,36 @@ That is fragile because a session key may encode several independent concepts:
 The UI should not own those interpretations. The backend must provide a
 UI-ready session view, and the frontend should render from that view.
 
+## Product Model
+
+The Web UI has two different surfaces that must not collapse into one another:
+
+- `Conversations`: the daily navigation surface for items a user wants to open,
+  read, and continue from a user-centered perspective.
+- `Sessions`: the lower-level ledger/debug surface for all persisted runtime
+  records, including WebChat, CLI, channel threads, cron runs, subagents, system
+  tasks, deletion, filtering, and raw key inspection.
+
+`Conversations` is not a smaller Sessions table. It should group items by user
+entry point:
+
+- Chats: `sessionKind: "chat"`
+- Channels: `sessionKind: "channel"`
+- Automations: `sessionKind: "cron"`
+
+Task and system sessions should normally stay in the Sessions ledger unless a
+dedicated background-work UI explicitly opts into them.
+
+`New chat` is only a WebChat creation flow:
+
+```text
+New chat -> choose agent -> create/open WebChat
+```
+
+It must not create cron jobs, channel sessions, subagent tasks, or system/task
+sessions. Cron and channel creation/configuration belong to their own
+Automations/Channels surfaces.
+
 ## API
 
 Preferred RPC:
@@ -108,6 +138,9 @@ interface SessionListItemV1 {
     | "timeout"
     | "cancelled";
 
+  // Whether the current Web UI should enable its standard chat composer.
+  interactive: boolean;
+
   channel?: {
     name?: string;
     id?: string;
@@ -167,11 +200,25 @@ The lifecycle bucket of the session:
 - `system`: internal/system session when the backend exposes one.
 - `unknown`: backend cannot classify the row.
 
+This field is the primary grouping input for the `Conversations` surface. If a
+design sketch calls this concept `conversationKind: "chat" | "channel" |
+"cron" | "task"`, the contract name for that concept is `sessionKind`.
+
 `surface`
 
 The entry surface or platform that produced the session view. Examples:
 `webchat`, `cli`, `tui`, `mcp`, `feishu`, `slack`, `telegram`, `cron`,
 `subagent`.
+
+Current terminal TUI sessions are CLI-compatible. They should normally report
+`surface: "cli"` because the existing TUI gateway path creates CLI sessions and
+uses the CLI gateway client contract. Use `surface: "tui"` only if a future TUI
+path explicitly marks sessions as TUI-owned.
+
+Known public channel surfaces align with the channel adapter contract:
+`slack`, `discord`, `feishu`, `dingtalk`, `wecom`, `qq`, `matrix`, and
+`telegram`. Unknown or not-yet-public adapters should degrade to
+`surface: "unknown"` while preserving display metadata in `channel`.
 
 `conversationKind`
 
@@ -223,6 +270,24 @@ backend lifecycle string and use `runStatus` for idle/running turn badges.
 Runtime task status for current/last turn display. This is separate from the
 persisted session lifecycle status.
 
+`interactive`
+
+Whether the current Web UI should enable its standard chat composer for this
+row. This is not the same as visibility. A non-interactive row may still appear
+in Conversations or Sessions as a readable item.
+
+Default rules:
+
+- WebChat rows should be interactive.
+- CLI/TUI/MCP rows are compatible ledger rows; do not enable the Web UI composer
+  unless backend explicitly marks them interactive.
+- Channel rows are readable from the Web UI, but the standard WebChat composer
+  should remain disabled unless a safe channel-reply flow exists.
+- Cron, subagent, task, and system rows should normally be non-interactive.
+
+If the UI later needs more nuance, add a structured field such as `openMode`
+instead of inferring behavior from the key.
+
 `channel`
 
 Optional external channel identity and delivery metadata. This should be
@@ -266,12 +331,20 @@ Backend compatibility requirements:
 - Keep existing row fields such as `agent_id`, `agentId`, `updated_at`,
   `updatedAt`, `message_count`, `entry_count`, `sourceKind`, and `channelKind`.
 - Add new contract fields without deleting or changing the old shape.
+- Treat existing fields as compatibility output, not as the canonical semantic
+  source for the new Web UI.
+- Keep the existing CLI and current terminal TUI gateway contracts thin:
+  `sessions.create({ kind: "cli" })`, `sessions.list({ limit })`,
+  `sessions.resolve({ key })`, and `chat.history({ sessionKey })` must not gain
+  required new parameters.
 
 ## Frontend Rules
 
 Frontend should render from contract fields:
 
-- Group sessions by `groupLabel`.
+- Use `sessionKind` for the primary Conversations sections:
+  Chats, Channels, and Automations.
+- Use `groupLabel` for second-level grouping within a section.
 - Use `title` as primary text.
 - Use `subtitle` as secondary text.
 - Use `effectiveAgentId` for agent badges and agent ownership display.
@@ -280,11 +353,26 @@ Frontend should render from contract fields:
 - Use `runStatus` for runtime badges.
 - Use `sessionKind`, `surface`, and `conversationKind` for icons, colors, and
   high-level visual treatment.
+- Use `interactive` to decide whether to enable the standard Web UI composer.
 - Treat `thread` or `topic` as a modifier, not as a separate conversation kind.
 - Use `key` only for open/resume/copy/delete/RPC/debug actions.
 
 If the UI needs a missing semantic field, backend should add it to this contract
 instead of the frontend deriving it from the key.
+
+`Sessions` page rules:
+
+- Show all rows returned by `sessions.list`, including WebChat, CLI, channel,
+  channel thread/topic, cron, subagent, task, system, and unknown rows.
+- Keep raw key visible or easily inspectable.
+- Favor filtering, deletion, status inspection, debugging, and resume/open
+  actions over daily navigation grouping.
+
+`New chat` rules:
+
+- Create only WebChat sessions.
+- Ask for or infer the target agent, then call the WebChat creation/open flow.
+- Do not create cron, channel, subagent, task, or system rows.
 
 ## Forbidden Frontend Behavior
 
@@ -299,6 +387,8 @@ Frontend must not:
   contexts
 - render a normal webchat/channel session as cron only because cron delivered
   into it
+- use `New chat` as a generic creation entry for cron, channel, subagent, task,
+  or system sessions
 
 Temporary fallback logic should be isolated, clearly marked, and should not
 become the primary UI path.
@@ -324,6 +414,7 @@ become the primary UI path.
   "messageCount": 42,
   "status": "done",
   "runStatus": "idle",
+  "interactive": true,
   "parent": null,
   "cron": null
 }
@@ -345,7 +436,8 @@ become the primary UI path.
   "updatedAt": 1760000000000,
   "messageCount": 12,
   "status": "done",
-  "runStatus": "idle"
+  "runStatus": "idle",
+  "interactive": false
 }
 ```
 
@@ -366,6 +458,7 @@ become the primary UI path.
   "messageCount": 8,
   "status": "running",
   "runStatus": "running",
+  "interactive": false,
   "parent": {
     "key": "agent:main:webchat:default",
     "taskId": "task-123",
@@ -391,6 +484,7 @@ become the primary UI path.
   "messageCount": 4,
   "status": "done",
   "runStatus": "idle",
+  "interactive": false,
   "cron": {
     "jobId": "daily-summary",
     "sessionTarget": "isolated"
@@ -418,6 +512,7 @@ its original visual identity.
   "messageCount": 31,
   "status": "done",
   "runStatus": "idle",
+  "interactive": false,
   "channel": {
     "name": "feishu",
     "id": "oc_123"
@@ -451,6 +546,7 @@ its original visual identity.
   "messageCount": 16,
   "status": "done",
   "runStatus": "idle",
+  "interactive": false,
   "channel": {
     "name": "slack",
     "id": "C123",
@@ -478,7 +574,8 @@ another agent, the UI must show `effectiveAgentId`.
   "updatedAt": 1760000000000,
   "messageCount": 5,
   "status": "done",
-  "runStatus": "idle"
+  "runStatus": "idle",
+  "interactive": true
 }
 ```
 
@@ -496,15 +593,22 @@ Backend contract tests should cover at least:
 - legacy row where stored `agentId` differs from `effectiveAgentId`
 - unknown/fallback row that still produces usable `title`, `groupLabel`, and
   `runStatus`
+- current terminal TUI rows remaining CLI-compatible unless a future TUI path
+  explicitly marks them as TUI-owned
+- `interactive` defaults for WebChat, CLI/TUI, channel, cron, subagent, task,
+  and system rows
 
 ## Frontend Acceptance Criteria
 
-- Chat session selector groups by `groupLabel`.
+- Conversations sidebar groups by `sessionKind`, then `groupLabel`.
+- Chat session selector displays `title`, `subtitle`, `groupLabel`,
+  `effectiveAgentId`, and `interactive` behavior from the contract.
 - Sessions page displays `title`, `subtitle`, `effectiveAgentId`,
-  `messageCount`, `updatedAt`, and `runStatus`.
+  `messageCount`, `updatedAt`, `runStatus`, and raw key/debug affordances.
 - No new frontend logic parses `session.key` for semantic classification.
 - Existing open/resume/copy/delete behavior still uses `key`.
 - WebChat, CLI, subagent, cron, and external channel sessions render from
   contract fields.
+- `New chat` creates only WebChat sessions.
 - Unknown or missing values degrade gracefully.
 - Fallback logic does not reintroduce key parsing as the primary path.

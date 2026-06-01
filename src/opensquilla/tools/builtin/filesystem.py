@@ -226,10 +226,15 @@ def _sandbox_path_access_enabled() -> bool:
     runtime = get_runtime()
     if runtime is None or not runtime.effective.sandbox_enabled:
         return False
-    ctx = current_tool_context.get()
-    if ctx is not None and (ctx.run_mode == "full" or ctx.elevated == "full"):
+    if _full_host_access_active():
         return False
     return True
+
+
+def _full_host_access_active() -> bool:
+    from opensquilla.tools.builtin.shell import _context_elevated_mode
+
+    return _context_elevated_mode() == "full"
 
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
@@ -339,6 +344,8 @@ def _strict_read_material_root() -> Path | None:
 
 
 def _strict_read_roots() -> tuple[Path, ...]:
+    if _full_host_access_active():
+        return tuple()
     roots: list[Path] = []
     workspace_root = _strict_read_workspace_root()
     if workspace_root is not None:

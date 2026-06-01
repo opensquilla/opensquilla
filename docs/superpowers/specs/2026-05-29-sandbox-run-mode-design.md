@@ -61,26 +61,25 @@ The core runtime should move toward `RunMode`, `ExecutionTarget`, `ApprovalBehav
 
 ## CLI Run Mode Commands
 
-The CLI should use the same three-mode vocabulary as the frontend. Otherwise the product will keep teaching users that `bypass`, `on`, and `off` are mutually exclusive sandbox states, which is the exact confusion this design is removing.
+The CLI should use the same three-mode semantics as the frontend, but keep the short command style OpenSquilla already uses. The command should feel like the existing `opensquilla sandbox on/full/status/reset` family, not like a second verbose UI vocabulary.
 
 Recommended canonical commands:
 
 | CLI | Meaning | Config Effect |
 | --- | --- | --- |
-| `opensquilla sandbox standard` | default new chats to `Standard-Sandbox` | sandbox on, ordinary approvals on |
-| `opensquilla sandbox trusted` | default new chats to `Trusted-Sandbox` | sandbox on, ordinary approvals skipped |
-| `opensquilla sandbox host` | default new chats to `Full Host Access` | sandbox off, host execution |
+| `opensquilla sandbox on` | default new chats to `Standard-Sandbox` | sandbox on, ordinary approvals on |
+| `opensquilla sandbox trust` | default new chats to `Trusted-Sandbox` | sandbox on, ordinary approvals skipped |
+| `opensquilla sandbox full` | default new chats to `Full Host Access` | sandbox off, host execution |
 
 `opensquilla sandbox status` should display the global default Run Mode, backend availability, network/domain guard state, and whether a gateway restart or live reload is still needed. It should stop presenting the primary state as old `posture=bypass`.
 
-Legacy commands can remain as compatibility aliases for scripts, but their output should say what they now mean:
+Compatibility aliases can remain for scripts, but their output should say what they now mean:
 
-| Legacy CLI | New Meaning |
+| Alias | New Meaning |
 | --- | --- |
-| `opensquilla sandbox on` | alias for `standard` |
-| `opensquilla sandbox bypass` | alias for `trusted`, not host execution |
-| `opensquilla sandbox full` | alias for `host` |
-| `opensquilla sandbox reset` | reset to `standard` unless a separate install-profile decision says otherwise |
+| `opensquilla sandbox trusted` | alias for `trust` |
+| `opensquilla sandbox bypass` | deprecated alias for `trust`, not host execution |
+| `opensquilla sandbox reset` | reset to `on` unless a separate install-profile decision says otherwise |
 
 Do not add a prominent `sandbox off` command. If old config or slash-command code sees `off`, treat it as legacy "normal sandboxed approvals" and map it to `Standard-Sandbox`; do not teach users that "off" is a safe label for the new model.
 
@@ -257,16 +256,16 @@ Recommended backend mapping:
 | Linux | bubblewrap + process limits + network guard | native sandbox |
 | macOS | Seatbelt profile + process limits + network guard | native sandbox |
 | WSL2 | Linux backend from inside WSL2 | treat as Linux if dependencies pass doctor |
-| native Windows | Windows restricted-token backend | native sandbox, planned |
+| native Windows | Windows restricted-token backend | native sandbox, in scope now |
 | no supported backend | fail closed when sandbox is required | never silent noop |
 
 For native Windows, the best fit is the Codex-style restricted-token backend, adapted behind OpenSquilla's existing Python `Backend` interface. Codex's design is the closest match because it keeps execution native to Windows while still creating an OS-level boundary: restricted tokens, capability/ACL-based filesystem roots, Windows Filtering Platform network control, dedicated setup/refresh helpers, private desktop support, and Job Object lifecycle control.
 
-Claude Code is useful here as a safety lesson, not as the target backend: its native Windows PowerShell path treats sandboxing as unavailable and refuses execution when policy requires sandboxing. OpenSquilla should copy that fail-closed behavior until a real Windows backend is ready.
+This Windows backend is part of the current implementation scope, not a future roadmap item. Claude Code is still useful here as a safety lesson: its native Windows PowerShell path treats sandboxing as unavailable and refuses execution when policy requires sandboxing. OpenSquilla should copy that fail-closed behavior while setup is missing, broken, or incomplete.
 
 OpenClaw's Docker backend is useful as an optional future backend, especially for users who already run Docker Desktop. It should not be the default native Windows answer for OpenSquilla because it changes the execution environment into a container, complicates Windows path and PowerShell workflows, and adds a heavy dependency. Docker is a good operational sandbox; it is not the cleanest default fit for a Windows-native local assistant.
 
-The planned Windows backend should be exposed as something like `windows_restricted_token` and selected by `backend=auto` only when doctor confirms it is installed and usable. It should provide:
+The Windows backend should be exposed as something like `windows_restricted_token` and selected by `backend=auto` only when doctor confirms it is installed and usable. It should provide:
 
 - restricted-token process launch, ideally through a small helper executable instead of spreading Win32 API calls through the Python gateway;
 - workspace and mount enforcement through ACL/capability roots, with deny rules for credentials and sensitive paths;
@@ -275,7 +274,7 @@ The planned Windows backend should be exposed as something like `windows_restric
 - environment allowlisting equivalent to the Unix backends;
 - setup and doctor output that clearly says whether the helper, accounts, ACL state, and network filters are healthy.
 
-Until that backend exists, native Windows with `Standard-Sandbox` or `Trusted-Sandbox` should show an unavailable-backend mismatch and fail closed. It must not fall back to `noop` or host execution just because the user asked for sandbox mode.
+During rollout, native Windows with `Standard-Sandbox` or `Trusted-Sandbox` should fail closed whenever `windows_restricted_token` is unavailable, not installed, unhealthy, or unable to enforce the requested policy. It must not fall back to `noop` or host execution just because the user asked for sandbox mode.
 
 ## Operation Profile And Hints
 
@@ -506,8 +505,9 @@ Additive test coverage should include:
 
 - `Trusted-Sandbox` resolves to sandbox execution, never host execution.
 - `Full Host Access` is the only global host execution mode.
-- CLI `sandbox bypass` maps to `Trusted-Sandbox` and keeps sandbox execution enabled.
-- CLI `sandbox full` or `sandbox host` is the only global CLI path to `Full Host Access`.
+- CLI `sandbox trust` maps to `Trusted-Sandbox` and keeps sandbox execution enabled.
+- CLI `sandbox bypass` remains only as a deprecated alias for `trust`.
+- CLI `sandbox full` is the only canonical CLI path to `Full Host Access`.
 - ordinary approval payloads do not contain Host Once.
 - Host Once appears only after a sandbox-related failure.
 - Host Once grants are one-use and fingerprint-bound.
@@ -527,7 +527,8 @@ Additive test coverage should include:
 - legacy chats without saved Run Context initialize from the current global default and record that source.
 - stricter current gateway policy can constrain saved session context; looser policy cannot silently expand it.
 - sandbox-enabled execution does not silently degrade to noop unless an explicit, documented user setting allows that posture.
-- native Windows with sandbox required fails closed while no real Windows backend is available.
+- native Windows sandbox execution uses `windows_restricted_token` when available.
+- native Windows with sandbox required fails closed when `windows_restricted_token` is missing, unhealthy, or cannot enforce the requested policy.
 - WSL2 uses the Linux backend path only when Linux sandbox dependencies pass doctor.
 - Docker is not selected as the default Windows backend unless a separate explicit Docker-backend design is approved.
 
@@ -536,13 +537,13 @@ Additive test coverage should include:
 ### P0
 
 1. Replace `bypass/elevated` user semantics with the three Run Modes.
-2. Migrate CLI sandbox commands to `standard`, `trusted`, and `host`, with old commands kept only as compatibility aliases.
+2. Migrate CLI sandbox commands to the short OpenSquilla-style commands `on`, `trust`, and `full`, with `bypass` kept only as a deprecated alias.
 3. Add session Run Context so frontend changes apply without gateway restart.
 4. Migrate Chat composer gear from old `Execution mode`/bypass behavior to `Run Mode`, while preserving Router and Visual effects and avoiding Workspace/Sandbox-page shortcuts in the composer.
 5. Migrate Approvals and global approval modal away from `Bypass Approvals -> elevatedMode=bypass`.
 6. Add external path mount requests with cross-platform validation.
 7. Make Host Once a sandbox-failure-only fallback.
-8. On native Windows, fail closed with doctor/explain when sandbox mode is requested but no real Windows backend is available.
+8. Add native Windows `windows_restricted_token` backend support and fail closed with doctor/explain when setup is missing or unhealthy.
 
 ### P1
 
@@ -554,18 +555,17 @@ Additive test coverage should include:
 ### P2
 
 13. Strengthen backend isolation with resource limits, `no_new_privs`, seccomp or platform equivalents, and better fail-closed behavior.
-14. Add a native Windows `windows_restricted_token` backend through a small helper executable behind the existing backend interface.
-15. Consider worktree/session isolation for coding workflows.
+14. Consider worktree/session isolation for coding workflows.
 
 ### P3
 
-16. Defer broad Claude-style auto classification until deterministic policy and UI semantics are stable.
+15. Defer broad Claude-style auto classification until deterministic policy and UI semantics are stable.
 
 ## Implementation Planning Notes
 
 - Session Run Context should use gateway runtime/session state first and persist enough state to survive gateway restarts. Global defaults initialize new chats; they do not overwrite saved chat context.
 - Workspace-scoped grants should use the same persistence boundary as existing approval settings unless implementation planning finds a narrower local store already exists.
-- Existing CLI posture commands should be compatibility shims around the new Run Modes. They should not introduce a fourth mode.
+- CLI posture commands should keep the existing short-command style. `on`, `trust`, and `full` are the canonical commands; `trusted` and `bypass` are aliases. They should not introduce a fourth mode.
 - Keep old `elevated` strings at compatibility boundaries only. New policy code should reason in Run Mode, execution target, approval behavior, operation profile, and grant scope.
 - The Windows backend should be introduced as a new backend adapter plus helper boundary, not by spreading Windows-specific process, ACL, or firewall code through unrelated tools.
 - Migration should update all user-facing old-mode copy: Chat composer, Approvals, global approval modal, Config help, slash command help, API errors, and tool context comments.

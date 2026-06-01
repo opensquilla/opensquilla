@@ -557,10 +557,16 @@ async def escalate_backend_denial(
         )
 
     session_id = _resolve_session_id(rt, None)
-    escalation_request = dataclasses.replace(request, reason=f"sandbox denied: {notes_str}")
+    escalation_reason = f"host once requested after sandbox denied: {notes_str}"
+    escalation_request = dataclasses.replace(request, reason=escalation_reason)
     escalation_policy = dataclasses.replace(policy, require_approval=True)
 
-    decision = await rt.gate.gate(escalation_request, escalation_policy, session_id=session_id)
+    decision = await rt.gate.gate(
+        escalation_request,
+        escalation_policy,
+        session_id=session_id,
+        extra_params={"approvalKind": "host_once"},
+    )
 
     if not isinstance(decision, DenialResult):
         return ALLOW

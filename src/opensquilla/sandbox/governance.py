@@ -245,6 +245,7 @@ class ApprovalGate:
         policy: SandboxPolicy,
         *,
         session_id: str,
+        extra_params: dict[str, object] | None = None,
     ) -> ApprovalDecision:
         """Ask the human for approval when policy requires it.
 
@@ -273,6 +274,8 @@ class ApprovalGate:
             "session_id": session_id,
             "fingerprint": fingerprint,
         }
+        if extra_params:
+            params.update(extra_params)
         approval_id = self._queue.request(namespace=self._namespace, params=params)
         try:
             approved = await self._queue.wait(approval_id, timeout=self._timeout)

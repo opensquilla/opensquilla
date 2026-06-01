@@ -15,80 +15,75 @@ class _RecordingHandle:
 
 
 @pytest.mark.asyncio
-async def test_renderer_emits_turn_lifecycle_and_blocks() -> None:
+async def test_text_then_tool_becomes_thinking_block() -> None:
     handle = _RecordingHandle()
-    renderer = OpenTuiStreamRenderer(title="squilla", output_handle=handle)
-
-    renderer.__enter__()
-    await renderer.astatus("先扫描结构")
-    await renderer.atool_start("read_file", {"path": "main.py"}, "c1")
-    await renderer.atool_finished("c1", success=True, result="scanned 3 files")
-    tool_details = [p for t, p in handle.sent if t == "tool.detail"]
-    assert tool_details == [{"text": "scanned 3 files", "tool_id": "c1"}]
-    await renderer.aappend_text("架构分四层")
-    answer_texts = [p.get("text") for t, p in handle.sent if t == "answer.text"]
-    assert "".join(answer_texts) == "架构分四层"
-    await renderer.afinalize(None, cancelled=False)
-    renderer.__exit__(None, None, None)
-
-    types = [t for t, _ in handle.sent]
-    assert types[0] == "turn.begin"
-    assert "turn.status" in types
-    assert "model.text" in types
-    assert "tool.call" in types
-    assert "answer.text" in types
-    assert "usage" in types
-    assert "turn.end" in types
-    tool_calls = [p for t, p in handle.sent if t == "tool.call"]
-    assert [p.get("status") for p in tool_calls] == ["running", "ok"]
-    assert all(p.get("id") == "c1" for p in tool_calls)
-    assert tool_calls[0]["name"] == "read_file"
-    assert tool_calls[0]["summary"]  # arg summary is preserved on the finish line
-    assert any(t == "turn.status" and p.get("phase") == "tool" for t, p in handle.sent)
-    assert any(t == "turn.status" and p.get("phase") == "output" for t, p in handle.sent)
-    # composer is disabled when the turn begins and re-enabled when it ends
-    composer_disabled = [p.get("disabled") for t, p in handle.sent if t == "composer.set"]
-    assert composer_disabled == [True, False]
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("Let me check")
+    await r.atool_start("web_search", {"query": "x"}, "c1")
+    await r.atool_finished("c1", success=True, result="result line")
+    await r.aappend_text("Final answer")
+    await r.afinalize(None)
+    retypes = [p for t, p in handle.sent if t == "block.retype"]
+    assert retypes and retypes[0]["kind"] == "thinking"
+    tool_begins = [p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "tool"]
+    assert tool_begins and tool_begins[0]["meta"]["name"] == "web_search"
+    answer_begins = [p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "answer"]
+    assert len(answer_begins) == 2
+    ends = [t for t, _ in handle.sent if t == "block.end"]
+    assert ends
 
 
 @pytest.mark.asyncio
-async def test_renderer_demotes_streaming_answer_before_tool_start() -> None:
+async def test_answer_only_turn_has_no_retype() -> None:
     handle = _RecordingHandle()
-    renderer = OpenTuiStreamRenderer(output_handle=handle)
-
-    renderer.__enter__()
-    await renderer.aappend_text("先说明一点")
-    await renderer.atool_start("read_file", {"path": "main.py"}, "c1")
-    await renderer.aappend_text("最终回答")
-    await renderer.afinalize(None, cancelled=False)
-
-    types = [t for t, _ in handle.sent]
-    assert types.index("answer.text") < types.index("answer.demote")
-    assert types.index("answer.demote") < types.index("tool.call")
-    assert types.count("answer.demote") == 1
-    answer_texts = [p.get("text") for t, p in handle.sent if t == "answer.text"]
-    assert answer_texts == ["先说明一点", "最终回答"]
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("Direct answer")
+    await r.afinalize(None)
+    assert not [t for t, _ in handle.sent if t == "block.retype"]
+    answer_begins = [p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "answer"]
+    assert len(answer_begins) == 1
 
 
 @pytest.mark.asyncio
 async def test_renderer_marks_tool_error_and_cancel() -> None:
     handle = _RecordingHandle()
-    renderer = OpenTuiStreamRenderer(output_handle=handle)
-    renderer.__enter__()
-    await renderer.atool_start("grep", {"pattern": "x"}, "c2")
-    await renderer.atool_finished("c2", success=False, error="boom")
-    await renderer.aerror("turn-level failure")
-    await renderer.afinalize(None, cancelled=True)
-
-    tool_states = [p.get("status") for t, p in handle.sent if t == "tool.call"]
-    assert "error" in tool_states
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.atool_start("grep", {"pattern": "x"}, "c2")
+    await r.atool_finished("c2", success=False, error="boom")
+    await r.aerror("turn-level failure")
+    await r.afinalize(None, cancelled=True)
+    updates = [p for t, p in handle.sent if t == "block.update"]
+    assert any(p["patch"].get("status") == "error" for p in updates)
+    error_begins = [p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "error"]
+    assert error_begins and error_begins[0]["meta"]["text"] == "turn-level failure"
     end = [p for t, p in handle.sent if t == "turn.end"][0]
     assert end["cancelled"] is True
-    # The failed tool's detail is tied to its tool_id; the turn-level aerror
-    # detail has no owning tool, so its tool_id stays None (host appends it).
-    details = {p.get("text"): p.get("tool_id") for t, p in handle.sent if t == "tool.detail"}
-    assert details.get("boom") == "c2"
-    assert details.get("turn-level failure") is None
+    # the failed tool's detail line was appended into the tool block
+    appends = [p for t, p in handle.sent if t == "block.append" and p["id"] == "c2"]
+    assert any("boom" in p["delta"] for p in appends)
+
+
+@pytest.mark.asyncio
+async def test_anonymous_tools_each_close_independently() -> None:
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.atool_start("a", {}, None)
+    await r.atool_finished(None, success=True, result="ra")
+    await r.atool_start("b", {}, None)
+    await r.atool_finished(None, success=True, result="rb")
+    begins = [p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "tool"]
+    ends = [p for t, p in handle.sent if t == "block.end"]
+    assert len(begins) == 2
+    # each tool block gets its own end (distinct ids), so neither overwrites
+    # the other and no dangling block is left without a close.
+    begin_ids = {p["id"] for p in begins}
+    end_ids = {p["id"] for p in ends}
+    assert len(begin_ids) == 2
+    assert begin_ids <= end_ids
 
 
 def test_tool_result_summary_keeps_meaningful_lines_without_banners() -> None:

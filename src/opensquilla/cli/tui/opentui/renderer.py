@@ -13,15 +13,14 @@ from itertools import count
 from typing import Any, Literal
 
 from opensquilla.cli.tui.opentui.messages import (
-    AnswerDemote,
-    AnswerText,
-    ModelText,
-    ToolCall,
-    ToolDetail,
+    BlockAppend,
+    BlockBegin,
+    BlockEnd,
+    BlockRetype,
+    BlockUpdate,
     TurnBegin,
     TurnEnd,
     TurnStatusState,
-    Usage,
 )
 from opensquilla.cli.tui.terminal.stream import _summarize_args, _summarize_result
 
@@ -38,8 +37,10 @@ class OpenTuiStreamRenderer:
         self._turn_id = ""
         self._began = False
         self._saw_output = False
-        self._answer_segment_open = False
-        self._tool_calls: dict[str, tuple[str, str]] = {}
+        self._block_seq = 0
+        self._open_text_id: str | None = None
+        self._tool_block_ids: dict[str, str] = {}
+        self._last_tool_block_id: str | None = None
 
     async def _emit(self, message_type: str, payload: Any) -> None:
         await self._emit_raw(message_type, asdict(payload))
@@ -79,6 +80,10 @@ class OpenTuiStreamRenderer:
     def start(self) -> None:
         return None
 
+    def _next_block_id(self) -> str:
+        self._block_seq += 1
+        return f"{self._turn_id}-b{self._block_seq}"
+
     async def aappend_text(self, delta: str) -> None:
         if not delta:
             return
@@ -89,21 +94,28 @@ class OpenTuiStreamRenderer:
                 "turn.status", TurnStatusState(phase="output", label="output", active=True)
             )
         self.buffer += delta
-        self._answer_segment_open = True
-        await self._emit("answer.text", AnswerText(text=delta))
+        if self._open_text_id is None:
+            self._open_text_id = self._next_block_id()
+            await self._emit(
+                "block.begin", BlockBegin(id=self._open_text_id, kind="answer", meta={})
+            )
+        await self._emit("block.append", BlockAppend(id=self._open_text_id, delta=delta))
 
-    async def _demote_answer_segment(self, tool_use_id: str | None) -> None:
-        if not self._answer_segment_open:
+    async def _close_text_as(self, kind: Literal["thinking", "answer"]) -> None:
+        if self._open_text_id is None:
             return
-        self._answer_segment_open = False
-        await self._emit(
-            "answer.demote",
-            AnswerDemote(tool_id=tool_use_id),
-        )
+        block_id = self._open_text_id
+        self._open_text_id = None
+        if kind == "thinking":
+            await self._emit("block.retype", BlockRetype(id=block_id, kind="thinking"))
+        await self._emit("block.end", BlockEnd(id=block_id))
 
     async def astatus(self, message: str, *, style: str = "dim") -> None:
+        # status messages drive only the pill, not a content block: they are
+        # transient progress notes, not model output, so the block protocol
+        # deliberately emits nothing onto the timeline for them.
         await self._ensure_begin()
-        await self._emit("model.text", ModelText(text=message))
+        return None
 
     async def atool_start(
         self,
@@ -112,16 +124,18 @@ class OpenTuiStreamRenderer:
         tool_use_id: str | None = None,
     ) -> None:
         await self._ensure_begin()
-        await self._demote_answer_segment(tool_use_id)
+        await self._close_text_as("thinking")
         summary = _summarize_args(name, args)
+        block_id = tool_use_id or self._next_block_id()
         if tool_use_id:
-            self._tool_calls[tool_use_id] = (name, summary)
+            self._tool_block_ids[tool_use_id] = block_id
+        self._last_tool_block_id = block_id
         await self._emit(
             "turn.status", TurnStatusState(phase="tool", label=name, active=True)
         )
         await self._emit(
-            "tool.call",
-            ToolCall(name=name, summary=summary, status="running", id=tool_use_id),
+            "block.begin",
+            BlockBegin(id=block_id, kind="tool", meta={"name": name, "args": summary}),
         )
 
     async def atool_finished(
@@ -133,34 +147,43 @@ class OpenTuiStreamRenderer:
         error: str | None = None,
         result: object | None = None,
     ) -> None:
-        name, summary = self._tool_calls.get(tool_use_id or "", ("", ""))
-        await self._emit(
-            "tool.call",
-            ToolCall(
-                name=name,
-                summary=summary,
-                status="ok" if success else "error",
-                id=tool_use_id,
-            ),
-        )
-        if not success and error:
-            detail = _summarize_result(error)
+        if tool_use_id:
+            block_id = self._tool_block_ids.get(tool_use_id)
         else:
-            detail = _summarize_result(result)
+            block_id = self._last_tool_block_id
+        if block_id is None:
+            block_id = self._next_block_id()
+            await self._emit(
+                "block.begin", BlockBegin(id=block_id, kind="tool", meta={"name": "", "args": ""})
+            )
+        detail = _summarize_result(error) if (not success and error) else _summarize_result(result)
         if detail:
-            await self._emit("tool.detail", ToolDetail(text=detail, tool_id=tool_use_id))
+            for line in detail.split("\n"):
+                await self._emit("block.append", BlockAppend(id=block_id, delta=line))
+        await self._emit(
+            "block.update",
+            BlockUpdate(id=block_id, patch={"status": "ok" if success else "error"}),
+        )
+        await self._emit("block.end", BlockEnd(id=block_id))
 
     async def aerror(self, message: str) -> None:
         await self._ensure_begin()
-        await self._emit("tool.detail", ToolDetail(text=message))
+        block_id = self._next_block_id()
+        await self._emit(
+            "block.begin", BlockBegin(id=block_id, kind="error", meta={"text": message})
+        )
+        await self._emit("block.end", BlockEnd(id=block_id))
 
     async def afinalize(self, usage: Any | None = None, *, cancelled: bool = False) -> None:
         await self._ensure_begin()
-        self._answer_segment_open = False
-        # turn.end closes the answer card (JS draws the bottom border) BEFORE
-        # the usage line, so usage renders outside/below the card frame.
+        await self._close_text_as("answer")
         await self._emit("turn.end", TurnEnd(id=self._turn_id, cancelled=cancelled))
-        await self._emit("usage", Usage(text=_format_usage(usage)))
+        block_id = self._next_block_id()
+        await self._emit(
+            "block.begin",
+            BlockBegin(id=block_id, kind="usage", meta={"text": _format_usage(usage)}),
+        )
+        await self._emit("block.end", BlockEnd(id=block_id))
         await self._emit(
             "turn.status", TurnStatusState(phase="idle", label="ready", active=False)
         )

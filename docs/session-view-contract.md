@@ -141,7 +141,7 @@ interface SessionListItemV1 {
   // Whether the current Web UI should enable its standard chat composer.
   interactive: boolean;
 
-  channel?: {
+  channelContext?: {
     name?: string;
     id?: string;
     accountId?: string;
@@ -218,7 +218,7 @@ path explicitly marks sessions as TUI-owned.
 Known public channel surfaces align with the channel adapter contract:
 `slack`, `discord`, `feishu`, `dingtalk`, `wecom`, `qq`, `matrix`, and
 `telegram`. Unknown or not-yet-public adapters should degrade to
-`surface: "unknown"` while preserving display metadata in `channel`.
+`surface: "unknown"` while preserving display metadata in `channelContext`.
 
 `conversationKind`
 
@@ -288,10 +288,14 @@ Default rules:
 If the UI later needs more nuance, add a structured field such as `openMode`
 instead of inferring behavior from the key.
 
-`channel`
+`channelContext`
 
 Optional external channel identity and delivery metadata. This should be
 display-only in the UI unless a feature explicitly needs routing details.
+
+Do not confuse this with the legacy `channel` field already present in
+`sessions.list`. The legacy field remains for CLI/TUI/older callers and may be
+a string. New UI should use `surface` and `channelContext`.
 
 `parent`
 
@@ -513,7 +517,7 @@ its original visual identity.
   "status": "done",
   "runStatus": "idle",
   "interactive": false,
-  "channel": {
+  "channelContext": {
     "name": "feishu",
     "id": "oc_123"
   },
@@ -547,7 +551,7 @@ its original visual identity.
   "status": "done",
   "runStatus": "idle",
   "interactive": false,
-  "channel": {
+  "channelContext": {
     "name": "slack",
     "id": "C123",
     "threadId": "1717000000.000100"

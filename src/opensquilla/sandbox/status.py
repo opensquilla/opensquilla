@@ -4,21 +4,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from opensquilla.sandbox.run_mode import config_run_mode, display_name, execution_target
+
 
 def posture(config: Any) -> str:
-    sandbox_enabled = bool(config.sandbox.sandbox)
-    grading_enabled = bool(config.sandbox.security_grading)
-    default_mode = str(config.permissions.default_mode)
-    if sandbox_enabled and grading_enabled and default_mode == "off":
-        return "on"
-    if not sandbox_enabled and not grading_enabled and default_mode in {"bypass", "full"}:
-        return default_mode
-    return "custom"
+    return config_run_mode(config).value
 
 
 def status_payload(config: Any, *, restart_required: bool = False) -> dict[str, Any]:
+    run_mode = config_run_mode(config)
     return {
-        "posture": posture(config),
+        "run_mode": run_mode.value,
+        "run_mode_label": display_name(run_mode),
+        "execution_target": execution_target(run_mode),
+        "posture": run_mode.value,
         "sandbox": {
             "sandbox": bool(config.sandbox.sandbox),
             "security_grading": bool(config.sandbox.security_grading),

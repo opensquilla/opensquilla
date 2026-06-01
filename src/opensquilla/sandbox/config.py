@@ -24,8 +24,9 @@ from opensquilla.sandbox.types import SecurityLevel
 
 log = logging.getLogger(__name__)
 
-BackendName = Literal["auto", "bubblewrap", "seatbelt", "noop"]
+BackendName = Literal["auto", "bubblewrap", "seatbelt", "noop", "windows_restricted_token"]
 NetworkDefault = Literal["none", "proxy_allowlist"]
+RunModeName = Literal["standard", "trusted", "full"]
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,7 @@ class SandboxSettings(BaseSettings):
     default_level: SecurityLevel = SecurityLevel.STANDARD
     backend: BackendName = "auto"
     allow_legacy_mode: bool = False
+    run_mode: RunModeName | None = None
 
     network_default: NetworkDefault = "none"
     denial_threshold: int = 3
@@ -158,5 +160,6 @@ __all__ = [
     "BackendName",
     "EffectiveMode",
     "NetworkDefault",
+    "RunModeName",
     "SandboxSettings",
 ]

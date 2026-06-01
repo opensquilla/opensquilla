@@ -124,3 +124,71 @@ async def test_rpc_run_context_get_reports_missing_session() -> None:
             {"sessionKey": "agent:main:webchat:missing"},
             ctx,
         )
+
+
+@pytest.mark.asyncio
+async def test_rpc_run_context_set_rejects_non_owner_full_mode_without_mutation() -> None:
+    from opensquilla.gateway.auth import Principal
+    from opensquilla.gateway.rpc import RpcContext, RpcHandlerError
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_run_context_set
+
+    manager = _SessionManager()
+    config = SimpleNamespace(
+        workspace_dir="/tmp/ws",
+        agents=[],
+        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+    ctx = RpcContext(
+        conn_id="c",
+        principal=Principal(
+            role="operator",
+            scopes=frozenset(["operator.write", "operator.read"]),
+            is_owner=False,
+            authenticated=True,
+        ),
+        session_manager=manager,
+        config=config,
+    )
+
+    with pytest.raises(RpcHandlerError, match="requires owner principal"):
+        await _handle_sandbox_run_context_set(
+            {"sessionKey": manager.node.session_key, "runMode": "full"},
+            ctx,
+        )
+
+    assert manager.node.origin is None
+
+
+@pytest.mark.asyncio
+async def test_rpc_run_context_set_allows_owner_full_mode() -> None:
+    from opensquilla.gateway.auth import Principal
+    from opensquilla.gateway.rpc import RpcContext
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_run_context_set
+
+    manager = _SessionManager()
+    config = SimpleNamespace(
+        workspace_dir="/tmp/ws",
+        agents=[],
+        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+    ctx = RpcContext(
+        conn_id="c",
+        principal=Principal(
+            role="operator",
+            scopes=frozenset(["operator.write", "operator.read"]),
+            is_owner=True,
+            authenticated=True,
+        ),
+        session_manager=manager,
+        config=config,
+    )
+
+    result = await _handle_sandbox_run_context_set(
+        {"sessionKey": manager.node.session_key, "runMode": "full"},
+        ctx,
+    )
+
+    assert result["runMode"] == "full"
+    assert manager.node.origin["sandbox_run_context"]["run_mode"] == "full"

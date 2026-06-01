@@ -49,6 +49,7 @@ const OPENTUI_DAILY_THEME = Object.freeze({
 const CARD_RULE_LONG = "─".repeat(48);
 const CARD_RULE_SHORT = "─".repeat(8);
 const TOOL_INDENT = " ";
+const TIMELINE_WRAP_GUARD_CELLS = 6;
 const STATUS_PULSE_FRAMES = Object.freeze({
   thinking: ["∙", "•", "●", "•"],
   tool: ["◌", "◔", "◑", "◕"],
@@ -293,6 +294,29 @@ function textWidth(text) {
   return width;
 }
 
+// Clip text to at most `cells` display columns (CJK-aware), appending … when it
+// overflows. Used to keep plain timeline lines from wrapping past the rail.
+function clipToCells(text, cells) {
+  if (textWidth(text) <= cells) return text;
+  const budget = Math.max(1, cells - 1); // reserve one cell for the ellipsis
+  let out = "";
+  let used = 0;
+  for (const char of Array.from(text)) {
+    const w = cellWidth(char);
+    if (used + w > budget) break;
+    out += char;
+    used += w;
+  }
+  return `${out}…`;
+}
+
+function timelineAvailCells(prefix) {
+  return Math.max(
+    8,
+    (renderer.terminalWidth ?? 80) - textWidth(prefix) - TIMELINE_WRAP_GUARD_CELLS,
+  );
+}
+
 function cellWidth(char) {
   return /[\u1100-\u115f\u2329\u232a\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]/u.test(char)
     ? 2
@@ -312,6 +336,7 @@ class TurnView {
     this.answerMd = null;
     this.answerTop = null;
     this.answerGap = null;
+    this.answerBot = null;
     this.ended = false;
     this._seq = 0;
     this.box = new BoxRenderable(renderer, {
@@ -343,7 +368,7 @@ class TurnView {
     const cleanName = stripTerminalControls(String(name));
     const cleanSummary = stripTerminalControls(String(summary));
     const tail = cleanSummary ? ` ${cleanSummary}` : "";
-    this._line(`rail-tool-${toolId}`, `${TOOL_INDENT}│`, OPENTUI_DAILY_THEME.faint);
+    this._line(`rail-tool-${toolId}`, `${TOOL_INDENT}│`, OPENTUI_DAILY_THEME.detailText);
     const node = this._line(`tool-${toolId}`, `${TOOL_INDENT}${STATUS_PULSE_FRAMES.tool[0]} ${cleanName}${tail}`, OPENTUI_DAILY_THEME.toolAccent);
     node._toolName = cleanName;
     node._toolTail = tail;
@@ -367,7 +392,7 @@ class TurnView {
       toolPulseNodes.delete(node);
       this.runningNodes.delete(node);
     } else {
-      this._line(`rail-tool-${toolId}`, `${TOOL_INDENT}│`, OPENTUI_DAILY_THEME.faint);
+      this._line(`rail-tool-${toolId}`, `${TOOL_INDENT}│`, OPENTUI_DAILY_THEME.detailText);
       this._line(`tool-${toolId}`, `${TOOL_INDENT}${glyph} ${finalName}${tail}`, fg);
     }
     renderer.requestRender?.();
@@ -376,8 +401,13 @@ class TurnView {
   addToolDetail(text, toolId = null) {
     const lines = stripTerminalControls(String(text)).split("\n");
     const max = 3;
-    const rows = lines.slice(0, max).map((line) => `${TOOL_INDENT}│   ${line}`);
-    if (lines.length > max) rows.push(`${TOOL_INDENT}│   … ${lines.length - max} more lines`);
+    // Clip each detail line to the viewport width so a long value cannot wrap
+    // past the timeline rail (the wrapped continuation would lose its "│ "
+    // prefix and run to the left edge).
+    const prefix = `${TOOL_INDENT}│   `;
+    const avail = timelineAvailCells(prefix);
+    const rows = lines.slice(0, max).map((line) => `${prefix}${clipToCells(line, avail)}`);
+    if (lines.length > max) rows.push(`${prefix}${clipToCells(`… ${lines.length - max} more lines`, avail)}`);
 
     const toolNode = toolId != null ? this.toolNodes.get(toolId) : null;
     rows.forEach((content, index) => {
@@ -418,31 +448,62 @@ class TurnView {
     if (!this.sawAnswer) {
       this.sawAnswer = true;
       this._answerText = "";
-      this.answerDraft = this._line(`answer-draft-${this._seq++}`, "", OPENTUI_DAILY_THEME.modelText);
+      this.answerDraft = null;
+      this.answerGap = this._line("a-gap", "│", OPENTUI_DAILY_THEME.detailText);
+      this.answerTop = this._line("a-top", `╭─ answer ─ squilla ${CARD_RULE_LONG}`, OPENTUI_DAILY_THEME.toolAccent);
+      this.answerBody = new BoxRenderable(renderer, {
+        id: `turn-${this.id}-answer-body`,
+        width: "100%",
+        flexDirection: "column",
+        border: ["left"],
+        borderColor: OPENTUI_DAILY_THEME.toolAccent,
+        paddingLeft: 1,
+        flexShrink: 0,
+      });
+      this.answerMd = new MarkdownRenderable(renderer, {
+        id: `turn-${this.id}-md`,
+        content: "",
+        streaming: true,
+        conceal: true,
+        syntaxStyle,
+        fg: OPENTUI_DAILY_THEME.text,
+        tableOptions: { style: "columns" },
+        internalBlockMode: "top-level",
+        width: "100%",
+      });
+      this.answerBody.add(this.answerMd);
+      this.box.add(this.answerBody);
     }
     this._answerText += String(delta);
-    if (this.answerDraft) this.answerDraft.content = stripTerminalControls(this._answerText);
+    if (this.answerMd) this.answerMd.content = stripTerminalControls(this._answerText);
     renderer.requestRender?.();
   }
 
   demoteAnswerToTimeline() {
     if (!this.sawAnswer) return;
     const text = stripTerminalControls(this._answerText);
-    // The streaming draft was a single bare node; replace it with a proper
-    // timeline block: a rail gap above/below, a ✱ glyph on the first line, and
-    // continuation lines indented to align under it — so intermediate model
-    // output reads as a node on the timeline like the tool rows do.
+    // Replace the optimistic answer card with a proper timeline block: a rail
+    // gap above/below, a ✱ glyph on the first line, and continuation lines
+    // indented to align under it.
     if (this.answerDraft && typeof this.box.remove === "function") {
       this.box.remove(this.answerDraft.id);
     }
-    if (text) {
-      const lines = text.split("\n");
-      this._line(`mid-gap-top-${this._seq}`, `${TOOL_INDENT}│`, OPENTUI_DAILY_THEME.faint);
+    [this.answerGap, this.answerTop, this.answerBody, this.answerBot].forEach((node) => {
+      if (node && typeof this.box.remove === "function") this.box.remove(node.id);
+    });
+    // Trim blank leading/trailing lines so a model's trailing "\n\n" does not
+    // pad the timeline with empty rows between the ✱ block and the next tool.
+    const trimmed = text.replace(/^\n+|\n+$/g, "");
+    if (trimmed) {
+      const lines = trimmed.split("\n");
+      this._line(`mid-gap-top-${this._seq}`, `${TOOL_INDENT}│`, OPENTUI_DAILY_THEME.detailText);
       lines.forEach((line, index) => {
-        const content = index === 0 ? `${TOOL_INDENT}✱ ${line}` : `${TOOL_INDENT}  ${line}`;
+        const prefix = index === 0 ? `${TOOL_INDENT}✱ ` : `${TOOL_INDENT}  `;
+        const avail = timelineAvailCells(prefix);
+        const content = `${prefix}${clipToCells(line, avail)}`;
         this._line(`mid-${this._seq}-${index}`, content, OPENTUI_DAILY_THEME.modelText);
       });
-      this._line(`mid-gap-bot-${this._seq}`, `${TOOL_INDENT}│`, OPENTUI_DAILY_THEME.faint);
+      this._line(`mid-gap-bot-${this._seq}`, `${TOOL_INDENT}│`, OPENTUI_DAILY_THEME.detailText);
       this._seq += 1;
     }
     this.sawAnswer = false;
@@ -452,37 +513,15 @@ class TurnView {
     this.answerGap = null;
     this.answerTop = null;
     this.answerMd = null;
+    this.answerBot = null;
   }
 
   promoteAnswerToCard() {
     if (!this.sawAnswer) return false;
-    const content = this._answerText;
-    if (this.answerDraft && typeof this.box.remove === "function") this.box.remove(this.answerDraft.id);
-    // The answer only becomes the blue Markdown card once turn.end proves it is final.
-    this.answerGap = this._line("a-gap", "│", OPENTUI_DAILY_THEME.faint);
-    this.answerTop = this._line("a-top", `╭─ answer ─ squilla ${CARD_RULE_LONG}`, OPENTUI_DAILY_THEME.toolAccent);
-    this.answerBody = new BoxRenderable(renderer, {
-      id: `turn-${this.id}-answer-body`,
-      width: "100%",
-      flexDirection: "column",
-      border: ["left"],
-      borderColor: OPENTUI_DAILY_THEME.toolAccent,
-      paddingLeft: 1,
-      flexShrink: 0,
-    });
-    this.answerMd = new MarkdownRenderable(renderer, {
-      id: `turn-${this.id}-md`,
-      content,
-      streaming: false,
-      conceal: true,
-      syntaxStyle,
-      fg: OPENTUI_DAILY_THEME.text,
-      tableOptions: { style: "columns" },
-      internalBlockMode: "top-level",
-      width: "100%",
-    });
-    this.answerBody.add(this.answerMd);
-    this.box.add(this.answerBody);
+    if (this.answerMd) {
+      this.answerMd.content = stripTerminalControls(this._answerText);
+      this.answerMd.streaming = false;
+    }
     this.sawAnswer = false;
     this._answerText = "";
     this.answerDraft = null;
@@ -502,7 +541,9 @@ class TurnView {
       return;
     }
     const renderedAnswer = this.promoteAnswerToCard();
-    if (renderedAnswer) this._line("a-bot", `╰${CARD_RULE_SHORT}`, OPENTUI_DAILY_THEME.toolAccent);
+    if (renderedAnswer && !this.answerBot) {
+      this.answerBot = this._line("a-bot", `╰${CARD_RULE_SHORT}`, OPENTUI_DAILY_THEME.toolAccent);
+    }
     renderer.requestRender?.();
   }
 
@@ -577,6 +618,9 @@ function handlePythonMessage(message) {
       return;
     case "tool.detail":
       activeTurn?.addToolDetail(String(message.text ?? ""), message.tool_id ?? null);
+      return;
+    case "answer.demote":
+      activeTurn?.demoteAnswerToTimeline();
       return;
     case "answer.text":
       activeTurn?.appendAnswer(String(message.text ?? ""));

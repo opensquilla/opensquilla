@@ -24,3 +24,11 @@ def test_complex_ui_state(run_real_terminal_scenario) -> None:
         assert "fake-terminal" in rendered
         assert "save 42%" in rendered
         assert router_lines
+    if result.backend_id == "opentui":
+        intermediate_lines = [
+            line for line in rendered.splitlines() if "intermediate-before-tool" in line
+        ]
+        assert intermediate_lines
+        assert intermediate_lines[0].lstrip().startswith("✱ ")
+        assert "…" in intermediate_lines[0]
+        assert "second-intermediate-line" in rendered

@@ -13,6 +13,7 @@ from itertools import count
 from typing import Any, Literal
 
 from opensquilla.cli.tui.opentui.messages import (
+    AnswerDemote,
     AnswerText,
     ModelText,
     ToolCall,
@@ -37,6 +38,7 @@ class OpenTuiStreamRenderer:
         self._turn_id = ""
         self._began = False
         self._saw_output = False
+        self._answer_segment_open = False
         self._tool_calls: dict[str, tuple[str, str]] = {}
 
     async def _emit(self, message_type: str, payload: Any) -> None:
@@ -87,7 +89,17 @@ class OpenTuiStreamRenderer:
                 "turn.status", TurnStatusState(phase="output", label="output", active=True)
             )
         self.buffer += delta
+        self._answer_segment_open = True
         await self._emit("answer.text", AnswerText(text=delta))
+
+    async def _demote_answer_segment(self, tool_use_id: str | None) -> None:
+        if not self._answer_segment_open:
+            return
+        self._answer_segment_open = False
+        await self._emit(
+            "answer.demote",
+            AnswerDemote(tool_id=tool_use_id),
+        )
 
     async def astatus(self, message: str, *, style: str = "dim") -> None:
         await self._ensure_begin()
@@ -100,6 +112,7 @@ class OpenTuiStreamRenderer:
         tool_use_id: str | None = None,
     ) -> None:
         await self._ensure_begin()
+        await self._demote_answer_segment(tool_use_id)
         summary = _summarize_args(name, args)
         if tool_use_id:
             self._tool_calls[tool_use_id] = (name, summary)
@@ -143,6 +156,7 @@ class OpenTuiStreamRenderer:
 
     async def afinalize(self, usage: Any | None = None, *, cancelled: bool = False) -> None:
         await self._ensure_begin()
+        self._answer_segment_open = False
         # turn.end closes the answer card (JS draws the bottom border) BEFORE
         # the usage line, so usage renders outside/below the card frame.
         await self._emit("turn.end", TurnEnd(id=self._turn_id, cancelled=cancelled))

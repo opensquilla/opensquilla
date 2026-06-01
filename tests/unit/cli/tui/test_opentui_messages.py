@@ -61,6 +61,7 @@ def test_host_message_rejects_malformed_control_payloads() -> None:
 
 def test_python_message_to_json_serializes_structured_blocks() -> None:
     from opensquilla.cli.tui.opentui.messages import (
+        AnswerDemote,
         AnswerText,
         ModelText,
         PromptEcho,
@@ -88,6 +89,9 @@ def test_python_message_to_json_serializes_structured_blocks() -> None:
     )
     assert '"type":"answer.text"' in python_message_to_json(
         "answer.text", AnswerText(text="架构分四层")
+    )
+    assert '"type":"answer.demote"' in python_message_to_json(
+        "answer.demote", AnswerDemote(tool_id="c1")
     )
     assert '"type":"usage"' in python_message_to_json("usage", Usage(text="in 1k / out 2k"))
     status = python_message_to_json(

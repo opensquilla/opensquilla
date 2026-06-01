@@ -52,6 +52,25 @@ async def test_renderer_emits_turn_lifecycle_and_blocks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_renderer_demotes_streaming_answer_before_tool_start() -> None:
+    handle = _RecordingHandle()
+    renderer = OpenTuiStreamRenderer(output_handle=handle)
+
+    renderer.__enter__()
+    await renderer.aappend_text("先说明一点")
+    await renderer.atool_start("read_file", {"path": "main.py"}, "c1")
+    await renderer.aappend_text("最终回答")
+    await renderer.afinalize(None, cancelled=False)
+
+    types = [t for t, _ in handle.sent]
+    assert types.index("answer.text") < types.index("answer.demote")
+    assert types.index("answer.demote") < types.index("tool.call")
+    assert types.count("answer.demote") == 1
+    answer_texts = [p.get("text") for t, p in handle.sent if t == "answer.text"]
+    assert answer_texts == ["先说明一点", "最终回答"]
+
+
+@pytest.mark.asyncio
 async def test_renderer_marks_tool_error_and_cancel() -> None:
     handle = _RecordingHandle()
     renderer = OpenTuiStreamRenderer(output_handle=handle)

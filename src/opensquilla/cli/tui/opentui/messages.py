@@ -61,6 +61,12 @@ class AnswerText:
 
 
 @dataclass(frozen=True)
+class AnswerDemote:
+    reason: str = "tool_start"
+    tool_id: str | None = None
+
+
+@dataclass(frozen=True)
 class Usage:
     text: str
 

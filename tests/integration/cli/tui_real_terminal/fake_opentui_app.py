@@ -59,6 +59,12 @@ async def _render_response(
         _set_toolbar(output, "router_hud_style", "normal")
         _invalidate(output)
         await renderer.astatus("router route standard -> fake-terminal 99% save 42%")
+        await renderer.aappend_text(
+            "intermediate-before-tool "
+            + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 6
+            + "\nsecond-intermediate-line "
+            + "0123456789" * 10
+        )
         await renderer.atool_start("fake_tool", {"path": "fixture.txt"}, "tool-1")
         await renderer.atool_finished("tool-1", success=True, elapsed=0.01)
         await renderer.astatus("approval requested: allow fake_tool fixture.txt")

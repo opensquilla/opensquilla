@@ -166,6 +166,9 @@ warn_unused_configs = true
 exclude = [
     "^src/opensquilla/squilla_router/models/",
     "^src/opensquilla/skills/bundled/.*/scripts/",
+    # video-merger ships an upstream MIT-0 library under src/; same
+    # treatment as the per-skill scripts/ trees.
+    "^src/opensquilla/skills/bundled/video-merger/src/",
 ]
 
 [[tool.mypy.overrides]]

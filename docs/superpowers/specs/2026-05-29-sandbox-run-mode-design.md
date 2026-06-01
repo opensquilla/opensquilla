@@ -46,15 +46,15 @@ The core runtime should move toward `RunMode`, `ExecutionTarget`, `ApprovalBehav
 
 The app now has a global topbar center slot that Chat uses for session identity and run status. That topbar slot should remain mostly read-only: it may show current state, but it should not become the primary sandbox configuration surface.
 
-The chat composer gear remains the quick control for the current chat session. It should stay light and only expose settings that are likely to affect the next user turn or the immediate chat experience:
+The chat composer gear remains the quick control for the current chat session. It should stay very light and only expose controls that users naturally toggle while composing a message:
 
 - `Run Mode`
-- `Workspace`
 - `Squilla Router`
 - `Visual effects`
-- `Open Sandbox...`
 
-`Run Mode` and `Workspace` are sandbox Run Context controls. `Squilla Router` stays in the same popover for convenience but continues to use the existing router configuration path. `Visual effects` is a local UI preference and is not part of sandbox policy.
+`Run Mode` is the only sandbox control in the composer gear. `Squilla Router` stays in the same popover for convenience but continues to use the existing router configuration path. `Visual effects` is a local UI preference and is not part of sandbox policy.
+
+Workspace switching, mount management, allowed domains, and sandbox diagnostics belong in the `Control -> Sandbox` page or in contextual prompts such as Path Access Request. The composer gear should not include `Workspace` or `Open Sandbox...`.
 
 Advanced sandbox management belongs in a new sidebar page:
 
@@ -425,7 +425,7 @@ Additive test coverage should include:
 
 1. Replace `bypass/elevated` user semantics with the three Run Modes.
 2. Add session Run Context so frontend changes apply without gateway restart.
-3. Migrate Chat composer gear from old `Execution mode`/bypass behavior to `Run Mode`, add Workspace, preserve Router and Visual effects, and add `Open Sandbox...`.
+3. Migrate Chat composer gear from old `Execution mode`/bypass behavior to `Run Mode`, while preserving Router and Visual effects and avoiding Workspace/Sandbox-page shortcuts in the composer.
 4. Migrate Approvals and global approval modal away from `Bypass Approvals -> elevatedMode=bypass`.
 5. Add external path mount requests with cross-platform validation.
 6. Make Host Once a sandbox-failure-only fallback.

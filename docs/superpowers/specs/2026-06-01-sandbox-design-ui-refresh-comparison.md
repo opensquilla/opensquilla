@@ -173,34 +173,31 @@ Host Once 是一个明确的失败恢复动作：
 - `Squilla Router`
 - `Visual effects`
 
-但没有 workspace 快捷入口，也没有清晰的三档 Run Mode。`Execution mode` 实际还是旧 bypass toggle。
+它的问题不是缺少更多入口，而是没有清晰的三档 Run Mode。`Execution mode` 实际还是旧 bypass toggle。这个功能键应该继续保持轻，不应该再塞入 Workspace、Mounts、Domains 或完整 Sandbox 页面跳转。
 
 **优化后设计**
 
 composer gear 保持轻量，但内容变成：
 
 - `Run Mode`
-- `Workspace`
 - `Squilla Router`
 - `Visual effects`
-- `Open Sandbox...`
 
 其中：
 
-- `Run Mode` 和 `Workspace` 是沙箱相关。
+- `Run Mode` 是唯一放在聊天输入框功能键里的沙箱控制。
 - `Squilla Router` 保留现有产品入口。
 - `Visual effects` 是前端偏好，不参与沙箱。
-- `Open Sandbox...` 跳转到完整管理页。
+
+Workspace 修改、挂载目录、Allowed Domains、doctor/explain 和规则管理全部放到 `Control -> Sandbox` 页。聊天功能键不提供 `Workspace` 或 `Open Sandbox...`。
 
 **优化后优势**
 
 用户在发下一条消息前能快速确认：
 
 - 当前是不是沙箱。
-- 当前在哪个 workspace 里执行。
-- 是否要进入完整 Sandbox 管理页。
 
-同时不会把挂载、域名、doctor、规则管理都塞进聊天输入框。
+同时不会把 workspace、挂载、域名、doctor、规则管理都塞进聊天输入框。
 
 ## 7. Topbar 职责
 
@@ -217,7 +214,7 @@ topbar center 只做只读会话状态：
 - context warning
 - 可选的 Run Mode 状态 chip
 
-真正修改 Run Mode、Workspace、Mounts、Domains 的入口仍然在 composer gear 和 Sandbox 页。
+Run Mode 的快捷修改在 composer gear；Workspace、Mounts、Domains 的修改在 Sandbox 页。
 
 **优化后优势**
 
@@ -277,13 +274,13 @@ topbar center 只做只读会话状态：
 
 Workspace 变成 session Run Context 的一部分：
 
-- Chat gear 可以快速切换 workspace。
+- Sandbox 页可以切换当前 workspace。
 - Sandbox 页可以管理 recent workspaces。
 - 修改后下一次工具调用生效，不需要重启 gateway。
 
 **优化后优势**
 
-用户能在 UI 中切项目目录；agent 也能在沙箱里访问用户指定的项目，而不是靠 host bypass。
+用户能在 Sandbox 设置里切项目目录；agent 也能在沙箱里访问用户指定的项目，而不是靠 host bypass。聊天输入框保持专注，不承担项目管理职责。
 
 ## 10. 外部路径访问
 
@@ -614,7 +611,7 @@ P0：
 
 1. 三档 Run Mode 替代 elevated/bypass。
 2. Session Run Context 实时生效。
-3. Chat composer gear 迁移到 Run Mode + Workspace。
+3. Chat composer gear 迁移到轻量 Run Mode 控制，保留 Router / Visual effects，不加入 Workspace 或 Open Sandbox。
 4. Approvals 和 modal 移除旧 bypass host 入口。
 5. 外部路径 Path Access Request。
 6. Host Once 只在沙箱失败后出现。
@@ -648,9 +645,9 @@ P3：
 | host exec | 多入口、难审计 | 只有 Full Host Access 和 Host Once |
 | 普通 approval | 批准后可能 host 执行 | 批准后仍按当前 policy 执行 |
 | Host Once | 语义不够产品化 | 沙箱失败后的一次性补救 |
-| Chat gear | Execution mode 仍是旧 bypass | Run Mode + Workspace 快捷控制 |
+| Chat gear | Execution mode 仍是旧 bypass | 只保留轻量 Run Mode 控制 |
 | Sandbox 页面 | 没有统一管理入口 | Control -> Sandbox 集中管理 |
-| Workspace | 不够灵活 | 会话级切换，下一次调用生效 |
+| Workspace | 不够灵活 | 在 Sandbox 设置中会话级切换，下一次调用生效 |
 | 外部路径 | 易失败或倾向 host | 优先询问挂载 |
 | 挂载校验 | 配置可能开后门 | 跨平台解析，敏感路径硬拦 |
 | 网络 | 无网络提示容易推向 bypass | Allowed Domains 窄通道 |

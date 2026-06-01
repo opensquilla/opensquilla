@@ -598,6 +598,43 @@ async def _await_bg_output_task(output_task: asyncio.Task[None]) -> None:
             await output_task
 
 
+async def _run_host_shell_command(
+    command: str,
+    *,
+    cwd: str | None,
+    env: dict[str, str],
+    timeout: float,
+) -> str:
+    try:
+        with tempfile.TemporaryFile() as output_file:
+            subprocess_kwargs: dict[str, Any] = {
+                "stdout": output_file,
+                "stderr": asyncio.subprocess.STDOUT,
+                "cwd": cwd,
+                "env": env,
+            }
+            if os.name == "posix":
+                subprocess_kwargs["start_new_session"] = True
+            else:
+                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                if creationflags:
+                    subprocess_kwargs["creationflags"] = creationflags
+
+            proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
+            if not await _wait_exec_process(proc, timeout):
+                await _terminate_exec_process_tree(proc)
+                return f"[timeout after {timeout}s]\ncommand: {command}"
+            if os.name == "posix":
+                _signal_exec_process_tree(proc, signal.SIGTERM)
+
+            output_file.flush()
+            output_file.seek(0)
+            output = output_file.read().decode("utf-8", errors="replace")
+            return f"exit_code={proc.returncode}\n{output}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
 @tool(
     name="exec_command",
     description="Execute a shell command and return stdout/stderr with exit code.",
@@ -703,25 +740,12 @@ async def exec_command(
             _host_once_current_call.set(True)
             _consume_host_once_current_call()
             try:
-                proc = await asyncio.create_subprocess_shell(
+                return await _run_host_shell_command(
                     command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
                     cwd=cwd,
                     env=merged_env,
+                    timeout=effective_timeout,
                 )
-                try:
-                    stdout_bytes, _ = await asyncio.wait_for(
-                        proc.communicate(), timeout=effective_timeout
-                    )
-                except TimeoutError:
-                    proc.kill()
-                    await proc.communicate()
-                    return f"[timeout after {effective_timeout}s]\ncommand: {command}"
-                output = stdout_bytes.decode("utf-8", errors="replace")
-                return f"exit_code={proc.returncode}\n{output}"
-            except Exception as e:
-                return f"[error] {e}"
             finally:
                 _host_once_current_call.set(False)
         output = sandbox_result.stdout
@@ -733,34 +757,12 @@ async def exec_command(
     if host_execution:
         log.info("shell_exec_host", command=_audit_command(command), run_mode=_context_run_mode())
 
-    try:
-        with tempfile.TemporaryFile() as output_file:
-            subprocess_kwargs: dict[str, Any] = {
-                "stdout": output_file,
-                "stderr": asyncio.subprocess.STDOUT,
-                "cwd": cwd,
-                "env": merged_env,
-            }
-            if os.name == "posix":
-                subprocess_kwargs["start_new_session"] = True
-            else:
-                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                if creationflags:
-                    subprocess_kwargs["creationflags"] = creationflags
-
-            proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
-            if not await _wait_exec_process(proc, effective_timeout):
-                await _terminate_exec_process_tree(proc)
-                return f"[timeout after {effective_timeout}s]\ncommand: {command}"
-            if os.name == "posix":
-                _signal_exec_process_tree(proc, signal.SIGTERM)
-
-            output_file.flush()
-            output_file.seek(0)
-            output = output_file.read().decode("utf-8", errors="replace")
-            return f"exit_code={proc.returncode}\n{output}"
-    except Exception as e:
-        return f"[error] {e}"
+    return await _run_host_shell_command(
+        command,
+        cwd=cwd,
+        env=merged_env,
+        timeout=effective_timeout,
+    )
 
 
 @tool(

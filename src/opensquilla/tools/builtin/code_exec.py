@@ -295,7 +295,16 @@ async def execute_code(
 
     ctx = current_tool_context.get()
     runtime = get_runtime()
-    sandbox_enabled = bool(runtime is not None and runtime.effective.sandbox_enabled)
+    from opensquilla.tools.builtin.shell import (
+        _consume_host_once_current_call,
+        _host_execution_allowed,
+        _host_once_current_call,
+    )
+
+    host_execution = _host_execution_allowed()
+    sandbox_enabled = bool(
+        runtime is not None and runtime.effective.sandbox_enabled and not host_execution
+    )
     python_bin = _resolve_python_bin(sandbox_enabled=sandbox_enabled)
     workspace = (
         Path(ctx.workspace_dir).expanduser().resolve() if ctx and ctx.workspace_dir else None
@@ -315,13 +324,6 @@ async def execute_code(
 
     safe_env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
 
-    from opensquilla.tools.builtin.shell import (
-        _consume_host_once_current_call,
-        _host_execution_allowed,
-        _host_once_current_call,
-    )
-
-    host_execution = _host_execution_allowed()
     if runtime is None or (runtime.effective.sandbox_enabled and not host_execution):
         decision, _policy, request = await gate_action(
             action_kind="code.exec",

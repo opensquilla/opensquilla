@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -136,10 +137,14 @@ async def test_backend_denial_host_once_does_not_persist(monkeypatch) -> None:
         effective = SimpleNamespace(sandbox_enabled=True)
 
     class _Proc:
+        pid = 999999
         returncode = 0
 
-        async def communicate(self):
-            return b"host once\n", None
+        async def wait(self):
+            return 0
+
+        def terminate(self) -> None:
+            return None
 
         def kill(self) -> None:
             return None
@@ -180,13 +185,34 @@ async def test_backend_denial_host_once_does_not_persist(monkeypatch) -> None:
 
     async def _fake_create_subprocess_shell(*args, **kwargs):
         calls.append("host")
+        assert kwargs["stdout"] != shell.asyncio.subprocess.PIPE
+        assert kwargs["stderr"] == shell.asyncio.subprocess.STDOUT
+        if shell.os.name == "posix":
+            assert kwargs["start_new_session"] is True
         return _Proc()
+
+    class _FakeTemporaryFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+        def seek(self, offset: int) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"host once\n"
 
     monkeypatch.setattr(shell, "get_runtime", lambda: _Runtime())
     monkeypatch.setattr(shell, "gate_action", _fake_gate_action)
     monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
     monkeypatch.setattr(shell, "escalate_backend_denial", _fake_escalate_backend_denial)
     monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", _fake_create_subprocess_shell)
+    monkeypatch.setattr(shell.tempfile, "TemporaryFile", lambda: _FakeTemporaryFile())
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -205,3 +231,51 @@ async def test_backend_denial_host_once_does_not_persist(monkeypatch) -> None:
     assert "host once" in first
     assert "sandboxed again" in second
     assert calls == ["gate", "backend", "escalate", "host", "gate", "backend"]
+
+
+@pytest.mark.asyncio
+async def test_full_host_access_code_exec_resolves_host_python(monkeypatch, tmp_path) -> None:
+    from opensquilla.tools.builtin import code_exec
+
+    resolve_calls: list[bool] = []
+
+    class _Runtime:
+        effective = SimpleNamespace(sandbox_enabled=True)
+        workspace = tmp_path
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"host python\n", b""
+
+    def _fake_resolve_python_bin(*, sandbox_enabled: bool) -> str:
+        resolve_calls.append(sandbox_enabled)
+        return "/host/python"
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):
+        assert args[:2] == ("/host/python", "-c")
+        return _Proc()
+
+    monkeypatch.setattr(code_exec, "get_runtime", lambda: _Runtime())
+    monkeypatch.setattr(code_exec, "_resolve_python_bin", _fake_resolve_python_bin)
+    monkeypatch.setattr(code_exec.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            session_key="s1",
+            run_mode="full",
+            workspace_dir=str(tmp_path),
+        )
+    )
+    try:
+        result = await code_exec.execute_code("print('hi')")
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(result)
+    assert payload["exit_code"] == 0
+    assert payload["stdout"] == "host python\n"
+    assert resolve_calls == [False]

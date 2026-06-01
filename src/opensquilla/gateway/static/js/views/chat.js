@@ -2215,6 +2215,31 @@ const ChatView = (() => {
     });
   }
 
+  function _startNewChatSession(source) {
+    _unsubscribeSession();
+    _parkCurrentSessionStreamState(source || 'new_chat');
+    const key = _genKey();
+    _updateSessionChip(key);
+    _persistSession(key);
+    _setRunMode(_RUN_MODE_DEFAULT, { toast: false, sync: false });
+    _loadRunContext();
+    _clearPendingDrainAfterTerminalTimer();
+    _setCompactInFlight(false);
+    _hideCompactionSeparator();
+    _pendingSessionIntent = 'new_chat'; _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
+    _messages = [];
+    _clearContextStatus();
+    _resetHistoryPagingState();
+    _lastHeaderRole = '';
+    _lastHeaderDay = '';
+    _usageAccum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null, routedTurns: 0, sessionSaved: 0 };
+    _usageModel = '';
+    _viz.reset(); _resetSavingsPopupCooldown();
+    _thread.innerHTML = _emptyStateHTML(); // safe: static string, no user data
+    _subscribeSession();
+    UI.toast('New chat session in the current agent: ' + key, 'info');
+  }
+
   /* ── Event Bindings ─────────────────────────────────────────────────── */
 
   function _bindEvents() {
@@ -2231,28 +2256,7 @@ const ChatView = (() => {
     // _sessionInput is null; no listener needed here.
 
     // New session button
-    newBtn.addEventListener('click', () => {
-      _unsubscribeSession();
-      _parkCurrentSessionStreamState('new_chat');
-      const key = _genKey();
-      _updateSessionChip(key);
-      _persistSession(key);
-      _clearPendingDrainAfterTerminalTimer();
-      _setCompactInFlight(false);
-      _hideCompactionSeparator();
-      _pendingSessionIntent = 'new_chat'; _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
-      _messages = [];
-      _clearContextStatus();
-      _resetHistoryPagingState();
-      _lastHeaderRole = '';
-      _lastHeaderDay = '';
-      _usageAccum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null, routedTurns: 0, sessionSaved: 0 };
-      _usageModel = '';
-      _viz.reset(); _resetSavingsPopupCooldown();
-      _thread.innerHTML = _emptyStateHTML(); // safe: static string, no user data
-      _subscribeSession();
-      UI.toast('New chat session in the current agent: ' + key, 'info');
-    });
+    newBtn.addEventListener('click', () => _startNewChatSession('new_chat'));
 
     // Export
     exportBtn.addEventListener('click', _exportMarkdown);
@@ -2560,26 +2564,7 @@ const ChatView = (() => {
     switch (action) {
       case 'new_chat':
       case '/new': {
-        _unsubscribeSession();
-        _parkCurrentSessionStreamState('new_chat');
-        const key = _genKey();
-        _updateSessionChip(key);
-        _persistSession(key);
-        _clearPendingDrainAfterTerminalTimer();
-        _setCompactInFlight(false);
-        _hideCompactionSeparator();
-        _pendingSessionIntent = 'new_chat'; _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
-        _messages = [];
-        _clearContextStatus();
-        _resetHistoryPagingState();
-        _lastHeaderRole = '';
-        _lastHeaderDay = '';
-        _usageAccum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null, routedTurns: 0, sessionSaved: 0 };
-        _usageModel = '';
-        _viz.reset(); _resetSavingsPopupCooldown();
-        _thread.innerHTML = _emptyStateHTML(); // safe: static string, no user data
-        _subscribeSession();
-        UI.toast('New chat session in the current agent: ' + key, 'info');
+        _startNewChatSession('new_chat');
         break;
       }
       case 'reset_session':

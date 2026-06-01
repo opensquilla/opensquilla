@@ -109,6 +109,24 @@ def test_chat_run_mode_control_replaces_elevated_bypass_copy() -> None:
     assert 'accept="image/*" multiple' not in source
 
 
+def test_chat_new_session_resets_run_mode_before_loading_context() -> None:
+    source = _read_chat_js()
+
+    start = source.index("function _startNewChatSession(")
+    end = source.index("  function _bindEvents()", start)
+    helper = source[start:end]
+
+    persist_idx = helper.index("_persistSession(key);")
+    reset_idx = helper.index("_setRunMode(_RUN_MODE_DEFAULT")
+    load_idx = helper.index("_loadRunContext()")
+
+    assert "_updateSessionChip(key);" in helper
+    assert persist_idx < reset_idx < load_idx
+    assert "function _startNewChatSession(source)" in helper
+    assert "_parkCurrentSessionStreamState(source || 'new_chat')" in helper
+    assert "newBtn.addEventListener('click', () => _startNewChatSession('new_chat'))" in source
+
+
 def test_chat_does_not_render_persistent_bypass_warning_chip() -> None:
     chat_source = _read_chat_js()
     chat_css = _read_chat_css()

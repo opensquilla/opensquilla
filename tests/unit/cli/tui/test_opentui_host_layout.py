@@ -89,6 +89,27 @@ def test_opentui_answer_uses_markdown_renderable() -> None:
     assert "streaming" in source
 
 
+def test_opentui_promotes_only_final_answer_run_to_card() -> None:
+    source = HOST_SOURCE.read_text(encoding="utf-8")
+
+    add_tool_body = source.split("  addTool(toolId, name, summary) {", 1)[1].split(
+        "  finishTool(", 1
+    )[0]
+    finish_answer_body = source.split("  finishAnswer(cancelled) {", 1)[1].split(
+        "  setUsage(", 1
+    )[0]
+
+    assert "this.answerTop = null;" in source
+    assert "this.box.remove(this.answerTop.id)" in source
+    assert "this.box.remove(this.answerMd.id)" in source
+    assert "demoteAnswerToTimeline" in source
+    assert "this.demoteAnswerToTimeline();" in add_tool_body
+    assert "promoteAnswerToCard" in source
+    assert "this.promoteAnswerToCard()" in finish_answer_body
+    assert '"╭─ answer ─ squilla ─────"' in source
+    assert '"╰─────"' in source
+
+
 def test_opentui_input_region_and_scroll_routing() -> None:
     source = HOST_SOURCE.read_text(encoding="utf-8")
 

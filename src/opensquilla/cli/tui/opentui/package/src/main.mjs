@@ -274,6 +274,10 @@ class TurnView {
     this.toolNodes = new Map();
     this.runningNodes = new Set();   // this turn's nodes still in toolPulseNodes
     this.sawAnswer = false;
+    this._answerText = "";
+    this.answerMd = null;
+    this.answerTextNode = null;
+    this.answerTop = null;
     this.ended = false;
     this._seq = 0;
     this.box = new BoxRenderable(renderer, {
@@ -302,6 +306,7 @@ class TurnView {
   }
 
   addTool(toolId, name, summary) {
+    this.demoteAnswerToTimeline();
     const cleanName = stripTerminalControls(String(name));
     const cleanSummary = stripTerminalControls(String(summary));
     const tail = cleanSummary ? ` ${cleanSummary}` : "";
@@ -352,7 +357,8 @@ class TurnView {
   appendAnswer(delta) {
     if (!this.sawAnswer) {
       this.sawAnswer = true;
-      this._line("a-top", "╭─ answer ─ squilla ─────", OPENTUI_DAILY_THEME.frame);
+      this._answerText = "";
+      this.answerTop = this._line("a-top", "╭─ answer ─ squilla ─────", OPENTUI_DAILY_THEME.frame);
       this.answerMd = new MarkdownRenderable(renderer, {
         id: `turn-${this.id}-md`,
         content: "",
@@ -361,14 +367,36 @@ class TurnView {
         syntaxStyle,
         fg: OPENTUI_DAILY_THEME.text,
         tableOptions: { style: "columns" },
+        internalBlockMode: "top-level",
+        height: 0,
         paddingLeft: 1,
       });
       this.box.add(this.answerMd);
-      this._answerText = "";
+      this.answerTextNode = this._line(`answer-fallback-${this._seq++}`, "", OPENTUI_DAILY_THEME.text);
     }
     this._answerText += String(delta);
-    this.answerMd.content = this._answerText;
+    if (this.answerMd) this.answerMd.content = this._answerText;
+    if (this.answerTextNode) this.answerTextNode.content = stripTerminalControls(this._answerText);
     renderer.requestRender?.();
+  }
+
+  demoteAnswerToTimeline() {
+    if (!this.sawAnswer) return;
+    if (this.answerTop && typeof this.box.remove === "function") this.box.remove(this.answerTop.id);
+    if (this.answerMd && typeof this.box.remove === "function") this.box.remove(this.answerMd.id);
+    if (this.answerTextNode && typeof this.box.remove === "function") this.box.remove(this.answerTextNode.id);
+    const text = stripTerminalControls(this._answerText);
+    if (text) this._line(`answer-${this._seq++}`, text, OPENTUI_DAILY_THEME.answerAccent);
+    this.sawAnswer = false;
+    this._answerText = "";
+    this.answerTop = null;
+    this.answerMd = null;
+    this.answerTextNode = null;
+  }
+
+  promoteAnswerToCard() {
+    if (!this.sawAnswer || !this.answerMd) return false;
+    return true;
   }
 
   finishAnswer(cancelled) {
@@ -377,9 +405,9 @@ class TurnView {
     for (const node of this.runningNodes) toolPulseNodes.delete(node);
     this.runningNodes.clear();
     this.ended = true;
+    const renderedAnswer = this.promoteAnswerToCard();
     if (cancelled) this._line("a-cancel", "│ turn cancelled", OPENTUI_DAILY_THEME.muted);
-    if (this.answerMd) this.answerMd.streaming = false;
-    if (this.sawAnswer) this._line("a-bot", "╰─────", OPENTUI_DAILY_THEME.frame);
+    if (renderedAnswer) this._line("a-bot", "╰─────", OPENTUI_DAILY_THEME.frame);
     renderer.requestRender?.();
   }
 

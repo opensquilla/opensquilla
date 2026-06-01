@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer
+from opensquilla.cli.tui.terminal.stream import _summarize_result
 
 
 class _RecordingHandle:
@@ -61,3 +62,49 @@ async def test_renderer_marks_tool_error_and_cancel() -> None:
     assert "error" in tool_states
     end = [p for t, p in handle.sent if t == "turn.end"][0]
     assert end["cancelled"] is True
+
+
+def test_tool_result_summary_keeps_meaningful_lines_without_banners() -> None:
+    summary = _summarize_result(
+        "exit_code=0\n"
+        "═══ 一级模块 ═══\n"
+        "agents\n"
+        "────────\n"
+        "memory\n"
+        "================\n"
+        "tools\n"
+    )
+
+    assert summary == "exit_code=0\nagents\nmemory"
+    assert " / " not in summary
+    assert "═══" not in summary
+
+
+def test_tool_result_summary_stringifies_single_structured_msg_payload() -> None:
+    summary = _summarize_result(
+        {
+            "type": "msg",
+            "msg": [
+                {"kind": "text", "text": "first"},
+                {"kind": "data", "value": {"rows": [1, 2]}},
+            ],
+        }
+    )
+
+    assert summary.startswith("[")
+    assert '"type": "msg"' not in summary
+    assert '"rows": [1, 2]' in summary
+
+
+def test_tool_result_summary_stringifies_structured_msg_payloads() -> None:
+    summary = _summarize_result(
+        [
+            {"type": "msg", "msg": {"files": ["main.py"], "count": 1}},
+            {"type": "msg", "msg": ["ok", {"status": "done"}]},
+        ]
+    )
+
+    assert summary == (
+        '{"count": 1, "files": ["main.py"]}\n'
+        '["ok", {"status": "done"}]'
+    )

@@ -55,6 +55,8 @@ _DIRECTIVE_TAG_RE = re.compile(
     r"\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]\s*"
 )
 _DIRECTIVE_TAG_BUFFER_LIMIT = 256
+_RESULT_DECORATION_ONLY_RE = re.compile(r"^[\s═─=\-]{3,}$")
+_RESULT_DECORATION_BANNER_RE = re.compile(r"^[\s═─=\-]{2,}.+[\s═─=\-]{2,}$")
 
 
 def _capture_console_print(*objects: Any, **kwargs: Any) -> str:
@@ -152,25 +154,71 @@ def _summarize_result(result: Any | None, *, max_chars: int = 220) -> str:
     """Return a compact, terminal-safe tool result preview."""
     if result is None:
         return ""
-    if isinstance(result, str):
-        text = result
-    else:
-        try:
-            text = json.dumps(result, ensure_ascii=False, sort_keys=True)
-        except TypeError:
-            text = str(result)
+    text = _stringify_result_for_summary(result)
     text = _sanitize_stream_text(text).strip()
     if not text:
         return ""
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not _is_result_decoration_line(line)
+    ]
     if not lines:
         return ""
-    preview = " / ".join(lines[:3])
-    if len(lines) > 3:
-        preview += f" / ... {len(lines) - 3} more lines"
+    preview = "\n".join(lines[:3])
     if len(preview) > max_chars:
         preview = f"{preview[: max_chars - 1].rstrip()}…"
     return preview
+
+
+def _stringify_result_for_summary(result: Any) -> str:
+    msg_text = _stringify_msg_event_payloads(result)
+    if msg_text is not None:
+        return msg_text
+    return _stringify_result_value(result)
+
+
+def _stringify_msg_event_payloads(result: Any) -> str | None:
+    if isinstance(result, dict):
+        payload = _msg_event_payload(result)
+        if payload is None:
+            return None
+        return _stringify_result_value(payload)
+    if not isinstance(result, list):
+        return None
+
+    parts: list[str] = []
+    for item in result:
+        payload = _msg_event_payload(item)
+        if payload is None:
+            continue
+        rendered = _stringify_result_value(payload).strip()
+        if rendered:
+            parts.append(rendered)
+    return "\n".join(parts) if parts else None
+
+
+def _msg_event_payload(event: Any) -> Any | None:
+    if not isinstance(event, dict) or event.get("type") != "msg" or "msg" not in event:
+        return None
+    return event["msg"]
+
+
+def _stringify_result_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _is_result_decoration_line(line: str) -> bool:
+    stripped = line.strip()
+    return bool(
+        _RESULT_DECORATION_ONLY_RE.fullmatch(stripped)
+        or _RESULT_DECORATION_BANNER_RE.fullmatch(stripped)
+    )
 
 
 def _start_on_fresh_line(payload: str) -> str:

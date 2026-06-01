@@ -86,14 +86,19 @@ def test_explicit_full_run_mode_disables_sandbox_booleans() -> None:
     assert config_run_mode(config) == RunMode.FULL
 
 
-def test_windows_restricted_token_backend_fails_closed_until_implemented() -> None:
+def test_windows_restricted_token_backend_fails_closed_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import WindowsRestrictedTokenBackend
+
+    monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: False)
     settings = SandboxSettings(
         sandbox=True,
         security_grading=True,
         backend="windows_restricted_token",
     )
 
-    with pytest.raises(SandboxBackendError, match="not implemented"):
+    with pytest.raises(SandboxBackendError, match="windows_restricted_token.*unavailable"):
         select_backend(settings)
 
 

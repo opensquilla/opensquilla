@@ -34,7 +34,6 @@ import functools
 import inspect
 import json
 import logging
-import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,7 +125,6 @@ def configure_runtime(
     """
     global _runtime
 
-    settings = _apply_host_compatibility(settings)
     effective = settings.validate_combination()
     cache = stale_cache if stale_cache is not None else get_stale_output_cache()
     ledger = DenialLedger(
@@ -169,35 +167,6 @@ def configure_runtime(
         effective.insecure_mode,
     )
     return _runtime
-
-
-def _apply_host_compatibility(settings: SandboxSettings) -> SandboxSettings:
-    """Adjust unsupported platform defaults before runtime selection.
-
-    Some platforms currently have no executable sandbox backend in this
-    package. Treating the generated default ``sandbox=true, backend=auto`` as a
-    hard boot failure makes local CLI one-shots unusable, even for read-only
-    file tools. Keep explicit backend choices fail-closed, but make the auto
-    choice resolve to the same visible insecure mode an operator would get by
-    setting ``sandbox=false``.
-    """
-
-    if (
-        sys.platform.startswith("win")
-        and settings.sandbox
-        and settings.backend == "auto"
-    ):
-        log.warning(
-            "sandbox.windows_auto_backend_unsupported: "
-            "no Windows sandbox backend is available; disabling sandbox for this runtime"
-        )
-        return settings.model_copy(
-            update={
-                "sandbox": False,
-                "security_grading": False,
-            }
-        )
-    return settings
 
 
 def get_runtime() -> SandboxRuntime | None:

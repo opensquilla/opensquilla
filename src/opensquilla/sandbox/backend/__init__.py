@@ -1,11 +1,14 @@
 """Sandbox backend implementations and selection helper.
 
-Three backends ship today:
+Four concrete backends ship today:
 
 * :class:`~opensquilla.sandbox.backend.bubblewrap.BubblewrapBackend` — the Linux
   primary path; uses the ``bwrap`` binary for namespace isolation.
 * :class:`~opensquilla.sandbox.backend.seatbelt.SeatbeltBackend` — macOS
   primary path; uses ``sandbox-exec`` with a generated SBPL profile.
+* :class:`~opensquilla.sandbox.backend.windows_restricted_token.WindowsRestrictedTokenBackend` —
+  native Windows path; delegates to a restricted-token helper and fails closed
+  when policy enforcement is unavailable.
 * :class:`~opensquilla.sandbox.backend.noop.NoopBackend` — used when the sandbox
   feature switch is off; runs the command through the existing rlimit
   wrapper and emits a warning on every invocation so the bypass is visible
@@ -23,6 +26,7 @@ from opensquilla.sandbox.backend.base import Backend
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.backend.seatbelt import SeatbeltBackend
+from opensquilla.sandbox.backend.windows_restricted_token import WindowsRestrictedTokenBackend
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.types import SandboxBackendError
 
@@ -39,6 +43,10 @@ def _auto_backend() -> Backend:
         seatbelt = SeatbeltBackend()
         if seatbelt.available():
             return seatbelt
+    if sys.platform.startswith("win"):
+        windows = WindowsRestrictedTokenBackend()
+        if windows.available():
+            return windows
     return NoopBackend()
 
 
@@ -64,9 +72,7 @@ def select_backend(settings: SandboxSettings) -> Backend:
     elif choice == "noop":
         backend = NoopBackend()
     elif choice == "windows_restricted_token":
-        raise SandboxBackendError(
-            "windows_restricted_token sandbox backend is not implemented yet"
-        )
+        backend = WindowsRestrictedTokenBackend()
     else:  # pragma: no cover — pydantic Literal constrains this upstream
         raise ValueError(f"unknown sandbox backend: {choice!r}")
 
@@ -92,5 +98,6 @@ __all__ = [
     "BubblewrapBackend",
     "NoopBackend",
     "SeatbeltBackend",
+    "WindowsRestrictedTokenBackend",
     "select_backend",
 ]

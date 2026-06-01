@@ -20,6 +20,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.sandbox.types import SecurityLevel
 
 log = logging.getLogger(__name__)
@@ -104,6 +105,14 @@ class SandboxSettings(BaseSettings):
                 "default_level=DISABLED requires allow_legacy_mode=True; "
                 "legacy mode must be opted into explicitly"
             )
+        if self.run_mode is not None:
+            mode = normalize_run_mode(self.run_mode)
+            if mode in {RunMode.STANDARD, RunMode.TRUSTED}:
+                self.sandbox = True
+                self.security_grading = True
+            elif mode == RunMode.FULL:
+                self.sandbox = False
+                self.security_grading = False
         return self
 
     def validate_combination(self) -> EffectiveMode:

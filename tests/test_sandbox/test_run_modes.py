@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import types
 
+import pytest
+
+from opensquilla.sandbox.backend import select_backend
+from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.run_mode import (
     RunMode,
     approval_behavior,
@@ -11,6 +15,7 @@ from opensquilla.sandbox.run_mode import (
     normalize_run_mode,
     run_mode_config_patch,
 )
+from opensquilla.sandbox.types import SandboxBackendError
 
 
 def test_trusted_sandbox_is_sandboxed_and_skips_only_routine_prompts() -> None:
@@ -51,6 +56,45 @@ def test_trusted_patch_round_trips_through_config_run_mode() -> None:
     )
 
     assert config_run_mode(config) == RunMode.TRUSTED
+
+
+def test_explicit_trusted_run_mode_enables_sandbox_booleans() -> None:
+    settings = SandboxSettings(run_mode="trusted")
+    config = types.SimpleNamespace(
+        sandbox=settings,
+        permissions=types.SimpleNamespace(default_mode="off"),
+    )
+
+    effective = settings.validate_combination()
+
+    assert effective.sandbox_enabled is True
+    assert effective.grading_enabled is True
+    assert config_run_mode(config) == RunMode.TRUSTED
+
+
+def test_explicit_full_run_mode_disables_sandbox_booleans() -> None:
+    settings = SandboxSettings(run_mode="full", sandbox=True, security_grading=True)
+    config = types.SimpleNamespace(
+        sandbox=settings,
+        permissions=types.SimpleNamespace(default_mode="full"),
+    )
+
+    effective = settings.validate_combination()
+
+    assert effective.sandbox_enabled is False
+    assert effective.grading_enabled is False
+    assert config_run_mode(config) == RunMode.FULL
+
+
+def test_windows_restricted_token_backend_fails_closed_until_implemented() -> None:
+    settings = SandboxSettings(
+        sandbox=True,
+        security_grading=True,
+        backend="windows_restricted_token",
+    )
+
+    with pytest.raises(SandboxBackendError, match="not implemented"):
+        select_backend(settings)
 
 
 def test_configured_default_elevated_only_returns_full() -> None:

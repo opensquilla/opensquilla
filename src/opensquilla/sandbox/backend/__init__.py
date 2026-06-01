@@ -63,6 +63,10 @@ def select_backend(settings: SandboxSettings) -> Backend:
         backend = SeatbeltBackend()
     elif choice == "noop":
         backend = NoopBackend()
+    elif choice == "windows_restricted_token":
+        raise SandboxBackendError(
+            "windows_restricted_token sandbox backend is not implemented yet"
+        )
     else:  # pragma: no cover — pydantic Literal constrains this upstream
         raise ValueError(f"unknown sandbox backend: {choice!r}")
 

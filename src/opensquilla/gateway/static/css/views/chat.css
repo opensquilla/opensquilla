@@ -472,6 +472,8 @@
   box-shadow: var(--shadow-sm);
   font-size: var(--fs-sm);
   line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
   max-width: 78%;
   min-width: 56px;
@@ -1387,6 +1389,8 @@
   min-height: 32px;
   min-width: 56px;
   padding: var(--sp-2) var(--sp-4);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 

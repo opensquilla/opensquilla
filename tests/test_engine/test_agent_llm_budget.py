@@ -221,6 +221,49 @@ class _RepeatedToolFailureThenDoneProvider:
         return []
 
 
+class _HighUsageToolLoopProvider:
+    provider_name = "fake"
+
+    def __init__(self, *, tool_rounds: int = 3, input_tokens_per_call: int = 4000) -> None:
+        self.tool_rounds = tool_rounds
+        self.input_tokens_per_call = input_tokens_per_call
+        self.calls: list[list[Message]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        return self._stream(len(self.calls))
+
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number > self.tool_rounds:
+            yield ProviderText(text="done")
+            yield ProviderDone(
+                stop_reason="stop",
+                input_tokens=self.input_tokens_per_call,
+                output_tokens=0,
+            )
+            return
+        tool_use_id = f"read-{call_number}"
+        yield ProviderToolUseStart(tool_use_id=tool_use_id, tool_name="exec_command")
+        yield ProviderToolUseEnd(
+            tool_use_id=tool_use_id,
+            tool_name="exec_command",
+            arguments={"command": f"printf round-{call_number}"},
+        )
+        yield ProviderDone(
+            stop_reason="tool_calls",
+            input_tokens=self.input_tokens_per_call,
+            output_tokens=0,
+        )
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
 class _ConfigCapturingProvider:
     provider_name = "fake"
 
@@ -999,6 +1042,128 @@ async def test_context_overflow_effective_compaction_allows_single_retry(
 
 
 @pytest.mark.asyncio
+async def test_inline_overflow_uses_live_context_not_cumulative_provider_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.engine.agent as agent_module
+
+    provider = _HighUsageToolLoopProvider(tool_rounds=3, input_tokens_per_call=4000)
+    flush_calls: list[int] = []
+    compact_requests: list[Any] = []
+
+    async def _tool(call: Any) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="ok",
+        )
+
+    async def _flush(_plan: Any, flush_messages: list[Message]) -> Any:
+        flush_calls.append(len(flush_messages))
+        return SimpleNamespace(
+            mode="llm",
+            indexed_chunk_count=1,
+            integrity_status="ok",
+            output_coverage_status="ok",
+            invalid_candidate_count=0,
+            candidate_missing_ids=[],
+            obligation_status="ok",
+            obligation_missing_ids=[],
+        )
+
+    async def _compact(request: Any) -> CompactionResult:
+        compact_requests.append(request)
+        return CompactionResult(
+            summary="",
+            kept_entries=request.entries,
+            removed_count=0,
+            chunks_processed=0,
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            context_window_tokens=20_000,
+            context_overflow_threshold=0.5,
+            flush_enabled=True,
+            flush_timeout_seconds=0.01,
+            max_iterations=10,
+        ),
+        tool_handler=_tool,
+    )
+    monkeypatch.setattr(agent, "_run_flush", _flush)
+    monkeypatch.setattr(agent_module, "compact_context", _compact)
+
+    events = [event async for event in agent.run_turn("read the files one by one")]
+
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.text == "done"
+    assert done.input_tokens == 16_000
+    assert len(provider.calls) == 4
+    assert flush_calls == []
+    assert compact_requests == []
+
+
+@pytest.mark.asyncio
+async def test_inline_overflow_still_triggers_for_large_live_provider_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.engine.agent as agent_module
+
+    provider = _HighUsageToolLoopProvider(tool_rounds=0, input_tokens_per_call=1)
+    large_tool = ToolDefinition(
+        name="large_context_tool",
+        description="large live request surface " + ("z" * 6000),
+        input_schema=ToolInputSchema(),
+    )
+    flush_calls: list[int] = []
+    compact_requests: list[Any] = []
+
+    async def _flush(_plan: Any, flush_messages: list[Message]) -> Any:
+        flush_calls.append(len(flush_messages))
+        return SimpleNamespace(
+            mode="llm",
+            indexed_chunk_count=1,
+            integrity_status="ok",
+            output_coverage_status="ok",
+            invalid_candidate_count=0,
+            candidate_missing_ids=[],
+            obligation_status="ok",
+            obligation_missing_ids=[],
+        )
+
+    async def _compact(request: Any) -> CompactionResult:
+        compact_requests.append(request)
+        return CompactionResult(
+            summary="",
+            kept_entries=request.entries,
+            removed_count=0,
+            chunks_processed=0,
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            context_window_tokens=3000,
+            context_overflow_threshold=0.5,
+            flush_enabled=True,
+            flush_timeout_seconds=0.01,
+            system_prompt="live request system context " + ("s" * 2000),
+        ),
+        tool_definitions=[large_tool],
+    )
+    monkeypatch.setattr(agent, "_run_flush", _flush)
+    monkeypatch.setattr(agent_module, "compact_context", _compact)
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert any(isinstance(event, DoneEvent) for event in events)
+    assert len(provider.calls) == 1
+    assert flush_calls == [1]
+    assert len(compact_requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_provider_request_budget_exhausted_compacts_warns_and_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1330,6 +1495,7 @@ async def test_context_overflow_flush_timeout_records_backoff_and_retries(
         config=AgentConfig(
             max_provider_retries=0,
             max_overflow_retries=2,
+            flush_enabled=True,
             flush_timeout_seconds=0.01,
             flush_backoff_initial_seconds=10.0,
         ),

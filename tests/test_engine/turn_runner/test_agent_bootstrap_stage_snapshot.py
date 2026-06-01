@@ -600,7 +600,7 @@ async def test_agent_bootstrap_stage_snapshot(
         "agent_config_cache_mode": "off",
         "agent_config_thinking": case["thinking"],
         "agent_config_tool_result_projection_max_inline_chars": 60_000,
-        "agent_config_flush_enabled": True,
+        "agent_config_flush_enabled": False,
         "effective_runtime_timeout": expected_runtime_timeout,
         "effective_max_iterations": expected_max_iterations,
         "effective_iteration_timeout": case["iteration_timeout"],

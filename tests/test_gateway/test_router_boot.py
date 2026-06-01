@@ -792,6 +792,7 @@ def test_build_flush_service_uses_configured_background_memory_timeout() -> None
         provider_selector=SimpleNamespace(resolve=lambda: object()),
         config=GatewayConfig(
             memory={
+                "flush_enabled": True,
                 "flush_timeout_seconds": 0.25,
                 "flush_background_timeout_seconds": 42.0,
             }
@@ -812,7 +813,7 @@ async def test_build_flush_service_archive_workspace_falls_back_to_main_workspac
     service = build_flush_service(
         tool_registry=registry,
         provider_selector=SimpleNamespace(resolve=lambda: None),
-        config=GatewayConfig(),
+        config=GatewayConfig(memory={"flush_enabled": True}),
         memory_managers={
             "side": SimpleNamespace(workspace_dir=None, memory_dir=matching_memory_dir),
             "main": SimpleNamespace(
@@ -862,7 +863,7 @@ async def test_build_flush_service_wires_durable_receipt_writer(tmp_path: Path) 
         service = build_flush_service(
             tool_registry=registry,
             provider_selector=SimpleNamespace(resolve=lambda: None),
-            config=GatewayConfig(),
+            config=GatewayConfig(memory={"flush_enabled": True}),
             session_manager=session_manager,
             memory_managers={"main": SimpleNamespace(workspace_dir=tmp_path)},
         )
@@ -924,7 +925,7 @@ async def test_build_flush_service_receipt_uses_session_id_captured_before_rotat
         service = build_flush_service(
             tool_registry=registry,
             provider_selector=SimpleNamespace(resolve=lambda: None),
-            config=GatewayConfig(),
+            config=GatewayConfig(memory={"flush_enabled": True}),
             session_manager=session_manager,
             memory_managers={"main": SimpleNamespace(workspace_dir=tmp_path)},
         )
@@ -987,7 +988,7 @@ async def test_build_flush_service_receipts_distinguish_same_window_different_co
         service = build_flush_service(
             tool_registry=registry,
             provider_selector=SimpleNamespace(resolve=lambda: None),
-            config=GatewayConfig(),
+            config=GatewayConfig(memory={"flush_enabled": True}),
             session_manager=session_manager,
             memory_managers={"main": SimpleNamespace(workspace_dir=tmp_path)},
         )
@@ -1043,7 +1044,7 @@ async def test_build_flush_service_archive_failed_without_checkpoint_is_checkpoi
         service = build_flush_service(
             tool_registry=registry,
             provider_selector=SimpleNamespace(resolve=lambda: None),
-            config=GatewayConfig(),
+            config=GatewayConfig(memory={"flush_enabled": True}),
             session_manager=session_manager,
         )
 

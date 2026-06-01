@@ -4949,9 +4949,9 @@ class TurnRunner:
 
         memory_cfg = getattr(self._config, "memory", None)
         if memory_cfg is None:
-            return self._session_flush_service is not None
+            return False
 
-        raw_enabled = getattr(memory_cfg, "flush_enabled", True)
+        raw_enabled = getattr(memory_cfg, "flush_enabled", False)
         if isinstance(raw_enabled, str):
             return raw_enabled.strip().lower() not in {"0", "false", "no", "off"}
         return bool(raw_enabled)

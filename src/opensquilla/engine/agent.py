@@ -1867,8 +1867,6 @@ class Agent:
         turn_tool_errors = 0
         last_actual_model = ""
         terminal_error: ErrorEvent | None = None
-        window_input_tokens = 0
-        window_output_tokens = 0
         final_text_parts: list[str] = []
         final_reasoning_parts: list[str] = []
         artifact_delivery_final_response_pending = False
@@ -2625,8 +2623,6 @@ class Agent:
                             )
                             if visible_text:
                                 final_text_parts.append(visible_text)
-                            window_input_tokens += iter_input_tokens
-                            window_output_tokens += iter_output_tokens
                             logger.warning(
                                 "provider.output_truncated_continue",
                                 session_key=self._session_key,
@@ -2943,8 +2939,6 @@ class Agent:
                                 kept_count=len(overflow_outcome.messages),
                                 removed_count=overflow_outcome.removed_count,
                             )
-                            window_input_tokens = 0
-                            window_output_tokens = 0
                             _call_attempt += 1
                             continue
                         if not _fallback.should_retry(kind, _retry_attempt):
@@ -3040,14 +3034,16 @@ class Agent:
                 if iter_reasoning_content:
                     final_reasoning_parts.append(iter_reasoning_content)
 
-                window_input_tokens += iter_input_tokens
-                window_output_tokens += iter_output_tokens
-
-                # Check overflow against the current post-compaction window,
-                # not lifetime usage for the whole turn.
+                # Check overflow against the live provider request, not
+                # cumulative billable usage for the whole turn.
+                estimated_context_tokens = self._estimate_live_request_tokens(
+                    request_messages,
+                    tools=provider_tools_for_call,
+                    config=call_chat_cfg,
+                )
                 overflow_outcome = await self._check_context_overflow(
                     turn_messages,
-                    window_input_tokens + window_output_tokens,
+                    estimated_context_tokens,
                     request_context_insert_index=request_context_insert_index,
                     runtime_context_insert_index=runtime_context_insert_index,
                 )
@@ -3065,9 +3061,9 @@ class Agent:
                     )
                     continue  # retry the tool loop iteration
                 if overflow_outcome.compacted:
-                    # Compaction happened — replace message list and reset only
-                    # the live-window gauge. Lifetime counters keep feeding
-                    # DoneEvent usage/cost accounting for this turn.
+                    # Compaction happened — replace message list. Lifetime
+                    # counters keep feeding DoneEvent usage/cost accounting for
+                    # this turn.
                     turn_messages = overflow_outcome.messages
                     if overflow_outcome.request_context_insert_index is not None:
                         request_context_insert_index = overflow_outcome.request_context_insert_index
@@ -3080,8 +3076,6 @@ class Agent:
                         kept_count=len(overflow_outcome.messages),
                         removed_count=overflow_outcome.removed_count,
                     )
-                    window_input_tokens = 0
-                    window_output_tokens = 0
                     overflow_retries = 0  # reset on success
                     # Rebuild chat_cfg so next LLM call uses refreshed system
                     # prompt. Read cache_breakpoints from the
@@ -4011,16 +4005,69 @@ class Agent:
             default_model=self.config.model_id,
         )
 
+    @staticmethod
+    def _live_request_jsonable(value: Any) -> Any:
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            try:
+                return model_dump(mode="json", exclude_none=True)
+            except TypeError:
+                return model_dump(mode="json")
+        if isinstance(value, list | tuple):
+            return [Agent._live_request_jsonable(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                str(key): Agent._live_request_jsonable(item) for key, item in value.items()
+            }
+        if hasattr(value, "__dict__"):
+            return {
+                str(key): Agent._live_request_jsonable(item)
+                for key, item in vars(value).items()
+                if not str(key).startswith("_")
+            }
+        try:
+            json.dumps(value)
+        except TypeError:
+            return repr(value)
+        return value
+
+    def _estimate_live_request_tokens(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition] | None = None,
+        config: ChatConfig | None = None,
+    ) -> int:
+        """Estimate the current provider request size without lifetime usage."""
+
+        payload: dict[str, Any] = {
+            "messages": [self._live_request_jsonable(message) for message in messages],
+        }
+        if tools:
+            payload["tools"] = [self._live_request_jsonable(tool) for tool in tools]
+        if config is not None:
+            if config.system:
+                payload["system"] = config.system
+            config_payload = config.model_dump(
+                mode="json",
+                exclude_none=True,
+                exclude={"system", "model_capabilities"},
+            )
+            payload.update(config_payload)
+
+        estimated_chars = len(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
+        return max(1, estimated_chars // 4)
+
     async def _check_context_overflow(
         self,
         messages: list[Message],
-        total_tokens: int,
+        estimated_context_tokens: int,
         *,
         request_context_insert_index: int | None = None,
         runtime_context_insert_index: int | None = None,
         compaction_window_tokens: int | None = None,
     ) -> CompactionOutcome | None:
-        """Check if total tokens exceed the overflow threshold.
+        """Check if estimated live context tokens exceed the overflow threshold.
 
         Uses sub-agent flush instead of prompt injection.
         The flush is re-entrant: it can trigger on every approach to threshold.
@@ -4028,7 +4075,7 @@ class Agent:
         self._last_compaction_refusal_reason = None
         window_tokens = compaction_window_tokens or self.config.context_window_tokens
         threshold = self.config.context_overflow_threshold * window_tokens
-        if total_tokens <= threshold:
+        if estimated_context_tokens <= threshold:
             return CompactionOutcome(
                 messages=messages,
                 request_context_insert_index=request_context_insert_index,
@@ -4105,7 +4152,7 @@ class Agent:
                     )
 
                     if should_flush(
-                        total_tokens=total_tokens,
+                        total_tokens=estimated_context_tokens,
                         threshold_tokens=int(threshold),
                         transcript_bytes=transcript_bytes,
                     ):
@@ -4116,7 +4163,7 @@ class Agent:
                         logger.info(
                             "memory_flush.triggered",
                             path=plan.relative_path,
-                            total_tokens=total_tokens,
+                            total_tokens=estimated_context_tokens,
                             threshold=int(threshold),
                         )
                         flush_task = asyncio.create_task(self._run_flush(plan, list(messages)))
@@ -4160,7 +4207,7 @@ class Agent:
                             phase="agent_inline_overflow",
                             status="skipped",
                             reason=reason,
-                            tokens_before=total_tokens,
+                            tokens_before=estimated_context_tokens,
                             context_window_tokens=window_tokens,
                             **compaction_effect_payload(
                                 status="skipped",
@@ -4197,7 +4244,7 @@ class Agent:
                 source="automatic",
                 phase="agent_inline_overflow",
                 status="started",
-                tokens_before=total_tokens,
+                tokens_before=estimated_context_tokens,
                 context_window_tokens=window_tokens,
                 **compaction_effect_payload(status="started"),
                 **compaction_lifecycle_payload(
@@ -4218,7 +4265,7 @@ class Agent:
                     status="failed",
                     message=str(exc),
                     reason=self._last_compaction_refusal_reason,
-                    tokens_before=total_tokens,
+                    tokens_before=estimated_context_tokens,
                     context_window_tokens=window_tokens,
                     **compaction_effect_payload(status="failed"),
                     **compaction_lifecycle_payload(
@@ -4237,7 +4284,7 @@ class Agent:
                 observed_payload.update(
                     compaction_result_payload(
                         result,
-                        tokens_before=total_tokens,
+                        tokens_before=estimated_context_tokens,
                     )
                 )
                 notify_compaction(
@@ -4267,7 +4314,7 @@ class Agent:
                     phase="agent_inline_overflow",
                     status="failed",
                     reason=self._last_compaction_refusal_reason,
-                    tokens_before=total_tokens,
+                    tokens_before=estimated_context_tokens,
                     context_window_tokens=window_tokens,
                     removed_count=result.removed_count,
                     kept_count=len(result.kept_entries),
@@ -4291,7 +4338,7 @@ class Agent:
                     phase="agent_inline_overflow",
                     status="skipped",
                     reason=skip_reason,
-                    tokens_before=total_tokens,
+                    tokens_before=estimated_context_tokens,
                     tokens_after=result.tokens_after,
                     remaining_budget_tokens=result.remaining_budget_tokens,
                     context_window_tokens=window_tokens,

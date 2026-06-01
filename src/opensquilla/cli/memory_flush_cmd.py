@@ -245,8 +245,8 @@ async def run_memory_flush_session(
         flush_service = getattr(svc, "flush_service", None)
         if flush_service is None:
             raise RuntimeError(
-                "session flush service is disabled; unset OPENSQUILLA_SESSION_FLUSH=0 "
-                "or enable session flush before running memory flush-session"
+                "session flush service is disabled; set memory.flush_enabled=true "
+                "and leave OPENSQUILLA_SESSION_FLUSH unset before running memory flush-session"
             )
         session_manager = svc.session_manager
         if session_manager is None:

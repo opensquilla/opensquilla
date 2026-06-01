@@ -44,6 +44,17 @@ def _make_entry(content: str, role: str = "user") -> TranscriptEntry:
     )
 
 
+def _flush_enabled_config(**overrides: Any) -> SimpleNamespace:
+    memory = {
+        "flush_enabled": True,
+        "flush_timeout_seconds": 0.25,
+        "flush_background_timeout_seconds": 120.0,
+        "flush_compaction_requires_safe_receipt": False,
+    }
+    memory.update(overrides)
+    return SimpleNamespace(memory=SimpleNamespace(**memory))
+
+
 def _make_assistant_tool_entry(content: str, tool_calls: list[dict[str, Any]]) -> TranscriptEntry:
     return TranscriptEntry(
         session_id="test-session-id",
@@ -589,6 +600,7 @@ async def test_preflight_starts_full_transcript_flush_without_blocking_compact()
         provider_selector=MagicMock(),
         session_manager=mock_sm,
         session_flush_service=flush_service,
+        config=_flush_enabled_config(),
     )
 
     with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
@@ -638,6 +650,7 @@ async def test_preflight_degraded_flush_receipts_do_not_block_compaction(
         provider_selector=MagicMock(),
         session_manager=mock_sm,
         session_flush_service=flush_service,
+        config=_flush_enabled_config(),
     )
 
     with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
@@ -972,6 +985,7 @@ async def test_preflight_backfilled_flush_receipt_allows_compact() -> None:
         provider_selector=MagicMock(),
         session_manager=mock_sm,
         session_flush_service=flush_service,
+        config=_flush_enabled_config(),
     )
 
     with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):

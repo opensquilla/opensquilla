@@ -324,7 +324,7 @@ class AgentConfig:
     # skill context in history so provider KV-cache prefixes stay stable.
     skills_context_prompt: str | None = None
     # Pre-compaction memory flush
-    flush_enabled: bool = True
+    flush_enabled: bool = False
     flush_timeout_seconds: float = 15.0
     flush_background_timeout_seconds: float = 120.0
     flush_backoff_initial_seconds: float = 30.0

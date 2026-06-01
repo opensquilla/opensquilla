@@ -207,6 +207,7 @@ async def test_agent_memory_flush_timeout_enters_backoff_without_retrigger(
         config=AgentConfig(
             context_window_tokens=100,
             context_overflow_threshold=0.5,
+            flush_enabled=True,
             flush_timeout_seconds=0.01,
             flush_backoff_initial_seconds=10.0,
             flush_backoff_max_seconds=20.0,
@@ -258,6 +259,7 @@ async def test_agent_memory_flush_timeout_records_backoff_and_compacts(
         config=AgentConfig(
             context_window_tokens=100,
             context_overflow_threshold=0.5,
+            flush_enabled=True,
             flush_timeout_seconds=0.01,
             flush_backoff_initial_seconds=10.0,
             flush_backoff_max_seconds=20.0,

@@ -1210,8 +1210,8 @@ def build_flush_service(
 ) -> Any:
     """Construct a :class:`SessionFlushService` gated by flush config.
 
-    Returns ``None`` when the kill-switch env var or gateway memory config
-    disables flush. Otherwise returns a service wired to the gateway's tool
+    Returns ``None`` when the kill-switch env var is disabled or gateway memory
+    config does not explicitly enable flush. Otherwise returns a service wired to the gateway's tool
     registry and provider selector. ``agent_id`` is threaded through the
     callable signature for future multi-agent support, but today OpenSquilla
     uses a single ModelSelector so we just call its ``resolve()`` and ignore
@@ -1222,7 +1222,7 @@ def build_flush_service(
     if not is_session_flush_enabled():
         return None
     memory_cfg = getattr(config, "memory", None)
-    if memory_cfg is not None and not getattr(memory_cfg, "flush_enabled", True):
+    if memory_cfg is None or not getattr(memory_cfg, "flush_enabled", False):
         return None
 
     from opensquilla.memory.session_flush import SessionFlushService

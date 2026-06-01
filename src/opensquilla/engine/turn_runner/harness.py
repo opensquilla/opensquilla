@@ -440,7 +440,7 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
                 media_root_from_config(runner._config) / "tool-results"
             ),
             tool_result_store_session_id=session_id_for_log or session_key,
-            flush_enabled=getattr(mem_cfg, "flush_enabled", True),
+            flush_enabled=getattr(mem_cfg, "flush_enabled", False),
             flush_timeout_seconds=getattr(mem_cfg, "flush_timeout_seconds", 15.0),
             flush_background_timeout_seconds=getattr(
                 mem_cfg, "flush_background_timeout_seconds", 120.0

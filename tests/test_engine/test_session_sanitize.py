@@ -1661,7 +1661,7 @@ async def test_agent_inline_strict_flush_receipt_refuses_destructive_compaction(
         compact_context_should_not_run,
     )
 
-    outcome = await agent._check_context_overflow(messages, total_tokens=100)
+    outcome = await agent._check_context_overflow(messages, estimated_context_tokens=100)
 
     assert outcome is None
     assert compact_called is False

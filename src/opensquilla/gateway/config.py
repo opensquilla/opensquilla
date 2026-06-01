@@ -491,7 +491,7 @@ class MemoryConfig(BaseSettings):
     ttl_sweep_interval_minutes: float = Field(default=60.0, ge=0.0)
 
     # Flush (pre-compaction memory save)
-    flush_enabled: bool = True
+    flush_enabled: bool = False
     flush_timeout_seconds: float = 15.0
     flush_background_timeout_seconds: float = 120.0
     flush_backoff_initial_seconds: float = 30.0

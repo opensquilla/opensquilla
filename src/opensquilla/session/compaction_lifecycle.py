@@ -471,7 +471,7 @@ def pre_compaction_flush_enabled(config: Any) -> bool:
     if not is_session_flush_enabled():
         return False
     memory_cfg = getattr(config, "memory", None)
-    return bool(getattr(memory_cfg, "flush_enabled", True))
+    return bool(getattr(memory_cfg, "flush_enabled", False))
 
 
 def pre_compaction_flush_requires_safe_receipt(config: Any) -> bool:

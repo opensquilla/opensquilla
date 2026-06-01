@@ -1,7 +1,9 @@
 """Kill switch for session-end flush.
 
-PR2 synchronous flush is opt-out via ``OPENSQUILLA_SESSION_FLUSH``. Setting the
-env var to ``0`` or ``false`` restores full PR2-pre behavior:
+Session flush is disabled by default in memory configuration. When memory
+configuration explicitly enables it, ``OPENSQUILLA_SESSION_FLUSH`` remains a
+global kill switch. Setting the env var to ``0`` or ``false`` restores full
+pre-flush behavior:
 
 * ``sessions.reset`` skips snapshot/lock-drain and returns the original
   response shape without a ``flush_receipt`` field.

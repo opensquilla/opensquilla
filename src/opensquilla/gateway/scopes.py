@@ -112,6 +112,7 @@ METHOD_SCOPES: dict[str, str] = {
     "tools.catalog": READ_SCOPE,
     "tools.effective": READ_SCOPE,
     "tools.search_provider": READ_SCOPE,  # OpenSquilla-only; classified read.
+    "sandbox.run_context.get": READ_SCOPE,  # OpenSquilla-only; session sandbox mode.
     "channels.status": READ_SCOPE,
     "commands.list_for_surface": READ_SCOPE,  # OpenSquilla-only.
     "chat.history": READ_SCOPE,
@@ -150,6 +151,7 @@ METHOD_SCOPES: dict[str, str] = {
     "sessions.contextCompact": WRITE_SCOPE,
     "sessions.compact": WRITE_SCOPE,
     "sessions.truncate": WRITE_SCOPE,
+    "sandbox.run_context.set": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
     # OpenSquilla-only; explicit override of `config.` admin prefix.
     "config.patch.safe": WRITE_SCOPE,
     # ----- approvals -----

@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Any
 
 from opensquilla.channels.types import IncomingMessage
+from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.session.keys import normalize_agent_id, parse_agent_id
 from opensquilla.tools.policy import apply_tool_policy_layer
 from opensquilla.tools.types import (
@@ -157,6 +158,7 @@ def build_cli_route_envelope(
     principal_is_owner: bool | None = None,
     interaction_mode: InteractionMode | str = InteractionMode.INTERACTIVE,
     elevated: str | None = None,
+    run_mode: str | None = None,
 ) -> RouteEnvelope:
     """Build a route for local CLI input."""
     resolved_interaction_mode = _interaction_mode(interaction_mode)
@@ -165,6 +167,12 @@ def build_cli_route_envelope(
         metadata["principal_is_owner"] = principal_is_owner
     if elevated in ("on", "bypass", "full"):
         metadata["elevated"] = elevated
+    try:
+        normalized_run_mode = normalize_run_mode(run_mode) if run_mode else None
+    except ValueError:
+        normalized_run_mode = None
+    if normalized_run_mode is not None:
+        metadata["run_mode"] = normalized_run_mode.value
     return RouteEnvelope(
         source_kind=SourceKind.CLI,
         source_name=source_name,
@@ -364,8 +372,19 @@ def tool_context_from_envelope(
     source_kind = envelope.metadata.get("tool_source_kind") or envelope.source_kind.value
     source_name = envelope.metadata.get("tool_source_name") or envelope.source_name
     elevated = envelope.metadata.get("elevated") or default_elevated
-    if elevated not in ("on", "bypass", "full") or not is_owner:
+    if elevated != "full" or not is_owner:
         elevated = None
+    run_mode_value = envelope.metadata.get("run_mode")
+    if elevated == "full":
+        run_mode = RunMode.FULL
+    else:
+        try:
+            run_mode = normalize_run_mode(run_mode_value) if run_mode_value else None
+        except ValueError:
+            run_mode = None
+    sandbox_mounts = envelope.metadata.get("sandbox_mounts")
+    if not isinstance(sandbox_mounts, list):
+        sandbox_mounts = []
     ctx = ToolContext(
         is_owner=is_owner,
         caller_kind=caller_kind,
@@ -374,6 +393,8 @@ def tool_context_from_envelope(
         agent_id=envelope.agent_id,
         workspace_dir=workspace_dir,
         workspace_strict=workspace_strict,
+        run_mode=run_mode.value if run_mode is not None else None,
+        sandbox_mounts=sandbox_mounts,
         session_key=envelope.session_key,
         channel_kind=envelope.channel_name or envelope.channel_type,
         channel_id=envelope.channel_id,

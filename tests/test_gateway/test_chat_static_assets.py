@@ -109,22 +109,39 @@ def test_chat_run_mode_control_replaces_elevated_bypass_copy() -> None:
     assert 'accept="image/*" multiple' not in source
 
 
-def test_chat_new_session_resets_run_mode_before_loading_context() -> None:
+def test_chat_session_transitions_reset_run_mode_before_loading_context() -> None:
     source = _read_chat_js()
 
     start = source.index("function _startNewChatSession(")
     end = source.index("  function _bindEvents()", start)
-    helper = source[start:end]
+    new_chat_helper = source[start:end]
 
-    persist_idx = helper.index("_persistSession(key);")
-    reset_idx = helper.index("_setRunMode(_RUN_MODE_DEFAULT")
-    load_idx = helper.index("_loadRunContext()")
+    start = source.index("function _switchToSession(key)")
+    end = source.index("  function _bindSessionChip()", start)
+    switch_helper = source[start:end]
 
-    assert "_updateSessionChip(key);" in helper
-    assert persist_idx < reset_idx < load_idx
-    assert "function _startNewChatSession(source)" in helper
-    assert "_parkCurrentSessionStreamState(source || 'new_chat')" in helper
+    for helper in (new_chat_helper, switch_helper):
+        persist_idx = helper.index("_persistSession(key);")
+        reset_idx = helper.index("_setRunMode(_RUN_MODE_DEFAULT")
+        load_idx = helper.index("_loadRunContext()")
+        assert "_updateSessionChip(key);" in helper
+        assert persist_idx < reset_idx < load_idx
+
+    assert "function _startNewChatSession(source)" in new_chat_helper
+    assert "_parkCurrentSessionStreamState(source || 'new_chat')" in new_chat_helper
     assert "newBtn.addEventListener('click', () => _startNewChatSession('new_chat'))" in source
+
+
+def test_chat_run_context_load_failure_ignores_stale_sessions() -> None:
+    source = _read_chat_js()
+    start = source.index("async function _loadRunContext()")
+    end = source.index("  async function _syncRunMode", start)
+    helper = source[start:end]
+    catch_body = helper[helper.index("} catch {") :]
+
+    guard_idx = catch_body.index("if (sessionKey !== _sessionKey) return;")
+    reset_idx = catch_body.index("_setRunMode(_RUN_MODE_DEFAULT")
+    assert guard_idx < reset_idx
 
 
 def test_chat_does_not_render_persistent_bypass_warning_chip() -> None:

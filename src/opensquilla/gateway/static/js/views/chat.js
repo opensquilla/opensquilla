@@ -1746,6 +1746,7 @@ const ChatView = (() => {
     _parkCurrentSessionStreamState('session_switch');
     _updateSessionChip(key);
     _persistSession(key);
+    _setRunMode(_RUN_MODE_DEFAULT, { toast: false, sync: false });
     _messages = [];
     _pendingSessionIntent = null;
     _clearPendingDrainAfterTerminalTimer();
@@ -2177,6 +2178,7 @@ const ChatView = (() => {
       if (sessionKey !== _sessionKey) return;
       _applyRunContext(payload);
     } catch {
+      if (sessionKey !== _sessionKey) return;
       _setRunMode(_RUN_MODE_DEFAULT, { toast: false, sync: false });
     }
   }

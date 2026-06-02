@@ -155,101 +155,153 @@ literal value `none` for empty `ON_SCREEN_TEXT`.
 
 `no watermark, no logo, no subtitles, no on-screen text outside ON_SCREEN_TEXT.`
 
-## Example A — Chinese request, all-Chinese script (30s, 3 shots, 9:16)
+## Example A — Chinese request, all-Chinese script (50s, 5 shots, 9:16)
 
 User wrote the request in Chinese, so every field is Chinese — including
 IMAGE_PROMPT and VIDEO_PROMPT. Seedance 2.0 and Gemini 3.1 image both
-handle these prompts natively.
+handle these prompts natively. Note the RENDER_STYLE is photoreal
+cinematic (an opt-in style — downstream seedance moderation MAY refuse
+photoreal human faces; the meta-skill's video step retries twice then
+falls back to a Ken-Burns clip if the model persistently refuses).
 
 Caller passes:
-- `with.identity_anchor` = `林,25岁东亚女性,齐颌黑色波波头,杏仁眼,鼠尾草绿色超大针织毛衣,金色圆耳环;陈,26岁东亚男性,短黑发,海军蓝校队夹克,棕色帆布托特包`
-- `with.render_style` = `2D 动漫插画,扁平上色,柔和赛璐璐阴影,手绘线条`
+- `with.identity_anchor` = `陆,28岁东亚男性,背头黑发,无框眼镜,深灰色定制西装,气场冷峻;张,35岁东亚女性,波浪长卷发,浓妆,白色职业套装,神情傲慢`
+- `with.render_style` = `电影级写实,真实摄影,戏剧化强光对比,高对比度色调`
 
 ```
 === OVERVIEW ===
-TITLE: 咖啡店偶遇
-DURATION_S: 30
+TITLE: 职场反转：踢到铁板了
+DURATION_S: 50
 ASPECT_RATIO: 9:16
-STYLE: 故事
-AUDIENCE: 20-30 都市青年
-N_SHOTS: 3
-IDENTITY_ANCHOR: 林,25岁东亚女性,齐颌黑色波波头,杏仁眼,鼠尾草绿色超大针织毛衣,金色圆耳环;陈,26岁东亚男性,短黑发,海军蓝校队夹克,棕色帆布托特包
-RENDER_STYLE: 2D 动漫插画,扁平上色,柔和赛璐璐阴影,手绘线条
+STYLE: 现代都市 / 职场爽剧
+AUDIENCE: 18-35 职场青年 / 爽剧受众
+N_SHOTS: 5
+IDENTITY_ANCHOR: 陆,28岁东亚男性,背头黑发,无框眼镜,深灰色定制西装,气场冷峻;张,35岁东亚女性,波浪长卷发,浓妆,白色职业套装,神情傲慢
+RENDER_STYLE: 电影级写实,真实摄影,戏剧化强光对比,高对比度色调
 
 === SHOT_1 ===
-DURATION_S: 9
-CAMERA: 中景,静止
-IMAGE_PROMPT: 林,25岁东亚女性,齐颌黑色波波头,杏仁眼,鼠尾草绿色超大针织毛衣,金色圆耳环;陈,26岁东亚男性,短黑发,海军蓝校队夹克,棕色帆布托特包,林独自坐在木质咖啡桌前手捧白色陶瓷杯,温暖琥珀色吊灯,2D 动漫插画,扁平上色,柔和赛璐璐阴影,手绘线条,--ar 9:16
-VIDEO_PROMPT: 林,25岁东亚女性,齐颌黑色波波头,杏仁眼,鼠尾草绿色超大针织毛衣,金色圆耳环;陈,26岁东亚男性,短黑发,海军蓝校队夹克,棕色帆布托特包,林望向咖啡店窗外神思飘远,静止镜头 0-9s,温暖琥珀色吊灯,2D 动漫插画,扁平上色,柔和赛璐璐阴影,手绘线条,aspect_ratio: 9:16,no watermark, no logo, no subtitles
-VOICEOVER: 推开那扇熟悉的咖啡店门。
-ON_SCREEN_TEXT: none
+DURATION_S: 10
+CAMERA: 中景,快速跟拍
+IMAGE_PROMPT: 张,35岁东亚女性,波浪长卷发,浓妆,白色职业套装,神情傲慢;陆,28岁东亚男性,背头黑发,无框眼镜,深灰色定制西装,气场冷峻,张在奢华的现代办公室里将一份文件夹狠狠摔在办公桌上,指着站在对面的陆,眼神充满鄙夷,电影级写实,真实摄影,高对比度色调,--ar 9:16
+VIDEO_PROMPT: 张,35岁东亚女性,波浪长卷发,浓妆,白色职业套装,神情傲慢;陆,28岁东亚男性,背头黑发,无框眼镜,深灰色定制西装,气场冷峻,张愤怒地将文件摔在桌上并大声指责,陆面无表情地看着她,镜头快速推向张愤怒的脸,动作激进利落,0-10s,电影级写实,真实摄影,画面无水印,无字幕,无logo,aspect_ratio: 9:16
+VOICEOVER: "拿着你的实习报告，立刻给我滚出公司！"
+ON_SCREEN_TEXT: 扫地出门
 
 === SHOT_2 ===
-DURATION_S: 11
-CAMERA: 特写 + 缓慢摇镜
-IMAGE_PROMPT: 林,25岁东亚女性,齐颌黑色波波头,杏仁眼,鼠尾草绿色超大针织毛衣,金色圆耳环;陈,26岁东亚男性,短黑发,海军蓝校队夹克,棕色帆布托特包,陈在咖啡店门口驻足眼神惊讶认出对方,林抬头转身惊讶相视,2D 动漫插画,扁平上色,柔和赛璐璐阴影,手绘线条,--ar 9:16
-VIDEO_PROMPT: 林,25岁东亚女性,齐颌黑色波波头,杏仁眼,鼠尾草绿色超大针织毛衣,金色圆耳环;陈,26岁东亚男性,短黑发,海军蓝校队夹克,棕色帆布托特包,陈停步在咖啡店门口眼神惊讶,镜头缓慢摇向林,林转身惊讶,0-11s,2D 动漫插画,扁平上色,柔和赛璐璐阴影,手绘线条,aspect_ratio: 9:16,no watermark, no logo, no subtitles
-VOICEOVER: 抬头的一瞬间,对上了那双熟悉的眼睛。
-ON_SCREEN_TEXT: 林 & 陈
+DURATION_S: 10
+CAMERA: 特写,动态倾斜拉镜头
+IMAGE_PROMPT: 陆,28岁东亚男性,背头黑发,无框眼镜,深灰色定制西装,气场冷峻,陆抬手摘下无框眼镜,嘴角勾起一抹极度冷酷且自信的嘲讽笑意,眼神凌厉,电影级写实,真实摄影,高对比度色调,--ar 9:16
+VIDEO_PROMPT: 陆,28岁东亚男性,背头黑发,无框眼镜,深灰色定制西装,气场冷峻,陆动作极其干净利落地抬手摘下眼镜丢在桌上,嘴角瞬间勾起冰冷的笑意,镜头配合他的动作迅速拉近并微微倾斜,凸显压迫感,0-10s,电影级写实,真实摄影,画面无水印,无字幕,无logo,aspect_ratio: 9:16
+VOICEOVER: 陆冷笑一声："张经理，你确定要开除我？"
+ON_SCREEN_TEXT: 临危不乱
 
 === SHOT_3 ===
 DURATION_S: 10
-CAMERA: 双人中景,静止
-IMAGE_PROMPT: 林,25岁东亚女性,齐颌黑色波波头,杏仁眼,鼠尾草绿色超大针织毛衣,金色圆耳环;陈,26岁东亚男性,短黑发,海军蓝校队夹克,棕色帆布托特包,林与陈在小圆桌前面对面而坐,中间两杯拿铁,皆露微笑,2D 动漫插画,扁平上色,柔和赛璐璐阴影,手绘线条,--ar 9:16
-VIDEO_PROMPT: 林,25岁东亚女性,齐颌黑色波波头,杏仁眼,鼠尾草绿色超大针织毛衣,金色圆耳环;陈,26岁东亚男性,短黑发,海军蓝校队夹克,棕色帆布托特包,林与陈在咖啡桌前面对面而坐相视一笑开始交谈,温暖亲密氛围,静止镜头 0-10s,2D 动漫插画,扁平上色,柔和赛璐璐阴影,手绘线条,aspect_ratio: 9:16,no watermark, no logo, no subtitles
-VOICEOVER: 三年未见,曾经的故事化作此刻一笑。
-ON_SCREEN_TEXT: 好久不见
+CAMERA: 快速平移 + 瞬间推焦
+IMAGE_PROMPT: 张,35岁东亚女性,波浪长卷发,浓妆,白色职业套装,神情傲慢;陆,28岁东亚男性,背头黑发,无框眼镜,深灰色定制西装,气场冷峻,陆从西装内口袋掏出一枚精致的金色集团徽章抛在桌上,张看到徽章后脸色瞬间惨白,冷汗直流,电影级写实,真实摄影,高对比度色调,--ar 9:16
+VIDEO_PROMPT: 张,35岁东亚女性,波浪长卷发,浓妆,白色职业套装,神情傲慢;陆,28岁东亚男性,背头黑发,无框眼镜,深灰色定制西装,气场冷峻,陆利落地掏出金色徽章拍在桌上,镜头瞬间给徽章一个快速特写推焦,动作干净有力,0-10s,电影级写实,真实摄影,画面无水印,无字幕,无logo,aspect_ratio: 9:16
+VOICEOVER: "看清楚，这是什么。"
+ON_SCREEN_TEXT: 亮出底牌
+
+=== SHOT_4 ===
+DURATION_S: 10
+CAMERA: 特写 + 快速甩镜头（Whip Pan）
+IMAGE_PROMPT: 张,35岁东亚女性,波浪长卷发,浓妆,白色职业套装,极度恐惧的表情,额头冒汗,瞪大双眼死死盯着桌上的徽章,双手颤抖,电影级写实,真实摄影,高对比度色调,--ar 9:16
+VIDEO_PROMPT: 张,35岁东亚女性,波浪长卷发,浓妆,白色职业套装,极度恐惧的表情,张认出徽章后惊恐地倒退一步,浑身剧烈颤抖,镜头从桌上的徽章快速甩向张惨白的脸和颤抖的双手,节奏急促,0-10s,电影级写实,真实摄影,画面无水印,无字幕,无logo,aspect_ratio: 9:16
+VOICEOVER: "董事长专属黑金徽章？！你……你是……"
+ON_SCREEN_TEXT: 瞬间打脸
+
+=== SHOT_5 ===
+DURATION_S: 10
+CAMERA: 低角度仰拍,动态跟拍
+IMAGE_PROMPT: 张,35岁东亚女性,波浪长卷发,浓妆,白色职业套装,神情傲慢;陆,28岁东亚男性,背头黑发,无框眼镜,深灰色定制西装,气场冷峻,陆单手插兜转身走向总裁专属转椅利落坐下,张在背景中双腿发软扶住桌子,满脸绝望,电影级写实,真实摄影,高对比度色调,--ar 9:16
+VIDEO_PROMPT: 张,35岁东亚女性,波浪长卷发,浓妆,白色职业套装,神情傲慢;陆,28岁东亚男性,背头黑发,无框眼镜,深灰色定制西装,气场冷峻,陆极其顺畅地转身上前坐上总裁椅,镜头紧跟他的动作,张在后方浑身颤抖,动作一气呵成无拖泥带水,0-10s,电影级写实,真实摄影,画面无水印,无字幕,无logo,aspect_ratio: 9:16
+VOICEOVER: "我的微服私访结束了。现在，收拾东西给我滚。"
+ON_SCREEN_TEXT: 终极逆袭
 ```
 
-## Example B — English request, all-English script (same flow)
+## Example B — English request, all-English script (50s, 5 shots, 9:16)
 
 Caller passes:
-- `with.identity_anchor` = `Lin, 25-year-old East Asian woman, chin-length black bob, almond eyes, sage-green oversized knit sweater, gold round earrings; Chen, 26-year-old East Asian man, short black hair, navy blue varsity jacket, brown canvas tote`
-- `with.render_style` = `2D anime illustration, flat colour, soft cel-shading`
+- `with.identity_anchor` = `Lu, 28-year-old East Asian man, slicked-back black hair, rimless glasses, dark grey tailored suit, cold and powerful aura; Zhang, 35-year-old East Asian woman, wavy long hair, heavy makeup, white professional pantsuit, arrogant expression`
+- `with.render_style` = `Cinematic realism, authentic photography, dramatic high-contrast lighting, bold color grading`
 
 ```
 === OVERVIEW ===
-TITLE: 咖啡店偶遇
-DURATION_S: 30
+TITLE: Corporate Revenge: Tricking the Titan
+DURATION_S: 50
 ASPECT_RATIO: 9:16
-STYLE: 故事 / Story
-AUDIENCE: 20-30 都市青年
-N_SHOTS: 3
-IDENTITY_ANCHOR: Lin, 25-year-old East Asian woman, chin-length black bob, almond eyes, sage-green oversized knit sweater, gold round earrings; Chen, 26-year-old East Asian man, short black hair, navy blue varsity jacket, brown canvas tote
-RENDER_STYLE: 2D anime illustration, flat colour, soft cel-shading
+STYLE: Modern Urban / Corporate Drama / Revenge Short
+AUDIENCE: 18-35 Professionals / Fast-paced Drama Enthusiasts
+N_SHOTS: 5
+IDENTITY_ANCHOR: Lu, 28-year-old East Asian man, slicked-back black hair, rimless glasses, dark grey tailored suit, cold and powerful aura; Zhang, 35-year-old East Asian woman, wavy long hair, heavy makeup, white professional pantsuit, arrogant expression
+RENDER_STYLE: Cinematic realism, authentic photography, dramatic high-contrast lighting, bold color grading
 
 === SHOT_1 ===
-DURATION_S: 9
-CAMERA: medium, static
-IMAGE_PROMPT: Lin, 25-year-old East Asian woman, chin-length black bob, almond eyes, sage-green oversized knit sweater, gold round earrings; Chen, 26-year-old East Asian man, short black hair, navy blue varsity jacket, brown canvas tote, Lin sits alone at wooden cafe table holding white ceramic cup, warm amber pendant lights, 2D anime illustration, flat colour, soft cel-shading, --ar 9:16
-VIDEO_PROMPT: Lin, 25-year-old East Asian woman, chin-length black bob, almond eyes, sage-green oversized knit sweater, gold round earrings; Chen, 26-year-old East Asian man, short black hair, navy blue varsity jacket, brown canvas tote, Lin gazes out the cafe window absentmindedly, static camera 0-9s, warm amber pendant lights, 2D anime illustration, flat colour, soft cel-shading, aspect_ratio: 9:16, no watermark, no logo, no subtitles
-VOICEOVER: 推开那扇熟悉的咖啡店门。
-ON_SCREEN_TEXT: none
+DURATION_S: 10
+CAMERA: medium shot, fast tracking camera
+IMAGE_PROMPT: Zhang, 35-year-old East Asian woman, wavy long hair, heavy makeup, white professional pantsuit, arrogant expression; Lu, 28-year-old East Asian man, slicked-back black hair, rimless glasses, dark grey tailored suit, cold and powerful aura, Zhang slams a folder onto the desk in a luxurious modern office, pointing at Lu with utter contempt, cinematic realism, authentic photography, high-contrast lighting, --ar 9:16
+VIDEO_PROMPT: Zhang, 35-year-old East Asian woman, wavy long hair, heavy makeup, white professional pantsuit, arrogant expression; Lu, 28-year-old East Asian man, slicked-back black hair, rimless glasses, dark grey tailored suit, cold and powerful aura, Zhang aggressively slams a folder down and shouts angrily, Lu stares at her with a critical deadpan expression, camera snaps instantly into a tight zoom on Zhang's furious face, fast-paced action 0-10s, cinematic realism, authentic photography, no watermark, no logo, no subtitles, aspect_ratio: 9:16
+VOICEOVER: "Take your internship report and get out of my company right now!"
+ON_SCREEN_TEXT: The Dismissal
 
 === SHOT_2 ===
-DURATION_S: 11
-CAMERA: close-up + slow pan
-IMAGE_PROMPT: Lin, 25-year-old East Asian woman, chin-length black bob, almond eyes, sage-green oversized knit sweater, gold round earrings; Chen, 26-year-old East Asian man, short black hair, navy blue varsity jacket, brown canvas tote, Chen pauses mid-step at cafe door eyes wide with recognition, Lin turns head in surprise, 2D anime illustration, flat colour, soft cel-shading, --ar 9:16
-VIDEO_PROMPT: Lin, 25-year-old East Asian woman, chin-length black bob, almond eyes, sage-green oversized knit sweater, gold round earrings; Chen, 26-year-old East Asian man, short black hair, navy blue varsity jacket, brown canvas tote, Chen pauses at cafe door eyes wide with recognition, camera slowly pans to Lin who turns in surprise, 0-11s, 2D anime illustration, flat colour, soft cel-shading, aspect_ratio: 9:16, no watermark, no logo, no subtitles
-VOICEOVER: 抬头的一瞬间,对上了那双熟悉的眼睛。
-ON_SCREEN_TEXT: 林 & 陈
+DURATION_S: 10
+CAMERA: close-up, dynamic camera tilt
+IMAGE_PROMPT: Lu, 28-year-old East Asian man, slicked-back black hair, rimless glasses, dark grey tailored suit, cold and powerful aura, Lu raises his hand to adjust his glasses with a sharp, swift motion, a cold and confident smirk appearing on his face, cinematic realism, authentic photography, high-contrast lighting, --ar 9:16
+VIDEO_PROMPT: Lu, 28-year-old East Asian man, slicked-back black hair, rimless glasses, dark grey tailored suit, cold and powerful aura, Lu adjusts his glasses with a swift, sharp finger gesture, a confident smirk appears on his lips, camera dynamically tilts up capturing his sharp eyes behind the lenses, fast pacing 0-10s, cinematic realism, authentic photography, no watermark, no logo, no subtitles, aspect_ratio: 9:16
+VOICEOVER: Lu sneers, "Are you sure you want to fire me, Manager Zhang?"
+ON_SCREEN_TEXT: Unshaken Confidence
 
 === SHOT_3 ===
 DURATION_S: 10
-CAMERA: medium two-shot, static
-IMAGE_PROMPT: Lin, 25-year-old East Asian woman, chin-length black bob, almond eyes, sage-green oversized knit sweater, gold round earrings; Chen, 26-year-old East Asian man, short black hair, navy blue varsity jacket, brown canvas tote, Lin and Chen face each other across small round cafe table, two latte cups between them, both smile, 2D anime illustration, flat colour, soft cel-shading, --ar 9:16
-VIDEO_PROMPT: Lin, 25-year-old East Asian woman, chin-length black bob, almond eyes, sage-green oversized knit sweater, gold round earrings; Chen, 26-year-old East Asian man, short black hair, navy blue varsity jacket, brown canvas tote, Lin and Chen sit face to face at cafe table they smile and begin talking warm intimate atmosphere, static camera 0-10s, 2D anime illustration, flat colour, soft cel-shading, aspect_ratio: 9:16, no watermark, no logo, no subtitles
-VOICEOVER: 三年未见,曾经的故事化作此刻一笑。
-ON_SCREEN_TEXT: 好久不见
+CAMERA: rapid pan + sudden push-in zoom
+IMAGE_PROMPT: Zhang, 35-year-old East Asian woman, wavy long hair, heavy makeup, white professional pantsuit, arrogant expression; Lu, 28-year-old East Asian man, slicked-back black hair, rimless glasses, dark grey tailored suit, cold and powerful aura, Lu pulls out a sleek gold corporate badge from his inner suit pocket and tosses it sharply onto the desk, Zhang's face turns pale with sheer terror, cinematic realism, authentic photography, high-contrast lighting, --ar 9:16
+VIDEO_PROMPT: Zhang, 35-year-old East Asian woman, wavy long hair, heavy makeup, white professional pantsuit, arrogant expression; Lu, 28-year-old East Asian man, slicked-back black hair, rimless glasses, dark grey tailored suit, cold and powerful aura, Lu swiftly tosses a gold badge onto the desk, camera instantly snaps a sharp macro zoom onto the badge then pans up to Zhang's terrified expression, zero delay, fast-paced motion 0-10s, cinematic realism, authentic photography, no watermark, no logo, no subtitles, aspect_ratio: 9:16
+VOICEOVER: Lu slams the badge down: "Look closely at what this is."
+ON_SCREEN_TEXT: The Reveal
+
+=== SHOT_4 ===
+DURATION_S: 10
+CAMERA: extreme close-up + rapid whip pan
+IMAGE_PROMPT: Zhang, 35-year-old East Asian woman, wavy long hair, heavy makeup, white professional pantsuit, terrified expression, sweat dripping down her face, staring down at the desk in sheer shock, eyes wide open, cinematic realism, authentic photography, high-contrast lighting, --ar 9:16
+VIDEO_PROMPT: Zhang, 35-year-old East Asian woman, wavy long hair, heavy makeup, white professional pantsuit, terrified expression, Zhang stumbles back a step, trembling violently as she recognizes the badge, camera executes a rapid whip pan from the badge to her trembling hands, fast pacing 0-10s, cinematic realism, authentic photography, no watermark, no logo, no subtitles, aspect_ratio: 9:16
+VOICEOVER: "The global chairman's personal crest?! You... you are..."
+ON_SCREEN_TEXT: Instant Regret
+
+=== SHOT_5 ===
+DURATION_S: 10
+CAMERA: low angle, dynamic tracking shot
+IMAGE_PROMPT: Zhang, 35-year-old East Asian woman, wavy long hair, heavy makeup, white professional pantsuit, arrogant expression; Lu, 28-year-old East Asian man, slicked-back black hair, rimless glasses, dark grey tailored suit, cold and powerful aura, Lu puts one hand in his pocket, turns around sharply, and sits down dominantly into the CEO executive chair, Zhang stands frozen in the background trembling with despair, cinematic realism, authentic photography, high-contrast lighting, --ar 9:16
+VIDEO_PROMPT: Zhang, 35-year-old East Asian woman, wavy long hair, heavy makeup, white professional pantsuit, arrogant expression; Lu, 28-year-old East Asian man, slicked-back black hair, rimless glasses, dark grey tailored suit, cold and powerful aura, Lu turns around with a swift, smooth motion and sits firmly into the CEO chair, camera tracks his movement dynamically, Zhang trembles in panic in the background, fast pacing 0-10s, cinematic realism, authentic photography, no watermark, no logo, no subtitles, aspect_ratio: 9:16
+VOICEOVER: "My undercover inspection is over. Now, pack your bags and get out."
+ON_SCREEN_TEXT: The Ultimate Payback
 ```
 
-Note how the IDENTITY_ANCHOR string is the **first comma-separated
-segment of every IMAGE_PROMPT and VIDEO_PROMPT**, byte-identical across
-shot 1 / 2 / 3. Same goes for the RENDER_STYLE clause near the end.
-That repetition is what gives the video model a stable identity anchor.
+Notes on what makes these examples work:
+
+- **IDENTITY_ANCHOR is the first comma-separated segment of every
+  IMAGE_PROMPT and VIDEO_PROMPT**, byte-identical across all five
+  shots. RENDER_STYLE sits near the end of each prompt, also repeated
+  verbatim. That repetition is what gives the video model a stable
+  identity + style anchor.
+- Shots 2 and 4 deliberately drop the second character from the
+  IDENTITY_ANCHOR fragment — only the character actually on-camera is
+  named. The anchor "vocabulary" stays consistent (same name, same
+  age/clothing string) but you may omit the off-camera person to keep
+  the prompt focused.
+- Each VIDEO_PROMPT carries ONE major action + ONE camera move per
+  10-second beat. Trying to pack multiple beats into a single shot
+  blurs the result.
+- ON_SCREEN_TEXT is short (4 CJK chars or 2-3 English words) — long
+  enough to read at 10 fps but short enough not to compete with the
+  voiceover or main subject.
+- VOICEOVER quotes punctuation goes verbatim into the SRT later; punctuation
+  marks survive UTF-8 round-trip through ai-video-script → srt-from-script
+  → subtitle-burner.
 
 ## What this skill does NOT do
 
 - Does not call any image/video API itself — it only emits text.
 - Does not invent SHOT durations that violate `OVERVIEW.DURATION_S`.
-- Does not produce more than 5 shots in a single pass.
+- Does not produce more than 10 shots in a single pass.

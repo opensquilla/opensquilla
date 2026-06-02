@@ -633,6 +633,11 @@ async def test_set_workspace_rejects_sensitive_root_paths():
 
     for workspace_path in (
         "/root",
+        "/root/project",
+        "/root/.aws",
+        "/root/.kube",
+        "/root/.docker/config",
+        "/root/.gnupg",
         "/root/.ssh",
         "/root/.opensquilla/workspace/.ssh/id_rsa",
         "/root/.opensquilla/workspace/.env",
@@ -834,6 +839,11 @@ async def test_saved_root_nested_workspace_is_allowed():
     "workspace_path",
     [
         "/root",
+        "/root/project",
+        "/root/.aws",
+        "/root/.kube",
+        "/root/.docker/config",
+        "/root/.gnupg",
         "/root/.ssh",
         "/root/.opensquilla/workspace/.ssh/id_rsa",
         "/root/.opensquilla/workspace/.env",

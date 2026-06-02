@@ -18,6 +18,7 @@ from opensquilla.sandbox.run_mode import RunMode, config_run_mode, normalize_run
 from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
 
 RUN_CONTEXT_ORIGIN_KEY = "sandbox_run_context"
+DEFAULT_ROOT_WORKSPACE = "/root/.opensquilla/workspace"
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,14 @@ def _is_filesystem_root(path: str) -> bool:
         return False
 
 
+def _is_relative_to_path(candidate: str, root: str) -> bool:
+    try:
+        Path(candidate).relative_to(Path(root))
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def normalize_workspace_path(value: Any) -> str:
     workspace = _string_value(value)
     if workspace is None:
@@ -141,9 +150,19 @@ def normalize_workspace_path(value: Any) -> str:
         raise ValueError("invalid_workspace_path")
     if _is_filesystem_root(normalized_workspace):
         raise ValueError("sensitive_path")
+    default_root_workspace = str(normalize_path(DEFAULT_ROOT_WORKSPACE))
+    if _is_relative_to_path(normalized_workspace, default_root_workspace):
+        if (
+            sensitive_path_marker(
+                normalized_workspace,
+                workspace=default_root_workspace,
+            )
+            is not None
+        ):
+            raise ValueError("sensitive_path")
+        return normalized_workspace
     if (
-        sensitive_path_marker(normalized_workspace, workspace=normalized_workspace)
-        is not None
+        sensitive_path_marker(normalized_workspace, workspace=None) is not None
     ):
         raise ValueError("sensitive_path")
     return normalized_workspace
@@ -352,6 +371,7 @@ async def set_run_mode(
 
 __all__ = [
     "RUN_CONTEXT_ORIGIN_KEY",
+    "DEFAULT_ROOT_WORKSPACE",
     "DomainGrant",
     "MountGrant",
     "PackageBundleGrant",

@@ -945,14 +945,18 @@ class FeishuChannel:
             or event.get("chat_id")
             or "unknown"
         )
+        is_group = self._clarify_card_is_group(value, event)
         metadata: dict[str, Any] = {
             "conversation_kind": "interaction",
-            "is_group": True,
+            "is_group": is_group,
             "event_id": raw.get("header", {}).get("event_id"),
             "message_type": "interactive",
             "native_chat_id": channel_id,
             "input_provenance": "clarify_form",
         }
+        chat_type = value.get("chat_type") or event.get("chat_type")
+        if isinstance(chat_type, str) and chat_type:
+            metadata["chat_type"] = chat_type
         run_id = value.get("run_id")
         if isinstance(run_id, str) and run_id:
             metadata["clarify_run_id"] = run_id
@@ -979,6 +983,18 @@ class FeishuChannel:
                 rendered = str(value)
             lines.append(f"{key}: {rendered}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _clarify_card_is_group(value: dict[str, Any], event: dict[str, Any]) -> bool:
+        raw_is_group = value.get("is_group")
+        if isinstance(raw_is_group, bool):
+            return raw_is_group
+        chat_type = value.get("chat_type")
+        if not isinstance(chat_type, str) or not chat_type:
+            chat_type = event.get("chat_type")
+        if isinstance(chat_type, str) and chat_type:
+            return chat_type in {"group", "topic_group"}
+        return True
 
     # ------------------------------------------------------------------
     # Event parsing

@@ -338,7 +338,12 @@ async def test_direct_channel_batch_turn_sends_clarify_card_to_feishu_channel() 
     await _run_turn_batch_path(
         channel,
         FakeTurnRunner(),
-        _message(),
+        IncomingMessage(
+            sender_id="u1",
+            channel_id="c1",
+            content="hello",
+            metadata={"is_group": False, "chat_type": "p2p"},
+        ),
         "agent:main:channel-clarify",
         _tool_ctx(),
         bridge,
@@ -354,6 +359,8 @@ async def test_direct_channel_batch_turn_sends_clarify_card_to_feishu_channel() 
     assert "destination" in json.dumps(card, ensure_ascii=False)
     assert "预算" in json.dumps(card, ensure_ascii=False)
     assert '"opensquilla_action": "clarify_submit"' in json.dumps(card)
+    assert '"is_group": false' in json.dumps(card)
+    assert '"chat_type": "p2p"' in json.dumps(card)
     assert "请回复以下字段" not in sent.content
     assert any(event_name == "session.event.tool_result" for _, event_name, _ in bridge.events)
 

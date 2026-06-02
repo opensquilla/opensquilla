@@ -1701,6 +1701,12 @@ def _build_clarify_channel_card(args: dict[str, Any], msg: IncomingMessage) -> d
         "opensquilla_action": "clarify_submit",
         "channel_id": msg.channel_id,
     }
+    is_group = msg.metadata.get("is_group")
+    if isinstance(is_group, bool):
+        value["is_group"] = is_group
+    chat_type = msg.metadata.get("chat_type")
+    if isinstance(chat_type, str) and chat_type:
+        value["chat_type"] = chat_type
     if isinstance(args.get("run_id"), str) and args["run_id"]:
         value["run_id"] = args["run_id"]
     if isinstance(args.get("step"), str) and args["step"]:

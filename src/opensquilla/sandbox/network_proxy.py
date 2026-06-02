@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import socket
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -30,6 +32,18 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "transfer-encoding",
         "upgrade",
     }
+)
+_RFC2544_FAKE_IP_NETWORK = ipaddress.IPv4Network("198.18.0.0/15")
+_HARD_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
 )
 
 
@@ -60,11 +74,9 @@ class SandboxProxyServer:
         response_read_timeout_seconds: float = _DEFAULT_RESPONSE_READ_TIMEOUT_SECONDS,
         max_response_bytes: int = _MAX_RESPONSE_BYTES,
         resolver: Callable[[str, int], tuple[str, int]] | None = None,
-        upstream_validator: Callable[[str, int], None] | None = None,
     ) -> None:
         self._decide = decide
-        self._resolver = resolver or _identity_resolver
-        self._upstream_validator = upstream_validator or _validate_upstream_resolution
+        self._resolver = resolver or _resolve_validated_upstream
         self.host = host
         self.port = port
         self._header_read_timeout_seconds = header_read_timeout_seconds
@@ -205,10 +217,9 @@ class SandboxProxyServer:
         request: _ParsedRequest,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         try:
-            self._upstream_validator(request.host, request.port)
+            connect_host, connect_port = self._resolver(request.host, request.port)
         except Exception as exc:
             raise _ProxyDeniedError("unsafe_upstream_resolution") from exc
-        connect_host, connect_port = self._resolver(request.host, request.port)
         upstream_reader, upstream_writer = await asyncio.open_connection(
             connect_host,
             connect_port,
@@ -517,14 +528,76 @@ def _identity_resolver(host: str, port: int) -> tuple[str, int]:
     return host, port
 
 
-def _validate_upstream_resolution(host: str, port: int) -> None:
-    from opensquilla.tools.ssrf import validate_http_url_for_fetch
+def _resolve_validated_upstream(host: str, port: int) -> tuple[str, int]:
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve hostname: {host}") from exc
+    if not infos:
+        raise ValueError(f"Cannot resolve hostname: {host}")
 
-    validate_http_url_for_fetch(f"http://{_authority(host, port)}/")
+    first_destination: tuple[str, int] | None = None
+    trusted_fake_networks = _trusted_fake_ip_networks()
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        raw_addr = sockaddr[0]
+        try:
+            addr = ipaddress.ip_address(raw_addr)
+        except ValueError as exc:
+            raise ValueError(f"Cannot parse resolved address for {host}: {raw_addr}") from exc
+        reason = _unsafe_resolved_address_reason(addr, trusted_fake_networks)
+        if reason is not None:
+            raise ValueError(f"Blocked: {host} resolves to {addr} ({reason})")
+        if first_destination is None:
+            first_destination = (str(addr), int(sockaddr[1] if len(sockaddr) > 1 else port))
+
+    if first_destination is None:
+        raise ValueError(f"Cannot resolve hostname: {host}")
+    return first_destination
 
 
-def _authority(host: str, port: int) -> str:
-    return host if port == 80 else f"{host}:{port}"
+def _trusted_fake_ip_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    try:
+        from opensquilla.tools.ssrf import get_trusted_fake_ip_cidrs
+
+        values = get_trusted_fake_ip_cidrs()
+    except Exception:
+        values = ()
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for value in values:
+        try:
+            networks.append(ipaddress.ip_network(value))
+        except ValueError:
+            continue
+    return tuple(networks)
+
+
+def _unsafe_resolved_address_reason(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    trusted_fake_networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> str | None:
+    for network in _HARD_BLOCKED_NETWORKS:
+        if addr.version == network.version and addr in network:
+            return f"hard-blocked network {network}"
+    if _is_trusted_fake_ip(addr, trusted_fake_networks):
+        return None
+    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+        if isinstance(addr, ipaddress.IPv4Address) and addr in _RFC2544_FAKE_IP_NETWORK:
+            return (
+                "reserved/private range; configure [tools].trusted_fake_ip_cidrs "
+                f"with {_RFC2544_FAKE_IP_NETWORK} only if this is fake-IP DNS"
+            )
+        return "private/internal range"
+    return None
+
+
+def _is_trusted_fake_ip(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    trusted_networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    return any(addr.version == network.version and addr in network for network in trusted_networks)
 
 
 async def _write_response(writer: asyncio.StreamWriter, response: bytes) -> None:

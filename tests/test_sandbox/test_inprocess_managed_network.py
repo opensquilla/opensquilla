@@ -251,6 +251,33 @@ async def test_rpc_search_query_fails_closed_under_managed_network(
 
 
 @pytest.mark.asyncio
+async def test_rpc_search_query_without_runtime_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_runtime()
+
+    async def fail_search(*args: object, **kwargs: object) -> dict[str, object]:
+        raise AssertionError("search provider should not run without sandbox runtime")
+
+    monkeypatch.setattr(rpc_tools, "run_web_search_payload", fail_search)
+    ctx = RpcContext(
+        conn_id="c",
+        principal=Principal(
+            role="operator",
+            scopes=frozenset(["operator.write", "operator.read"]),
+            is_owner=True,
+            authenticated=True,
+        ),
+    )
+
+    result = await rpc_tools._handle_search_query({"query": "python packages"}, ctx)
+
+    assert result["ok"] is False
+    assert result["results"] == []
+    assert result["error"]["kind"] == "runtime_unconfigured"
+
+
+@pytest.mark.asyncio
 async def test_inprocess_network_action_without_run_context_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

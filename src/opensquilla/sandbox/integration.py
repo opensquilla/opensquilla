@@ -738,17 +738,17 @@ async def guard_in_process_network_action(
     networking and the action cannot safely run. A ``None`` result means the
     caller may continue with its existing non-managed behavior.
     """
-    rt = runtime or get_runtime()
-    if rt is None:
-        return None
     decision, policy, request = await gate_action(
         action_kind=action_kind,
         argv=argv,
-        runtime=rt,
+        runtime=runtime,
     )
     if isinstance(decision, DenialResult):
         return decision
     if policy.network != NetworkMode.PROXY_ALLOWLIST:
+        return None
+    rt = runtime or get_runtime()
+    if rt is None:
         return None
     prepared = await _prepare_in_process_managed_network(request, rt)
     return prepared if isinstance(prepared, DenialResult) else None

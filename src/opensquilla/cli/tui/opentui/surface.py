@@ -12,10 +12,14 @@ from typing import Protocol
 
 from opensquilla.cli.tui.backend.contracts import TuiSurface
 from opensquilla.cli.tui.opentui.bridge import OpenTuiBridge
-from opensquilla.cli.tui.opentui.completion import build_completion_context
+from opensquilla.cli.tui.opentui.completion import (
+    build_completion_context,
+    enumerate_workspace_files,
+)
 from opensquilla.cli.tui.opentui.messages import (
     CompletionContext,
     ComposerState,
+    HostCompletionRequest,
     HostError,
     HostInputCancel,
     HostInputEof,
@@ -82,8 +86,10 @@ class OpenTuiSurface:
         bridge: _OpenTuiBridgeLike,
         *,
         approval_surface: Surface = Surface.CLI_GATEWAY,
+        workspace_dir: Path | None = None,
     ) -> None:
         self._bridge = bridge
+        self._workspace_dir = workspace_dir
         self._cancel_callback: Callable[[], None] | None = None
         self._shutdown_callback: Callable[[], None] | None = None
         self._eof_emitted = False
@@ -101,6 +107,9 @@ class OpenTuiSurface:
                 return None
             if isinstance(message, HostInputSubmit):
                 return message.text
+            if isinstance(message, HostCompletionRequest):
+                await self._handle_completion(message)
+                continue
             if isinstance(message, HostInputCancel):
                 if self._cancel_callback is not None:
                     self._cancel_callback()
@@ -138,6 +147,40 @@ class OpenTuiSurface:
     async def send_message(self, message_type: str, payload: dict[str, object]) -> None:
         await self._output_handle.send_message(message_type, payload)
 
+    async def _handle_completion(self, message: HostCompletionRequest) -> None:
+        if message.kind != "file":
+            await self._bridge.send(
+                "completion.response",
+                {"request_id": message.request_id, "kind": message.kind, "items": []},
+            )
+            return
+
+        workspace_dir = self._workspace_dir
+        if workspace_dir is None:
+            await self._bridge.send(
+                "completion.response",
+                {"request_id": message.request_id, "kind": "file", "items": []},
+            )
+            return
+
+        loop = asyncio.get_running_loop()
+        paths = await loop.run_in_executor(
+            None,
+            lambda: enumerate_workspace_files(
+                workspace_dir,
+                query=message.query,
+                max_results=50,
+            ),
+        )
+        await self._bridge.send(
+            "completion.response",
+            {
+                "request_id": message.request_id,
+                "kind": "file",
+                "items": [_file_completion_item(path) for path in paths],
+            },
+        )
+
 
 @asynccontextmanager
 async def _opentui_stream_output(
@@ -167,9 +210,11 @@ async def open_opentui_surface(
     print_ready_marker: bool = True,
     bridge: OpenTuiBridge | None = None,
     completion_context: CompletionContext | None = None,
+    workspace_dir: Path | str | None = None,
 ) -> AsyncIterator[TuiSurface]:
     del model, session_id
     active_bridge = bridge or OpenTuiBridge()
+    active_workspace_dir = _normalize_workspace_dir(workspace_dir) or _workspace_dir()
     await active_bridge.start()
     try:
         marker = (
@@ -187,9 +232,13 @@ async def open_opentui_surface(
             "completion.context",
             completion_context
             if completion_context is not None
-            else build_completion_context(surface, workspace_dir=_workspace_dir()),
+            else build_completion_context(surface, workspace_dir=active_workspace_dir),
         )
-        yield OpenTuiSurface(active_bridge, approval_surface=surface)
+        yield OpenTuiSurface(
+            active_bridge,
+            approval_surface=surface,
+            workspace_dir=active_workspace_dir,
+        )
     finally:
         await active_bridge.close()
 
@@ -199,6 +248,21 @@ def _workspace_dir() -> Path | None:
     if not workspace:
         return None
     return Path(workspace)
+
+
+def _normalize_workspace_dir(workspace_dir: Path | str | None) -> Path | None:
+    if workspace_dir is None:
+        return None
+    return Path(workspace_dir)
+
+
+def _file_completion_item(path: str) -> dict[str, str]:
+    return {
+        "label": path,
+        "description": path,
+        "insert_text": f"@{path} ",
+        "category": "file",
+    }
 
 
 def _send_bridge_message(

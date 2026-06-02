@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -62,7 +63,11 @@ async def test_opentui_chat_runtime_exposes_tui_output_and_reuses_runtime(
 ) -> None:
     from opensquilla.cli.tui.opentui import runtime as opentui_runtime
 
-    scope: dict[str, Any] = {"model": "model-a", "session_key": "session-a"}
+    scope: dict[str, Any] = {
+        "model": "model-a",
+        "session_key": "session-a",
+        "tool_ctx": SimpleNamespace(workspace_dir="/tmp/opentui-workspace"),
+    }
     captured: dict[str, Any] = {}
     fake_surface = _FakeOpenTuiSurface()
 
@@ -101,12 +106,52 @@ async def test_opentui_chat_runtime_exposes_tui_output_and_reuses_runtime(
         "surface": Surface.CLI_GATEWAY,
         "model": "model-a",
         "session_id": "session-a",
+        "workspace_dir": "/tmp/opentui-workspace",
     }
     assert captured["runtime_kwargs"]["dispatch"] is fake_dispatch
     assert captured["runtime_kwargs"]["config"].concurrent_input_during_turn is True
     assert opentui_runtime.get_tui_output(scope) is None
     assert getattr(captured["output"], "_output_handle", None) is fake_surface.output_handle
     assert captured["manager"] is not None
+
+
+@pytest.mark.asyncio
+async def test_opentui_chat_runtime_forwards_workspace_dir_from_tool_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.tui.opentui import runtime as opentui_runtime
+
+    scope: dict[str, Any] = {
+        "model": "model-a",
+        "session_key": "session-a",
+        "tool_ctx": SimpleNamespace(workspace_dir="/tmp/workspace-a"),
+    }
+    captured: dict[str, Any] = {}
+    fake_surface = _FakeOpenTuiSurface()
+
+    @asynccontextmanager
+    async def fake_open_opentui_surface(**kwargs: Any):
+        captured["surface_kwargs"] = kwargs
+        yield fake_surface
+
+    async def fake_run_tui_runtime(**kwargs: Any):
+        async with kwargs["surface_factory"]() as yielded:
+            assert yielded is fake_surface
+
+    monkeypatch.setattr(opentui_runtime, "open_opentui_surface", fake_open_opentui_surface)
+    monkeypatch.setattr(opentui_runtime, "run_tui_runtime", fake_run_tui_runtime)
+
+    async def fake_dispatch(_value: str) -> bool:
+        return True
+
+    await opentui_runtime.run_opentui_chat_runtime(
+        surface=Surface.CLI_GATEWAY,
+        scope=scope,
+        dispatch=fake_dispatch,
+        queue_max_size=8,
+    )
+
+    assert captured["surface_kwargs"]["workspace_dir"] == "/tmp/workspace-a"
 
 
 @pytest.mark.asyncio

@@ -54,6 +54,17 @@ class OpenTuiChatRuntimeContext:
         value = self.scope.get("session_key")
         return value if isinstance(value, str) else None
 
+    @property
+    def workspace_dir(self) -> str | None:
+        value = self.scope.get("workspace_dir")
+        if isinstance(value, str) and value:
+            return value
+        tool_ctx = self.scope.get("tool_ctx")
+        ctx_workspace = getattr(tool_ctx, "workspace_dir", None)
+        if isinstance(ctx_workspace, str) and ctx_workspace:
+            return ctx_workspace
+        return None
+
     def abort_turn(self) -> Awaitable[None]:
         if self.surface is not Surface.CLI_GATEWAY or self.abort_active_turn is None:
             return _noop_abort_turn()
@@ -128,11 +139,14 @@ async def run_opentui_chat_runtime(
     )
 
     def _surface_factory():
-        return open_opentui_surface(
-            surface=surface,
-            model=context.model,
-            session_id=context.session_id,
-        )
+        kwargs: dict[str, Any] = {
+            "surface": surface,
+            "model": context.model,
+            "session_id": context.session_id,
+        }
+        if context.workspace_dir is not None:
+            kwargs["workspace_dir"] = context.workspace_dir
+        return open_opentui_surface(**kwargs)
 
     def _notice(payload: str) -> None:
         opentui_notice(scope, payload)

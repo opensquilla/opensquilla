@@ -8,6 +8,7 @@ import pytest
 
 from opensquilla.cli.tui.opentui.messages import (
     CompletionContext,
+    HostCompletionRequest,
     HostInputCancel,
     HostInputEof,
     HostInputSubmit,
@@ -117,6 +118,133 @@ async def test_open_opentui_surface_sends_completion_context_on_startup() -> Non
             },
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_opentui_surface_answers_file_completion_without_returning_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    from opensquilla.cli.tui.opentui import surface as surface_module
+
+    calls: list[tuple[object, str, int]] = []
+
+    def fake_enumerate_workspace_files(root, *, query: str, max_results: int):
+        calls.append((root, query, max_results))
+        return ["foo.py", "src/foo_bar.py"]
+
+    monkeypatch.setattr(
+        surface_module,
+        "enumerate_workspace_files",
+        fake_enumerate_workspace_files,
+    )
+    bridge = FakeOpenTuiBridge()
+    surface = OpenTuiSurface(
+        bridge,
+        approval_surface=Surface.CLI_GATEWAY,
+        workspace_dir=tmp_path,
+    )
+
+    bridge.messages.put_nowait(
+        HostCompletionRequest(kind="file", query="foo", request_id=7)
+    )
+    bridge.messages.put_nowait(HostInputSubmit(text="hello"))
+
+    assert await surface.next_line() == "hello"
+    assert calls == [(tmp_path, "foo", 50)]
+    assert bridge.sent == [
+        (
+            "completion.response",
+            {
+                "request_id": 7,
+                "kind": "file",
+                "items": [
+                    {
+                        "label": "foo.py",
+                        "description": "foo.py",
+                        "insert_text": "@foo.py ",
+                        "category": "file",
+                    },
+                    {
+                        "label": "src/foo_bar.py",
+                        "description": "src/foo_bar.py",
+                        "insert_text": "@src/foo_bar.py ",
+                        "category": "file",
+                    },
+                ],
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_opentui_surface_answers_file_completion_with_empty_items_without_workspace() -> None:
+    bridge = FakeOpenTuiBridge()
+    surface = OpenTuiSurface(bridge, approval_surface=Surface.CLI_GATEWAY)
+
+    bridge.messages.put_nowait(HostCompletionRequest(kind="file", query="foo", request_id=8))
+    bridge.messages.put_nowait(HostInputSubmit(text="after completion"))
+
+    assert await surface.next_line() == "after completion"
+    assert bridge.sent == [
+        (
+            "completion.response",
+            {
+                "request_id": 8,
+                "kind": "file",
+                "items": [],
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_open_opentui_surface_uses_explicit_workspace_for_completion_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    from opensquilla.cli.tui.opentui import surface as surface_module
+
+    bridge = FakeOpenTuiBridge()
+    captured: dict[str, Any] = {}
+
+    def fake_build_completion_context(
+        surface: Surface,
+        *,
+        workspace_dir,
+    ) -> CompletionContext:
+        captured["surface"] = surface
+        captured["workspace_dir"] = workspace_dir
+        return CompletionContext(catalog=(), files=("src/main.py",))
+
+    monkeypatch.setenv("OPENSQUILLA_WORKSPACE_DIR", "/tmp/wrong-env-workspace")
+    monkeypatch.setattr(
+        surface_module,
+        "build_completion_context",
+        fake_build_completion_context,
+    )
+
+    async with open_opentui_surface(
+        surface=Surface.CLI_STANDALONE,
+        ready_marker="",
+        print_ready_marker=False,
+        bridge=bridge,
+        workspace_dir=tmp_path,
+    ):
+        pass
+
+    assert captured == {
+        "surface": Surface.CLI_STANDALONE,
+        "workspace_dir": tmp_path,
+    }
+    assert bridge.sent[-1] == (
+        "completion.context",
+        {
+            "catalog": (),
+            "files": ("src/main.py",),
+            "filters_sensitive_paths": True,
+        },
+    )
 
 
 def test_opentui_output_toolbar_invalidates_router_plugin() -> None:

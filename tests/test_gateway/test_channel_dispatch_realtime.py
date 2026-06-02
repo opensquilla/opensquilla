@@ -30,6 +30,7 @@ from opensquilla.gateway.channel_dispatch import (
     _deliver_runtime_channel_reply,
     _dispatch_combined_message_after_debounce,
     _ingest_channel_message_attachments,
+    _route_envelope_reply_message,
     _run_turn_batch_path,
     _run_turn_with_streaming,
     _RuntimeChannelStreamRelay,
@@ -79,6 +80,15 @@ def test_channel_reply_sanitizes_provider_compaction_markers() -> None:
     assert "opensquilla_compacted" not in reply.content
     assert "assistant_content" not in reply.content
     assert reply.content == "Reply to user:\n?"
+
+
+def test_route_envelope_reply_preserves_channel_for_thread_target() -> None:
+    route_envelope = SimpleNamespace(channel_id="C42", thread_id="1700000000.000100")
+
+    reply = _route_envelope_reply_message("busy", route_envelope)
+
+    assert reply.reply_to == "1700000000.000100"
+    assert reply.metadata == {"channel": "C42"}
 
 
 def test_channel_stream_policy_prefers_adapter_stream_updates() -> None:

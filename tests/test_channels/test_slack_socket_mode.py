@@ -199,10 +199,28 @@ async def test_send_threads_only_on_message_ts() -> None:
     assert post[1]["thread_ts"] == "1700000000.000200"
 
 
+async def test_send_thread_timestamp_uses_metadata_channel_without_default() -> None:
+    ch = _mk()
+    fake = _FakeClient()
+    ch._get_client = lambda: fake  # type: ignore[method-assign]
+    await ch.send(
+        OutgoingMessage(
+            content="hi",
+            reply_to="1700000000.000200",
+            metadata={"channel": "C42"},
+        )
+    )
+    post = next(c for c in fake.calls if c[0] == "/chat.postMessage")
+    assert post[1] is not None
+    assert post[1]["channel"] == "C42"
+    assert post[1]["thread_ts"] == "1700000000.000200"
+
+
 def test_reply_helpers_target_inbound_conversation() -> None:
     ch = _mk()
     inbound = IncomingMessage(sender_id="U", channel_id="D42", content="hi")
     assert ch.build_reply_message("r", inbound).reply_to == "D42"
+    assert ch.build_reply_message("r", inbound).metadata == {"channel": "D42"}
     assert ch.streaming_reply_kwargs(inbound) == {"channel": "D42"}
 
 
@@ -218,7 +236,10 @@ def test_reply_helpers_preserve_thread_target_when_enabled() -> None:
     reply = ch.build_reply_message("r", inbound)
 
     assert reply.reply_to == "C42"
-    assert reply.metadata == {"thread_ts": "1700000000.000100"}
+    assert reply.metadata == {
+        "channel": "C42",
+        "thread_ts": "1700000000.000100",
+    }
     assert ch.streaming_reply_kwargs(inbound) == {
         "channel": "C42",
         "thread_ts": "1700000000.000100",
@@ -235,6 +256,7 @@ def test_reply_helpers_thread_root_when_enabled() -> None:
     )
 
     assert ch.build_reply_message("r", inbound).metadata == {
+        "channel": "C42",
         "thread_ts": "1700000000.000200"
     }
 

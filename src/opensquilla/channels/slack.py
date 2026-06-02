@@ -249,7 +249,7 @@ class SlackChannel:
 
     def build_reply_message(self, content: str, inbound: IncomingMessage) -> OutgoingMessage:
         """Target the inbound conversation so batch replies need no static channel id."""
-        metadata: dict[str, Any] = {}
+        metadata: dict[str, Any] = {"channel": inbound.channel_id}
         if thread_ts := self._reply_thread_ts(inbound):
             metadata["thread_ts"] = thread_ts
         return OutgoingMessage(content=content, reply_to=inbound.channel_id, metadata=metadata)

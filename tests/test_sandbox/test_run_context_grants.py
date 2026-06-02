@@ -372,6 +372,53 @@ async def test_duplicate_same_mount_grant_is_noop(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_duplicate_same_mount_grant_in_existing_list_is_noop_without_reordering(
+    tmp_path,
+):
+    from opensquilla.sandbox.run_context_service import add_mount_grant
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    first = tmp_path / "first"
+    middle = tmp_path / "middle"
+    last = tmp_path / "last"
+    for path in (first, middle, last):
+        path.mkdir()
+    mount_payload = [
+        {"path": str(first.resolve(strict=False)), "access": "ro", "scope": "chat"},
+        {"path": str(middle.resolve(strict=False)), "access": "ro", "scope": "chat"},
+        {"path": str(last.resolve(strict=False)), "access": "rw", "scope": "workspace"},
+    ]
+    saved_origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": str(workspace),
+            "mounts": mount_payload,
+        }
+    }
+    manager = _SessionManager()
+    manager.node.origin = saved_origin
+
+    updated = await add_mount_grant(
+        manager,
+        manager.node.session_key,
+        path=str(middle / "nested" / ".."),
+        access="ro",
+        scope="chat",
+        config=_config(),
+        workspace=str(workspace),
+    )
+
+    assert [mount.path for mount in updated.mounts] == [
+        str(first.resolve(strict=False)),
+        str(middle.resolve(strict=False)),
+        str(last.resolve(strict=False)),
+    ]
+    assert manager.node.origin is saved_origin
+    assert manager.node.origin["sandbox_run_context"]["mounts"] == mount_payload
+
+
+@pytest.mark.asyncio
 async def test_duplicate_domain_grant_replaces_existing_entry(tmp_path):
     from opensquilla.sandbox.run_context_service import add_domain_grant
 
@@ -426,6 +473,45 @@ async def test_duplicate_same_domain_grant_is_noop(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_duplicate_same_domain_grant_in_existing_list_is_noop_without_reordering(
+    tmp_path,
+):
+    from opensquilla.sandbox.run_context_service import add_domain_grant
+
+    domain_payload = [
+        {"domain": "files.pythonhosted.org", "scope": "chat", "source": "manual"},
+        {"domain": "pypi.org", "scope": "workspace", "source": "manual"},
+        {"domain": "registry.npmjs.org", "scope": "chat", "source": "manual"},
+    ]
+    saved_origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": str(tmp_path),
+            "domains": domain_payload,
+        }
+    }
+    manager = _SessionManager()
+    manager.node.origin = saved_origin
+
+    updated = await add_domain_grant(
+        manager,
+        manager.node.session_key,
+        domain="https://pypi.org/simple",
+        scope="workspace",
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert [domain.domain for domain in updated.domains] == [
+        "files.pythonhosted.org",
+        "pypi.org",
+        "registry.npmjs.org",
+    ]
+    assert manager.node.origin is saved_origin
+    assert manager.node.origin["sandbox_run_context"]["domains"] == domain_payload
+
+
+@pytest.mark.asyncio
 async def test_duplicate_bundle_grant_replaces_existing_entry(tmp_path):
     from opensquilla.sandbox.run_context_service import enable_bundle_grant
 
@@ -477,6 +563,57 @@ async def test_duplicate_same_bundle_grant_is_noop(tmp_path):
 
     assert updated.source == "saved"
     assert manager.node.origin is origin_before
+
+
+@pytest.mark.asyncio
+async def test_duplicate_same_bundle_grant_in_existing_list_is_noop_without_reordering(
+    tmp_path,
+):
+    from opensquilla.sandbox.run_context_service import enable_bundle_grant
+
+    bundle_payload = [
+        {
+            "bundle_id": "node-package-install",
+            "scope": "workspace",
+            "source": "manual",
+        },
+        {
+            "bundle_id": "python-package-install",
+            "scope": "workspace",
+            "source": "manual",
+        },
+        {
+            "bundle_id": "rust-package-install",
+            "scope": "chat",
+            "source": "manual",
+        },
+    ]
+    saved_origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": str(tmp_path),
+            "bundles": bundle_payload,
+        }
+    }
+    manager = _SessionManager()
+    manager.node.origin = saved_origin
+
+    updated = await enable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id=" python-package-install ",
+        scope="workspace",
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert [bundle.bundle_id for bundle in updated.bundles] == [
+        "node-package-install",
+        "python-package-install",
+        "rust-package-install",
+    ]
+    assert manager.node.origin is saved_origin
+    assert manager.node.origin["sandbox_run_context"]["bundles"] == bundle_payload
 
 
 @pytest.mark.asyncio
@@ -723,6 +860,87 @@ async def test_set_workspace_rejects_sensitive_path(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "workspace_parts",
+    [
+        ("ws", ".aws", "credentials"),
+        ("ws", ".kube", "config"),
+        ("ws", ".docker", "config"),
+        ("ws", ".docker", "config.json"),
+        ("ws", ".gnupg", "key"),
+        ("ws", ".envrc"),
+        ("ws", ".env_secret"),
+    ],
+)
+async def test_set_workspace_rejects_non_root_sensitive_targets(
+    tmp_path,
+    workspace_parts,
+):
+    from opensquilla.sandbox.run_context_service import set_workspace
+
+    manager = _SessionManager()
+
+    with pytest.raises(ValueError, match="sensitive_path"):
+        await set_workspace(
+            manager,
+            manager.node.session_key,
+            workspace_path=str(tmp_path.joinpath(*workspace_parts)),
+            config=_config(),
+            current_workspace=None,
+        )
+
+    assert manager.node.origin is None
+
+
+@pytest.mark.asyncio
+async def test_non_root_nested_workspace_is_allowed_for_set_saved_and_fallback(
+    tmp_path,
+):
+    from opensquilla.sandbox.run_context import get_run_context, set_run_mode
+    from opensquilla.sandbox.run_context_service import set_workspace
+    from opensquilla.sandbox.run_mode import RunMode
+
+    workspace_path = tmp_path / "ws" / "project" / "src"
+    normalized = str(workspace_path.resolve(strict=False))
+
+    manager = _SessionManager()
+    updated = await set_workspace(
+        manager,
+        manager.node.session_key,
+        workspace_path=str(workspace_path),
+        config=_config(),
+        current_workspace=None,
+    )
+    assert updated.workspace == normalized
+
+    manager = _SessionManager()
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": str(workspace_path),
+        }
+    }
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=None,
+    )
+    assert ctx.workspace == normalized
+
+    manager = _SessionManager()
+    updated = await set_run_mode(
+        manager,
+        manager.node.session_key,
+        RunMode.TRUSTED,
+        config=_config(),
+        workspace=str(workspace_path),
+    )
+    assert updated.workspace == normalized
+    assert manager.node.origin["sandbox_run_context"]["workspace"] == normalized
+
+
+@pytest.mark.asyncio
 async def test_saved_bundle_id_payload_deserializes(tmp_path):
     from opensquilla.sandbox.run_context import get_run_context
 
@@ -960,6 +1178,74 @@ async def test_saved_sensitive_workspace_is_dropped(tmp_path):
     )
 
     assert ctx.workspace is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "workspace_parts",
+    [
+        ("ws", ".aws", "credentials"),
+        ("ws", ".kube", "config"),
+        ("ws", ".docker", "config"),
+        ("ws", ".docker", "config.json"),
+        ("ws", ".gnupg", "key"),
+        ("ws", ".envrc"),
+        ("ws", ".env_secret"),
+    ],
+)
+async def test_saved_non_root_sensitive_workspace_is_dropped(
+    tmp_path,
+    workspace_parts,
+):
+    from opensquilla.sandbox.run_context import get_run_context
+
+    manager = _SessionManager()
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": str(tmp_path.joinpath(*workspace_parts)),
+        }
+    }
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=None,
+    )
+
+    assert ctx.workspace is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "workspace_parts",
+    [
+        ("ws", ".aws", "credentials"),
+        ("ws", ".docker", "config.json"),
+        ("ws", ".envrc"),
+        ("ws", ".env_secret"),
+    ],
+)
+async def test_set_run_mode_drops_non_root_sensitive_fallback_workspace(
+    tmp_path,
+    workspace_parts,
+):
+    from opensquilla.sandbox.run_context import set_run_mode
+    from opensquilla.sandbox.run_mode import RunMode
+
+    manager = _SessionManager()
+
+    updated = await set_run_mode(
+        manager,
+        manager.node.session_key,
+        RunMode.TRUSTED,
+        config=_config(),
+        workspace=str(tmp_path.joinpath(*workspace_parts)),
+    )
+
+    assert updated.workspace is None
+    assert manager.node.origin["sandbox_run_context"]["workspace"] is None
 
 
 @pytest.mark.asyncio

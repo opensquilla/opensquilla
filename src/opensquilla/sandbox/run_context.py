@@ -147,6 +147,30 @@ def _is_relative_to_path(candidate: str, root: str) -> bool:
         return False
 
 
+def _has_sensitive_workspace_parts(parts: tuple[str, ...]) -> bool:
+    if any(part.startswith(".env") for part in parts):
+        return True
+    for blocked in _DEFAULT_WORKSPACE_CREDENTIAL_PARTS:
+        limit = len(parts) - len(blocked) + 1
+        for start in range(max(limit, 0)):
+            if parts[start : start + len(blocked)] == blocked:
+                return True
+    return False
+
+
+def _has_sensitive_workspace_components(path: str) -> bool:
+    try:
+        path_value = Path(path)
+        parts = tuple(
+            part.casefold()
+            for part in path_value.parts
+            if part and part != path_value.anchor
+        )
+    except (OSError, RuntimeError, ValueError):
+        return True
+    return _has_sensitive_workspace_parts(parts)
+
+
 def _is_sensitive_default_workspace_target(path: str, workspace: str) -> bool:
     marker = sensitive_path_marker(path, workspace=workspace)
     if marker is not None:
@@ -157,14 +181,7 @@ def _is_sensitive_default_workspace_target(path: str, workspace: str) -> bool:
         )
     except (OSError, RuntimeError, ValueError):
         return True
-    if any(part.startswith(".env") for part in relative_parts):
-        return True
-    for blocked in _DEFAULT_WORKSPACE_CREDENTIAL_PARTS:
-        limit = len(relative_parts) - len(blocked) + 1
-        for start in range(max(limit, 0)):
-            if relative_parts[start : start + len(blocked)] == blocked:
-                return True
-    return False
+    return _has_sensitive_workspace_parts(relative_parts)
 
 
 def normalize_workspace_path(value: Any) -> str:
@@ -176,6 +193,8 @@ def normalize_workspace_path(value: Any) -> str:
     except (OSError, RuntimeError, ValueError):
         raise ValueError("invalid_workspace_path")
     if _is_filesystem_root(normalized_workspace):
+        raise ValueError("sensitive_path")
+    if _has_sensitive_workspace_components(normalized_workspace):
         raise ValueError("sensitive_path")
     default_root_workspace = str(normalize_path(DEFAULT_ROOT_WORKSPACE))
     if _is_relative_to_path(normalized_workspace, default_root_workspace):

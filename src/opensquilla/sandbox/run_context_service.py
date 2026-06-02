@@ -84,6 +84,8 @@ async def add_mount_grant(
         access=mount_access,
         scope=normalize_scope(scope),
     )
+    if grant in existing.mounts:
+        return existing
     mounts = tuple(m for m in existing.mounts if m.path != grant.path) + (grant,)
     if mounts == existing.mounts:
         return existing
@@ -151,6 +153,8 @@ async def add_domain_grant(
         scope=normalize_scope(scope),
         source=source,
     )
+    if grant in existing.domains:
+        return existing
     domains = tuple(d for d in existing.domains if d.domain != grant.domain) + (grant,)
     if domains == existing.domains:
         return existing
@@ -212,6 +216,8 @@ async def enable_bundle_grant(
         scope=normalize_scope(scope, "workspace"),
         source="manual",
     )
+    if grant in existing.bundles:
+        return existing
     bundles = tuple(b for b in existing.bundles if b.bundle_id != grant.bundle_id) + (
         grant,
     )

@@ -14,7 +14,8 @@ export function createThinkingBlock(ctx) {
       const avail = timelineAvailCells(prefix, renderer.terminalWidth);
       const n = new TextRenderable(renderer, { id: `${idPrefix}-l${i}`, content: `${prefix}${clipToCells(line, avail)}`, fg: THEME.modelText }); box.add(n);
     });
-    const gb = new TextRenderable(renderer, { id: `${idPrefix}-gb`, content: `${TOOL_INDENT}│`, fg: THEME.detailText }); box.add(gb);
+    // No trailing rail: the next block (tool/answer) draws its own leading rail,
+    // so a bottom rail here would double up into an apparent blank line.
     rendered = true;
     renderer.requestRender?.();
   }

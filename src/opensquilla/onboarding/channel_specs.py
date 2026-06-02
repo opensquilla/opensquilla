@@ -62,25 +62,39 @@ def _slack_spec() -> ChannelSetupSpec:
     return ChannelSetupSpec(
         type="slack",
         label="Slack",
-        description="Slack workspace bot using bot token + signing secret.",
-        transport="webhook",
-        requires_public_url=True,
+        description="Slack workspace bot — Socket Mode (websocket) or Events API webhook.",
+        transport="mixed",
+        requires_public_url=False,
         dependency_extra=None,
         restart_required=True,
         docs_hint="https://api.slack.com/apps",
-        help="Slack webhooks require a public URL reachable by Slack.",
+        help=(
+            "connection_mode=socket uses Slack Socket Mode (an outbound websocket) and "
+            "needs no public URL — set app_token (xapp-...). connection_mode=webhook uses "
+            "the Events API and needs a public Request URL reachable by Slack."
+        ),
         fields=(
             *_common_fields(),
             ChannelSetupField("token", "Bot token (xoxb-...)", "password",
                               required=True, secret=True, group="credentials",
                               placeholder="xoxb-..."),
+            ChannelSetupField("app_token", "App-level token (xapp-...)", "password",
+                              required=False, secret=True, group="credentials",
+                              placeholder="xapp-...",
+                              show_when={"connection_mode": "socket"}),
             ChannelSetupField("slack_channel_id", "Default channel id", "text",
-                              required=False, default=""),
+                              required=False, default="",
+                              description="Optional; replies auto-target the incoming "
+                              "conversation when unset."),
             ChannelSetupField("signing_secret", "Signing secret", "password",
                               required=False, secret=True, group="credentials",
-                              advanced=True),
+                              advanced=True,
+                              show_when={"connection_mode": "webhook"}),
             ChannelSetupField("reply_in_thread", "Reply in thread", "bool",
                               required=False, default=False),
+            ChannelSetupField("connection_mode", "Connection mode", "select",
+                              required=False, default="webhook",
+                              choices=("webhook", "socket")),
         ),
     )
 

@@ -159,7 +159,10 @@ def test_zero_channels_means_not_messaging_configured():
 
 def test_channel_present_marks_configured():
     cfg = GatewayConfig()
-    res = upsert_channel(cfg, entry_payload={"type": "slack", "name": "w", "token": "x"})
+    res = upsert_channel(
+        cfg,
+        entry_payload={"type": "slack", "name": "w", "token": "x", "signing_secret": "ss"},
+    )
     s = get_onboarding_status(res.config)
     assert s.channel_count == 1
     assert s.channels_configured is True

@@ -3805,6 +3805,7 @@ class Agent:
         source_messages = self._strip_provider_context_marker_replay_for_provider(source_messages)
         source_messages = self._compact_aggregate_tool_results_for_provider(source_messages)
         source_messages = self._sanitize_projected_tool_use_arguments_for_provider(source_messages)
+        source_messages = repair_tool_pairing(source_messages)
         return sanitize_session_messages(source_messages)
 
     def _apply_provider_tool_result_overrides(self, messages: list[Message]) -> list[Message]:

@@ -285,13 +285,34 @@ async def test_channel_upsert_redacts_secrets(tmp_path, monkeypatch):
     res = await get_dispatcher().dispatch(
         "r1",
         "onboarding.channel.upsert",
-        {"entry": {"type": "slack", "name": "w", "token": "supersecret"}},
+        {
+            "entry": {
+                "type": "slack",
+                "name": "w",
+                "token": "supersecret",
+                "signing_secret": "signing-secret",
+            }
+        },
         _admin_ctx(),
     )
     assert res.error is None, res.error
     assert res.payload["changed"] is True
     assert res.payload["restartRequired"] is True
     assert res.payload["entry"]["token"] == "***"
+
+
+@pytest.mark.asyncio
+async def test_channel_upsert_rejects_slack_webhook_without_signing_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.channel.upsert",
+        {"entry": {"type": "slack", "name": "w", "token": "supersecret"}},
+        _admin_ctx(),
+    )
+
+    assert res.error is not None
+    assert "signing_secret" in res.error.message
 
 
 @pytest.mark.asyncio
@@ -821,7 +842,7 @@ async def test_channel_disable_then_remove(tmp_path, monkeypatch):
     await d.dispatch(
         "r1",
         "onboarding.channel.upsert",
-        {"entry": {"type": "slack", "name": "w", "token": "t"}},
+        {"entry": {"type": "slack", "name": "w", "token": "t", "signing_secret": "ss"}},
         _admin_ctx(),
     )
     res = await d.dispatch("r2", "onboarding.channel.disable", {"name": "w"}, _admin_ctx())

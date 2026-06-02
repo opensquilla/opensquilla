@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
 import opensquilla.sandbox as sandbox
-from opensquilla.sandbox.backend.bubblewrap import build_bwrap_argv
+from opensquilla.sandbox.backend import bubblewrap as bubblewrap_mod
+from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend, build_bwrap_argv
 from opensquilla.sandbox.backend.seatbelt import render_seatbelt_profile
 from opensquilla.sandbox.types import (
     MountSpec,
@@ -17,7 +19,6 @@ from opensquilla.sandbox.types import (
     SandboxRequest,
     SecurityLevel,
 )
-
 
 _UNSET = object()
 
@@ -78,22 +79,113 @@ def test_seatbelt_proxy_allowlist_without_proxy_fails_closed(
         render_seatbelt_profile(_request(_policy(tmp_path), tmp_path))
 
 
-def test_bubblewrap_proxy_allowlist_with_proxy_requires_linux_bridge(
+def test_bubblewrap_proxy_allowlist_with_proxy_builds_bridge_argv(
     tmp_path: Path,
 ) -> None:
     policy = _policy(tmp_path, network_proxy=_proxy_spec())
 
-    with pytest.raises(SandboxBackendError, match="linux proxy bridge"):
-        build_bwrap_argv(_request(policy, tmp_path), binary="bwrap")
+    argv = build_bwrap_argv(_request(policy, tmp_path), binary="bwrap")
+
+    separator = argv.index("--")
+    child_argv = argv[separator + 1 :]
+    assert "--unshare-net" in argv
+    assert child_argv[:4] == [
+        sys.executable,
+        "-m",
+        "opensquilla.sandbox.backend.linux_proxy_bridge",
+        "--",
+    ]
+    assert child_argv[4:] == ["sh", "-lc", "echo ok"]
+    assert argv.count("echo ok") == 1
+    assert "OPENSQUILLA_SANDBOX_PROXY_UDS" in argv
+    assert "OPENSQUILLA_SANDBOX_PROXY_PORT" in argv
+    assert "HTTP_PROXY" in argv
+    assert "http://127.0.0.1:8080" in argv
 
 
-def test_seatbelt_proxy_allowlist_with_proxy_remains_unsupported(
+def test_bubblewrap_proxy_allowlist_proxy_env_overrides_user_input(
+    tmp_path: Path,
+) -> None:
+    policy = _policy(tmp_path, network_proxy=_proxy_spec())
+    request = _request(policy, tmp_path)
+    request.env["HTTP_PROXY"] = "http://attacker.invalid:1"
+
+    argv = build_bwrap_argv(request, binary="bwrap")
+
+    assert "http://127.0.0.1:8080" in argv
+    assert "http://attacker.invalid:1" not in argv
+
+
+@pytest.mark.asyncio
+async def test_bubblewrap_run_starts_and_stops_proxy_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    policy = _policy(tmp_path, network_proxy=_proxy_spec(port=18080))
+    events: list[str] = []
+    captured: dict[str, object] = {}
+
+    class FakeBridge:
+        def __init__(self, uds_path: Path, upstream_host: str, upstream_port: int) -> None:
+            captured["bridge"] = (uds_path, upstream_host, upstream_port)
+
+        async def start(self) -> None:
+            events.append("bridge.start")
+
+        async def stop(self) -> None:
+            events.append("bridge.stop")
+
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            events.append("process.communicate")
+            return b"ok\n", b""
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: object) -> FakeProcess:
+        events.append("process.spawn")
+        captured["argv"] = argv
+        return FakeProcess()
+
+    monkeypatch.setattr(BubblewrapBackend, "available", lambda self: True)
+    monkeypatch.setattr(bubblewrap_mod, "LinuxProxyBridgeHost", FakeBridge)
+    monkeypatch.setattr(
+        bubblewrap_mod.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    result = await BubblewrapBackend(binary="bwrap").run(_request(policy, tmp_path))
+
+    assert events == [
+        "bridge.start",
+        "process.spawn",
+        "process.communicate",
+        "bridge.stop",
+    ]
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    bridge = captured["bridge"]
+    assert isinstance(bridge, tuple)
+    assert bridge[1:] == ("127.0.0.1", 18080)
+    argv = captured["argv"]
+    assert isinstance(argv, tuple)
+    assert "--unshare-net" in argv
+    assert "opensquilla.sandbox.backend.linux_proxy_bridge" in argv
+
+
+def test_seatbelt_proxy_allowlist_with_proxy_renders_proxy_only_profile(
     tmp_path: Path,
 ) -> None:
     policy = _policy(tmp_path, network_proxy=_proxy_spec())
 
-    with pytest.raises(SandboxBackendError, match="not supported"):
-        render_seatbelt_profile(_request(policy, tmp_path))
+    profile = render_seatbelt_profile(_request(policy, tmp_path))
+
+    assert "(allow network-outbound" in profile
+    assert "127.0.0.1:8080" in profile
+    assert "(allow network*)" not in profile
+    assert "(deny network*)" not in profile
 
 
 def test_policy_positional_description_keeps_legacy_binding(

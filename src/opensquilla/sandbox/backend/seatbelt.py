@@ -28,6 +28,7 @@ from typing import Any, cast
 from opensquilla.sandbox.backend.base import Backend
 from opensquilla.sandbox.types import (
     NetworkMode,
+    NetworkProxySpec,
     SandboxBackendError,
     SandboxPolicy,
     SandboxRequest,
@@ -201,6 +202,10 @@ def _write_rules(paths: Iterable[Path]) -> list[str]:
     return [f"(allow file-write* {_subpath(path)})" for path in _unique_existing(paths)]
 
 
+def _network_proxy_rule(proxy: NetworkProxySpec) -> str:
+    return f"(allow network-outbound (remote tcp {_scheme_string(f'{proxy.host}:{proxy.port}')}))"
+
+
 def render_seatbelt_profile(
     request: SandboxRequest,
     *,
@@ -214,9 +219,6 @@ def render_seatbelt_profile(
                 "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
                 "for the seatbelt backend"
             )
-        raise SandboxBackendError(
-            "NetworkMode.PROXY_ALLOWLIST is not supported by the seatbelt backend"
-        )
 
     read_paths: list[Path] = []
     write_paths: list[Path] = []
@@ -259,6 +261,13 @@ def render_seatbelt_profile(
         lines.append("(deny network*)")
     elif policy.network == NetworkMode.HOST:
         lines.append("(allow network*)")
+    elif policy.network == NetworkMode.PROXY_ALLOWLIST:
+        if policy.network_proxy is None:  # pragma: no cover - guarded above
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                "for the seatbelt backend"
+            )
+        lines.append(_network_proxy_rule(policy.network_proxy))
     else:  # pragma: no cover - exhaustive guard for future enum values
         raise SandboxBackendError(f"unsupported seatbelt network mode: {policy.network!r}")
 

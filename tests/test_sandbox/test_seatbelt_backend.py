@@ -18,6 +18,7 @@ from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.types import (
     MountSpec,
     NetworkMode,
+    NetworkProxySpec,
     ResourceLimits,
     SandboxBackendError,
     SandboxPolicy,
@@ -35,6 +36,7 @@ def _policy(
     workspace: Path,
     *,
     network: NetworkMode = NetworkMode.NONE,
+    network_proxy: NetworkProxySpec | None = None,
     workspace_rw: bool = True,
     tmp_writable: bool = True,
     mounts: tuple[MountSpec, ...] | None = None,
@@ -56,6 +58,7 @@ def _policy(
         limits=ResourceLimits(wall_timeout_s=0.1),
         env_allowlist=("PATH", "LANG"),
         require_approval=False,
+        network_proxy=network_proxy,
     )
 
 
@@ -131,11 +134,29 @@ def test_profile_allows_network_host(tmp_path: Path) -> None:
     assert "(allow network*)" in profile
 
 
-def test_profile_rejects_proxy_allowlist(tmp_path: Path) -> None:
-    with pytest.raises(SandboxBackendError, match="PROXY_ALLOWLIST"):
+def test_profile_rejects_proxy_allowlist_without_proxy(tmp_path: Path) -> None:
+    with pytest.raises(SandboxBackendError, match="network proxy"):
         render_seatbelt_profile(
             _request(_policy(tmp_path, network=NetworkMode.PROXY_ALLOWLIST), tmp_path)
         )
+
+
+def test_profile_allows_only_proxy_endpoint_for_proxy_allowlist(tmp_path: Path) -> None:
+    profile = render_seatbelt_profile(
+        _request(
+            _policy(
+                tmp_path,
+                network=NetworkMode.PROXY_ALLOWLIST,
+                network_proxy=NetworkProxySpec(host="127.0.0.1", port=18080),
+            ),
+            tmp_path,
+        )
+    )
+
+    assert "(allow network-outbound" in profile
+    assert "127.0.0.1:18080" in profile
+    assert "(allow network*)" not in profile
+    assert "(deny network*)" not in profile
 
 
 def test_profile_keeps_workspace_ro_when_policy_ro(tmp_path: Path) -> None:

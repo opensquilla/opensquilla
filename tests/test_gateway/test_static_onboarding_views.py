@@ -570,6 +570,20 @@ def test_setup_view_marks_unsupported_providers_disabled():
     assert "runtimeSupported" in txt
 
 
+def test_setup_view_validates_visible_required_channel_fields_before_save():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    start = txt.index("function _saveChannel()")
+    end = txt.index("  async function _saveMemory()", start)
+    body = txt[start:end]
+
+    assert 'data-required="${field.required ? \'true\' : \'false\'}"' in txt
+    assert "function _validateScopedRequiredFields(scope)" in txt
+    assert "_validateScopedRequiredFields('channel')" in body
+    assert "if (missing)" in body
+    assert "is required." in body
+    assert "return;" in body
+
+
 def test_setup_view_treats_image_configure_as_capability_enable_action():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
     assert "field.default !== false" in txt

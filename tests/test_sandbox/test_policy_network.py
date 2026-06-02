@@ -39,3 +39,17 @@ def test_standard_shell_and_code_exec_keep_network_none(tmp_path: Path) -> None:
 
     assert shell_policy.network is NetworkMode.NONE
     assert code_policy.network is NetworkMode.NONE
+
+
+def test_network_default_proxy_allowlist_uses_proxy_for_network_actions(
+    tmp_path: Path,
+) -> None:
+    settings = SandboxSettings(network_default="proxy_allowlist")
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "network.http",
+        tmp_path,
+        settings,
+        trusted=True,
+    )
+    assert policy.network is NetworkMode.PROXY_ALLOWLIST

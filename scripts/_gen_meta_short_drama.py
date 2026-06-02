@@ -14,7 +14,7 @@ SLUG_TMPL = "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message 
 
 HEAD = '''---
 name: meta-short-drama
-description: "Use this meta-skill instead of answering directly when the current user asks to generate an AI short-drama or 短剧 from a topic. The workflow infers render style, character identity, and shot count (1-10, default 5) from the request (filling in conservative defaults when missing), drafts a strict shot-by-shot shooting script, pauses for one free-form review (the user can approve, adjust render style / character / shot count / shot details, or cancel in plain language), optionally re-drafts the script with the user's adjustments, then generates per-shot first-frame images plus per-shot video clips (each anchored to shot 1's image so the character stays consistent), bookends them with a title card and an ending card, burns subtitles in the user's language, and saves the script alongside the final MP4. Do not use it for slide decks, document-decision analysis, single-image generation, isolated script writing, or pasted historical short-drama examples."
+description: "Use this meta-skill instead of answering directly when the current user asks to generate an AI short-drama or 短剧 from a topic. The workflow infers render style, character identity, and shot count (1-10, default 5) from the request (filling in conservative defaults when missing), drafts a strict shot-by-shot shooting script, pauses for one free-form review (the user can approve, adjust render style / character / shot count / shot details, or cancel in plain language), optionally re-drafts the script with the user's adjustments, generates one universal full-cast identity-reference image plus per-shot composition images, then per-shot video clips (each video anchored to BOTH the universal reference image and its own composition image so the character identity AND scene layout stay consistent), bookends them with a title card and an ending card, burns subtitles in the user's language, and saves the script alongside the final MP4. Do not use it for slide decks, document-decision analysis, single-image generation, isolated script writing, or pasted historical short-drama examples."
 kind: meta
 meta_priority: 75
 always: false
@@ -314,6 +314,54 @@ composition:
           {{ outputs.final_script | truncate(1500) }}
 
     # =========================================================================
+    # 8b. Universal identity-reference image. One full-cast neutral lineup
+    #     PNG that every shot's video step uses as the IDENTITY anchor
+    #     (input_reference). Each shot ALSO passes its own composition
+    #     PNG (N_shot.png) as a second reference. Two-anchor model:
+    #       slot 1 (reference.png)  → who the characters look like
+    #       slot 2 (N_shot.png)     → how the scene is laid out
+    # =========================================================================
+    - id: reference_prompt_extract
+      kind: llm_chat
+      depends_on: [final_script]
+      with:
+        system: "Return one line of text. No quotes, no prefix, no commentary."
+        task: |
+          Build a single-line image prompt for an ensemble identity
+          reference card. The picture must show ALL main characters from
+          the script standing together in a neutral lineup pose against
+          a neutral background, in the same RENDER_STYLE as the shots,
+          so the downstream video model can use it as a soft identity
+          anchor across cuts.
+
+          Layout: paste OVERVIEW.IDENTITY_ANCHOR verbatim at the start
+          (this includes every character's name + age + ethnicity + hair
+          + outfit). Then append: ", full-body group lineup, neutral
+          studio lighting, neutral light grey backdrop, ALL characters
+          clearly visible standing side by side, no props, no scene". Then
+          append OVERVIEW.RENDER_STYLE verbatim. Finally append the
+          literal aspect-ratio token "--ar 9:16".
+
+          Output: a single line, byte-for-byte safe to pass as a CLI arg.
+
+          Script (read OVERVIEW block):
+          {{ outputs.final_script | truncate(3000) }}
+
+    - id: reference_image
+      kind: skill_exec
+      skill: nano-banana-pro
+      depends_on: [reference_prompt_extract, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize"
+      with:
+        prompt: "{{ outputs.reference_prompt_extract | truncate(800) }}"
+        filename: "<<SLUG>>/reference.png"
+        aspect_ratio: "9:16"
+        image_size: "1K"
+        max_retries: 1
+        fallback_model: "google/gemini-3-pro-image-preview"
+        placeholder_on_fail: "yes"
+
+    # =========================================================================
     # 9. Cover card image + 2s video (gated on proceed).
     # =========================================================================
     - id: cover_image
@@ -414,14 +462,15 @@ EXEC_TMPL = '''
     - id: shot{N}_video
       kind: skill_exec
       skill: seedance-2-prompt
-      depends_on: [shot{N}_vid_prompt, shot{N}_duration, shot1_image, shot{N}_image, review_normalize]
+      depends_on: [shot{N}_vid_prompt, shot{N}_duration, reference_image, shot{N}_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot{N}_vid_prompt"
       on_failure: shot{N}_video_fallback
       with:
         prompt: "{{{{ outputs.shot{N}_vid_prompt | truncate(900) }}}}"
         filename: "<<SLUG>>/{N}_shot.mp4"
         input_image: ""
-        input_reference: "<<SLUG>>/1_shot.png"
+        input_reference: "<<SLUG>>/reference.png"
+        input_reference_2: "<<SLUG>>/{N}_shot.png"
         aspect_ratio: "9:16"
         duration: "{{{{ outputs.shot{N}_duration | truncate(3) }}}}"
         model: "bytedance/seedance-2.0"
@@ -597,10 +646,20 @@ to disk regardless of outcome.
     Image/video steps gate on the sentinel so unused slots stay dormant.
 11. **Image generation per active shot** — `nano-banana-pro`, retry +
     fallback model + placeholder PNG (image step never aborts DAG).
-12. **Video generation per active shot** — `seedance-2.0`, retry twice;
+12. **`reference_prompt_extract` + `reference_image`** — one extra
+    `nano-banana-pro` call produces `reference.png`, a full-cast neutral
+    lineup of every named character on a neutral backdrop. Used as the
+    universal IDENTITY anchor for every shot's seedance call so the
+    character does not drift across cuts (nano-banana would otherwise
+    re-roll subtly different faces per shot).
+13. **Video generation per active shot** — `seedance-2.0`, retry twice;
     on persistent refusal the Ken-Burns substitute fires using the
-    shot's PNG. All shots use shot1.png as `input_reference` to lock
-    character identity across cuts.
+    shot's PNG. Each shot passes TWO reference images to seedance:
+      slot 1 `reference.png` — who the characters look like (identity)
+      slot 2 `N_shot.png`    — how this specific scene is laid out (composition)
+    Empty / missing references are filtered before the API call, so
+    callers who still want a single-anchor model can simply leave the
+    second slot empty.
 13. **`ending_image` + `ending_video`** — Pillow "完" / "THE END" card
     + 1.5s Ken-Burns clip (`99_ending.mp4` — sorts last).
 14. **`merge`** — `video-merger` stitches `0_cover` + active shots
@@ -618,6 +677,7 @@ to disk regardless of outcome.
 ```
 <workspace>/meta_short_drama/<slug>/
     script.txt              # full final script (always)
+    reference.png           # full-cast identity reference (used by every shot_video)
     0_cover.png  0_cover.mp4
     1_shot.png   1_shot.mp4   ┐
     2_shot.png   2_shot.mp4   ├ only for active shots (1..N_SHOTS)

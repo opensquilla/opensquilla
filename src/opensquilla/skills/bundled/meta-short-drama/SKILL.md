@@ -36,6 +36,7 @@ metadata:
       - subtitle-burner
       - title-card-image
       - text-file-write
+      - text-file-read
 composition:
   steps:
     # =========================================================================
@@ -151,17 +152,34 @@ composition:
           OVERVIEW.N_SHOTS lines so downstream steps can re-extract them.
 
     # =========================================================================
+    # 2b. Persist the draft to disk BEFORE the review pause so the user
+    #     can hand-edit the file directly while reviewing. The next step
+    #     reads it back so manual edits propagate even when the user's
+    #     reply doesn't mention them.
+    # =========================================================================
+    - id: script_save_draft
+      kind: skill_exec
+      skill: text-file-write
+      depends_on: [script_draft]
+      with:
+        text: "{{ outputs.script_draft }}"
+        output: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/script.txt"
+
+    # =========================================================================
     # 3. ONE combined review gate — free-form. The user can approve,
     #    rewrite anything, or cancel.
     # =========================================================================
     - id: review_gate
       kind: user_input
-      depends_on: [script_draft, intake_extract]
+      depends_on: [script_save_draft, script_draft, intake_extract]
       clarify:
         mode: form
         intro: |
           脚本就绪。下面是脚本预览 + 我对风格/角色/分镜数做的假设
           (标 AUTO_FILLED: yes 的项是我替你填的,你可以改)。
+
+          脚本草稿已存到本次运行目录的 script.txt —— 想直接改文件也行,
+          下一步会重新读盘,你的手动编辑会一起带进去。
 
           你怎么回都行 —— 不用按固定格式:
             - 满意就直接说 "ok" / "继续" / "proceed"
@@ -231,12 +249,25 @@ composition:
           {{ outputs.intake_extract | truncate(800) }}
 
     # =========================================================================
+    # 4b. Re-read the script from disk so any hand-edits the user made to
+    #     script.txt during the review pause are honoured by the redraft
+    #     step. When the user didn't touch the file this is just an echo
+    #     of the original draft.
+    # =========================================================================
+    - id: script_reread
+      kind: skill_exec
+      skill: text-file-read
+      depends_on: [review_gate, script_save_draft]
+      with:
+        input: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/script.txt"
+
+    # =========================================================================
     # 5. Re-draft script when the user supplied adjustments. Free.
     # =========================================================================
     - id: script_revised
       kind: agent
       skill: ai-video-script
-      depends_on: [review_normalize, script_draft]
+      depends_on: [review_normalize, script_reread]
       when: "'DECISION: proceed' in outputs.review_normalize and 'HAS_OVERRIDES: yes' in outputs.review_normalize"
       with:
         task: |
@@ -250,10 +281,12 @@ composition:
 
           Apply overrides in priority: NEW_NOTES → NEW_N_SHOTS →
           NEW_RENDER_STYLE → NEW_IDENTITY_ANCHOR. "unchanged" fields
-          inherit from draft verbatim.
+          inherit from the previous script verbatim.
 
-          Previous draft:
-          {{ outputs.script_draft | truncate(3500) }}
+          Previous script (re-read from disk — if the user hand-edited
+          script.txt during review, those edits are already baked in
+          here, so preserve them):
+          {{ outputs.script_reread | truncate(8000) }}
 
           Parsed overrides:
           {{ outputs.review_normalize | truncate(1500) }}
@@ -266,22 +299,25 @@ composition:
     # =========================================================================
     - id: final_script
       kind: llm_chat
-      depends_on: [review_normalize, script_draft, script_revised]
+      depends_on: [review_normalize, script_reread, script_revised]
       with:
         system: "Echo one of two inputs verbatim. No commentary. No new content."
         task: |
           If a revised script block is present below, echo it verbatim.
-          Otherwise echo the draft verbatim.
+          Otherwise echo the re-read script verbatim (this preserves any
+          hand-edits the user made to script.txt during review).
 
           REVISED (may be empty):
           {{ outputs.get('script_revised', '') | truncate(8000) }}
 
-          DRAFT:
-          {{ outputs.script_draft | truncate(8000) }}
+          RE-READ FROM DISK:
+          {{ outputs.script_reread | truncate(8000) }}
 
     # =========================================================================
-    # 7. Save the final script to disk (always, even on cancel — the
-    #    script is free and useful for the user to keep).
+    # 7. Save the final script to disk (overwrites the draft so the file
+    #    on disk always reflects the post-review canonical script —
+    #    important when the LLM produced a revision the user didn't write
+    #    by hand).
     # =========================================================================
     - id: script_save
       kind: skill_exec
@@ -1661,6 +1697,7 @@ to disk regardless of outcome.
 | `subtitle-burner` | Burn SRT into MP4 | ffmpeg + libass |
 | `title-card-image` | Pillow cover + ending PNG cards | Pillow |
 | `text-file-write` | Save script.txt | Python stdlib |
+| `text-file-read` | Re-read script.txt after review pause | Python stdlib |
 
 Environment:
 - `OPENROUTER_API_KEY` must be set.

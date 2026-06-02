@@ -39,13 +39,24 @@ async def set_workspace(
     config: Any,
     current_workspace: str | None,
 ) -> RunContext:
+    if not str(workspace_path or "").strip():
+        raise ValueError("empty_workspace_path")
+    normalized_workspace = str(normalize_path(workspace_path))
+    decision = decide_path_access(
+        normalized_workspace,
+        workspace=None,
+        mounts=(),
+        write=True,
+    )
+    if decision.status == "blocked":
+        raise ValueError(decision.reason or "workspace_blocked")
     existing = await get_run_context(
         session_manager,
         session_key,
         config=config,
         workspace=current_workspace,
     )
-    updated = replace(existing, workspace=workspace_path, source="saved")
+    updated = replace(existing, workspace=normalized_workspace, source="saved")
     return await persist_run_context(session_manager, session_key, updated)
 
 

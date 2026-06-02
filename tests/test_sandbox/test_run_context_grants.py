@@ -288,6 +288,64 @@ async def test_disable_bundle_grant_rejects_unknown_without_mutation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_set_workspace_normalizes_before_persisting(tmp_path):
+    from opensquilla.sandbox.run_context_service import set_workspace
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    updated = await set_workspace(
+        manager,
+        manager.node.session_key,
+        workspace_path=str(workspace / "nested" / ".."),
+        config=_config(),
+        current_workspace=None,
+    )
+
+    assert updated.workspace == str(workspace.resolve(strict=False))
+    assert (
+        manager.node.origin["sandbox_run_context"]["workspace"]
+        == str(workspace.resolve(strict=False))
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workspace_path", ["", "/"])
+async def test_set_workspace_rejects_empty_or_root_paths(tmp_path, workspace_path):
+    from opensquilla.sandbox.run_context_service import set_workspace
+
+    manager = _SessionManager()
+
+    with pytest.raises(ValueError):
+        await set_workspace(
+            manager,
+            manager.node.session_key,
+            workspace_path=workspace_path,
+            config=_config(),
+            current_workspace=str(tmp_path),
+        )
+    assert manager.node.origin is None
+
+
+@pytest.mark.asyncio
+async def test_set_workspace_rejects_sensitive_path(tmp_path):
+    from opensquilla.sandbox.run_context_service import set_workspace
+
+    manager = _SessionManager()
+
+    with pytest.raises(ValueError, match="sensitive_path"):
+        await set_workspace(
+            manager,
+            manager.node.session_key,
+            workspace_path=str(tmp_path / ".ssh" / "id_rsa"),
+            config=_config(),
+            current_workspace=str(tmp_path),
+        )
+    assert manager.node.origin is None
+
+
+@pytest.mark.asyncio
 async def test_saved_bundle_id_payload_deserializes(tmp_path):
     from opensquilla.sandbox.run_context import get_run_context
 
@@ -308,6 +366,32 @@ async def test_saved_bundle_id_payload_deserializes(tmp_path):
     )
 
     assert ctx.bundles[0].bundle_id == "python-package-install"
+
+
+@pytest.mark.asyncio
+async def test_saved_unknown_bundle_payload_is_ignored(tmp_path):
+    from opensquilla.sandbox.run_context import get_run_context
+
+    manager = _SessionManager()
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": str(tmp_path),
+            "bundles": [
+                {"bundleId": "python-package-install"},
+                {"bundle_id": "unknown-package-install"},
+            ],
+        }
+    }
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert [bundle.bundle_id for bundle in ctx.bundles] == ["python-package-install"]
 
 
 @pytest.mark.asyncio

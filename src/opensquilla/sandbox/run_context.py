@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from opensquilla.sandbox.package_bundles import expand_package_bundle
 from opensquilla.sandbox.path_validation import normalize_mount_access
 from opensquilla.sandbox.run_mode import RunMode, config_run_mode, normalize_run_mode
 
@@ -159,6 +160,8 @@ def _bundles_from_payload(value: Any) -> tuple[PackageBundleGrant, ...]:
             continue
         bundle_id = _string_value(item.get("bundle_id") or item.get("bundleId"))
         if bundle_id is None:
+            continue
+        if not expand_package_bundle(bundle_id):
             continue
         bundles.append(
             PackageBundleGrant(

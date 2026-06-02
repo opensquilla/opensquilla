@@ -1895,7 +1895,10 @@ def test_noninteractive_channel_add_writes_config(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
     from opensquilla.onboarding.flow import run_noninteractive_channel_add
 
-    result = run_noninteractive_channel_add("slack", {"name": "w", "token": "x"})
+    result = run_noninteractive_channel_add(
+        "slack",
+        {"name": "w", "token": "x", "signing_secret": "ss"},
+    )
     assert result.path == target
     assert "slack" in target.read_text()
 

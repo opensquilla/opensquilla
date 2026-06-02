@@ -4,6 +4,8 @@ const SandboxView = (() => {
   let _el = null;
   let _rpc = null;
   let _generation = 0;
+  let _pendingApprovalCount = 0;
+  let _lastRuleCount = 0;
 
   function render(el) {
     _generation += 1;
@@ -63,13 +65,17 @@ const SandboxView = (() => {
       </div>`;
 
     _el.querySelector('#sandbox-refresh')?.addEventListener('click', _load);
+    window.addEventListener('opensquilla:approvals-pending', _onApprovalsPending);
     _load();
   }
 
   function destroy() {
     _generation += 1;
+    window.removeEventListener('opensquilla:approvals-pending', _onApprovalsPending);
     _el = null;
     _rpc = null;
+    _pendingApprovalCount = 0;
+    _lastRuleCount = 0;
   }
 
   async function _load() {
@@ -116,6 +122,8 @@ const SandboxView = (() => {
     if (network) network.innerHTML = _renderEmpty('Loading network policy');
     const rules = root.querySelector('#sandbox-rules');
     if (rules) rules.innerHTML = _renderEmpty('Loading rules');
+    _lastRuleCount = 0;
+    _updateApprovalActivity(_pendingApprovalCount);
   }
 
   function _renderLoaded(root, data) {
@@ -145,10 +153,12 @@ const SandboxView = (() => {
     }
 
     const rules = _rules(status, runContext, data.explanation);
+    _lastRuleCount = rules.length;
     const rulesCount = root.querySelector('#sandbox-rules-count');
     if (rulesCount) rulesCount.textContent = `${rules.length} ${rules.length === 1 ? 'rule' : 'rules'}`;
     const rulesEl = root.querySelector('#sandbox-rules');
     if (rulesEl) rulesEl.innerHTML = _renderRules(rules);
+    _updateApprovalActivity(_pendingApprovalCount);
   }
 
   function _renderError(root, err) {
@@ -170,6 +180,8 @@ const SandboxView = (() => {
     if (network) network.innerHTML = _renderEmpty('Managed network state is unavailable');
     const rules = root.querySelector('#sandbox-rules');
     if (rules) rules.innerHTML = _renderEmpty('Sandbox rules are unavailable');
+    _lastRuleCount = 0;
+    _updateApprovalActivity(_pendingApprovalCount);
     const pill = root.querySelector('#sandbox-network-pill');
     if (pill) {
       pill.className = 'conn-pill err';
@@ -322,6 +334,56 @@ const SandboxView = (() => {
           <strong>${_esc(value)}</strong>
         </div>`).join('')}
     </div>`;
+  }
+
+  function _onApprovalsPending(event) {
+    const pending = Array.isArray(event?.detail?.pending) ? event.detail.pending : null;
+    const detailCount = Number(event?.detail?.count);
+    const count = Number.isFinite(detailCount) ? detailCount : (pending ? pending.length : 0);
+    _pendingApprovalCount = Math.max(0, count);
+    _updateApprovalActivity(_pendingApprovalCount);
+  }
+
+  function _updateApprovalActivity(count) {
+    const root = _el;
+    if (!root) return;
+
+    const safeCount = Math.max(0, Number(count) || 0);
+    const rulesCount = root.querySelector('#sandbox-rules-count');
+    if (rulesCount) {
+      rulesCount.textContent = safeCount > 0
+        ? `${safeCount} pending ${safeCount === 1 ? 'approval' : 'approvals'}`
+        : `${_lastRuleCount} ${_lastRuleCount === 1 ? 'rule' : 'rules'}`;
+    }
+
+    const rulesEl = root.querySelector('#sandbox-rules');
+    if (!rulesEl) return;
+
+    const existing = rulesEl.querySelector('[data-sandbox-approval-activity]');
+    if (safeCount <= 0) {
+      if (existing) existing.remove();
+      const list = rulesEl.querySelector('.sandbox-rule-list');
+      if (list && !list.querySelector('.sandbox-rule-list__row')) {
+        rulesEl.innerHTML = _renderEmpty('No sandbox rules reported');
+      }
+      return;
+    }
+
+    const row = `
+      <div class="sandbox-rule-list__row" data-sandbox-approval-activity>
+        <span>Approvals pending</span>
+        <strong>${safeCount}</strong>
+      </div>`;
+    let list = rulesEl.querySelector('.sandbox-rule-list');
+    if (!list) {
+      rulesEl.innerHTML = `<div class="sandbox-rule-list">${row}</div>`;
+      return;
+    }
+    if (existing) {
+      existing.outerHTML = row;
+    } else {
+      list.insertAdjacentHTML('afterbegin', row);
+    }
   }
 
   function _detailRow(label, value, mono) {

@@ -8,6 +8,7 @@ STATIC = ROOT / "src" / "opensquilla" / "gateway" / "static"
 APP_JS = STATIC / "js" / "app.js"
 ICONS_JS = STATIC / "js" / "icons.js"
 TEMPLATE = ROOT / "src" / "opensquilla" / "gateway" / "templates" / "index.html"
+APPROVAL_MONITOR_JS = STATIC / "js" / "approval_monitor.js"
 SANDBOX_JS = STATIC / "js" / "views" / "sandbox.js"
 SANDBOX_CSS = STATIC / "css" / "views" / "sandbox.css"
 APPROVALS_JS = STATIC / "js" / "views" / "approvals.js"
@@ -58,3 +59,32 @@ def test_sandbox_assets_define_icon_and_control_sections() -> None:
 def test_standalone_approvals_view_assets_are_removed() -> None:
     assert not APPROVALS_JS.exists()
     assert not APPROVALS_CSS.exists()
+
+
+def test_approval_monitor_inline_button_uses_modal_polling_path() -> None:
+    monitor = _read(APPROVAL_MONITOR_JS)
+    start = monitor.index("inline.addEventListener('click'")
+    handler = monitor[start : monitor.index("});", start) + 3]
+
+    assert "Router.navigate('/approvals')" not in monitor
+    assert "_openModal(pending[0], data.mode || 'prompt');" in monitor
+    assert "_resetPollBackoff();" in handler
+    assert "_poll();" in handler
+    assert "_modal" in handler
+    assert 'data-approval-action="once"' in monitor
+    assert 'data-approval-action="always"' in monitor
+    assert 'data-approval-action="deny"' in monitor
+
+
+def test_sandbox_view_tracks_pending_approval_activity() -> None:
+    sandbox = _read(SANDBOX_JS)
+
+    assert "opensquilla:approvals-pending" in sandbox
+    assert "window.addEventListener('opensquilla:approvals-pending', _onApprovalsPending);" in sandbox
+    assert "window.removeEventListener('opensquilla:approvals-pending', _onApprovalsPending);" in sandbox
+    assert "function _onApprovalsPending(event)" in sandbox
+    assert "function _updateApprovalActivity(count)" in sandbox
+    assert "root.querySelector('#sandbox-rules-count')" in sandbox
+    assert "root.querySelector('#sandbox-rules')" in sandbox
+    assert "Approvals pending" in sandbox
+    assert "#sb-activity" not in sandbox

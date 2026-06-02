@@ -1473,6 +1473,106 @@ async def test_agent_request_context_is_request_only_after_history() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_provider_view_prunes_non_adjacent_tool_results() -> None:
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, config=AgentConfig(max_iterations=1))
+    agent.set_history(
+        [
+            Message(role="user", content="old task"),
+            Message(
+                role="assistant",
+                content=[
+                    ContentBlockToolUse(
+                        id="call_lookup",
+                        name="lookup",
+                        input={"q": "old"},
+                    )
+                ],
+            ),
+            Message(role="user", content="ordinary user message before the tool result"),
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call_lookup",
+                        content="lookup result",
+                        is_error=False,
+                    )
+                ],
+            ),
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    replay_payload = json.dumps(
+        [message.model_dump(mode="json") for message in provider.calls[0]["messages"]],
+        ensure_ascii=False,
+    )
+    assert "call_lookup" not in replay_payload
+    assert "ordinary user message before the tool result" in replay_payload
+
+
+@pytest.mark.asyncio
+async def test_agent_provider_view_preserves_split_adjacent_tool_results() -> None:
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, config=AgentConfig(max_iterations=1))
+    agent.set_history(
+        [
+            Message(role="user", content="old task"),
+            Message(
+                role="assistant",
+                content=[
+                    ContentBlockToolUse(
+                        id="call_alpha",
+                        name="lookup",
+                        input={"q": "alpha"},
+                    ),
+                    ContentBlockToolUse(
+                        id="call_beta",
+                        name="lookup",
+                        input={"q": "beta"},
+                    ),
+                ],
+            ),
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call_alpha",
+                        content="alpha result",
+                        is_error=False,
+                    )
+                ],
+            ),
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call_beta",
+                        content="beta result",
+                        is_error=False,
+                    )
+                ],
+            ),
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    replay_payload = json.dumps(
+        [message.model_dump(mode="json") for message in provider.calls[0]["messages"]],
+        ensure_ascii=False,
+    )
+    assert "call_alpha" in replay_payload
+    assert "alpha result" in replay_payload
+    assert "call_beta" in replay_payload
+    assert "beta result" in replay_payload
+
+
+@pytest.mark.asyncio
 async def test_agent_request_context_repeats_across_tool_loop_without_persisting() -> None:
     provider = ToolLoopCapturingProvider()
 

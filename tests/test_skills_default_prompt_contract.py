@@ -56,6 +56,7 @@ DEFAULTS = {
     "sub-agent",
     "subtitle-burner",
     "summarize",
+    "text-file-read",
     "text-file-write",
     "title-card-image",
     "tmux",

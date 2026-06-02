@@ -58,11 +58,18 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
         timeout=180,
     )
     wheels = list(wheel_dir.glob("opensquilla-*.whl"))
+    # 120s was tight enough that Windows CI runners began timing out as
+    # the base dependency list grew (each transitive wheel adds I/O the
+    # Defender real-time scanner has to walk through). Ubuntu still
+    # completes in ~30s; Windows now needs ~90-150s. Bumping the budget
+    # rather than skipping preserves the test's intent — verify the
+    # built wheel installs cleanly into a fresh venv and the migration
+    # resolver finds V010 afterwards.
     subprocess.run(
         [str(pip), "install", str(wheels[0])],
         check=True,
         capture_output=True,
-        timeout=120,
+        timeout=300,
     )
 
     result = subprocess.run(

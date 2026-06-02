@@ -138,6 +138,25 @@ def _parse_numbered(matches: list, schema: ClarifyStepConfig) -> tuple[dict[str,
 def _parse_positional(
     lines: list[str], schema: ClarifyStepConfig,
 ) -> tuple[dict[str, Any], list[str]]:
+    # Catch-all shortcut: schemas with a single string field (commonly
+    # paired with nl_extract: true as a free-form review surface) should
+    # accept a multi-line reply as one blob, not error with "too many
+    # lines". This is what callers mean by "the entire user reply is
+    # the value" and matches how the nl_extract LLM is instructed to
+    # behave when it cannot decompose the reply.
+    if (
+        len(schema.fields) == 1
+        and schema.fields[0].type == "string"
+        and len(lines) > 1
+    ):
+        field = schema.fields[0]
+        coerced, field_errors = _coerce_and_validate(
+            field, "\n".join(lines).strip(),
+        )
+        if field_errors:
+            return {}, field_errors
+        return {field.name: coerced}, []
+
     if len(lines) > len(schema.fields):
         return {}, [
             f"too many lines: got {len(lines)}, schema has only "

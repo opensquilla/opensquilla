@@ -119,7 +119,11 @@ def main() -> int:
             print(f"Error: cannot read --script {args.script!r}: {exc}", file=sys.stderr)
             return 1
     else:
-        text = sys.stdin.read()
+        # Read raw bytes from stdin and decode as UTF-8 ourselves —
+        # sys.stdin defaults to the Windows console code page (cp936/
+        # GBK), which mangles UTF-8 CJK input into surrogates that the
+        # SRT writer then refuses to encode.
+        text = sys.stdin.buffer.read().decode("utf-8", errors="replace")
     if not text.strip():
         print("Error: empty script input.", file=sys.stderr)
         return 1

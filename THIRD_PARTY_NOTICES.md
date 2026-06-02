@@ -115,7 +115,7 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 - `srt-from-script`
 - `subtitle-burner`
 - `summarize`
-- `text-file-write`
+- `text-file-read`
 - `title-card-image`
 - `tmux`
 - `video-still-animator`

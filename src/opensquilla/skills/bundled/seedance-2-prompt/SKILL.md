@@ -36,6 +36,8 @@ entrypoint:
     - "{{ with.input_image | default('') }}"
     - --input-reference
     - "{{ with.input_reference | default('') }}"
+    - --input-reference
+    - "{{ with.input_reference_2 | default('') }}"
     - --max-retries
     - "{{ with.max_retries | default(0) }}"
   parse: text
@@ -73,7 +75,8 @@ This script normalises both into a single Python contract.
 | `resolution` | no | `720p` | `480p`, `720p`, `1080p`. Ignored by OpenRouter. |
 | `model` | no | provider default | Override model id. Empty means use provider default. |
 | `input_image` | no | `""` | Strict first-frame path. If set, video starts from this image. |
-| `input_reference` | no | `""` | Soft identity/style anchor path. Used only when `input_image` is empty. Same anchor passed to several shots locks the character across cuts. |
+| `input_reference` | no | `""` | Primary soft identity/style anchor path. Used only when `input_image` is empty. Same anchor passed across shots locks the character. |
+| `input_reference_2` | no | `""` | Optional second reference (e.g. per-shot scene composition). Forwarded as a second `--input-reference` so the underlying provider sees both. Empty strings are filtered out before the API call. |
 | `max_retries` | no | `0` | Extra retries on transient submit/poll/download failures or non-success terminal status. `0` = single attempt; `2` = up to 3 total attempts with exponential backoff (2s, 4s, 8s capped at 15s). Set this on flows that fall back to a still-image animator on final failure. |
 
 **`input_image` vs `input_reference`** — `input_image` becomes the literal

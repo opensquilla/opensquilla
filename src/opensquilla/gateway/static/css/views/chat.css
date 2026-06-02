@@ -644,6 +644,11 @@
   50%      { left: calc(100% - 1.1em); transform: rotate(1440deg); }
 }
 
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.2; }
+}
+
 /* Interrupted-turn marker. Appended to the .msg-body when a streaming
    turn is aborted (ESC, Stop button, server-side cancel) so the partial
    response is unambiguously labelled in the transcript. The element is a

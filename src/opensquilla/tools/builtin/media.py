@@ -1200,7 +1200,8 @@ def _tts_voice_settings(
 
 
 def _shared_voice_summary(voice: dict[str, Any]) -> dict[str, Any]:
-    labels = voice.get("labels") if isinstance(voice.get("labels"), dict) else {}
+    raw_labels = voice.get("labels")
+    labels = raw_labels if isinstance(raw_labels, dict) else {}
     summary = {
         "name": voice.get("name"),
         "voice_id": voice.get("voice_id"),

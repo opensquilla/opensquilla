@@ -63,8 +63,14 @@ log = logging.getLogger(__name__)
 _BWRAP_BINARY = "bwrap"
 _OUTPUT_BYTE_CAP = 1_048_576  # 1 MiB per stream
 _TERMINATE_GRACE_S = 2.0
-_LINUX_PROXY_BRIDGE_MODULE = "opensquilla.sandbox.backend.linux_proxy_bridge"
 _DEFAULT_BRIDGE_UDS_PATH = Path("/tmp/opensquilla-sandbox-proxy.sock")
+_DEFAULT_BRIDGE_SCRIPT_NAME = "inner_bridge.py"
+_BWRAP_PYTHON_CANDIDATES: tuple[Path, ...] = (
+    Path("/usr/bin/python3"),
+    Path("/bin/python3"),
+    Path("/usr/bin/python"),
+    Path("/bin/python"),
+)
 _HOST_RO_PATHS: tuple[Path, ...] = (
     Path("/usr"),
     Path("/bin"),
@@ -150,11 +156,28 @@ def _proxy_env_args(uds_path: Path, port: int) -> list[str]:
     return args
 
 
-def _proxy_bridge_child_argv(request: SandboxRequest) -> list[str]:
+def _bridge_python_path() -> Path:
+    for candidate in _BWRAP_PYTHON_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    raise SandboxBackendError(
+        "NetworkMode.PROXY_ALLOWLIST requires a system Python mounted "
+        "inside the bubblewrap sandbox"
+    )
+
+
+def _default_bridge_script_path(uds_path: Path) -> Path:
+    return uds_path.parent / _DEFAULT_BRIDGE_SCRIPT_NAME
+
+
+def _proxy_bridge_child_argv(
+    request: SandboxRequest,
+    *,
+    bridge_script_path: Path,
+) -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        _LINUX_PROXY_BRIDGE_MODULE,
+        str(_bridge_python_path()),
+        str(bridge_script_path),
         "--",
         *request.argv,
     ]
@@ -165,6 +188,7 @@ def build_bwrap_argv(
     *,
     binary: str = _BWRAP_BINARY,
     bridge_uds_path: Path | None = None,
+    bridge_script_path: Path | None = None,
     bridge_port: int | None = None,
 ) -> list[str]:
     """Return the ``bwrap`` argv for ``request``.
@@ -177,6 +201,7 @@ def build_bwrap_argv(
     policy = request.policy
     argv: list[str] = [binary]
     proxy_bridge_uds_path: Path | None = None
+    proxy_bridge_script_path: Path | None = None
     proxy_bridge_port: int | None = None
 
     # Structural flags first — these describe the process and namespace
@@ -202,6 +227,9 @@ def build_bwrap_argv(
             )
         argv.append("--unshare-net")
         proxy_bridge_uds_path = bridge_uds_path or _DEFAULT_BRIDGE_UDS_PATH
+        proxy_bridge_script_path = (
+            bridge_script_path or _default_bridge_script_path(proxy_bridge_uds_path)
+        )
         proxy_bridge_port = bridge_port or policy.network_proxy.port
         if proxy_bridge_port <= 0 or proxy_bridge_port > 65535:
             raise SandboxBackendError(
@@ -234,6 +262,13 @@ def build_bwrap_argv(
     if proxy_bridge_uds_path is not None and proxy_bridge_port is not None:
         bridge_dir = proxy_bridge_uds_path.parent
         _validate_mount_path(bridge_dir, kind="proxy bridge")
+        if proxy_bridge_script_path is None:  # pragma: no cover - paired assignment above
+            raise SandboxBackendError("missing linux proxy bridge script path")
+        _validate_mount_path(proxy_bridge_script_path, kind="proxy bridge script")
+        if proxy_bridge_script_path.parent != bridge_dir:
+            raise SandboxBackendError(
+                "linux proxy bridge script must be in the mounted bridge directory"
+            )
         argv += _dir_chain_args(bridge_dir)
         argv += ["--bind", str(bridge_dir), str(bridge_dir)]
         argv += _proxy_env_args(proxy_bridge_uds_path, proxy_bridge_port)
@@ -253,8 +288,13 @@ def build_bwrap_argv(
         argv += ["--chdir", str(request.cwd)]
 
     argv.append("--")
-    if proxy_bridge_uds_path is not None:
-        argv.extend(_proxy_bridge_child_argv(request))
+    if proxy_bridge_script_path is not None:
+        argv.extend(
+            _proxy_bridge_child_argv(
+                request,
+                bridge_script_path=proxy_bridge_script_path,
+            )
+        )
     else:
         argv.extend(request.argv)
     return argv

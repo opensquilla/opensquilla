@@ -6,8 +6,8 @@ reopening host networking:
 
 * :class:`LinuxProxyBridgeHost` listens on a host Unix-domain socket and
   forwards every accepted stream to the guarded local proxy.
-* ``python -m opensquilla.sandbox.backend.linux_proxy_bridge -- <argv...>``
-  runs inside the sandbox, listens on loopback TCP, connects each local client
+* A standalone copy of this module is written beside that socket and run
+  inside the sandbox. It listens on loopback TCP, connects each local client
   to the host Unix socket, and starts the caller's command with HTTP(S) proxy
   environment variables pointing at that inner loopback listener.
 """
@@ -31,8 +31,16 @@ PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
 class LinuxProxyBridgeHost:
     """Host-side UDS bridge to the guarded sandbox proxy."""
 
-    def __init__(self, uds_path: Path, upstream_host: str, upstream_port: int) -> None:
+    def __init__(
+        self,
+        uds_path: Path,
+        upstream_host: str,
+        upstream_port: int,
+        *,
+        script_path: Path | None = None,
+    ) -> None:
         self.uds_path = uds_path
+        self.script_path = script_path or (uds_path.parent / "inner_bridge.py")
         self.upstream_host = upstream_host
         self.upstream_port = upstream_port
         self._server: asyncio.AbstractServer | None = None
@@ -43,8 +51,15 @@ class LinuxProxyBridgeHost:
         if self._server is not None:
             return
         self.uds_path.parent.mkdir(parents=True, exist_ok=True)
+        self.script_path.parent.mkdir(parents=True, exist_ok=True)
         with suppress(FileNotFoundError):
             self.uds_path.unlink()
+        self.script_path.write_text(
+            Path(__file__).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        with suppress(OSError):
+            os.chmod(self.script_path, 0o600)
         server = await asyncio.start_unix_server(
             self._accept,
             path=str(self.uds_path),
@@ -86,6 +101,8 @@ class LinuxProxyBridgeHost:
             await server.wait_closed()
         with suppress(FileNotFoundError):
             self.uds_path.unlink()
+        with suppress(FileNotFoundError):
+            self.script_path.unlink()
 
     def _accept(
         self,

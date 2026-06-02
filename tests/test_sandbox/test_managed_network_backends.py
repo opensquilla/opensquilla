@@ -91,19 +91,28 @@ def test_bubblewrap_proxy_allowlist_with_proxy_builds_bridge_argv(
     tmp_path: Path,
 ) -> None:
     policy = _policy(tmp_path, network_proxy=_proxy_spec())
+    bridge_uds_path = tmp_path / "bridge" / "proxy.sock"
+    bridge_script_path = bridge_uds_path.parent / "inner_bridge.py"
 
-    argv = build_bwrap_argv(_request(policy, tmp_path), binary="bwrap")
+    argv = build_bwrap_argv(
+        _request(policy, tmp_path),
+        binary="bwrap",
+        bridge_uds_path=bridge_uds_path,
+        bridge_script_path=bridge_script_path,
+    )
 
     separator = argv.index("--")
     child_argv = argv[separator + 1 :]
     assert "--unshare-net" in argv
-    assert child_argv[:4] == [
-        sys.executable,
-        "-m",
-        "opensquilla.sandbox.backend.linux_proxy_bridge",
+    assert child_argv[:3] == [
+        "/usr/bin/python3",
+        str(bridge_script_path),
         "--",
     ]
-    assert child_argv[4:] == ["sh", "-lc", "echo ok"]
+    assert child_argv[3:] == ["sh", "-lc", "echo ok"]
+    assert sys.executable not in child_argv
+    assert "-m" not in child_argv
+    assert "opensquilla.sandbox.backend.linux_proxy_bridge" not in child_argv
     assert argv.count("echo ok") == 1
     assert "OPENSQUILLA_SANDBOX_PROXY_UDS" in argv
     assert "OPENSQUILLA_SANDBOX_PROXY_PORT" in argv
@@ -180,7 +189,32 @@ async def test_bubblewrap_run_starts_and_stops_proxy_bridge(
     argv = captured["argv"]
     assert isinstance(argv, tuple)
     assert "--unshare-net" in argv
-    assert "opensquilla.sandbox.backend.linux_proxy_bridge" in argv
+    assert "opensquilla.sandbox.backend.linux_proxy_bridge" not in argv
+    assert "-m" not in argv
+    assert "/usr/bin/python3" in argv
+    assert any(str(arg).endswith("/inner_bridge.py") for arg in argv)
+
+
+@pytest.mark.asyncio
+async def test_linux_proxy_bridge_host_writes_and_removes_inner_script(
+    tmp_path: Path,
+) -> None:
+    bridge = bubblewrap_mod.LinuxProxyBridgeHost(
+        tmp_path / "proxy.sock",
+        "127.0.0.1",
+        9,
+    )
+
+    await bridge.start()
+    try:
+        assert bridge.script_path.exists()
+        script = bridge.script_path.read_text(encoding="utf-8")
+        assert "def main(" in script
+        assert "asyncio.start_server" in script
+    finally:
+        await bridge.stop()
+
+    assert not bridge.script_path.exists()
 
 
 def test_seatbelt_proxy_allowlist_with_proxy_renders_proxy_only_profile(

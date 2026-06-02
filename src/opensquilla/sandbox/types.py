@@ -141,8 +141,8 @@ class SandboxPolicy:
     limits: ResourceLimits
     env_allowlist: tuple[str, ...]
     require_approval: bool
-    network_proxy: NetworkProxySpec | None = None
     description: str = ""
+    network_proxy: NetworkProxySpec | None = None
 
     def summary(self) -> dict[str, object]:
         """Flat structured summary used in log lines and debug output."""

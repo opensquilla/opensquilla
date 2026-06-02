@@ -27,6 +27,10 @@ def normalize_scope(scope: Any, default: str = "chat") -> str:
     return value if value in {"chat", "workspace", "once"} else default
 
 
+def _normalize_bundle_id(bundle_id: Any) -> str:
+    return str(bundle_id or "").strip()
+
+
 async def set_workspace(
     session_manager: Any,
     session_key: str,
@@ -174,7 +178,8 @@ async def enable_bundle_grant(
     config: Any,
     workspace: str | None,
 ) -> RunContext:
-    if not expand_package_bundle(bundle_id):
+    normalized_bundle_id = _normalize_bundle_id(bundle_id)
+    if not expand_package_bundle(normalized_bundle_id):
         raise ValueError("unknown_package_bundle")
     existing = await get_run_context(
         session_manager,
@@ -183,7 +188,7 @@ async def enable_bundle_grant(
         workspace=workspace,
     )
     grant = PackageBundleGrant(
-        bundle_id=bundle_id,
+        bundle_id=normalized_bundle_id,
         scope=normalize_scope(scope, "workspace"),
         source="manual",
     )
@@ -205,13 +210,16 @@ async def disable_bundle_grant(
     config: Any,
     workspace: str | None,
 ) -> RunContext:
+    normalized_bundle_id = _normalize_bundle_id(bundle_id)
+    if not expand_package_bundle(normalized_bundle_id):
+        raise ValueError("unknown_package_bundle")
     existing = await get_run_context(
         session_manager,
         session_key,
         config=config,
         workspace=workspace,
     )
-    bundles = tuple(b for b in existing.bundles if b.bundle_id != bundle_id)
+    bundles = tuple(b for b in existing.bundles if b.bundle_id != normalized_bundle_id)
     return await persist_run_context(
         session_manager,
         session_key,

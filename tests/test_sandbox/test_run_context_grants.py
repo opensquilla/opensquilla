@@ -222,6 +222,72 @@ async def test_duplicate_bundle_grant_replaces_existing_entry(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_disable_bundle_grant_removes_existing_entry(tmp_path):
+    from opensquilla.sandbox.run_context_service import (
+        disable_bundle_grant,
+        enable_bundle_grant,
+    )
+
+    manager = _SessionManager()
+
+    await enable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id="python-package-install",
+        scope="workspace",
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+    updated = await disable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id=" python-package-install ",
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert updated.bundles == ()
+    assert manager.node.origin["sandbox_run_context"]["bundles"] == []
+
+
+@pytest.mark.asyncio
+async def test_disable_bundle_grant_rejects_unknown_without_mutation(tmp_path):
+    from opensquilla.sandbox.run_context_service import (
+        disable_bundle_grant,
+        enable_bundle_grant,
+    )
+
+    manager = _SessionManager()
+    await enable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id="python-package-install",
+        scope="workspace",
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+    origin_before = manager.node.origin
+
+    with pytest.raises(ValueError, match="unknown_package_bundle"):
+        await disable_bundle_grant(
+            manager,
+            manager.node.session_key,
+            bundle_id="python-package-intsall",
+            config=_config(),
+            workspace=str(tmp_path),
+        )
+
+    assert manager.node.origin is origin_before
+    assert manager.node.origin["sandbox_run_context"]["bundles"] == [
+        {
+            "bundle_id": "python-package-install",
+            "scope": "workspace",
+            "source": "manual",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_saved_bundle_id_payload_deserializes(tmp_path):
     from opensquilla.sandbox.run_context import get_run_context
 

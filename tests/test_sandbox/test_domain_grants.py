@@ -20,6 +20,9 @@ from opensquilla.sandbox.package_bundles import (
         ("HTTPS://PyPI.org/simple", "pypi.org"),
         ("registry.npmjs.org/", "registry.npmjs.org"),
         ("*.PythonHosted.org", "*.pythonhosted.org"),
+        (".example.com", ".example.com"),
+        ("..Example.com..", "..example.com.."),
+        ("http://[v6.invalid]", ""),
     ],
 )
 def test_normalize_domain(raw: str, expected: str) -> None:
@@ -120,6 +123,22 @@ def test_validate_domain_pattern_blocks_malformed_hostnames(raw: str) -> None:
     assert decision.status == "blocked"
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "https://[::1]foo",
+        "http://[]",
+        "http://[v6.invalid]",
+    ],
+)
+def test_validate_domain_pattern_blocks_malformed_bracketed_url_hosts(raw: str) -> None:
+    try:
+        decision = validate_domain_pattern(raw)
+    except ValueError as exc:
+        pytest.fail(f"validate_domain_pattern raised {exc!r}")
+    assert decision.status == "blocked"
+
+
 def test_domain_matches_exact_domain() -> None:
     assert domain_matches("pypi.org", "pypi.org")
     assert not domain_matches("pypi.org", "files.pythonhosted.org")
@@ -148,7 +167,13 @@ def test_domain_matches_returns_false_for_invalid_pattern() -> None:
         "pypi.org:abc",
         "exa_mple.com",
         "8.8.8.8",
+        "https://[::1]foo",
+        "http://[v6.invalid]",
     ],
 )
 def test_domain_matches_returns_false_for_invalid_host(host: str) -> None:
-    assert not domain_matches("pypi.org", host)
+    try:
+        matched = domain_matches("pypi.org", host)
+    except ValueError as exc:
+        pytest.fail(f"domain_matches raised {exc!r}")
+    assert not matched

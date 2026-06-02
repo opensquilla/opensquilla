@@ -28,16 +28,23 @@ def normalize_domain(raw: str) -> str:
     if not text:
         return ""
     if "://" in text:
-        parsed = urlparse(text)
-        text = parsed.hostname or ""
+        try:
+            parsed = urlparse(text)
+            if "[" in parsed.netloc or "]" in parsed.netloc:
+                return ""
+            text = parsed.hostname or ""
+        except ValueError:
+            return ""
     else:
         text = text.split("/", 1)[0]
         if text.startswith("["):
             bracket_end = text.find("]")
             text = text[: bracket_end + 1] if bracket_end != -1 else text
         elif text.count(":") == 1:
-            text = text.split(":", 1)[0]
-    return text.strip(".").lower()
+            host, port = text.rsplit(":", 1)
+            if _is_valid_port(port):
+                text = host
+    return text.lower()
 
 
 def validate_domain_pattern(raw: str) -> DomainDecision:
@@ -93,12 +100,21 @@ def _extract_validation_host(raw: str) -> tuple[str, str | None]:
     if not text:
         return "", None
     if "://" in text:
-        parsed = urlparse(text)
+        try:
+            parsed = urlparse(text)
+        except ValueError:
+            return "", "invalid_domain"
+        try:
+            hostname = parsed.hostname or ""
+        except ValueError:
+            return "", "invalid_domain"
         try:
             parsed.port
         except ValueError:
-            return parsed.hostname or "", "invalid_port"
-        return parsed.hostname or "", None
+            return hostname, "invalid_port"
+        if "[" in parsed.netloc or "]" in parsed.netloc:
+            return hostname, "invalid_domain"
+        return hostname, None
 
     host = text.split("/", 1)[0]
     if host.startswith("["):

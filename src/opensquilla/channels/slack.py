@@ -249,11 +249,25 @@ class SlackChannel:
 
     def build_reply_message(self, content: str, inbound: IncomingMessage) -> OutgoingMessage:
         """Target the inbound conversation so batch replies need no static channel id."""
-        return OutgoingMessage(content=content, reply_to=inbound.channel_id)
+        metadata: dict[str, Any] = {}
+        if thread_ts := self._reply_thread_ts(inbound):
+            metadata["thread_ts"] = thread_ts
+        return OutgoingMessage(content=content, reply_to=inbound.channel_id, metadata=metadata)
 
     def streaming_reply_kwargs(self, inbound: IncomingMessage) -> dict[str, Any]:
         """Stream the reply into the inbound conversation."""
-        return {"channel": inbound.channel_id}
+        kwargs = {"channel": inbound.channel_id}
+        if thread_ts := self._reply_thread_ts(inbound):
+            kwargs["thread_ts"] = thread_ts
+        return kwargs
+
+    def _reply_thread_ts(self, inbound: IncomingMessage) -> str | None:
+        """Resolve the Slack thread target for a reply to ``inbound``."""
+        if not self.reply_in_thread:
+            return None
+        metadata = inbound.metadata or {}
+        raw = metadata.get("thread_ts") or metadata.get("ts")
+        return str(raw) if raw else None
 
     # ------------------------------------------------------------------
     # Outbound
@@ -262,8 +276,8 @@ class SlackChannel:
     async def send(self, message: OutgoingMessage) -> None:
         """Post a message to the originating Slack conversation.
 
-        The destination is resolved from ``reply_to`` — the gateway routes the
-        source conversation there — so the bot answers wherever it was
+        The destination is resolved from ``reply_to``: the gateway routes the
+        source conversation there, so the bot answers wherever it was
         addressed without a statically configured ``slack_channel_id``. Slack
         conversation ids are prefixed ``C``/``G``/``D``; a bare message
         timestamp is treated as a thread anchor instead. An explicit
@@ -406,6 +420,9 @@ class SlackChannel:
         """
         client = self._get_client()
         target = channel or self.slack_channel_id
+        if not target:
+            log.error("slack.stream_failed", channel="", error="no_target_channel")
+            raise RuntimeError("Slack stream has no target channel")
         throttle = StreamThrottle(interval_s=update_interval_ms / 1000.0)
         message_ts: str | None = None
 
@@ -478,7 +495,7 @@ class SlackChannel:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Validate the bot token, store ``bot_user_id``, and — in Socket Mode —
+        """Validate the bot token, store ``bot_user_id``, and - in Socket Mode -
         open the Slack Socket Mode long-connection."""
         client = self._get_client()
         resp = await client.post("/auth.test")
@@ -492,9 +509,10 @@ class SlackChannel:
                 raise SlackAuthError(
                     "connection_mode='socket' requires app_token (an xapp- App-Level Token)"
                 )
+            initial_socket_url = await self._open_socket_connection()
             self._socket_stop = asyncio.Event()
             self._socket_task = asyncio.create_task(
-                self._run_socket_loop(), name="slack-socket-mode"
+                self._run_socket_loop(initial_socket_url), name="slack-socket-mode"
             )
         self._connected = True
         log.info("slack.started", bot_user_id=self.bot_user_id, mode=self.connection_mode)
@@ -531,15 +549,17 @@ class SlackChannel:
             raise SlackAuthError(f"apps.connections.open failed: {data.get('error')}")
         return str(data["url"])
 
-    async def _run_socket_loop(self) -> None:
+    async def _run_socket_loop(self, initial_socket_url: str | None = None) -> None:
         """Maintain the Socket Mode websocket, reconnecting with backoff."""
         import websockets
 
         backoff = 1.0
         stop = self._socket_stop
+        next_socket_url = initial_socket_url
         while stop is None or not stop.is_set():
             try:
-                ws_url = await self._open_socket_connection()
+                ws_url = next_socket_url or await self._open_socket_connection()
+                next_socket_url = None
                 async with websockets.connect(
                     ws_url, ping_interval=30, ping_timeout=20, max_size=None
                 ) as ws:
@@ -553,6 +573,7 @@ class SlackChannel:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                next_socket_url = None
                 self._connected = False
                 log.warning("slack.socket_mode.reconnect", error=str(exc), backoff=backoff)
                 if stop is None:

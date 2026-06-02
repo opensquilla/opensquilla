@@ -157,6 +157,8 @@ def _is_sensitive_default_workspace_target(path: str, workspace: str) -> bool:
         )
     except (OSError, RuntimeError, ValueError):
         return True
+    if any(part.startswith(".env") for part in relative_parts):
+        return True
     for blocked in _DEFAULT_WORKSPACE_CREDENTIAL_PARTS:
         limit = len(relative_parts) - len(blocked) + 1
         for start in range(max(limit, 0)):

@@ -686,10 +686,12 @@ async def test_set_workspace_rejects_sensitive_root_paths():
         "/root/.opensquilla/workspace/.ssh/id_rsa",
         "/root/.opensquilla/workspace/.env",
         "/root/.opensquilla/workspace/.env.local",
+        "/root/.opensquilla/workspace/.envrc",
         "/root/.opensquilla/workspace/project/.aws/credentials",
         "/root/.opensquilla/workspace/project/.kube/config",
         "/root/.opensquilla/workspace/project/.docker/config.json",
         "/root/.opensquilla/workspace/project/.gnupg/private-keys-v1.d/key",
+        "/root/.opensquilla/workspace/project/.env_secret",
     ):
         manager = _SessionManager()
         with pytest.raises(ValueError):
@@ -909,10 +911,12 @@ async def test_saved_root_nested_workspace_is_allowed():
         "/root/.opensquilla/workspace/.ssh/id_rsa",
         "/root/.opensquilla/workspace/.env",
         "/root/.opensquilla/workspace/.env.local",
+        "/root/.opensquilla/workspace/.envrc",
         "/root/.opensquilla/workspace/project/.aws/credentials",
         "/root/.opensquilla/workspace/project/.kube/config",
         "/root/.opensquilla/workspace/project/.docker/config.json",
         "/root/.opensquilla/workspace/project/.gnupg/private-keys-v1.d/key",
+        "/root/.opensquilla/workspace/project/.env_secret",
     ],
 )
 async def test_saved_sensitive_root_workspace_is_dropped(workspace_path):

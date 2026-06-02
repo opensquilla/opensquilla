@@ -395,6 +395,194 @@ async def test_saved_unknown_bundle_payload_is_ignored(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_saved_root_workspace_is_dropped(tmp_path):
+    from opensquilla.sandbox.run_context import get_run_context
+
+    manager = _SessionManager()
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": "/",
+        }
+    }
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert ctx.workspace is None
+
+
+@pytest.mark.asyncio
+async def test_saved_sensitive_workspace_is_dropped(tmp_path):
+    from opensquilla.sandbox.run_context import get_run_context
+
+    manager = _SessionManager()
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": str(tmp_path / ".ssh" / "id_rsa"),
+        }
+    }
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert ctx.workspace is None
+
+
+@pytest.mark.asyncio
+async def test_saved_sensitive_mount_is_dropped_while_valid_mount_remains(tmp_path):
+    from opensquilla.sandbox.run_context import get_run_context
+
+    valid = tmp_path / "outside"
+    valid.mkdir()
+    manager = _SessionManager()
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "mounts": [
+                {"path": str(tmp_path / ".ssh" / "id_rsa"), "access": "ro"},
+                {"path": str(valid), "access": "rw", "scope": "workspace"},
+            ],
+        }
+    }
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(tmp_path / "workspace"),
+    )
+
+    assert [(mount.path, mount.access, mount.scope) for mount in ctx.mounts] == [
+        (str(valid.resolve(strict=False)), "rw", "workspace")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_saved_invalid_domain_is_dropped_while_valid_domain_normalizes(tmp_path):
+    from opensquilla.sandbox.run_context import get_run_context
+
+    manager = _SessionManager()
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "domains": [
+                {"domain": "127.0.0.1"},
+                {"domain": "HTTPS://PyPI.org/simple", "scope": "workspace"},
+            ],
+        }
+    }
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert [(domain.domain, domain.scope) for domain in ctx.domains] == [
+        ("pypi.org", "workspace")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_saved_duplicate_mounts_and_domains_keep_normalized_last_value(tmp_path):
+    from opensquilla.sandbox.run_context import get_run_context
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    manager = _SessionManager()
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "mounts": [
+                {"path": str(outside), "access": "ro", "scope": "chat"},
+                {
+                    "path": str(outside / "nested" / ".."),
+                    "access": "rw",
+                    "scope": "workspace",
+                },
+            ],
+            "domains": [
+                {"domain": "HTTPS://PyPI.org/simple", "scope": "chat"},
+                {"domain": "pypi.org", "scope": "workspace", "source": "manual"},
+            ],
+        }
+    }
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert [(mount.path, mount.access, mount.scope) for mount in ctx.mounts] == [
+        (str(outside.resolve(strict=False)), "rw", "workspace")
+    ]
+    assert [(domain.domain, domain.scope, domain.source) for domain in ctx.domains] == [
+        ("pypi.org", "workspace", "manual")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unrelated_mutation_does_not_repersist_unsafe_saved_entries(tmp_path):
+    from opensquilla.sandbox.run_context_service import enable_bundle_grant
+
+    valid_mount = tmp_path / "outside"
+    valid_mount.mkdir()
+    manager = _SessionManager()
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": "/",
+            "mounts": [
+                {"path": str(tmp_path / ".ssh" / "id_rsa"), "access": "ro"},
+                {"path": str(valid_mount), "access": "rw"},
+            ],
+            "domains": [
+                {"domain": "127.0.0.1"},
+                {"domain": "HTTPS://PyPI.org/simple"},
+            ],
+        }
+    }
+
+    await enable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id="python-package-install",
+        scope="workspace",
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    saved = manager.node.origin["sandbox_run_context"]
+    assert saved["workspace"] is None
+    assert saved["mounts"] == [
+        {"path": str(valid_mount.resolve(strict=False)), "access": "rw", "scope": "chat"}
+    ]
+    assert saved["domains"] == [
+        {"domain": "pypi.org", "scope": "chat", "source": "manual"}
+    ]
+    assert saved["bundles"] == [
+        {
+            "bundle_id": "python-package-install",
+            "scope": "workspace",
+            "source": "manual",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_temporary_grants_round_trip(tmp_path):
     from opensquilla.sandbox.run_context import (
         RunContext,

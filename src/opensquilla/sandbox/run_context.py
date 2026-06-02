@@ -6,8 +6,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from opensquilla.sandbox.domain_validation import validate_domain_pattern
 from opensquilla.sandbox.package_bundles import expand_package_bundle
-from opensquilla.sandbox.path_validation import normalize_mount_access
+from opensquilla.sandbox.path_validation import (
+    decide_path_access,
+    normalize_mount_access,
+    normalize_path,
+)
 from opensquilla.sandbox.run_mode import RunMode, config_run_mode, normalize_run_mode
 
 RUN_CONTEXT_ORIGIN_KEY = "sandbox_run_context"
@@ -111,44 +116,82 @@ def _string_value(value: Any, default: str | None = None) -> str | None:
     return default
 
 
-def _mounts_from_payload(value: Any) -> tuple[MountGrant, ...]:
+def _workspace_from_payload(value: Any) -> str | None:
+    workspace = _string_value(value)
+    if workspace is None:
+        return None
+    try:
+        normalized_workspace = str(normalize_path(workspace))
+        decision = decide_path_access(
+            normalized_workspace,
+            workspace=None,
+            mounts=(),
+            write=True,
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if decision.status == "blocked":
+        return None
+    return decision.normalized_path
+
+
+def _mounts_from_payload(
+    value: Any,
+    *,
+    workspace: str | None = None,
+) -> tuple[MountGrant, ...]:
     if not isinstance(value, Iterable) or isinstance(value, (str, bytes, dict)):
         return ()
-    mounts: list[MountGrant] = []
+    mounts: dict[str, MountGrant] = {}
     for item in value:
         if not isinstance(item, dict):
             continue
         path = _string_value(item.get("path"))
         if path is None:
             continue
-        mounts.append(
-            MountGrant(
-                path=path,
-                access=normalize_mount_access(_string_value(item.get("access"), "ro")),
-                scope=_string_value(item.get("scope"), "chat") or "chat",
+        access = normalize_mount_access(_string_value(item.get("access"), "ro"))
+        try:
+            decision = decide_path_access(
+                path,
+                workspace=workspace,
+                mounts=(),
+                write=access == "rw",
             )
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if decision.status == "blocked":
+            continue
+        grant = MountGrant(
+            path=decision.normalized_path,
+            access=access,
+            scope=_string_value(item.get("scope"), "chat") or "chat",
         )
-    return tuple(mounts)
+        mounts.pop(grant.path, None)
+        mounts[grant.path] = grant
+    return tuple(mounts.values())
 
 
 def _domains_from_payload(value: Any) -> tuple[DomainGrant, ...]:
     if not isinstance(value, Iterable) or isinstance(value, (str, bytes, dict)):
         return ()
-    domains: list[DomainGrant] = []
+    domains: dict[str, DomainGrant] = {}
     for item in value:
         if not isinstance(item, dict):
             continue
         domain = _string_value(item.get("domain"))
         if domain is None:
             continue
-        domains.append(
-            DomainGrant(
-                domain=domain,
-                scope=_string_value(item.get("scope"), "chat") or "chat",
-                source=_string_value(item.get("source"), "manual") or "manual",
-            )
+        decision = validate_domain_pattern(domain)
+        if decision.status == "blocked":
+            continue
+        grant = DomainGrant(
+            domain=decision.normalized,
+            scope=_string_value(item.get("scope"), "chat") or "chat",
+            source=_string_value(item.get("source"), "manual") or "manual",
         )
-    return tuple(domains)
+        domains.pop(grant.domain, None)
+        domains[grant.domain] = grant
+    return tuple(domains.values())
 
 
 def _bundles_from_payload(value: Any) -> tuple[PackageBundleGrant, ...]:
@@ -211,11 +254,11 @@ def _context_from_payload(payload: Any, source: str) -> RunContext | None:
         run_mode = normalize_run_mode(payload.get("run_mode"))
     except ValueError:
         return None
-    workspace = payload.get("workspace")
+    workspace = _workspace_from_payload(payload.get("workspace"))
     return RunContext(
         run_mode=run_mode,
-        workspace=workspace if isinstance(workspace, str) and workspace else None,
-        mounts=_mounts_from_payload(payload.get("mounts")),
+        workspace=workspace,
+        mounts=_mounts_from_payload(payload.get("mounts"), workspace=workspace),
         domains=_domains_from_payload(payload.get("domains")),
         bundles=_bundles_from_payload(payload.get("bundles")),
         temporary_grants=_temporary_grants_from_payload(payload.get("temporary_grants")),

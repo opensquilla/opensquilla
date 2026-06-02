@@ -1427,10 +1427,22 @@ const SetupView = (() => {
       const input = label.querySelector('input, select');
       if (!input || input.type === 'checkbox') return;
       if (String(input.value || '').trim()) return;
+      if (input.dataset.secret === 'true' && _canKeepExistingSecret(scope)) return;
       const labelText = label.querySelector('span')?.textContent || label.dataset.name || 'required field';
       missing = labelText.replace(/\s*\*\s*$/, '').trim();
     });
     return missing;
+  }
+
+  function _canKeepExistingSecret(scope) {
+    if (scope !== 'channel') return false;
+    const type = _el.querySelector('[data-channel-type]')?.value || _channelType || '';
+    const name = _el.querySelector('[data-scope="channel"][data-name="name"] input')?.value || '';
+    return (_channelStatus.channels || []).some(row => (
+      row.configured !== false
+      && String(row.type || '') === String(type)
+      && String(row.name || '') === String(name).trim()
+    ));
   }
 
   async function _saveProvider() {

@@ -37,6 +37,22 @@ async def _wait_for_active_client(server: SandboxProxyServer) -> None:
     raise AssertionError("proxy did not register active client")
 
 
+async def _send_proxy_request_with_timeout(
+    server: SandboxProxyServer,
+    request: bytes,
+    *,
+    timeout: float = 1.0,
+) -> bytes:
+    reader, writer = await asyncio.open_connection(server.host, server.port)
+    try:
+        writer.write(request)
+        await writer.drain()
+        return await asyncio.wait_for(reader.read(4096), timeout=timeout)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_proxy_forwards_allowed_absolute_http_request_to_upstream() -> None:
     seen_hosts: list[str] = []
     resolver_calls: list[tuple[str, int]] = []
@@ -87,7 +103,7 @@ async def test_proxy_forwards_allowed_absolute_http_request_to_upstream() -> Non
             b"Host: Allowed.test\r\n"
             b"User-Agent: pytest\r\n"
             b"Content-Length: 5\r\n"
-            b"Connection: close\r\n"
+            b"Connection: keep-alive\r\n"
             b"\r\n"
             b"hello",
         )
@@ -102,7 +118,7 @@ async def test_proxy_forwards_allowed_absolute_http_request_to_upstream() -> Non
     assert resolver_calls == [("allowed.test", 80)]
     assert upstream_requests == [
         b"POST /upload?name=x HTTP/1.1\r\n"
-        b"Host: Allowed.test\r\n"
+        b"Host: allowed.test\r\n"
         b"User-Agent: pytest\r\n"
         b"Content-Length: 5\r\n"
         b"Connection: close\r\n"
@@ -111,24 +127,9 @@ async def test_proxy_forwards_allowed_absolute_http_request_to_upstream() -> Non
     ]
 
 
-async def test_proxy_tunnels_allowed_connect() -> None:
+async def test_proxy_rejects_mismatched_host_for_absolute_http_request() -> None:
     seen_hosts: list[str] = []
     resolver_calls: list[tuple[str, int]] = []
-
-    async def handle_tunnel_upstream(
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        payload = await reader.readexactly(4)
-        writer.write(payload.upper())
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-
-    upstream = await asyncio.start_server(handle_tunnel_upstream, "127.0.0.1", 0)
-    upstream_socket = next(iter(upstream.sockets or ()), None)
-    assert upstream_socket is not None
-    upstream_host, upstream_port = upstream_socket.getsockname()[:2]
 
     def decide(host: str) -> NetworkDecision:
         seen_hosts.append(host)
@@ -136,30 +137,115 @@ async def test_proxy_tunnels_allowed_connect() -> None:
 
     def resolver(host: str, port: int) -> tuple[str, int]:
         resolver_calls.append((host, port))
-        return str(upstream_host), int(upstream_port)
+        return "127.0.0.1", 9
 
     server = SandboxProxyServer(decide, resolver=resolver)
     await server.start()
-    reader, writer = await asyncio.open_connection(server.host, server.port)
     try:
-        writer.write(b"CONNECT Allowed.test:443 HTTP/1.1\r\n\r\n")
-        await writer.drain()
-        response_header = await reader.readuntil(b"\r\n\r\n")
-        assert response_header.startswith(b"HTTP/1.1 200 Connection Established")
-
-        writer.write(b"ping")
-        await writer.drain()
-        assert await reader.readexactly(4) == b"PING"
+        response = await _send_proxy_request(
+            server,
+            b"GET http://Allowed.test/path HTTP/1.1\r\n"
+            b"Host: blocked.test\r\n"
+            b"\r\n",
+        )
     finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 403")
+    assert seen_hosts == []
+    assert resolver_calls == []
+
+
+async def test_proxy_forwards_absolute_http_without_host_using_approved_host() -> None:
+    upstream_requests: list[bytes] = []
+
+    async def handle_upstream(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        upstream_requests.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Length: 0\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+        )
+        await writer.drain()
         writer.close()
-        with suppress(ConnectionResetError):
-            await writer.wait_closed()
+        await writer.wait_closed()
+
+    upstream = await asyncio.start_server(handle_upstream, "127.0.0.1", 0)
+    upstream_socket = next(iter(upstream.sockets or ()), None)
+    assert upstream_socket is not None
+    upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+
+    server = SandboxProxyServer(
+        _allow_decision,
+        resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+    )
+    await server.start()
+    try:
+        response = await _send_proxy_request(
+            server,
+            b"GET http://Allowed.test:8080/path HTTP/1.1\r\n"
+            b"\r\n",
+        )
+    finally:
         await server.stop()
         upstream.close()
         await upstream.wait_closed()
 
+    assert response.startswith(b"HTTP/1.1 200 OK")
+    assert upstream_requests == [
+        b"GET /path HTTP/1.1\r\n"
+        b"Host: allowed.test:8080\r\n"
+        b"Connection: close\r\n"
+        b"\r\n"
+    ]
+
+
+async def test_proxy_rejects_allowed_connect_without_opening_upstream() -> None:
+    seen_hosts: list[str] = []
+    resolver_calls: list[tuple[str, int]] = []
+
+    def decide(host: str) -> NetworkDecision:
+        seen_hosts.append(host)
+        return _allow_decision(host)
+
+    def resolver(host: str, port: int) -> tuple[str, int]:
+        resolver_calls.append((host, port))
+        return "127.0.0.1", 9
+
+    server = SandboxProxyServer(decide, resolver=resolver)
+    await server.start()
+    try:
+        response = await _send_proxy_request(
+            server,
+            b"CONNECT Allowed.test:443 HTTP/1.1\r\n\r\n",
+        )
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 403")
     assert seen_hosts == ["allowed.test"]
-    assert resolver_calls == [("allowed.test", 443)]
+    assert resolver_calls == []
+
+
+async def test_proxy_rejects_oversized_content_length_without_reading_body() -> None:
+    server = SandboxProxyServer(_allow_decision)
+    await server.start()
+    try:
+        response = await _send_proxy_request_with_timeout(
+            server,
+            b"POST http://Allowed.test/upload HTTP/1.1\r\n"
+            b"Content-Length: 1048577\r\n"
+            b"\r\n",
+            timeout=0.5,
+        )
+    finally:
+        await server.stop()
+
+    assert response.startswith((b"HTTP/1.1 403", b"HTTP/1.1 413"))
 
 
 async def test_proxy_returns_403_for_unknown_absolute_http_host() -> None:
@@ -180,7 +266,7 @@ async def test_proxy_returns_403_for_unknown_absolute_http_host() -> None:
         response = await _send_proxy_request(
             server,
             b"GET http://Example.com/path HTTP/1.1\r\n"
-            b"Host: ignored.example\r\n"
+            b"Host: Example.com\r\n"
             b"\r\n",
         )
     finally:
@@ -268,7 +354,7 @@ async def test_proxy_forwards_allowed_origin_form_http_request_to_upstream() -> 
     assert seen_hosts == ["pypi.org"]
     assert upstream_requests == [
         b"GET /simple HTTP/1.1\r\n"
-        b"Host: PyPI.org:443\r\n"
+        b"Host: pypi.org:443\r\n"
         b"Connection: close\r\n"
         b"\r\n"
     ]

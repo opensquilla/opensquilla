@@ -48,12 +48,15 @@ from opensquilla.sandbox.governance import (
     gate_execution,
     on_successful_exec,
 )
+from opensquilla.sandbox.network_guard import decide_network_access
+from opensquilla.sandbox.network_proxy import SandboxProxyServer
 from opensquilla.sandbox.path_validation import (
     decide_path_access,
     normalize_mount_access,
     normalize_path,
 )
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
+from opensquilla.sandbox.run_context import RunContext
 from opensquilla.sandbox.stale_output_cache import StaleOutputCache, get_stale_output_cache
 from opensquilla.sandbox.types import (
     ALLOW,
@@ -62,6 +65,8 @@ from opensquilla.sandbox.types import (
     DenialResult,
     FollowupTag,
     MountSpec,
+    NetworkMode,
+    NetworkProxySpec,
     SandboxBackendError,
     SandboxPolicy,
     SandboxRequest,
@@ -425,7 +430,46 @@ async def run_under_backend(
         raise SandboxBackendError(
             "Sandbox runtime is not configured; refusing to run backend request"
         )
+    if (
+        request.policy.network == NetworkMode.PROXY_ALLOWLIST
+        and request.policy.network_proxy is None
+    ):
+        return await _run_with_managed_network_proxy(request, rt)
     return await rt.backend.run(request)
+
+
+def _current_run_context_for_network_proxy() -> RunContext | None:
+    try:
+        from opensquilla.tools.types import current_tool_context
+
+        ctx = current_tool_context.get()
+    except Exception:  # pragma: no cover - defensive
+        return None
+    context = getattr(ctx, "sandbox_run_context", None) if ctx is not None else None
+    return context if isinstance(context, RunContext) else None
+
+
+async def _run_with_managed_network_proxy(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+) -> SandboxResult:
+    context = _current_run_context_for_network_proxy()
+    if context is None:
+        raise SandboxBackendError(
+            "NetworkMode.PROXY_ALLOWLIST requires Run Context grants to start "
+            "the managed network proxy"
+        )
+
+    proxy = SandboxProxyServer(lambda host: decide_network_access(host, context))
+    await proxy.start()
+    try:
+        policy = dataclasses.replace(
+            request.policy,
+            network_proxy=NetworkProxySpec(host=proxy.host, port=proxy.port),
+        )
+        return await runtime.backend.run(request.with_policy(policy))
+    finally:
+        await proxy.stop()
 
 
 async def record_success(

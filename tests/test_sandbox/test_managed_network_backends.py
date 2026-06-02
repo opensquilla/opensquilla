@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import opensquilla.sandbox as sandbox
+from opensquilla.sandbox import integration as integration_mod
 from opensquilla.sandbox.backend import bubblewrap as bubblewrap_mod
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend, build_bwrap_argv
 from opensquilla.sandbox.backend.seatbelt import render_seatbelt_profile
+from opensquilla.sandbox.run_context import DomainGrant, RunContext
+from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.sandbox.types import (
     MountSpec,
     NetworkMode,
@@ -17,8 +22,10 @@ from opensquilla.sandbox.types import (
     SandboxBackendError,
     SandboxPolicy,
     SandboxRequest,
+    SandboxResult,
     SecurityLevel,
 )
+from opensquilla.tools.types import ToolContext, current_tool_context
 
 _UNSET = object()
 
@@ -186,6 +193,81 @@ def test_seatbelt_proxy_allowlist_with_proxy_renders_proxy_only_profile(
     assert "127.0.0.1:8080" in profile
     assert "(allow network*)" not in profile
     assert "(deny network*)" not in profile
+
+
+@pytest.mark.asyncio
+async def test_run_under_backend_populates_proxy_from_current_run_context(
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeBackend:
+        name = "fake"
+
+        async def run(self, request: SandboxRequest) -> SandboxResult:
+            proxy = request.policy.network_proxy
+            seen["proxy"] = proxy
+            assert proxy is not None
+            reader, writer = await asyncio.open_connection(proxy.host, proxy.port)
+            try:
+                writer.write(
+                    b"GET http://Blocked.test/path HTTP/1.1\r\n"
+                    b"\r\n"
+                )
+                await writer.drain()
+                seen["proxy_response"] = await reader.read(4096)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+            return SandboxResult(
+                returncode=0,
+                stdout="ok",
+                stderr="",
+                wall_time_s=0.0,
+                backend_used="fake",
+            )
+
+    runtime = SimpleNamespace(backend=FakeBackend())
+    policy = _policy(tmp_path, network_proxy=None)
+    ctx = ToolContext(session_key="agent:main:webchat:abc", workspace_dir=str(tmp_path))
+    ctx.sandbox_run_context = RunContext(
+        run_mode=RunMode.STANDARD,
+        domains=(DomainGrant(domain="allowed.test"),),
+    )
+    token = current_tool_context.set(ctx)
+    try:
+        result = await integration_mod.run_under_backend(
+            _request(policy, tmp_path),
+            runtime=runtime,
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result.stdout == "ok"
+    assert seen["proxy_response"].startswith(b"HTTP/1.1 403")
+    proxy = seen["proxy"]
+    assert isinstance(proxy, NetworkProxySpec)
+    assert proxy.host == "127.0.0.1"
+    assert proxy.port > 0
+
+
+@pytest.mark.asyncio
+async def test_run_under_backend_proxy_allowlist_without_context_fails_closed(
+    tmp_path: Path,
+) -> None:
+    class FakeBackend:
+        name = "fake"
+
+        async def run(self, request: SandboxRequest) -> SandboxResult:
+            raise AssertionError("backend should not run without proxy context")
+
+    runtime = SimpleNamespace(backend=FakeBackend())
+
+    with pytest.raises(SandboxBackendError, match="Run Context"):
+        await integration_mod.run_under_backend(
+            _request(_policy(tmp_path, network_proxy=None), tmp_path),
+            runtime=runtime,
+        )
 
 
 def test_policy_positional_description_keeps_legacy_binding(

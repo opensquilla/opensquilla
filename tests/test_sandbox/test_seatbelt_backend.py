@@ -298,6 +298,54 @@ async def test_run_filters_env_and_returns_nonzero_without_raise(
 
 
 @pytest.mark.asyncio
+async def test_run_injects_proxy_env_for_proxy_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b"ok\n", b""
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: object) -> FakeProcess:
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setattr(seatbelt_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        seatbelt_mod,
+        "_sandbox_exec_binary",
+        lambda binary=None: "/usr/bin/sandbox-exec",
+    )
+    monkeypatch.setattr(
+        seatbelt_mod.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    policy = _policy(
+        tmp_path,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        network_proxy=NetworkProxySpec(host="127.0.0.1", port=18080),
+    )
+    request = _request(policy, tmp_path)
+    request.env["HTTP_PROXY"] = "http://attacker.invalid:1"
+
+    result = await SeatbeltBackend().run(request)
+
+    assert result.returncode == 0
+    env = captured["env"]
+    assert isinstance(env, dict)
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        assert env[key] == "http://127.0.0.1:18080"
+    assert "http://attacker.invalid:1" not in env.values()
+
+
+@pytest.mark.asyncio
 async def test_run_timeout_returns_timed_out_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

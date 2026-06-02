@@ -12,7 +12,9 @@ from opensquilla.sandbox.domain_validation import normalize_domain
 from opensquilla.sandbox.network_guard import NetworkDecision
 
 _HEADER_LIMIT = 64 * 1024
+_MAX_BODY_BYTES = 1_048_576
 _DEFAULT_HEADER_READ_TIMEOUT_SECONDS = 5.0
+_DEFAULT_BODY_READ_TIMEOUT_SECONDS = 5.0
 _CHUNK_SIZE = 64 * 1024
 
 
@@ -27,6 +29,10 @@ class _ParsedRequest:
     content_length: int
 
 
+class _ProxyDeniedError(ValueError):
+    """Internal fail-closed signal for syntactically valid but denied requests."""
+
+
 class SandboxProxyServer:
     def __init__(
         self,
@@ -35,6 +41,7 @@ class SandboxProxyServer:
         host: str = "127.0.0.1",
         port: int = 0,
         header_read_timeout_seconds: float = _DEFAULT_HEADER_READ_TIMEOUT_SECONDS,
+        body_read_timeout_seconds: float = _DEFAULT_BODY_READ_TIMEOUT_SECONDS,
         resolver: Callable[[str, int], tuple[str, int]] | None = None,
     ) -> None:
         self._decide = decide
@@ -42,6 +49,7 @@ class SandboxProxyServer:
         self.host = host
         self.port = port
         self._header_read_timeout_seconds = header_read_timeout_seconds
+        self._body_read_timeout_seconds = body_read_timeout_seconds
         self._server: asyncio.Server | None = None
         self._active_tasks: set[asyncio.Task[None]] = set()
         self._active_writers: set[asyncio.StreamWriter] = set()
@@ -127,9 +135,17 @@ class SandboxProxyServer:
             if decision.status == "allow" and request.host:
                 try:
                     if request.method == "CONNECT":
-                        await self._forward_connect(request, reader, writer)
+                        await _write_response(
+                            writer,
+                            _response(403, "Forbidden", b"Network access denied.\n"),
+                        )
                     else:
                         await self._forward_http(request, header, reader, writer)
+                except _ProxyDeniedError:
+                    await _write_response(
+                        writer,
+                        _response(403, "Forbidden", b"Network access denied.\n"),
+                    )
                 except Exception:
                     await _write_response(
                         writer,
@@ -188,7 +204,13 @@ class SandboxProxyServer:
         try:
             body = b""
             if request.content_length:
-                body = await reader.readexactly(request.content_length)
+                try:
+                    body = await asyncio.wait_for(
+                        reader.readexactly(request.content_length),
+                        timeout=self._body_read_timeout_seconds,
+                    )
+                except TimeoutError as exc:
+                    raise _ProxyDeniedError("request_body_timeout") from exc
             upstream_writer.write(_rewrite_http_header(request, header) + body)
             await upstream_writer.drain()
 
@@ -198,23 +220,6 @@ class SandboxProxyServer:
                     break
                 writer.write(chunk)
                 await writer.drain()
-        finally:
-            self._active_writers.discard(upstream_writer)
-            upstream_writer.close()
-            with suppress(ConnectionError, RuntimeError):
-                await upstream_writer.wait_closed()
-
-    async def _forward_connect(
-        self,
-        request: _ParsedRequest,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        upstream_reader, upstream_writer = await self._open_upstream(request)
-        try:
-            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            await writer.drain()
-            await _tunnel(reader, writer, upstream_reader, upstream_writer)
         finally:
             self._active_writers.discard(upstream_writer)
             upstream_writer.close()
@@ -242,6 +247,8 @@ def _parse_request(header: bytes) -> _ParsedRequest:
     if not version.startswith("HTTP/"):
         raise ValueError("malformed_request_line")
     content_length = _content_length(lines[1:])
+    if content_length > _MAX_BODY_BYTES:
+        raise ValueError("request_body_too_large")
     if method == "CONNECT":
         host, port = _host_port_from_connect_target(target)
         return _ParsedRequest(
@@ -254,9 +261,18 @@ def _parse_request(header: bytes) -> _ParsedRequest:
             content_length=content_length,
         )
     if "://" in target:
-        if len(_host_values(lines[1:])) > 1:
+        host_values = _host_values(lines[1:])
+        if len(host_values) > 1:
             raise ValueError("invalid_host_header")
         host, port, origin_form = _parts_from_absolute_url(target)
+        if host_values:
+            header_host, header_port = _host_port_from_authority(
+                host_values[0],
+                require_port=False,
+                default_port=80,
+            )
+            if header_host != host or header_port != port:
+                raise ValueError("host_header_mismatch")
         return _ParsedRequest(
             method=method,
             target=target,
@@ -405,27 +421,22 @@ def _rewrite_http_header(request: _ParsedRequest, header: bytes) -> bytes:
     header_lines = lines[1:-2]
     rewritten: list[str] = [
         f"{request.method} {request.origin_form} {request.version}",
+        f"Host: {_authority_for_request(request)}",
     ]
-    has_host = False
-    has_connection = False
     for line in header_lines:
         name, separator, value = line.partition(":")
         if not separator:
             continue
         lowered = name.strip().lower()
-        if lowered == "host":
-            has_host = True
-        if lowered == "connection":
-            has_connection = True
-        if lowered == "proxy-connection":
+        if lowered in {"host", "connection", "proxy-connection"}:
             continue
         rewritten.append(f"{name}:{value}")
-    if not has_host:
-        host_value = request.host if request.port == 80 else f"{request.host}:{request.port}"
-        rewritten.append(f"Host: {host_value}")
-    if not has_connection:
-        rewritten.append("Connection: close")
+    rewritten.append("Connection: close")
     return ("\r\n".join(rewritten) + "\r\n\r\n").encode("iso-8859-1")
+
+
+def _authority_for_request(request: _ParsedRequest) -> str:
+    return request.host if request.port == 80 else f"{request.host}:{request.port}"
 
 
 def _normalize_nonempty_host(host: str) -> str:
@@ -437,38 +448,6 @@ def _normalize_nonempty_host(host: str) -> str:
 
 def _identity_resolver(host: str, port: int) -> tuple[str, int]:
     return host, port
-
-
-async def _tunnel(
-    client_reader: asyncio.StreamReader,
-    client_writer: asyncio.StreamWriter,
-    upstream_reader: asyncio.StreamReader,
-    upstream_writer: asyncio.StreamWriter,
-) -> None:
-    client_to_upstream = asyncio.create_task(_pipe(client_reader, upstream_writer))
-    upstream_to_client = asyncio.create_task(_pipe(upstream_reader, client_writer))
-    tasks = {client_to_upstream, upstream_to_client}
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
-    await asyncio.gather(*done, return_exceptions=True)
-
-
-async def _pipe(
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-) -> None:
-    try:
-        while True:
-            chunk = await reader.read(_CHUNK_SIZE)
-            if not chunk:
-                break
-            writer.write(chunk)
-            await writer.drain()
-    finally:
-        writer.close()
 
 
 async def _write_response(writer: asyncio.StreamWriter, response: bytes) -> None:

@@ -203,10 +203,18 @@ async def _run_inner(argv: list[str]) -> int:
         return 2
 
     uds_path = Path(uds_raw)
+    active_tasks: set[asyncio.Task[None]] = set()
+
+    def accept_inner(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        task = asyncio.create_task(_handle_inner_connection(uds_path, reader, writer))
+        active_tasks.add(task)
+        task.add_done_callback(active_tasks.discard)
+
     server = await asyncio.start_server(
-        lambda reader, writer: asyncio.create_task(
-            _handle_inner_connection(uds_path, reader, writer)
-        ),
+        accept_inner,
         _INNER_PROXY_HOST,
         port,
     )
@@ -219,6 +227,11 @@ async def _run_inner(argv: list[str]) -> int:
     finally:
         server.close()
         await server.wait_closed()
+        tasks = [task for task in active_tasks if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def main(argv: list[str] | None = None) -> int:

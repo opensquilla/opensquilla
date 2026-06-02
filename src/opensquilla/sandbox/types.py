@@ -64,8 +64,9 @@ class NetworkMode(StrEnum):
     ``NONE`` is a real restriction (the Linux backend unshares the network
     namespace); ``HOST`` is only valid when the sandbox is disabled entirely
     or the caller has explicitly opted in via a future allowlist path.
-    ``PROXY_ALLOWLIST`` is reserved — the abstraction is shaped to accept
-    allowlist config later without widening the contract.
+    ``PROXY_ALLOWLIST`` routes egress through a local managed proxy so the
+    backend can keep raw network access unavailable while applying domain
+    allowlist decisions before forwarding.
     """
 
     NONE = "none"

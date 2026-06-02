@@ -53,6 +53,7 @@ _BASE_RO_PATHS: tuple[Path, ...] = (
     Path("/Library/Developer/CommandLineTools"),
 )
 _BREW_PREFIXES: tuple[Path, ...] = (Path("/opt/homebrew"), Path("/usr/local"))
+_PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
 
 
 def _sandbox_exec_binary(binary: str | None = None) -> str | None:
@@ -187,6 +188,15 @@ def _env_for_policy(
         resolved[key] = value
     if tmp_dir is not None:
         resolved["TMPDIR"] = str(tmp_dir)
+    if policy.network == NetworkMode.PROXY_ALLOWLIST:
+        if policy.network_proxy is None:
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                "for the seatbelt backend"
+            )
+        proxy_url = f"http://{policy.network_proxy.host}:{policy.network_proxy.port}"
+        for key in _PROXY_ENV_KEYS:
+            resolved[key] = proxy_url
     return resolved
 
 

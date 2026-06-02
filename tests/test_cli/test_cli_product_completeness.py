@@ -94,7 +94,14 @@ def _install_fake_gateway(monkeypatch, cls=FakeGatewayClient) -> type[FakeGatewa
 def test_catalog_list_json_surfaces(tmp_path: Path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
-    runner.invoke(app, ["channels", "add", "slack", "--name", "w", "--token", "supersecret"])
+    runner.invoke(
+        app,
+        [
+            "channels", "add", "slack",
+            "--name", "w", "--token", "supersecret",
+            "--field", "signing_secret=ss",
+        ],
+    )
 
     providers = runner.invoke(app, ["providers", "list", "--json"])
     search = runner.invoke(app, ["search", "list", "--json"])

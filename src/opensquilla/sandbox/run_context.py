@@ -27,11 +27,28 @@ class DomainGrant:
 
 
 @dataclass(frozen=True)
+class PackageBundleGrant:
+    bundle_id: str
+    scope: str = "workspace"
+    source: str = "manual"
+
+
+@dataclass(frozen=True)
+class TemporaryGrant:
+    kind: str
+    value: str
+    fingerprint: str
+    expires_after: str = "once"
+
+
+@dataclass(frozen=True)
 class RunContext:
     run_mode: RunMode
     workspace: str | None = None
     mounts: tuple[MountGrant, ...] = ()
     domains: tuple[DomainGrant, ...] = ()
+    bundles: tuple[PackageBundleGrant, ...] = ()
+    temporary_grants: tuple[TemporaryGrant, ...] = ()
     source: str = "default"
 
     def to_origin_payload(self) -> dict[str, Any]:
@@ -49,6 +66,23 @@ class RunContext:
                     "source": grant.source,
                 }
                 for grant in self.domains
+            ],
+            "bundles": [
+                {
+                    "bundle_id": grant.bundle_id,
+                    "scope": grant.scope,
+                    "source": grant.source,
+                }
+                for grant in self.bundles
+            ],
+            "temporary_grants": [
+                {
+                    "kind": grant.kind,
+                    "value": grant.value,
+                    "fingerprint": grant.fingerprint,
+                    "expires_after": grant.expires_after,
+                }
+                for grant in self.temporary_grants
             ],
         }
 
@@ -116,6 +150,55 @@ def _domains_from_payload(value: Any) -> tuple[DomainGrant, ...]:
     return tuple(domains)
 
 
+def _bundles_from_payload(value: Any) -> tuple[PackageBundleGrant, ...]:
+    if not isinstance(value, Iterable) or isinstance(value, (str, bytes, dict)):
+        return ()
+    bundles: list[PackageBundleGrant] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        bundle_id = _string_value(item.get("bundle_id") or item.get("bundleId"))
+        if bundle_id is None:
+            continue
+        bundles.append(
+            PackageBundleGrant(
+                bundle_id=bundle_id,
+                scope=_string_value(item.get("scope"), "workspace") or "workspace",
+                source=_string_value(item.get("source"), "manual") or "manual",
+            )
+        )
+    return tuple(bundles)
+
+
+def _temporary_grants_from_payload(value: Any) -> tuple[TemporaryGrant, ...]:
+    if not isinstance(value, Iterable) or isinstance(value, (str, bytes, dict)):
+        return ()
+    grants: list[TemporaryGrant] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        kind = _string_value(item.get("kind"))
+        grant_value = _string_value(item.get("value"))
+        fingerprint = _string_value(item.get("fingerprint"))
+        if kind is None or grant_value is None or fingerprint is None:
+            continue
+        grants.append(
+            TemporaryGrant(
+                kind=kind,
+                value=grant_value,
+                fingerprint=fingerprint,
+                expires_after=(
+                    _string_value(
+                        item.get("expires_after") or item.get("expiresAfter"),
+                        "once",
+                    )
+                    or "once"
+                ),
+            )
+        )
+    return tuple(grants)
+
+
 def _context_from_payload(payload: Any, source: str) -> RunContext | None:
     if not isinstance(payload, dict):
         return None
@@ -131,6 +214,8 @@ def _context_from_payload(payload: Any, source: str) -> RunContext | None:
         workspace=workspace if isinstance(workspace, str) and workspace else None,
         mounts=_mounts_from_payload(payload.get("mounts")),
         domains=_domains_from_payload(payload.get("domains")),
+        bundles=_bundles_from_payload(payload.get("bundles")),
+        temporary_grants=_temporary_grants_from_payload(payload.get("temporary_grants")),
         source=source,
     )
 
@@ -191,6 +276,8 @@ async def set_run_mode(
         workspace=existing.workspace,
         mounts=existing.mounts,
         domains=existing.domains,
+        bundles=existing.bundles,
+        temporary_grants=existing.temporary_grants,
         source="saved",
     )
     return await persist_run_context(session_manager, session_key, updated)
@@ -200,7 +287,9 @@ __all__ = [
     "RUN_CONTEXT_ORIGIN_KEY",
     "DomainGrant",
     "MountGrant",
+    "PackageBundleGrant",
     "RunContext",
+    "TemporaryGrant",
     "get_run_context",
     "persist_run_context",
     "set_run_mode",

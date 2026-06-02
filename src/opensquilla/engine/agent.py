@@ -22,6 +22,7 @@ import structlog
 
 from opensquilla.artifacts import artifact_payload
 from opensquilla.context_budget import ContextBudgetClass, ContextBudgetGovernor
+from opensquilla.engine.agent_injection import PendingInputProvider
 from opensquilla.engine.cache_break_monitor import (
     check_response_for_cache_break,
     notify_compaction,
@@ -1494,13 +1495,20 @@ class Agent:
         message: str,
         extra_messages: list[Message] | None = None,
         semantic_message: str | None = None,
+        *,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run one agent turn, yielding AgentEvents.
 
         Explicit state machine — no recursion. Tool loop iterates until
         the model finishes, unless config.max_iterations is a positive cap.
         """
-        async for event in self._turn_generator(message, extra_messages, semantic_message):
+        async for event in self._turn_generator(
+            message,
+            extra_messages,
+            semantic_message,
+            pending_input_provider=pending_input_provider,
+        ):
             yield event
 
     async def _turn_generator(
@@ -1508,6 +1516,8 @@ class Agent:
         message: str,
         extra_messages: list[Message] | None = None,
         semantic_message: str | None = None,
+        *,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Async generator that drives the state machine."""
         self._current_turn_message = message
@@ -3229,6 +3239,18 @@ class Agent:
                 turn_messages.append(
                     Message(role="user", content=tool_result_blocks)  # type: ignore[arg-type]
                 )
+                if pending_input_provider is not None:
+                    pending_inputs = pending_input_provider.drain_pending()
+                    if pending_inputs:
+                        turn_messages.append(
+                            Message(
+                                role="user",
+                                content=[
+                                    ContentBlockText(text=pending_input)
+                                    for pending_input in pending_inputs
+                                ],
+                            )
+                        )
                 if terminal_projection_preflight_error:
                     self._write_turn_call_log(
                         "tool_argument_projection_rehydrate_recovery",

@@ -62,7 +62,7 @@ def _slack_spec() -> ChannelSetupSpec:
     return ChannelSetupSpec(
         type="slack",
         label="Slack",
-        description="Slack workspace bot — Socket Mode (websocket) or Events API webhook.",
+        description="Slack workspace bot - Socket Mode (websocket) or Events API webhook.",
         transport="mixed",
         requires_public_url=False,
         dependency_extra=None,
@@ -70,7 +70,7 @@ def _slack_spec() -> ChannelSetupSpec:
         docs_hint="https://api.slack.com/apps",
         help=(
             "connection_mode=socket uses Slack Socket Mode (an outbound websocket) and "
-            "needs no public URL — set app_token (xapp-...). connection_mode=webhook uses "
+            "needs no public URL - set app_token (xapp-...). connection_mode=webhook uses "
             "the Events API and needs a public Request URL reachable by Slack."
         ),
         fields=(
@@ -94,7 +94,8 @@ def _slack_spec() -> ChannelSetupSpec:
                               required=False, default=False),
             ChannelSetupField("connection_mode", "Connection mode", "select",
                               required=False, default="webhook",
-                              choices=("webhook", "socket")),
+                              choices=("webhook", "socket"),
+                              advanced=True),
         ),
     )
 

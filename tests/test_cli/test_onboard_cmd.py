@@ -1954,6 +1954,8 @@ def test_configure_channel_noninteractive_adds_slack(tmp_path, monkeypatch):
             "work",
             "--token",
             "xoxb-secret",
+            "--field",
+            "signing_secret=ss",
         ],
     )
 

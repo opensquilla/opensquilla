@@ -34,7 +34,12 @@ async def test_channels_status_includes_configured_channels_without_manager():
     ctx = _read_ctx()
     res = upsert_channel(
         GatewayConfig(),
-        entry_payload={"type": "slack", "name": "work", "token": "xoxb-secret"},
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": "xoxb-secret",
+            "signing_secret": "ss",
+        },
     )
     ctx.config = res.config
 

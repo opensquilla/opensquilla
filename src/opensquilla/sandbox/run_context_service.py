@@ -7,7 +7,11 @@ from typing import Any
 
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
 from opensquilla.sandbox.package_bundles import expand_package_bundle
-from opensquilla.sandbox.path_validation import decide_path_access, normalize_mount_access
+from opensquilla.sandbox.path_validation import (
+    decide_path_access,
+    normalize_mount_access,
+    normalize_path,
+)
 from opensquilla.sandbox.run_context import (
     DomainGrant,
     MountGrant,
@@ -93,7 +97,9 @@ async def remove_mount_grant(
         config=config,
         workspace=workspace,
     )
-    mounts = tuple(m for m in existing.mounts if m.path != path)
+    normalized_path = str(normalize_path(path))
+    removal_paths = {normalized_path, path}
+    mounts = tuple(m for m in existing.mounts if m.path not in removal_paths)
     return await persist_run_context(
         session_manager,
         session_key,
@@ -142,6 +148,8 @@ async def remove_domain_grant(
     workspace: str | None,
 ) -> RunContext:
     decision = validate_domain_pattern(domain)
+    if decision.status == "blocked":
+        raise ValueError(decision.reason)
     normalized = decision.normalized
     existing = await get_run_context(
         session_manager,

@@ -13,14 +13,24 @@ def posture(config: Any) -> str:
 
 def status_payload(config: Any, *, restart_required: bool = False) -> dict[str, Any]:
     run_mode = config_run_mode(config)
+    sandbox_cfg = config.sandbox
+    network_default = str(getattr(sandbox_cfg, "network_default", "none"))
+    managed_network = (
+        "ready"
+        if bool(sandbox_cfg.sandbox) and network_default == "proxy_allowlist"
+        else "blocked"
+    )
     return {
         "run_mode": run_mode.value,
         "run_mode_label": display_name(run_mode),
         "execution_target": execution_target(run_mode),
         "posture": run_mode.value,
+        "backend": str(getattr(sandbox_cfg, "backend", "auto")),
+        "managed_network": managed_network,
         "sandbox": {
-            "sandbox": bool(config.sandbox.sandbox),
-            "security_grading": bool(config.sandbox.security_grading),
+            "sandbox": bool(sandbox_cfg.sandbox),
+            "security_grading": bool(sandbox_cfg.security_grading),
+            "network_default": network_default,
         },
         "permissions": {
             "default_mode": str(config.permissions.default_mode),

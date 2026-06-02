@@ -13,7 +13,17 @@ from opensquilla.gateway.rpc import (
 )
 from opensquilla.gateway.session_services import get_session_storage
 from opensquilla.sandbox.run_context import RunContext, get_run_context, set_run_mode
+from opensquilla.sandbox.run_context_service import (
+    add_domain_grant,
+    add_mount_grant,
+    disable_bundle_grant,
+    enable_bundle_grant,
+    remove_domain_grant,
+    remove_mount_grant,
+    set_workspace,
+)
 from opensquilla.sandbox.run_mode import display_name, execution_target, normalize_run_mode
+from opensquilla.sandbox.status import status_payload
 from opensquilla.session.keys import parse_agent_id
 
 _d = get_dispatcher()
@@ -37,6 +47,11 @@ def _require_session_manager(ctx: RpcContext) -> Any:
     if manager is None:
         raise RpcUnavailableError("Session manager is not configured")
     return manager
+
+
+def _require_owner(ctx: RpcContext, method: str) -> None:
+    if not getattr(ctx.principal, "is_owner", False):
+        raise RpcHandlerError("UNAUTHORIZED", f"{method} requires owner principal.")
 
 
 async def _session_for_key(session_manager: Any, session_key: str) -> Any | None:
@@ -92,8 +107,49 @@ def _payload(context: RunContext) -> dict[str, Any]:
         "workspace": context.workspace,
         "mounts": origin_payload["mounts"],
         "domains": origin_payload["domains"],
+        "bundles": origin_payload.get("bundles", []),
+        "temporaryGrants": origin_payload.get("temporary_grants", []),
         "source": context.source,
     }
+
+
+def _explain_messages(status: dict[str, Any]) -> list[dict[str, str]]:
+    managed_network = str(status.get("managed_network", "blocked"))
+    if managed_network == "ready":
+        network_message = "Managed network allowlist is ready."
+    else:
+        network_message = "Managed network allowlist is blocked."
+    return [
+        {"kind": "run_mode", "message": f"Run mode is {status['run_mode']}."},
+        {"kind": "managed_network", "message": network_message},
+    ]
+
+
+@_d.method("sandbox.status", scope="operator.read")
+async def _handle_sandbox_status(params: dict | None, ctx: RpcContext) -> dict:
+    return status_payload(ctx.config)
+
+
+@_d.method("sandbox.explain", scope="operator.read")
+async def _handle_sandbox_explain(params: dict | None, ctx: RpcContext) -> dict:
+    params = params if isinstance(params, dict) else {}
+    status = status_payload(ctx.config)
+    result: dict[str, Any] = {
+        "status": status,
+        "messages": _explain_messages(status),
+    }
+    session_key = params.get("sessionKey")
+    if isinstance(session_key, str) and session_key:
+        manager = _require_session_manager(ctx)
+        workspace = await _workspace_for_session(manager, session_key, ctx.config)
+        context = await get_run_context(
+            manager,
+            session_key,
+            config=ctx.config,
+            workspace=workspace,
+        )
+        result["runContext"] = _payload(context)
+    return result
 
 
 @_d.method("sandbox.run_context.get", scope="operator.read")
@@ -115,11 +171,7 @@ async def _handle_sandbox_run_context_get(params: dict | None, ctx: RpcContext) 
 async def _handle_sandbox_run_context_set(params: dict | None, ctx: RpcContext) -> dict:
     params = _require_params(params)
     session_key = _require_session_key(params)
-    if not getattr(ctx.principal, "is_owner", False):
-        raise RpcHandlerError(
-            "UNAUTHORIZED",
-            "sandbox.run_context.set requires owner principal.",
-        )
+    _require_owner(ctx, "sandbox.run_context.set")
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
@@ -131,5 +183,149 @@ async def _handle_sandbox_run_context_set(params: dict | None, ctx: RpcContext) 
         run_mode,
         config=ctx.config,
         workspace=await _workspace_for_session(manager, session_key, ctx.config),
+    )
+    return _payload(context)
+
+
+@_d.method("sandbox.mount.add", scope="operator.write")
+async def _handle_sandbox_mount_add(params: dict | None, ctx: RpcContext) -> dict:
+    params = _require_params(params)
+    session_key = _require_session_key(params)
+    _require_owner(ctx, "sandbox.mount.add")
+    manager = _require_session_manager(ctx)
+    session = await _ensure_session_for_set(manager, session_key)
+    if session is None:
+        raise KeyError(f"Session not found: {session_key}")
+    workspace = await _workspace_for_session(manager, session_key, ctx.config)
+    context = await add_mount_grant(
+        manager,
+        session_key,
+        path=str(params.get("path") or ""),
+        access=str(params.get("access") or "ro"),
+        scope=str(params.get("scope") or "chat"),
+        config=ctx.config,
+        workspace=workspace,
+    )
+    return _payload(context)
+
+
+@_d.method("sandbox.mount.remove", scope="operator.write")
+async def _handle_sandbox_mount_remove(params: dict | None, ctx: RpcContext) -> dict:
+    params = _require_params(params)
+    session_key = _require_session_key(params)
+    _require_owner(ctx, "sandbox.mount.remove")
+    manager = _require_session_manager(ctx)
+    session = await _ensure_session_for_set(manager, session_key)
+    if session is None:
+        raise KeyError(f"Session not found: {session_key}")
+    workspace = await _workspace_for_session(manager, session_key, ctx.config)
+    context = await remove_mount_grant(
+        manager,
+        session_key,
+        path=str(params.get("path") or ""),
+        config=ctx.config,
+        workspace=workspace,
+    )
+    return _payload(context)
+
+
+@_d.method("sandbox.domain.add", scope="operator.write")
+async def _handle_sandbox_domain_add(params: dict | None, ctx: RpcContext) -> dict:
+    params = _require_params(params)
+    session_key = _require_session_key(params)
+    _require_owner(ctx, "sandbox.domain.add")
+    manager = _require_session_manager(ctx)
+    session = await _ensure_session_for_set(manager, session_key)
+    if session is None:
+        raise KeyError(f"Session not found: {session_key}")
+    workspace = await _workspace_for_session(manager, session_key, ctx.config)
+    context = await add_domain_grant(
+        manager,
+        session_key,
+        domain=str(params.get("domain") or ""),
+        scope=str(params.get("scope") or "workspace"),
+        config=ctx.config,
+        workspace=workspace,
+    )
+    return _payload(context)
+
+
+@_d.method("sandbox.domain.remove", scope="operator.write")
+async def _handle_sandbox_domain_remove(params: dict | None, ctx: RpcContext) -> dict:
+    params = _require_params(params)
+    session_key = _require_session_key(params)
+    _require_owner(ctx, "sandbox.domain.remove")
+    manager = _require_session_manager(ctx)
+    session = await _ensure_session_for_set(manager, session_key)
+    if session is None:
+        raise KeyError(f"Session not found: {session_key}")
+    workspace = await _workspace_for_session(manager, session_key, ctx.config)
+    context = await remove_domain_grant(
+        manager,
+        session_key,
+        domain=str(params.get("domain") or ""),
+        config=ctx.config,
+        workspace=workspace,
+    )
+    return _payload(context)
+
+
+@_d.method("sandbox.bundle.enable", scope="operator.write")
+async def _handle_sandbox_bundle_enable(params: dict | None, ctx: RpcContext) -> dict:
+    params = _require_params(params)
+    session_key = _require_session_key(params)
+    _require_owner(ctx, "sandbox.bundle.enable")
+    manager = _require_session_manager(ctx)
+    session = await _ensure_session_for_set(manager, session_key)
+    if session is None:
+        raise KeyError(f"Session not found: {session_key}")
+    workspace = await _workspace_for_session(manager, session_key, ctx.config)
+    context = await enable_bundle_grant(
+        manager,
+        session_key,
+        bundle_id=str(params.get("bundleId") or params.get("bundle_id") or ""),
+        scope=str(params.get("scope") or "workspace"),
+        config=ctx.config,
+        workspace=workspace,
+    )
+    return _payload(context)
+
+
+@_d.method("sandbox.bundle.disable", scope="operator.write")
+async def _handle_sandbox_bundle_disable(params: dict | None, ctx: RpcContext) -> dict:
+    params = _require_params(params)
+    session_key = _require_session_key(params)
+    _require_owner(ctx, "sandbox.bundle.disable")
+    manager = _require_session_manager(ctx)
+    session = await _ensure_session_for_set(manager, session_key)
+    if session is None:
+        raise KeyError(f"Session not found: {session_key}")
+    workspace = await _workspace_for_session(manager, session_key, ctx.config)
+    context = await disable_bundle_grant(
+        manager,
+        session_key,
+        bundle_id=str(params.get("bundleId") or params.get("bundle_id") or ""),
+        config=ctx.config,
+        workspace=workspace,
+    )
+    return _payload(context)
+
+
+@_d.method("sandbox.workspace.set", scope="operator.write")
+async def _handle_sandbox_workspace_set(params: dict | None, ctx: RpcContext) -> dict:
+    params = _require_params(params)
+    session_key = _require_session_key(params)
+    _require_owner(ctx, "sandbox.workspace.set")
+    manager = _require_session_manager(ctx)
+    session = await _ensure_session_for_set(manager, session_key)
+    if session is None:
+        raise KeyError(f"Session not found: {session_key}")
+    current_workspace = await _workspace_for_session(manager, session_key, ctx.config)
+    context = await set_workspace(
+        manager,
+        session_key,
+        workspace_path=str(params.get("workspace") or params.get("workspacePath") or ""),
+        config=ctx.config,
+        current_workspace=current_workspace,
     )
     return _payload(context)

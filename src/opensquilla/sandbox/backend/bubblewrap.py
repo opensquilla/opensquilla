@@ -145,11 +145,14 @@ def build_bwrap_argv(request: SandboxRequest, *, binary: str = _BWRAP_BINARY) ->
     if policy.network == NetworkMode.NONE:
         argv.append("--unshare-net")
     elif policy.network == NetworkMode.PROXY_ALLOWLIST:
-        # Reserved — the proxy path is not implemented in this pass; fail
-        # loudly rather than silently widen network scope.
+        if policy.network_proxy is None:
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                "for the bubblewrap backend"
+            )
         raise SandboxBackendError(
-            "NetworkMode.PROXY_ALLOWLIST is reserved and not yet supported "
-            "by the bubblewrap backend"
+            "NetworkMode.PROXY_ALLOWLIST requires linux proxy bridge support "
+            "in the bubblewrap backend"
         )
 
     # Base filesystem skeleton. Use tmpfs as root so synthetic mount points

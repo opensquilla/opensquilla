@@ -209,6 +209,11 @@ def render_seatbelt_profile(
     """Render a deny-by-default SBPL profile for ``request``."""
     policy = request.policy
     if policy.network == NetworkMode.PROXY_ALLOWLIST:
+        if policy.network_proxy is None:
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                "for the seatbelt backend"
+            )
         raise SandboxBackendError(
             "NetworkMode.PROXY_ALLOWLIST is not supported by the seatbelt backend"
         )

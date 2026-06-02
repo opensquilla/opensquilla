@@ -114,6 +114,7 @@ def test_slack_mode_specific_fields_are_conditional():
     fields = {f.name: f for f in spec.fields}
     assert fields["app_token"].show_when == {"connection_mode": "socket"}
     assert fields["signing_secret"].show_when == {"connection_mode": "webhook"}
+    assert fields["signing_secret"].required is True
     assert fields["slack_channel_id"].required is False
 
 

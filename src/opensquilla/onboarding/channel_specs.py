@@ -87,7 +87,7 @@ def _slack_spec() -> ChannelSetupSpec:
                               description="Optional; replies auto-target the incoming "
                               "conversation when unset."),
             ChannelSetupField("signing_secret", "Signing secret", "password",
-                              required=False, secret=True, group="credentials",
+                              required=True, secret=True, group="credentials",
                               advanced=True,
                               show_when={"connection_mode": "webhook"}),
             ChannelSetupField("reply_in_thread", "Reply in thread", "bool",

@@ -10,6 +10,18 @@ def test_classify_python_package_install() -> None:
     assert profile.needs_network is True
 
 
+def test_classify_python_package_install_variants() -> None:
+    for command in (
+        ("python3", "-m", "pip", "install", "requests"),
+        ("python3.11", "-m", "pip", "install", "requests"),
+        ("/usr/bin/python3", "-m", "pip", "install", "requests"),
+    ):
+        profile = classify_command(command)
+        assert profile.name == "package_install"
+        assert profile.package_manager == "python"
+        assert profile.needs_network is True
+
+
 def test_classify_node_package_install() -> None:
     profile = classify_command(("npm", "install"))
     assert profile.name == "package_install"
@@ -17,7 +29,13 @@ def test_classify_node_package_install() -> None:
 
 
 def test_classify_alternate_node_package_installers() -> None:
-    for command in (("pnpm", "install"), ("yarn", "install")):
+    for command in (
+        ("npm", "ci"),
+        ("pnpm", "install"),
+        ("pnpm", "add", "vite"),
+        ("yarn", "install"),
+        ("yarn", "add", "vite"),
+    ):
         profile = classify_command(command)
         assert profile.name == "package_install"
         assert profile.package_manager == "node"
@@ -44,6 +62,17 @@ def test_classify_url_fetch() -> None:
     assert profile.requested_domains == ("example.com",)
 
 
+def test_classify_url_fetch_normalizes_url_punctuation() -> None:
+    for url in (
+        "https://example.com?x=1",
+        "https://example.com#fragment",
+        "https://example.com).",
+    ):
+        profile = classify_command(("curl", url))
+        assert profile.name == "url_fetch"
+        assert profile.requested_domains == ("example.com",)
+
+
 def test_classify_destructive_shell() -> None:
     profile = classify_command(("rm", "-rf", "dist"))
     assert profile.name == "destructive_shell"
@@ -65,6 +94,17 @@ def test_classify_workspace_read() -> None:
 def test_unknown_shell_is_conservative() -> None:
     profile = classify_command(("sh", "-lc", "complex $(unknown)"))
     assert profile.name == "unknown_shell"
+
+
+def test_shell_wrapper_with_url_is_conservative() -> None:
+    profile = classify_command(("sh", "-lc", "curl https://example.com"))
+    assert profile.name == "unknown_shell"
+
+
+def test_shell_wrapper_preserves_obvious_destructive_impact() -> None:
+    profile = classify_command(("sh", "-lc", "rm -rf dist && curl https://example.com"))
+    assert profile.name == "destructive_shell"
+    assert profile.high_impact is True
 
 
 def test_package_bundle_for_manager() -> None:

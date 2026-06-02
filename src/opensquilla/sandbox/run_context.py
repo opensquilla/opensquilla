@@ -158,11 +158,10 @@ def _is_sensitive_default_workspace_target(path: str, workspace: str) -> bool:
     except (OSError, RuntimeError, ValueError):
         return True
     for blocked in _DEFAULT_WORKSPACE_CREDENTIAL_PARTS:
-        if (
-            len(relative_parts) >= len(blocked)
-            and relative_parts[: len(blocked)] == blocked
-        ):
-            return True
+        limit = len(relative_parts) - len(blocked) + 1
+        for start in range(max(limit, 0)):
+            if relative_parts[start : start + len(blocked)] == blocked:
+                return True
     return False
 
 

@@ -645,21 +645,22 @@ async def test_set_workspace_rejects_empty_or_root_paths(tmp_path, workspace_pat
 async def test_set_workspace_allows_root_nested_deployment_workspace():
     from opensquilla.sandbox.run_context_service import set_workspace
 
-    manager = _SessionManager()
+    for workspace_path in (
+        "/root/.opensquilla/workspace",
+        "/root/.opensquilla/workspace/project/src",
+    ):
+        manager = _SessionManager()
 
-    updated = await set_workspace(
-        manager,
-        manager.node.session_key,
-        workspace_path="/root/.opensquilla/workspace",
-        config=_config(),
-        current_workspace=None,
-    )
+        updated = await set_workspace(
+            manager,
+            manager.node.session_key,
+            workspace_path=workspace_path,
+            config=_config(),
+            current_workspace=None,
+        )
 
-    assert updated.workspace == "/root/.opensquilla/workspace"
-    assert (
-        manager.node.origin["sandbox_run_context"]["workspace"]
-        == "/root/.opensquilla/workspace"
-    )
+        assert updated.workspace == workspace_path
+        assert manager.node.origin["sandbox_run_context"]["workspace"] == workspace_path
 
 
 @pytest.mark.asyncio
@@ -685,6 +686,10 @@ async def test_set_workspace_rejects_sensitive_root_paths():
         "/root/.opensquilla/workspace/.ssh/id_rsa",
         "/root/.opensquilla/workspace/.env",
         "/root/.opensquilla/workspace/.env.local",
+        "/root/.opensquilla/workspace/project/.aws/credentials",
+        "/root/.opensquilla/workspace/project/.kube/config",
+        "/root/.opensquilla/workspace/project/.docker/config.json",
+        "/root/.opensquilla/workspace/project/.gnupg/private-keys-v1.d/key",
     ):
         manager = _SessionManager()
         with pytest.raises(ValueError):
@@ -860,22 +865,26 @@ async def test_saved_root_workspace_is_dropped(tmp_path):
 async def test_saved_root_nested_workspace_is_allowed():
     from opensquilla.sandbox.run_context import get_run_context
 
-    manager = _SessionManager()
-    manager.node.origin = {
-        "sandbox_run_context": {
-            "run_mode": "standard",
-            "workspace": "/root/.opensquilla/workspace",
+    for workspace_path in (
+        "/root/.opensquilla/workspace",
+        "/root/.opensquilla/workspace/project/src",
+    ):
+        manager = _SessionManager()
+        manager.node.origin = {
+            "sandbox_run_context": {
+                "run_mode": "standard",
+                "workspace": workspace_path,
+            }
         }
-    }
 
-    ctx = await get_run_context(
-        manager,
-        manager.node.session_key,
-        config=_config(),
-        workspace=None,
-    )
+        ctx = await get_run_context(
+            manager,
+            manager.node.session_key,
+            config=_config(),
+            workspace=None,
+        )
 
-    assert ctx.workspace == "/root/.opensquilla/workspace"
+        assert ctx.workspace == workspace_path
 
 
 @pytest.mark.asyncio
@@ -900,6 +909,10 @@ async def test_saved_root_nested_workspace_is_allowed():
         "/root/.opensquilla/workspace/.ssh/id_rsa",
         "/root/.opensquilla/workspace/.env",
         "/root/.opensquilla/workspace/.env.local",
+        "/root/.opensquilla/workspace/project/.aws/credentials",
+        "/root/.opensquilla/workspace/project/.kube/config",
+        "/root/.opensquilla/workspace/project/.docker/config.json",
+        "/root/.opensquilla/workspace/project/.gnupg/private-keys-v1.d/key",
     ],
 )
 async def test_saved_sensitive_root_workspace_is_dropped(workspace_path):

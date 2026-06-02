@@ -195,6 +195,21 @@ def test_chat_composer_autofocus_is_desktop_only() -> None:
     assert "// Autofocus chat input\n    if (_textarea) _textarea.focus();" not in source
 
 
+def test_chat_composer_has_microphone_transcription_flow() -> None:
+    source = _read_chat_js()
+    css = _read_chat_css()
+
+    assert 'id="chat-btn-mic"' in source
+    assert 'aria-label="Record voice input"' in source
+    assert "navigator.mediaDevices.getUserMedia" in source
+    assert "new MediaRecorder" in source
+    assert "/api/audio/transcribe" in source
+    assert "Authorization" in source
+    assert "Bearer ${token}" in source
+    assert "voice_input" in source
+    assert "chat-mic-recording" in css
+
+
 def test_mobile_sidebar_closed_state_leaves_focus_order() -> None:
     app = _read_app_js()
 

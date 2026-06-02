@@ -25,6 +25,7 @@ from enum import StrEnum
 from typing import Any, cast
 
 from opensquilla.gateway.config import GatewayConfig
+from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.image_generation_specs import (
     get_image_generation_provider_setup_spec,
     list_image_generation_provider_setup_specs,
@@ -140,6 +141,27 @@ def image_generation_section_status(cfg: GatewayConfig) -> SectionStatus:
         elif credential is SectionStatus.DEGRADED and aggregate is not SectionStatus.UNKNOWN:
             aggregate = SectionStatus.DEGRADED
     return aggregate
+
+
+def audio_section_status(cfg: GatewayConfig) -> SectionStatus:
+    audio_cfg = getattr(cfg, "audio", None)
+    if audio_cfg is None or not bool(getattr(audio_cfg, "enabled", False)):
+        return SectionStatus.OPTIONAL
+    provider_id = "elevenlabs"
+    try:
+        _spec = get_audio_provider_setup_spec(provider_id)
+    except KeyError:
+        return SectionStatus.UNKNOWN
+    providers = getattr(audio_cfg, "providers", None)
+    provider_cfg = getattr(providers, provider_id, None) if providers is not None else None
+    if provider_cfg is None:
+        return SectionStatus.UNKNOWN
+    if getattr(provider_cfg, "api_key", ""):
+        return SectionStatus.OK
+    env_key = str(getattr(provider_cfg, "api_key_env", "") or "").strip()
+    if env_key:
+        return SectionStatus.OK if os.environ.get(env_key) else SectionStatus.DEGRADED
+    return SectionStatus.MISSING
 
 
 def memory_embedding_section_status(cfg: GatewayConfig) -> SectionStatus:
@@ -270,6 +292,7 @@ def section_verifiers() -> dict[str, Callable[[GatewayConfig], SectionStatus]]:
         "search": search_section_status,
         "channels": channels_section_status,
         "image_generation": image_generation_section_status,
+        "audio": audio_section_status,
         "memory_embedding": memory_embedding_section_status,
     }
 

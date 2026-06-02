@@ -1,5 +1,12 @@
 """Shared onboarding/configuration core used by CLI, RPC, and WebUI."""
 
+from opensquilla.onboarding.audio_specs import (
+    AudioProviderSetupField,
+    AudioProviderSetupSpec,
+    audio_provider_catalog_payload,
+    get_audio_provider_setup_spec,
+    list_audio_provider_setup_specs,
+)
 from opensquilla.onboarding.channel_specs import (
     ChannelSetupField,
     ChannelSetupSpec,
@@ -42,6 +49,8 @@ from opensquilla.onboarding.search_specs import (
 )
 
 __all__ = [
+    "AudioProviderSetupField",
+    "AudioProviderSetupSpec",
     "ChannelSetupField",
     "ChannelSetupSpec",
     "ImageGenerationProviderSetupField",
@@ -52,7 +61,9 @@ __all__ = [
     "RouterSetupProfile",
     "SearchProviderSetupField",
     "SearchProviderSetupSpec",
+    "audio_provider_catalog_payload",
     "channel_catalog_payload",
+    "get_audio_provider_setup_spec",
     "get_channel_setup_spec",
     "get_image_generation_provider_setup_spec",
     "get_memory_embedding_provider_setup_spec",
@@ -61,6 +72,7 @@ __all__ = [
     "get_search_provider_setup_spec",
     "image_generation_provider_catalog_payload",
     "memory_embedding_provider_catalog_payload",
+    "list_audio_provider_setup_specs",
     "list_channel_setup_specs",
     "list_image_generation_provider_setup_specs",
     "list_memory_embedding_provider_setup_specs",

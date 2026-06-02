@@ -45,9 +45,18 @@ _TOOL_GROUPS: Mapping[str, frozenset[str]] = {
             "feishu_media_upload_artifact",
             "image",
             "image_generate",
+            "audio_provider_capabilities",
+            "dubbing_download",
+            "dubbing_generate",
+            "dubbing_status",
+            "music_generate",
             "pdf",
             "publish_artifact",
+            "song_generate",
             "tts",
+            "voice_clone",
+            "voice_convert",
+            "voice_search",
         }
     ),
     "channel:doc": frozenset(

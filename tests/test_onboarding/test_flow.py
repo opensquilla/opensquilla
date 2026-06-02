@@ -1502,8 +1502,6 @@ def test_interactive_channel_add_uses_explicit_config_path(tmp_path, monkeypatch
         def password(self, message: str, **_kwargs):
             if message == "Bot token (xoxb-...)":
                 return _Answer("xoxb-test")
-            if message == "Signing secret":
-                return _Answer("signing-secret")
             raise AssertionError(f"unexpected password prompt: {message}")
 
         def confirm(self, message: str, **_kwargs):
@@ -1516,7 +1514,10 @@ def test_interactive_channel_add_uses_explicit_config_path(tmp_path, monkeypatch
 
     flow.run_interactive_channel_add(None, config_path=target)
 
-    assert 'type = "slack"' in target.read_text()
+    data = target.read_text()
+    assert 'type = "slack"' in data
+    assert 'connection_mode = "webhook"' in data
+    assert "signing_secret" not in data
     assert not default_target.exists()
 
 

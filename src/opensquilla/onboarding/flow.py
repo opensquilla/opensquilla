@@ -1095,7 +1095,7 @@ def _should_prompt_channel_field(
     if field.name in controls:
         return True
     if field.show_when and field.default in (None, ""):
-        return True
+        return not field.advanced
     return False
 
 

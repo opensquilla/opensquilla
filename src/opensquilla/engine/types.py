@@ -78,6 +78,13 @@ class ToolUseStartEvent:
 
 
 @dataclass
+class ToolUseDeltaEvent:
+    kind: Literal["tool_use_delta"] = field(default="tool_use_delta", init=False)
+    tool_use_id: str = ""
+    json_fragment: str = ""
+
+
+@dataclass
 class ToolResultEvent:
     kind: Literal["tool_result"] = field(default="tool_result", init=False)
     tool_use_id: str = ""
@@ -243,6 +250,7 @@ AgentEvent = (
     | TextDeltaEvent
     | RunHeartbeatEvent
     | ToolUseStartEvent
+    | ToolUseDeltaEvent
     | ToolResultEvent
     | RouterControlReplayEvent
     | ArtifactEvent

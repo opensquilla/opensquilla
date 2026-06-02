@@ -8,16 +8,20 @@ OVERVIEW_CSS = Path("src/opensquilla/gateway/static/css/views/overview.css")
 HEALTH_JS = Path("src/opensquilla/gateway/static/js/views/health.js")
 HEALTH_CSS = Path("src/opensquilla/gateway/static/css/views/health.css")
 INDEX_HTML = Path("src/opensquilla/gateway/templates/index.html")
+VUE_ROUTER = Path("opensquilla-webui/src/router/index.ts")
+VUE_HEALTH_VIEW = Path("opensquilla-webui/src/views/HealthView.vue")
 
 
 def test_health_view_is_registered_and_loaded() -> None:
     app = APP_JS.read_text(encoding="utf-8")
-    index = INDEX_HTML.read_text(encoding="utf-8")
+    router = VUE_ROUTER.read_text(encoding="utf-8")
 
     assert "_renderStandardView(HealthView, el)" in app
     assert 'data-path="/health"' in app
-    assert "views/health.js" in index
-    assert "views/health.css" in index
+    assert "HealthView.vue" in router
+    assert "path: '/health'" in router
+    assert "name: 'health'" in router
+    assert VUE_HEALTH_VIEW.exists()
 
 
 def test_health_view_calls_doctor_status_and_renders_fix_steps() -> None:

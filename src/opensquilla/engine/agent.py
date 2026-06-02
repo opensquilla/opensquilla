@@ -122,6 +122,7 @@ from .types import (
     ToolCall,
     ToolResult,
     ToolResultEvent,
+    ToolUseDeltaEvent,
     ToolUseStartEvent,
     WarningEvent,
 )
@@ -2272,6 +2273,11 @@ class Agent:
                                     json_fragment = raw_ev.json_fragment  # type: ignore[union-attr]
                                     acc.json_buf.append(json_fragment)
                                     acc.json_chars += len(json_fragment)
+                                    if json_fragment:
+                                        yield ToolUseDeltaEvent(
+                                            tool_use_id=raw_ev.tool_use_id,
+                                            json_fragment=json_fragment,
+                                        )
                                     last_heartbeat_chars = tool_argument_heartbeat_chars.get(
                                         raw_ev.tool_use_id, 0
                                     )

@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from opensquilla.engine.steps.meta_resolution import meta_resolution
 from opensquilla.skills.loader import SkillLoader
@@ -868,3 +869,82 @@ def test_report_meta_skill_clarifies_only_broad_or_decision_critical_requests(
     assert "NEEDS_CLARIFICATION" in preferences_prompt
     assert "only when the topic is too broad" in preferences_prompt
     assert "Clarification answers" in report_mode_prompt
+
+
+# ── A8: high-risk experimental meta-skills carry enforced metadata ──
+
+
+def _read_exp_frontmatter(name: str) -> dict:
+    """Parse the YAML frontmatter of an experimental meta-skill."""
+    path = EXP / name / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    # Frontmatter is the block between the first pair of ``---`` fences.
+    chunks = text.split("---", 2)
+    assert len(chunks) >= 3, f"{name} missing frontmatter fences"
+    return yaml.safe_load(chunks[1]) or {}
+
+
+_A8_DEPRECATED = (
+    "meta-issue-to-pr-autopilot",
+    "meta-long-running-build-watchdog",
+)
+
+_A8_HARDENED = _A8_DEPRECATED + (
+    "meta-pre-commit-quality-gate",
+    "meta-security-review-bundle",
+)
+
+
+@pytest.mark.parametrize("skill_name", _A8_DEPRECATED)
+def test_a8_deprecated_high_risk_skill_is_invocation_disabled(
+    skill_name: str,
+) -> None:
+    """A8: the two top-risk experimental meta-skills must stay off the
+    resolver's match path. They have no per-step budget (E5), no
+    runtime capability enforcement (P1 narrowed ToolContext), and no
+    side-effect ledger (E4), so a resolver match would re-open every
+    auto-fix loop / PR-creation loop the deprecation was meant to
+    contain. Empty triggers + ``disable-model-invocation: true`` is
+    belt and suspenders: either alone would also suffice."""
+    fm = _read_exp_frontmatter(skill_name)
+    assert fm.get("disable-model-invocation") is True, (
+        f"{skill_name} must set ``disable-model-invocation: true`` to "
+        f"stay off the resolver"
+    )
+    triggers = fm.get("triggers")
+    assert triggers in ([], None), (
+        f"{skill_name} must have empty triggers; got {triggers!r}"
+    )
+    # The description must announce the deprecation so a human reading
+    # the SKILL.md (or a creator-generated catalog index) immediately
+    # sees why this skill no longer fires.
+    description = str(fm.get("description") or "")
+    assert "[DEPRECATED]" in description, (
+        f"{skill_name} description must lead with ``[DEPRECATED]``; got "
+        f"{description!r}"
+    )
+
+
+@pytest.mark.parametrize("skill_name", _A8_HARDENED)
+def test_a8_high_risk_skill_declares_risk_and_capabilities(
+    skill_name: str,
+) -> None:
+    """A8: every high-risk experimental meta-skill must declare
+    ``metadata.opensquilla.risk: high`` AND a non-empty
+    ``capabilities`` list. The fields are advisory in P0 (runtime
+    enforcement lands with E5 + narrowed ``ToolContext`` in P1), but
+    pinning them now means the auto-propose risk classifier
+    cross-check has something to compare against and the catalog audit
+    can grep these without parsing the DAG body."""
+    fm = _read_exp_frontmatter(skill_name)
+    metadata = fm.get("metadata") or {}
+    omc = metadata.get("opensquilla") or {}
+    assert omc.get("risk") == "high", (
+        f"{skill_name} must declare ``metadata.opensquilla.risk: high``; "
+        f"got {omc.get('risk')!r}"
+    )
+    capabilities = omc.get("capabilities") or []
+    assert isinstance(capabilities, list) and capabilities, (
+        f"{skill_name} must declare a non-empty "
+        f"``metadata.opensquilla.capabilities`` list; got {capabilities!r}"
+    )

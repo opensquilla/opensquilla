@@ -88,6 +88,10 @@ def test_e2e_p1_proposal_lint_pass(tmp_path, monkeypatch) -> None:
     )
     assert smoke_result["G3"]["passed"]
     assert smoke_result["G4"]["passed"]
+    # ``classifier_model="stub"`` makes ``run_smoke_gates`` flag the
+    # result as degraded — no cross-vendor classification actually ran,
+    # so G3/G4 pass by stub-fixture construction only.
+    assert smoke_result.get("degraded") is True
 
     out = subprocess.run(
         [sys.executable, str(PROPOSALS),
@@ -98,11 +102,18 @@ def test_e2e_p1_proposal_lint_pass(tmp_path, monkeypatch) -> None:
         capture_output=True, text=True, check=True,
     )
     persist = json.loads(out.stdout)
-    assert persist["auto_enable_eligible"] is True
+    # D1: degraded smoke must NOT yield ``auto_enable_eligible``. The
+    # proposal still persists (operators can review it on disk), but
+    # the unattended creator pipeline cannot promote a candidate that
+    # was never validated against a real classifier model.
+    assert persist["auto_enable_eligible"] is False
 
     proposal_dir = home / "proposals" / persist["proposal_id"]
     assert (proposal_dir / "SKILL.md").is_file()
     assert (proposal_dir / "gates.json").is_file()
+    gates_payload = json.loads((proposal_dir / "gates.json").read_text())
+    assert gates_payload["smoke"].get("degraded") is True
+    assert gates_payload["auto_enable_eligible"] is False
 
 
 def test_creator_preserves_required_triggers_and_prior_step_context(monkeypatch) -> None:

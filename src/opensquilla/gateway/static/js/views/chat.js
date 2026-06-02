@@ -7150,6 +7150,37 @@ const ChatView = (() => {
     ) || null;
   }
 
+  function _settleToolResultCard(payload, isError) {
+    const toolId = payload && payload.tool_use_id || '';
+    if (!toolId) return null;
+    const bubble = _ensureStreamBubble();
+    const body = bubble && bubble.querySelector('.msg-body');
+    const details = _findToolDetailsById(body, toolId);
+    if (!details) return null;
+    let toolName = payload.name || payload.tool_name || '';
+    if (toolName) _retitleToolCallDOM(details, toolName, payload.arguments || payload.input || '');
+    toolName = toolName || details.getAttribute('data-tool-name') || '';
+    details.classList.remove('chat-tools-collapse--running');
+    details.classList.add(_toolResultStateClass(payload));
+    _setToolSummaryStatus(details, isError ? 'error' : 'done');
+    const summary = details.querySelector('.chat-tools-summary');
+    if (summary) summary.removeAttribute('aria-disabled');
+    return details;
+  }
+
+  function _clarifyArgsFromHistoricalSegment(seg, details) {
+    const input = details && details._opensquillaToolInput;
+    if (!input || typeof input !== 'object') return null;
+    if (
+      input.kind === 'user_input'
+      && input.paused === true
+      && input.clarify_schema
+    ) {
+      return input;
+    }
+    return null;
+  }
+
   function _toolExecutionStatus(payload) {
     const status = payload && (payload.execution_status || payload.executionStatus);
     return status && typeof status === 'object' ? status : null;
@@ -7346,8 +7377,32 @@ const ChatView = (() => {
     ) {
       try { console.log('[clarify-debug] firing _appendClarifyForm'); } catch (e) {}
       _markVisibleStreamEvent('clarify_form');
+      _settleToolResultCard(payload, false);
       _appendClarifyForm(payload, _args);
       _chatDiag('tool_result.append.clarify_form', _chatDiagSummarizePayload(payload));
+      return;
+    }
+
+    // Skipped user_input step with an inferred-context summary —
+    // close the (c)/(d) "trust gap" on the path where the form was
+    // auto-suppressed. The scheduler attaches ``clarify_skip_summary``
+    // whenever a meta author's ``when:`` expression evaluated false
+    // for a user_input step, so the user can still see what the
+    // upstream context-extraction inferred and intervene before the
+    // DAG continues.
+    if (
+      _args
+      && _args.kind === 'user_input'
+      && _args.skipped === true
+      && _args.clarify_skip_summary
+    ) {
+      try { console.log('[clarify-debug] firing _appendClarifySkipSummary'); } catch (e) {}
+      _markVisibleStreamEvent('clarify_skip_summary');
+      _appendClarifySkipSummary(payload, _args);
+      _chatDiag(
+        'tool_result.append.clarify_skip_summary',
+        _chatDiagSummarizePayload(payload),
+      );
       return;
     }
 
@@ -7430,6 +7485,13 @@ const ChatView = (() => {
   // ── PR5: meta-skill user_input form rendering ──
 
   function _appendClarifyForm(payload, args) {
+    const bubble = _ensureStreamBubble();
+    const body = bubble.querySelector('.msg-body');
+    _appendClarifyFormToBody(body, payload, args);
+  }
+
+  function _appendClarifyFormToBody(body, payload, args) {
+    if (!body) return;
     // The scheduler payload carries:
     //   args.clarify_schema = { mode, intro, fields, cancel_keywords,
     //                            timeout_hours, nl_extract }
@@ -7445,9 +7507,6 @@ const ChatView = (() => {
     const schemaLang = /[\u4e00-\u9fff]/.test(schemaCopy) ? 'zh' : 'en';
     const clarifyText = (zh, en) => schemaLang === 'zh' ? zh : en;
 
-    const bubble = _ensureStreamBubble();
-    const body = bubble.querySelector('.msg-body');
-
     const card = document.createElement('div');
     card.className = 'clarify-form chat-tools-collapse';
     card.setAttribute('data-clarify-step', args.step || '');
@@ -7458,12 +7517,112 @@ const ChatView = (() => {
     header.textContent = clarifyText('请确认以下信息', 'Please confirm these details');
     card.appendChild(header);
 
+    // Dual-channel hint (soft-clarify) — tell the user the main chat
+    // input still works while the form is open, so they can either
+    // type into fields or continue the conversation naturally to
+    // supply / refine answers. Without this line users assume the
+    // form is the only path forward and avoid the message box.
+    const dualChannelHint = document.createElement('div');
+    dualChannelHint.className = 'clarify-form-dual-channel-hint';
+    dualChannelHint.textContent = clarifyText(
+      '✎ 您也可以在下方对话框里继续聊天补充信息，或回复 "开始" 让系统立即执行；说 "算了" 取消。',
+      '✎ You can also keep chatting in the message box below to add or refine info, reply "go ahead" to start, or "cancel" to abort.',
+    );
+    card.appendChild(dualChannelHint);
+
     if (schema.intro) {
       const intro = document.createElement('div');
       intro.className = 'clarify-form-intro';
       // schema.intro is xml_escape'd server-side; safe as textContent.
       intro.textContent = schema.intro;
       card.appendChild(intro);
+    }
+
+    // Step (d) auto-prefill rendering. The server may attach
+    // confirmed_fields / ambiguous_fields / unknown_mentions when
+    // the prefill scan inferred values from the user's earlier
+    // messages. Render a transparency block at the top so the user
+    // sees what was detected and can confirm or override; build a
+    // lookup map so the field rows below can show inline markers.
+    const confirmedFields = Array.isArray(schema.confirmed_fields)
+      ? schema.confirmed_fields : [];
+    const ambiguousFields = Array.isArray(schema.ambiguous_fields)
+      ? schema.ambiguous_fields : [];
+    const unknownMentions = Array.isArray(schema.unknown_mentions)
+      ? schema.unknown_mentions : [];
+    const confirmedByName = {};
+    confirmedFields.forEach((entry) => {
+      if (entry && typeof entry.name === 'string') {
+        confirmedByName[entry.name] = entry;
+      }
+    });
+    const ambiguousByName = {};
+    ambiguousFields.forEach((entry) => {
+      if (entry && typeof entry.name === 'string') {
+        ambiguousByName[entry.name] = entry;
+      }
+    });
+
+    if (
+      confirmedFields.length > 0
+      || ambiguousFields.length > 0
+      || unknownMentions.length > 0
+    ) {
+      const prefill = document.createElement('div');
+      prefill.className = 'clarify-form-prefill';
+      const prefillNote = document.createElement('div');
+      prefillNote.className = 'clarify-form-prefill-note';
+      prefillNote.textContent = clarifyText(
+        '已根据您之前的消息识别出以下信息，请确认或修改：',
+        'We noticed details from your earlier messages — please confirm or override below:',
+      );
+      prefill.appendChild(prefillNote);
+      const prefillList = document.createElement('ul');
+      prefillList.className = 'clarify-form-prefill-list';
+      confirmedFields.forEach((entry) => {
+        if (!entry || typeof entry.name !== 'string') return;
+        const li = document.createElement('li');
+        li.className = 'clarify-form-prefill-confirmed';
+        // Field values may be any JSON type — coerce to a stable
+        // string the user will recognise. Using textContent keeps
+        // angle brackets / quotes safe (server already xml_escaped
+        // free-text fields).
+        const valueRepr = entry.value === null || entry.value === undefined
+          ? ''
+          : String(entry.value);
+        const sourceLabel = entry.source || 'auto_prefill';
+        li.textContent = clarifyText(
+          '✓ ' + entry.name + ' = ' + valueRepr + '(来源: ' + sourceLabel + ')',
+          '✓ ' + entry.name + ' = ' + valueRepr + ' (source: ' + sourceLabel + ')',
+        );
+        prefillList.appendChild(li);
+      });
+      ambiguousFields.forEach((entry) => {
+        if (!entry || typeof entry.name !== 'string') return;
+        const li = document.createElement('li');
+        li.className = 'clarify-form-prefill-ambiguous';
+        const reason = entry.reason ? ' — ' + entry.reason : '';
+        li.textContent = clarifyText(
+          '⚠ ' + entry.name + '：需要您填写' + reason,
+          '⚠ ' + entry.name + ': needs your input' + reason,
+        );
+        prefillList.appendChild(li);
+      });
+      unknownMentions.forEach((entry) => {
+        if (!entry || typeof entry.text !== 'string') return;
+        const li = document.createElement('li');
+        li.className = 'clarify-form-prefill-unknown';
+        const guess = entry.guess
+          ? clarifyText('（推测：' + entry.guess + '）', ' (looked like: ' + entry.guess + ')')
+          : '';
+        li.textContent = clarifyText(
+          '· 我们注意到您还提到了：' + entry.text + guess,
+          '· we also noticed: ' + entry.text + guess,
+        );
+        prefillList.appendChild(li);
+      });
+      prefill.appendChild(prefillList);
+      card.appendChild(prefill);
     }
 
     const form = document.createElement('form');
@@ -7473,6 +7632,9 @@ const ChatView = (() => {
     fields.forEach((field) => {
       const row = document.createElement('div');
       row.className = 'clarify-form-row';
+
+      const confirmedEntry = confirmedByName[field.name];
+      const ambiguousEntry = ambiguousByName[field.name];
 
       const label = document.createElement('label');
       label.className = 'clarify-form-label';
@@ -7527,7 +7689,57 @@ const ChatView = (() => {
       input.setAttribute('data-clarify-field', field.name);
       input.setAttribute('data-clarify-type', field.type);
       if (field.required) input.setAttribute('data-clarify-required', '1');
+
+      // Auto-prefill: a confirmed value from the prefill scan wins over
+      // any author-supplied default. Mark the field so the user sees
+      // it's a system inference (CSS hook + data attribute) and a
+      // future submit handler could distinguish "user-typed" from
+      // "auto-confirmed". The user can still edit/replace as normal.
+      if (confirmedEntry !== undefined) {
+        const confirmedValue = confirmedEntry.value;
+        if (confirmedValue !== null && confirmedValue !== undefined) {
+          if (field.type === 'bool') {
+            const boolStr = (confirmedValue === true || confirmedValue === 'true')
+              ? 'true' : 'false';
+            input.value = boolStr;
+          } else {
+            input.value = String(confirmedValue);
+          }
+        }
+        input.classList.add('clarify-form-input-confirmed');
+        input.setAttribute('data-clarify-confirmed', '1');
+        input.setAttribute(
+          'data-clarify-source', String(confirmedEntry.source || 'auto_prefill'),
+        );
+      }
+
       row.appendChild(input);
+
+      // Inline marker line below the input — the per-row hint that
+      // tells the user "we filled this from earlier context, edit
+      // freely if it's wrong" or "we noticed something here but
+      // couldn't pin it down".
+      if (confirmedEntry !== undefined) {
+        const marker = document.createElement('div');
+        marker.className = 'clarify-form-row-marker clarify-form-row-marker-confirmed';
+        marker.textContent = clarifyText(
+          '✓ 已自动识别，可编辑修改',
+          '✓ auto-detected from earlier — edit if needed',
+        );
+        row.appendChild(marker);
+      } else if (ambiguousEntry !== undefined) {
+        const marker = document.createElement('div');
+        marker.className = 'clarify-form-row-marker clarify-form-row-marker-ambiguous';
+        const reason = ambiguousEntry.reason
+          ? clarifyText('（' + ambiguousEntry.reason + '）', ' (' + ambiguousEntry.reason + ')')
+          : '';
+        marker.textContent = clarifyText(
+          '⚠ 不太确定，请填写' + reason,
+          '⚠ unclear, please specify' + reason,
+        );
+        row.appendChild(marker);
+      }
+
       form.appendChild(row);
     });
 
@@ -7617,6 +7829,113 @@ const ChatView = (() => {
     card.appendChild(form);
     body.appendChild(card);
     if (_autoScroll) _scrollToBottom();
+  }
+
+  function _appendClarifySkipSummary(payload, args) {
+    // Render a lightweight "trust gap" card for a user_input step
+    // that was auto-skipped by its ``when:`` expression. The user
+    // sees what the system inferred without the form being forced
+    // back open, but still gets a clear way to undo if the
+    // inference was wrong.
+    const summary = args.clarify_skip_summary || {};
+    const stepId = String(summary.step_id || args.skill || '');
+    const fields = Array.isArray(summary.fields) ? summary.fields : [];
+    const inferredFrom = Array.isArray(summary.inferred_from) ? summary.inferred_from : [];
+    const trigger = String(summary.trigger_message || '');
+    const label = String(summary.label || '');
+
+    // Localise the default label when the page is Chinese.
+    const pageLang = /[一-鿿]/.test(
+      (trigger + ' ' + label + ' ' + (fields[0] && fields[0].prompt || '')),
+    ) ? 'zh' : 'en';
+    const localized = (zh, en) => pageLang === 'zh' ? zh : en;
+
+    const bubble = _ensureStreamBubble();
+    const body = bubble.querySelector('.msg-body');
+
+    const card = document.createElement('div');
+    card.className = 'clarify-skip-summary chat-tools-collapse';
+    card.setAttribute('data-clarify-skip-step', stepId);
+
+    const header = document.createElement('div');
+    header.className = 'clarify-skip-summary-header';
+    header.textContent = localized(
+      '系统已从对话上下文中推断了答案 (' + stepId + ')',
+      'System inferred answers from conversation context (' + stepId + ')',
+    );
+    card.appendChild(header);
+
+    if (label) {
+      const note = document.createElement('div');
+      note.className = 'clarify-skip-summary-note';
+      // ``label`` is server-generated copy, not user content — safe as textContent.
+      note.textContent = label;
+      card.appendChild(note);
+    }
+
+    if (trigger) {
+      const triggerEl = document.createElement('div');
+      triggerEl.className = 'clarify-skip-summary-trigger';
+      triggerEl.textContent = localized('您说: ', 'You said: ') + trigger;
+      card.appendChild(triggerEl);
+    }
+
+    if (fields.length > 0) {
+      const fieldsHeader = document.createElement('div');
+      fieldsHeader.className = 'clarify-skip-summary-fields-header';
+      fieldsHeader.textContent = localized(
+        '系统本可询问以下字段，但已根据上下文推断：',
+        'Fields the system would have asked for, now inferred from context:',
+      );
+      card.appendChild(fieldsHeader);
+      const fieldList = document.createElement('ul');
+      fieldList.className = 'clarify-skip-summary-fields';
+      fields.forEach((field) => {
+        if (!field || typeof field.name !== 'string') return;
+        const li = document.createElement('li');
+        const requiredFlag = field.required
+          ? ' ' + localized('（必填）', '(required)')
+          : '';
+        li.textContent = field.name + requiredFlag + (field.prompt ? ' — ' + field.prompt : '');
+        fieldList.appendChild(li);
+      });
+      card.appendChild(fieldList);
+    }
+
+    if (inferredFrom.length > 0) {
+      const inferHeader = document.createElement('div');
+      inferHeader.className = 'clarify-skip-summary-inferred-header';
+      inferHeader.textContent = localized(
+        '推断依据：',
+        'Inferred from:',
+      );
+      card.appendChild(inferHeader);
+      inferredFrom.forEach((entry) => {
+        if (!entry || typeof entry.excerpt !== 'string') return;
+        const block = document.createElement('div');
+        block.className = 'clarify-skip-summary-inferred-entry';
+        const stepLabel = document.createElement('span');
+        stepLabel.className = 'clarify-skip-summary-inferred-step';
+        stepLabel.textContent = '[' + (entry.step || '') + '] ';
+        block.appendChild(stepLabel);
+        const excerpt = document.createElement('span');
+        excerpt.className = 'clarify-skip-summary-inferred-excerpt';
+        excerpt.textContent = entry.excerpt;
+        block.appendChild(excerpt);
+        card.appendChild(block);
+      });
+    }
+
+    const hint = document.createElement('div');
+    hint.className = 'clarify-skip-summary-hint';
+    hint.textContent = localized(
+      '若发现理解有误，请直接回复 "修改 <字段名>" 或重新描述需求。',
+      'If anything looks wrong, reply "change <field>" or restate your request.',
+    );
+    card.appendChild(hint);
+
+    body.appendChild(card);
+    _maybeScrollToBottom();
   }
 
   function _currentSessionKey() {
@@ -7844,9 +8163,11 @@ const ChatView = (() => {
 
       // Build tool_use_id → tool name map so tool_result segments can look up the name
       const _toolNameById = {};
+      const _toolInputById = {};
       for (const seg of segments) {
         if (seg.type === 'tool_use' && seg.tool_use_id) {
           _toolNameById[seg.tool_use_id] = seg.name || 'tool';
+          _toolInputById[seg.tool_use_id] = seg.input || null;
         }
       }
 
@@ -7864,6 +8185,7 @@ const ChatView = (() => {
           if (_isControlPlaneToolName(seg.name || '')) continue;
           if (_findToolDetailsById(body, seg.tool_use_id || '')) continue;
           const details = _buildToolCallDOM(seg.name || 'tool', seg.tool_use_id || '', seg.input || '', false);
+          details._opensquillaToolInput = seg.input || null;
           body.appendChild(details);
         } else if (seg.type === 'tool_result') {
           const toolId = seg.tool_use_id || '';
@@ -7876,11 +8198,17 @@ const ChatView = (() => {
             const details = _findToolDetailsById(body, toolId);
             if (details) {
               _retitleToolCallDOM(details, resultToolName, seg.input || '');
+              details._opensquillaToolInput = details._opensquillaToolInput || _toolInputById[toolId] || null;
               details.classList.remove('chat-tools-collapse--running');
               details.classList.add(_toolResultStateClass(seg));
               const toolsBody = details.querySelector('.chat-tools-body');
               const resultTarget = toolsBody || details;
               if (_findToolResultById(resultTarget, toolId)) continue;
+              const clarifyArgs = _clarifyArgsFromHistoricalSegment(seg, details);
+              if (clarifyArgs) {
+                _appendClarifyFormToBody(body, seg, clarifyArgs);
+                continue;
+              }
               const resultDiv = _buildToolResultDOM(
                 content,
                 isError,

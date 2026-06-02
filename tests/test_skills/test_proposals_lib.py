@@ -507,3 +507,64 @@ def test_write_atomic_under_concurrent_writers(tmp_path: Path) -> None:
         ids.append(out["proposal_id"])
     assert len(set(ids)) == 5  # all distinct
     assert proposals_lib.pending_count(home)["count"] == 5
+
+
+# ── D1: degraded smoke must not yield auto_enable_eligible ──
+
+SMOKE_DEGRADED = {
+    "G3": {"passed": True, "degraded": True},
+    "G4": {"passed": True, "degraded": True},
+    "degraded": True,
+}
+
+
+def test_degraded_smoke_blocks_auto_enable_eligible(tmp_path: Path) -> None:
+    """D1: when the smoke runner has no fixture-generator LLM, it falls
+    back to a deterministic stub and flags the result ``degraded: True``.
+    G3/G4 still report ``passed: True`` because the deterministic
+    fixtures self-match by construction, but the candidate has not
+    been validated against a real model. The eligibility evaluator
+    must observe ``degraded`` and refuse to auto-enable so an
+    unattended creator pipeline cannot promote a never-validated
+    proposal.
+
+    The proposal itself still lands (``status == "ok"``) so an operator
+    can inspect it; only ``auto_enable_eligible`` flips to False."""
+    home = tmp_path / ".opensquilla"
+    result = proposals_lib.write_proposal(
+        home,
+        SAMPLE_SKILL_MD,
+        GATES_PASSING,
+        SMOKE_DEGRADED,
+    )
+    assert result["status"] == "ok"
+    assert result["auto_enable_eligible"] is False
+    shown = proposals_lib.show_proposal(home, result["proposal_id"])
+    assert shown["gates"]["auto_enable_eligible"] is False
+    # Cross-check: the smoke record on disk retains ``degraded`` so an
+    # auditor can grep for it without re-deriving from the eligibility
+    # flag.
+    assert shown["gates"]["smoke"].get("degraded") is True
+
+
+def test_non_degraded_smoke_still_yields_auto_enable_eligible(
+    tmp_path: Path,
+) -> None:
+    """D1 negative control: a smoke result that does NOT carry a
+    ``degraded`` flag (or carries it as False) must still be eligible
+    when all other gates pass. Without this regression the D1 change
+    could silently mark every proposal ineligible."""
+    home = tmp_path / ".opensquilla"
+    smoke_clean = {
+        "G3": {"passed": True, "degraded": False},
+        "G4": {"passed": True, "degraded": False},
+        "degraded": False,
+    }
+    result = proposals_lib.write_proposal(
+        home,
+        SAMPLE_SKILL_MD,
+        GATES_PASSING,
+        smoke_clean,
+    )
+    assert result["status"] == "ok"
+    assert result["auto_enable_eligible"] is True

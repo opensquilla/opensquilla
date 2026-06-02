@@ -262,14 +262,19 @@ def _synthesise_user_message(
     )
     if intent_digest:
         msg += f" Observed user-intent digest: {intent_digest[:500]}"
-    # Loop-safety assertion — promoted to a hard check because the
-    # consequence of regression is real recursion in the resolver.
+    # Loop-safety check. The earlier ``assert`` form was a real safety
+    # gate, but ``python -O`` strips assertions, so a production build
+    # silently lost the recursion guard. ``raise`` keeps the check
+    # active in every build and lets the caller see a structured error
+    # instead of a silent recursion.
     lower = msg.lower()
     for trig in _META_SKILL_CREATOR_TRIGGERS:
-        assert trig.lower() not in lower, (
-            f"synthesised user_message contains meta-skill-creator trigger "
-            f"{trig!r}; auto_propose would recursively trigger itself"
-        )
+        if trig.lower() in lower:
+            raise RuntimeError(
+                f"synthesised user_message contains meta-skill-creator "
+                f"trigger {trig!r}; auto_propose would recursively trigger "
+                f"itself if this message reached the resolver",
+            )
     return msg
 
 
@@ -618,7 +623,27 @@ def try_auto_enable_proposal(
     triggered_by: str,
     max_risk: str,
 ) -> dict[str, object]:
-    """Public wrapper used by cron/dream and manual creator persist paths."""
+    """Public wrapper used by cron/dream and manual creator persist paths.
+
+    The operator kill switch is honoured at this boundary so that
+    ``OPENSQUILLA_AUTO_PROPOSE_DISABLED=1`` halts auto-enable from
+    every call site — cron, dream, and manual creator persist —
+    without each caller having to remember to gate itself.
+    """
+    if is_auto_propose_disabled():
+        _log.info(
+            "auto_propose.kill_switch",
+            extra={
+                "proposal_id": proposal_id,
+                "triggered_by": triggered_by,
+                "path": "try_auto_enable_proposal",
+            },
+        )
+        return {
+            "decision": "refused",
+            "reason": "kill_switch_disabled",
+            "kill_switch": True,
+        }
     return _try_auto_enable_proposal(
         proposals_dir=proposals_dir,
         proposal_id=proposal_id,
@@ -626,6 +651,24 @@ def try_auto_enable_proposal(
         triggered_by=triggered_by,
         max_risk=max_risk,
     )
+
+
+# Centralised operator kill switch. Setting this env var to ``"1"``
+# halts every auto-propose entry point (cron, dream, manual creator
+# persist) so operators get a single point of control without each
+# call site having to remember to inline the check.
+_AUTO_PROPOSE_KILL_SWITCH_ENV = "OPENSQUILLA_AUTO_PROPOSE_DISABLED"
+
+
+def is_auto_propose_disabled() -> bool:
+    """Return True when the operator-controlled kill switch is set.
+
+    Both the synthesis pipeline (``auto_propose``) and the auto-enable
+    wrapper (``try_auto_enable_proposal``) consult this helper at
+    their entry points. Callers (cron handler, dream callback) may
+    pre-check it to skip building expensive context objects.
+    """
+    return os.getenv(_AUTO_PROPOSE_KILL_SWITCH_ENV) == "1"
 
 
 def _resolve_proposals_dir(proposals_dir: Path | None) -> Path:
@@ -671,6 +714,20 @@ async def auto_propose(
         AutoProposeResult capturing proposals_created / skipped /
         errors. NEVER raises — every exception is collected.
     """
+    # Honour the operator kill switch at the source so that every
+    # entry point — cron, dream callback, manual creator
+    # auto-enable, future call sites — observes the same disabled
+    # state. Pre-checks in the cron handler stay as fast paths but
+    # this guard is the load-bearing one.
+    if is_auto_propose_disabled():
+        _log.info(
+            "auto_propose.kill_switch",
+            extra={"triggered_by": triggered_by, "path": "auto_propose"},
+        )
+        return AutoProposeResult(
+            skipped=[{"reason": "kill_switch_disabled"}],
+            triggered_by=triggered_by,
+        )
     proposals_dir = _resolve_proposals_dir(proposals_dir)
     proposals_created: list[str] = []
     proposals_enabled: list[str] = []

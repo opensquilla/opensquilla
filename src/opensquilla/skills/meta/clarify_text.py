@@ -31,8 +31,23 @@ _KEY_VALUE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*[:：]\s*(.*?)\s*$")
 # Numbered line: 1) value  or  1. value
 _NUMBERED_RE = re.compile(r"^\s*(\d+)\s*[\)\.]\s*(.*?)\s*$")
 
-_TRUE_VALUES = frozenset({"true", "yes", "1", "on", "是"})
-_FALSE_VALUES = frozenset({"false", "no", "0", "off", "否"})
+# Bool synonym tables. CJK affirmative/negative words ("好", "对",
+# "可以", "确认", "不要", "不用", "算了") used to silently fall through
+# to "not a bool" because the table only carried "是" / "否". Users
+# reading the prompt naturally answered with the conversational
+# equivalents, hit a parse error, and were re-prompted — the
+# "information not understood" symptom in chat-mode clarify. Keep the
+# CLI ``clarify_form.py`` table in lockstep with this set; the two
+# surfaces must accept the same vocabulary or a multi-surface skill
+# reports inconsistent outcomes.
+_TRUE_VALUES = frozenset({
+    "true", "yes", "1", "on",
+    "是", "好", "对", "嗯", "可以", "确认", "没问题", "ok",
+})
+_FALSE_VALUES = frozenset({
+    "false", "no", "0", "off",
+    "否", "不", "不要", "不行", "不用", "算了",
+})
 
 
 def parse_clarify_reply(

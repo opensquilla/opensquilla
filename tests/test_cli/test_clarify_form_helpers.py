@@ -363,3 +363,133 @@ def test_result_dataclass_minimal():
     r = ClarifyFormResult(fields={"x": 1}, cancelled=False)
     assert r.fields == {"x": 1}
     assert r.cancelled is False
+
+
+# ── Surface rendering of (d) protocol: confirmed / ambiguous / unknowns ──
+
+
+@pytest.mark.asyncio
+async def test_prompt_form_renders_confirmed_fields_and_accepts_enter() -> None:
+    """When the schema carries ``confirmed_fields`` from the prefill
+    scan, the user must see the inferred values up-front and be able
+    to accept each by hitting Enter on an empty line. The accepted
+    value lands in the result exactly as the audit reported."""
+    schema = {
+        "mode": "form",
+        "intro": "",
+        "fields": [
+            {"name": "destination", "type": "string", "required": True, "prompt": "city"},
+            {
+                "name": "days",
+                "type": "int",
+                "required": True,
+                "prompt": "days",
+                "min": 1,
+                "max": 30,
+            },
+        ],
+        "cancel_keywords": [],
+        "timeout_hours": 24,
+        "confirmed_fields": [
+            {"name": "destination", "value": "Tokyo", "source": "auto_prefill"},
+        ],
+        "ambiguous_fields": [
+            {"name": "days", "reason": "duration not stated"},
+        ],
+        "unknown_mentions": [],
+    }
+    answers = iter(["", "5"])  # Enter on destination → confirm; "5" for days
+
+    async def _stub(_prefix: str) -> str | None:
+        return next(answers)
+
+    out: list[str] = []
+    result = await prompt_clarify_form(schema, prompt_fn=_stub, writer=out.append)
+
+    assert result.cancelled is False
+    assert result.fields == {"destination": "Tokyo", "days": 5}
+    transcript = "\n".join(out)
+    assert "noticed details" in transcript
+    assert "destination" in transcript
+    assert "Tokyo" in transcript
+    assert "duration not stated" in transcript
+
+
+@pytest.mark.asyncio
+async def test_prompt_form_confirmed_field_can_be_overridden() -> None:
+    """A user who disagrees with the inferred value must be able to
+    type a new value to override. The overridden value wins; the
+    confirmed value is discarded."""
+    schema = {
+        "mode": "form",
+        "intro": "",
+        "fields": [
+            {"name": "destination", "type": "string", "required": True, "prompt": "city"},
+        ],
+        "cancel_keywords": [],
+        "timeout_hours": 24,
+        "confirmed_fields": [
+            {"name": "destination", "value": "Tokyo", "source": "auto_prefill"},
+        ],
+    }
+
+    async def _stub(_prefix: str) -> str | None:
+        return "Osaka"
+
+    result = await prompt_clarify_form(schema, prompt_fn=_stub, writer=lambda _: None)
+    assert result.cancelled is False
+    assert result.fields == {"destination": "Osaka"}
+
+
+@pytest.mark.asyncio
+async def test_prompt_form_renders_unknown_mentions() -> None:
+    """``unknown_mentions`` must surface verbatim so the user knows the
+    system noticed something it could not map to a field."""
+    schema = {
+        "mode": "form",
+        "intro": "",
+        "fields": [
+            {"name": "destination", "type": "string", "required": True, "prompt": "city"},
+        ],
+        "cancel_keywords": [],
+        "timeout_hours": 24,
+        "confirmed_fields": [],
+        "ambiguous_fields": [],
+        "unknown_mentions": [
+            {"text": "next month", "guess": "departure timing?"},
+        ],
+    }
+
+    async def _stub(_prefix: str) -> str | None:
+        return "Tokyo"
+
+    out: list[str] = []
+    await prompt_clarify_form(schema, prompt_fn=_stub, writer=out.append)
+    transcript = "\n".join(out)
+    assert "next month" in transcript
+    assert "departure timing?" in transcript
+
+
+@pytest.mark.asyncio
+async def test_prompt_form_without_prefill_payload_unchanged() -> None:
+    """Backwards compatibility: a schema without any prefill payload
+    must render exactly as before — no transparency header, no extra
+    blocks, no behavioural change."""
+    schema = {
+        "mode": "form",
+        "intro": "",
+        "fields": [
+            {"name": "destination", "type": "string", "required": True, "prompt": "city"},
+        ],
+        "cancel_keywords": [],
+        "timeout_hours": 24,
+    }
+
+    async def _stub(_prefix: str) -> str | None:
+        return "Tokyo"
+
+    out: list[str] = []
+    result = await prompt_clarify_form(schema, prompt_fn=_stub, writer=out.append)
+    assert result.fields == {"destination": "Tokyo"}
+    transcript = "\n".join(out)
+    assert "noticed details" not in transcript

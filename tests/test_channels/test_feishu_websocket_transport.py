@@ -317,3 +317,51 @@ async def test_feishu_non_message_events_do_not_start_agent_turns(
     await channel._handle_inbound_event(envelope)
 
     assert channel._queue.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_feishu_clarify_card_action_enqueues_form_submission() -> None:
+    channel = FeishuChannel(
+        FeishuChannelConfig(app_id="app", app_secret="secret", connection_mode="websocket")
+    )
+    envelope = InboundEventEnvelope(
+        source="feishu:websocket",
+        event_id="evt-clarify-card-action",
+        event_type="card.action.trigger",
+        raw={
+            "header": {
+                "event_id": "evt-clarify-card-action",
+                "event_type": "card.action.trigger",
+            },
+            "event": {
+                "open_id": "ou_user",
+                "operator": {"open_id": "ou_operator"},
+                "action": {
+                    "value": {
+                        "opensquilla_action": "clarify_submit",
+                        "channel_id": "oc_chat",
+                        "run_id": "run-1",
+                        "step": "clarify",
+                    },
+                    "form_value": {
+                        "destination": "Tokyo",
+                        "days": 5,
+                        "include_food": True,
+                    },
+                },
+            },
+        },
+        received_at=datetime.now(UTC),
+    )
+
+    await channel._handle_inbound_event(envelope)
+
+    msg = await channel.receive()
+    assert msg.sender_id == "ou_operator"
+    assert msg.channel_id == "oc_chat"
+    assert "destination: Tokyo" in msg.content
+    assert "days: 5" in msg.content
+    assert "include_food: true" in msg.content
+    assert msg.metadata["conversation_kind"] == "interaction"
+    assert msg.metadata["input_provenance"] == "clarify_form"
+    assert msg.metadata["clarify_run_id"] == "run-1"

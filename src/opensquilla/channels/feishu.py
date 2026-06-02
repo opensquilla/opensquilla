@@ -894,6 +894,9 @@ class FeishuChannel:
                 reaction_type=reaction,
             )
         elif envelope.event_type == "card.action.trigger":
+            if msg := self._parse_clarify_card_action(envelope.raw):
+                self.enqueue(msg)
+                return
             log.info("feishu.card_action_ignored", event_id=envelope.event_id)
         else:
             log.info(
@@ -905,6 +908,77 @@ class FeishuChannel:
     def _verify_signature(self, timestamp: str, nonce: str, body: str, signature: str) -> bool:
         """Verify Feishu event callback signature."""
         return _verify_feishu_signature(self.config.encrypt_key, timestamp, nonce, body, signature)
+
+    def _parse_clarify_card_action(self, raw: dict[str, Any]) -> IncomingMessage | None:
+        event = raw.get("event", {})
+        if not isinstance(event, dict):
+            return None
+        action = event.get("action", {})
+        if not isinstance(action, dict):
+            return None
+        value = action.get("value", {})
+        if not isinstance(value, dict):
+            return None
+        if value.get("opensquilla_action") != "clarify_submit":
+            return None
+
+        fields = action.get("form_value")
+        if not isinstance(fields, dict):
+            fields = action.get("form_values")
+        if not isinstance(fields, dict):
+            fields = value.get("fields")
+        if not isinstance(fields, dict):
+            return None
+
+        content = self._clarify_fields_to_text(fields)
+        if not content:
+            return None
+
+        operator = event.get("operator", {})
+        sender_id = ""
+        if isinstance(operator, dict):
+            sender_id = str(operator.get("open_id") or "")
+        sender_id = sender_id or str(event.get("open_id") or "unknown")
+        channel_id = str(
+            value.get("channel_id")
+            or event.get("open_chat_id")
+            or event.get("chat_id")
+            or "unknown"
+        )
+        metadata: dict[str, Any] = {
+            "conversation_kind": "interaction",
+            "is_group": True,
+            "event_id": raw.get("header", {}).get("event_id"),
+            "message_type": "interactive",
+            "native_chat_id": channel_id,
+            "input_provenance": "clarify_form",
+        }
+        run_id = value.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            metadata["clarify_run_id"] = run_id
+        step = value.get("step")
+        if isinstance(step, str) and step:
+            metadata["clarify_step"] = step
+
+        return IncomingMessage(
+            sender_id=sender_id,
+            channel_id=channel_id,
+            content=content,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _clarify_fields_to_text(fields: dict[str, Any]) -> str:
+        lines: list[str] = []
+        for key, value in fields.items():
+            if value is None or value == "":
+                continue
+            if isinstance(value, bool):
+                rendered = "true" if value else "false"
+            else:
+                rendered = str(value)
+            lines.append(f"{key}: {rendered}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Event parsing

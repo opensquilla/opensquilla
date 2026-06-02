@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -62,7 +61,7 @@ from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaResult, MetaS
 if TYPE_CHECKING:
     from opensquilla.persistence.meta_run_writer import MetaRunWriter
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 slog = structlog.get_logger(__name__)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
@@ -432,6 +431,11 @@ class MetaOrchestrator:
         full event stream through to the outer iterator so the user can see
         every inner tool call.
         """
+        log.warning(
+            "DEBUG_TRACE_dispatch_step_stream_entered",
+            step=step.id,
+            kind=step.kind,
+        )
 
         # Operator-controlled opt-out: when memory persistence is disabled
         # at the config level, short-circuit any step that targets the
@@ -511,6 +515,44 @@ class MetaOrchestrator:
                     f"run_id; construct MetaOrchestrator with dao= / "
                     f"run_writer= and ensure begin_run_sync succeeded",
                 )
+            # Step (c) wiring: build a prefill_context from the data
+            # already on hand so the executor can ask the user only
+            # for fields it cannot infer. ``conversation_history`` is
+            # not yet in scope here (the producer-side wiring is a
+            # later commit); the resolver-side hook in
+            # ``meta_resolution._clarify_extract_context`` already
+            # carries it for the resume turn so reference resolution
+            # does not regress.
+            prefill_context: dict[str, Any] | None = None
+            llm_chat_for_prefill: Any = None
+            log.warning(
+                "DEBUG_TRACE_user_input_dispatch",
+                step=step.id,
+                cfg_nl_extract=bool(cfg and cfg.nl_extract),
+                has_llm_chat=self._llm_chat is not None,
+                inputs_keys=sorted(inputs.keys()),
+                outputs_keys=sorted(outputs.keys()),
+            )
+            if (
+                cfg is not None
+                and cfg.nl_extract
+                and self._llm_chat is not None
+            ):
+                ctx_payload: dict[str, Any] = {}
+                user_message = inputs.get("user_message")
+                if isinstance(user_message, str) and user_message.strip():
+                    ctx_payload["original_user_message"] = user_message
+                collected = inputs.get("collected")
+                if isinstance(collected, dict) and collected:
+                    ctx_payload["previously_collected"] = collected
+                if outputs:
+                    ctx_payload["prior_step_outputs"] = dict(outputs)
+                conversation = inputs.get("conversation_history")
+                if isinstance(conversation, list) and conversation:
+                    ctx_payload["conversation_history"] = conversation
+                if ctx_payload:
+                    prefill_context = ctx_payload
+                    llm_chat_for_prefill = self._llm_chat
             text = await run_user_input_step(
                 step,
                 inputs=inputs,
@@ -519,6 +561,8 @@ class MetaOrchestrator:
                 session_id=self._session_key or "",
                 dao=self._dao,
                 now=time.time,
+                llm_chat=llm_chat_for_prefill,
+                prefill_context=prefill_context,
             )
             # Skip path only — pause path raises MetaPaused, which the
             # scheduler catches before we get here.
@@ -1155,11 +1199,30 @@ def make_agent_runner_from_parent(
         # Strip meta_invoke from the sub-Agent's tool surface so a step
         # cannot recurse into another meta-skill (pitfall #3 in the
         # mechanism doc: meta-A → meta-B → meta-A loops).
+        #
+        # Three tool-definition shapes are matched:
+        #   * attribute-style (``SimpleNamespace`` / dataclass with ``name``)
+        #   * flat-dict       ``{"name": "meta_invoke", ...}``
+        #   * OpenAI function-wrapped
+        #     ``{"type": "function", "function": {"name": "meta_invoke"}}``
+        # Missing the third shape would let provider routers that emit
+        # OpenAI-compatible schemas (OpenAI/OpenRouter/DeepSeek/Gemini)
+        # leak ``meta_invoke`` back into sub-Agents and reopen the
+        # recursion path the guard exists to close.
         filtered_tool_definitions = [
             td for td in tool_definitions
             if not (
                 getattr(td, "name", None) == "meta_invoke"
-                or (isinstance(td, dict) and td.get("name") == "meta_invoke")
+                or (
+                    isinstance(td, dict)
+                    and (
+                        td.get("name") == "meta_invoke"
+                        or (
+                            isinstance(td.get("function"), dict)
+                            and td["function"].get("name") == "meta_invoke"
+                        )
+                    )
+                )
             )
         ]
         agent = agent_factory(

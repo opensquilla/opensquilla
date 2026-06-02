@@ -74,9 +74,7 @@ def _domains_from_argv(parts: tuple[str, ...]) -> tuple[str, ...]:
 def _is_destructive(lowered: tuple[str, ...]) -> bool:
     if not lowered:
         return False
-    if lowered[0] in {"rm", "del", "erase"} and any(
-        "r" in p or "f" in p for p in lowered[1:]
-    ):
+    if lowered[0] in {"rm", "del", "erase"}:
         return True
     return lowered[0] in {"mkfs", "format"}
 

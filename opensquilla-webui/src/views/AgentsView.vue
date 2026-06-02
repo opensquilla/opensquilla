@@ -424,7 +424,9 @@ function onCardKeydown(event: KeyboardEvent) {
 
 function openChat(id?: string) {
   if (!id) return
-  router.push('/chat?agent=' + encodeURIComponent(id))
+  const agentId = String(id || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'main'
+  const suffix = Math.random().toString(36).slice(2, 10)
+  router.push({ path: '/chat', query: { session: `agent:${agentId}:webchat:${suffix}` } })
 }
 
 // ---------------------------------------------------------------------------
@@ -721,9 +723,10 @@ function escHtml(s: string): string {
 .stat-label {
   color: var(--text-dim);
   display: block;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
   text-transform: uppercase;
 }
 

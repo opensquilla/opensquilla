@@ -1,6 +1,12 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 
+const basePath = (() => {
+  const el = document.getElementById('opensquilla-data')
+  const raw = el?.dataset.basePath || '/control'
+  return raw.endsWith('/') ? raw : raw + '/'
+})()
+
 // Views
 const OverviewView = () => import('@/views/OverviewView.vue')
 const ChatView = () => import('@/views/ChatView.vue')
@@ -40,7 +46,7 @@ const routes: RouteRecordRaw[] = [
 ]
 
 export const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(basePath),
   routes,
 })
 

@@ -199,15 +199,15 @@
             <span class="cron-pill" :class="`cron-pill--${jobKindClass(j)}`">{{ jobKindLabel(j) }}</span>
           </header>
           <div class="cron-card__schedule">
-            <code class="cron-expr">{{ j.expression || j.schedule || '&mdash;' }}</code>
+            <code class="cron-expr">{{ j.expression || j.schedule || '—' }}</code>
             <span v-if="explainCron(j.expression || '')" class="cron-card__human">{{ explainCron(j.expression || '') }}</span>
           </div>
           <dl class="cron-card__meta">
-            <div><dt>Target</dt><dd>{{ j.sessionTarget || j.session_target || '&mdash;' }}</dd></div>
+            <div><dt>Target</dt><dd>{{ j.sessionTarget || j.session_target || '—' }}</dd></div>
             <div>
               <dt>Last run</dt>
               <dd>
-                {{ j.last_run ? humanCountdownPast(new Date(j.last_run)) : '&mdash;' }}
+                {{ j.last_run ? humanCountdownPast(new Date(j.last_run)) : '—' }}
                 <span v-if="j.last_status">
                   &middot; <span :class="`status status--${j.last_status === 'ok' || j.last_status === 'success' ? 'ok' : 'err'}`">{{ j.last_status }}</span>
                 </span>
@@ -268,14 +268,14 @@
                 <button class="cron-link" @click="toggleSelected(j.id)">{{ j.name || j.id }}</button>
               </td>
               <td><span class="cron-pill" :class="`cron-pill--${jobKindClass(j)}`">{{ jobKindLabel(j) }}</span></td>
-              <td>{{ j.sessionTarget || j.session_target || '&mdash;' }}</td>
-              <td><code class="cron-expr cron-expr--inline">{{ j.expression || j.schedule || '&mdash;' }}</code></td>
+              <td>{{ j.sessionTarget || j.session_target || '—' }}</td>
+              <td><code class="cron-expr cron-expr--inline">{{ j.expression || j.schedule || '—' }}</code></td>
               <td>
                 <span v-if="j.enabled" class="status status--ok">enabled</span>
                 <span v-else class="status status--off">paused</span>
               </td>
-              <td class="cron-mono">{{ j.last_run ? humanCountdownPast(new Date(j.last_run)) : '&mdash;' }}</td>
-              <td class="cron-mono">{{ j.enabled ? nextRunText(j) : '&mdash;' }}</td>
+              <td class="cron-mono">{{ j.last_run ? humanCountdownPast(new Date(j.last_run)) : '—' }}</td>
+              <td class="cron-mono">{{ j.enabled ? nextRunText(j) : '—' }}</td>
               <td class="cron-table__actions">
                 <button class="cron-iconbtn cron-iconbtn--sm" title="Run now" @click="runJob(j.id, $event)">
                   <Icon name="send" :size="14" />
@@ -315,11 +315,11 @@
             </thead>
             <tbody>
               <tr v-for="r in runs" :key="r.started_at">
-                <td class="cron-mono">{{ r.started_at ? relTime(r.started_at) : '&mdash;' }}</td>
+                <td class="cron-mono">{{ r.started_at ? relTime(r.started_at) : '—' }}</td>
                 <td><span :class="`status status--${r.status === 'ok' ? 'ok' : 'err'}`">{{ r.status || 'unknown' }}</span></td>
-                <td class="cron-mono">{{ r.duration_ms != null ? r.duration_ms + 'ms' : '&mdash;' }}</td>
+                <td class="cron-mono">{{ r.duration_ms != null ? r.duration_ms + 'ms' : '—' }}</td>
                 <td>{{ deliveryStatusText(r) }}</td>
-                <td class="cron-runs__reply">{{ r.summary ? r.summary.substring(0, 120) : '&mdash;' }}</td>
+                <td class="cron-runs__reply">{{ r.summary ? r.summary.substring(0, 120) : '—' }}</td>
                 <td>
                   <button v-if="r.sessionKey" class="cron-link cron-run-chat-link" @click="router.push('/chat?session=' + encodeURIComponent(r.sessionKey))">
                     &rarr; Chat
@@ -749,7 +749,7 @@ const upcomingJobs = computed(() => {
 const nextJob = computed(() => upcomingJobs.value[0] || null)
 
 const nextCountdown = computed(() => {
-  if (!nextJob.value) return '&mdash;'
+  if (!nextJob.value) return '—'
   return humanCountdown(new Date(nextJob.value.ts))
 })
 
@@ -1290,11 +1290,11 @@ function isUpcomingRun(j: CronJob, t = Date.now()) {
 }
 
 function nextRunText(j: CronJob) {
-  if (!j || !j.enabled) return '&mdash;'
+  if (!j || !j.enabled) return '—'
   if (j.status === 'running') return 'running'
-  if (!j.next_run) return '&mdash;'
+  if (!j.next_run) return '—'
   const ts = new Date(j.next_run)
-  if (isNaN(ts.getTime())) return '&mdash;'
+  if (isNaN(ts.getTime())) return '—'
   if (ts.getTime() <= Date.now()) return 'awaiting update'
   return humanCountdown(ts)
 }
@@ -1336,7 +1336,7 @@ function deliveryStatusText(r: CronRun) {
   if (ds && typeof ds === 'object') {
     return `ch: ${(ds as Record<string, string>).channel || '-'}, ws: ${(ds as Record<string, string>).ws || '-'}`
   }
-  return (ds as string) || '&mdash;'
+  return (ds as string) || '—'
 }
 
 function horizonLeft(ts: number) {
@@ -1463,7 +1463,7 @@ function nextRuns(parsed: ParsedCron, count: number, fromTs?: number): Date[] {
 function humanizeFieldList(field: ParsedField, all_label: string, names?: Record<number, string>) {
   if (field.all) return all_label
   const arr = [...field.set!].sort((a, b) => a - b)
-  if (arr.length === 0) return '&mdash;'
+  if (arr.length === 0) return '—'
   const display = arr.map(v => names ? names[v] : String(v).padStart(2, '0'))
   if (display.length === 1) return display[0]
   if (display.length <= 4) return display.join(', ')
@@ -1527,7 +1527,7 @@ function renderCronExplain(expr: string) {
   if (!parsed) {
     cronExplainValid.value = false
     cronExplainInvalid.value = true
-    cronExplainHuman.value = 'Could not parse expression &mdash; expected 5 fields (m h dom mon dow).'
+    cronExplainHuman.value = 'Could not parse expression — expected 5 fields (m h dom mon dow).'
     cronExplainUpcoming.value = []
     return
   }
@@ -1587,7 +1587,7 @@ function humanTime(date: Date): string {
 
 function relTime(ts: string): string {
   const date = new Date(ts)
-  if (isNaN(date.getTime())) return '&mdash;'
+  if (isNaN(date.getTime())) return '—'
   return humanCountdownPast(date)
 }
 
@@ -1746,9 +1746,10 @@ function jobSessionKey(job: CronJob | null): string {
 .stat-label {
   color: var(--text-dim);
   display: block;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
   text-transform: uppercase;
 }
 
@@ -2105,7 +2106,9 @@ function jobSessionKey(job: CronJob | null): string {
 
 .cron-card__meta dt {
   color: var(--text-dim);
-  font-size: var(--fs-sm);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.25;
 }
 
 .cron-card__meta dd {

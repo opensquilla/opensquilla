@@ -19,6 +19,12 @@ from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
 
 RUN_CONTEXT_ORIGIN_KEY = "sandbox_run_context"
 DEFAULT_ROOT_WORKSPACE = "/root/.opensquilla/workspace"
+_DEFAULT_WORKSPACE_CREDENTIAL_PARTS: tuple[tuple[str, ...], ...] = (
+    (".aws", "credentials"),
+    (".kube", "config"),
+    (".docker", "config"),
+    (".gnupg",),
+)
 
 
 @dataclass(frozen=True)
@@ -140,6 +146,25 @@ def _is_relative_to_path(candidate: str, root: str) -> bool:
         return False
 
 
+def _is_sensitive_default_workspace_target(path: str, workspace: str) -> bool:
+    marker = sensitive_path_marker(path, workspace=workspace)
+    if marker is not None:
+        return True
+    try:
+        relative_parts = tuple(
+            part.casefold() for part in Path(path).relative_to(Path(workspace)).parts
+        )
+    except (OSError, RuntimeError, ValueError):
+        return True
+    for blocked in _DEFAULT_WORKSPACE_CREDENTIAL_PARTS:
+        if (
+            len(relative_parts) >= len(blocked)
+            and relative_parts[: len(blocked)] == blocked
+        ):
+            return True
+    return False
+
+
 def normalize_workspace_path(value: Any) -> str:
     workspace = _string_value(value)
     if workspace is None:
@@ -152,18 +177,19 @@ def normalize_workspace_path(value: Any) -> str:
         raise ValueError("sensitive_path")
     default_root_workspace = str(normalize_path(DEFAULT_ROOT_WORKSPACE))
     if _is_relative_to_path(normalized_workspace, default_root_workspace):
-        if (
-            sensitive_path_marker(
-                normalized_workspace,
-                workspace=default_root_workspace,
-            )
-            is not None
+        if _is_sensitive_default_workspace_target(
+            normalized_workspace,
+            default_root_workspace,
         ):
             raise ValueError("sensitive_path")
         return normalized_workspace
-    if (
-        sensitive_path_marker(normalized_workspace, workspace=None) is not None
-    ):
+    decision = decide_path_access(
+        normalized_workspace,
+        workspace=None,
+        mounts=(),
+        write=True,
+    )
+    if decision.status == "blocked":
         raise ValueError("sensitive_path")
     return normalized_workspace
 

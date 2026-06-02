@@ -632,6 +632,8 @@ async def test_set_workspace_rejects_sensitive_root_paths():
     from opensquilla.sandbox.run_context_service import set_workspace
 
     for workspace_path in (
+        "/run/docker.sock",
+        "/var/run/docker.sock",
         "/root",
         "/root/project",
         "/root/.aws",
@@ -639,8 +641,14 @@ async def test_set_workspace_rejects_sensitive_root_paths():
         "/root/.docker/config",
         "/root/.gnupg",
         "/root/.ssh",
+        "/root/.opensquilla/workspace/.aws/credentials",
+        "/root/.opensquilla/workspace/.kube/config",
+        "/root/.opensquilla/workspace/.docker/config",
+        "/root/.opensquilla/workspace/.gnupg/private-keys-v1.d/key",
+        "/root/.opensquilla/workspace/id_rsa",
         "/root/.opensquilla/workspace/.ssh/id_rsa",
         "/root/.opensquilla/workspace/.env",
+        "/root/.opensquilla/workspace/.env.local",
     ):
         manager = _SessionManager()
         with pytest.raises(ValueError):
@@ -838,6 +846,8 @@ async def test_saved_root_nested_workspace_is_allowed():
 @pytest.mark.parametrize(
     "workspace_path",
     [
+        "/run/docker.sock",
+        "/var/run/docker.sock",
         "/root",
         "/root/project",
         "/root/.aws",
@@ -845,8 +855,14 @@ async def test_saved_root_nested_workspace_is_allowed():
         "/root/.docker/config",
         "/root/.gnupg",
         "/root/.ssh",
+        "/root/.opensquilla/workspace/.aws/credentials",
+        "/root/.opensquilla/workspace/.kube/config",
+        "/root/.opensquilla/workspace/.docker/config",
+        "/root/.opensquilla/workspace/.gnupg/private-keys-v1.d/key",
+        "/root/.opensquilla/workspace/id_rsa",
         "/root/.opensquilla/workspace/.ssh/id_rsa",
         "/root/.opensquilla/workspace/.env",
+        "/root/.opensquilla/workspace/.env.local",
     ],
 )
 async def test_saved_sensitive_root_workspace_is_dropped(workspace_path):

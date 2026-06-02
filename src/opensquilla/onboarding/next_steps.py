@@ -21,7 +21,13 @@ _KEY_URLS = {
     "anthropic": "https://console.anthropic.com/settings/keys",
     "deepseek": "https://platform.deepseek.com/api_keys",
 }
-_CAPABILITY_SECTIONS = ("search", "channels", "image_generation", "memory_embedding")
+_CAPABILITY_SECTIONS = (
+    "search",
+    "channels",
+    "image_generation",
+    "audio",
+    "memory_embedding",
+)
 _CAPABILITY_STATUS_DISPLAY = {
     "ok": "Ready",
     "optional": "Later",
@@ -34,6 +40,7 @@ _HEADLESS_SECTION_ALIASES = {
     "providers": "provider",
     "channel": "channels",
     "image_generation": "image-generation",
+    "audio": "audio",
     "memory_embedding": "memory-embedding",
 }
 _HEADLESS_SETUP_COMMANDS = {
@@ -56,6 +63,10 @@ _HEADLESS_SETUP_COMMANDS = {
     "image-generation": (
         "Image recipes",
         "opensquilla onboard catalog image",
+    ),
+    "audio": (
+        "Audio recipes",
+        "opensquilla onboard catalog audio",
     ),
     "memory-embedding": (
         "Headless memory embedding",
@@ -107,6 +118,7 @@ def env_recovery_commands(status: Any) -> list[dict[str, str]]:
             status.image_generation_source,
             status.image_generation_env_key,
         ),
+        ("audio", "Set audio key", status.audio_source, status.audio_env_key),
         (
             "memory_embedding",
             "Set memory key",
@@ -215,6 +227,14 @@ def env_reference_warnings(config: Any) -> list[str]:
             image_env_key = str(getattr(image_spec, "env_key", "") or "").strip()
         if image_env_key and not os.environ.get(image_env_key):
             warnings.append(_missing_env_warning("Image generation provider", image_env_key))
+
+    audio = getattr(config, "audio", None)
+    if getattr(audio, "enabled", False) and not status.audio_configured:
+        providers = getattr(audio, "providers", None)
+        provider_cfg = getattr(providers, "elevenlabs", None) if providers is not None else None
+        audio_env_key = str(getattr(provider_cfg, "api_key_env", "") or "").strip()
+        if audio_env_key and not os.environ.get(audio_env_key):
+            warnings.append(_missing_env_warning("Audio provider", audio_env_key))
 
     embedding = getattr(getattr(config, "memory", None), "embedding", None)
     embedding_provider = str(getattr(embedding, "requested_provider", "") or "")

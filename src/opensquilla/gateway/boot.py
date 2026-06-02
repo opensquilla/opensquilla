@@ -1714,13 +1714,14 @@ async def build_services(
         log.warning("build_services.session_search_tool_failed", error=str(e))
 
     try:
-        from opensquilla.tools.builtin.media import configure_image_generation
+        from opensquilla.tools.builtin.media import configure_audio, configure_image_generation
 
         configure_image_generation(
             config.image_generation,
             llm_config=config.llm,
             squilla_router_config=config.squilla_router,
         )
+        configure_audio(config.audio)
     except Exception as e:
         log.warning("build_services.image_generation_config_failed", error=str(e))
 
@@ -2794,11 +2795,17 @@ async def start_gateway_server(
     server_handle._background_completion_manager = background_completion_manager
 
     if run:
+        uvicorn_kwargs: dict[str, Any] = {
+            "app": app,
+            "host": config.host,
+            "port": config.port,
+            "log_level": "info" if not config.debug else "debug",
+        }
+        if config.tls.keyfile and config.tls.certfile:
+            uvicorn_kwargs["ssl_keyfile"] = config.tls.keyfile
+            uvicorn_kwargs["ssl_certfile"] = config.tls.certfile
         uv_config = uvicorn.Config(
-            app=app,
-            host=config.host,
-            port=config.port,
-            log_level="info" if not config.debug else "debug",
+            **uvicorn_kwargs,
         )
         server = uvicorn.Server(uv_config)
         server_handle._server = server

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from opensquilla.gateway.config import GatewayConfig
+from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.config_store import default_config_path
 from opensquilla.onboarding.image_generation_specs import (
     get_image_generation_provider_setup_spec,
@@ -23,6 +24,7 @@ from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
 from opensquilla.onboarding.section_status import (
     FIRST_RUN_REQUIRED_SECTIONS,
     SectionStatus,
+    audio_section_status,
     channels_section_status,
     image_generation_section_status,
     llm_section_status,
@@ -53,6 +55,11 @@ class OnboardingStatus:
     image_generation_provider: str
     image_generation_primary: str
     image_generation_env_key: str
+    audio_configured: bool
+    audio_enabled: bool
+    audio_source: str
+    audio_provider: str
+    audio_env_key: str
     memory_embedding_configured: bool
     memory_embedding_provider: str
     memory_embedding_source: str
@@ -71,6 +78,7 @@ _SECTION_LABELS: dict[str, str] = {
     "search": "Web search",
     "channels": "Channels",
     "image_generation": "Image generation",
+    "audio": "Voice audio",
     "memory_embedding": "Memory embedding",
 }
 
@@ -324,6 +332,32 @@ def _memory_embedding_annotations(
     return "none", env_key
 
 
+def _audio_annotations(
+    cfg: GatewayConfig,
+    status: SectionStatus,
+) -> tuple[str, str, str]:
+    audio_cfg = getattr(cfg, "audio", None)
+    if audio_cfg is None or status is SectionStatus.OPTIONAL:
+        return "none", "", ""
+    provider_id = "elevenlabs"
+    try:
+        spec = get_audio_provider_setup_spec(provider_id)
+    except KeyError:
+        return "none", provider_id, ""
+    providers = getattr(audio_cfg, "providers", None)
+    provider_cfg = getattr(providers, provider_id, None) if providers is not None else None
+    if provider_cfg is None:
+        return "none", provider_id, spec.env_key
+    if getattr(provider_cfg, "api_key", ""):
+        return "explicit", provider_id, ""
+    env_key = str(getattr(provider_cfg, "api_key_env", "") or spec.env_key).strip()
+    if env_key and os.environ.get(env_key):
+        return "env", provider_id, env_key
+    if env_key:
+        return "missing_env", provider_id, env_key
+    return "none", provider_id, spec.env_key
+
+
 def _runtime_blocking_sections(
     *,
     memory_provider: str,
@@ -347,6 +381,7 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
     llm_status = sections["llm"]
     search_status = sections["search"]
     image_status = sections["image_generation"]
+    audio_status = sections["audio"]
     memory_status = sections["memory_embedding"]
     llm_source, llm_env_key = _llm_source(config, llm_status)
     search_provider, search_source, search_env_key = _search_annotations(
@@ -355,6 +390,7 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
     image_source, image_provider, image_primary, image_env_key = _image_generation_annotations(
         config, image_status
     )
+    audio_source, audio_provider, audio_env_key = _audio_annotations(config, audio_status)
     memory_embedding = getattr(getattr(config, "memory", None), "embedding", None)
     memory_provider = str(
         getattr(memory_embedding, "requested_provider", "")
@@ -377,6 +413,10 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
                 if image_source == "llm_fallback"
                 else _source_detail(image_source, image_env_key)
             ),
+        ),
+        "audio": _with_provider(
+            audio_provider,
+            _source_detail(audio_source, audio_env_key),
         ),
         "memory_embedding": _with_provider(
             memory_provider,
@@ -402,6 +442,11 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
         image_generation_provider=image_provider,
         image_generation_primary=image_primary,
         image_generation_env_key=image_env_key,
+        audio_configured=audio_status is SectionStatus.OK,
+        audio_enabled=bool(getattr(config.audio, "enabled", False)),
+        audio_source=audio_source,
+        audio_provider=audio_provider,
+        audio_env_key=audio_env_key,
         memory_embedding_configured=memory_status is SectionStatus.OK,
         memory_embedding_provider=memory_provider,
         memory_embedding_source=memory_source,
@@ -419,6 +464,7 @@ __all__ = [
     "SectionStatus",
     "get_onboarding_status",
     "channels_section_status",
+    "audio_section_status",
     "image_generation_section_status",
     "llm_section_status",
     "memory_embedding_section_status",

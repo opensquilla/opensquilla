@@ -1337,7 +1337,7 @@ def test_onboard_status_table_names_missing_env_keys_for_optional_capabilities(
     summary = _status_cockpit_summary(get_onboarding_status(load_config(target)))
     assert summary == (
         "Blocking setup: Memory embedding"
-        " · Optional later: Web search, Channels, Image generation"
+        " · Optional later: Web search, Channels, Image generation, Voice audio"
     )
 
 
@@ -1397,7 +1397,13 @@ def test_onboard_status_offers_ready_next_moves_when_all_sections_ready(
         "[[channels.channels]]\n"
         'type = "slack"\n'
         'name = "w"\n'
-        'token = "xoxb-test"\n',
+        'token = "xoxb-test"\n'
+        "\n"
+        "[audio]\n"
+        "enabled = true\n"
+        "\n"
+        "[audio.providers.elevenlabs]\n"
+        'api_key = "el-test"\n',
         encoding="utf-8",
     )
 

@@ -1315,6 +1315,24 @@
   overflow: hidden;
 }
 
+.msg-artifact-card--audio {
+  cursor: default;
+  max-width: min(520px, 100%);
+  min-width: min(320px, 78vw);
+}
+
+.msg-artifact-card--audio:hover,
+.msg-artifact-card--audio:focus-visible {
+  background: var(--bg-surface);
+  border-color: var(--border);
+  transform: none;
+}
+
+.msg-artifact-audio {
+  display: block;
+  width: 100%;
+}
+
 .msg-artifact-preview {
   aspect-ratio: 16 / 10;
   background: var(--bg);
@@ -2228,6 +2246,22 @@
 }
 #chat-btn-send:active {
   transform: scale(0.92);
+}
+
+#chat-btn-mic.chat-mic-recording {
+  color: #b91c1c;
+  background: #fee2e2;
+  border-color: #fecaca;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.14);
+}
+
+#chat-btn-mic.chat-mic-recording svg {
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(0.86); }
 }
 
 /* Stop button pulse animation during streaming */

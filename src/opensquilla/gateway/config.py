@@ -1063,6 +1063,46 @@ class ImageGenerationConfig(BaseSettings):
     )
 
 
+class AudioElevenLabsProviderConfig(BaseModel):
+    base_url: str = "https://api.elevenlabs.io"
+    api_key: str = ""
+    api_key_env: str = "ELEVENLABS_API_KEY"
+    speech_to_text_model: str = "scribe_v2"
+    voice_conversion_model: str = "eleven_multilingual_sts_v2"
+    music_model: str = "music_v1"
+    music_output_format: str = "mp3_44100_128"
+
+
+class AudioProvidersConfig(BaseModel):
+    elevenlabs: AudioElevenLabsProviderConfig = Field(
+        default_factory=AudioElevenLabsProviderConfig
+    )
+
+
+class AudioTTSConfig(BaseModel):
+    model: str = "eleven_multilingual_v2"
+    voice: str = "21m00Tcm4TlvDq8ikWAM"
+    language_code: str = ""
+    output_format: str = "mp3_44100_128"
+    timeout_seconds: float = 120.0
+    stability: float | None = None
+    similarity_boost: float | None = None
+    style: float | None = None
+    use_speaker_boost: bool | None = None
+    speed: float = 1.0
+
+
+class AudioConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_AUDIO_",
+        env_nested_delimiter="__",
+    )
+
+    enabled: bool = False
+    tts: AudioTTSConfig = Field(default_factory=AudioTTSConfig)
+    providers: AudioProvidersConfig = Field(default_factory=AudioProvidersConfig)
+
+
 # ---------------------------------------------------------------------------
 # Channel config (BaseModel — no env-var binding, validated at TOML load)
 # Names use *Entry suffix to avoid shadowing adapter-level *ChannelConfig.
@@ -1460,6 +1500,7 @@ class GatewayConfig(BaseSettings):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
+    audio: AudioConfig = Field(default_factory=AudioConfig)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     agents: list[AgentEntryConfig] = Field(default_factory=list)
@@ -1716,6 +1757,13 @@ class GatewayConfig(BaseSettings):
             data.pop("search_api_key_env", None)
         elif not data.get("search_api_key"):
             data.pop("search_api_key", None)
+        _delete_env_sourced_secret(
+            data,
+            "audio.providers.elevenlabs.api_key",
+            "audio.providers.elevenlabs.api_key_env",
+            default_env="ELEVENLABS_API_KEY",
+            settings_env="OPENSQUILLA_AUDIO_PROVIDERS__ELEVENLABS__API_KEY",
+        )
         router = data.get("squilla_router")
         if isinstance(router, dict) and router.get("tier_profile"):
             try:
@@ -1867,3 +1915,31 @@ def _delete_path(obj: dict[str, Any], path: str) -> None:
             return
         current = next_value
     current.pop(parts[-1], None)
+
+
+def _get_path(obj: dict[str, Any], path: str) -> Any:
+    current: Any = obj
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _delete_env_sourced_secret(
+    obj: dict[str, Any],
+    secret_path: str,
+    env_path: str,
+    *,
+    default_env: str,
+    settings_env: str | None = None,
+) -> None:
+    value = str(_get_path(obj, secret_path) or "").strip()
+    if not value:
+        _delete_path(obj, secret_path)
+        return
+    env_name = str(_get_path(obj, env_path) or default_env).strip() or default_env
+    if os.environ.get(env_name) == value or (
+        settings_env is not None and os.environ.get(settings_env) == value
+    ):
+        _delete_path(obj, secret_path)

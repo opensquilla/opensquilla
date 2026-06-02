@@ -18,11 +18,13 @@ from opensquilla.gateway.config import (
     SquillaRouterConfig,
     _router_tier_profile_defaults,
 )
+from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.image_generation_specs import (
     get_image_generation_provider_setup_spec,
 )
 from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 from opensquilla.onboarding.redaction import (
+    redact_audio_payload,
     redact_channel_entry,
     redact_image_generation_payload,
     redact_memory_embedding_payload,
@@ -537,6 +539,102 @@ def disable_image_generation(config: GatewayConfig) -> MutationResult:
             "enabled": False,
             "primary": new_cfg.image_generation.primary,
         },
+    )
+
+
+def _audio_provider_config(config: GatewayConfig, provider_id: str) -> Any:
+    providers = config.audio.providers
+    provider_config = getattr(providers, provider_id, None)
+    if provider_config is None:
+        raise KeyError(f"unknown audio provider: {provider_id!r}")
+    return provider_config
+
+
+def _audio_api_key_source(*, api_key: str, env_key: str) -> str:
+    if api_key:
+        return "explicit"
+    if env_key and os.environ.get(env_key):
+        return "env"
+    if env_key:
+        return "missing_env"
+    return "none"
+
+
+def upsert_audio_provider(
+    config: GatewayConfig,
+    *,
+    provider_id: str,
+    api_key: str = "",
+    api_key_env: str = "",
+    base_url: str = "",
+    enabled: bool = True,
+    tts_voice: str = "",
+    tts_model: str = "",
+    language_code: str = "",
+) -> MutationResult:
+    spec = get_audio_provider_setup_spec(provider_id)
+    if not spec.runtime_supported:
+        raise ValueError(
+            f"audio provider {provider_id!r} is not runtime-supported and cannot be configured"
+        )
+    if provider_id != "elevenlabs":
+        raise ValueError(f"audio provider {provider_id!r} is not supported")
+
+    current_provider_cfg = _audio_provider_config(config, provider_id)
+    explicit_env_key = _clean_optional_str(api_key_env)
+    if api_key and explicit_env_key:
+        raise ValueError("configure either api_key or api_key_env, not both")
+    effective_api_key = clean_header_secret(
+        api_key or getattr(current_provider_cfg, "api_key", ""),
+        label="Audio API key",
+    )
+    current_env_key = getattr(current_provider_cfg, "api_key_env", spec.env_key) or ""
+    env_key = "" if api_key else (explicit_env_key or current_env_key or spec.env_key)
+    api_key_source = _audio_api_key_source(
+        api_key=effective_api_key,
+        env_key=env_key,
+    )
+    if enabled and spec.requires_api_key and api_key_source == "none":
+        raise ValueError(
+            f"audio provider {provider_id!r} requires an api_key or {spec.env_key}"
+        )
+
+    effective_base_url = (
+        base_url or getattr(current_provider_cfg, "base_url", "") or spec.default_base_url
+    )
+    effective_tts_voice = tts_voice or config.audio.tts.voice or spec.default_tts_voice
+    effective_tts_model = tts_model or config.audio.tts.model or spec.default_tts_model
+    effective_language_code = language_code or config.audio.tts.language_code
+
+    new_cfg = _clone(config)
+    new_cfg.audio.enabled = bool(enabled)
+    next_provider_cfg = _audio_provider_config(new_cfg, provider_id)
+    next_provider_cfg.api_key = effective_api_key
+    next_provider_cfg.api_key_env = env_key
+    next_provider_cfg.base_url = effective_base_url
+    new_cfg.audio.tts.voice = effective_tts_voice
+    new_cfg.audio.tts.model = effective_tts_model
+    new_cfg.audio.tts.language_code = effective_language_code
+    if api_key:
+        new_cfg.clear_runtime_secret(f"audio.providers.{provider_id}.api_key")
+
+    payload = {
+        "provider": provider_id,
+        "enabled": bool(enabled),
+        "api_key": effective_api_key,
+        "api_key_env": env_key,
+        "api_key_source": api_key_source,
+        "base_url": effective_base_url,
+        "tts_voice": effective_tts_voice,
+        "tts_model": effective_tts_model,
+        "language_code": effective_language_code,
+    }
+    return MutationResult(
+        config=new_cfg,
+        changed=True,
+        restart_required=False,
+        warnings=[],
+        public_payload=redact_audio_payload(payload),
     )
 
 

@@ -624,6 +624,7 @@ const ChatView = (() => {
   let _thread = null;
   let _textarea = null;
   let _sendBtn = null;
+  let _micBtn = null;
   let _sessionInput = null;
   let _sessionChip = null;
   let _attachPreview = null;
@@ -634,6 +635,10 @@ const ChatView = (() => {
   let _elevatedPill = null;
   let _composer = null;
   let _composerObserver = null;
+  let _mediaRecorder = null;
+  let _recordedAudioChunks = [];
+  let _recordingStream = null;
+  let _voiceInputBusy = false;
 
   /* ── Helpers ────────────────────────────────────────────────────────── */
 
@@ -1250,6 +1255,7 @@ const ChatView = (() => {
                         placeholder="Send a message..." maxlength="100000"
                         aria-label="Message to send"></textarea>
             </div>
+            <button class="btn btn--icon btn--ghost" id="chat-btn-mic" title="Record voice input" aria-label="Record voice input">${icons.microphone ? icons.microphone() : icons.chat()}</button>
             <button class="btn btn--icon btn--ghost" id="chat-btn-new" title="New chat session in the current agent" aria-label="New chat session in the current agent">${icons.plus()}</button>
             <button class="btn btn--icon btn--ghost" id="chat-btn-export" title="Export as Markdown" aria-label="Export as Markdown">${icons.download()}</button>
             <button class="btn btn--icon btn--primary" id="chat-btn-send" title="Send (queues while streaming)" aria-label="Send message">${icons.send()}</button>
@@ -1263,6 +1269,7 @@ const ChatView = (() => {
     _thread       = _el.querySelector('#chat-thread');
     _textarea     = _el.querySelector('#chat-textarea');
     _sendBtn      = _el.querySelector('#chat-btn-send');
+    _micBtn       = _el.querySelector('#chat-btn-mic');
     _sessionInput = null;  // replaced by chip; session key lives in _sessionKey
     _sessionChip  = document.getElementById('chat-session-chip');
     _attachPreview = _el.querySelector('#chat-attach-preview');
@@ -2287,6 +2294,7 @@ const ChatView = (() => {
 
     // Send
     _sendBtn.addEventListener('click', _onSend);
+    if (_micBtn) _micBtn.addEventListener('click', _onVoiceInputToggle);
     if (_stopBtn) _stopBtn.addEventListener('click', () => _onStop('webui_stop_button'));
     if (_pendingArea) _pendingArea.addEventListener('click', _onPendingAreaClick);
 
@@ -8029,9 +8037,11 @@ const ChatView = (() => {
   function _artifactCategory(artifact) {
     const mime = _artifactMime(artifact);
     if (mime.startsWith('image/')) return 'visual';
+    if (mime.startsWith('audio/')) return 'audio';
     if (ARTIFACT_MIME_CATEGORIES[mime]) return ARTIFACT_MIME_CATEGORIES[mime];
     if (!mime || mime === 'application/octet-stream' || mime === 'artifact') {
       const ext = _artifactExtension(_artifactName(artifact));
+      if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'webm'].includes(ext)) return 'audio';
       if (ARTIFACT_EXTENSION_CATEGORIES[ext]) return ARTIFACT_EXTENSION_CATEGORIES[ext];
     }
     return 'file';
@@ -8042,12 +8052,17 @@ const ChatView = (() => {
       case 'data': return 'data';
       case 'document': return 'doc';
       case 'code': return 'code';
+      case 'audio': return 'audio';
       default: return 'file';
     }
   }
 
   function _isImageArtifact(artifact) {
     return _artifactCategory(artifact) === 'visual';
+  }
+
+  function _isAudioArtifact(artifact) {
+    return _artifactCategory(artifact) === 'audio';
   }
 
   function _artifactPreviewUrl(artifact) {
@@ -8112,6 +8127,15 @@ const ChatView = (() => {
           </span>
           <span class="msg-artifact-card__action" aria-hidden="true">Download</span>
         </a>`;
+      } else if (_isAudioArtifact(artifact)) {
+        html += `<div class="msg-artifact-card msg-artifact-card--audio" data-artifact-category="${_escAttr(category)}" data-artifact-id="${_escAttr(artifact?.id || '')}" data-artifact-name="${_escAttr(name)}">
+          <audio class="msg-artifact-audio" controls preload="metadata" src="${_escAttr(downloadHref)}"></audio>
+          <span class="msg-artifact-card__body">
+            <span class="msg-artifact-card__name">${_esc(name)}</span>
+            <span class="msg-artifact-card__meta">${_esc(meta)}</span>
+          </span>
+          <a class="msg-artifact-card__action" href="${_escAttr(downloadHref)}" download="${_escAttr(name)}" data-artifact-download="${_escAttr(downloadUrl)}">Download</a>
+        </div>`;
       } else {
         html += `<a class="msg-artifact-chip" href="${_escAttr(downloadHref)}" download="${_escAttr(name)}" data-artifact-category="${_escAttr(category)}" data-artifact-download="${_escAttr(downloadUrl)}" data-artifact-id="${_escAttr(artifact?.id || '')}" data-artifact-name="${_escAttr(name)}" title="${_escAttr(name)}">
           <span class="msg-file-chip__icon" aria-hidden="true">${_esc(_artifactCategoryLabel(category))}</span>
@@ -8638,6 +8662,134 @@ const ChatView = (() => {
       file_uuid: result.file_uuid,
     };
     _renderAttachmentPreview();
+  }
+
+  async function _onVoiceInputToggle() {
+    if (_voiceInputBusy) return;
+    if (_mediaRecorder && _mediaRecorder.state === 'recording') {
+      _mediaRecorder.stop();
+      return;
+    }
+    await _startVoiceInputRecording();
+  }
+
+  async function _startVoiceInputRecording() {
+    if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      UI.toast('Voice input requires HTTPS on public URLs.', 'warn', 4500);
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+      UI.toast('Voice input is not available in this browser.', 'warn', 3500);
+      return;
+    }
+    try {
+      _voiceInputBusy = true;
+      _setVoiceInputState('requesting');
+      _recordedAudioChunks = [];
+      _recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : '';
+      _mediaRecorder = mimeType
+        ? new MediaRecorder(_recordingStream, { mimeType })
+        : new MediaRecorder(_recordingStream);
+      _mediaRecorder.addEventListener('dataavailable', (event) => {
+        if (event.data && event.data.size > 0) _recordedAudioChunks.push(event.data);
+      });
+      _mediaRecorder.addEventListener('stop', () => {
+        _finishVoiceInputRecording().catch((err) => {
+          UI.toast(`Voice transcription failed: ${err && err.message || err}`, 'warn', 4500);
+          _setVoiceInputState('idle');
+        });
+      }, { once: true });
+      _mediaRecorder.start();
+      _setVoiceInputState('recording');
+      UI.toast('Recording voice input...', 'info', 1600);
+    } catch (err) {
+      UI.toast(`Could not start voice input: ${err && err.message || err}`, 'warn', 4500);
+      _stopVoiceInputTracks();
+      _setVoiceInputState('idle');
+    } finally {
+      _voiceInputBusy = false;
+    }
+  }
+
+  async function _finishVoiceInputRecording() {
+    _stopVoiceInputTracks();
+    const mime = (_mediaRecorder && _mediaRecorder.mimeType) || 'audio/webm';
+    _mediaRecorder = null;
+    if (!_recordedAudioChunks.length) {
+      _setVoiceInputState('idle');
+      UI.toast('No voice audio was recorded.', 'warn', 2500);
+      return;
+    }
+    _setVoiceInputState('transcribing');
+    _voiceInputBusy = true;
+    try {
+      const blob = new Blob(_recordedAudioChunks, { type: mime });
+      const text = await _transcribeVoiceInput(blob, mime);
+      if (!text) {
+        UI.toast('Voice transcription returned no text.', 'warn', 3000);
+        return;
+      }
+      _appendTranscribedText(text);
+      UI.toast('Voice input transcribed.', 'info', 2200);
+    } finally {
+      _recordedAudioChunks = [];
+      _voiceInputBusy = false;
+      _setVoiceInputState('idle');
+    }
+  }
+
+  async function _transcribeVoiceInput(blob, mime) {
+    const ext = mime.includes('mp4') ? 'm4a' : mime.includes('wav') ? 'wav' : 'webm';
+    const form = new FormData();
+    form.append('file', blob, `voice_input.${ext}`);
+    const headers = {};
+    const token = (App.getAuthToken && App.getAuthToken()) || '';
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const response = await fetch('/api/audio/transcribe', {
+      method: 'POST',
+      body: form,
+      headers: headers,
+      credentials: 'same-origin',
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+    return String(payload.text || '').trim();
+  }
+
+  function _appendTranscribedText(text) {
+    if (!_textarea) return;
+    const current = _textarea.value.trim();
+    const next = current ? `${current}\n${text}` : text;
+    _textarea.value = next;
+    _textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    _textarea.focus();
+    _textarea.setSelectionRange(next.length, next.length);
+  }
+
+  function _setVoiceInputState(state) {
+    if (!_micBtn) return;
+    const recording = state === 'recording';
+    const busy = state === 'requesting' || state === 'transcribing';
+    _micBtn.classList.toggle('chat-mic-recording', recording);
+    _micBtn.disabled = busy;
+    _micBtn.title = recording
+      ? 'Stop recording'
+      : state === 'transcribing'
+        ? 'Transcribing voice input'
+        : 'Record voice input';
+    _micBtn.setAttribute('aria-label', recording ? 'Stop recording voice input' : 'Record voice input');
+  }
+
+  function _stopVoiceInputTracks() {
+    if (_recordingStream && _recordingStream.getTracks) {
+      _recordingStream.getTracks().forEach((track) => track.stop());
+    }
+    _recordingStream = null;
   }
 
   function _resolveAttachmentMime(file) {

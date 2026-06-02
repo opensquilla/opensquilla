@@ -117,7 +117,7 @@ const SetupView = (() => {
     if (stepId === 'router') return _detailStepStatus((_status.sectionDetails || {}).router);
     if (stepId === 'channels') return _detailStepStatus((_status.sectionDetails || {}).channels);
     if (stepId === 'extras') {
-      return _aggregateStepStatus(['search', 'image_generation', 'memory_embedding']);
+      return _aggregateStepStatus(['search', 'image_generation', 'audio', 'memory_embedding']);
     }
     if (stepId === 'finish') {
       return _hasSetupAction()
@@ -230,6 +230,7 @@ const SetupView = (() => {
       ['channels', 'channels'],
       ['search', 'extras'],
       ['image_generation', 'extras'],
+      ['audio', 'extras'],
       ['memory_embedding', 'extras'],
     ];
     const entry = sectionSteps.find(([section]) => {
@@ -453,6 +454,7 @@ const SetupView = (() => {
     const labels = {
       search: 'Copy set search key command',
       image_generation: 'Copy set image key command',
+      audio: 'Copy set audio key command',
       memory_embedding: 'Copy set memory key command',
     };
     return _renderEnvRecoveryCommand(
@@ -662,11 +664,28 @@ const SetupView = (() => {
       ? _credentialNeedList(imageSpec.whatYouNeed, imageEnv || imageSpec.envKey)
       : ['No key required while image generation is disabled.'];
     const imageStatusText = _imageGenerationStatusText();
+    const audioProviders = (_catalog.audioProviders || []).filter(p => p.runtimeSupported);
+    const audioProviderSelected = _status.audioProvider || audioProviders[0]?.providerId || 'elevenlabs';
+    const audioSpec = audioProviders.find(p => p.providerId === audioProviderSelected) || audioProviders[0] || {};
+    const audioConfig = ((_config || {}).audio || {});
+    const audioProviderConfig = ((audioConfig.providers || {})[audioProviderSelected] || {});
+    const audioTtsConfig = audioConfig.tts || {};
+    const audioEnv = audioProviderConfig.api_key_env || (audioSpec.requiresApiKey ? audioSpec.envKey : '') || '';
+    const audioBaseUrl = audioProviderConfig.base_url || audioSpec.defaultBaseUrl || '';
+    const audioTtsVoice = audioTtsConfig.voice || audioSpec.defaultTtsVoice || '';
+    const audioTtsModel = audioTtsConfig.model || audioSpec.defaultTtsModel || '';
+    const audioLanguageCode = audioTtsConfig.language_code || audioSpec.defaultLanguageCode || '';
+    const audioEnabledDefault = _status.audioEnabled === true || audioConfig.enabled === true;
+    const audioConfigHidden = audioEnabledDefault ? '' : ' hidden';
+    const audioNeeds = audioEnabledDefault
+      ? _credentialNeedList(audioSpec.whatYouNeed, audioEnv || audioSpec.envKey)
+      : ['No key required while voice audio is disabled.'];
+    const audioStatusText = _audioStatusText();
     return `
       <section class="setup-panel">
         <header class="setup-panel__head">
           <h3>Capability Center</h3>
-          <p>Web search · Memory recall · Image generation</p>
+          <p>Web search · Memory recall · Image generation · Voice audio</p>
         </header>
         <div class="setup-extras">
           <div class="setup-mini">
@@ -750,6 +769,30 @@ const SetupView = (() => {
             <label class="setup-check"><input id="setup-image-enabled" name="setup_image_enabled" type="checkbox" data-image-enabled${imageEnabledDefault ? ' checked' : ''}><span>Enabled</span></label>
             <button class="${_capabilitySaveButtonClass('image_generation')}" data-save-image>Save image generation</button>
           </div>
+          <div class="setup-mini">
+            <div class="setup-mini__head">
+              <h4>Voice audio</h4>
+              ${_renderCapabilityBadge('audio')}
+            </div>
+            <p class="setup-muted">${_esc(audioStatusText)}</p>
+            ${_renderCapabilityEnvRecoveryCommand('audio')}
+            ${_renderNeedList(audioNeeds, 'Audio needs', 'data-audio-needs')}
+            <div class="setup-mini__advanced-body" data-audio-config-fields${audioConfigHidden}>
+              <label><span>Provider</span>
+                <select id="setup-audio-provider" name="setup_audio_provider" data-audio-provider>
+                  ${audioProviders.map(p => `<option value="${_esc(p.providerId)}"${p.providerId === audioProviderSelected ? ' selected' : ''}>${_esc(p.label)}</option>`).join('')}
+                </select>
+              </label>
+              <label><span>API key</span><input id="setup-audio-api-key" name="setup_audio_api_key" type="password" data-audio-field="api_key" data-secret="true" placeholder="leave blank to keep current"></label>
+              <label><span>API key env</span><input id="setup-audio-api-key-env" name="setup_audio_api_key_env" data-audio-field="api_key_env" value="${_esc(audioEnv)}" placeholder="${_esc(audioSpec.envKey || 'ELEVENLABS_API_KEY')}"></label>
+              <label><span>Base URL</span><input id="setup-audio-base-url" name="setup_audio_base_url" data-audio-field="base_url" value="${_esc(audioBaseUrl)}" placeholder="${_esc(audioSpec.defaultBaseUrl || 'https://api.elevenlabs.io')}"></label>
+              <label><span>TTS voice</span><input id="setup-audio-tts-voice" name="setup_audio_tts_voice" data-audio-field="tts_voice" value="${_esc(audioTtsVoice)}" placeholder="${_esc(audioSpec.defaultTtsVoice || 'voice id')}"></label>
+              <label><span>TTS model</span><input id="setup-audio-tts-model" name="setup_audio_tts_model" data-audio-field="tts_model" value="${_esc(audioTtsModel)}" placeholder="${_esc(audioSpec.defaultTtsModel || 'eleven_multilingual_v2')}"></label>
+              <label><span>Language code</span><input id="setup-audio-language-code" name="setup_audio_language_code" data-audio-field="language_code" value="${_esc(audioLanguageCode)}" placeholder="zh-CN, en-US, en-GB"></label>
+            </div>
+            <label class="setup-check"><input id="setup-audio-enabled" name="setup_audio_enabled" type="checkbox" data-audio-enabled${audioEnabledDefault ? ' checked' : ''}><span>Enabled</span></label>
+            <button class="${_capabilitySaveButtonClass('audio')}" data-save-audio>Save voice audio</button>
+          </div>
         </div>
         <div class="setup-actions">
           <button class="setup-btn" data-prev="channels">Back</button>
@@ -811,6 +854,23 @@ const SetupView = (() => {
       );
     }
     return 'Image generation is enabled but still needs a visible provider key before agents can use it.';
+  }
+
+  function _audioStatusText() {
+    if (_status.audioEnabled === false) {
+      return 'Voice audio tools stay hidden until this capability is enabled.';
+    }
+    if (_status.audioConfigured === true) {
+      return 'Voice audio tools are ready for TTS, transcription, dubbing, cloning, conversion, and music.';
+    }
+    if (_status.audioSource === 'missing_env') {
+      return _missingEnvStatusText(
+        'Voice audio',
+        _status.audioEnvKey,
+        'Voice audio is enabled but still needs a visible provider key.',
+      );
+    }
+    return 'Voice audio is enabled but still needs a visible provider key.';
   }
 
   function _memoryEmbeddingStatusText(providerId = '') {
@@ -1096,6 +1156,8 @@ const SetupView = (() => {
     _el.querySelector('[data-memory-provider]')?.addEventListener('change', _syncMemoryProviderControls);
     _el.querySelector('[data-image-provider]')?.addEventListener('change', _syncImageProviderDefaults);
     _el.querySelector('[data-image-enabled]')?.addEventListener('change', _syncImageProviderDefaults);
+    _el.querySelector('[data-audio-provider]')?.addEventListener('change', _syncAudioProviderDefaults);
+    _el.querySelector('[data-audio-enabled]')?.addEventListener('change', _syncAudioProviderDefaults);
     _el.querySelectorAll('[data-setup-copy-command]').forEach(btn => btn.addEventListener('click', _onSetupCommandCopy));
     _bindChannelDirtyTracking();
     _bindConditionalSelects(_el);
@@ -1106,6 +1168,7 @@ const SetupView = (() => {
     _el.querySelector('[data-save-search]')?.addEventListener('click', _saveSearch);
     _el.querySelector('[data-save-memory]')?.addEventListener('click', _saveMemory);
     _el.querySelector('[data-save-image]')?.addEventListener('click', _saveImage);
+    _el.querySelector('[data-save-audio]')?.addEventListener('click', _saveAudio);
   }
 
   async function _onSetupCommandCopy(event) {
@@ -1175,6 +1238,7 @@ const SetupView = (() => {
     if (_step === 'extras' && _drafts.has('extras')) {
       _syncSearchProviderKeyControls({ refreshEnv: false });
       _syncMemoryProviderControls();
+      _syncAudioProviderDefaults({ refreshDefaults: false });
     }
   }
 
@@ -1194,6 +1258,9 @@ const SetupView = (() => {
     if (input.dataset.imageProvider !== undefined) return 'extras:image:provider';
     if (input.dataset.imageEnabled !== undefined) return 'extras:image:enabled';
     if (input.dataset.imageField) return `extras:image:${input.dataset.imageField}`;
+    if (input.dataset.audioProvider !== undefined) return 'extras:audio:provider';
+    if (input.dataset.audioEnabled !== undefined) return 'extras:audio:enabled';
+    if (input.dataset.audioField) return `extras:audio:${input.dataset.audioField}`;
     return `field:${idx}`;
   }
 
@@ -1378,6 +1445,32 @@ const SetupView = (() => {
     if (baseInput) {
       baseInput.value = spec.defaultBaseUrl || baseInput.value;
     }
+    _rememberDraft('extras');
+  }
+
+  function _syncAudioProviderDefaults({ refreshDefaults = true } = {}) {
+    const enabledInput = _el.querySelector('[data-audio-enabled]');
+    const audioEnabled = enabledInput?.checked === true;
+    const audioConfigFields = _el.querySelector('[data-audio-config-fields]');
+    if (audioConfigFields) audioConfigFields.hidden = !audioEnabled;
+    const providerId = _el.querySelector('[data-audio-provider]')?.value || 'elevenlabs';
+    const spec = (_catalog.audioProviders || []).find(p => p.providerId === providerId) || {};
+    const envInput = _el.querySelector('[data-audio-field="api_key_env"]');
+    const baseInput = _el.querySelector('[data-audio-field="base_url"]');
+    const voiceInput = _el.querySelector('[data-audio-field="tts_voice"]');
+    const modelInput = _el.querySelector('[data-audio-field="tts_model"]');
+    const languageInput = _el.querySelector('[data-audio-field="language_code"]');
+    if (envInput && refreshDefaults) envInput.value = spec.envKey || '';
+    if (baseInput && refreshDefaults) baseInput.value = spec.defaultBaseUrl || baseInput.value;
+    if (voiceInput && refreshDefaults) voiceInput.value = spec.defaultTtsVoice || voiceInput.value;
+    if (modelInput && refreshDefaults) modelInput.value = spec.defaultTtsModel || modelInput.value;
+    if (languageInput && refreshDefaults && !languageInput.value) {
+      languageInput.value = spec.defaultLanguageCode || '';
+    }
+    const audioNeeds = audioEnabled
+      ? _credentialNeedList(spec.whatYouNeed, envInput?.value || spec.envKey)
+      : ['No key required while voice audio is disabled.'];
+    _replaceNeedList('[data-audio-needs]', audioNeeds, 'Audio needs', 'data-audio-needs');
     _rememberDraft('extras');
   }
 
@@ -1585,6 +1678,31 @@ const SetupView = (() => {
         (res || {}).restartRequired,
       )) {
         UI.toast('Image generation saved.', 'info');
+      }
+      await _load();
+      _draw();
+    } catch (err) {
+      UI.toast('Save failed: ' + err.message, 'err');
+    }
+  }
+
+  async function _saveAudio() {
+    const params = { providerId: _el.querySelector('[data-audio-provider]')?.value || 'elevenlabs' };
+    params.enabled = _el.querySelector('[data-audio-enabled]')?.checked === true;
+    _el.querySelectorAll('[data-audio-field]').forEach(input => {
+      if (input.value !== '' || input.dataset.secret !== 'true') params[_camel(input.dataset.audioField)] = input.value;
+    });
+    try {
+      const res = await _rpc.call('onboarding.audio.configure', params);
+      const entry = (res || {}).entry || {};
+      if (!_toastEnvReferenceSave(
+        'Voice audio',
+        entry.api_key_env,
+        entry.api_key_source,
+        entry.api_key,
+        (res || {}).restartRequired,
+      )) {
+        UI.toast('Voice audio saved.', 'info');
       }
       await _load();
       _draw();

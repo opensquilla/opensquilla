@@ -316,6 +316,27 @@ async def test_channel_upsert_rejects_slack_webhook_without_signing_secret(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_channel_upsert_rejects_slack_socket_without_app_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.channel.upsert",
+        {
+            "entry": {
+                "type": "slack",
+                "name": "w",
+                "token": "supersecret",
+                "connection_mode": "socket",
+            }
+        },
+        _admin_ctx(),
+    )
+
+    assert res.error is not None
+    assert "app_token" in res.error.message
+
+
+@pytest.mark.asyncio
 async def test_channel_probe_validates_and_redacts_without_persisting(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))

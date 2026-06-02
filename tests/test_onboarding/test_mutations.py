@@ -234,6 +234,20 @@ def test_slack_socket_channel_does_not_require_signing_secret():
     assert "signing_secret" not in entry or entry["signing_secret"] in (None, "")
 
 
+def test_slack_socket_channel_requires_app_token():
+    cfg = GatewayConfig()
+    with pytest.raises(ValueError, match="app_token"):
+        upsert_channel(
+            cfg,
+            entry_payload={
+                "type": "slack",
+                "name": "w",
+                "token": "xoxb-test",
+                "connection_mode": "socket",
+            },
+        )
+
+
 def test_remove_channel():
     cfg = GatewayConfig()
     res1 = upsert_channel(

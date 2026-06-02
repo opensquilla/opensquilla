@@ -1101,6 +1101,12 @@ class SlackChannelEntry(ConfiguredChannelEntry):
     connection_mode: Literal["webhook", "socket"] = "webhook"
     app_token: str = ""
 
+    @model_validator(mode="after")
+    def _validate_socket_app_token(self) -> SlackChannelEntry:
+        if self.connection_mode == "socket" and not self.app_token.strip():
+            raise ValueError("slack socket channels require app_token")
+        return self
+
 
 class FeishuChannelEntry(ConfiguredChannelEntry):
     """Gateway config entry for a Feishu (Lark) channel."""

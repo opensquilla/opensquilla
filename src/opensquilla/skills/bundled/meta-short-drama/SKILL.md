@@ -867,7 +867,15 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot1_vid_prompt"
       on_failure: shot1_video_fallback
       with:
-        prompt: "{{ outputs.shot1_vid_prompt | truncate(900) }}"
+        # Prepend Assets Mapping so seedance knows the role of each
+        # input_reference image. Mirrors the upstream JiMeng prompt
+        # convention (see references/recipes.md "Mode: All-Reference"):
+        #   @image1 / reference[1] = identity anchor (full-cast lineup)
+        #   @image2 / reference[2] = scene composition (this shot)
+        # Keeping the preamble in English even when the shot directive
+        # is Chinese — seedance parses English instruction prefixes
+        # reliably regardless of the user-content language.
+        prompt: "Mode: All-Reference. Assets Mapping: reference[1] is the full-cast identity anchor (USE strictly for character likeness, faces, hair, skin tone, outfits, and accessories — keep these byte-identical to the reference across cuts). reference[2] is THIS shot's scene composition reference (USE for camera angle, framing, character blocking, prop placement, and background layout). Shot directive: {{ outputs.shot1_vid_prompt | truncate(700) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/1_shot.mp4"
         input_image: ""
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
@@ -910,7 +918,15 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot2_vid_prompt"
       on_failure: shot2_video_fallback
       with:
-        prompt: "{{ outputs.shot2_vid_prompt | truncate(900) }}"
+        # Prepend Assets Mapping so seedance knows the role of each
+        # input_reference image. Mirrors the upstream JiMeng prompt
+        # convention (see references/recipes.md "Mode: All-Reference"):
+        #   @image1 / reference[1] = identity anchor (full-cast lineup)
+        #   @image2 / reference[2] = scene composition (this shot)
+        # Keeping the preamble in English even when the shot directive
+        # is Chinese — seedance parses English instruction prefixes
+        # reliably regardless of the user-content language.
+        prompt: "Mode: All-Reference. Assets Mapping: reference[1] is the full-cast identity anchor (USE strictly for character likeness, faces, hair, skin tone, outfits, and accessories — keep these byte-identical to the reference across cuts). reference[2] is THIS shot's scene composition reference (USE for camera angle, framing, character blocking, prop placement, and background layout). Shot directive: {{ outputs.shot2_vid_prompt | truncate(700) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/2_shot.mp4"
         input_image: ""
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
@@ -953,7 +969,15 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot3_vid_prompt"
       on_failure: shot3_video_fallback
       with:
-        prompt: "{{ outputs.shot3_vid_prompt | truncate(900) }}"
+        # Prepend Assets Mapping so seedance knows the role of each
+        # input_reference image. Mirrors the upstream JiMeng prompt
+        # convention (see references/recipes.md "Mode: All-Reference"):
+        #   @image1 / reference[1] = identity anchor (full-cast lineup)
+        #   @image2 / reference[2] = scene composition (this shot)
+        # Keeping the preamble in English even when the shot directive
+        # is Chinese — seedance parses English instruction prefixes
+        # reliably regardless of the user-content language.
+        prompt: "Mode: All-Reference. Assets Mapping: reference[1] is the full-cast identity anchor (USE strictly for character likeness, faces, hair, skin tone, outfits, and accessories — keep these byte-identical to the reference across cuts). reference[2] is THIS shot's scene composition reference (USE for camera angle, framing, character blocking, prop placement, and background layout). Shot directive: {{ outputs.shot3_vid_prompt | truncate(700) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/3_shot.mp4"
         input_image: ""
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
@@ -996,7 +1020,15 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot4_vid_prompt"
       on_failure: shot4_video_fallback
       with:
-        prompt: "{{ outputs.shot4_vid_prompt | truncate(900) }}"
+        # Prepend Assets Mapping so seedance knows the role of each
+        # input_reference image. Mirrors the upstream JiMeng prompt
+        # convention (see references/recipes.md "Mode: All-Reference"):
+        #   @image1 / reference[1] = identity anchor (full-cast lineup)
+        #   @image2 / reference[2] = scene composition (this shot)
+        # Keeping the preamble in English even when the shot directive
+        # is Chinese — seedance parses English instruction prefixes
+        # reliably regardless of the user-content language.
+        prompt: "Mode: All-Reference. Assets Mapping: reference[1] is the full-cast identity anchor (USE strictly for character likeness, faces, hair, skin tone, outfits, and accessories — keep these byte-identical to the reference across cuts). reference[2] is THIS shot's scene composition reference (USE for camera angle, framing, character blocking, prop placement, and background layout). Shot directive: {{ outputs.shot4_vid_prompt | truncate(700) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/4_shot.mp4"
         input_image: ""
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
@@ -1039,7 +1071,15 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot5_vid_prompt"
       on_failure: shot5_video_fallback
       with:
-        prompt: "{{ outputs.shot5_vid_prompt | truncate(900) }}"
+        # Prepend Assets Mapping so seedance knows the role of each
+        # input_reference image. Mirrors the upstream JiMeng prompt
+        # convention (see references/recipes.md "Mode: All-Reference"):
+        #   @image1 / reference[1] = identity anchor (full-cast lineup)
+        #   @image2 / reference[2] = scene composition (this shot)
+        # Keeping the preamble in English even when the shot directive
+        # is Chinese — seedance parses English instruction prefixes
+        # reliably regardless of the user-content language.
+        prompt: "Mode: All-Reference. Assets Mapping: reference[1] is the full-cast identity anchor (USE strictly for character likeness, faces, hair, skin tone, outfits, and accessories — keep these byte-identical to the reference across cuts). reference[2] is THIS shot's scene composition reference (USE for camera angle, framing, character blocking, prop placement, and background layout). Shot directive: {{ outputs.shot5_vid_prompt | truncate(700) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/5_shot.mp4"
         input_image: ""
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
@@ -1082,7 +1122,15 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot6_vid_prompt"
       on_failure: shot6_video_fallback
       with:
-        prompt: "{{ outputs.shot6_vid_prompt | truncate(900) }}"
+        # Prepend Assets Mapping so seedance knows the role of each
+        # input_reference image. Mirrors the upstream JiMeng prompt
+        # convention (see references/recipes.md "Mode: All-Reference"):
+        #   @image1 / reference[1] = identity anchor (full-cast lineup)
+        #   @image2 / reference[2] = scene composition (this shot)
+        # Keeping the preamble in English even when the shot directive
+        # is Chinese — seedance parses English instruction prefixes
+        # reliably regardless of the user-content language.
+        prompt: "Mode: All-Reference. Assets Mapping: reference[1] is the full-cast identity anchor (USE strictly for character likeness, faces, hair, skin tone, outfits, and accessories — keep these byte-identical to the reference across cuts). reference[2] is THIS shot's scene composition reference (USE for camera angle, framing, character blocking, prop placement, and background layout). Shot directive: {{ outputs.shot6_vid_prompt | truncate(700) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/6_shot.mp4"
         input_image: ""
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
@@ -1125,7 +1173,15 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot7_vid_prompt"
       on_failure: shot7_video_fallback
       with:
-        prompt: "{{ outputs.shot7_vid_prompt | truncate(900) }}"
+        # Prepend Assets Mapping so seedance knows the role of each
+        # input_reference image. Mirrors the upstream JiMeng prompt
+        # convention (see references/recipes.md "Mode: All-Reference"):
+        #   @image1 / reference[1] = identity anchor (full-cast lineup)
+        #   @image2 / reference[2] = scene composition (this shot)
+        # Keeping the preamble in English even when the shot directive
+        # is Chinese — seedance parses English instruction prefixes
+        # reliably regardless of the user-content language.
+        prompt: "Mode: All-Reference. Assets Mapping: reference[1] is the full-cast identity anchor (USE strictly for character likeness, faces, hair, skin tone, outfits, and accessories — keep these byte-identical to the reference across cuts). reference[2] is THIS shot's scene composition reference (USE for camera angle, framing, character blocking, prop placement, and background layout). Shot directive: {{ outputs.shot7_vid_prompt | truncate(700) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/7_shot.mp4"
         input_image: ""
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
@@ -1168,7 +1224,15 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot8_vid_prompt"
       on_failure: shot8_video_fallback
       with:
-        prompt: "{{ outputs.shot8_vid_prompt | truncate(900) }}"
+        # Prepend Assets Mapping so seedance knows the role of each
+        # input_reference image. Mirrors the upstream JiMeng prompt
+        # convention (see references/recipes.md "Mode: All-Reference"):
+        #   @image1 / reference[1] = identity anchor (full-cast lineup)
+        #   @image2 / reference[2] = scene composition (this shot)
+        # Keeping the preamble in English even when the shot directive
+        # is Chinese — seedance parses English instruction prefixes
+        # reliably regardless of the user-content language.
+        prompt: "Mode: All-Reference. Assets Mapping: reference[1] is the full-cast identity anchor (USE strictly for character likeness, faces, hair, skin tone, outfits, and accessories — keep these byte-identical to the reference across cuts). reference[2] is THIS shot's scene composition reference (USE for camera angle, framing, character blocking, prop placement, and background layout). Shot directive: {{ outputs.shot8_vid_prompt | truncate(700) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/8_shot.mp4"
         input_image: ""
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
@@ -1211,7 +1275,15 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot9_vid_prompt"
       on_failure: shot9_video_fallback
       with:
-        prompt: "{{ outputs.shot9_vid_prompt | truncate(900) }}"
+        # Prepend Assets Mapping so seedance knows the role of each
+        # input_reference image. Mirrors the upstream JiMeng prompt
+        # convention (see references/recipes.md "Mode: All-Reference"):
+        #   @image1 / reference[1] = identity anchor (full-cast lineup)
+        #   @image2 / reference[2] = scene composition (this shot)
+        # Keeping the preamble in English even when the shot directive
+        # is Chinese — seedance parses English instruction prefixes
+        # reliably regardless of the user-content language.
+        prompt: "Mode: All-Reference. Assets Mapping: reference[1] is the full-cast identity anchor (USE strictly for character likeness, faces, hair, skin tone, outfits, and accessories — keep these byte-identical to the reference across cuts). reference[2] is THIS shot's scene composition reference (USE for camera angle, framing, character blocking, prop placement, and background layout). Shot directive: {{ outputs.shot9_vid_prompt | truncate(700) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/9_shot.mp4"
         input_image: ""
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
@@ -1254,7 +1326,15 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot10_vid_prompt"
       on_failure: shot10_video_fallback
       with:
-        prompt: "{{ outputs.shot10_vid_prompt | truncate(900) }}"
+        # Prepend Assets Mapping so seedance knows the role of each
+        # input_reference image. Mirrors the upstream JiMeng prompt
+        # convention (see references/recipes.md "Mode: All-Reference"):
+        #   @image1 / reference[1] = identity anchor (full-cast lineup)
+        #   @image2 / reference[2] = scene composition (this shot)
+        # Keeping the preamble in English even when the shot directive
+        # is Chinese — seedance parses English instruction prefixes
+        # reliably regardless of the user-content language.
+        prompt: "Mode: All-Reference. Assets Mapping: reference[1] is the full-cast identity anchor (USE strictly for character likeness, faces, hair, skin tone, outfits, and accessories — keep these byte-identical to the reference across cuts). reference[2] is THIS shot's scene composition reference (USE for camera angle, framing, character blocking, prop placement, and background layout). Shot directive: {{ outputs.shot10_vid_prompt | truncate(700) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/10_shot.mp4"
         input_image: ""
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
@@ -1439,12 +1519,21 @@ to disk regardless of outcome.
     re-roll subtly different faces per shot).
 13. **Video generation per active shot** — `seedance-2.0`, retry twice;
     on persistent refusal the Ken-Burns substitute fires using the
-    shot's PNG. Each shot passes TWO reference images to seedance:
-      slot 1 `reference.png` — who the characters look like (identity)
-      slot 2 `N_shot.png`    — how this specific scene is laid out (composition)
-    Empty / missing references are filtered before the API call, so
-    callers who still want a single-anchor model can simply leave the
-    second slot empty.
+    shot's PNG. Each shot passes TWO reference images to seedance,
+    AND the per-shot prompt is wrapped with an explicit "Assets
+    Mapping" preamble in the upstream JiMeng convention so seedance
+    knows the role of each reference:
+      reference[1] = `reference.png` (full-cast identity anchor — used
+                     strictly for character likeness / faces / hair /
+                     outfits / accessories across all shots)
+      reference[2] = `N_shot.png`    (this shot's scene composition
+                     reference — used for camera angle, framing,
+                     blocking, prop placement, background layout)
+    The Assets Mapping preamble is in English even when the per-shot
+    directive is Chinese — seedance parses English instruction prefixes
+    reliably regardless of the user-content language. Empty / missing
+    references are still filtered before the API call (so direct CLI
+    callers using a single anchor remain backwards-compatible).
 13. **`ending_image` + `ending_video`** — Pillow "完" / "THE END" card
     + 1.5s Ken-Burns clip (`99_ending.mp4` — sorts last).
 14. **`merge`** — `video-merger` stitches `0_cover` + active shots

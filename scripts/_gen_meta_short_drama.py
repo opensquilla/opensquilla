@@ -79,9 +79,33 @@ composition:
             RENDER_STYLE and IDENTITY_ANCHOR. Downstream models accept
             Chinese natively (seedance is Chinese-first).
           - If user named a render style verbatim → copy it, AUTO_FILLED_RENDER_STYLE: no.
-          - Else default:
-              EN: `2D anime illustration, flat colour, soft cel-shading`
-              中: `2D 动漫插画,扁平上色,柔和赛璐璐阴影`
+          - Else INFER the style from the TOPIC genre and pick the best
+            match below. AUTO_FILLED_RENDER_STYLE: yes. Do NOT default to
+            anime for live-action genres — most short-drama topics
+            (职场反转 / 都市爽剧 / 霸总 / 校园 / 悬疑 / 古装宫斗) want
+            photoreal. Anime is correct ONLY when the topic itself reads
+            as animated (童话 / 二次元 / 治愈系动画 / fairy tale / cute
+            mascot). When unsure between photoreal and stylised → pick
+            photoreal; the user will adjust at step 3 if wrong.
+
+              短剧 / 都市 / 职场 / 霸总 / 校园 / 现代 / 悬疑 / 罪案
+                EN: `cinematic photoreal, 35mm film grain, dramatic lighting, shallow depth of field`
+                中: `电影级写实,真实摄影,戏剧化布光,浅景深`
+              古装 / 武侠 / 仙侠 / 国风
+                EN: `cinematic photoreal, period costume drama, soft natural light, painterly grading`
+                中: `电影级写实,古装年代剧,柔和自然光,水墨色调`
+              带货 / 商品 / 产品 / 广告
+                EN: `studio lighting, hero product shot, clean background, shallow depth of field`
+                中: `专业棚拍,产品主体光,干净背景,浅景深`
+              童话 / 儿童 / 二次元 / 卡通 / fairy tale / cute / mascot
+                EN: `2D anime illustration, flat colour, soft cel-shading`
+                中: `2D 动漫插画,扁平上色,柔和赛璐璐阴影`
+              科普 / 教育 / 知识
+                EN: `isometric infographic, flat colour, bright key light, clean composition`
+                中: `等距信息图风格,扁平配色,明亮主光,干净构图`
+              fallback (genre unclear)
+                EN: `cinematic photoreal, 35mm film grain, dramatic lighting, shallow depth of field`
+                中: `电影级写实,真实摄影,戏剧化布光,浅景深`
           - If user described main character(s) with at least
             ethnicity + age + hair + outfit → summarise ≤40 words,
             AUTO_FILLED_IDENTITY_ANCHOR: no.

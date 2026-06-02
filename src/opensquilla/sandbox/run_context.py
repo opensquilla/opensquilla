@@ -353,6 +353,20 @@ def _context_from_payload(payload: Any, source: str) -> RunContext | None:
     )
 
 
+def run_context_from_origin_payload(
+    payload: Any,
+    *,
+    source: str = "metadata",
+) -> RunContext | None:
+    """Hydrate a validated run context from serialized origin metadata.
+
+    Invalid or malformed payloads return ``None`` so route metadata cannot
+    silently become grants unless it passes the same normalization as saved
+    session context.
+    """
+    return _context_from_payload(payload, source)
+
+
 async def get_run_context(
     session_manager: Any,
     session_key: str,
@@ -428,5 +442,6 @@ __all__ = [
     "normalize_scope",
     "normalize_workspace_path",
     "persist_run_context",
+    "run_context_from_origin_payload",
     "set_run_mode",
 ]

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import opensquilla.sandbox as sandbox
+from opensquilla.gateway.routing import build_cli_route_envelope, tool_context_from_envelope
 from opensquilla.sandbox import integration as integration_mod
 from opensquilla.sandbox.backend import bubblewrap as bubblewrap_mod
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend, build_bwrap_argv
@@ -25,7 +26,7 @@ from opensquilla.sandbox.types import (
     SandboxResult,
     SecurityLevel,
 )
-from opensquilla.tools.types import ToolContext, current_tool_context
+from opensquilla.tools.types import current_tool_context
 
 _UNSET = object()
 
@@ -229,11 +230,16 @@ async def test_run_under_backend_populates_proxy_from_current_run_context(
 
     runtime = SimpleNamespace(backend=FakeBackend())
     policy = _policy(tmp_path, network_proxy=None)
-    ctx = ToolContext(session_key="agent:main:webchat:abc", workspace_dir=str(tmp_path))
-    ctx.sandbox_run_context = RunContext(
+    run_context = RunContext(
         run_mode=RunMode.STANDARD,
         domains=(DomainGrant(domain="allowed.test"),),
     )
+    envelope = build_cli_route_envelope(
+        session_key="agent:main:webchat:abc",
+        run_mode="standard",
+    )
+    envelope.metadata["sandbox_run_context"] = run_context.to_origin_payload()
+    ctx = tool_context_from_envelope(envelope, workspace_dir=str(tmp_path))
     token = current_tool_context.set(ctx)
     try:
         result = await integration_mod.run_under_backend(

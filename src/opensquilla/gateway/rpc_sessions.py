@@ -186,6 +186,20 @@ def _trusted_run_mode_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> Any 
     return None
 
 
+def _apply_run_context_route_metadata(
+    route_envelope: Any,
+    run_context: Any,
+    *,
+    principal_is_owner: bool,
+) -> None:
+    run_context_payload = run_context.to_origin_payload()
+    route_envelope.metadata["run_mode"] = run_context.run_mode.value
+    route_envelope.metadata["sandbox_mounts"] = run_context_payload["mounts"]
+    route_envelope.metadata["sandbox_run_context"] = run_context_payload
+    if run_context.run_mode.value == "full" and principal_is_owner:
+        route_envelope.metadata["elevated"] = "full"
+
+
 def _normalize_session_send_source_hint(params: dict[str, Any]) -> dict[str, Any]:
     raw_hint = params.get("_source")
     source_hint = dict(raw_hint) if isinstance(raw_hint, dict) else {}
@@ -1038,11 +1052,11 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             session_id=getattr(session, "session_id", None),
             principal_is_owner=ctx.principal.is_owner,
         )
-    run_context_payload = run_context.to_origin_payload()
-    route_envelope.metadata["run_mode"] = run_context.run_mode.value
-    route_envelope.metadata["sandbox_mounts"] = run_context_payload["mounts"]
-    if run_context.run_mode.value == "full" and ctx.principal.is_owner:
-        route_envelope.metadata["elevated"] = "full"
+    _apply_run_context_route_metadata(
+        route_envelope,
+        run_context,
+        principal_is_owner=ctx.principal.is_owner,
+    )
     elevated_hint = _trusted_elevated_hint(ctx, source_hint)
     if elevated_hint is not None:
         route_envelope.metadata["elevated"] = elevated_hint

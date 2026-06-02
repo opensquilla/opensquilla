@@ -48,6 +48,7 @@ class ToolContext:
     workspace_write_deny_globs: list[str] = field(default_factory=list)
     run_mode: str | None = None
     sandbox_mounts: list[dict[str, Any]] = field(default_factory=list)
+    sandbox_run_context: Any | None = None
     host_once: bool = False
     session_key: str | None = None
     channel_kind: str | None = None

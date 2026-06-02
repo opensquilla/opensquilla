@@ -27,7 +27,7 @@ Free-text via `with.task` / `with.request`:
 - Style (轻松/专业/故事/科普/带货) — narrative style, not render style
 - Total duration (15s, 30s, 60s default)
 - Aspect ratio (9:16 default, 16:9 optional)
-- `N_SHOTS` override (3 default, **1-10 allowed**)
+- `N_SHOTS` override (5 default, **1-10 allowed**)
 
 Caller-supplied anchors (used verbatim — this skill never invents them):
 - `with.render_style` — one-line aesthetic the per-shot prompts must end

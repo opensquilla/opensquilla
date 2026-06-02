@@ -14,7 +14,7 @@ SLUG_TMPL = "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message 
 
 HEAD = '''---
 name: meta-short-drama
-description: "Use this meta-skill instead of answering directly when the current user asks to generate an AI short-drama or 短剧 from a topic. The workflow infers render style, character identity, and shot count (1-10, default 3) from the request (filling in conservative defaults when missing), drafts a strict shot-by-shot shooting script, pauses for one free-form review (the user can approve, adjust render style / character / shot count / shot details, or cancel in plain language), optionally re-drafts the script with the user's adjustments, then generates per-shot first-frame images plus per-shot video clips (each anchored to shot 1's image so the character stays consistent), bookends them with a title card and an ending card, burns subtitles in the user's language, and saves the script alongside the final MP4. Do not use it for slide decks, document-decision analysis, single-image generation, isolated script writing, or pasted historical short-drama examples."
+description: "Use this meta-skill instead of answering directly when the current user asks to generate an AI short-drama or 短剧 from a topic. The workflow infers render style, character identity, and shot count (1-10, default 5) from the request (filling in conservative defaults when missing), drafts a strict shot-by-shot shooting script, pauses for one free-form review (the user can approve, adjust render style / character / shot count / shot details, or cancel in plain language), optionally re-drafts the script with the user's adjustments, then generates per-shot first-frame images plus per-shot video clips (each anchored to shot 1's image so the character stays consistent), bookends them with a title card and an ending card, burns subtitles in the user's language, and saves the script alongside the final MP4. Do not use it for slide decks, document-decision analysis, single-image generation, isolated script writing, or pasted historical short-drama examples."
 kind: meta
 meta_priority: 75
 always: false
@@ -71,7 +71,7 @@ composition:
           AUTO_FILLED_RENDER_STYLE: <yes|no>
           IDENTITY_ANCHOR: <one line in user's language describing main character(s)>
           AUTO_FILLED_IDENTITY_ANCHOR: <yes|no>
-          N_SHOTS: <integer 1..10, default 3>
+          N_SHOTS: <integer 1..10, default 5>
           AUTO_FILLED_N_SHOTS: <yes|no>
 
           Rules:
@@ -88,7 +88,7 @@ composition:
           - Else invent ONE or TWO original characters fitting the TOPIC.
           - If user named shot count (3 个分镜 / "5 shots" / etc.) → use it
             clamped 1..10, AUTO_FILLED_N_SHOTS: no.
-          - Else default N_SHOTS: 3, AUTO_FILLED_N_SHOTS: yes.
+          - Else default N_SHOTS: 5, AUTO_FILLED_N_SHOTS: yes.
           - Never ask the user a question. The user reviews in step 3.
 
           User request:
@@ -106,7 +106,8 @@ composition:
           Generate a strict-format short-drama shooting script following
           ai-video-script's SKILL.md OUTPUT FORMAT section. Use the
           N_SHOTS value from the intake contract below (clamp 1..10).
-          Default DURATION_S total: 30. ASPECT_RATIO: 9:16.
+          Default DURATION_S total: 50 (~10s per shot for the default 5
+          shots). ASPECT_RATIO: 9:16.
 
           Output style: plain text only. No emoji, no decorative symbols.
 
@@ -569,7 +570,7 @@ TAIL = '''
 # meta-short-drama
 
 End-to-end short-drama generator with one free-form user-review gate
-before any paid step. **1-10 shots** (default 3), title card + ending
+before any paid step. **1-10 shots** (default 5), title card + ending
 card, in-language burned subtitles, and the generated script is saved
 to disk regardless of outcome.
 
@@ -653,7 +654,7 @@ subprocesses. The review_gate ensures user consent before any paid step.
 
 ## Limits (v2)
 
-- 1-10 shots; default 3. The DAG always declares 10 slots but
+- 1-10 shots; default 5. The DAG always declares 10 slots but
   `__SHOT_ABSENT__` gating keeps unused slots dormant.
 - Per-shot duration follows the script's DURATION_S (clamped 3-15s by
   seedance API). Total drama length scales linearly.

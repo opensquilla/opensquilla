@@ -684,6 +684,17 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                     else:
                         if not nl_result.errors and nl_result.fields:
                             parsed, errors = nl_result.fields, []
+                        elif not nl_result.errors and not nl_result.fields:
+                            # The LLM produced valid JSON but omitted every
+                            # field — typical when the reply is terse ("ok",
+                            # "继续") and the model decides nothing was
+                            # explicitly stated. Fall through to the
+                            # deterministic parser, which copes fine with a
+                            # single catch-all string field (the whole reply
+                            # becomes its value). Leaving nl_attempted True
+                            # would otherwise strand the user in an
+                            # unrecoverable "no fields extracted" loop.
+                            nl_attempted = False
                         else:
                             errors = nl_result.errors or [
                                 "nl_extract: no fields extracted",

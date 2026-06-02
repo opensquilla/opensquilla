@@ -220,9 +220,18 @@ composition:
         fields:
           - name: review
             type: string
-            required: false
-            prompt: "对脚本的回复或调整(approval/adjustment to the script). 任何文本都行 — 整段写入此字段."
-            max_chars: 2000
+            required: true
+            prompt: |
+              用户对脚本草稿的整段回复 — 直接把用户说的所有文字原样
+              放进这个字段,不要总结、不要重写、不要解释。这是一个
+              catch-all 字段:任何同意/拒绝/修改意见/吐槽/闲聊都属于这里。
+              The user's verbatim reply about the script draft. Copy the
+              user's entire reply text into this single field — do not
+              summarise, paraphrase, translate, or split it. This is a
+              catch-all: approvals, rejections, edits, off-topic remarks
+              all belong here. If the user's reply is empty or pure
+              whitespace, emit "(empty)" so the field always has a value.
+            max_chars: 4000
         cancel_keywords: ["cancel", "取消", "算了", "停止", "stop", "abort"]
         timeout_hours: 24
 

@@ -130,12 +130,28 @@ def test_positional_fewer_lines_than_fields():
 
 
 def test_positional_more_lines_than_fields():
+    # Two-field schema where the second line genuinely overflows.
+    schema = _schema(
+        ClarifyField(name="x", type="string", required=True),
+        ClarifyField(name="y", type="int", required=True),
+    )
+    fields, errors = parse_clarify_reply(
+        "Tokyo\n42\nextra", schema, surface="cli",
+    )
+    assert fields == {}
+    assert any("too many" in e.lower() for e in errors)
+
+
+def test_positional_multiline_collapses_into_single_string_field():
+    # When the schema is a single string field (the catch-all pattern
+    # used by free-form review steps), additional lines should be
+    # joined into the same field rather than reported as overflow.
     schema = _schema(ClarifyField(name="x", type="string", required=True))
     fields, errors = parse_clarify_reply(
         "Tokyo\nextra", schema, surface="cli",
     )
-    assert fields == {}
-    assert any("too many" in e.lower() for e in errors)
+    assert errors == []
+    assert fields == {"x": "Tokyo\nextra"}
 
 
 # ── Hybrid rejection ──

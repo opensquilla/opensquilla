@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
@@ -14,6 +15,7 @@ from opensquilla.sandbox.path_validation import (
     normalize_path,
 )
 from opensquilla.sandbox.run_mode import RunMode, config_run_mode, normalize_run_mode
+from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
 
 RUN_CONTEXT_ORIGIN_KEY = "sandbox_run_context"
 
@@ -116,23 +118,42 @@ def _string_value(value: Any, default: str | None = None) -> str | None:
     return default
 
 
-def _workspace_from_payload(value: Any) -> str | None:
+def normalize_scope(scope: Any, default: str = "chat") -> str:
+    value = str(scope or default).strip().lower()
+    return value if value in {"chat", "workspace", "once"} else default
+
+
+def _is_filesystem_root(path: str) -> bool:
+    try:
+        normalized = Path(path)
+        return normalized == Path(normalized.anchor)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def normalize_workspace_path(value: Any) -> str:
     workspace = _string_value(value)
     if workspace is None:
-        return None
+        raise ValueError("empty_workspace_path")
     try:
         normalized_workspace = str(normalize_path(workspace))
-        decision = decide_path_access(
-            normalized_workspace,
-            workspace=None,
-            mounts=(),
-            write=True,
-        )
     except (OSError, RuntimeError, ValueError):
+        raise ValueError("invalid_workspace_path")
+    if _is_filesystem_root(normalized_workspace):
+        raise ValueError("sensitive_path")
+    if (
+        sensitive_path_marker(normalized_workspace, workspace=normalized_workspace)
+        is not None
+    ):
+        raise ValueError("sensitive_path")
+    return normalized_workspace
+
+
+def _workspace_from_payload(value: Any) -> str | None:
+    try:
+        return normalize_workspace_path(value)
+    except ValueError:
         return None
-    if decision.status == "blocked":
-        return None
-    return decision.normalized_path
 
 
 def _mounts_from_payload(
@@ -164,7 +185,7 @@ def _mounts_from_payload(
         grant = MountGrant(
             path=decision.normalized_path,
             access=access,
-            scope=_string_value(item.get("scope"), "chat") or "chat",
+            scope=normalize_scope(item.get("scope"), "chat"),
         )
         mounts.pop(grant.path, None)
         mounts[grant.path] = grant
@@ -186,7 +207,7 @@ def _domains_from_payload(value: Any) -> tuple[DomainGrant, ...]:
             continue
         grant = DomainGrant(
             domain=decision.normalized,
-            scope=_string_value(item.get("scope"), "chat") or "chat",
+            scope=normalize_scope(item.get("scope"), "chat"),
             source=_string_value(item.get("source"), "manual") or "manual",
         )
         domains.pop(grant.domain, None)
@@ -208,7 +229,7 @@ def _bundles_from_payload(value: Any) -> tuple[PackageBundleGrant, ...]:
             continue
         grant = PackageBundleGrant(
             bundle_id=bundle_id,
-            scope=_string_value(item.get("scope"), "workspace") or "workspace",
+            scope=normalize_scope(item.get("scope"), "workspace"),
             source=_string_value(item.get("source"), "manual") or "manual",
         )
         bundles.pop(grant.bundle_id, None)
@@ -337,6 +358,8 @@ __all__ = [
     "RunContext",
     "TemporaryGrant",
     "get_run_context",
+    "normalize_scope",
+    "normalize_workspace_path",
     "persist_run_context",
     "set_run_mode",
 ]

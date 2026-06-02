@@ -10,7 +10,6 @@ from opensquilla.sandbox.package_bundles import expand_package_bundle
 from opensquilla.sandbox.path_validation import (
     decide_path_access,
     normalize_mount_access,
-    normalize_path,
 )
 from opensquilla.sandbox.run_context import (
     DomainGrant,
@@ -18,13 +17,10 @@ from opensquilla.sandbox.run_context import (
     PackageBundleGrant,
     RunContext,
     get_run_context,
+    normalize_scope,
+    normalize_workspace_path,
     persist_run_context,
 )
-
-
-def normalize_scope(scope: Any, default: str = "chat") -> str:
-    value = str(scope or default).strip().lower()
-    return value if value in {"chat", "workspace", "once"} else default
 
 
 def _normalize_bundle_id(bundle_id: Any) -> str:
@@ -39,23 +35,21 @@ async def set_workspace(
     config: Any,
     current_workspace: str | None,
 ) -> RunContext:
-    if not str(workspace_path or "").strip():
-        raise ValueError("empty_workspace_path")
-    normalized_workspace = str(normalize_path(workspace_path))
-    decision = decide_path_access(
-        normalized_workspace,
-        workspace=None,
-        mounts=(),
-        write=True,
-    )
-    if decision.status == "blocked":
-        raise ValueError(decision.reason or "workspace_blocked")
+    normalized_workspace = normalize_workspace_path(workspace_path)
     existing = await get_run_context(
         session_manager,
         session_key,
         config=config,
         workspace=current_workspace,
     )
+    existing_workspace = None
+    if existing.workspace is not None:
+        try:
+            existing_workspace = normalize_workspace_path(existing.workspace)
+        except ValueError:
+            existing_workspace = existing.workspace
+    if existing_workspace == normalized_workspace:
+        return existing
     updated = replace(existing, workspace=normalized_workspace, source="saved")
     return await persist_run_context(session_manager, session_key, updated)
 
@@ -91,6 +85,8 @@ async def add_mount_grant(
         scope=normalize_scope(scope),
     )
     mounts = tuple(m for m in existing.mounts if m.path != grant.path) + (grant,)
+    if mounts == existing.mounts:
+        return existing
     return await persist_run_context(
         session_manager,
         session_key,
@@ -156,6 +152,8 @@ async def add_domain_grant(
         source=source,
     )
     domains = tuple(d for d in existing.domains if d.domain != grant.domain) + (grant,)
+    if domains == existing.domains:
+        return existing
     return await persist_run_context(
         session_manager,
         session_key,
@@ -217,6 +215,8 @@ async def enable_bundle_grant(
     bundles = tuple(b for b in existing.bundles if b.bundle_id != grant.bundle_id) + (
         grant,
     )
+    if bundles == existing.bundles:
+        return existing
     return await persist_run_context(
         session_manager,
         session_key,

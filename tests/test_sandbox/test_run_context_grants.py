@@ -589,6 +589,41 @@ async def test_set_workspace_same_normalized_path_is_noop(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "workspace_path",
+    [
+        "/",
+        "/root/project",
+        "/run/docker.sock",
+        "/var/run/docker.sock",
+        "/root/.opensquilla/workspace/.env.local",
+        None,
+    ],
+)
+async def test_set_run_mode_drops_unsafe_fallback_workspace(tmp_path, workspace_path):
+    from opensquilla.sandbox.run_context import set_run_mode
+    from opensquilla.sandbox.run_mode import RunMode
+
+    manager = _SessionManager()
+    fallback_workspace = (
+        str(tmp_path / ".ssh" / "id_rsa")
+        if workspace_path is None
+        else workspace_path
+    )
+
+    updated = await set_run_mode(
+        manager,
+        manager.node.session_key,
+        RunMode.TRUSTED,
+        config=_config(),
+        workspace=fallback_workspace,
+    )
+
+    assert updated.workspace is None
+    assert manager.node.origin["sandbox_run_context"]["workspace"] is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("workspace_path", ["", "/"])
 async def test_set_workspace_rejects_empty_or_root_paths(tmp_path, workspace_path):
     from opensquilla.sandbox.run_context_service import set_workspace
@@ -644,6 +679,7 @@ async def test_set_workspace_rejects_sensitive_root_paths():
         "/root/.opensquilla/workspace/.aws/credentials",
         "/root/.opensquilla/workspace/.kube/config",
         "/root/.opensquilla/workspace/.docker/config",
+        "/root/.opensquilla/workspace/.docker/config.json",
         "/root/.opensquilla/workspace/.gnupg/private-keys-v1.d/key",
         "/root/.opensquilla/workspace/id_rsa",
         "/root/.opensquilla/workspace/.ssh/id_rsa",
@@ -858,6 +894,7 @@ async def test_saved_root_nested_workspace_is_allowed():
         "/root/.opensquilla/workspace/.aws/credentials",
         "/root/.opensquilla/workspace/.kube/config",
         "/root/.opensquilla/workspace/.docker/config",
+        "/root/.opensquilla/workspace/.docker/config.json",
         "/root/.opensquilla/workspace/.gnupg/private-keys-v1.d/key",
         "/root/.opensquilla/workspace/id_rsa",
         "/root/.opensquilla/workspace/.ssh/id_rsa",

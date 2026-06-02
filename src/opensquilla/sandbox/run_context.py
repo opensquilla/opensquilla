@@ -23,6 +23,7 @@ _DEFAULT_WORKSPACE_CREDENTIAL_PARTS: tuple[tuple[str, ...], ...] = (
     (".aws", "credentials"),
     (".kube", "config"),
     (".docker", "config"),
+    (".docker", "config.json"),
     (".gnupg",),
 )
 
@@ -347,7 +348,7 @@ async def get_run_context(
             return saved
     return RunContext(
         run_mode=config_run_mode(config),
-        workspace=workspace,
+        workspace=_workspace_from_payload(workspace),
         source="default",
     )
 

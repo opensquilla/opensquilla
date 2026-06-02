@@ -204,7 +204,7 @@ composition:
             - 不想做了 → 说 "取消" / "cancel" / "停"
 
           预估成本(选继续才会发生):
-            - N 张图 (nano-banana-pro)  ≈ N × $0.05
+            - N 张镜头图 + 1 张全角色参考图 (nano-banana-pro)  ≈ N × $0.05 + $0.05-$0.10
             - N 段视频 (seedance-2.0)   ≈ $0.15/s × 总时长
               (脚本里每镜 DURATION_S 决定时长)
             - 封面 + 结尾卡 (本地 Pillow + ffmpeg,免费)

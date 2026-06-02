@@ -660,7 +660,7 @@ class SlackChannel:
         """Shared inbound path for an Events API ``event_callback`` payload,
         used by both the webhook handler and the Socket Mode loop."""
         event = data.get("event", {})
-        if not isinstance(event, dict) or event.get("type") != "message":
+        if not isinstance(event, dict) or event.get("type") not in {"message", "app_mention"}:
             return
         # Only plain user messages are input; drop edits/deletes/joins and the
         # bot's own streaming-edit echoes (``message_changed`` etc.).

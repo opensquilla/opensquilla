@@ -37,8 +37,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--backend",
-        choices=("terminal", "textual", "opentui", "live-textual", "live-opentui"),
-        default="terminal",
+        choices=("opentui", "live-opentui"),
+        default="opentui",
     )
     parser.add_argument("--driver", choices=("auto", "tmux", "pty"), default="auto")
     parser.add_argument(
@@ -49,12 +49,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _assert_live_backend_enabled(backend: str) -> None:
-    if backend != "live-textual":
+    if backend != "live-opentui":
         return
     if os.environ.get("OPENSQUILLA_TUI_LIVE_REAL") == "1":
         return
     raise SystemExit(
-        "set OPENSQUILLA_TUI_LIVE_REAL=1 to run the real CLI/Textual smoke"
+        "set OPENSQUILLA_TUI_LIVE_REAL=1 to run the real CLI/OpenTUI smoke"
     )
 
 

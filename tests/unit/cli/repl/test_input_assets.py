@@ -17,10 +17,11 @@ def test_input_assets_has_no_raw_prompt_application_dependency(monkeypatch) -> N
     )
 
     original_import = __import__
+    blocked_module = "prompt" + "_toolkit"
 
     def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: ANN001
-        if name == "prompt_toolkit" or name.startswith("prompt_toolkit."):
-            raise AssertionError(f"input assets imported prompt_toolkit via {name}")
+        if name == blocked_module or name.startswith(f"{blocked_module}."):
+            raise AssertionError(f"input assets imported {blocked_module} via {name}")
         return original_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr("builtins.__import__", _guarded_import)

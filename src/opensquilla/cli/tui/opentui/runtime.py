@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from opensquilla.cli.tui.adapters.terminal_chat_adapter import (
+from opensquilla.cli.tui.adapters.runtime_helpers import (
     ChatAbortTurn,
+    ChatRuntimeContext,
     ChatRuntimeScope,
-    TuiPluginOutputHandle,
     classify_chat_input,
     clear_current_cancel,
     default_tui_plugin_manager,
@@ -23,7 +24,6 @@ from opensquilla.cli.tui.backend.contracts import (
     TuiSurface,
 )
 from opensquilla.cli.tui.backend.output_binding import TuiOutputBinding
-from opensquilla.cli.tui.backend.plugins import TuiPluginManager
 from opensquilla.cli.tui.backend.runtime import run_tui_runtime
 from opensquilla.cli.tui.backend.state import TuiRuntimeState
 from opensquilla.cli.tui.opentui.messages import ModelText, PromptEcho
@@ -31,28 +31,9 @@ from opensquilla.cli.tui.opentui.surface import open_opentui_surface
 from opensquilla.engine.commands import Surface
 
 
-async def _noop_abort_turn() -> None:
-    return None
-
-
 @dataclass
-class OpenTuiChatRuntimeContext:
+class OpenTuiChatRuntimeContext(ChatRuntimeContext):
     """Typed OpenTUI-chat adapter state with a legacy scope mirror."""
-
-    surface: Surface
-    scope: ChatRuntimeScope
-    plugin_manager: TuiPluginManager
-    abort_active_turn: ChatAbortTurn | None = None
-
-    @property
-    def model(self) -> str | None:
-        value = self.scope.get("model")
-        return value if isinstance(value, str) else None
-
-    @property
-    def session_id(self) -> str | None:
-        value = self.scope.get("session_key")
-        return value if isinstance(value, str) else None
 
     @property
     def workspace_dir(self) -> str | None:
@@ -64,24 +45,6 @@ class OpenTuiChatRuntimeContext:
         if isinstance(ctx_workspace, str) and ctx_workspace:
             return ctx_workspace
         return None
-
-    def abort_turn(self) -> Awaitable[None]:
-        if self.surface is not Surface.CLI_GATEWAY or self.abort_active_turn is None:
-            return _noop_abort_turn()
-        return self.abort_active_turn()
-
-    def expose_surface(self, tui_surface: TuiSurface) -> None:
-        output_handle = getattr(tui_surface, "output_handle", None)
-        if isinstance(output_handle, TuiOutputHandle):
-            TuiOutputBinding(self.scope).expose(
-                TuiPluginOutputHandle(
-                    output_handle,
-                    plugin_manager=self.plugin_manager,
-                )
-            )
-
-    def clear_output(self) -> None:
-        TuiOutputBinding(self.scope).clear()
 
 
 def get_tui_output(scope: MutableMapping[str, Any]) -> TuiOutputHandle | None:
@@ -96,7 +59,8 @@ def opentui_notice(scope: MutableMapping[str, Any], payload: str) -> None:
         return
 
     async def _write() -> None:
-        await output.write_through(payload)
+        with contextlib.suppress(Exception):
+            await output.write_through(payload)
 
     try:
         loop = asyncio.get_running_loop()

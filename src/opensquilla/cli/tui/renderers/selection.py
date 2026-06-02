@@ -7,8 +7,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from opensquilla.cli.tui.terminal.renderer import TerminalRenderer
-
 OPENSQUILLA_TUI_BACKEND_ENV = "OPENSQUILLA_TUI_BACKEND"
 
 
@@ -41,28 +39,10 @@ class TuiRendererBackend(Protocol):
     def create_renderer(self, **kwargs: Any) -> Any: ...
 
 
-@dataclass(frozen=True)
-class TerminalRendererBackend:
-    backend_id: str = "terminal"
-    supports_structured_ui: bool = False
-    supports_streaming_fast_path: bool = True
-
-    def is_available(self) -> RendererBackendAvailability:
-        return RendererBackendAvailability(available=True)
-
-    def create_renderer(self, **kwargs: Any) -> TerminalRenderer:
-        return TerminalRenderer(**kwargs)
-
-
 def renderer_backends() -> dict[str, TuiRendererBackend]:
     from opensquilla.cli.tui.opentui.bridge import OpenTuiRendererBackend
-    from opensquilla.cli.tui.renderers.textual_backend import TextualRendererBackend
 
-    backends: list[TuiRendererBackend] = [
-        TerminalRendererBackend(),
-        OpenTuiRendererBackend(),
-        TextualRendererBackend(),
-    ]
+    backends: list[TuiRendererBackend] = [OpenTuiRendererBackend()]
     return {backend.backend_id: backend for backend in backends}
 
 
@@ -76,15 +56,16 @@ def get_renderer_backend(backend_id: str) -> TuiRendererBackend:
         return backends[backend_id]
     except KeyError as exc:
         raise RendererBackendSelectionError(
-            f"Unknown TUI backend '{backend_id}'. "
-            f"Expected one of: {_backend_choices(backends)}."
+            f"Only OpenTUI is supported; got TUI backend '{backend_id}'. "
+            f"Unset {OPENSQUILLA_TUI_BACKEND_ENV} or set it to "
+            f"{_backend_choices(backends)}."
         ) from exc
 
 
 def select_renderer_backend(backend_id: str | None = None) -> TuiRendererBackend:
-    selected_id = "terminal" if backend_id is None else backend_id.strip()
+    selected_id = "opentui" if backend_id is None else backend_id.strip()
     if not selected_id:
-        selected_id = "terminal"
+        selected_id = "opentui"
     backend = get_renderer_backend(selected_id)
     availability = backend.is_available()
     if not availability.available:

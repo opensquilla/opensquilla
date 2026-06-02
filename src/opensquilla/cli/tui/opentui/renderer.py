@@ -1,9 +1,9 @@
 """Structured-message renderer for the OpenTUI footer backend.
 
-Mirrors the ``TerminalRenderer`` async protocol but, instead of formatting
-content into Rich text, emits one structured timeline message per call so the
-JS host can render each block by type. The renderer's lifetime equals one turn,
-so turn.begin/status/end are driven by enter/method-calls/afinalize.
+Implements the async TUI renderer protocol by emitting one structured timeline
+message per call so the JS host can render each block by type. The renderer's
+lifetime equals one turn, so turn.begin/status/end are driven by
+enter/method-calls/afinalize.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from dataclasses import asdict
 from itertools import count
 from typing import Any, Literal
 
+from opensquilla.cli.tui.backend.render_summary import summarize_args, summarize_result
 from opensquilla.cli.tui.opentui.messages import (
     BlockAppend,
     BlockBegin,
@@ -22,7 +23,6 @@ from opensquilla.cli.tui.opentui.messages import (
     TurnEnd,
     TurnStatusState,
 )
-from opensquilla.cli.tui.terminal.stream import _summarize_args, _summarize_result
 
 _turn_ids = count(1)
 
@@ -128,7 +128,7 @@ class OpenTuiStreamRenderer:
     ) -> None:
         await self._ensure_begin()
         await self._close_text_as("thinking")
-        summary = _summarize_args(name, args)
+        summary = summarize_args(name, args)
         block_id = tool_use_id or self._next_block_id()
         if tool_use_id:
             self._tool_block_ids[tool_use_id] = block_id
@@ -160,7 +160,7 @@ class OpenTuiStreamRenderer:
             await self._emit(
                 "block.begin", BlockBegin(id=block_id, kind="tool", meta={"name": "", "args": ""})
             )
-        detail = _summarize_result(error) if (not success and error) else _summarize_result(result)
+        detail = summarize_result(error) if (not success and error) else summarize_result(result)
         if detail:
             for line in detail.split("\n"):
                 await self._emit("block.append", BlockAppend(id=block_id, delta=line))

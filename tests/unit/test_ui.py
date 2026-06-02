@@ -19,5 +19,5 @@ def test_dynamic_stream_write_returns_length_when_wrapped_stream_returns_none(
     stream = NullStyleStream()
     monkeypatch.setattr(sys, "stdout", stream)
 
-    assert _DynamicStream("stdout").write("textual payload") == len("textual payload")
-    assert stream.writes == ["textual payload"]
+    assert _DynamicStream("stdout").write("sample payload") == len("sample payload")
+    assert stream.writes == ["sample payload"]

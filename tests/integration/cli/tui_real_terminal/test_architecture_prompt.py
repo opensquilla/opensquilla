@@ -115,13 +115,13 @@ def test_architecture_prompt_replay_routes_tool_output_through_finished_result()
     list_result = finished_by_id["tool-list"]["result"]
     read_result = finished_by_id["tool-read"]["result"]
 
-    assert usage.model == "fake-terminal"
+    assert usage.model == "fake-opentui"
     assert isinstance(list_result, str)
     assert "top-level repository layout" in list_result
     assert "AGENTS.md" in list_result
     assert isinstance(read_result, str)
-    assert "Textual app owns input chrome" in read_result
-    assert "class TextualChatApp(App[None]):" in read_result
+    assert "OpenTUI runtime owns the chat surface factory" in read_result
+    assert "async def run_opentui_chat_runtime(" in read_result
     assert not any("tool_output" in message for message in renderer.statuses)
     assert not any("stdout:" in message for message in renderer.statuses)
     assert not any("truncated" in message for message in renderer.statuses)
@@ -136,13 +136,7 @@ def test_architecture_prompt_renders_tools_and_chinese_output(
     transcript = (result.run_dir / "transcript.txt").read_text(encoding="utf-8")
     scrollback = (result.run_dir / "scrollback.txt").read_text(encoding="utf-8")
     rendered_output = f"{transcript}\n{scrollback}"
-    app_log_name = (
-        "textual-app.log"
-        if result.backend_id == "textual"
-        else "opentui-app.log"
-        if result.backend_id == "opentui"
-        else "app.log"
-    )
+    app_log_name = "opentui-app.log"
     app_events = [
         json.loads(line)
         for line in (result.run_dir / app_log_name).read_text(encoding="utf-8").splitlines()
@@ -156,38 +150,19 @@ def test_architecture_prompt_renders_tools_and_chinese_output(
 
     assert any(ARCHITECTURE_PROMPT in item for item in submitted)
     assert "架构" in rendered_output
-    if result.backend_id != "opentui":
-        # Scrollback backends keep the whole transcript on screen, so the full
-        # tool/detail history is assertable. The fullscreen opentui viewport
-        # only retains the final frame (see the opentui branch below).
-        assert ARCHITECTURE_PROMPT in rendered_output or result.backend_id == "textual"
-        assert "list_dir" in rendered_output
-        assert "read_file" in rendered_output
-        assert "top-level repository layout" in rendered_output
-        assert "AGENTS.md" in rendered_output
-        assert "pyproject.toml" in rendered_output
-        assert "Textual app owns input chrome" in rendered_output
-        assert "class TextualChatApp(App[None]):" in rendered_output
-        assert "tool_output" not in rendered_output
-        assert "stdout:" not in rendered_output
-        assert "truncated" not in rendered_output
-        assert "router.reason" in rendered_output
-        assert "architecture-analysis-complete" in rendered_output
-    if result.backend_id == "opentui":
-        # Fullscreen alt-screen viewport: the conversation lives in a ScrollBox,
-        # so assertions cover the markers that remain visible in the final frame
-        # (answer card + usage + grouped finished tool detail), not the whole transcript.
-        assert "✓ list_dir" in rendered_output
-        assert "✓ read_file" in rendered_output
-        assert "│   top-level repository layout" in rendered_output
-        assert "│   AGENTS.md" in rendered_output
-        assert "│   Textual app owns input chrome" in rendered_output
-        assert "│   class TextualChatApp(App[None]):" in rendered_output
-        assert "╭─ answer ─ squilla" in rendered_output
-        assert "╰─────" in rendered_output
-        assert "· in 1 / out 2 · fake-terminal" in rendered_output
-        assert "tool_output" not in rendered_output
-        assert "stdout:" not in rendered_output
-        assert "truncated" not in rendered_output
+    # Fullscreen alt-screen viewport: the conversation lives in a ScrollBox, so
+    # assertions cover the markers visible in the final frame.
+    assert "✓ list_dir" in rendered_output
+    assert "✓ read_file" in rendered_output
+    assert "│   top-level repository layout" in rendered_output
+    assert "│   AGENTS.md" in rendered_output
+    assert "│   OpenTUI runtime owns the chat surface factory" in rendered_output
+    assert "│   async def run_opentui_chat_runtime(" in rendered_output
+    assert "╭─ answer ─ squilla" in rendered_output
+    assert "╰─────" in rendered_output
+    assert "· in 1 / out 2 · fake-opentui" in rendered_output
+    assert "tool_output" not in rendered_output
+    assert "stdout:" not in rendered_output
+    assert "truncated" not in rendered_output
     assert "Traceback" not in rendered_output
     assert "\x1b[" not in rendered_output

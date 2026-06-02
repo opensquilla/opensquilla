@@ -1,8 +1,8 @@
 # Real Terminal TUI Harness
 
-The real-terminal harness launches the production prompt-toolkit/Rich terminal
-surface in a child process, drives it through tmux when available, falls back to
-PTY when needed, and stores evidence under `.artifacts/tui-real-terminal/runs`.
+The real-terminal harness launches the OpenTUI chat surface in a child process,
+drives it through tmux when available, falls back to PTY when needed, and stores
+evidence under `.artifacts/tui-real-terminal/runs`.
 
 ## Commands
 
@@ -21,31 +21,30 @@ uv run pytest tests/integration/cli/tui_real_terminal -q
 Manual lab:
 
 ```bash
-uv run python scripts/tui_real_terminal_lab.py --scenario long_streaming --backend terminal
+uv run python scripts/tui_real_terminal_lab.py --scenario long_streaming --backend opentui
 ```
 
-Backend comparison path:
+OpenTUI backend path:
 
 ```bash
-uv run pytest tests/integration/cli/tui_real_terminal -q --tui-backend terminal
-uv run pytest tests/integration/cli/tui_real_terminal -q --tui-backend textual
+uv run pytest tests/integration/cli/tui_real_terminal -q --tui-backend opentui
 ```
 
-The `terminal` and `textual` backends run deterministic fake-provider apps
-through the real terminal harness. A guarded `live-textual` backend exists for
-manual real CLI smoke checks:
+The `opentui` backend runs deterministic fake-provider apps through the real
+terminal harness. A guarded `live-opentui` backend exists for manual real CLI
+smoke checks:
 
 ```bash
 OPENSQUILLA_TUI_LIVE_REAL=1 uv run pytest \
-  tests/integration/cli/tui_real_terminal/test_live_textual_real_cli.py -q \
-  --tui-backend live-textual --tui-driver tmux
+  tests/integration/cli/tui_real_terminal/test_live_opentui_real_cli.py -q \
+  --tui-backend live-opentui --tui-driver tmux
 
 OPENSQUILLA_TUI_LIVE_REAL=1 uv run python scripts/tui_real_terminal_lab.py \
-  --scenario live_architecture_prompt --backend live-textual
+  --scenario live_opentui_architecture_prompt --backend live-opentui
 ```
 
 The live smoke launches `opensquilla chat --standalone` with
-`OPENSQUILLA_TUI_BACKEND=textual`, drives it through tmux, sends a real prompt,
+`OPENSQUILLA_TUI_BACKEND=opentui`, drives it through tmux, sends a real prompt,
 and captures text evidence. Use it deliberately because it may hit the
 configured live provider.
 

@@ -158,17 +158,10 @@ async def test_opentui_chat_runtime_forwards_workspace_dir_from_tool_context(
 async def test_opentui_chat_runtime_uses_footer_native_echo_hooks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.cli.tui.adapters import terminal_chat_adapter
+    from opensquilla.cli.tui.adapters import runtime_helpers
     from opensquilla.cli.tui.opentui import runtime as opentui_runtime
 
-    def fail_user_echo(_text: str) -> str:
-        raise AssertionError("OpenTUI echo must not call terminal Rich echo payloads")
-
-    def fail_queued_echo() -> str:
-        raise AssertionError("OpenTUI queue echo must not call terminal Rich echo payloads")
-
-    monkeypatch.setattr(terminal_chat_adapter, "user_input_echo_payload", fail_user_echo)
-    monkeypatch.setattr(terminal_chat_adapter, "queued_input_start_payload", fail_queued_echo)
+    assert runtime_helpers.classify_chat_input("/help") is not None
 
     scope: dict[str, Any] = {"model": "model-a", "session_key": "session-a"}
     fake_surface = _FakeOpenTuiSurface()

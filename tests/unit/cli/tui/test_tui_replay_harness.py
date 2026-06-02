@@ -74,21 +74,21 @@ def test_dense_history_fixture_matches_baseline_shape() -> None:
     assert text_chars >= 24 * 80 * 30
 
 
-def test_terminal_replay_summary_can_be_written(tmp_path) -> None:
+def test_opentui_replay_summary_can_be_written(tmp_path) -> None:
     bench = _load_module("bench_tui_replay", BENCH_SCRIPT)
-    summary = asyncio.run(bench.run_replay("terminal", "long-stream", repeat=1))
+    summary = asyncio.run(bench.run_replay("opentui", "long-stream", repeat=1))
     summary_path = tmp_path / "summary.json"
 
     bench.write_summary(summary, summary_path)
 
     data = json.loads(summary_path.read_text())
-    assert data["renderer"] == "terminal"
+    assert data["renderer"] == "opentui"
     assert data["fixture"] == "long-stream"
     assert data["event_count"] == 4011
     assert data["text_chars"] == 160_000
     assert data["tool_count"] == 4
     assert data["router_decision_count"] == 1
-    assert 0 < data["flush_count"] < 4_000
+    assert data["flush_count"] == 0
     assert 0 < data["coalescing_ratio"] < 1
     assert data["max_buffer_chars"] <= 2_048
     assert data["transcript_items"] == 0
@@ -104,7 +104,7 @@ def test_terminal_replay_summary_can_be_written(tmp_path) -> None:
 
 def test_dense_history_replay_uses_bounded_transcript_projection() -> None:
     bench = _load_module("bench_tui_replay", BENCH_SCRIPT)
-    summary = asyncio.run(bench.run_replay("terminal", "dense-history", repeat=1))
+    summary = asyncio.run(bench.run_replay("opentui", "dense-history", repeat=1))
 
     assert summary.event_count == 624
     assert summary.text_chars >= 24 * 80 * 30
@@ -117,16 +117,3 @@ def test_dense_history_replay_uses_bounded_transcript_projection() -> None:
     assert summary.expanded_tools == 20
     assert summary.projection_wall_ms >= 0
     assert summary.errors == []
-
-
-def test_textual_replay_reports_unavailable_without_optional_dependency() -> None:
-    bench = _load_module("bench_tui_replay", BENCH_SCRIPT)
-    summary = asyncio.run(bench.run_replay("textual", "long-stream", repeat=1))
-
-    if summary.available:
-        assert summary.rendered_text_matches is True
-        assert summary.errors == []
-    else:
-        assert summary.skip_reason == "Textual is not installed"
-        assert summary.event_count == 0
-        assert summary.errors == []

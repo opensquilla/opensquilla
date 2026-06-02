@@ -6,18 +6,18 @@
     {
       "kind": "toolbar",
       "payload": {
-        "router_hud": "route standard -> fake-terminal 96% save 38%",
+        "router_hud": "route standard -> fake-opentui 96% save 38%",
         "router_hud_style": "normal"
       }
     },
     {
       "kind": "status",
       "payload": {
-        "message": "router route standard -> fake-terminal 96% save 38%",
+          "message": "router route standard -> fake-opentui 96% save 38%",
         "detail": [
           "│ router.reason: architecture-analysis prompt with local path context",
           "│ router.baseline: frontier-baseline",
-          "│ router.selected: fake-terminal",
+          "│ router.selected: fake-opentui",
           "│ router.savings: 38%"
         ]
       }
@@ -64,7 +64,7 @@
       "payload": {
         "name": "read_file",
         "args": {
-          "path": "/Users/cwan0785/opensquilla/src/opensquilla/cli/tui/textual/app.py"
+          "path": "/Users/cwan0785/opensquilla/src/opensquilla/cli/tui/opentui/runtime.py"
         },
         "tool_use_id": "tool-read"
       }
@@ -84,15 +84,14 @@
         "name": "read_file",
         "line_count": 312,
         "truncated": true,
-        "summary": "Textual app owns input chrome, semantic line classification, router HUD, and append-only transcript output",
+        "summary": "OpenTUI runtime owns the chat surface factory, semantic line classification, router HUD, and structured output handle",
         "stdout": [
-          "class TextualChatApp(App[None]):",
-          "    CSS = \"\"\"",
-          "    #transcript { overflow-y: auto; scrollbar-visibility: visible; }",
-          "    #composer { border: round #293641; }",
-          "    #router-hud { border: round #365b48; }",
-          "    def append_stream_output(self, payload: str) -> None:",
-          "        self._display_payload(payload)"
+          "async def run_opentui_chat_runtime(",
+          "    context = OpenTuiChatRuntimeContext(",
+          "    def _surface_factory():",
+          "        return open_opentui_surface(**kwargs)",
+          "    await run_tui_runtime(",
+          "        hooks=TuiRuntimeHooks("
         ],
         "stderr": []
       }
@@ -102,23 +101,23 @@
       "payload": {
         "message": "thinking: mapping runtime boundary -> surface adapter -> renderer output path",
         "detail": [
-          "│ runtime: run_textual_chat_runtime wires backend hooks and exposes output handle",
-          "│ surface: open_textual_surface selects inline Textual prompt sessions",
-          "│ renderer: StreamingRenderer emits status, tool rows, text deltas, and usage footer"
+          "│ runtime: run_opentui_chat_runtime wires backend hooks and exposes output handle",
+          "│ surface: open_opentui_surface selects the OpenTUI footer host",
+          "│ renderer: OpenTuiStreamRenderer emits status, tool rows, text deltas, and usage footer"
         ]
       }
     },
     {
       "kind": "text_delta",
       "payload": {
-        "text": "架构分析: /Users/cwan0785/opensquilla uses a runtime adapter, Textual surface, and streaming renderer. 工具调用显示概要，同时保留灰色 detail block，包括参数、stdout/stderr 摘要、截断原因和行数。 architecture-analysis-complete"
+        "text": "架构分析: /Users/cwan0785/opensquilla uses a runtime adapter, OpenTUI surface, and streaming renderer. 工具调用显示概要，同时保留 detail block，包括参数、stdout/stderr 摘要、截断原因和行数。 architecture-analysis-complete"
       }
     },
     {
       "kind": "done",
       "payload": {
         "usage": {
-          "model": "fake-terminal",
+          "model": "fake-opentui",
           "input_tokens": 1,
           "output_tokens": 2
         }

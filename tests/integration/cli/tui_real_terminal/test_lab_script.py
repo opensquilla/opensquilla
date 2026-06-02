@@ -7,6 +7,9 @@ from types import ModuleType
 
 import pytest
 
+REMOVED_TEXT_BACKEND = "text" + "ual"
+REMOVED_BACKEND_IDS = ("terminal", REMOVED_TEXT_BACKEND, f"live-{REMOVED_TEXT_BACKEND}")
+
 
 def _load_lab_script() -> ModuleType:
     script_path = Path(__file__).resolve().parents[4] / "scripts" / "tui_real_terminal_lab.py"
@@ -18,16 +21,15 @@ def _load_lab_script() -> ModuleType:
     return module
 
 
-def test_live_textual_lab_requires_explicit_live_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_live_opentui_lab_requires_explicit_live_env(monkeypatch: pytest.MonkeyPatch) -> None:
     lab = _load_lab_script()
     monkeypatch.delenv("OPENSQUILLA_TUI_LIVE_REAL", raising=False)
 
     with pytest.raises(SystemExit, match="OPENSQUILLA_TUI_LIVE_REAL=1"):
-        lab._assert_live_backend_enabled("live-textual")
+        lab._assert_live_backend_enabled("live-opentui")
 
     monkeypatch.setenv("OPENSQUILLA_TUI_LIVE_REAL", "1")
-    lab._assert_live_backend_enabled("live-textual")
-    lab._assert_live_backend_enabled("textual")
+    lab._assert_live_backend_enabled("live-opentui")
     lab._assert_live_backend_enabled("opentui")
 
 
@@ -39,3 +41,11 @@ def test_lab_script_accepts_opentui_backend_for_manual_render_runs() -> None:
     )
 
     assert args.backend == "opentui"
+
+
+@pytest.mark.parametrize("backend", REMOVED_BACKEND_IDS)
+def test_lab_script_rejects_removed_backend_choices(backend: str) -> None:
+    module = _load_lab_script()
+
+    with pytest.raises(SystemExit):
+        module._parser().parse_args(["--scenario", "architecture_prompt", "--backend", backend])

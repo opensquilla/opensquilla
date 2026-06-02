@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.cli.chat.turn import UsageSummary
+from opensquilla.cli.tui.backend.render_summary import summarize_result
 from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer, _format_tokens
-from opensquilla.cli.tui.terminal.stream import _summarize_result
 from opensquilla.engine.usage import SessionTotalsSnapshot
 
 
@@ -240,7 +240,7 @@ async def test_afinalize_tolerates_handle_without_set_toolbar() -> None:
 
 
 def test_tool_result_summary_keeps_meaningful_lines_without_banners() -> None:
-    summary = _summarize_result(
+    summary = summarize_result(
         "exit_code=0\n"
         ".\n"
         "·\n"
@@ -260,7 +260,7 @@ def test_tool_result_summary_keeps_meaningful_lines_without_banners() -> None:
 
 
 def test_tool_result_summary_stringifies_single_structured_msg_payload() -> None:
-    summary = _summarize_result(
+    summary = summarize_result(
         {
             "type": "msg",
             "msg": [
@@ -276,7 +276,7 @@ def test_tool_result_summary_stringifies_single_structured_msg_payload() -> None
 
 
 def test_tool_result_summary_stringifies_structured_msg_payloads() -> None:
-    summary = _summarize_result(
+    summary = summarize_result(
         [
             {"type": "msg", "msg": {"files": ["main.py"], "count": 1}},
             {"type": "msg", "msg": ["ok", {"status": "done"}]},

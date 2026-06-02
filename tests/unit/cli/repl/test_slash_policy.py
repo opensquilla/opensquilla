@@ -37,6 +37,7 @@ from opensquilla.cli.repl.slash_policy import (
         "/clear",
         "/reset",
         "/compact",
+        "/cmp",
         "/clear   ",
         "/reset trailing-junk",
         "/compact extra args",
@@ -52,13 +53,14 @@ def test_classify_destructive(command: str) -> None:
 
 
 def test_destructive_set_matches_plan_lock() -> None:
-    """The destructive set is locked to exactly these three commands.
+    """The destructive set is locked to exactly these commands.
 
     The destructive set is closed; any future addition needs a
     plan amendment. This test pins the frozenset contents so a silent
-    expansion fails loudly.
+    expansion fails loudly. ``/cmp`` is the ``/compact`` alias and shares its
+    context-rewriting (and therefore destructive) semantics.
     """
-    assert DESTRUCTIVE_SLASH_WORDS == frozenset({"/clear", "/reset", "/compact"})
+    assert DESTRUCTIVE_SLASH_WORDS == frozenset({"/clear", "/reset", "/compact", "/cmp"})
 
 
 # --------------------------------------------------------------------------- #

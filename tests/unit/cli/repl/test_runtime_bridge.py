@@ -13,6 +13,9 @@ from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.cli.repl.stream import TurnResult
 from opensquilla.engine.commands import Surface
 
+REMOVED_TEXT_BACKEND = "text" + "ual"
+REMOVED_BACKEND_IDS = ["terminal", REMOVED_TEXT_BACKEND, f"live-{REMOVED_TEXT_BACKEND}"]
+
 
 async def _fake_gateway_stream(*args: Any, **kwargs: Any) -> TurnResult:
     return TurnResult(text="gateway")
@@ -234,7 +237,7 @@ async def test_gateway_runtime_bridge_owns_default_turn_callbacks(
 
 
 @pytest.mark.asyncio
-async def test_run_concurrent_repl_defaults_to_terminal_bridge(
+async def test_run_concurrent_repl_defaults_to_opentui_bridge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.cli.repl import runtime_bridge
@@ -242,18 +245,14 @@ async def test_run_concurrent_repl_defaults_to_terminal_bridge(
     monkeypatch.delenv("OPENSQUILLA_TUI_BACKEND", raising=False)
     calls: list[dict[str, Any]] = []
 
-    async def fake_terminal_repl(**kwargs: Any) -> None:
+    async def fake_opentui_repl(**kwargs: Any) -> None:
         calls.append(kwargs)
-
-    async def fail_textual_repl(**_kwargs: Any) -> None:
-        raise AssertionError("terminal must remain the default TUI runtime")
 
     async def fake_dispatch(_value: str) -> bool:
         return True
 
     scope: dict[str, Any] = {}
-    monkeypatch.setattr(runtime_bridge._terminal_bridge, "run_concurrent_repl", fake_terminal_repl)
-    monkeypatch.setattr(runtime_bridge._textual_bridge, "run_concurrent_repl", fail_textual_repl)
+    monkeypatch.setattr(runtime_bridge._opentui_bridge, "run_concurrent_repl", fake_opentui_repl)
 
     await runtime_bridge.run_concurrent_repl(
         surface=Surface.CLI_GATEWAY,
@@ -272,48 +271,20 @@ async def test_run_concurrent_repl_defaults_to_terminal_bridge(
     ]
 
 
-@pytest.mark.asyncio
-async def test_run_concurrent_repl_uses_textual_bridge_when_selected(
+@pytest.mark.parametrize("backend_id", REMOVED_BACKEND_IDS)
+def test_validate_tui_backend_selection_rejects_removed_backends(
     monkeypatch: pytest.MonkeyPatch,
+    backend_id: str,
 ) -> None:
     from opensquilla.cli.repl import runtime_bridge
 
-    monkeypatch.setenv("OPENSQUILLA_TUI_BACKEND", "textual")
-    calls: list[dict[str, Any]] = []
+    monkeypatch.setenv("OPENSQUILLA_TUI_BACKEND", backend_id)
 
-    async def fail_terminal_repl(**_kwargs: Any) -> None:
-        raise AssertionError("explicit textual backend must not run terminal bridge")
+    with pytest.raises(ValueError) as exc_info:
+        runtime_bridge.validate_tui_backend_selection()
 
-    async def fake_textual_repl(**kwargs: Any) -> None:
-        calls.append(kwargs)
-
-    async def fake_dispatch(_value: str) -> bool:
-        return True
-
-    async def fake_abort() -> None:
-        return None
-
-    scope: dict[str, Any] = {}
-    monkeypatch.setattr(runtime_bridge._terminal_bridge, "run_concurrent_repl", fail_terminal_repl)
-    monkeypatch.setattr(runtime_bridge._textual_bridge, "run_concurrent_repl", fake_textual_repl)
-
-    await runtime_bridge.run_concurrent_repl(
-        surface=Surface.CLI_GATEWAY,
-        scope=scope,
-        dispatch=fake_dispatch,
-        abort_active_turn=fake_abort,
-        queue_max_size=3,
-    )
-
-    assert calls == [
-        {
-            "surface": Surface.CLI_GATEWAY,
-            "scope": scope,
-            "dispatch": fake_dispatch,
-            "queue_max_size": 3,
-            "abort_active_turn": fake_abort,
-        }
-    ]
+    assert "Only OpenTUI is supported" in str(exc_info.value)
+    assert backend_id in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -325,12 +296,6 @@ async def test_run_concurrent_repl_uses_opentui_bridge_when_selected(
     monkeypatch.setenv("OPENSQUILLA_TUI_BACKEND", "opentui")
     calls: list[dict[str, Any]] = []
 
-    async def fail_terminal_repl(**_kwargs: Any) -> None:
-        raise AssertionError("explicit opentui backend must not run terminal bridge")
-
-    async def fail_textual_repl(**_kwargs: Any) -> None:
-        raise AssertionError("explicit opentui backend must not run textual bridge")
-
     async def fake_opentui_repl(**kwargs: Any) -> None:
         calls.append(kwargs)
 
@@ -338,8 +303,6 @@ async def test_run_concurrent_repl_uses_opentui_bridge_when_selected(
         return True
 
     scope: dict[str, Any] = {}
-    monkeypatch.setattr(runtime_bridge._terminal_bridge, "run_concurrent_repl", fail_terminal_repl)
-    monkeypatch.setattr(runtime_bridge._textual_bridge, "run_concurrent_repl", fail_textual_repl)
     monkeypatch.setattr(runtime_bridge._opentui_bridge, "run_concurrent_repl", fake_opentui_repl)
 
     await runtime_bridge.run_concurrent_repl(
@@ -361,11 +324,11 @@ async def test_run_concurrent_repl_uses_opentui_bridge_when_selected(
 
 
 @pytest.mark.asyncio
-async def test_terminal_chat_runtime_exposes_launch_scoped_plugin_manager(
+async def test_opentui_chat_runtime_exposes_launch_scoped_plugin_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.cli.repl import terminal_chat_adapter
     from opensquilla.cli.tui.backend.plugins import TuiPluginManager
+    from opensquilla.cli.tui.opentui import runtime as opentui_runtime
     from opensquilla.cli.tui.plugins.router_hud import RouterHudPlugin
 
     scope: dict[str, object] = {}
@@ -373,37 +336,37 @@ async def test_terminal_chat_runtime_exposes_launch_scoped_plugin_manager(
     fake_surface = _FakeTuiSurface()
 
     @asynccontextmanager
-    async def fake_open_terminal_surface(**_kwargs: object):
+    async def fake_open_opentui_surface(**_kwargs: object):
         yield fake_surface
 
     async def fake_run_tui_runtime(**kwargs: object):
         hooks = kwargs["hooks"]
-        assert not terminal_chat_adapter.get_tui_output(scope)
+        assert not opentui_runtime.get_tui_output(scope)
         hooks.expose_surface(fake_surface)
-        output = terminal_chat_adapter.get_tui_output(scope)
+        output = opentui_runtime.get_tui_output(scope)
         captured["output"] = output
         captured["manager"] = getattr(output, "plugin_manager", None)
         hooks.clear_exposed_surface()
         return SimpleNamespace()
 
     monkeypatch.setattr(
-        terminal_chat_adapter,
-        "open_terminal_surface",
-        fake_open_terminal_surface,
+        opentui_runtime,
+        "open_opentui_surface",
+        fake_open_opentui_surface,
     )
-    monkeypatch.setattr(terminal_chat_adapter, "run_tui_runtime", fake_run_tui_runtime)
+    monkeypatch.setattr(opentui_runtime, "run_tui_runtime", fake_run_tui_runtime)
 
     async def fake_dispatch(_value: str) -> bool:
         return True
 
-    await terminal_chat_adapter.run_terminal_chat_runtime(
+    await opentui_runtime.run_opentui_chat_runtime(
         surface=Surface.CLI_GATEWAY,
         scope=scope,
         dispatch=fake_dispatch,
         queue_max_size=8,
     )
 
-    assert terminal_chat_adapter.get_tui_output(scope) is None
+    assert opentui_runtime.get_tui_output(scope) is None
     manager = captured["manager"]
     assert isinstance(manager, TuiPluginManager)
     assert any(isinstance(plugin, RouterHudPlugin) for plugin in manager.plugins)

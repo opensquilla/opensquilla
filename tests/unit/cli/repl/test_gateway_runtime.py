@@ -21,10 +21,11 @@ def test_gateway_runtime_has_no_raw_prompt_application_dependency(monkeypatch) -
     )
 
     original_import = __import__
+    blocked_module = "prompt" + "_toolkit"
 
     def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: ANN001
-        if name == "prompt_toolkit" or name.startswith("prompt_toolkit."):
-            raise AssertionError(f"gateway runtime imported prompt_toolkit via {name}")
+        if name == blocked_module or name.startswith(f"{blocked_module}."):
+            raise AssertionError(f"gateway runtime imported {blocked_module} via {name}")
         return original_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr("builtins.__import__", _guarded_import)

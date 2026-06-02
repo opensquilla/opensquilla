@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from opensquilla.cli.tui.adapters.terminal_chat_adapter import (
+from opensquilla.cli.tui.adapters.runtime_helpers import (
     ChatRuntimeScope,
     clear_current_cancel,
 )

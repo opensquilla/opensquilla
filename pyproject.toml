@@ -42,7 +42,6 @@ dependencies = [
     "croniter>=2.0",
     "tomli-w>=1.0",
     "yoyo-migrations>=8.2",
-    "prompt-toolkit>=3.0",
     "questionary>=2.0",
     "python-docx>=1.1.0",
     "python-pptx>=1.0.0",
@@ -172,5 +171,4 @@ ignore_missing_imports = true
 dev = [
     "laboratory>=1.0.2",
     "syrupy>=5.1.0",
-    "textual>=8.2.7",
 ]

@@ -1,7 +1,7 @@
 """Standalone chat runtime for the TurnRunner-backed TUI path.
 
 This module owns standalone session setup and input dispatch. It deliberately
-depends on typed callbacks instead of `chat_cmd.py` or raw prompt-toolkit
+depends on typed callbacks instead of `chat_cmd.py` or raw frontend
 objects, so the CLI entrypoint can stay as wiring while future TUI frontends
 reuse the same backend loop.
 """

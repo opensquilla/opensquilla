@@ -14,21 +14,21 @@ pytestmark = [
 ]
 
 
-def test_live_textual_real_cli_runs_architecture_prompt_in_tmux(
+def test_live_opentui_real_cli_runs_architecture_prompt_in_tmux(
     run_real_terminal_scenario,
     tui_backend: str,
     tui_driver: str,
 ) -> None:
     if os.environ.get("OPENSQUILLA_TUI_LIVE_REAL") != "1":
-        pytest.skip("set OPENSQUILLA_TUI_LIVE_REAL=1 to run the real CLI/Textual tmux smoke")
-    if tui_backend != "live-textual":
-        pytest.skip("run with --tui-backend=live-textual")
+        pytest.skip("set OPENSQUILLA_TUI_LIVE_REAL=1 to run the real CLI/OpenTUI tmux smoke")
+    if tui_backend != "live-opentui":
+        pytest.skip("run with --tui-backend=live-opentui")
     if tui_driver == "pty":
-        pytest.skip("live Textual real CLI mode requires tmux, not PTY")
+        pytest.skip("live OpenTUI real CLI mode requires tmux, not PTY")
     if not probe_terminal_capabilities().tmux_available:
         pytest.skip("tmux is unavailable")
 
-    result = run_real_terminal_scenario(scenario_by_id("live_architecture_prompt"))
+    result = run_real_terminal_scenario(scenario_by_id("live_opentui_architecture_prompt"))
 
     assert result.status == "pass"
     assert (result.run_dir / "scrollback.txt").exists()

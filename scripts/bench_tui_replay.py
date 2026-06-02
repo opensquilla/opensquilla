@@ -294,9 +294,7 @@ async def run_replay(renderer: str, fixture: str, *, repeat: int = 1) -> ReplayS
 
     for _ in range(repeat):
         events = _build_events(fixture)
-        output_handle = (
-            _ReplayOutputHandle() if renderer == "terminal" and fixture == "long-stream" else None
-        )
+        output_handle = _ReplayOutputHandle() if fixture == "long-stream" else None
         replay_renderer = (
             backend.create_renderer(title="tui-replay", output_handle=output_handle)
             if fixture == "long-stream"
@@ -383,7 +381,7 @@ def write_summary(summary: ReplaySummary, summary_json: Path) -> None:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Replay synthetic TUI events.")
-    parser.add_argument("--renderer", choices=("terminal", "textual"), required=True)
+    parser.add_argument("--renderer", choices=("opentui",), required=True)
     parser.add_argument("--fixture", choices=("long-stream", "dense-history"), required=True)
     parser.add_argument("--summary-json", type=Path, required=True)
     parser.add_argument("--repeat", type=int, default=1)

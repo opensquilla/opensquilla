@@ -1,7 +1,7 @@
 """Standalone slash-command adapter for the chat REPL backend.
 
 This module owns TurnRunner-backed slash command dispatch. It stays independent
-from prompt-toolkit and raw chat application objects: callers pass typed session
+from raw frontend and chat application objects: callers pass typed session
 state, service handles, and optional stream callbacks.
 """
 
@@ -36,6 +36,7 @@ STANDALONE_SLASH_HANDLER_WORDS = frozenset(
     {
         "/clear",
         "/compact",
+        "/cmp",
         "/cost",
         "/exit",
         "/help",
@@ -560,7 +561,7 @@ async def handle_standalone_slash_command(
         console.print(f"[{ACCENT}]cleared[/] [dim]{state.session_key}[/dim]")
         return True
 
-    if cmd == "/compact":
+    if cmd in {"/compact", "/cmp"}:
         await _compact_standalone_context(context)
         return True
 

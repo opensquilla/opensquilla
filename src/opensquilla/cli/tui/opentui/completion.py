@@ -9,7 +9,9 @@ import subprocess
 from collections.abc import Callable, Sequence
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Any, Protocol
 
+from opensquilla.engine.commands import Surface
 from opensquilla.tools.builtin.filesystem import _is_sensitive_access_path
 
 from .messages import CompletionCandidate, CompletionContext
@@ -43,6 +45,10 @@ SETTING_TOGGLES: tuple[CompletionCandidate, ...] = (
 
 _SEGMENT_SEPARATORS = frozenset("/\\._- ")
 _SKIP_DIRS = frozenset({".git", "node_modules", ".venv", "__pycache__"})
+
+
+class SkillCompletionLoader(Protocol):
+    def get_user_invocable(self) -> Sequence[Any]: ...
 
 
 def fuzzy_rank(query: str, candidates: Sequence[str]) -> list[tuple[int, float]]:
@@ -105,8 +111,8 @@ def enumerate_workspace_files(
 
 def build_completion_catalog(
     *,
-    surface: object,
-    skill_loader: object | None = None,
+    surface: Surface | str,
+    skill_loader: SkillCompletionLoader | None = None,
     workspace_dir: Path | None = None,
 ) -> list[CompletionCandidate]:
     """Build command, skill, and setting rows for slash completion."""
@@ -119,9 +125,9 @@ def build_completion_catalog(
 
 
 def build_completion_context(
-    surface: object,
+    surface: Surface | str,
     *,
-    skill_loader: object | None = None,
+    skill_loader: SkillCompletionLoader | None = None,
     workspace_dir: Path | None = None,
     file_query: str = "",
     max_files: int = 50,
@@ -333,7 +339,7 @@ def _is_ignored(rel_posix: str, patterns: list[str]) -> bool:
     return False
 
 
-def _command_candidates(surface: object) -> list[CompletionCandidate]:
+def _command_candidates(surface: Surface | str) -> list[CompletionCandidate]:
     from opensquilla.engine.commands import DEFAULT_REGISTRY
 
     return [
@@ -348,7 +354,7 @@ def _command_candidates(surface: object) -> list[CompletionCandidate]:
 
 
 def _skill_candidates(
-    skill_loader: object | None,
+    skill_loader: SkillCompletionLoader | None,
     *,
     workspace_dir: Path | None,
 ) -> list[CompletionCandidate]:
@@ -378,7 +384,7 @@ def _skill_candidates(
     return candidates
 
 
-def _build_skill_loader(*, workspace_dir: Path | None = None) -> object:
+def _build_skill_loader(*, workspace_dir: Path | None = None) -> SkillCompletionLoader:
     import os as _os
 
     from opensquilla.gateway.config import GatewayConfig

@@ -1,8 +1,8 @@
 """TUI runtime launch bridge for chat command wiring.
 
-This module owns concrete runtime dependency assembly and terminal bridge
+This module owns concrete runtime dependency assembly and OpenTUI bridge
 defaults. ``chat_cmd.py`` supplies mode-level CLI parameters; the TUI bridge
-decides how terminal, slash-command, and turn-stream callbacks become gateway
+decides how frontend, slash-command, and turn-stream callbacks become gateway
 or standalone runtime dependencies.
 """
 
@@ -14,8 +14,6 @@ from typing import TYPE_CHECKING, Any, Protocol
 from rich.panel import Panel
 
 import opensquilla.cli.tui.adapters.opentui_bridge as _opentui_bridge
-import opensquilla.cli.tui.adapters.terminal_bridge as _terminal_bridge
-import opensquilla.cli.tui.adapters.textual_bridge as _textual_bridge
 from opensquilla.cli.chat import gateway_runtime as _gateway_runtime
 from opensquilla.cli.chat.session_context import (
     GatewayRuntimeScope,
@@ -24,6 +22,7 @@ from opensquilla.cli.chat.session_context import (
 from opensquilla.cli.chat.turn import TurnResult
 from opensquilla.cli.tui import standalone_runtime as _standalone_runtime
 from opensquilla.cli.tui.adapters import commands as _commands
+from opensquilla.cli.tui.adapters import runtime_helpers as _runtime_helpers
 from opensquilla.cli.tui.adapters import slash_bridge as _slash_bridge
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
 from opensquilla.cli.ui import ACCENT, console, error_panel
@@ -48,12 +47,8 @@ def validate_tui_backend_selection(env: Mapping[str, str] | None = None) -> str:
 
 
 def _runtime_bridge_for_selected_backend() -> Any:
-    backend_id = validate_tui_backend_selection()
-    if backend_id == "opentui":
-        return _opentui_bridge
-    if backend_id == "textual":
-        return _textual_bridge
-    return _terminal_bridge
+    validate_tui_backend_selection()
+    return _opentui_bridge
 
 
 class GatewayTerminalReplRunner(Protocol):
@@ -96,7 +91,7 @@ def get_tui_output(
 
 
 def clear_current_cancel() -> None:
-    _terminal_bridge.clear_current_cancel()
+    _runtime_helpers.clear_current_cancel()
 
 
 def cli_sender_id() -> str:
@@ -121,14 +116,12 @@ def standalone_slash_services_from_runtime(
 
 def _turn_stream_dependencies() -> Any:
     from opensquilla.cli.tui import turn_bridge as _turn_bridge
+    from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer
 
-    if validate_tui_backend_selection() == "opentui":
-        from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer
-
-        return _turn_bridge.default_turn_stream_dependencies(
-            renderer_factory=OpenTuiStreamRenderer
-        )
-    return _turn_bridge.default_turn_stream_dependencies()
+    validate_tui_backend_selection()
+    return _turn_bridge.default_turn_stream_dependencies(
+        renderer_factory=OpenTuiStreamRenderer
+    )
 
 
 async def stream_response_gateway(

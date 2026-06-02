@@ -1,6 +1,6 @@
 """TUI-owned default bridge for shared turn streaming.
 
-This module keeps the legacy TUI turn-stream facade while terminal presentation
+This module keeps the legacy TUI turn-stream facade while frontend presentation
 defaults live in ``turn_stream_defaults``.
 """
 

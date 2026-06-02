@@ -27,8 +27,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--tui-backend",
         action="store",
-        default="terminal",
-        choices=("terminal", "textual", "opentui", "live-textual"),
+        default="opentui",
+        choices=("opentui", "live-opentui"),
     )
     parser.addoption(
         "--tui-driver",
@@ -72,12 +72,12 @@ def run_real_terminal_scenario(
     tui_driver: DriverSelection,
 ) -> Callable[[TuiScenario], ScenarioResult]:
     def _run(scenario: TuiScenario) -> ScenarioResult:
-        if tui_backend == "live-textual":
+        if tui_backend == "live-opentui":
             if scenario.family != "live_prompt":
-                pytest.skip("live-textual backend only runs live_prompt scenarios")
+                pytest.skip("live-opentui backend only runs live_prompt scenarios")
             if os.environ.get("OPENSQUILLA_TUI_LIVE_REAL") != "1":
                 pytest.skip(
-                    "set OPENSQUILLA_TUI_LIVE_REAL=1 to run the real CLI/Textual smoke"
+                    "set OPENSQUILLA_TUI_LIVE_REAL=1 to run the real CLI/OpenTUI smoke"
                 )
 
         capabilities = probe_terminal_capabilities()
@@ -101,11 +101,11 @@ def run_real_terminal_scenario(
         if not target.available:
             pytest.skip(target.skip_reason or f"TUI backend {tui_backend!r} unavailable")
         if (
-            target.backend_id == "live-textual"
+            target.backend_id == "live-opentui"
             and os.environ.get("OPENSQUILLA_TUI_LIVE_REAL") != "1"
         ):
             pytest.skip(
-                "set OPENSQUILLA_TUI_LIVE_REAL=1 to run the real CLI/Textual smoke"
+                "set OPENSQUILLA_TUI_LIVE_REAL=1 to run the real CLI/OpenTUI smoke"
             )
         if (
             scenario.required_backend_id is not None

@@ -6,19 +6,17 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import opensquilla.cli.tui.adapters.input_bridge as _input_bridge
-import opensquilla.cli.tui.adapters.terminal_bridge as _terminal_bridge
 from opensquilla.cli.chat import turn_stream as _turn_stream
+from opensquilla.cli.tui.adapters import runtime_helpers as _runtime_helpers
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
 from opensquilla.cli.tui.backend.domain_events import KIND_ROUTER_DECISION, TuiDomainEvent
 from opensquilla.cli.tui.backend.plugins import TuiPluginManager
+from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer
 from opensquilla.cli.tui.plugins.router_hud import (
     ROUTER_HUD_SLOT,
     RouterHudPlugin,
     RouterHudSnapshot,
 )
-from opensquilla.cli.tui.terminal import prompt as terminal_prompt
-from opensquilla.cli.tui.terminal.approval import maybe_handle_approval
-from opensquilla.cli.tui.terminal.renderer import TerminalRenderer
 from opensquilla.cli.ui import console, error_panel
 from opensquilla.engine.commands import Surface
 from opensquilla.provider.model_catalog import ModelCatalog
@@ -107,8 +105,10 @@ def _set_toolbar_value(
     setter = getattr(tui_output, "set_toolbar", None)
     if callable(setter):
         setter(key, value)
-        return
-    terminal_prompt.set_toolbar_value(key, value)
+
+
+async def _noop_approval_handler(*_args: Any, **_kwargs: Any) -> None:
+    return None
 
 
 def _invalidate_output(tui_output: TuiOutputHandle | None) -> None:
@@ -131,14 +131,14 @@ def default_turn_stream_dependencies(
 ) -> TurnStreamDependencies:
     return _turn_stream.default_turn_stream_dependencies(
         renderer_factory=(
-            TerminalRenderer if renderer_factory is None else renderer_factory
+            OpenTuiStreamRenderer if renderer_factory is None else renderer_factory
         ),
         stream_wrapper=stream_wrapper,
         approval_handler=(
-            maybe_handle_approval if approval_handler is None else approval_handler
+            _noop_approval_handler if approval_handler is None else approval_handler
         ),
         cancel_clearer=(
-            _terminal_bridge.clear_current_cancel
+            _runtime_helpers.clear_current_cancel
             if cancel_clearer is None
             else cancel_clearer
         ),

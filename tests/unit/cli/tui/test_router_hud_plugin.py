@@ -24,7 +24,6 @@ from opensquilla.cli.tui.plugins.router_hud import (
     RouterHudPlugin,
     RouterHudSnapshot,
 )
-from opensquilla.cli.tui.terminal import prompt as prompt_module
 from opensquilla.engine.types import DoneEvent, RouterDecisionEvent
 from opensquilla.tools.types import CallerKind, ToolContext
 
@@ -215,24 +214,7 @@ def test_router_hud_omits_malformed_confidence() -> None:
     assert snapshot.label == "route t2 -> claude-sonnet-4.6"
 
 
-def test_terminal_prompt_renders_router_hud_in_bottom_toolbar() -> None:
-    previous = dict(prompt_module._toolbar_context)
-    try:
-        prompt_module._toolbar_context["model"] = "provider/baseline"
-        prompt_module._toolbar_context["session_id"] = "agent:main:test"
-        prompt_module._toolbar_context["router_hud"] = "route t2 -> sonnet 71%"
-        prompt_module._toolbar_context["router_hud_style"] = "warning"
-
-        toolbar = prompt_module._bottom_toolbar()
-
-        assert "baseline" in toolbar.value
-        assert "route t2 -&gt; sonnet 71%" in toolbar.value
-    finally:
-        prompt_module._toolbar_context.clear()
-        prompt_module._toolbar_context.update(previous)
-
-
-def test_terminal_router_sink_updates_toolbar_only_for_router_events() -> None:
+def test_opentui_router_sink_updates_toolbar_only_for_router_events() -> None:
     class _Output:
         def __init__(self) -> None:
             self.updates: list[tuple[str, object | None]] = []
@@ -265,7 +247,7 @@ def test_terminal_router_sink_updates_toolbar_only_for_router_events() -> None:
     assert output.invalidations == 1
 
 
-def test_terminal_router_sink_writes_resolved_context_window() -> None:
+def test_opentui_router_sink_writes_resolved_context_window() -> None:
     class _Output:
         def __init__(self) -> None:
             self.updates: list[tuple[str, object | None]] = []
@@ -284,7 +266,7 @@ def test_terminal_router_sink_writes_resolved_context_window() -> None:
     assert ("router_context_window", 1_000_000) in output.updates
 
 
-def test_terminal_router_sink_reuses_launch_scoped_plugin_manager() -> None:
+def test_opentui_router_sink_reuses_launch_scoped_plugin_manager() -> None:
     class _Output:
         def __init__(self, plugin_manager: TuiPluginManager) -> None:
             self.plugin_manager = plugin_manager

@@ -70,13 +70,9 @@ Developers can replay deterministic terminal-chat fixtures without a live
 provider:
 
 ```sh
-uv run python scripts/bench_tui_replay.py --renderer terminal --fixture long-stream --summary-json .artifacts/tui/terminal-long-stream.json
-uv run python scripts/bench_tui_replay.py --renderer terminal --fixture dense-history --summary-json .artifacts/tui/terminal-dense-history.json
+uv run python scripts/bench_tui_replay.py --renderer opentui --fixture long-stream --summary-json .artifacts/tui/opentui-long-stream.json
+uv run python scripts/bench_tui_replay.py --renderer opentui --fixture dense-history --summary-json .artifacts/tui/opentui-dense-history.json
 ```
-
-Use `--renderer textual` only for optional Textual evaluation. If Textual is not
-installed, the summary reports `available=false` and a `skip_reason` instead of
-failing the benchmark.
 
 Benchmark summaries include renderer availability, event counts, text size,
 tool and router-decision counts, wall time, flush counts, maximum buffered text,

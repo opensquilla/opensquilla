@@ -352,6 +352,8 @@ def _router_context_from_toolbar(toolbar: dict[str, object]) -> str:
 def _coerce_nonnegative_int(value: object | None) -> int | None:
     if value is None or isinstance(value, bool):
         return None
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        return None
     try:
         return max(int(value), 0)
     except (TypeError, ValueError):

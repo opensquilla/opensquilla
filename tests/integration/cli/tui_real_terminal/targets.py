@@ -8,7 +8,7 @@ from typing import Literal
 
 from tui_real_terminal.driver import TerminalSize
 
-TuiBackendId = Literal["terminal", "textual", "opentui", "live-textual", "live-opentui"]
+TuiBackendId = Literal["opentui", "live-opentui"]
 
 
 @dataclass(frozen=True)
@@ -33,17 +33,11 @@ class TuiTarget:
 
 
 def build_tui_target(backend_id: str, context: TargetContext) -> TuiTarget:
-    if backend_id == "terminal":
-        return _terminal_target(context)
-    if backend_id == "textual":
-        return _textual_target(context)
     if backend_id == "opentui":
         return _opentui_target(context)
-    if backend_id == "live-textual":
-        return _live_textual_target(context)
     if backend_id == "live-opentui":
         return _live_opentui_target(context)
-    raise ValueError(f"unknown TUI backend target: {backend_id}")
+    raise ValueError(f"only opentui is supported; got TUI backend target: {backend_id}")
 
 
 def _base_env(context: TargetContext, *, isolate_state: bool = True) -> dict[str, str]:
@@ -73,51 +67,6 @@ def _host_gateway_config_path(project_root: Path) -> str:
     return str(user_config) if user_config.is_file() else ""
 
 
-def _terminal_target(context: TargetContext) -> TuiTarget:
-    app_path = Path(__file__).with_name("fake_terminal_app.py")
-    app_log = context.artifact_dir / "app.log"
-    env = _base_env(context)
-    env.update(
-        {
-            "OPENSQUILLA_TUI_FAKE_SCENARIO": context.scenario_id,
-            "OPENSQUILLA_TUI_FAKE_APP_LOG": str(app_log),
-            "OPENSQUILLA_TUI_READY_MARKER": "OPEN_SQUILLA_TUI_READY",
-        }
-    )
-    return TuiTarget(
-        backend_id="terminal",
-        command=[sys.executable, "-u", str(app_path)],
-        env=env,
-        initial_size=context.size,
-        readiness_markers=("OPEN_SQUILLA_TUI_READY",),
-        log_paths=(app_log,),
-        capability_requirements=("real-terminal", "fake-provider"),
-    )
-
-
-def _textual_target(context: TargetContext) -> TuiTarget:
-    app_path = Path(__file__).with_name("fake_textual_app.py")
-    app_log = context.artifact_dir / "textual-app.log"
-    env = _base_env(context)
-    env.update(
-        {
-            "OPENSQUILLA_TUI_FAKE_SCENARIO": context.scenario_id,
-            "OPENSQUILLA_TUI_FAKE_APP_LOG": str(app_log),
-            "OPENSQUILLA_TUI_READY_MARKER": "OPEN_SQUILLA_TUI_READY",
-            "OPENSQUILLA_TUI_BACKEND": "textual",
-        }
-    )
-    return TuiTarget(
-        backend_id="textual",
-        command=[sys.executable, "-u", str(app_path)],
-        env=env,
-        initial_size=context.size,
-        readiness_markers=("OPEN_SQUILLA_TUI_READY",),
-        log_paths=(app_log,),
-        capability_requirements=("real-terminal", "fake-provider", "live-textual-app"),
-    )
-
-
 def _opentui_target(context: TargetContext) -> TuiTarget:
     app_path = Path(__file__).with_name("fake_opentui_app.py")
     app_log = context.artifact_dir / "opentui-app.log"
@@ -138,42 +87,6 @@ def _opentui_target(context: TargetContext) -> TuiTarget:
         readiness_markers=("OPEN_SQUILLA_TUI_READY",),
         log_paths=(app_log,),
         capability_requirements=("real-terminal", "fake-provider", "opentui-footer"),
-    )
-
-
-def _live_textual_target(context: TargetContext) -> TuiTarget:
-    env = _base_env(context, isolate_state=False)
-    env.update(
-        {
-            "OPENSQUILLA_TUI_BACKEND": "textual",
-            "OPENSQUILLA_TUI_READY_MARKER": "OPEN_SQUILLA_TUI_READY",
-            "OPENSQUILLA_MEMORY_DREAM_DISABLED": "1",
-            "OPENSQUILLA_OPENROUTER_LIVE_PRICING": "0",
-        }
-    )
-    config_path = _host_gateway_config_path(context.project_root)
-    if config_path:
-        env["OPENSQUILLA_GATEWAY_CONFIG_PATH"] = config_path
-    return TuiTarget(
-        backend_id="live-textual",
-        command=[
-            sys.executable,
-            "-u",
-            "-m",
-            "opensquilla.cli.main",
-            "chat",
-            "--standalone",
-            "--workspace",
-            str(context.project_root),
-            "--workspace-strict",
-            "--timeout",
-            "120",
-        ],
-        env=env,
-        initial_size=context.size,
-        readiness_markers=("OPEN_SQUILLA_TUI_READY",),
-        log_paths=(context.artifact_dir / "logs",),
-        capability_requirements=("real-terminal", "real-cli", "live-textual-app", "tmux"),
     )
 
 

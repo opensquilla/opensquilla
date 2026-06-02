@@ -313,25 +313,45 @@ composition:
       with:
         system: "Return one line of text. No quotes, no prefix, no commentary."
         task: |
-          Build a single-line image prompt for an ensemble identity
-          reference card. The picture must show ALL main characters from
-          the script standing together in a neutral lineup pose against
-          a neutral background, in the same RENDER_STYLE as the shots,
-          so the downstream video model can use it as a soft identity
-          anchor across cuts.
+          Build a single-line image prompt for a full-cast identity
+          reference card. The picture must show EVERY named character
+          that appears in ANY shot of the script (NOT just the
+          OVERVIEW.IDENTITY_ANCHOR anchors — supporting cast, cameo
+          characters, anyone the script mentions by name in any SHOT
+          block also belongs here), standing together in a neutral
+          lineup against a neutral backdrop. The downstream video model
+          uses this image as the universal identity anchor for every
+          shot.
 
-          Layout: paste OVERVIEW.IDENTITY_ANCHOR verbatim at the start
-          (this includes every character's name + age + ethnicity + hair
-          + outfit). Then append: ", full-body group lineup, neutral
-          studio lighting, neutral light grey backdrop, ALL characters
-          clearly visible standing side by side, no props, no scene". Then
-          append OVERVIEW.RENDER_STYLE verbatim. Finally append the
-          literal aspect-ratio token "--ar 9:16".
+          Procedure (do these silently in your head; only emit the final
+          single-line prompt):
 
-          Output: a single line, byte-for-byte safe to pass as a CLI arg.
+          1. Read the entire script. Enumerate every distinct named
+             character that appears in ANY SHOT_N block's IMAGE_PROMPT
+             or VIDEO_PROMPT. Include characters who appear in only one
+             shot. Deduplicate by name. Let N be the count.
+          2. For each character, write the most complete canonical
+             attribute string the script gives them (name, age,
+             ethnicity, hair, outfit, distinguishing accessory). Pull
+             missing fields from OVERVIEW.IDENTITY_ANCHOR if needed.
+          3. Compose the final prompt as a single line in this exact
+             order:
 
-          Script (read OVERVIEW block):
-          {{ outputs.final_script | truncate(3000) }}
+               <char 1 description>; <char 2 description>; ...; <char N description>, ALL <N> characters standing side by side in a horizontal full-body group lineup, every character clearly visible from head to toe, evenly spaced across frame, wide-angle group photo, neutral studio lighting, neutral light grey backdrop, no props, no background scene, group portrait composition, <OVERVIEW.RENDER_STYLE verbatim>, --ar 9:16
+
+             - Use ; (semicolon) BETWEEN characters, exactly as in the
+               examples above.
+             - State the integer N explicitly inside "ALL <N> characters".
+             - If N = 1, still say "ALL 1 character" and drop the
+               "side by side / horizontal lineup" phrasing — write
+               "single-character full-body portrait" instead.
+
+          Output a single line. No quotes. No commentary outside the
+          prompt itself.
+
+          Script (READ THE FULL SCRIPT, including every SHOT_N block,
+          not just OVERVIEW):
+          {{ outputs.final_script | truncate(8000) }}
 
     - id: reference_image
       kind: skill_exec
@@ -343,8 +363,13 @@ composition:
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         aspect_ratio: "9:16"
         image_size: "1K"
+        # Use 3-pro as primary here: this image runs ONCE per drama and
+        # has to render every cast member visibly, which 3-pro handles
+        # better than 3.1-flash on dense multi-subject prompts. Per-shot
+        # images keep 3.1-flash for cost.
+        model: "google/gemini-3-pro-image-preview"
         max_retries: 1
-        fallback_model: "google/gemini-3-pro-image-preview"
+        fallback_model: "google/gemini-3.1-flash-image-preview"
         placeholder_on_fail: "yes"
 
     # =========================================================================

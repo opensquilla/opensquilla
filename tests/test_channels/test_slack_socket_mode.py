@@ -112,6 +112,27 @@ def test_ingest_accepts_plain_user_message() -> None:
     assert msg.content == "hi"
 
 
+def test_ingest_accepts_app_mention_event() -> None:
+    ch = _mk()
+    ch._ingest_event_callback(
+        {
+            "event_id": "EvMention",
+            "event": {
+                "type": "app_mention",
+                "user": "UUSER",
+                "channel": "C123",
+                "text": "<@UBOT> hi",
+                "ts": "2.1",
+            },
+        }
+    )
+
+    assert ch._queue.qsize() == 1
+    msg = ch._queue.get_nowait()
+    assert msg.channel_id == "C123"
+    assert msg.content == "<@UBOT> hi"
+
+
 @pytest.mark.parametrize(
     "event",
     [

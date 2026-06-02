@@ -60,6 +60,22 @@ async function main() {
   });
   renderer.root.add(inputBox);
 
+  // Full-screen, top-of-stack host for transient floating UI (completion menu,
+  // and any future confirm/hint popups). Lives as a root sibling of the
+  // conversation and footer so overlays never bleed into the scrollback buffer
+  // or get clipped by the fixed-height footer; its high zIndex keeps it painted
+  // above both. The layer itself is invisible — only mounted overlays draw.
+  const overlayLayer = new BoxRenderable(renderer, {
+    id: "overlay-layer",
+    position: "absolute",
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 1000,
+  });
+  renderer.root.add(overlayLayer);
+
   const ipc = createIpc({ fromFd: FROM_PYTHON_FD, toFd: TO_PYTHON_FD });
   const composer = createComposer({
     renderer,
@@ -67,6 +83,7 @@ async function main() {
     TextRenderable,
     conversationBox,
     inputBox,
+    overlayLayer,
     footerHeight: FOOTER_HEIGHT,
     sendHostMessage: ipc.send,
   });

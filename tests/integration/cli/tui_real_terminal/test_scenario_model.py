@@ -11,8 +11,10 @@ if str(HARNESS_PARENT) not in sys.path:
     sys.path.insert(0, str(HARNESS_PARENT))
 
 from tui_real_terminal.assertions import (  # noqa: E402
+    assert_no_completion_menu_overlap,
     assert_no_inline_prompt_chrome_collision,
     assert_no_raw_ansi_leakage,
+    assert_no_stale_completion_menu,
     assert_prompt_ready,
     assert_visible_text,
 )
@@ -40,7 +42,9 @@ def test_all_abcd_scenarios_are_declared() -> None:
         "long_streaming",
         "complex_ui_state",
         "architecture_prompt",
-        "live_architecture_prompt",
+        "completion_file_menu_escape",
+        "completion_menu_resize",
+        "completion_slash_menu_filter",
         "live_opentui_architecture_prompt",
         "terminal_changes",
     }
@@ -49,19 +53,11 @@ def test_all_abcd_scenarios_are_declared() -> None:
     assert scenarios["long_streaming"].family == "long_streaming_output"
     assert scenarios["complex_ui_state"].family == "complex_ui_state"
     assert scenarios["architecture_prompt"].family == "architecture_prompt"
-    assert scenarios["live_architecture_prompt"].family == "live_prompt"
+    assert scenarios["completion_file_menu_escape"].family == "completion_menu"
+    assert scenarios["completion_menu_resize"].family == "completion_menu"
+    assert scenarios["completion_slash_menu_filter"].family == "completion_menu"
     assert scenarios["live_opentui_architecture_prompt"].family == "live_prompt"
     assert scenarios["terminal_changes"].family == "terminal_changes"
-    assert scenarios["live_architecture_prompt"].requires_tmux is True
-    assert scenarios["live_architecture_prompt"].requires_prompt_ready is False
-    assert scenarios["live_architecture_prompt"].required_backend_id == "live-textual"
-    assert scenarios["live_architecture_prompt"].steps[-2].action == "wait_any_text"
-    assert " · " in scenarios["live_architecture_prompt"].steps[-2].value
-    assert "timed out" in scenarios["live_architecture_prompt"].steps[-2].value
-    assert scenarios["live_architecture_prompt"].steps[-2].timeout_s >= 120
-    assert scenarios["live_architecture_prompt"].steps[-1].action == "capture"
-    assert scenarios["live_architecture_prompt"].steps[-1].timeout_s >= 0.1
-    assert "send a massage" in scenarios["live_architecture_prompt"].expected_text
     assert scenarios["live_opentui_architecture_prompt"].requires_tmux is True
     assert scenarios["live_opentui_architecture_prompt"].requires_prompt_ready is False
     assert (
@@ -84,6 +80,17 @@ def test_launch_scenario_serializes_to_json(tmp_path: Path) -> None:
     assert data["scenario_id"] == "launch_input_loop"
     assert data["family"] == "launch_and_input_loop"
     assert data["initial_size"] == {"cols": 100, "rows": 30}
+
+
+def test_complex_ui_state_captures_intermediate_frame_before_final_state() -> None:
+    scenario = scenario_by_id("complex_ui_state")
+    intermediate_steps = [
+        step for step in scenario.steps if step.checkpoint == "during-intermediate"
+    ]
+
+    assert len(intermediate_steps) == 1
+    assert intermediate_steps[0].action == "wait_text"
+    assert intermediate_steps[0].value == "intermediate-before-tool"
 
 
 def test_visible_text_assertion_includes_checkpoint() -> None:
@@ -117,6 +124,34 @@ def test_ansi_leakage_assertion_rejects_raw_escape() -> None:
 
     with pytest.raises(AssertionError, match="raw terminal escape"):
         assert_no_raw_ansi_leakage(frame)
+
+
+def test_completion_menu_overlap_rejects_dirty_border() -> None:
+    frame = TerminalFrame(
+        "menu",
+        " ╭ commands ─ fake-response:hello ─╮\n"
+        " │ › /compact  Compact history     │\n"
+        " ╰─────────────────────────────────╯",
+        1,
+        TerminalSize(),
+    )
+
+    with pytest.raises(AssertionError, match="completion menu overlap"):
+        assert_no_completion_menu_overlap(frame)
+
+
+def test_stale_completion_menu_rejects_leftover_title_border() -> None:
+    frame = TerminalFrame(
+        "after-close",
+        " ╭ commands ───────────────────────╮\n"
+        " │ › /compact  Compact history     │\n"
+        " ╰─────────────────────────────────╯",
+        1,
+        TerminalSize(),
+    )
+
+    with pytest.raises(AssertionError, match="stale completion menu"):
+        assert_no_stale_completion_menu(frame)
 
 
 def test_evidence_bundle_writes_required_artifacts(tmp_path: Path) -> None:

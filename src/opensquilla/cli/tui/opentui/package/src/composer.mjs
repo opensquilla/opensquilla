@@ -193,7 +193,7 @@ function fileCompletionItems(paths) {
 // (renderer, renderable classes, boxes, footer height, host writer) are injected
 // via `deps`.
 export function createComposer(deps) {
-  const { renderer, BoxRenderable, TextRenderable, conversationBox, inputBox, footerHeight, sendHostMessage } = deps;
+  const { renderer, BoxRenderable, TextRenderable, conversationBox, inputBox, overlayLayer, footerHeight, sendHostMessage } = deps;
 
   let inputText = "";
   // Caret position as a grapheme index into Array.from(inputText), range [0, len].
@@ -319,6 +319,7 @@ export function createComposer(deps) {
       clearTimeout(fileDebounce);
       fileDebounce = null;
     }
+    clearOverlay();
   }
 
   function clampMenuSelection() {
@@ -387,9 +388,23 @@ export function createComposer(deps) {
     });
   }
 
+  // Remove any previously mounted completion menu from the overlay layer so a
+  // shrinking menu never leaves a stale node behind and re-renders don't stack.
+  function clearOverlay() {
+    overlayLayer?.remove?.("completion-menu");
+  }
+
   function renderCompletionMenu() {
+    // Always clear first: a closed menu must vanish, and an open one is rebuilt
+    // fresh so its height tracks the current candidate count exactly.
+    clearOverlay();
     if (!menu.active) return;
     const rows = completionMenuRows();
+    // Mounted on the full-screen overlay layer (a root sibling), so `bottom` is
+    // screen-relative: footerHeight rows up puts the menu directly above the
+    // footer. It can never bleed into the scrollback buffer the way an
+    // inputBox-child overflowing upward did, and the overlay's high zIndex keeps
+    // it painted above the conversation.
     const menuNode = new BoxRenderable(renderer, {
       id: "completion-menu",
       position: "absolute",
@@ -412,7 +427,7 @@ export function createComposer(deps) {
         fg: row.fg,
       }));
     });
-    inputBox.add(menuNode);
+    overlayLayer.add(menuNode);
   }
 
   // Split the input into display lines and splice the caret into the line/column
@@ -625,7 +640,8 @@ export function createComposer(deps) {
         if (applyMenuKeyResult(menuResult)) return;
       }
       if (key.ctrl && key.name === "c") {
-        // With text: clear the input. Empty: signal EOF (exit the TUI).
+        // With text: clear the input. Empty: interrupt the in-flight turn.
+        // Ctrl-D owns EOF/exit.
         if (inputText.length > 0) {
           setInput("");
           historyIndex = inputHistory.length;
@@ -633,7 +649,9 @@ export function createComposer(deps) {
           wakeCursor();
           rerenderInputRegion();
         } else {
-          sendHostMessage({ type: "input.eof" });
+          sendHostMessage({ type: "input.cancel" });
+          wakeCursor();
+          rerenderInputRegion();
         }
         return;
       }

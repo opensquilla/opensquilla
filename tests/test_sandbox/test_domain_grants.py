@@ -75,6 +75,11 @@ def test_validate_domain_pattern_allows_exact_and_narrow_wildcard() -> None:
         normalized="example.com",
         reason="exact_domain",
     )
+    assert validate_domain_pattern("example.com:443") == DomainDecision(
+        status="allowed",
+        normalized="example.com",
+        reason="exact_domain",
+    )
     assert validate_domain_pattern("*.pythonhosted.org") == DomainDecision(
         status="allowed",
         normalized="*.pythonhosted.org",
@@ -116,6 +121,7 @@ def test_package_bundles_expand_to_known_domains() -> None:
         "foo.*.example.com",
         "*.",
         "example.com:abc",
+        "example.com:１２３",
     ],
 )
 def test_validate_domain_pattern_blocks_malformed_hostnames(raw: str) -> None:
@@ -139,9 +145,19 @@ def test_validate_domain_pattern_blocks_malformed_bracketed_url_hosts(raw: str) 
     assert decision.status == "blocked"
 
 
+def test_validate_domain_pattern_blocks_huge_port_without_raising() -> None:
+    raw = "example.com:" + ("9" * 5000)
+    try:
+        decision = validate_domain_pattern(raw)
+    except ValueError as exc:
+        pytest.fail(f"validate_domain_pattern raised {exc!r}")
+    assert decision.status == "blocked"
+
+
 def test_domain_matches_exact_domain() -> None:
     assert domain_matches("pypi.org", "pypi.org")
     assert not domain_matches("pypi.org", "files.pythonhosted.org")
+    assert domain_matches("example.com", "example.com:443")
 
 
 def test_domain_matches_wildcard_subdomain_and_excludes_apex() -> None:
@@ -169,11 +185,21 @@ def test_domain_matches_returns_false_for_invalid_pattern() -> None:
         "8.8.8.8",
         "https://[::1]foo",
         "http://[v6.invalid]",
+        "example.com:１２３",
     ],
 )
 def test_domain_matches_returns_false_for_invalid_host(host: str) -> None:
     try:
         matched = domain_matches("pypi.org", host)
+    except ValueError as exc:
+        pytest.fail(f"domain_matches raised {exc!r}")
+    assert not matched
+
+
+def test_domain_matches_returns_false_for_huge_port_without_raising() -> None:
+    host = "example.com:" + ("9" * 5000)
+    try:
+        matched = domain_matches("example.com", host)
     except ValueError as exc:
         pytest.fail(f"domain_matches raised {exc!r}")
     assert not matched

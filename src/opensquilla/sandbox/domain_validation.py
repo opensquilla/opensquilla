@@ -21,6 +21,7 @@ class DomainDecision:
 _ALLOWED_WILDCARD_SUFFIXES = {"pythonhosted.org"}
 _DNS_LABEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 _IPV4_NUMERIC_ALIAS_LABEL_RE = re.compile(r"(?:\d+|0x[0-9a-f]+)")
+_PORT_RE = re.compile(r"[0-9]{1,5}")
 
 
 def normalize_domain(raw: str) -> str:
@@ -144,7 +145,7 @@ def _normalize_exact_validation_host(value: str) -> str:
 
 
 def _is_valid_port(value: str) -> bool:
-    if not value.isdigit():
+    if _PORT_RE.fullmatch(value) is None:
         return False
     port = int(value)
     return 0 <= port <= 65535

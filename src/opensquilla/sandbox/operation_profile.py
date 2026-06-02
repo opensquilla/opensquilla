@@ -68,21 +68,21 @@ def package_bundle_for_manager(package_manager: str | None) -> str | None:
 
 def _is_python_install(lowered: tuple[str, ...]) -> bool:
     return (
-        len(lowered) >= 3
+        len(lowered) >= 4
         and _PYTHON_EXE_RE.fullmatch(_command_name(lowered[0])) is not None
         and lowered[1:3] == ("-m", "pip")
-        and "install" in lowered
+        and lowered[3] == "install"
     ) or (
-        lowered
+        len(lowered) >= 2
         and _command_name(lowered[0]) in {"pip", "pip3"}
-        and "install" in lowered
+        and lowered[1] == "install"
     )
 
 
 def _is_node_install(lowered: tuple[str, ...]) -> bool:
     if not lowered or _command_name(lowered[0]) not in {"npm", "pnpm", "yarn"}:
         return False
-    return any(part in _NODE_INSTALL_COMMANDS for part in lowered[1:])
+    return len(lowered) >= 2 and lowered[1] in _NODE_INSTALL_COMMANDS
 
 
 def _domains_from_argv(parts: tuple[str, ...]) -> tuple[str, ...]:
@@ -132,9 +132,17 @@ def _shell_tokens(script: str) -> tuple[str, ...]:
 
 def _shell_script(lowered: tuple[str, ...]) -> str:
     for index, part in enumerate(lowered[1:], start=1):
-        if part.startswith("-") and "c" in part:
+        if _is_shell_command_option(part):
             return " ".join(lowered[index + 1 :])
     return " ".join(lowered[1:])
+
+
+def _is_shell_command_option(part: str) -> bool:
+    if part == "-c":
+        return True
+    if not part.startswith("-") or part.startswith("--"):
+        return False
+    return "c" in part[1:]
 
 
 def _command_name(value: str) -> str:

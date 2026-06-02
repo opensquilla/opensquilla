@@ -4,10 +4,14 @@ from opensquilla.sandbox.operation_profile import classify_command, package_bund
 
 
 def test_classify_python_package_install() -> None:
-    profile = classify_command(("python", "-m", "pip", "install", "requests"))
-    assert profile.name == "package_install"
-    assert profile.package_manager == "python"
-    assert profile.needs_network is True
+    for command in (
+        ("python", "-m", "pip", "install", "requests"),
+        ("pip", "install", "requests"),
+    ):
+        profile = classify_command(command)
+        assert profile.name == "package_install"
+        assert profile.package_manager == "python"
+        assert profile.needs_network is True
 
 
 def test_classify_python_package_install_variants() -> None:
@@ -20,6 +24,12 @@ def test_classify_python_package_install_variants() -> None:
         assert profile.name == "package_install"
         assert profile.package_manager == "python"
         assert profile.needs_network is True
+
+
+def test_pip_help_install_is_not_package_install() -> None:
+    profile = classify_command(("pip", "help", "install"))
+    assert profile.name == "unknown_shell"
+    assert profile.package_manager is None
 
 
 def test_classify_node_package_install() -> None:
@@ -40,6 +50,12 @@ def test_classify_alternate_node_package_installers() -> None:
         assert profile.name == "package_install"
         assert profile.package_manager == "node"
         assert profile.needs_network is True
+
+
+def test_npm_run_install_is_not_package_install() -> None:
+    profile = classify_command(("npm", "run", "install"))
+    assert profile.name == "unknown_shell"
+    assert profile.package_manager is None
 
 
 def test_classify_rust_package_install() -> None:
@@ -106,6 +122,12 @@ def test_shell_wrapper_with_url_is_conservative() -> None:
 
 def test_shell_wrapper_preserves_obvious_destructive_impact() -> None:
     profile = classify_command(("sh", "-lc", "rm -rf dist && curl https://example.com"))
+    assert profile.name == "destructive_shell"
+    assert profile.high_impact is True
+
+
+def test_shell_wrapper_finds_c_option_after_long_options() -> None:
+    profile = classify_command(("bash", "--norc", "-c", "rm -rf dist"))
     assert profile.name == "destructive_shell"
     assert profile.high_impact is True
 

@@ -6,6 +6,8 @@ ROOT = Path(__file__).resolve().parents[2] / "src/opensquilla/gateway"
 VIEWS = ROOT / "static/js/views"
 TEMPLATE = ROOT / "templates/index.html"
 APP = ROOT / "static/js/app.js"
+VUE_ROUTER = Path("opensquilla-webui/src/router/index.ts")
+VUE_SETUP_VIEW = Path("opensquilla-webui/src/views/SetupView.vue")
 
 
 def test_channels_view_is_read_only_status_surface():
@@ -569,12 +571,18 @@ def test_setup_view_rebinds_conditional_fields_after_dynamic_redraw():
 
 
 def test_setup_view_is_loaded_and_registered_but_not_sidebar_primary():
-    template = TEMPLATE.read_text(encoding="utf-8")
     app = APP.read_text(encoding="utf-8")
-    assert "static/js/views/setup.js" in template
+    router = VUE_ROUTER.read_text(encoding="utf-8")
+
     assert "_renderStandardView(SetupView, el)" in app
     assert "Router.register('/setup'" in app
     assert 'data-path="/setup"' not in app
+    assert "SetupView.vue" in router
+    assert "path: '/setup'" in router
+    assert "name: 'setup'" in router
+    assert "group: 'Settings'" in router
+    assert "group: 'Control'" not in router.split("path: '/setup'", 1)[1].split("}", 1)[0]
+    assert VUE_SETUP_VIEW.exists()
 
 
 def test_setup_view_marks_unsupported_providers_disabled():

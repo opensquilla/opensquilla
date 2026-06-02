@@ -547,8 +547,10 @@ def test_chat_interrupt_mark_is_rendered_and_styled() -> None:
     assert "var(--text-muted)" in css.split(".msg-interrupt-mark", 1)[1].split("}", 1)[0]
 
 
-def test_health_assets_are_loaded_by_index_template() -> None:
+def test_control_index_loads_vue_entrypoint() -> None:
     index = Path("src/opensquilla/gateway/templates/index.html").read_text(encoding="utf-8")
 
-    assert "views/health.css" in index
-    assert "views/health.js" in index
+    assert 'id="app"' in index
+    assert 'id="opensquilla-data"' in index
+    assert "vite_css_url" in index
+    assert "vite_js_url" in index

@@ -17,7 +17,7 @@
             v-model="searchInput"
             type="text"
             class="sess-search-input"
-            placeholder="Search session keys…"
+            placeholder="Search sessions…"
             autocomplete="off"
             @input="onSearchInput"
           />
@@ -25,10 +25,6 @@
         <button class="btn btn--ghost" title="Refresh" @click="loadData">
           <Icon name="refresh" :size="16" />
           <span>Refresh</span>
-        </button>
-        <button class="btn btn--primary" @click="openNewSessionModal">
-          <Icon name="plus" :size="16" />
-          <span>New session</span>
         </button>
       </div>
     </header>
@@ -111,11 +107,11 @@
           <div class="sess-empty__title">No sessions yet.</div>
           <p class="sess-empty__msg">
             Sessions appear here as soon as you chat with an agent or schedule a cron job.<br/>
-            Start one and pick up the conversation any time.
+            Start chats from the sidebar, or configure agents first.
           </p>
-          <button class="btn btn--primary sess-empty__cta" @click="openNewSessionModal">
-            <Icon name="plus" :size="16" />
-            <span>Start a new session</span>
+          <button class="btn btn--primary sess-empty__cta" @click="goToAgents">
+            <Icon name="agents" :size="16" />
+            <span>Open Agents</span>
           </button>
         </div>
       </div>
@@ -146,29 +142,30 @@
               </th>
               <th
                 class="sess-th-sort"
-                :class="{ 'is-active': sortCol === 'key' }"
-                @click="setSort('key')"
+                :class="{ 'is-active': sortCol === 'title' }"
+                @click="setSort('title')"
               >
-                Session key
-                <span v-if="sortCol === 'key'" class="sess-table__arrow">{{ sortAsc ? ' ▲' : ' ▼' }}</span>
+                Session
+                <span v-if="sortCol === 'title'" class="sess-table__arrow">{{ sortAsc ? ' ▲' : ' ▼' }}</span>
               </th>
+              <th>Type</th>
+              <th>Agent</th>
               <th>Status</th>
-              <th>Msgs</th>
               <th
                 class="sess-th-sort"
-                :class="{ 'is-active': sortCol === 'updated_at' }"
-                @click="setSort('updated_at')"
+                :class="{ 'is-active': sortCol === 'messageCount' }"
+                @click="setSort('messageCount')"
+              >
+                Messages
+                <span v-if="sortCol === 'messageCount'" class="sess-table__arrow">{{ sortAsc ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th
+                class="sess-th-sort"
+                :class="{ 'is-active': sortCol === 'updatedAt' }"
+                @click="setSort('updatedAt')"
               >
                 Modified
-                <span v-if="sortCol === 'updated_at'" class="sess-table__arrow">{{ sortAsc ? ' ▲' : ' ▼' }}</span>
-              </th>
-              <th
-                class="sess-th-sort"
-                :class="{ 'is-active': sortCol === 'message_count' }"
-                @click="setSort('message_count')"
-              >
-                Msgs
-                <span v-if="sortCol === 'message_count'" class="sess-table__arrow">{{ sortAsc ? ' ▲' : ' ▼' }}</span>
+                <span v-if="sortCol === 'updatedAt'" class="sess-table__arrow">{{ sortAsc ? ' ▲' : ' ▼' }}</span>
               </th>
               <th class="sess-table__cell--actions"></th>
             </tr>
@@ -202,9 +199,29 @@
                     :title="'Open chat: ' + row.key"
                     @click="openChat(row.key)"
                   >
-                    {{ row.key }}
+                    {{ row.title }}
                   </button>
-                  <div v-if="agentSubline(row)" v-html="agentSubline(row)"></div>
+                  <div class="sess-key__sub">
+                    <span v-if="row.subtitle" class="sess-key__subtitle">{{ row.subtitle }}</span>
+                    <span v-else class="sess-key__subtitle sess-key__subtitle--gap">Missing subtitle</span>
+                    <code class="sess-key__debug" title="Debug session key">{{ row.key }}</code>
+                  </div>
+                  <div class="sess-key__badges">
+                    <span class="sess-group-badge">{{ row.groupLabel }}</span>
+                    <span v-if="row.contractGaps.length" class="chip chip-warn sess-gap-chip" :title="contractGapTitle(row)">Contract gap</span>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div class="sess-type-stack">
+                  <span :class="['sess-type-chip', `sess-type-chip--${row.sessionKind}`]">{{ sessionKindLabel(row.sessionKind) }}</span>
+                  <span class="sess-type-meta">{{ surfaceLabel(row) }}</span>
+                </div>
+              </td>
+              <td>
+                <div class="sess-agent-stack">
+                  <span class="sess-agent-badge">{{ agentDisplayName(row) }}</span>
+                  <span class="sess-agent-id">{{ row.effectiveAgentId }}</span>
                 </div>
               </td>
               <td>
@@ -212,14 +229,15 @@
                   <span :class="['chip', sessionStatusChip(sessionVisualStatus(row))]">
                     {{ sessionStatusLabel(sessionVisualStatus(row)) }}
                   </span>
-                  <span v-if="runStatusBadge(row)" v-html="runStatusBadge(row)"></span>
+                  <span v-if="runStatusLabel(row.runStatus)" :class="['chip', runStatusChipClass(row.runStatus), 'sess-run-chip']">
+                    {{ runStatusLabel(row.runStatus) }}
+                  </span>
                 </div>
               </td>
               <td class="sess-mono">
-                {{ row.message_count != null ? Number(row.message_count).toLocaleString() : '—' }}
+                {{ row.messageCount != null ? Number(row.messageCount).toLocaleString() : '—' }}
               </td>
-              <td class="sess-mono sess-dim">{{ row.updated_at ? relTime(row.updated_at) : '—' }}</td>
-              <td class="sess-mono sess-dim">{{ row.message_count != null ? Number(row.message_count).toLocaleString() : '—' }}</td>
+              <td class="sess-mono sess-dim">{{ row.updatedAt ? relTime(row.updatedAt) : '—' }}</td>
               <td class="sess-table__cell--actions">
                 <button class="sess-iconbtn" :title="'Open chat: ' + row.key" @click="openChat(row.key)">
                   <Icon name="chat" :size="14" />
@@ -259,63 +277,6 @@
       </div>
     </section>
 
-    <!-- New session modal -->
-    <div v-if="showModal" class="modal-backdrop" @mousedown="onModalBackdropClick">
-      <div class="modal sess-newchat-modal" role="dialog" aria-modal="true" aria-labelledby="ns-title">
-        <div class="modal-title" id="ns-title">Start a new chat</div>
-        <div class="modal-body">
-          <div class="sess-form">
-            <label class="sess-form__field">
-              <span class="sess-form__label">Agent</span>
-              <div class="sess-combobox-wrap">
-                <input
-                  v-model="modalAgentInput"
-                  type="text"
-                  class="input"
-                  placeholder="Pick an agent or type a new ID"
-                  autocomplete="off"
-                  @input="onModalAgentInput"
-                  @keydown.enter.prevent="onModalSubmit"
-                />
-                <div v-if="modalAgentSuggestions.length > 0" class="sess-combobox-dropdown">
-                  <button
-                    v-for="a in modalAgentSuggestions"
-                    :key="a.id"
-                    type="button"
-                    class="sess-combobox-item"
-                    :class="{ 'is-selected': modalSelectedAgent === a.id }"
-                    @click="selectModalAgent(a.id)"
-                  >
-                    <span class="sess-combobox-item__label">{{ a.label }}</span>
-                    <span v-if="a.sublabel" class="sess-combobox-item__sub">{{ a.sublabel }}</span>
-                  </button>
-                  <button
-                    v-if="modalAgentInput.trim() && !modalAgents.find(a => a.id === modalAgentInput.trim())"
-                    type="button"
-                    class="sess-combobox-item sess-combobox-item--create"
-                    @click="createModalAgent"
-                  >
-                    ↵ Create new agent "{{ modalAgentInput.trim() }}"
-                  </button>
-                </div>
-              </div>
-              <small class="sess-form__hint">Pick an agent or type a new ID to create it.</small>
-            </label>
-            <div v-if="modalError" class="sess-form__error">{{ modalError }}</div>
-          </div>
-        </div>
-        <div class="modal-foot">
-          <button class="btn" @click="closeModal">Cancel</button>
-          <button
-            class="btn btn--primary"
-            :disabled="!modalCanSubmit"
-            @click="onModalSubmit"
-          >
-            {{ modalCreatePending ? 'Creating…' : 'Start chat' }}
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -324,34 +285,16 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
+import {
+  SESSION_LIST_VIEW,
+  normalizeSessionItem,
+  sessionMatches,
+  type SessionItem,
+} from '@/composables/useSessions'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface Session {
-  key: string
-  status?: string
-  model?: string
-  message_count?: number
-  updated_at?: string
-  display_name?: string
-  displayName?: string
-  subject?: string
-  derived_title?: string
-  derivedTitle?: string
-  agent_id?: string
-  agentId?: string
-  active_task?: { status?: string }
-  activeTask?: { status?: string }
-  last_task?: { status?: string }
-  lastTask?: { status?: string }
-  run_status?: string
-  runStatus?: string
-  terminal_status?: string
-  terminalStatus?: string
-  size_bytes?: number
-}
 
 interface Agent {
   id: string
@@ -366,11 +309,7 @@ interface AgentsListData {
 }
 
 interface SessionsListData {
-  sessions?: Session[]
-}
-
-interface SessionCreateResponse {
-  key?: string
+  sessions?: any[]
 }
 
 interface DeleteResponse {
@@ -389,9 +328,9 @@ const rpc = useRpcStore()
 // State
 // ---------------------------------------------------------------------------
 
-const allSessions = ref<Session[]>([])
-const filtered = ref<Session[]>([])
-const sortCol = ref<'key' | 'updated_at' | 'message_count'>('updated_at')
+const allSessions = ref<SessionItem[]>([])
+const filtered = ref<SessionItem[]>([])
+const sortCol = ref<'title' | 'groupLabel' | 'updatedAt' | 'messageCount'>('updatedAt')
 const sortAsc = ref(false)
 const page = ref(0)
 const pageSize = ref(25)
@@ -399,19 +338,9 @@ const selected = ref<Set<string>>(new Set())
 const searchVal = ref('')
 const searchInput = ref('')
 const agentsById = ref<Map<string, Agent>>(new Map())
-const agentsLoaded = ref(false)
 
 let searchDebounceId: ReturnType<typeof setTimeout> | null = null
 let pollInterval: ReturnType<typeof setInterval> | null = null
-
-// Modal state
-const showModal = ref(false)
-const modalAgents = ref<{ id: string; label: string; sublabel: string }[]>([])
-const modalAgentInput = ref('')
-const modalSelectedAgent = ref('')
-const modalCreatePending = ref(false)
-const modalError = ref('')
-const modalSubmitting = ref(false)
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -442,10 +371,7 @@ const totalSessions = computed(() => allSessions.value.length)
 const lifecycleOpen = computed(() => allSessions.value.filter(s => s.status === 'running').length)
 
 const activeRuns = computed(() =>
-  allSessions.value.filter(s => {
-    const rs = sessionRunStatus(s)
-    return rs === 'queued' || rs === 'running'
-  }).length
+  allSessions.value.filter(s => s.runStatus === 'queued' || s.runStatus === 'running').length
 )
 
 const doneCount = computed(() =>
@@ -464,30 +390,15 @@ const abortedCount = computed(() =>
 )
 
 const totalMessages = computed(() =>
-  allSessions.value.reduce((acc, s) => acc + (Number(s.message_count) || 0), 0)
+  allSessions.value.reduce((acc, s) => acc + (Number(s.messageCount) || 0), 0)
 )
 
 const distinctAgents = computed(() => {
   const agents = new Set<string>()
   allSessions.value.forEach(s => {
-    const m = /^agent:([^:]+):/.exec(s.key || '')
-    if (m) agents.add(m[1])
+    if (s.effectiveAgentId && s.effectiveAgentId !== 'unknown') agents.add(s.effectiveAgentId)
   })
   return agents
-})
-
-const modalAgentSuggestions = computed(() => {
-  const typed = modalAgentInput.value.trim().toLowerCase()
-  if (!typed) return modalAgents.value
-  return modalAgents.value.filter(a =>
-    a.id.toLowerCase().includes(typed) || a.label.toLowerCase().includes(typed)
-  )
-})
-
-const modalCanSubmit = computed(() => {
-  if (modalSubmitting.value) return false
-  const typed = modalAgentInput.value.trim()
-  return !!(modalSelectedAgent.value || typed)
 })
 
 // ---------------------------------------------------------------------------
@@ -518,18 +429,19 @@ async function loadData() {
   }
 
   const [sessRes, agentsRes] = await Promise.allSettled([
-    rpc.call<SessionsListData>('sessions.list', { limit: 200 }),
+    rpc.call<SessionsListData>('sessions.list', { limit: 200, view: SESSION_LIST_VIEW }),
     rpc.call<AgentsListData>('agents.list'),
   ])
 
   if (agentsRes.status === 'fulfilled') {
     const list = agentsRes.value?.agents || []
     agentsById.value = new Map(list.map(a => [a.id, a]))
-    agentsLoaded.value = true
   }
 
   if (sessRes.status === 'fulfilled') {
-    allSessions.value = sessRes.value?.sessions || []
+    allSessions.value = (sessRes.value?.sessions || [])
+      .map(normalizeSessionItem)
+      .filter((item): item is SessionItem => !!item)
     selected.value.clear()
     applyFilter()
   } else {
@@ -557,13 +469,7 @@ function applyFilter() {
     filtered.value = [...allSessions.value]
   } else {
     const sv = searchVal.value
-    filtered.value = allSessions.value.filter(s =>
-      String(s.key || '').toLowerCase().includes(sv) ||
-      String(s.model || '').toLowerCase().includes(sv) ||
-      String(s.display_name || s.displayName || '').toLowerCase().includes(sv) ||
-      String(s.subject || '').toLowerCase().includes(sv) ||
-      String(s.derived_title || s.derivedTitle || '').toLowerCase().includes(sv)
-    )
+    filtered.value = allSessions.value.filter(s => sessionMatches(s, sv))
   }
   sortData()
 }
@@ -572,7 +478,7 @@ function sortData() {
   filtered.value.sort((a, b) => {
     let va: string | number = a[sortCol.value] ?? ''
     let vb: string | number = b[sortCol.value] ?? ''
-    if (sortCol.value === 'message_count' || sortCol.value === 'updated_at') {
+    if (sortCol.value === 'messageCount' || sortCol.value === 'updatedAt') {
       va = Number(va) || 0
       vb = Number(vb) || 0
     } else {
@@ -584,7 +490,7 @@ function sortData() {
   })
 }
 
-function setSort(col: 'key' | 'updated_at' | 'message_count') {
+function setSort(col: 'title' | 'groupLabel' | 'updatedAt' | 'messageCount') {
   if (sortCol.value === col) {
     sortAsc.value = !sortAsc.value
   } else {
@@ -624,6 +530,10 @@ function clearSelection() {
 
 function openChat(key: string) {
   router.push({ path: '/chat', query: { session: key } })
+}
+
+function goToAgents() {
+  router.push('/agents')
 }
 
 async function copyKey(key: string) {
@@ -668,159 +578,6 @@ async function doDelete(keys: string[]) {
   loadData()
 }
 
-// ---------------------------------------------------------------------------
-// Modal
-// ---------------------------------------------------------------------------
-
-async function openNewSessionModal() {
-  showModal.value = true
-  modalAgentInput.value = ''
-  modalSelectedAgent.value = ''
-  modalCreatePending.value = false
-  modalError.value = ''
-  modalSubmitting.value = false
-
-  try {
-    const data = await rpc.call<AgentsListData>('agents.list')
-    const agents = (data?.agents || []).map(a => ({
-      id: a.id,
-      label: a.name || a.id,
-      sublabel: a.model || (a.isBuiltin || a.type === 'builtin' ? 'built-in' : ''),
-    }))
-    modalAgents.value = agents
-    const mainAgent = agents.find(a => a.id === 'main')
-    if (mainAgent) {
-      modalSelectedAgent.value = 'main'
-      modalAgentInput.value = mainAgent.label
-    }
-  } catch {
-    modalAgents.value = []
-  }
-}
-
-function closeModal() {
-  showModal.value = false
-}
-
-function onModalBackdropClick(e: MouseEvent) {
-  if (e.target === e.currentTarget) {
-    closeModal()
-  }
-}
-
-function onModalAgentInput() {
-  const typed = modalAgentInput.value.trim()
-  const exact = modalAgents.value.find(a => a.id === typed || a.label === typed)
-  if (exact) {
-    modalSelectedAgent.value = exact.id
-    modalCreatePending.value = false
-  } else {
-    modalSelectedAgent.value = ''
-    modalCreatePending.value = !!typed
-  }
-}
-
-function selectModalAgent(id: string) {
-  modalSelectedAgent.value = id
-  modalCreatePending.value = false
-  const agent = modalAgents.value.find(a => a.id === id)
-  modalAgentInput.value = agent?.label || id
-}
-
-function createModalAgent() {
-  modalCreatePending.value = true
-  modalSelectedAgent.value = ''
-}
-
-async function onModalSubmit() {
-  if (modalSubmitting.value) return
-  modalError.value = ''
-
-  let agentId: string
-  if (modalCreatePending.value) {
-    const id = modalAgentInput.value.trim()
-    if (!id) return
-    agentId = id
-  } else {
-    agentId = modalSelectedAgent.value || modalAgentInput.value.trim() || 'main'
-  }
-
-  modalSubmitting.value = true
-  let createdAgent = false
-
-  try {
-    if (modalCreatePending.value) {
-      try {
-        await rpc.call('agents.create', { id: agentId, name: agentId })
-        createdAgent = true
-      } catch (err: any) {
-        if ((err?.code || '') !== 'agent.exists') throw err
-      }
-    }
-    const res = await rpc.call<SessionCreateResponse>('sessions.create', { agentId })
-    console.warn(createdAgent ? `Created agent "${agentId}" and started chat` : 'Session created')
-    closeModal()
-    loadData()
-    if (res?.key) {
-      router.push({ path: '/chat', query: { session: res.key } })
-    }
-  } catch (err: any) {
-    const code = err?.code || ''
-    const msg = err?.message || String(err)
-    let friendly = 'Failed to start chat: ' + msg
-    if (code === 'UNAUTHORIZED' && modalCreatePending.value) {
-      friendly = 'This connection does not have permission to create agents.'
-    }
-    if (code === 'agent.not_found') {
-      friendly = `Agent "${agentId}" doesn't exist. Type a new ID and pick "Create new agent" from the dropdown.`
-    }
-    if (code === 'agent.exists') {
-      friendly = `Agent "${agentId}" already exists — pick it from the list instead.`
-    }
-    modalError.value = friendly
-    modalSubmitting.value = false
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Session status helpers
-// ---------------------------------------------------------------------------
-
-function normalizeRunStatus(status: string | undefined): string {
-  const value = String(status || '').toLowerCase()
-  if (value === 'abandoned') return 'interrupted'
-  if (value === 'succeeded' || value === 'success' || value === 'complete') return 'idle'
-  if (['queued', 'running', 'interrupted', 'failed', 'timeout', 'cancelled'].includes(value)) {
-    return value
-  }
-  return 'idle'
-}
-
-function sessionRunStatus(row: Session): string {
-  const active = row.active_task || row.activeTask || null
-  const activeStatus = active ? normalizeRunStatus(active.status) : ''
-  const terminal = terminalRunStatus(row)
-  const rawStatus = row.run_status || row.runStatus || active?.status || terminal || ''
-  const runStatus = normalizeRunStatus(rawStatus)
-  if (active && (activeStatus === 'queued' || activeStatus === 'running')) return activeStatus
-  if (terminal) return normalizeRunStatus(terminal)
-  return runStatus
-}
-
-function terminalRunStatus(row: Session): string {
-  const lastTask = row.last_task || row.lastTask || null
-  const rawStatus = lastTask?.status || row.terminal_status || row.terminalStatus || ''
-  const status = normalizeRunStatus(rawStatus)
-  return ['failed', 'timeout', 'cancelled', 'interrupted'].includes(status) ? status : ''
-}
-
-function sessionVisualStatus(row: Session): string {
-  const runStatus = sessionRunStatus(row)
-  if (runStatus === 'failed' || runStatus === 'timeout') return runStatus
-  if (runStatus === 'cancelled' || runStatus === 'interrupted') return 'killed'
-  return String(row?.status || 'unknown').toLowerCase()
-}
-
 function runStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     queued: 'Task queued',
@@ -844,33 +601,40 @@ function runStatusChipClass(status: string): string {
   return classes[status] || ''
 }
 
-function runStatusBadge(row: Session): string {
-  const runStatus = sessionRunStatus(row)
-  const label = runStatusLabel(runStatus)
-  if (!label) return ''
-  const chipClass = runStatusChipClass(runStatus)
-  return `<span class="chip ${chipClass} sess-run-chip" title="${label}">${label}</span>`
+function sessionVisualStatus(row: SessionItem): string {
+  return row.visualStatus
 }
 
-function agentIdFromKey(key: string): string {
-  const m = /^agent:([^:]+):/.exec(key)
-  return m ? m[1] : ''
+function sessionKindLabel(kind: string): string {
+  const labels: Record<string, string> = {
+    chat: 'Chat',
+    channel: 'Channel',
+    task: 'Task',
+    cron: 'Cron',
+    system: 'System',
+    unknown: 'Unknown',
+  }
+  return labels[kind] || kind
 }
 
-function agentSubline(row: Session): string {
-  const agentId = row.agent_id || row.agentId || agentIdFromKey(row.key)
-  if (!agentId) return ''
+function surfaceLabel(row: SessionItem): string {
+  const parts = [row.surface, row.conversationKind]
+    .filter(value => value && value !== 'unknown')
+    .map(value => value.charAt(0).toUpperCase() + value.slice(1))
+  if (row.threadLabel) parts.push(row.threadLabel)
+  return parts.join(' · ') || 'Unknown'
+}
+
+function agentDisplayName(row: SessionItem): string {
+  const agentId = row.effectiveAgentId
+  if (!agentId || agentId === 'unknown') return 'Unknown agent'
   const entry = agentsById.value.get(agentId)
-  if (entry) {
-    if (agentId === 'main') return ''
-    const name = entry.name || agentId
-    return `<div class="sess-key__sub"><span class="sess-key__agent">${name}</span></div>`
-  }
-  if (agentId === 'main') return ''
-  if (!agentsLoaded.value) {
-    return `<div class="sess-key__sub"><span class="sess-key__agent">${agentId}</span></div>`
-  }
-  return `<div class="sess-key__sub"><span class="sess-key__agent sess-key__agent--orphan" title="Agent '${agentId}' is no longer registered">${agentId}<span class="chip chip-warn">⚠ Orphaned</span></span></div>`
+  if (entry) return entry.name || agentId
+  return agentId
+}
+
+function contractGapTitle(row: SessionItem): string {
+  return `Missing session-list-v1 fields: ${row.contractGaps.join(', ')}`
 }
 
 // ---------------------------------------------------------------------------
@@ -930,10 +694,10 @@ function sessionStatusLabel(status: string): string {
 // Time helper
 // ---------------------------------------------------------------------------
 
-function relTime(dateStr: string | undefined): string {
-  if (!dateStr) return '—'
-  const d = new Date(dateStr)
-  if (isNaN(d.getTime())) return dateStr
+function relTime(timestamp: number | undefined): string {
+  if (!timestamp) return '—'
+  const d = new Date(timestamp)
+  if (isNaN(d.getTime())) return '—'
 
   const now = new Date()
   const diffMs = now.getTime() - d.getTime()
@@ -1073,9 +837,10 @@ function relTime(dateStr: string | undefined): string {
 .stat-label {
   color: var(--text-dim);
   display: block;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
   text-transform: uppercase;
 }
 
@@ -1263,7 +1028,7 @@ function relTime(dateStr: string | undefined): string {
 }
 
 .sess-table__cell--key {
-  min-width: 200px;
+  min-width: 280px;
 }
 
 .sess-table__cell--actions {
@@ -1275,15 +1040,16 @@ function relTime(dateStr: string | undefined): string {
 .sess-table__key-content {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 5px;
 }
 
 .sess-key-link {
   background: transparent;
   border: none;
   color: var(--text);
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: 650;
   padding: 0;
   cursor: pointer;
   text-align: left;
@@ -1295,6 +1061,112 @@ function relTime(dateStr: string | undefined): string {
 
 .sess-key-link:hover {
   color: var(--accent);
+}
+
+.sess-key__sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sess-key__subtitle {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sess-key__subtitle--gap {
+  color: var(--warn);
+}
+
+.sess-key__debug {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sess-key__badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sess-group-badge,
+.sess-agent-badge {
+  align-items: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 650;
+  padding: 2px 8px;
+}
+
+.sess-gap-chip {
+  text-transform: none;
+}
+
+.sess-type-stack,
+.sess-agent-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sess-type-chip {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 700;
+  justify-content: center;
+  line-height: 1;
+  padding: 5px 9px;
+  width: fit-content;
+}
+
+.sess-type-chip--chat {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+}
+
+.sess-type-chip--channel {
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 24%, var(--border));
+}
+
+.sess-type-chip--task,
+.sess-type-chip--cron {
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 24%, var(--border));
+}
+
+.sess-type-chip--system,
+.sess-type-chip--unknown {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+}
+
+.sess-type-meta,
+.sess-agent-id {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sess-status-stack {
@@ -1538,153 +1410,6 @@ function relTime(dateStr: string | undefined): string {
 
 .sess-key__agent--orphan {
   color: var(--warn);
-}
-
-/* Modal */
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  padding: var(--sp-4);
-}
-
-.modal {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  max-width: 480px;
-  width: 100%;
-  max-height: 90vh;
-  overflow-y: auto;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.3);
-}
-
-.modal-title {
-  font-size: var(--fs-lg);
-  font-weight: 600;
-  padding: var(--sp-4) var(--sp-5);
-  border-bottom: 1px solid var(--border);
-}
-
-.modal-body {
-  padding: var(--sp-4) var(--sp-5);
-}
-
-.modal-foot {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-5);
-  border-top: 1px solid var(--border);
-}
-
-/* Form in modal */
-.sess-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-
-.sess-form__field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.sess-form__label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.sess-form__hint {
-  font-size: var(--fs-xs);
-  color: var(--text-dim);
-}
-
-.sess-form__error {
-  padding: var(--sp-2) var(--sp-3);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
-  border-radius: var(--radius-md);
-  color: var(--danger);
-  font-size: var(--fs-sm);
-}
-
-/* Combobox */
-.sess-combobox-wrap {
-  position: relative;
-}
-
-.sess-combobox-wrap .input {
-  width: 100%;
-  min-height: 40px;
-  padding: 8px 12px;
-  font-size: var(--fs-sm);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text);
-  outline: none;
-  transition: border-color var(--transition), box-shadow var(--transition);
-  font-family: inherit;
-}
-
-.sess-combobox-wrap .input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
-}
-
-.sess-combobox-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  margin-top: 4px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-  max-height: 240px;
-  overflow-y: auto;
-  z-index: 10;
-}
-
-.sess-combobox-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 8px 12px;
-  background: transparent;
-  border: none;
-  color: var(--text);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  text-align: left;
-  transition: background var(--transition);
-}
-
-.sess-combobox-item:hover,
-.sess-combobox-item.is-selected {
-  background: var(--bg-elevated);
-}
-
-.sess-combobox-item__sub {
-  font-size: var(--fs-xs);
-  color: var(--text-dim);
-}
-
-.sess-combobox-item--create {
-  color: var(--accent);
-  font-weight: 600;
-  border-top: 1px solid var(--border);
 }
 
 /* Responsive */

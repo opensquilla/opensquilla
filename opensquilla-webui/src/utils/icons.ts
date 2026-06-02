@@ -7,7 +7,9 @@ export type IconName =
   | 'send' | 'stop' | 'paperclip' | 'plus' | 'trash'
   | 'refresh' | 'download' | 'menu' | 'user' | 'search'
   | 'edit' | 'info' | 'settings' | 'gear' | 'regenerate'
-  | 'pencil' | 'chevronDown';
+  | 'pencil' | 'chevronDown' | 'chevronRight' | 'arrowUp'
+  | 'panel-left-open' | 'panel-left-close' | 'clock'
+  | 'fileText' | 'fileCode' | 'image' | 'table';
 
 interface IconDef {
   path: string;
@@ -51,6 +53,15 @@ const ICONS: Record<IconName, IconDef> = {
   regenerate: { path: '<path d="M3 12a9 9 0 0 1 15.5-6.36L21 8"/><polyline points="21 3 21 8 16 8"/><path d="M21 12a9 9 0 0 1-15.5 6.36L3 16"/><polyline points="3 21 3 16 8 16"/>', strokeWidth: 1.5 },
   pencil:     { path: '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/>', strokeWidth: 1.5 },
   chevronDown:{ path: '<polyline points="6 9 12 15 18 9"/>', strokeWidth: 1.5 },
+  chevronRight:{ path: '<polyline points="9 18 15 12 9 6"/>', strokeWidth: 1.5 },
+  arrowUp:    { path: '<path d="M12 19V5"/><path d="M5 12l7-7 7 7"/>', strokeWidth: 2 },
+  'panel-left-open':  { path: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l6 6-6 6"/>' },
+  'panel-left-close': { path: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M20 9l-6 6 6 6"/>' },
+  clock: { path: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>' },
+  fileText: { path: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/>', strokeWidth: 1.5 },
+  fileCode: { path: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="m10 13-2 2 2 2"/><path d="m14 13 2 2-2 2"/>', strokeWidth: 1.5 },
+  image: { path: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="1.5"/><path d="m21 15-4.5-4.5L6 19"/>', strokeWidth: 1.5 },
+  table: { path: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M9 4v16"/><path d="M15 4v16"/>', strokeWidth: 1.5 },
 };
 
 export function getIconSvg(name: IconName, size: number = 16): string {

@@ -14,6 +14,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from opensquilla.gateway import control_ui
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.control_ui import create_control_ui_routes
 
@@ -48,6 +49,40 @@ def test_control_ui_bootstrap_includes_config_path(tmp_path) -> None:
     assert response.status_code == 200
     assert 'data-config-path="' in response.text
     assert str(config.config_path) in response.text
+
+
+def test_control_ui_vite_asset_urls_use_configured_base_path(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "index.html").write_text(
+        '<script type="module" crossorigin src="./assets/index.js"></script>'
+        '<link rel="stylesheet" crossorigin href="./assets/index.css">',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
+
+    js_url, css_url = control_ui._read_vite_assets("/ops")
+
+    assert js_url == "/ops/static/dist/assets/index.js"
+    assert css_url == "/ops/static/dist/assets/index.css"
+
+
+def test_control_ui_rebases_hard_coded_vite_base_path(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "index.html").write_text(
+        '<script type="module" src="/control/static/dist/assets/index.js"></script>'
+        '<link rel="stylesheet" href="/control/static/dist/assets/index.css">',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
+
+    js_url, css_url = control_ui._read_vite_assets("/custom")
+
+    assert js_url == "/custom/static/dist/assets/index.js"
+    assert css_url == "/custom/static/dist/assets/index.css"
 
 
 def test_control_ui_bootstrap_ws_url_uses_client_reachable_wildcard_host() -> None:

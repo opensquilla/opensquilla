@@ -5,7 +5,8 @@ export type ThemeMode = 'light' | 'dark' | 'system'
 
 export const useAppStore = defineStore('app', () => {
   const theme = ref<ThemeMode>('system')
-  const sidebarOpen = ref(false)
+  const sidebarOpen = ref(true)
+  const sidebarHovered = ref(false)
   const approvalCount = ref(0)
 
   const resolvedTheme = computed<'light' | 'dark'>(() => {
@@ -50,10 +51,16 @@ export const useAppStore = defineStore('app', () => {
 
   function setSidebarOpen(open: boolean) {
     sidebarOpen.value = open
+    if (!open) sidebarHovered.value = false
   }
 
   function toggleSidebar() {
     sidebarOpen.value = !sidebarOpen.value
+    sidebarHovered.value = false
+  }
+
+  function setSidebarHovered(hovered: boolean) {
+    sidebarHovered.value = hovered
   }
 
   function setApprovalCount(count: number) {
@@ -69,6 +76,7 @@ export const useAppStore = defineStore('app', () => {
     theme,
     resolvedTheme,
     sidebarOpen,
+    sidebarHovered,
     approvalCount,
     features,
     initTheme,
@@ -76,6 +84,7 @@ export const useAppStore = defineStore('app', () => {
     cycleTheme,
     setSidebarOpen,
     toggleSidebar,
+    setSidebarHovered,
     setApprovalCount,
   }
 })

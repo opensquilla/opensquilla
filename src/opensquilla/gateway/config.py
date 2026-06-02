@@ -27,6 +27,11 @@ from opensquilla.gateway.config_migration import (
     migrate_config_payload,
 )
 from opensquilla.paths import default_opensquilla_home
+from opensquilla.router_tiers import (
+    DEFAULT_TEXT_TIER,
+    normalize_text_tier,
+    normalize_tier_mapping,
+)
 from opensquilla.sandbox.config import SandboxSettings
 
 
@@ -534,41 +539,41 @@ class MemoryConfig(BaseSettings):
 def _default_tiers() -> dict:
     """Default model routing config."""
     return {
-        "t0": {
+        "c0": {
             "provider": "openrouter",
             "model": "deepseek/deepseek-v4-flash",
             "description": (
-                "S tier: fast DeepSeek V4 Flash route for trivial chat, short rewrites, "
+                "fast DeepSeek V4 Flash route for trivial chat, short rewrites, "
                 "extraction, and low-risk simple Q&A"
             ),
             "supports_image": False,
             "thinking_level": "high",
         },
-        "t1": {
+        "c1": {
             "provider": "openrouter",
             "model": "deepseek/deepseek-v4-pro",
             "description": (
-                "M tier: default balanced text model for normal agent work, coding assistance, "
+                "default balanced text model for normal agent work, coding assistance, "
                 "debugging, and moderate analysis"
             ),
             "supports_image": False,
             "thinking_level": "high",
         },
-        "t2": {
+        "c2": {
             "provider": "openrouter",
             "model": "z-ai/glm-5.1",
             "description": (
-                "L tier: stronger text model for multi-step coding, structured reasoning, "
+                "stronger text model for multi-step coding, structured reasoning, "
                 "larger context synthesis, and harder analysis"
             ),
             "supports_image": False,
             "thinking_level": "high",
         },
-        "t3": {
+        "c3": {
             "provider": "openrouter",
             "model": "anthropic/claude-opus-4.7",
             "description": (
-                "XL tier: highest-quality text reasoning model for difficult planning, "
+                "Highest-quality text reasoning model for difficult planning, "
                 "deep review, complex debugging, and high-stakes synthesis"
             ),
             "supports_image": False,
@@ -629,34 +634,34 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
         return _default_tiers()
     profiles = {
         "openai": {
-            "t0": {
+            "c0": {
                 "provider": "openai",
                 "model": "gpt-5.4-nano",
                 "description": (
-                    "OpenAI fast tier: GPT-5.4 Nano for fast, high-throughput simple work."
+                    "OpenAI fast route: GPT-5.4 Nano for fast, high-throughput simple work."
                 ),
                 "supports_image": False,
                 "thinking_level": "none",
             },
-            "t1": {
+            "c1": {
                 "provider": "openai",
                 "model": "gpt-5.4-mini",
-                "description": "OpenAI balanced tier: GPT-5.4 Mini for normal agent work.",
+                "description": "OpenAI balanced route: GPT-5.4 Mini for normal agent work.",
                 "supports_image": False,
                 "thinking_level": "low",
             },
-            "t2": {
+            "c2": {
                 "provider": "openai",
                 "model": "gpt-5.5",
-                "description": "OpenAI strong tier: GPT-5.5 for complex text tasks.",
+                "description": "OpenAI strong route: GPT-5.5 for complex text tasks.",
                 "supports_image": False,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "openai",
                 "model": "gpt-5.5",
                 "description": (
-                    "OpenAI highest tier: GPT-5.5 with high reasoning; GPT-5.5 Pro is "
+                    "OpenAI highest route: GPT-5.5 with high reasoning; GPT-5.5 Pro is "
                     "excluded because it is not streaming-compatible."
                 ),
                 "supports_image": False,
@@ -664,76 +669,76 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
             },
         },
         "dashscope": {
-            "t0": {
+            "c0": {
                 "provider": "dashscope",
                 "model": "qwen3.6-flash",
                 "description": (
-                    "DashScope fast tier: Qwen3.6 Flash for simple text tasks; "
+                    "DashScope fast route: Qwen3.6 Flash for simple text tasks; "
                     "pending live smoke."
                 ),
                 "supports_image": False,
             },
-            "t1": {
+            "c1": {
                 "provider": "dashscope",
                 "model": "qwen3.6-plus",
                 "description": (
-                    "DashScope balanced tier: Qwen3.6 Plus for normal agent and "
+                    "DashScope balanced route: Qwen3.6 Plus for normal agent and "
                     "coding work; pending live smoke."
                 ),
                 "supports_image": False,
             },
-            "t2": {
+            "c2": {
                 "provider": "dashscope",
                 "model": "qwen3-max",
-                "description": "DashScope strong tier: Qwen3 Max for complex text tasks.",
+                "description": "DashScope strong route: Qwen3 Max for complex text tasks.",
                 "supports_image": False,
             },
-            "t3": {
+            "c3": {
                 "provider": "dashscope",
                 "model": "qwen3-max",
                 "description": (
-                    "DashScope highest tier: Qwen3 Max; higher-thinking behavior "
+                    "DashScope highest route: Qwen3 Max; higher-thinking behavior "
                     "requires future payload support."
                 ),
                 "supports_image": False,
             },
         },
         "deepseek": {
-            "t0": {
+            "c0": {
                 "provider": "deepseek",
                 "model": "deepseek-v4-flash",
                 "description": (
-                    "DeepSeek fast tier: V4 Flash with no router-requested thinking; "
+                    "DeepSeek fast route: V4 Flash with no router-requested thinking; "
                     "request ID pending live smoke."
                 ),
                 "supports_image": False,
                 "thinking_level": "off",
             },
-            "t1": {
+            "c1": {
                 "provider": "deepseek",
                 "model": "deepseek-v4-flash",
                 "description": (
-                    "DeepSeek balanced tier: V4 Flash with thinking enabled; request "
+                    "DeepSeek balanced route: V4 Flash with thinking enabled; request "
                     "ID pending live smoke."
                 ),
                 "supports_image": False,
                 "thinking_level": "low",
             },
-            "t2": {
+            "c2": {
                 "provider": "deepseek",
                 "model": "deepseek-v4-pro",
                 "description": (
-                    "DeepSeek strong tier: V4 Pro with thinking enabled; request ID "
+                    "DeepSeek strong route: V4 Pro with thinking enabled; request ID "
                     "pending live smoke."
                 ),
                 "supports_image": False,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "deepseek",
                 "model": "deepseek-v4-pro",
                 "description": (
-                    "DeepSeek highest tier: same V4 Pro wire behavior until "
+                    "DeepSeek highest route: same V4 Pro wire behavior until "
                     "effort-level support is added."
                 ),
                 "supports_image": False,
@@ -741,31 +746,31 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
             },
         },
         "gemini": {
-            "t0": {
+            "c0": {
                 "provider": "gemini",
                 "model": "gemini-2.5-flash-lite",
-                "description": "Gemini fast tier: 2.5 Flash-Lite for low-latency tasks.",
+                "description": "Gemini fast route: 2.5 Flash-Lite for low-latency tasks.",
                 "supports_image": False,
             },
-            "t1": {
+            "c1": {
                 "provider": "gemini",
                 "model": "gemini-2.5-flash",
-                "description": "Gemini balanced tier: 2.5 Flash for normal agent work.",
+                "description": "Gemini balanced route: 2.5 Flash for normal agent work.",
                 "supports_image": False,
                 "thinking_level": "low",
             },
-            "t2": {
+            "c2": {
                 "provider": "gemini",
                 "model": "gemini-2.5-pro",
-                "description": "Gemini strong tier: 2.5 Pro for complex coding and reasoning.",
+                "description": "Gemini strong route: 2.5 Pro for complex coding and reasoning.",
                 "supports_image": False,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "gemini",
                 "model": "gemini-2.5-pro",
                 "description": (
-                    "Gemini highest tier: 2.5 Pro with high thinking; 3.1 preview "
+                    "Gemini highest route: 2.5 Pro with high thinking; 3.1 preview "
                     "remains opt-in."
                 ),
                 "supports_image": False,
@@ -773,73 +778,73 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
             },
         },
         "zhipu": {
-            "t0": {
+            "c0": {
                 "provider": "zhipu",
                 "model": "glm-4.7-flashx",
                 "description": (
-                    "Zhipu fast tier: GLM-4.7 FlashX for simple text tasks; live smoke "
+                    "Zhipu fast route: GLM-4.7 FlashX for simple text tasks; live smoke "
                     "may require fallback."
                 ),
                 "supports_image": False,
             },
-            "t1": {
+            "c1": {
                 "provider": "zhipu",
                 "model": "glm-5",
-                "description": "Zhipu balanced tier: GLM-5 for normal agent work.",
+                "description": "Zhipu balanced route: GLM-5 for normal agent work.",
                 "supports_image": False,
                 "thinking_level": "low",
             },
-            "t2": {
+            "c2": {
                 "provider": "zhipu",
                 "model": "glm-5.1",
-                "description": "Zhipu strong tier: GLM-5.1 for complex text tasks.",
+                "description": "Zhipu strong route: GLM-5.1 for complex text tasks.",
                 "supports_image": False,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "zhipu",
                 "model": "glm-5.1",
-                "description": "Zhipu highest tier: GLM-5.1 with high reasoning effort.",
+                "description": "Zhipu highest route: GLM-5.1 with high reasoning effort.",
                 "supports_image": False,
                 "thinking_level": "high",
             },
         },
         "moonshot": {
-            "t0": {
+            "c0": {
                 "provider": "moonshot",
                 "model": "kimi-k2.5",
                 "description": (
-                    "Moonshot fast tier: Kimi K2.5 for cost-efficient agent work "
+                    "Moonshot fast route: Kimi K2.5 for cost-efficient agent work "
                     "with 256K context."
                 ),
                 "supports_image": True,
                 "thinking_level": "low",
             },
-            "t1": {
+            "c1": {
                 "provider": "moonshot",
                 "model": "kimi-k2.5",
                 "description": (
-                    "Moonshot balanced tier: Kimi K2.5 for normal multimodal "
+                    "Moonshot balanced route: Kimi K2.5 for normal multimodal "
                     "agent work."
                 ),
                 "supports_image": True,
                 "thinking_level": "medium",
             },
-            "t2": {
+            "c2": {
                 "provider": "moonshot",
                 "model": "kimi-k2.6",
                 "description": (
-                    "Moonshot strong tier: Kimi K2.6 for complex coding, reasoning, "
+                    "Moonshot strong route: Kimi K2.6 for complex coding, reasoning, "
                     "and multimodal tasks."
                 ),
                 "supports_image": True,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "moonshot",
                 "model": "kimi-k2.6",
                 "description": (
-                    "Moonshot highest tier: Kimi K2.6 for the hardest long-horizon "
+                    "Moonshot highest route: Kimi K2.6 for the hardest long-horizon "
                     "agent work."
                 ),
                 "supports_image": True,
@@ -847,41 +852,41 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
             },
         },
         "volcengine": {
-            "t0": {
+            "c0": {
                 "provider": "volcengine",
                 "model": "doubao-seed-2-0-mini-260215",
                 "description": (
-                    "Volcengine fast tier: Doubao Seed 2.0 Mini for low-latency, "
+                    "Volcengine fast route: Doubao Seed 2.0 Mini for low-latency, "
                     "low-cost simple text tasks."
                 ),
                 "supports_image": False,
                 "thinking_level": "off",
             },
-            "t1": {
+            "c1": {
                 "provider": "volcengine",
                 "model": "doubao-seed-2-0-lite-260215",
                 "description": (
-                    "Volcengine balanced tier: Doubao Seed 2.0 Lite for daily agent "
+                    "Volcengine balanced route: Doubao Seed 2.0 Lite for daily agent "
                     "work with lower cost than Pro."
                 ),
                 "supports_image": False,
                 "thinking_level": "low",
             },
-            "t2": {
+            "c2": {
                 "provider": "volcengine",
                 "model": "doubao-seed-2-0-pro-260215",
                 "description": (
-                    "Volcengine strong tier: Doubao Seed 2.0 Pro for complex "
+                    "Volcengine strong route: Doubao Seed 2.0 Pro for complex "
                     "reasoning and multimodal-capable text work."
                 ),
                 "supports_image": False,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "volcengine",
                 "model": "doubao-seed-2-0-code-preview-260215",
                 "description": (
-                    "Volcengine highest tier: Doubao Seed 2.0 Code Preview for the "
+                    "Volcengine highest route: Doubao Seed 2.0 Code Preview for the "
                     "hardest coding and code-review routes."
                 ),
                 "supports_image": False,
@@ -904,7 +909,7 @@ class SquillaRouterConfig(BaseSettings):
     strategy: str = "v4_phase3"
     tier_profile: str | None = None
     tiers: dict = Field(default_factory=_default_tiers)
-    default_tier: str = "t1"
+    default_tier: str = DEFAULT_TEXT_TIER
     confidence_threshold: float = 0.5
     v4_bundle_dir: str | None = None  # V4 Phase 3 bundle root; defaults to bundled assets
     v4_use_aux_head: bool | None = True  # override router.runtime.yaml aux head when set
@@ -916,13 +921,27 @@ class SquillaRouterConfig(BaseSettings):
     complaint_upgrade_max_chars: int = 160
     require_router_runtime: bool = True
     estimated_output_savings_pct: float = 0.03
-    upgrade_to_t3_compaction_enabled: bool = True
+    upgrade_to_c3_compaction_enabled: bool = True
 
     @model_validator(mode="before")
     @classmethod
     def _resolve_tier_profile_defaults(cls, values: Any) -> Any:
         if not isinstance(values, dict):
             return values
+        values = dict(values)
+        if (
+            "upgrade_to_c3_compaction_enabled" not in values
+            and "upgrade_to_t3_compaction_enabled" in values
+        ):
+            values["upgrade_to_c3_compaction_enabled"] = values[
+                "upgrade_to_t3_compaction_enabled"
+            ]
+        if "default_tier" in values:
+            values["default_tier"] = normalize_text_tier(values.get("default_tier")) or values.get(
+                "default_tier"
+            )
+        if isinstance(values.get("tiers"), dict):
+            values["tiers"] = normalize_tier_mapping(values["tiers"])
         profile = values.get("tier_profile")
         if profile is None:
             return values

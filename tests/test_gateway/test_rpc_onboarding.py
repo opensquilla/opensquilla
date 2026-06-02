@@ -162,9 +162,9 @@ async def test_router_configure_accepts_tier_overrides_and_syncs_llm_model(
         "onboarding.router.configure",
         {
             "mode": "recommended",
-            "defaultTier": "t2",
+            "defaultTier": "c2",
             "tiers": {
-                "t2": {"provider": "openai", "model": "gpt-5.5-custom"},
+                "c2": {"provider": "openai", "model": "gpt-5.5-custom"},
                 "image_model": {
                     "provider": "openai",
                     "model": "gpt-5.4-mini",
@@ -177,10 +177,10 @@ async def test_router_configure_accepts_tier_overrides_and_syncs_llm_model(
 
     assert res.error is None, res.error
     assert ctx.config.llm.model == "gpt-5.5-custom"
-    assert ctx.config.squilla_router.default_tier == "t2"
+    assert ctx.config.squilla_router.default_tier == "c2"
     persisted = tomllib.loads((tmp_path / "c.toml").read_text())
     assert persisted["llm"]["model"] == "gpt-5.5-custom"
-    assert persisted["squilla_router"]["tiers"]["t2"]["model"] == "gpt-5.5-custom"
+    assert persisted["squilla_router"]["tiers"]["c2"]["model"] == "gpt-5.5-custom"
     assert persisted["squilla_router"]["tiers"]["image_model"]["supports_image"] is True
 
 

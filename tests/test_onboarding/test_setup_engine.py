@@ -47,7 +47,7 @@ def test_setup_engine_can_derive_provider_model_from_router_default_tier(tmp_pat
     assert data["llm"]["provider"] == "deepseek"
     assert data["llm"]["model"] == "deepseek-v4-flash"
     assert data["squilla_router"]["tier_profile"] == "deepseek"
-    assert data["squilla_router"]["default_tier"] == "t1"
+    assert data["squilla_router"]["default_tier"] == "c1"
 
 
 def test_setup_engine_router_tier_override_updates_direct_fallback_model(tmp_path):
@@ -65,9 +65,9 @@ def test_setup_engine_router_tier_override_updates_direct_fallback_model(tmp_pat
         "router",
         {
             "mode": "recommended",
-            "defaultTier": "t2",
+            "defaultTier": "c2",
             "tiers": {
-                "t2": {
+                "c2": {
                     "provider": "openai",
                     "model": "gpt-5.5-custom",
                     "thinkingLevel": "high",
@@ -80,9 +80,9 @@ def test_setup_engine_router_tier_override_updates_direct_fallback_model(tmp_pat
     data = tomllib.loads(target.read_text())
     assert data["llm"]["model"] == "gpt-5.5-custom"
     assert data["squilla_router"]["tier_profile"] == "openai"
-    assert data["squilla_router"]["default_tier"] == "t2"
-    assert data["squilla_router"]["tiers"]["t2"]["model"] == "gpt-5.5-custom"
-    assert data["squilla_router"]["tiers"]["t2"]["thinking_level"] == "high"
+    assert data["squilla_router"]["default_tier"] == "c2"
+    assert data["squilla_router"]["tiers"]["c2"]["model"] == "gpt-5.5-custom"
+    assert data["squilla_router"]["tiers"]["c2"]["thinking_level"] == "high"
 
 
 def test_setup_engine_next_steps_do_not_include_secret(tmp_path):

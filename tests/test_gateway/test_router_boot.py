@@ -834,7 +834,7 @@ async def test_start_gateway_server_wires_meta_skill_auto_propose_routes(
         },
         squilla_router={
             "tiers": {
-                "t3": {
+                "c3": {
                     "model": "frontier-t3-model",
                     "thinking_level": "high",
                 },
@@ -855,7 +855,7 @@ async def test_start_gateway_server_wires_meta_skill_auto_propose_routes(
         assert runtime_contexts[-1]["skill_loader"] is server._services.skill_loader
         base_config = runtime_contexts[-1]["base_config"]
         assert base_config.model_id == "frontier-t3-model"
-        assert base_config.metadata["routed_tier"] == "t3"
+        assert base_config.metadata["routed_tier"] == "c3"
         assert base_config.metadata["thinking_level"] == "high"
         assert runtime_contexts[-1]["baseline_model"] == "frontier-t3-model"
         with pytest.raises(RuntimeError):

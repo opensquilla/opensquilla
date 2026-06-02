@@ -8,12 +8,12 @@ const SetupView = (() => {
     { id: 'extras', label: 'Capabilities' },
     { id: 'finish', label: 'Finish' },
   ];
-  const TEXT_TIERS = ['t0', 't1', 't2', 't3'];
+  const TEXT_TIERS = ['c0', 'c1', 'c2', 'c3'];
   const TIER_LABELS = {
-    t0: 'Fast/simple (t0)',
-    t1: 'Balanced default (t1)',
-    t2: 'Stronger reasoning (t2)',
-    t3: 'Max quality (t3)',
+    c0: 'Route c0',
+    c1: 'Route c1',
+    c2: 'Route c2',
+    c3: 'Route c3',
   };
   const READINESS_LABELS = {
     ok: 'Ready',
@@ -482,7 +482,7 @@ const SetupView = (() => {
     const profiles = catalog.profiles || [];
     const profile = provider ? profiles.find(p => p.providerId === provider) || {} : {};
     const tiers = provider ? Object.assign({}, profile.tiers || {}, router.tiers || {}) : {};
-    const defaultTier = router.default_tier || catalog.defaultTier || 't1';
+    const defaultTier = router.default_tier || catalog.defaultTier || 'c1';
     const mode = router.enabled === false ? 'disabled' : 'recommended';
     const routerSummary = provider
       ? `${provider} / ${_tierLabel(defaultTier)}`
@@ -547,7 +547,7 @@ const SetupView = (() => {
   }
 
   function _tierLabel(tier) {
-    return TIER_LABELS[tier] || tier || 'Balanced default (t1)';
+    return TIER_LABELS[tier] || tier || 'Route c1';
   }
 
   function _renderChannelsStep() {
@@ -1592,7 +1592,7 @@ const SetupView = (() => {
     try {
       await _rpc.call('onboarding.router.configure', {
         mode: _el.querySelector('[data-router-mode]')?.value || 'recommended',
-        defaultTier: _el.querySelector('[data-default-tier]')?.value || 't1',
+        defaultTier: _el.querySelector('[data-default-tier]')?.value || 'c1',
         tiers,
       });
       UI.toast('Router saved.', 'info');

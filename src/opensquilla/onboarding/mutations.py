@@ -32,11 +32,16 @@ from opensquilla.onboarding.redaction import (
     redact_search_payload,
 )
 from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
+from opensquilla.router_tiers import (
+    DEFAULT_TEXT_TIER,
+    TEXT_TIERS,
+    normalize_text_tier,
+)
 from opensquilla.secrets import clean_header_secret
 
 SearchFallbackPolicy = Literal["off", "network"]
 RouterMode = Literal["recommended", "openrouter-mix", "disabled"]
-_TEXT_ROUTER_TIERS = ("t0", "t1", "t2", "t3")
+_TEXT_ROUTER_TIERS = TEXT_TIERS
 _ROUTER_TIER_KEYS = set(_TEXT_ROUTER_TIERS) | {"image_model"}
 _TIER_KEY_ALIASES = {
     "thinkingLevel": "thinking_level",
@@ -91,7 +96,7 @@ def _reconcile_router_profile_for_provider(
     if (
         not current_profile
         and provider_id == "openrouter"
-        and cfg.squilla_router.tiers.get("t0", {}).get("provider") == "openrouter"
+        and cfg.squilla_router.tiers.get("c0", {}).get("provider") == "openrouter"
     ):
         return
     router_payload = cfg.squilla_router.model_dump(mode="python")
@@ -105,16 +110,18 @@ def _reconcile_router_profile_for_provider(
 
 
 def _default_text_tier(default_tier: str | None) -> str:
-    tier = (default_tier or "t1").strip()
-    return tier if tier in _TEXT_ROUTER_TIERS else "t1"
+    tier = normalize_text_tier(default_tier or DEFAULT_TEXT_TIER)
+    return tier if tier in _TEXT_ROUTER_TIERS else DEFAULT_TEXT_TIER
 
 
 def _normalize_explicit_text_tier(default_tier: str | None) -> str | None:
     if default_tier is None:
         return None
-    tier = str(default_tier).strip()
-    if not tier:
+    if not str(default_tier).strip():
         return None
+    tier = normalize_text_tier(default_tier)
+    if not tier:
+        raise ValueError("defaultTier must reference a text tier")
     if tier not in _TEXT_ROUTER_TIERS:
         raise ValueError("defaultTier must reference a text tier")
     return tier
@@ -124,7 +131,7 @@ def _router_default_model_for_provider(provider_id: str, default_tier: str | Non
     if provider_id not in ROUTER_TIER_PROFILE_IDS:
         return ""
     tiers = _router_tier_profile_defaults(provider_id)
-    tier = tiers.get(_default_text_tier(default_tier)) or tiers.get("t1") or {}
+    tier = tiers.get(_default_text_tier(default_tier)) or tiers.get("c1") or {}
     return str(tier.get("model") or "").strip()
 
 
@@ -158,7 +165,7 @@ def _merge_router_tiers(
     if not isinstance(overrides, dict):
         raise ValueError("router tiers must be an object")
     for name, raw_override in overrides.items():
-        tier_name = str(name)
+        tier_name = normalize_text_tier(name) or str(name)
         override = _normalize_tier_payload(tier_name, raw_override)
         current = dict(merged.get(tier_name, {}))
         current.update(override)
@@ -183,7 +190,7 @@ def _sync_llm_model_to_router_default(cfg: GatewayConfig) -> None:
     router = cfg.squilla_router
     if not getattr(router, "enabled", True):
         return
-    default_tier = str(getattr(router, "default_tier", "t1") or "t1")
+    default_tier = _default_text_tier(getattr(router, "default_tier", DEFAULT_TEXT_TIER))
     _validate_router_tiers(router.tiers, default_tier)
     tier = router.tiers[default_tier]
     model = str(tier.get("model") or "").strip()
@@ -211,7 +218,7 @@ def upsert_llm_provider(
     if not model_clean:
         model_clean = _router_default_model_for_provider(
             provider_id,
-            getattr(config.squilla_router, "default_tier", "t1"),
+            getattr(config.squilla_router, "default_tier", "c1"),
         )
     if not model_clean:
         raise ValueError("model is required")
@@ -290,7 +297,7 @@ def upsert_router(
 
     default_tier_override = _normalize_explicit_text_tier(default_tier)
     default_tier_clean = default_tier_override or str(
-        router_payload.get("default_tier") or "t1"
+        normalize_text_tier(router_payload.get("default_tier")) or DEFAULT_TEXT_TIER
     )
     if default_tier_override is not None:
         router_payload["default_tier"] = default_tier_clean

@@ -345,7 +345,7 @@ def test_upsert_llm_provider_recomputes_openrouter_mix_on_provider_switch():
     assert res.config.llm.provider == "deepseek"
     assert res.config.squilla_router.enabled is True
     assert res.config.squilla_router.tier_profile == "deepseek"
-    assert res.config.squilla_router.tiers["t0"]["provider"] == "deepseek"
+    assert res.config.squilla_router.tiers["c0"]["provider"] == "deepseek"
     assert "tiers" not in res.config.to_toml_dict()["squilla_router"]
 
 

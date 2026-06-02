@@ -58,6 +58,12 @@ from opensquilla.onboarding.search_specs import (
 )
 from opensquilla.onboarding.setup_paths import web_setup_url
 from opensquilla.onboarding.status import get_onboarding_status
+from opensquilla.router_tiers import (
+    DEFAULT_TEXT_TIER,
+    IMAGE_TIER,
+    TEXT_TIERS,
+    normalize_text_tier,
+)
 from opensquilla.ui import (
     ACCENT,
     ACCENT_DIM,
@@ -862,13 +868,13 @@ def run_interactive_memory_embedding_configure(
     return persisted
 
 
-_TEXT_ROUTER_TIERS = ("t0", "t1", "t2", "t3")
-_EXPOSED_ROUTER_TIERS = ("t0", "t1", "t2", "t3", "image_model")
+_TEXT_ROUTER_TIERS = TEXT_TIERS
+_EXPOSED_ROUTER_TIERS = (*TEXT_TIERS, IMAGE_TIER)
 _TEXT_TIER_LABELS = {
-    "t0": "Fast/simple (t0)",
-    "t1": "Balanced default (t1)",
-    "t2": "Stronger reasoning (t2)",
-    "t3": "Max quality (t3)",
+    "c0": "Route c0",
+    "c1": "Route c1",
+    "c2": "Route c2",
+    "c3": "Route c3",
 }
 _IMAGE_TIER_LABEL = "Image model"
 _DONE_LABEL = "Done"
@@ -910,16 +916,20 @@ def _router_mode_to_internal(selected: str | None) -> str:
 
 
 def _text_tier_label(tier: str | None) -> str:
-    return _TEXT_TIER_LABELS.get(str(tier or "t1"), _TEXT_TIER_LABELS["t1"])
+    normalized = normalize_text_tier(tier) or DEFAULT_TEXT_TIER
+    return _TEXT_TIER_LABELS.get(normalized, _TEXT_TIER_LABELS[DEFAULT_TEXT_TIER])
 
 
 def _text_tier_to_internal(selected: str | None) -> str:
+    normalized = normalize_text_tier(selected)
+    if normalized:
+        return normalized
     if selected in _TEXT_ROUTER_TIERS:
         return str(selected)
     for tier, label in _TEXT_TIER_LABELS.items():
         if selected == label:
             return tier
-    return "t1"
+    return DEFAULT_TEXT_TIER
 
 
 def _tier_choice_label(tier: str) -> str:
@@ -948,7 +958,7 @@ def _print_router_defaults(config) -> None:
             f"[{ACCENT_DIM}]router[/] [dim]disabled — requests bypass tier routing[/dim]"
         )
         return
-    default_tier = str(getattr(router, "default_tier", "t1") or "t1")
+    default_tier = _text_tier_to_internal(getattr(router, "default_tier", None))
     default = router.tiers.get(default_tier, {})
     console.print(
         f"[bold {ACCENT}]◆ router[/] "
@@ -1027,7 +1037,7 @@ def _ask_router_fields(
     default_tier_choice = questionary.select(
         "Default text model",
         choices=[_TEXT_TIER_LABELS[tier] for tier in _TEXT_ROUTER_TIERS],
-        default=_text_tier_label(str(preview.squilla_router.default_tier or "t1")),
+        default=_text_tier_label(str(preview.squilla_router.default_tier or "c1")),
     ).ask()
     default_tier = _text_tier_to_internal(default_tier_choice)
     preview = upsert_router(config, mode=mode, default_tier=default_tier).config

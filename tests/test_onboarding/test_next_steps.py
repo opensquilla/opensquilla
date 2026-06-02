@@ -69,7 +69,7 @@ def test_onboarding_finish_output_uses_product_router_label():
 
     text = format_next_steps(GatewayConfig(), config_path="/tmp/opensquilla/custom.toml")
 
-    assert "  Router: SquillaRouter, default=t1" in text
+    assert "  Router: SquillaRouter, default=c1" in text
     assert "profile=openrouter-mix" not in text
 
 

@@ -150,6 +150,7 @@ from opensquilla.router_control import (
     RouterControlHoldStore,
     render_router_control_prompt_block,
 )
+from opensquilla.router_tiers import HIGHEST_TEXT_TIER, normalize_text_tier, tier_index
 from opensquilla.safety import injection_guard, permission_matrix, sandbox, tool_tiers
 from opensquilla.session.compaction_lifecycle import (
     COMPACTION_CHUNK_SUMMARIZED_EVENT,
@@ -4316,27 +4317,32 @@ class TurnRunner:
         and compact failures that should trip the circuit without retrying.
         """
         router_cfg = getattr(self._config, "squilla_router", None)
-        if not getattr(router_cfg, "upgrade_to_t3_compaction_enabled", False):
+        upgrade_compaction_enabled = getattr(
+            router_cfg,
+            "upgrade_to_c3_compaction_enabled",
+            getattr(router_cfg, "upgrade_to_t3_compaction_enabled", False),
+        )
+        if not upgrade_compaction_enabled:
             return _T3_NOT_APPLICABLE
 
-        routed_tier = turn.metadata.get("routed_tier")
-        if routed_tier != "t3":
+        routed_tier = normalize_text_tier(turn.metadata.get("routed_tier"))
+        if routed_tier != HIGHEST_TEXT_TIER:
             return _T3_NOT_APPLICABLE
 
         if not turn.metadata.get("routing_applied", False):
             return _T3_NOT_APPLICABLE
 
         routing_extra = turn.metadata.get("routing_extra", {})
-        previous = routing_extra.get("previous_tier")
+        previous = normalize_text_tier(routing_extra.get("previous_tier"))
         if previous is None:
-            final = routing_extra.get("final_tier")
-            base = routing_extra.get("base_tier")
-            if final == "t3" and base in {"t0", "t1", "t2"}:
+            final = normalize_text_tier(routing_extra.get("final_tier"))
+            base = normalize_text_tier(routing_extra.get("base_tier"))
+            if final == HIGHEST_TEXT_TIER and tier_index(base) in {0, 1, 2}:
                 previous = base
             else:
                 return _T3_NOT_APPLICABLE
 
-        if previous not in {"t0", "t1", "t2"}:
+        if tier_index(previous) not in {0, 1, 2}:
             return _T3_NOT_APPLICABLE
 
         if session_key.startswith(("cron:", "subagent:")):
@@ -4409,7 +4415,7 @@ class TurnRunner:
             "t3_upgrade_compaction.triggered",
             session_key=session_key,
             previous_tier=previous,
-            final_tier="t3",
+            final_tier=HIGHEST_TEXT_TIER,
             context_window_tokens=context_window_tokens,
         )
         self.mark_compaction_attempted_this_turn(session_key)

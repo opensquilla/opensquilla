@@ -830,7 +830,7 @@ def test_onboard_catalog_accepts_short_capability_section_aliases(
     ("section", "expected"),
     [
         ("providers", ["openrouter", "OPENROUTER_API_KEY", "deepseek/deepseek-v4-pro"]),
-        ("router", ["recommended", "openrouter-mix", "t0", "t3"]),
+        ("router", ["recommended", "openrouter-mix", "c0", "c3"]),
         ("search", ["duckduckgo", "brave", "BRAVE_SEARCH_API_KEY"]),
         ("channels", ["discord", "Bot token", "opensquilla channels describe discord --json"]),
         ("image-generation", ["openrouter", "openrouter/google/gemini", "OPENROUTER_API_KEY"]),
@@ -925,7 +925,7 @@ def test_onboard_catalog_router_focus_offers_a_real_recipe(tmp_path, monkeypatch
     result = runner.invoke(app, ["onboard", "catalog", "router", "--config", str(target)])
 
     assert result.exit_code == 0, result.stdout
-    assert "Try: opensquilla onboard configure router --router recommended --default-tier t1" in (
+    assert "Try: opensquilla onboard configure router --router recommended --default-tier c1" in (
         result.stdout
     )
     assert "Configure with:" not in result.stdout
@@ -1544,7 +1544,7 @@ def test_onboard_if_needed_non_tty_hint_targets_blocking_memory_section(
         (
             "router",
             "Headless router:",
-            "opensquilla onboard configure router --router recommended --default-tier t1",
+            "opensquilla onboard configure router --router recommended --default-tier c1",
         ),
         (
             "channels",
@@ -1816,14 +1816,14 @@ def test_configure_router_noninteractive_can_set_default_tier(tmp_path, monkeypa
 
     result = runner.invoke(
         app,
-        ["configure", "router", "--router", "recommended", "--default-tier", "t2"],
+        ["configure", "router", "--router", "recommended", "--default-tier", "c2"],
     )
 
     assert result.exit_code == 0, result.stdout
     data = tomllib.loads(target.read_text())
     assert data["squilla_router"]["enabled"] is True
     assert data["squilla_router"]["tier_profile"] == "deepseek"
-    assert data["squilla_router"]["default_tier"] == "t2"
+    assert data["squilla_router"]["default_tier"] == "c2"
 
 
 def test_configure_router_rejects_invalid_default_tier_without_writing(

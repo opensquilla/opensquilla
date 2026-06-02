@@ -1668,9 +1668,9 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                     enabled: true,
                     rollout_phase: "full",
                     tiers: {
-                      t1: { model: "openrouter/deepseek-v4-flash" },
-                      t2: { model: "openrouter/gemini-3.1-flash-lite" },
-                      t3: { model: "openrouter/qwen3.6-max" },
+                      c1: { model: "openrouter/deepseek-v4-flash" },
+                      c2: { model: "openrouter/gemini-3.1-flash-lite" },
+                      c3: { model: "openrouter/qwen3.6-max" },
                       image_model: {
                         model: "openrouter/kimi-k2.6",
                         supports_image: true,
@@ -1746,7 +1746,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
               await emit(page, "session.event.router_decision", {
                 session_key: sessionKey,
                 stream_seq: 101,
-                tier: "t1",
+                tier: "c1",
                 model: "openrouter/deepseek-v4-flash",
                 routing_source: "squilla_router",
                 routing_applied: true,
@@ -1773,7 +1773,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                     usage: {
                       model: "openrouter/deepseek-v4-flash",
                       routed_model: "openrouter/deepseek-v4-flash",
-                      routed_tier: "t1",
+                      routed_tier: "c1",
                       routing_source: "squilla_router",
                       routing_applied: true,
                       input_tokens: 11,
@@ -1793,7 +1793,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
               await emit(page, "session.event.router_decision", {
                 session_key: sessionKey,
                 stream_seq: 102,
-                tier: "t1",
+                tier: "c1",
                 model: "openrouter/deepseek-v4-flash",
                 routing_source: "squilla_router",
                 routing_applied: true,
@@ -1823,7 +1823,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                     usage: {
                       model: "openrouter/deepseek-v4-flash",
                       routed_model: "openrouter/deepseek-v4-flash",
-                      routed_tier: "t1",
+                      routed_tier: "c1",
                       routing_source: "squilla_router",
                       routing_applied: true,
                       input_tokens: 11,
@@ -1858,7 +1858,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                     usage: {
                       model: "openrouter/deepseek-v4-flash",
                       routed_model: "openrouter/deepseek-v4-flash",
-                      routed_tier: "t1",
+                      routed_tier: "c1",
                       routing_source: "squilla_router",
                       routing_applied: true,
                       input_tokens: 11,
@@ -1880,7 +1880,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                     usage: {
                       model: "openrouter/gemini-3.1-flash-lite",
                       routed_model: "openrouter/gemini-3.1-flash-lite",
-                      routed_tier: "t2",
+                      routed_tier: "c2",
                       routing_source: "squilla_router",
                       routing_applied: true,
                       input_tokens: 13,
@@ -1895,7 +1895,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
               await emit(page, "session.event.router_decision", {
                 session_key: sessionKey,
                 stream_seq: 103,
-                tier: "t2",
+                tier: "c2",
                 model: "openrouter/gemini-3.1-flash-lite",
                 routing_source: "squilla_router",
                 routing_applied: true,
@@ -2961,7 +2961,7 @@ def test_completed_reconnect_without_replay_refreshes_history_in_real_browser(
                         enabled: true,
                         rollout_phase: "full",
                         tiers: {
-                          t1: { model: "openrouter/deepseek-v4-flash" },
+                          c1: { model: "openrouter/deepseek-v4-flash" },
                         },
                       },
                     });
@@ -2996,7 +2996,7 @@ def test_completed_reconnect_without_replay_refreshes_history_in_real_browser(
                             usage: {
                               model: "openrouter/deepseek-v4-flash",
                               routed_model: "openrouter/deepseek-v4-flash",
-                              routed_tier: "t1",
+                              routed_tier: "c1",
                               routing_source: "squilla_router",
                               routing_applied: true,
                               input_tokens: 0,
@@ -3194,7 +3194,7 @@ def test_replayed_savings_done_restores_reply_without_replaying_popup_in_real_br
                         enabled: true,
                         rollout_phase: "full",
                         tiers: {
-                          t1: { model: "openrouter/deepseek-v4-flash" },
+                          c1: { model: "openrouter/deepseek-v4-flash" },
                         },
                       },
                     });
@@ -3247,7 +3247,7 @@ def test_replayed_savings_done_restores_reply_without_replaying_popup_in_real_br
                     output_tokens: 661,
                     model: "openrouter/deepseek-v4-flash",
                     routed_model: "openrouter/deepseek-v4-flash",
-                    routed_tier: "t1",
+                    routed_tier: "c1",
                     routing_source: "squilla_router",
                     routing_applied: true,
                     total_savings_pct: 97,

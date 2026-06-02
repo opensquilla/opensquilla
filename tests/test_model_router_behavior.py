@@ -139,7 +139,7 @@ async def test_full_rollout_applies_routed_model_thinking_and_p0_prompt(
 ) -> None:
     fake_strategy(
         monkeypatch,
-        "t1",
+        "c1",
         0.91,
         {
             "route_class": "R1",
@@ -153,7 +153,7 @@ async def test_full_rollout_applies_routed_model_thinking_and_p0_prompt(
     routed = await apply_squilla_router(ctx)
 
     assert routed.model == "deepseek/deepseek-v4-pro"
-    assert routed.metadata["routed_tier"] == "t1"
+    assert routed.metadata["routed_tier"] == "c1"
     assert routed.metadata["routed_model"] == "deepseek/deepseek-v4-pro"
     assert routed.metadata["routing_applied"] is True
     assert routed.metadata["applied_model"] == "deepseek/deepseek-v4-pro"
@@ -176,7 +176,7 @@ async def test_router_reports_provider_state_loss_without_changing_route(
 ) -> None:
     fake_strategy(
         monkeypatch,
-        "t1",
+        "c1",
         0.91,
         {
             "route_class": "R1",
@@ -217,7 +217,7 @@ async def test_router_continuity_diagnostic_ignores_expired_provider_state(
 ) -> None:
     fake_strategy(
         monkeypatch,
-        "t1",
+        "c1",
         0.91,
         {
             "route_class": "R1",
@@ -261,7 +261,7 @@ async def test_p2_prompt_hint_is_recorded_but_not_injected(
 ) -> None:
     fake_strategy(
         monkeypatch,
-        "t3",
+        "c3",
         0.97,
         {
             "route_class": "R3",
@@ -275,7 +275,7 @@ async def test_p2_prompt_hint_is_recorded_but_not_injected(
     routed = await apply_squilla_router(ctx)
 
     assert routed.model == "anthropic/claude-opus-4.7"
-    assert routed.metadata["routed_tier"] == "t3"
+    assert routed.metadata["routed_tier"] == "c3"
     assert routed.metadata["thinking_level"] == "high"
     assert routed.metadata["prompt_policy"] == "P2"
     assert routed.metadata["routing_extra"]["prompt_hint"] == "Use a careful plan before answering."
@@ -288,7 +288,7 @@ async def test_v4_thinking_mode_overrides_explicit_tier_thinking_level(
 ) -> None:
     fake_strategy(
         monkeypatch,
-        "t2",
+        "c2",
         0.92,
         {
             "route_class": "R2",
@@ -300,7 +300,7 @@ async def test_v4_thinking_mode_overrides_explicit_tier_thinking_level(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.metadata["routed_tier"] == "t2"
+    assert routed.metadata["routed_tier"] == "c2"
     assert routed.metadata["thinking_mode"] == "T2"
     assert routed.metadata["thinking_requested"] is True
     assert routed.metadata["thinking_level"] == "medium"
@@ -312,7 +312,7 @@ async def test_confidence_gate_promotes_low_confidence_t0_to_default_t1_and_reco
 ) -> None:
     fake_strategy(
         monkeypatch,
-        "t0",
+        "c0",
         0.1,
         {
             "route_class": "R0",
@@ -325,11 +325,11 @@ async def test_confidence_gate_promotes_low_confidence_t0_to_default_t1_and_reco
     routed = await apply_squilla_router(ctx)
     extra = routed.metadata["routing_extra"]
 
-    assert routed.metadata["routed_tier"] == "t1"
+    assert routed.metadata["routed_tier"] == "c1"
     assert routed.model == "deepseek/deepseek-v4-pro"
     assert extra["confidence_gate_applied"] is True
-    assert extra["base_tier"] == "t0"
-    assert extra["final_tier"] == "t1"
+    assert extra["base_tier"] == "c0"
+    assert extra["final_tier"] == "c1"
     assert routed.metadata["thinking_mode"] == "T1"
     assert routed.metadata["thinking_level"] == "low"
     assert "[RESPONSE_POLICY: Answer directly" in routed.message
@@ -341,7 +341,7 @@ async def test_confidence_gate_falls_back_low_confidence_non_default_text_tier(
 ) -> None:
     fake_strategy(
         monkeypatch,
-        "t2",
+        "c2",
         0.1,
         {
             "route_class": "R2",
@@ -354,18 +354,18 @@ async def test_confidence_gate_falls_back_low_confidence_non_default_text_tier(
     routed = await apply_squilla_router(ctx)
     extra = routed.metadata["routing_extra"]
 
-    assert routed.metadata["routed_tier"] == "t1"
+    assert routed.metadata["routed_tier"] == "c1"
     assert routed.model == "deepseek/deepseek-v4-pro"
     assert extra["confidence_gate_applied"] is True
-    assert extra["pre_confidence_tier"] == "t2"
-    assert extra["final_tier"] == "t1"
+    assert extra["pre_confidence_tier"] == "c2"
+    assert extra["final_tier"] == "c1"
 
 
 @pytest.mark.asyncio
 async def test_large_material_estimate_floors_low_router_tier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_strategy(monkeypatch, "t1", 0.91, {"route_class": "R1"})
+    fake_strategy(monkeypatch, "c1", 0.91, {"route_class": "R1"})
     ctx = make_context("Please process the attached pasted text.")
     ctx.metadata["input_normalization"] = {
         "guard_action": "generated_text_attachment",
@@ -375,18 +375,18 @@ async def test_large_material_estimate_floors_low_router_tier(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.metadata["routed_tier"] == "t2"
+    assert routed.metadata["routed_tier"] == "c2"
     assert routed.metadata["routing_source"] == "large_context_floor"
-    assert routed.metadata["large_context_floor_from_tier"] == "t1"
+    assert routed.metadata["large_context_floor_from_tier"] == "c1"
     assert routed.metadata["large_context_material_tokens"] == 45_000
-    assert routed.metadata["routing_extra"]["final_tier"] == "t2"
+    assert routed.metadata["routing_extra"]["final_tier"] == "c2"
 
 
 @pytest.mark.asyncio
 async def test_large_material_ratio_floors_low_router_tier_to_t3(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_strategy(monkeypatch, "t1", 0.91, {"route_class": "R1"})
+    fake_strategy(monkeypatch, "c1", 0.91, {"route_class": "R1"})
     ctx = make_context("Please process the attached pasted text.")
     object.__setattr__(ctx.config.squilla_router, "context_window_tokens", 100_000)
     ctx.metadata["input_normalization"] = {
@@ -396,9 +396,9 @@ async def test_large_material_ratio_floors_low_router_tier_to_t3(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.metadata["routed_tier"] == "t3"
+    assert routed.metadata["routed_tier"] == "c3"
     assert routed.metadata["routing_source"] == "large_context_floor"
-    assert routed.metadata["large_context_floor_from_tier"] == "t1"
+    assert routed.metadata["large_context_floor_from_tier"] == "c1"
     assert routed.metadata["large_context_material_tokens"] == 40_000
 
 
@@ -409,7 +409,7 @@ async def test_anti_downgrade_keeps_recent_higher_tier_despite_confidence_gate(
     ctx1 = make_context("Hard first turn.", session_key="test-confidence-history")
     fake_strategy(
         monkeypatch,
-        "t2",
+        "c2",
         0.9,
         {
             "route_class": "R2",
@@ -418,11 +418,11 @@ async def test_anti_downgrade_keeps_recent_higher_tier_despite_confidence_gate(
         },
     )
     routed1 = await apply_squilla_router(ctx1)
-    assert routed1.metadata["routed_tier"] == "t2"
+    assert routed1.metadata["routed_tier"] == "c2"
 
     fake_strategy(
         monkeypatch,
-        "t0",
+        "c0",
         0.1,
         {
             "route_class": "R0",
@@ -435,17 +435,17 @@ async def test_anti_downgrade_keeps_recent_higher_tier_despite_confidence_gate(
     routed2 = await apply_squilla_router(ctx2)
     extra = routed2.metadata["routing_extra"]
 
-    assert routed2.metadata["routed_tier"] == "t2"
+    assert routed2.metadata["routed_tier"] == "c2"
     assert routed2.model == "z-ai/glm-5.1"
     assert extra["confidence_gate_applied"] is True
-    assert extra["pre_confidence_tier"] == "t0"
-    assert extra["final_tier"] == "t2"
+    assert extra["pre_confidence_tier"] == "c0"
+    assert extra["final_tier"] == "c2"
     assert extra["anti_downgrade_applied"] is True
-    assert extra["previous_tier"] == "t2"
+    assert extra["previous_tier"] == "c2"
 
     fake_strategy(
         monkeypatch,
-        "t1",
+        "c1",
         0.9,
         {
             "route_class": "R1",
@@ -458,11 +458,11 @@ async def test_anti_downgrade_keeps_recent_higher_tier_despite_confidence_gate(
     routed3 = await apply_squilla_router(ctx3)
     extra3 = routed3.metadata["routing_extra"]
 
-    assert routed3.metadata["routed_tier"] == "t2"
+    assert routed3.metadata["routed_tier"] == "c2"
     assert routed3.model == "z-ai/glm-5.1"
     assert extra3["confidence_gate_applied"] is False
     assert extra3["anti_downgrade_applied"] is True
-    assert extra3["previous_tier"] == "t2"
+    assert extra3["previous_tier"] == "c2"
 
 
 @pytest.mark.asyncio
@@ -472,7 +472,7 @@ async def test_anti_downgrade_uses_previous_turn_not_window_highest(
     session_key = "test-previous-not-highest"
     fake_strategy(
         monkeypatch,
-        "t3",
+        "c3",
         0.9,
         {
             "route_class": "R3",
@@ -481,13 +481,13 @@ async def test_anti_downgrade_uses_previous_turn_not_window_highest(
         },
     )
     routed1 = await apply_squilla_router(make_context("Very hard turn.", session_key=session_key))
-    assert routed1.metadata["routed_tier"] == "t3"
+    assert routed1.metadata["routed_tier"] == "c3"
 
     ctx2 = make_context("Less hard turn.", session_key=session_key)
     ctx2.config.squilla_router.kv_cache_anti_downgrade_enabled = False
     fake_strategy(
         monkeypatch,
-        "t2",
+        "c2",
         0.9,
         {
             "route_class": "R2",
@@ -496,12 +496,12 @@ async def test_anti_downgrade_uses_previous_turn_not_window_highest(
         },
     )
     routed2 = await apply_squilla_router(ctx2)
-    assert routed2.metadata["routed_tier"] == "t2"
+    assert routed2.metadata["routed_tier"] == "c2"
 
     ctx3 = make_context("Easy follow-up.", session_key=session_key)
     fake_strategy(
         monkeypatch,
-        "t1",
+        "c1",
         0.9,
         {
             "route_class": "R1",
@@ -512,10 +512,10 @@ async def test_anti_downgrade_uses_previous_turn_not_window_highest(
     routed3 = await apply_squilla_router(ctx3)
     extra3 = routed3.metadata["routing_extra"]
 
-    assert routed3.metadata["routed_tier"] == "t2"
+    assert routed3.metadata["routed_tier"] == "c2"
     assert routed3.model == "z-ai/glm-5.1"
     assert extra3["anti_downgrade_applied"] is True
-    assert extra3["previous_tier"] == "t2"
+    assert extra3["previous_tier"] == "c2"
 
 
 @pytest.mark.asyncio
@@ -525,7 +525,7 @@ async def test_anti_downgrade_keeps_previous_high_tier_without_margin_gate(
     session_key = "test-anti-downgrade-ignore-margin"
     fake_strategy(
         monkeypatch,
-        "t3",
+        "c3",
         0.95,
         {
             "route_class": "R3",
@@ -537,11 +537,11 @@ async def test_anti_downgrade_keeps_previous_high_tier_without_margin_gate(
     routed1 = await apply_squilla_router(
         make_context("Architecture review.", session_key=session_key)
     )
-    assert routed1.metadata["routed_tier"] == "t3"
+    assert routed1.metadata["routed_tier"] == "c3"
 
     fake_strategy(
         monkeypatch,
-        "t1",
+        "c1",
         0.99,
         {
             "route_class": "R1",
@@ -553,10 +553,10 @@ async def test_anti_downgrade_keeps_previous_high_tier_without_margin_gate(
     routed2 = await apply_squilla_router(make_context("Follow-up.", session_key=session_key))
     extra = routed2.metadata["routing_extra"]
 
-    assert routed2.metadata["routed_tier"] == "t3"
+    assert routed2.metadata["routed_tier"] == "c3"
     assert routed2.model == "anthropic/claude-opus-4.7"
     assert extra["anti_downgrade_applied"] is True
-    assert extra["previous_tier"] == "t3"
+    assert extra["previous_tier"] == "c3"
     assert extra["kv_cache_window_seconds"] == 600
 
 
@@ -566,7 +566,7 @@ async def test_complaint_upgrade_promotes_tier_thinking_and_blocks_compressed_pr
 ) -> None:
     fake_strategy(
         monkeypatch,
-        "t1",
+        "c1",
         0.9,
         {
             "route_class": "R1",
@@ -579,7 +579,7 @@ async def test_complaint_upgrade_promotes_tier_thinking_and_blocks_compressed_pr
     routed = await apply_squilla_router(ctx)
     extra = routed.metadata["routing_extra"]
 
-    assert routed.metadata["routed_tier"] == "t2"
+    assert routed.metadata["routed_tier"] == "c2"
     assert routed.model == "z-ai/glm-5.1"
     assert extra["complaint_detected"] is True
     assert extra["complaint_upgrade_applied"] is True
@@ -596,7 +596,7 @@ async def test_complaint_upgrade_starts_from_previous_experienced_tier(
     session_key = "test-complaint-upgrade-previous-tier"
     fake_strategy(
         monkeypatch,
-        "t2",
+        "c2",
         0.9,
         {
             "route_class": "R2",
@@ -607,11 +607,11 @@ async def test_complaint_upgrade_starts_from_previous_experienced_tier(
     routed1 = await apply_squilla_router(
         make_context("Analyze this tricky failure.", session_key=session_key)
     )
-    assert routed1.metadata["routed_tier"] == "t2"
+    assert routed1.metadata["routed_tier"] == "c2"
 
     fake_strategy(
         monkeypatch,
-        "t1",
+        "c1",
         0.9,
         {
             "route_class": "R1",
@@ -622,9 +622,9 @@ async def test_complaint_upgrade_starts_from_previous_experienced_tier(
     routed2 = await apply_squilla_router(make_context("答非所问", session_key=session_key))
     extra = routed2.metadata["routing_extra"]
 
-    assert routed2.metadata["routed_tier"] == "t3"
+    assert routed2.metadata["routed_tier"] == "c3"
     assert routed2.model == "anthropic/claude-opus-4.7"
-    assert extra["previous_tier"] == "t2"
+    assert extra["previous_tier"] == "c2"
     assert extra["complaint_detected"] is True
     assert extra["complaint_upgrade_applied"] is True
     assert extra["anti_downgrade_applied"] is False
@@ -636,7 +636,7 @@ async def test_router_classifies_raw_semantic_input_but_injects_prompt_into_disp
 ) -> None:
     strategy = fake_strategy(
         monkeypatch,
-        "t0",
+        "c0",
         0.92,
         {
             "route_class": "R0",
@@ -652,7 +652,7 @@ async def test_router_classifies_raw_semantic_input_but_injects_prompt_into_disp
     routed = await apply_squilla_router(ctx)
 
     assert strategy.messages == ["Summarize the underlying user input."]
-    assert routed.metadata["routed_tier"] == "t0"
+    assert routed.metadata["routed_tier"] == "c0"
     assert routed.metadata["prompt_policy"] == "P0"
     assert routed.message.startswith("Displayed prompt wrapper")
     assert "Summarize the underlying user input." not in routed.message
@@ -665,7 +665,7 @@ async def test_router_passes_transcript_context_into_strategy(
 ) -> None:
     strategy = context_aware_fake_strategy(
         monkeypatch,
-        "t2",
+        "c2",
         0.88,
         {
             "route_class": "R2",
@@ -694,7 +694,7 @@ async def test_router_passes_transcript_context_into_strategy(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.metadata["routed_tier"] == "t2"
+    assert routed.metadata["routed_tier"] == "c2"
     assert strategy.messages == ["Continue from the previous answer."]
     assert strategy.contexts == [
         {
@@ -811,7 +811,7 @@ async def test_non_image_attachment_does_not_force_vision_route(
 ) -> None:
     strategy = fake_strategy(
         monkeypatch,
-        "t1",
+        "c1",
         0.91,
         {
             "route_class": "R1",
@@ -828,7 +828,7 @@ async def test_non_image_attachment_does_not_force_vision_route(
 
     assert strategy.calls == 1
     assert routed.metadata["routing_source"] == "v4_phase3"
-    assert routed.metadata["routed_tier"] == "t1"
+    assert routed.metadata["routed_tier"] == "c1"
 
 
 @pytest.mark.asyncio
@@ -837,7 +837,7 @@ async def test_observe_rollout_records_decisions_without_applying_model_or_promp
 ) -> None:
     fake_strategy(
         monkeypatch,
-        "t2",
+        "c2",
         0.93,
         {
             "route_class": "R2",
@@ -852,7 +852,7 @@ async def test_observe_rollout_records_decisions_without_applying_model_or_promp
     routed = await apply_squilla_router(ctx)
 
     assert routed.model == baseline_model
-    assert routed.metadata["routed_tier"] == "t2"
+    assert routed.metadata["routed_tier"] == "c2"
     assert routed.metadata["routed_model"] == "z-ai/glm-5.1"
     assert routed.metadata["routing_applied"] is False
     assert routed.metadata["thinking_mode"] == "T2"
@@ -866,7 +866,7 @@ async def test_repeated_message_across_sessions_is_classified_each_time(
 ) -> None:
     strategy = fake_strategy(
         monkeypatch,
-        "t1",
+        "c1",
         0.91,
         {
             "route_class": "R1",
@@ -896,7 +896,7 @@ async def test_required_router_runtime_failure_falls_back_to_default_tier(
     routed = await apply_squilla_router(ctx)
 
     assert routed.metadata["routing_source"] == "v4_unavailable"
-    assert routed.metadata["routed_tier"] == "t1"
+    assert routed.metadata["routed_tier"] == "c1"
     assert routed.metadata["routing_confidence"] == 0.0
 
 
@@ -938,7 +938,7 @@ async def test_runtime_router_short_chinese_prompt_injects_localized_p0_hint() -
     routed = await apply_squilla_router(ctx)
 
     assert routed.metadata["routing_source"] == "v4_phase3"
-    assert routed.metadata["routed_tier"] == "t0"
+    assert routed.metadata["routed_tier"] == "c0"
     assert routed.model == "deepseek/deepseek-v4-flash"
     assert routed.metadata["thinking_mode"] == "T0"
     assert routed.metadata.get("thinking_requested") is None
@@ -954,7 +954,7 @@ async def test_runtime_router_complex_request_applies_deep_thinking_without_p2_p
     routed = await apply_squilla_router(ctx)
 
     assert routed.metadata["routing_source"] == "v4_phase3"
-    assert routed.metadata["routed_tier"] == "t3"
+    assert routed.metadata["routed_tier"] == "c3"
     assert routed.model == "anthropic/claude-opus-4.7"
     assert routed.metadata["thinking_mode"] == "T3"
     assert routed.metadata["thinking_requested"] is True

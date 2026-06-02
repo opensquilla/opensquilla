@@ -734,8 +734,8 @@ def test_setup_router_controls_use_user_facing_labels():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
     assert "SquillaRouter" in txt
     assert "OpenRouter mix" not in txt
-    assert "Balanced default (t1)" in txt
-    assert "Stronger reasoning (t2)" in txt
+    assert "Route c1" in txt
+    assert "Route c2" in txt
 
 
 def test_setup_view_preserves_unsaved_form_values_across_step_navigation():

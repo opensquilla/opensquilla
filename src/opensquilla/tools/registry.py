@@ -117,7 +117,9 @@ class ToolRegistry:
             from opensquilla.router_control import build_router_control_targets
 
             target_ids = [
-                target.target_id for target in build_router_control_targets(router_cfg)
+                target.target_id
+                for target in build_router_control_targets(router_cfg)
+                if target.target_type == "tier"
             ]
         except Exception:  # noqa: BLE001 - schema enrichment must not hide the tool
             return parameters

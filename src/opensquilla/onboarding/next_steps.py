@@ -50,7 +50,7 @@ _HEADLESS_SETUP_COMMANDS = {
     ),
     "router": (
         "Headless router",
-        "opensquilla onboard configure router --router recommended --default-tier t1",
+        "opensquilla onboard configure router --router recommended --default-tier c1",
     ),
     "channels": (
         "Channel recipes",
@@ -258,7 +258,7 @@ def format_next_steps(config: Any, *, config_path: str | Path | None = None) -> 
     provider = str(getattr(llm, "provider", "") or "")
     model = str(getattr(llm, "model", "") or "")
     env_key = str(getattr(llm, "api_key_env", "") or "")
-    router_default = str(getattr(router, "default_tier", "") or "t1")
+    router_default = str(getattr(router, "default_tier", "") or "c1")
     router_line = (
         "  Router: disabled"
         if not router.enabled

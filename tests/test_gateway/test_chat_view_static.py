@@ -395,7 +395,10 @@ def test_chat_streaming_active_mark_reveals_after_visible_bubble_delay() -> None
     reveal_start = source.index("function _maybeRevealStreamActiveMark()")
     reveal_end = source.index("  function _scheduleStreamActiveMarkReveal", reveal_start)
     reveal_body = source[reveal_start:reveal_end]
-    assert "_streamActiveMarkVisibleStartedAt ? Date.now() - _streamActiveMarkVisibleStartedAt : 0" in reveal_body
+    assert (
+        "_streamActiveMarkVisibleStartedAt ? Date.now() - _streamActiveMarkVisibleStartedAt : 0"
+        in reveal_body
+    )
 
     end_stream_start = source.index("function _endStreaming(opts)")
     end_stream_end = source.index("  function _hasViewLocalStreamState", end_stream_start)
@@ -1953,11 +1956,18 @@ def test_router_fx_single_visual_candidate_renders_nothing_live_or_history() -> 
     schedule_start = source.index("function _scheduleRouterFxBeginScan(anchorDiv, seedKey, opts) {")
     schedule_end = source.index("  // Render the routing visualisation", schedule_start)
     schedule_body = source[schedule_start:schedule_end]
-    assert "if (_routerFxConfigTiers !== null && !_routerFxHasMultipleCandidates(requestKind, null)) {" in schedule_body
+    assert (
+        "if (_routerFxConfigTiers !== null "
+        "&& !_routerFxHasMultipleCandidates(requestKind, null)) {"
+        in schedule_body
+    )
     assert "_chatDiag('router_scan.schedule.skip.single_candidate'" in schedule_body
 
     pending_start = source.index("async function _finishPendingRouterFxScan() {")
-    pending_end = source.index("function _scheduleRouterFxBeginScan(anchorDiv, seedKey, opts) {", pending_start)
+    pending_end = source.index(
+        "function _scheduleRouterFxBeginScan(anchorDiv, seedKey, opts) {",
+        pending_start,
+    )
     pending_body = source[pending_start:pending_end]
     assert pending_body.index("await _routerFxAwaitConfig();") < pending_body.index(
         "_routerFxBeginScan(pending.anchorDiv, pending.seedKey"

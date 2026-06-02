@@ -9,6 +9,7 @@ from opensquilla.gateway.config import (
     ROUTER_TIER_PROFILE_IDS,
     _router_tier_profile_defaults,
 )
+from opensquilla.router_tiers import DEFAULT_TEXT_TIER, TEXT_TIERS
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ def _profile_to_setup(profile_id: str) -> RouterSetupProfile:
     exposed_tiers = {
         name: dict(value)
         for name, value in raw_tiers.items()
-        if name in {"t0", "t1", "t2", "t3", "image_model"}
+        if name in set(TEXT_TIERS) | {"image_model"}
     }
     return RouterSetupProfile(
         profile_id=normalized,
@@ -69,13 +70,13 @@ def _tier_payload(tier: dict[str, Any]) -> dict[str, Any]:
 
 def router_catalog_payload() -> dict[str, Any]:
     return {
-        "defaultTier": "t1",
-        "textTiers": ["t0", "t1", "t2", "t3"],
+        "defaultTier": DEFAULT_TEXT_TIER,
+        "textTiers": list(TEXT_TIERS),
         "modes": [
             {
                 "mode": "recommended",
                 "label": "Recommended provider profile",
-                "description": "Use the selected provider's default t0-t3 routing profile.",
+                "description": "Use the selected provider's default c0-c3 routing profile.",
             },
             {
                 "mode": "openrouter-mix",

@@ -1307,7 +1307,7 @@ const ChatView = (() => {
     // Config (which populates _routerFxModels and registers all
     // configured tiers including image_only ones) must finish before
     // the first history render — otherwise non-winner cells fall back
-    // to the tier id ("t1", "t2") instead of the real model name.
+    // to the tier id ("c1", "c2") instead of the real model name.
     _loadFeatureToggles()
       .catch(() => { /* fall through to history anyway */ })
       .finally(() => _loadHistory());
@@ -1470,7 +1470,8 @@ const ChatView = (() => {
       if (tiers && typeof tiers === 'object') {
         Object.keys(tiers).forEach((tier) => {
           if (typeof tier !== 'string' || !tier) return;
-          const lower = tier.toLowerCase();
+          const lower = _routerFxNormalizeTier(tier);
+          if (!lower) return;
           configTierKeys.push(lower);
           configTierSet.add(lower);
           const rawTier = tiers[tier];
@@ -3262,7 +3263,7 @@ const ChatView = (() => {
   // OpenSquilla's tier ids vary by tier_profile. We seed the slot
   // list from config and register any decision tier we haven't seen
   // before, so the grid never silently drops an unfamiliar tier.
-  const _ROUTER_FX_DEFAULT_TIERS = ['t0', 't1', 't2', 't3'];
+  const _ROUTER_FX_DEFAULT_TIERS = ['c0', 'c1', 'c2', 'c3'];
   let _routerFxSlotList = _ROUTER_FX_DEFAULT_TIERS.slice();
   const _routerFxModels = {};
   const _routerFxTierConfigs = {};
@@ -3308,8 +3309,8 @@ const ChatView = (() => {
 
   function _routerFxSortTiers(list) {
     return list.slice().sort((a, b) => {
-      const am = /^t(\d+)$/.exec(a);
-      const bm = /^t(\d+)$/.exec(b);
+      const am = /^c(\d+)$/.exec(a);
+      const bm = /^c(\d+)$/.exec(b);
       if (am && bm) return parseInt(am[1], 10) - parseInt(bm[1], 10);
       if (am) return -1;
       if (bm) return 1;
@@ -3317,9 +3318,14 @@ const ChatView = (() => {
     });
   }
 
+  function _routerFxNormalizeTier(tier) {
+    if (typeof tier !== 'string' || !tier) return '';
+    return tier.toLowerCase().replace(/^t([0-3])$/, 'c$1');
+  }
+
   function _routerFxRegisterTier(tier) {
-    if (typeof tier !== 'string' || !tier) return;
-    const norm = tier.toLowerCase();
+    const norm = _routerFxNormalizeTier(tier);
+    if (!norm) return;
     if (_routerFxSlotList.indexOf(norm) >= 0) return;
     _routerFxSlotList = _routerFxSortTiers(_routerFxSlotList.concat([norm]));
   }
@@ -3440,7 +3446,7 @@ const ChatView = (() => {
   // Promise resolved when _loadFeatureToggles has populated tier
   // models from config. Any _loadHistory call awaits this gate so the
   // first history rebuild never renders strips with empty tier names
-  // ("t1", "t2", …) just because config hadn't returned yet.
+  // ("c1", "c2", …) just because config hadn't returned yet.
   let _routerFxConfigReadyResolve = null;
   const _routerFxConfigReady = new Promise((resolve) => {
     _routerFxConfigReadyResolve = resolve;
@@ -3515,7 +3521,7 @@ const ChatView = (() => {
   }
   function _routerFxIdentity(model, tier) {
     const modelPart = typeof model === 'string' ? model.trim().toLowerCase() : '';
-    const tierPart = typeof tier === 'string' ? tier.trim().toLowerCase() : '';
+    const tierPart = _routerFxNormalizeTier(tier);
     if (!modelPart && !tierPart) return '';
     return modelPart + '|' + tierPart;
   }
@@ -3597,7 +3603,7 @@ const ChatView = (() => {
     wrap.setAttribute('data-history-role', 'router');
     wrap.dataset.renderMode = opts.renderMode || (opts.preSettled ? 'history' : 'live');
     wrap.dataset.state = 'idle';
-    wrap.dataset.tier = decision.tier || '';
+    wrap.dataset.tier = _routerFxNormalizeTier(decision.tier);
     wrap.dataset.source = decision.source || 'none';
     const identity = _routerFxDecisionIdentity(decision);
     if (identity) wrap.dataset.routerIdentity = identity;
@@ -3658,7 +3664,7 @@ const ChatView = (() => {
     wrap._fxRequestKind = requestKind;
 
     if (opts.preSettled) {
-      const winnerIdx = _routerFxWinnerCellIndex(wrap, decision.tier);
+      const winnerIdx = _routerFxWinnerCellIndex(wrap, _routerFxNormalizeTier(decision.tier));
       if (winnerIdx >= 0) {
         _settleRouterFxImmediate(wrap, winnerIdx, { burst: false, decision });
         _routerFxNormalizeSettledStrip(wrap, opts.renderMode || 'history', decision);
@@ -3902,7 +3908,7 @@ const ChatView = (() => {
   function _routerFxWinnerName(decision) {
     const model = decision && (decision.model || decision.routed_model);
     if (model) return _routerFxStripProvider(String(model));
-    const tier = decision && decision.tier ? String(decision.tier).toLowerCase() : '';
+    const tier = _routerFxNormalizeTier(decision && decision.tier);
     if (tier && _routerFxModels[tier]) return _routerFxStripProvider(_routerFxModels[tier]);
     return tier || '';
   }
@@ -4208,7 +4214,7 @@ const ChatView = (() => {
     if (!wrap) return;
     decision = decision || {};
     _routerFxStopScan(wrap);
-    wrap.dataset.tier = decision.tier || '';
+    wrap.dataset.tier = _routerFxNormalizeTier(decision.tier);
     wrap.dataset.source = decision.source || 'none';
     wrap.dataset.renderMode = wrap.dataset.renderMode || 'live';
     wrap._fxDecision = decision;
@@ -4223,7 +4229,7 @@ const ChatView = (() => {
   }
 
   function _routerFxLockGrid(wrap, decision) {
-    const tier = decision.tier ? String(decision.tier) : '';
+    const tier = _routerFxNormalizeTier(decision.tier);
     if (tier) {
       _routerFxRememberTierDecision(tier, decision.model || '');
     }
@@ -4366,7 +4372,7 @@ const ChatView = (() => {
       _chatDiag('router_decision.skip.invalid_payload', {});
       return;
     }
-    const tier = typeof payload.tier === 'string' ? payload.tier : '';
+    const tier = _routerFxNormalizeTier(payload.tier);
     if (!tier) {
       _chatDiag('router_decision.skip.no_tier', _chatDiagSummarizePayload(payload));
       return;
@@ -4537,13 +4543,13 @@ const ChatView = (() => {
     // was recorded, drop the historic strip on the next rebuild —
     // the slider's whole point is conveying live router behaviour.
     if (_routerFxConfigTiers !== null && !_routerFeatureEnabled) return null;
-    const tier = typeof usage.routed_tier === 'string' ? usage.routed_tier : '';
+    const tier = _routerFxNormalizeTier(usage.routed_tier);
     if (!tier) return null;
     // If the operator has REMOVED this tier from config since the
     // turn was recorded, skip — rendering the strip would show a
-    // ghost cell ("t2") with no current meaning.
+    // ghost cell ("c2") with no current meaning.
     if (_routerFxConfigTiers !== null
-        && !_routerFxConfigTiers.has(tier.toLowerCase())) {
+        && !_routerFxConfigTiers.has(tier)) {
       return null;
     }
     _routerFxRememberTierDecision(tier, usage.routed_model || usage.model || '');
@@ -5321,7 +5327,7 @@ const ChatView = (() => {
     try {
       await _rpc.waitForConnection();
       // Wait until router config (tier → model cache) is populated so
-      // historical strips never render with "t1"/"t2"/"t3" placeholders
+      // historical strips never render with "c1"/"c2"/"c3" placeholders
       // just because we raced the config.get response.
       await _routerFxAwaitConfig();
       const data = await _rpc.call('chat.history', {

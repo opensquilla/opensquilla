@@ -136,7 +136,7 @@ def _router_detail(cfg: GatewayConfig, llm_source: str) -> str:
     profile = str(getattr(router, "tier_profile", "") or "").strip()
     if profile:
         return f"SquillaRouter profile: {profile}"
-    default_tier = str(getattr(router, "default_tier", "") or "t1").strip()
+    default_tier = str(getattr(router, "default_tier", "") or "c1").strip()
     return f"SquillaRouter default tier: {default_tier}"
 
 

@@ -9,9 +9,9 @@ from opensquilla.engine.runtime import _compute_comprehensive_turn_savings
 from opensquilla.engine.types import DoneEvent
 
 TEXT_TIERS = {
-    "t0": {"model": "deepseek/deepseek-v4-flash"},
-    "t2": {"model": "deepseek/deepseek-v4-pro"},
-    "t3": {"model": "anthropic/claude-opus-4.7"},
+    "c0": {"model": "deepseek/deepseek-v4-flash"},
+    "c2": {"model": "deepseek/deepseek-v4-pro"},
+    "c3": {"model": "anthropic/claude-opus-4.7"},
     "image_model": {"model": "moonshotai/kimi-k2.6", "image_only": True},
 }
 

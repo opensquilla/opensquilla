@@ -37,7 +37,7 @@ def test_dream_provider_follows_llm_model_when_router_disabled() -> None:
     assert primary.model == "user/custom-model"
 
 
-def test_dream_provider_uses_router_t1_model_when_router_active() -> None:
+def test_dream_provider_uses_legacy_router_default_alias_when_router_active() -> None:
     config = GatewayConfig(
         llm={
             "provider": "openrouter",
@@ -61,6 +61,8 @@ def test_dream_provider_uses_router_t1_model_when_router_active() -> None:
     primary = _primary_config(selector)
     assert primary.provider == "openrouter"
     assert primary.model == "router/t1-model"
+    assert config.squilla_router.default_tier == "c1"
+    assert "c1" in config.squilla_router.tiers
 
 
 def test_dream_rejects_dream_specific_model_override() -> None:

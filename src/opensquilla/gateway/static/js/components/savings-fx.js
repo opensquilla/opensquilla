@@ -104,7 +104,7 @@ const SavingsFX = (() => {
 
   function _isComboTier(tier) {
     const value = String(tier || '').trim().toLowerCase();
-    const numeric = /^t(\d+)$/.exec(value);
+    const numeric = /^c(\d+)$/.exec(value) || /^t(\d+)$/.exec(value);
     if (numeric) return Number(numeric[1]) < 3;
     return value !== 'highest' && value !== 'top' && value !== 'flagship';
   }

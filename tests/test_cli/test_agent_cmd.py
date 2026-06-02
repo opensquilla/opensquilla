@@ -277,7 +277,7 @@ def test_run_agent_command_json_includes_routing(
             errors=[],
         )
         result.routing = {  # type: ignore[attr-defined]
-            "routed_tier": "t2",
+            "routed_tier": "c2",
             "routing_source": "v4_phase3",
             "routing_confidence": 0.91,
             "baseline_model": "openrouter/heavy",
@@ -291,7 +291,7 @@ def test_run_agent_command_json_includes_routing(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["routing"] == {
-        "routed_tier": "t2",
+        "routed_tier": "c2",
         "routing_source": "v4_phase3",
         "routing_confidence": 0.91,
         "baseline_model": "openrouter/heavy",
@@ -310,7 +310,7 @@ async def test_run_agent_once_collects_done_routing(
         async def run(self, message: str, session_key: str, **kwargs: Any):
             yield DoneEvent(
                 text="ok",
-                routed_tier="t2",
+                routed_tier="c2",
                 routing_source="v4_phase3",
                 routing_confidence=0.91,
                 baseline_model="openrouter/heavy",
@@ -326,7 +326,7 @@ async def test_run_agent_once_collects_done_routing(
     result = await run_agent_once(message="hello", config=GatewayConfig())
 
     assert result.routing == {  # type: ignore[attr-defined]
-        "routed_tier": "t2",
+        "routed_tier": "c2",
         "routing_source": "v4_phase3",
         "routing_confidence": 0.91,
         "baseline_model": "openrouter/heavy",

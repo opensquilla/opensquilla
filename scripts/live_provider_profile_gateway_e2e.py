@@ -59,19 +59,19 @@ BASE_ENV = {
     "moonshot": "MOONSHOT_BASE_URL",
     "zhipu": "ZAI_BASE_URL",
 }
-TEXT_PROFILE_SLOTS = ("t0", "t1", "t2", "t3")
+TEXT_PROFILE_SLOTS = ("c0", "c1", "c2", "c3")
 LIVE_AGENT_MAX_ITERATIONS = 6
 LIVE_AGENT_RUNTIME_TIMEOUT_SECONDS = 75.0
 LIVE_TURN_HARD_DEADLINE_SECONDS = 90.0
 
 TIER_CASES = [
     {
-        "tier": "t0",
+        "tier": "c0",
         "id": "r0_short_ack",
         "message": "谢谢。不要调用工具，请只回复一个短句，包含 {marker}。",
     },
     {
-        "tier": "t1",
+        "tier": "c1",
         "id": "r1_structured_compare",
         "message": (
             "不要调用工具，只输出 Markdown 表格和 marker。用不超过 4 行的表格比较 "
@@ -80,7 +80,7 @@ TIER_CASES = [
         ),
     },
     {
-        "tier": "t2",
+        "tier": "c2",
         "id": "r2_debugging",
         "message": (
             "下面是异步服务偶发超时的日志片段：连接池耗尽、慢查询、重试风暴、队列积压。"
@@ -89,7 +89,7 @@ TIER_CASES = [
         ),
     },
     {
-        "tier": "t3",
+        "tier": "c3",
         "id": "r3_architecture",
         "message": (
             "请设计跨机房分布式任务调度系统，解释一致性、故障恢复和容量评估。"
@@ -222,7 +222,7 @@ def _write_config(
     model: str,
     *,
     max_tokens: int,
-    default_tier: str = "t1",
+    default_tier: str = "c1",
     tier_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     tier_override_toml = _render_tier_overrides(tier_overrides)
@@ -407,7 +407,7 @@ def _run_gateway_case_batch(
     max_tokens: int,
     timeout_seconds: float,
     case_mode: str,
-    default_tier: str = "t1",
+    default_tier: str = "c1",
     tier_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     active_tiers = tier_overrides or tiers

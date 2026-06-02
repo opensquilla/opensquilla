@@ -560,10 +560,10 @@ async def test_meta_resolution_promotes_meta_skill_creator_to_highest_text_tier(
         config=SimpleNamespace(
             squilla_router=SimpleNamespace(
                 tiers={
-                    "t0": {"model": "cheap-model"},
-                    "t1": {"model": "balanced-model"},
-                    "t2": {"model": "strong-model"},
-                    "t3": {"model": "frontier-model"},
+                    "c0": {"model": "cheap-model"},
+                    "c1": {"model": "balanced-model"},
+                    "c2": {"model": "strong-model"},
+                    "c3": {"model": "frontier-model"},
                     "image": {"model": "vision-model", "image_only": True},
                 },
             ),
@@ -578,10 +578,10 @@ async def test_meta_resolution_promotes_meta_skill_creator_to_highest_text_tier(
         "dynamic system prompt"
     )
     assert out.model == "frontier-model"
-    assert out.metadata["meta_required_tier"] == "t3"
+    assert out.metadata["meta_required_tier"] == "c3"
     assert out.metadata["meta_required_model"] == "frontier-model"
     assert out.metadata["meta_required_source"] == "meta-skill-creator"
-    assert out.metadata["routed_tier"] == "t3"
+    assert out.metadata["routed_tier"] == "c3"
     assert out.metadata["routed_model"] == "frontier-model"
     assert out.metadata["routing_source"] == "meta_skill_required_tier"
     assert out.metadata["routing_confidence"] == 1.0
@@ -605,8 +605,8 @@ async def test_meta_resolution_does_not_promote_non_creator_meta_to_highest_text
         config=SimpleNamespace(
             squilla_router=SimpleNamespace(
                 tiers={
-                    "t1": {"model": "cheap-model"},
-                    "t3": {"model": "frontier-model"},
+                    "c1": {"model": "cheap-model"},
+                    "c3": {"model": "frontier-model"},
                     "vision": {"model": "vision-model", "image_only": True},
                 },
             ),

@@ -2485,7 +2485,9 @@ async def start_gateway_server(
             provider_selector = svc.provider_selector
             router_cfg = getattr(config, "squilla_router", None)
             tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
-            t3_tier = tiers.get("t3") if isinstance(tiers, dict) else None
+            from opensquilla.router_tiers import HIGHEST_TEXT_TIER
+
+            t3_tier = tiers.get(HIGHEST_TEXT_TIER) if isinstance(tiers, dict) else None
             t3_model = ""
             t3_thinking_level = ""
             if isinstance(t3_tier, dict):
@@ -2533,7 +2535,7 @@ async def start_gateway_server(
             }
             if t3_model:
                 auto_metadata.update({
-                    "routed_tier": "t3",
+                    "routed_tier": HIGHEST_TEXT_TIER,
                     "routed_model": t3_model,
                     "applied_model": t3_model,
                 })

@@ -456,9 +456,9 @@ def _trigger_match_text(message: str) -> str:
 
 
 def _tier_sort_key(name: str, index: int) -> tuple[int, int]:
-    """Prefer numeric router tiers (t0 < t1 < t2 < t3), then declaration order."""
+    """Prefer canonical router tiers (c0 < c1 < c2 < c3), then declaration order."""
 
-    match = re.fullmatch(r"t(\d+)", name.strip().lower())
+    match = re.fullmatch(r"c(\d+)", name.strip().lower())
     if match:
         return (int(match.group(1)), index)
     return (-1, index)

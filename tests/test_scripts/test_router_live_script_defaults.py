@@ -9,10 +9,10 @@ from pathlib import Path
 from opensquilla.tools.registry import ToolProfile
 
 EXPECTED_ROUTER_MODELS = {
-    "t0": "deepseek/deepseek-v4-flash",
-    "t1": "deepseek/deepseek-v4-pro",
-    "t2": "z-ai/glm-5.1",
-    "t3": "anthropic/claude-opus-4.7",
+    "c0": "deepseek/deepseek-v4-flash",
+    "c1": "deepseek/deepseek-v4-pro",
+    "c2": "z-ai/glm-5.1",
+    "c3": "anthropic/claude-opus-4.7",
 }
 
 
@@ -35,7 +35,7 @@ def test_smoke_script_tier_defaults_match_router_defaults(tmp_path: Path) -> Non
     smoke._write_live_gateway_config(config_path, "")
 
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert data["llm"]["model"] == EXPECTED_ROUTER_MODELS["t1"]
+    assert data["llm"]["model"] == EXPECTED_ROUTER_MODELS["c1"]
     assert {
         tier: cfg["model"]
         for tier, cfg in data["squilla_router"]["tiers"].items()

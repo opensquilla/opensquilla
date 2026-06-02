@@ -290,7 +290,7 @@
   animation: conn-pill-heartbeat 2.4s ease-in-out infinite;
 }
 
-/* Tier badge — compact monospaced t0/t1/t2/t3 indicator for router decisions. */
+/* Tier badge — compact monospaced c0/c1/c2/c3 indicator for router decisions. */
 .tier {
   display: inline-flex;
   align-items: center;
@@ -305,9 +305,9 @@
   color: var(--accent);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
 }
-.tier.t0 { background: color-mix(in srgb, var(--text-dim) 18%, transparent); color: var(--text-muted); border-color: var(--border); }
-.tier.t2 { background: color-mix(in srgb, var(--info) 14%, transparent); color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, var(--border)); }
-.tier.t3 { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, var(--border)); }
+.tier.c0 { background: color-mix(in srgb, var(--text-dim) 18%, transparent); color: var(--text-muted); border-color: var(--border); }
+.tier.c2 { background: color-mix(in srgb, var(--info) 14%, transparent); color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, var(--border)); }
+.tier.c3 { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, var(--border)); }
 
 /* Spinner — generic 18px loading indicator. */
 .spinner {

@@ -320,13 +320,13 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
                 return _Answer("SquillaRouter")
             if message == "Default text model":
                 assert kwargs.get("choices") == [
-                    "Fast/simple (t0)",
-                    "Balanced default (t1)",
-                    "Stronger reasoning (t2)",
-                    "Max quality (t3)",
+                    "Route c0",
+                    "Route c1",
+                    "Route c2",
+                    "Route c3",
                 ]
-                assert kwargs.get("default") == "Balanced default (t1)"
-                return _Answer("Stronger reasoning (t2)")
+                assert kwargs.get("default") == "Route c1"
+                return _Answer("Route c2")
             raise AssertionError(f"unexpected select prompt: {message}")
 
         def text(self, message: str, **kwargs):
@@ -358,7 +358,7 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
     data = target.read_text()
     assert 'api_key = ""' in data
     assert 'api_key_env = "OPENROUTER_API_KEY"' in data
-    assert 'default_tier = "t2"' in data
+    assert 'default_tier = "c2"' in data
     assert 'model = "z-ai/glm-5.1"' in data
 
 
@@ -1352,7 +1352,7 @@ def test_router_tier_overrides_edit_only_selected_tiers():
     from opensquilla.onboarding.flow import _router_tier_overrides
 
     calls: list[str] = []
-    selections = iter(["Stronger reasoning (t2)", "Done"])
+    selections = iter(["Route c2", "Done"])
 
     class _Answer:
         def __init__(self, value):
@@ -1367,28 +1367,28 @@ def test_router_tier_overrides_edit_only_selected_tiers():
             assert message == "Tier to edit"
             assert kwargs.get("choices") == [
                 "Done",
-                "Fast/simple (t0)",
-                "Balanced default (t1)",
-                "Stronger reasoning (t2)",
-                "Max quality (t3)",
+                "Route c0",
+                "Route c1",
+                "Route c2",
+                "Route c3",
                 "Image model",
             ]
             return _Answer(next(selections))
 
         def text(self, message: str, **kwargs):
             calls.append(message)
-            if message == "t2 provider":
+            if message == "c2 provider":
                 assert kwargs.get("default") == "openrouter"
                 return _Answer("openrouter")
-            if message == "t2 model":
+            if message == "c2 model":
                 assert kwargs.get("default") == "z-ai/glm-5.1"
                 return _Answer("custom/reasoner")
             raise AssertionError(f"unexpected text prompt: {message}")
 
     overrides = _router_tier_overrides(_Questionary(), GatewayConfig())
 
-    assert calls == ["Tier to edit", "t2 provider", "t2 model", "Tier to edit"]
-    assert overrides == {"t2": {"provider": "openrouter", "model": "custom/reasoner"}}
+    assert calls == ["Tier to edit", "c2 provider", "c2 model", "Tier to edit"]
+    assert overrides == {"c2": {"provider": "openrouter", "model": "custom/reasoner"}}
 
 
 def test_interactive_feishu_websocket_prompts_only_core_fields(tmp_path, monkeypatch):

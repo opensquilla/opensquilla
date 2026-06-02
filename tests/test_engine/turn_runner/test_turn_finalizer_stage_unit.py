@@ -264,7 +264,7 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
         input_tokens=5,
         output_tokens=3,
         model="synthetic-turn-model-4.5",
-        routed_tier="t2",
+        routed_tier="c2",
         routing_applied=False,
         rollout_phase="observe",
     )
@@ -280,7 +280,7 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
     assert recs["transcript_append"].calls[0]["turn_usage"]["input_tokens"] == 5
     assert recs["transcript_append"].calls[0]["turn_usage"]["output_tokens"] == 3
     assert recs["transcript_append"].calls[0]["turn_usage"]["model"] == "synthetic-turn-model-4.5"
-    assert recs["transcript_append"].calls[0]["turn_usage"]["routed_tier"] == "t2"
+    assert recs["transcript_append"].calls[0]["turn_usage"]["routed_tier"] == "c2"
     assert recs["transcript_append"].calls[0]["turn_usage"]["routing_applied"] is False
     assert recs["transcript_append"].calls[0]["turn_usage"]["rollout_phase"] == "observe"
 
@@ -335,7 +335,7 @@ async def test_turn_with_artifacts_persists_json_wrapped_content() -> None:
 @pytest.mark.asyncio
 async def test_tool_use_segments_persist_with_tool_calls() -> None:
     segments: list[dict[str, Any]] = [
-        {"type": "tool_use", "tool_use_id": "t1", "name": "echo", "input": ""},
+        {"type": "tool_use", "tool_use_id": "c1", "name": "echo", "input": ""},
     ]
     stage, recs = _make_stage()
     inp = _make_input(turn_segments=segments)
@@ -350,7 +350,7 @@ async def test_unknown_background_tool_status_adds_confirmation_guard() -> None:
     segments: list[dict[str, Any]] = [
         {
             "type": "tool_result",
-            "tool_use_id": "t1",
+            "tool_use_id": "c1",
             "name": "background_process",
             "result": "session: open-browser\nstatus: running",
             "is_error": False,
@@ -385,7 +385,7 @@ async def test_successful_background_tool_status_does_not_add_confirmation_guard
     segments: list[dict[str, Any]] = [
         {
             "type": "tool_result",
-            "tool_use_id": "t1",
+            "tool_use_id": "c1",
             "name": "background_process",
             "result": "session: open-browser\nstatus: complete",
             "is_error": False,

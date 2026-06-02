@@ -182,7 +182,7 @@ strategy = "v4_phase3"
 #   1. install with `uv sync --extra model-router` or `uv sync --extra recommended`
 #   2. hydrate model assets via:
 #      git lfs pull --include="src/opensquilla/squilla_router/models/**"
-default_tier = "t1"
+default_tier = "c1"
 confidence_threshold = 0.5
 v4_use_aux_head = true
 kv_cache_anti_downgrade_enabled = true
@@ -192,33 +192,33 @@ complaint_upgrade_steps = 1
 complaint_upgrade_max_chars = 160
 require_router_runtime = true
 estimated_output_savings_pct = 0.03
-upgrade_to_t3_compaction_enabled = true
+upgrade_to_c3_compaction_enabled = true
 
-[squilla_router.tiers.t0]
+[squilla_router.tiers.c0]
 provider = "openrouter"
 model = "deepseek/deepseek-v4-flash"
-description = "S tier: fast DeepSeek V4 Flash route for trivial chat, short rewrites, extraction, and low-risk simple Q&A"
+description = "Fast DeepSeek V4 Flash route for trivial chat, short rewrites, extraction, and low-risk simple Q&A"
 supports_image = false
 thinking_level = "high"
 
-[squilla_router.tiers.t1]
+[squilla_router.tiers.c1]
 provider = "openrouter"
 model = "deepseek/deepseek-v4-pro"
-description = "M tier: default balanced text model for normal agent work, coding assistance, debugging, and moderate analysis"
+description = "Default balanced text route for normal agent work, coding assistance, debugging, and moderate analysis"
 supports_image = false
 thinking_level = "high"
 
-[squilla_router.tiers.t2]
+[squilla_router.tiers.c2]
 provider = "openrouter"
 model = "z-ai/glm-5.1"
-description = "L tier: stronger text model for multi-step coding, structured reasoning, larger context synthesis, and harder analysis"
+description = "Stronger text route for multi-step coding, structured reasoning, larger context synthesis, and harder analysis"
 supports_image = false
 thinking_level = "high"
 
-[squilla_router.tiers.t3]
+[squilla_router.tiers.c3]
 provider = "openrouter"
 model = "anthropic/claude-opus-4.7"
-description = "XL tier: highest-quality text reasoning model for difficult planning, deep review, complex debugging, and high-stakes synthesis"
+description = "Highest-quality text reasoning route for difficult planning, deep review, complex debugging, and high-stakes synthesis"
 supports_image = false
 thinking_level = "high"
 

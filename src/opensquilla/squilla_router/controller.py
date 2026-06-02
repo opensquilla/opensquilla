@@ -7,7 +7,9 @@ are retained only for safe fallback/default handling.
 
 from __future__ import annotations
 
-TIER_ORDER: list[str] = ["t0", "t1", "t2", "t3"]
+from opensquilla.router_tiers import TEXT_TIERS
+
+TIER_ORDER: list[str] = list(TEXT_TIERS)
 
 _SYNTHETIC_PEAK = 0.85
 

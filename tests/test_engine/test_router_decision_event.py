@@ -41,7 +41,7 @@ def test_returns_none_when_routed_tier_empty_string() -> None:
 
 def test_full_router_metadata_populates_all_event_fields() -> None:
     metadata = {
-        "routed_tier": "t2",
+        "routed_tier": "c2",
         "routed_model": "claude-sonnet-4.6",
         "baseline_model": "claude-opus-4.7",
         "routing_source": "router",
@@ -56,7 +56,7 @@ def test_full_router_metadata_populates_all_event_fields() -> None:
     event = build_router_decision_event(_ctx(metadata))
     assert isinstance(event, RouterDecisionEvent)
     assert event.kind == "router_decision"
-    assert event.tier == "t2"
+    assert event.tier == "c2"
     assert event.tier_index == 2
     assert event.model == "claude-sonnet-4.6"
     assert event.baseline_model == "claude-opus-4.7"
@@ -73,7 +73,7 @@ def test_legacy_router_probability_and_savings_keys_still_work() -> None:
     event = build_router_decision_event(
         _ctx(
             {
-                "routed_tier": "t2",
+                "routed_tier": "c2",
                 "routing_extra": {
                     "probs": [0.12, 0.71, 0.14, 0.03],
                     "tier_savings": {"pct": 64.0},
@@ -88,7 +88,7 @@ def test_legacy_router_probability_and_savings_keys_still_work() -> None:
 
 def test_falls_back_to_turn_model_when_routed_model_absent() -> None:
     event = build_router_decision_event(
-        _ctx({"routed_tier": "t1"}, model="deepseek-v4-flash")
+        _ctx({"routed_tier": "c1"}, model="deepseek-v4-flash")
     )
     assert event is not None
     assert event.model == "deepseek-v4-flash"
@@ -99,7 +99,7 @@ def test_falls_back_to_turn_model_when_routed_model_absent() -> None:
 
 def test_fallback_source_sets_fallback_flag() -> None:
     event = build_router_decision_event(
-        _ctx({"routed_tier": "t2", "routed_model": "x", "routing_source": "fallback"})
+        _ctx({"routed_tier": "c2", "routed_model": "x", "routing_source": "fallback"})
     )
     assert event is not None
     assert event.fallback is True
@@ -110,7 +110,7 @@ def test_malformed_probs_do_not_crash() -> None:
     event = build_router_decision_event(
         _ctx(
             {
-                "routed_tier": "t3",
+                "routed_tier": "c3",
                 "routed_model": "claude-opus-4.7",
                 "routing_extra": {"probs": ["bad", None, 0.5, "x"]},
             }
@@ -129,18 +129,18 @@ def test_unknown_tier_string_results_in_negative_tier_index() -> None:
     assert event.tier_index == -1
 
 
-def test_tier_index_maps_naturally_so_t0_and_t1_dont_collide() -> None:
-    # Regression: an earlier max(0, int(...) - 1) collapsed both t0
-    # and t1 onto index 0. The natural mapping puts t0 at 0, t1 at 1,
+def test_tier_index_maps_naturally_so_c0_and_c1_dont_collide() -> None:
+    # Regression: an earlier max(0, int(...) - 1) collapsed both c0
+    # and c1 onto index 0. The natural mapping puts c0 at 0, c1 at 1,
     # and so on.
     t0_event = build_router_decision_event(
-        _ctx({"routed_tier": "t0", "routed_model": "deepseek-v4-flash"})
+        _ctx({"routed_tier": "c0", "routed_model": "deepseek-v4-flash"})
     )
     t1_event = build_router_decision_event(
-        _ctx({"routed_tier": "t1", "routed_model": "claude-sonnet-4.6"})
+        _ctx({"routed_tier": "c1", "routed_model": "claude-sonnet-4.6"})
     )
     t3_event = build_router_decision_event(
-        _ctx({"routed_tier": "t3", "routed_model": "claude-opus-4.7"})
+        _ctx({"routed_tier": "c3", "routed_model": "claude-opus-4.7"})
     )
     assert t0_event is not None and t0_event.tier_index == 0
     assert t1_event is not None and t1_event.tier_index == 1
@@ -153,7 +153,7 @@ def test_routing_applied_and_rollout_phase_round_trip() -> None:
     observe_event = build_router_decision_event(
         _ctx(
             {
-                "routed_tier": "t2",
+                "routed_tier": "c2",
                 "routed_model": "claude-sonnet-4.6",
                 "routing_applied": False,
                 "rollout_phase": "observe",
@@ -168,7 +168,7 @@ def test_routing_applied_and_rollout_phase_round_trip() -> None:
     full_event = build_router_decision_event(
         _ctx(
             {
-                "routed_tier": "t2",
+                "routed_tier": "c2",
                 "routed_model": "claude-sonnet-4.6",
                 "routing_applied": True,
                 "rollout_phase": "full",
@@ -185,7 +185,7 @@ def test_legacy_metadata_without_routing_applied_defaults_to_applied() -> None:
     # metadata fields. The event helper must fall back to applied=True
     # + rollout_phase="full" so historic strips keep rendering normally.
     event = build_router_decision_event(
-        _ctx({"routed_tier": "t2", "routed_model": "claude-sonnet-4.6"})
+        _ctx({"routed_tier": "c2", "routed_model": "claude-sonnet-4.6"})
     )
     assert event is not None
     assert event.routing_applied is True
@@ -245,7 +245,7 @@ async def test_turn_runner_emits_router_decision_event_from_pipeline_metadata(
                 system_prompt=base_prompt,
                 attachments=attachments,
                 metadata={
-                    "routed_tier": "t2",
+                    "routed_tier": "c2",
                     "routed_model": "routed-model",
                     "routing_source": "router",
                     "routing_confidence": 0.8,
@@ -270,5 +270,5 @@ async def test_turn_runner_emits_router_decision_event_from_pipeline_metadata(
 
     router_events = [event for event in events if isinstance(event, RouterDecisionEvent)]
     assert len(router_events) == 1
-    assert router_events[0].tier == "t2"
+    assert router_events[0].tier == "c2"
     assert router_events[0].model == "routed-model"

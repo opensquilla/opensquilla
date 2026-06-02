@@ -102,11 +102,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     )
     from opensquilla.tools.dispatch import build_tool_handler
 
-    t3_tiers = {
-        "t0": {"provider": args.provider, "model": args.model, "thinking_level": "off"},
-        "t1": {"provider": args.provider, "model": args.model, "thinking_level": "low"},
-        "t2": {"provider": args.provider, "model": args.model, "thinking_level": "medium"},
-        "t3": {"provider": args.provider, "model": args.model, "thinking_level": "high"},
+    text_tiers = {
+        "c0": {"provider": args.provider, "model": args.model, "thinking_level": "off"},
+        "c1": {"provider": args.provider, "model": args.model, "thinking_level": "low"},
+        "c2": {"provider": args.provider, "model": args.model, "thinking_level": "medium"},
+        "c3": {"provider": args.provider, "model": args.model, "thinking_level": "high"},
     }
     actual_cron = args.actual_scheduler and args.trigger == "cron"
     actual_dream = args.actual_scheduler and args.trigger == "dream"
@@ -121,8 +121,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         },
         squilla_router={
             "enabled": True,
-            "tiers": t3_tiers,
-            "default_tier": "t3",
+            "tiers": text_tiers,
+            "default_tier": "c3",
         },
         meta_skill={
             "auto_propose": {
@@ -184,7 +184,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             metadata={
                 "routing_source": "meta_skill_auto_propose",
                 "routing_applied": True,
-                "routed_tier": "t3",
+                "routed_tier": "c3",
                 "routed_model": args.model,
                 "applied_model": args.model,
                 "thinking_requested": True,

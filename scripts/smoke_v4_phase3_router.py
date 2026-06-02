@@ -32,25 +32,25 @@ from opensquilla.env import load_env  # noqa: E402
 from opensquilla.gateway.config import GatewayConfig  # noqa: E402
 
 TIERS = {
-    "t0": {
+    "c0": {
         "provider": "openrouter",
         "model": "deepseek/deepseek-v4-flash",
         "description": "short text and trivial follow-ups",
         "thinking_level": "high",
     },
-    "t1": {
+    "c1": {
         "provider": "openrouter",
         "model": "deepseek/deepseek-v4-pro",
         "description": "normal coding and agent tasks",
         "thinking_level": "high",
     },
-    "t2": {
+    "c2": {
         "provider": "openrouter",
         "model": "z-ai/glm-5.1",
         "description": "structured multi-step work",
         "thinking_level": "high",
     },
-    "t3": {
+    "c3": {
         "provider": "openrouter",
         "model": "anthropic/claude-opus-4.7",
         "description": "deep reasoning and hard recovery turns",
@@ -316,7 +316,7 @@ DIALOGUE_ROUTER_CASES = [
         "id": "dialogue_r3_then_summarize",
         "category": "continuous_kv_cache",
         "description": (
-            "A hard architecture turn followed by a short compression request should keep t3."
+            "A hard architecture turn followed by a short compression request should keep c3."
         ),
         "turns": [
             {
@@ -330,7 +330,7 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "好的，把上面的方案压缩成三句话。",
                 "expected_route_class": "R1",
                 "expect_anti_downgrade": True,
-                "expected_final_tier": "t3",
+                "expected_final_tier": "c3",
             },
         ],
     },
@@ -352,7 +352,7 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "收到。",
                 "expected_route_class": "R0",
                 "expect_anti_downgrade": True,
-                "expected_final_tier": "t3",
+                "expected_final_tier": "c3",
             },
         ],
     },
@@ -371,14 +371,14 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "谢谢，先按这个方向查。",
                 "expected_route_class": "R1",
                 "expect_anti_downgrade": True,
-                "expected_final_tier": "t3",
+                "expected_final_tier": "c3",
             },
         ],
     },
     {
         "id": "dialogue_r2_then_more_detail",
         "category": "continuous_kv_cache",
-        "description": "A reasoning task followed by detail expansion should stay at or above t2.",
+        "description": "A reasoning task followed by detail expansion should stay at or above c2.",
         "turns": [
             {
                 "message": "发布后 P95 延迟从 300ms 涨到 2s，请给出从指标到代码的回归定位流程。",
@@ -388,7 +388,7 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "继续展开数据库和缓存两个方向。",
                 "expected_route_class": "R2",
                 "expect_anti_downgrade": True,
-                "expected_final_tier": "t3",
+                "expected_final_tier": "c3",
             },
         ],
     },
@@ -404,7 +404,7 @@ DIALOGUE_ROUTER_CASES = [
             {
                 "message": "再给一个团队协作中的例子。",
                 "expected_route_class": "R1",
-                "expected_final_tier": "t1",
+                "expected_final_tier": "c1",
             },
         ],
     },
@@ -412,7 +412,7 @@ DIALOGUE_ROUTER_CASES = [
         "id": "dialogue_r1_then_ack",
         "category": "continuous_followup",
         "description": (
-            "A standard task followed by acknowledgement should keep the active t1 model."
+            "A standard task followed by acknowledgement should keep the active c1 model."
         ),
         "turns": [
             {
@@ -423,7 +423,7 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "好的。",
                 "expected_route_class": "R0",
                 "expect_anti_downgrade": True,
-                "expected_final_tier": "t1",
+                "expected_final_tier": "c1",
             },
         ],
     },
@@ -440,7 +440,7 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "不对，你没理解我的意思，重新回答。",
                 "expected_route_class": "R0",
                 "expect_complaint_upgrade": True,
-                "expected_final_tier": "t1",
+                "expected_final_tier": "c1",
             },
         ],
     },
@@ -457,7 +457,7 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "这不对，太泛了，按客户视角重新写。",
                 "expected_route_class": "R2",
                 "expect_complaint_upgrade": True,
-                "expected_final_tier": "t3",
+                "expected_final_tier": "c3",
             },
         ],
     },
@@ -480,7 +480,7 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "不对，刚才漏掉了 scheduler event 和 admission webhook，重新排查。",
                 "expected_route_class": "R1",
                 "expect_complaint_upgrade": True,
-                "expected_final_tier": "t2",
+                "expected_final_tier": "c2",
             },
         ],
     },
@@ -503,20 +503,20 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "先只保留权限边界。",
                 "expected_route_class": "R0",
                 "expect_anti_downgrade": True,
-                "expected_final_tier": "t3",
+                "expected_final_tier": "c3",
             },
             {
                 "message": "再压缩成三条。",
                 "expected_route_class": "R0",
                 "expect_anti_downgrade": True,
-                "expected_final_tier": "t3",
+                "expected_final_tier": "c3",
             },
         ],
     },
     {
         "id": "dialogue_three_turn_r2_sticky",
         "category": "continuous_kv_cache",
-        "description": "A multi-turn debugging flow should keep t2 across brief narrowing turns.",
+        "description": "A multi-turn debugging flow should keep c2 across brief narrowing turns.",
         "turns": [
             {
                 "message": (
@@ -529,13 +529,13 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "只看异步任务这一块。",
                 "expected_route_class": "R0",
                 "expect_anti_downgrade": True,
-                "expected_final_tier": "t2",
+                "expected_final_tier": "c2",
             },
             {
                 "message": "再压缩成三条。",
                 "expected_route_class": "R0",
                 "expect_anti_downgrade": True,
-                "expected_final_tier": "t2",
+                "expected_final_tier": "c2",
             },
         ],
     },
@@ -543,7 +543,7 @@ DIALOGUE_ROUTER_CASES = [
         "id": "dialogue_r0_to_r1_no_sticky_jump",
         "category": "continuous_followup",
         "description": (
-            "A trivial first turn should not block a later standard task from choosing t1."
+            "A trivial first turn should not block a later standard task from choosing c1."
         ),
         "turns": [
             {
@@ -553,7 +553,7 @@ DIALOGUE_ROUTER_CASES = [
             {
                 "message": "比较 PostgreSQL 和 MySQL 在事务、索引、复制方面的差异，用表格输出。",
                 "expected_route_class": "R1",
-                "expected_final_tier": "t1",
+                "expected_final_tier": "c1",
             },
         ],
     },
@@ -574,7 +574,7 @@ DIALOGUE_ROUTER_CASES = [
                     "连接池耗尽、慢查询、重试风暴、队列积压同时出现。"
                 ),
                 "expected_route_class": "R2",
-                "expected_final_tier": "t2",
+                "expected_final_tier": "c2",
             },
         ],
     },
@@ -582,7 +582,7 @@ DIALOGUE_ROUTER_CASES = [
         "id": "dialogue_r1_to_r3_upgrade",
         "category": "continuous_followup",
         "description": (
-            "A standard first turn should allow a later architecture request to upgrade to t3."
+            "A standard first turn should allow a later architecture request to upgrade to c3."
         ),
         "turns": [
             {
@@ -592,7 +592,7 @@ DIALOGUE_ROUTER_CASES = [
             {
                 "message": "现在基于这三个组件设计一个跨区域高可用架构，说明故障恢复和容量评估。",
                 "expected_route_class": "R3",
-                "expected_final_tier": "t3",
+                "expected_final_tier": "c3",
             },
         ],
     },
@@ -618,7 +618,7 @@ def _router_config() -> GatewayConfig:
             "strategy": "v4_phase3",
             "rollout_phase": "full",
             "tiers": TIERS,
-            "default_tier": "t1",
+            "default_tier": "c1",
             "require_router_runtime": True,
             "confidence_threshold": 0.5,
             "kv_cache_anti_downgrade_enabled": True,
@@ -705,8 +705,8 @@ async def _forced_recent_history_scenario() -> dict[str, Any]:
             "text": "上一轮是一个长上下文的架构设计问题。",
             "route_class": "R3",
             "final_route_class": "R3",
-            "base_tier": "t3",
-            "final_tier": "t3",
+            "base_tier": "c3",
+            "final_tier": "c3",
             "difficulty": 2.0,
             "margin": 0.8,
             "top1_label": "R3",
@@ -716,8 +716,8 @@ async def _forced_recent_history_scenario() -> dict[str, Any]:
     extra = ctx.metadata.get("routing_extra") or {}
     ok = (
         extra.get("anti_downgrade_applied") is True
-        and ctx.metadata.get("routed_tier") == "t3"
-        and extra.get("previous_tier") == "t3"
+        and ctx.metadata.get("routed_tier") == "c3"
+        and extra.get("previous_tier") == "c3"
     )
     scenario = _scenario_from_ctx(
         "forced_recent_history_blocks_downgrade",
@@ -938,14 +938,30 @@ def _post_json(url: str, payload: dict[str, Any], timeout: float = 5.0) -> dict[
 
 
 def _live_tier_model_map(live_model: str) -> dict[str, str]:
+    def _tier_model_env(canonical: str, legacy: str, default: str) -> str:
+        return os.environ.get(canonical, os.environ.get(legacy, default)).strip()
+
     live_tier_models = {
-        "t0": os.environ.get("OPENSQUILLA_LIVE_LLM_T0_MODEL", "deepseek/deepseek-v4-flash").strip(),
-        "t1": os.environ.get("OPENSQUILLA_LIVE_LLM_T1_MODEL", "deepseek/deepseek-v4-pro").strip(),
-        "t2": os.environ.get("OPENSQUILLA_LIVE_LLM_T2_MODEL", "z-ai/glm-5.1").strip(),
-        "t3": os.environ.get(
+        "c0": _tier_model_env(
+            "OPENSQUILLA_LIVE_LLM_C0_MODEL",
+            "OPENSQUILLA_LIVE_LLM_T0_MODEL",
+            "deepseek/deepseek-v4-flash",
+        ),
+        "c1": _tier_model_env(
+            "OPENSQUILLA_LIVE_LLM_C1_MODEL",
+            "OPENSQUILLA_LIVE_LLM_T1_MODEL",
+            "deepseek/deepseek-v4-pro",
+        ),
+        "c2": _tier_model_env(
+            "OPENSQUILLA_LIVE_LLM_C2_MODEL",
+            "OPENSQUILLA_LIVE_LLM_T2_MODEL",
+            "z-ai/glm-5.1",
+        ),
+        "c3": _tier_model_env(
+            "OPENSQUILLA_LIVE_LLM_C3_MODEL",
             "OPENSQUILLA_LIVE_LLM_T3_MODEL",
             "anthropic/claude-opus-4.7",
-        ).strip(),
+        ),
     }
     if live_model:
         return {tier: live_model for tier in live_tier_models}
@@ -956,10 +972,10 @@ def _write_live_gateway_config(path: Path, live_model: str) -> None:
     live_tier_models = _live_tier_model_map(live_model)
     tier_blocks = []
     for tier, description in {
-        "t0": "live smoke fast tier",
-        "t1": "live smoke standard tier",
-        "t2": "live smoke reasoning tier",
-        "t3": "live smoke frontier tier",
+        "c0": "live smoke fast route",
+        "c1": "live smoke standard route",
+        "c2": "live smoke reasoning route",
+        "c3": "live smoke frontier route",
     }.items():
         tier_blocks.append(
             f"""
@@ -990,7 +1006,7 @@ source = "state"
 
 [llm]
 provider = "openrouter"
-model = "{live_model or live_tier_models['t1']}"
+model = "{live_model or live_tier_models['c1']}"
 base_url = "https://openrouter.ai/api/v1"
 max_tokens = 192
 
@@ -999,7 +1015,7 @@ enabled = true
 auto_thinking = true
 rollout_phase = "full"
 strategy = "v4_phase3"
-default_tier = "t1"
+default_tier = "c1"
 confidence_threshold = 0.5
 kv_cache_anti_downgrade_enabled = true
 kv_cache_anti_downgrade_window_seconds = 600

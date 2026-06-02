@@ -60,6 +60,7 @@ class OpenTuiStreamRenderer:
             return
         self._began = True
         self._turn_id = f"t{next(_turn_ids)}"
+        self._set_router_usage(None)
         await self._emit("turn.begin", TurnBegin(id=self._turn_id))
         await self._emit(
             "turn.status", TurnStatusState(phase="thinking", label="thinking", active=True)
@@ -213,10 +214,13 @@ class OpenTuiStreamRenderer:
         out_tok = getattr(usage, "output_tokens", None)
         if in_tok is None and out_tok is None:
             return
+        self._set_router_usage(f"{_format_tokens(in_tok)}/{_format_tokens(out_tok)}")
+
+    def _set_router_usage(self, value: object | None) -> None:
         set_toolbar = getattr(self.output_handle, "set_toolbar", None)
         if not callable(set_toolbar):
             return
-        set_toolbar("router_usage", f"{_format_tokens(in_tok)}/{_format_tokens(out_tok)}")
+        set_toolbar("router_usage", value)
         invalidate = getattr(self.output_handle, "invalidate", None)
         if callable(invalidate):
             invalidate()

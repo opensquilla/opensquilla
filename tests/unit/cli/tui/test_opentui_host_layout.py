@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 SRC = (
@@ -16,6 +18,17 @@ SRC = (
 
 def _read(rel: str) -> str:
     return (SRC / rel).read_text(encoding="utf-8")
+
+
+def _node_json(script: str) -> object:
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        cwd=Path(__file__).resolve().parents[4],
+        text=True,
+        capture_output=True,
+    )
+    return json.loads(result.stdout)
 
 
 def test_host_split_into_block_modules() -> None:
@@ -156,9 +169,32 @@ def test_composer_router_state_carries_structured_fields() -> None:
     assert "baseline_model" in composer
     assert "routing_applied" in composer
     assert "rollout_phase" in composer
-    # the model row can render a downgrade arrow and source markers exist.
+    # the model row can render a downgrade marker and source markers exist.
     assert "shortModel" in composer
-    assert "→" in composer
+    assert "↓" in composer
+
+
+def test_composer_router_model_downgrade_keeps_target_model_visible() -> None:
+    module_path = (
+        "./src/opensquilla/cli/tui/opentui/package/src/"
+        "composer.mjs"
+    )
+    data = _node_json(
+        f"""
+        const mod = await import("{module_path}");
+        const {{ fixedRouterRow, formatRouterModelValue }} = mod;
+        const target = "anthropic/claude-sonnet-4.6";
+        const baseline = "anthropic/claude-opus-4.7";
+        const downgrade = formatRouterModelValue(target, baseline);
+        const unchanged = formatRouterModelValue(target, target);
+        const row = fixedRouterRow("model", downgrade);
+        console.log(JSON.stringify({{ downgrade, unchanged, row }}));
+        """
+    )
+    assert data["downgrade"] == "↓ claude-sonnet-4.6"
+    assert data["unchanged"] == "claude-sonnet-4.6"
+    assert "claude-sonnet-4.6" in data["row"]
+    assert "claude-opus-4.7" not in data["row"]
 
 
 def test_main_is_thin_entry_with_mouse_and_alt_screen() -> None:

@@ -1,6 +1,37 @@
 import { THEME, STATUS_PULSE_FRAMES } from "./theme.mjs";
 import { cellWidth } from "./primitives.mjs";
 
+// Last path segment of a model id ("vendor/big-model" -> "big-model").
+export function shortModel(m) {
+  return m ? m.split("/").pop() : m;
+}
+
+// Router model row value. On downgrade, keep the resolved target model visible;
+// the source/baseline model is already represented by the down marker.
+export function formatRouterModelValue(model, baselineModel) {
+  const modelShort = shortModel(model);
+  const baselineShort = shortModel(baselineModel);
+  if (baselineShort && modelShort && baselineShort !== modelShort) {
+    return `↓ ${modelShort}`;
+  }
+  return modelShort || model;
+}
+
+export function fixedRouterRow(label, value) {
+  const safeValue = String(value).replace(/\s+/gu, " ").trim() || "-";
+  const maxValueCells = 20;
+  let clipped = "";
+  let cells = 0;
+  for (const char of Array.from(safeValue)) {
+    const next = cells + cellWidth(char);
+    if (next > maxValueCells) break;
+    clipped += char;
+    cells = next;
+  }
+  const padding = " ".repeat(Math.max(0, maxValueCells - cells));
+  return `${label.padEnd(5)} ${clipped}${padding}`;
+}
+
 // Factory for the composer / input-region. All state that main.mjs previously
 // held as module-level globals lives here as closure state; the rendering deps
 // (renderer, renderable classes, boxes, footer height, host writer) are injected
@@ -79,20 +110,8 @@ export function createComposer(deps) {
     cursorVisible = true;
   }
 
-  // Last path segment of a model id ("vendor/big-model" -> "big-model").
-  function shortModel(m) {
-    return m ? m.split("/").pop() : m;
-  }
-
-  // Router model row: when the resolved model differs from the routed-away-from
-  // baseline, show the downgrade as "baseline → model" so the saving is legible.
   function routerModelValue() {
-    const modelShort = shortModel(routerState.model);
-    const baselineShort = shortModel(routerState.baselineModel);
-    if (baselineShort && baselineShort !== modelShort) {
-      return `${baselineShort} → ${modelShort}`;
-    }
-    return modelShort || routerState.model;
+    return formatRouterModelValue(routerState.model, routerState.baselineModel);
   }
 
   // Router route row: tag the route when it is not a normal applied decision so
@@ -108,21 +127,6 @@ export function createComposer(deps) {
       return `${route} ·${source}`;
     }
     return route;
-  }
-
-  function fixedRouterRow(label, value) {
-    const safeValue = String(value).replace(/\s+/gu, " ").trim() || "-";
-    const maxValueCells = 18;
-    let clipped = "";
-    let cells = 0;
-    for (const char of Array.from(safeValue)) {
-      const next = cells + cellWidth(char);
-      if (next > maxValueCells) break;
-      clipped += char;
-      cells = next;
-    }
-    const padding = " ".repeat(Math.max(0, maxValueCells - cells));
-    return `${label.padEnd(5)} ${clipped}${padding}`;
   }
 
   // Render the caret as a thin bar when visible, a blank (same width) when the

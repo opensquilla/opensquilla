@@ -19,9 +19,14 @@ class _ToolbarRecordingHandle(_RecordingHandle):
     def __init__(self) -> None:
         super().__init__()
         self.toolbar: dict[str, object] = {}
+        self.toolbar_updates: list[tuple[str, object | None]] = []
         self.invalidated = 0
 
     def set_toolbar(self, key: str, value: object | None) -> None:
+        self.toolbar_updates.append((key, value))
+        if value is None:
+            self.toolbar.pop(key, None)
+            return
         self.toolbar[key] = value
 
     def invalidate(self) -> None:
@@ -154,18 +159,38 @@ async def test_afinalize_writes_usage_to_toolbar_and_invalidates() -> None:
     await r.aappend_text("done")
     await r.afinalize(UsageSummary(input_tokens=1234, output_tokens=856))
     assert handle.toolbar.get("router_usage") == "1.2k/856"
-    assert handle.invalidated == 1
+    assert handle.invalidated == 2
 
 
 @pytest.mark.asyncio
-async def test_afinalize_no_usage_does_not_touch_toolbar() -> None:
+async def test_turn_begin_clears_stale_router_usage_before_finalize_writes_current_usage() -> None:
     handle = _ToolbarRecordingHandle()
+    handle.toolbar["router_usage"] = "999/888"
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.astatus("thinking")
+
+    assert ("router_usage", None) in handle.toolbar_updates
+    assert "router_usage" not in handle.toolbar
+    assert handle.invalidated == 1
+
+    await r.afinalize(UsageSummary(input_tokens=5, output_tokens=7))
+
+    assert handle.toolbar.get("router_usage") == "5/7"
+    assert handle.toolbar_updates[-1] == ("router_usage", "5/7")
+    assert handle.invalidated == 2
+
+
+@pytest.mark.asyncio
+async def test_no_usage_turn_keeps_router_usage_cleared() -> None:
+    handle = _ToolbarRecordingHandle()
+    handle.toolbar["router_usage"] = "999/888"
     r = OpenTuiStreamRenderer(output_handle=handle)
     r.__enter__()
     await r.aappend_text("done")
     await r.afinalize(None)
     assert "router_usage" not in handle.toolbar
-    assert handle.invalidated == 0
+    assert handle.invalidated == 1
 
 
 @pytest.mark.asyncio

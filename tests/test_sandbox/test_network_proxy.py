@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from contextlib import suppress
 
 import pytest
@@ -116,7 +117,11 @@ async def test_proxy_forwards_allowed_absolute_http_request_to_upstream() -> Non
         resolver_calls.append((host, port))
         return str(upstream_host), int(upstream_port)
 
-    server = SandboxProxyServer(decide, resolver=resolver)
+    server = SandboxProxyServer(
+        decide,
+        resolver=resolver,
+        upstream_validator=lambda host, port: None,
+    )
     await server.start()
     try:
         response = await _send_proxy_request(
@@ -204,6 +209,7 @@ async def test_proxy_forwards_absolute_http_without_host_using_approved_host() -
     server = SandboxProxyServer(
         _allow_decision,
         resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+        upstream_validator=lambda host, port: None,
     )
     await server.start()
     try:
@@ -415,6 +421,7 @@ async def test_proxy_forwards_allowed_origin_form_http_request_to_upstream() -> 
     server = SandboxProxyServer(
         decide,
         resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+        upstream_validator=lambda host, port: None,
     )
     await server.start()
     try:
@@ -456,6 +463,7 @@ async def test_proxy_times_out_upstream_response_that_never_arrives() -> None:
     server = SandboxProxyServer(
         _allow_decision,
         resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+        upstream_validator=lambda host, port: None,
         response_read_timeout_seconds=0.05,
     )
     await server.start()
@@ -500,6 +508,7 @@ async def test_proxy_caps_oversized_upstream_response() -> None:
     server = SandboxProxyServer(
         _allow_decision,
         resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+        upstream_validator=lambda host, port: None,
         max_response_bytes=96,
     )
     await server.start()
@@ -516,6 +525,39 @@ async def test_proxy_caps_oversized_upstream_response() -> None:
 
     assert response.startswith(b"HTTP/1.1 200 OK")
     assert len(response) == 96
+
+
+async def test_proxy_rejects_allowed_domain_resolving_to_loopback_before_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = SandboxProxyServer(_allow_decision)
+    await server.start()
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host: str, *args: object, **kwargs: object) -> list[tuple]:
+        if host.lower() == "allowed.test":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    socket.IPPROTO_TCP,
+                    "",
+                    ("127.0.0.1", 80),
+                )
+            ]
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    try:
+        response = await _send_proxy_request(
+            server,
+            b"GET http://Allowed.test/path HTTP/1.1\r\n\r\n",
+        )
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 403")
 
 
 async def test_proxy_stop_is_idempotent() -> None:

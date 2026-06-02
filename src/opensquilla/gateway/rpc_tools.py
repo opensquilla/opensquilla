@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.sandbox.integration import guard_in_process_network_action
 from opensquilla.tools.builtin.web import (
     get_active_provider,
     run_web_search_payload,
@@ -220,9 +221,27 @@ async def _handle_search_query(params: dict | None, ctx: RpcContext) -> dict[str
     provider_name = str(provider) if provider else None
     if provider_name:
         search_runtime_status(provider_name)
+    limit = _query_limit(params)
+    denial = await guard_in_process_network_action(
+        action_kind="web.fetch",
+        argv=("web_search", query, str(limit or "")),
+    )
+    if denial is not None:
+        return {
+            "ok": False,
+            "query": query,
+            "provider": provider_name or get_active_provider(),
+            "results": [],
+            "error": {
+                "kind": denial.reason.value,
+                "class": "SandboxDenied",
+                "message": denial.message,
+                "retryable": denial.retryable,
+            },
+        }
     payload = await run_web_search_payload(
         query,
-        _query_limit(params),
+        limit,
         provider_name=provider_name,
     )
     error = payload.get("error")

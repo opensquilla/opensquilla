@@ -60,9 +60,11 @@ class SandboxProxyServer:
         response_read_timeout_seconds: float = _DEFAULT_RESPONSE_READ_TIMEOUT_SECONDS,
         max_response_bytes: int = _MAX_RESPONSE_BYTES,
         resolver: Callable[[str, int], tuple[str, int]] | None = None,
+        upstream_validator: Callable[[str, int], None] | None = None,
     ) -> None:
         self._decide = decide
         self._resolver = resolver or _identity_resolver
+        self._upstream_validator = upstream_validator or _validate_upstream_resolution
         self.host = host
         self.port = port
         self._header_read_timeout_seconds = header_read_timeout_seconds
@@ -202,6 +204,10 @@ class SandboxProxyServer:
         self,
         request: _ParsedRequest,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        try:
+            self._upstream_validator(request.host, request.port)
+        except Exception as exc:
+            raise _ProxyDeniedError("unsafe_upstream_resolution") from exc
         connect_host, connect_port = self._resolver(request.host, request.port)
         upstream_reader, upstream_writer = await asyncio.open_connection(
             connect_host,
@@ -509,6 +515,16 @@ def _normalize_nonempty_host(host: str) -> str:
 
 def _identity_resolver(host: str, port: int) -> tuple[str, int]:
     return host, port
+
+
+def _validate_upstream_resolution(host: str, port: int) -> None:
+    from opensquilla.tools.ssrf import validate_http_url_for_fetch
+
+    validate_http_url_for_fetch(f"http://{_authority(host, port)}/")
+
+
+def _authority(host: str, port: int) -> str:
+    return host if port == 80 else f"{host}:{port}"
 
 
 async def _write_response(writer: asyncio.StreamWriter, response: bytes) -> None:

@@ -13,8 +13,7 @@ from urllib.parse import parse_qsl, urlparse
 
 import httpx
 
-from opensquilla.env import trust_env as _trust_env
-from opensquilla.sandbox.integration import sandboxed
+from opensquilla.sandbox.integration import managed_network_httpx_kwargs, sandboxed
 from opensquilla.search.types import SearchProviderError, SearchResult
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
@@ -230,7 +229,10 @@ async def http_request(
 
     content: bytes | None = body.encode() if body else None
 
-    async with httpx.AsyncClient(timeout=timeout, trust_env=_trust_env()) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        **managed_network_httpx_kwargs(),
+    ) as client:
         response = await client.request(
             method=method_upper,
             url=url,

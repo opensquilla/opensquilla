@@ -93,42 +93,59 @@ def _extract_tool_result_ids(content: Any) -> set[str]:
 
 
 def repair_tool_pairing(messages: list[Message]) -> list[Message]:
-    """Remove messages with orphaned tool_use or tool_result blocks.
+    """Remove messages with malformed tool_use/tool_result adjacency.
 
-    A tool_use is orphaned if no subsequent message has a matching tool_result.
-    A tool_result is orphaned if no prior message has a matching tool_use.
+    OpenAI-compatible providers require an assistant message with tool calls to
+    be followed immediately by tool result messages for every requested
+    ``tool_call_id``. A matching ID elsewhere in the transcript is not enough:
+    ordinary user/context messages between the call and result still make the
+    provider request invalid.
+
     Returns original list reference if no repairs needed.
     """
-    # Collect all tool_use IDs and tool_result IDs
-    all_use_ids: set[str] = set()
-    all_result_ids: set[str] = set()
-
-    for msg in messages:
-        all_use_ids.update(_extract_tool_use_ids(msg.content))
-        all_result_ids.update(_extract_tool_result_ids(msg.content))
-
-    # Find orphans
-    orphan_uses = all_use_ids - all_result_ids
-    orphan_results = all_result_ids - all_use_ids
-
-    if not orphan_uses and not orphan_results:
+    if not messages:
         return messages
 
-    # Filter out messages that ONLY contain orphan blocks
+    valid_tool_call_indices: set[int] = set()
+    valid_tool_result_indices: set[int] = set()
+
+    for index, message in enumerate(messages[:-1]):
+        use_ids = _extract_tool_use_ids(message.content)
+        if not use_ids:
+            continue
+        if message.role != "assistant":
+            continue
+
+        result_indices: set[int] = set()
+        result_ids: set[str] = set()
+        for result_index in range(index + 1, len(messages)):
+            next_result_ids = _extract_tool_result_ids(messages[result_index].content)
+            if not next_result_ids:
+                break
+            result_ids.update(next_result_ids)
+            if not result_ids.issubset(use_ids):
+                break
+            result_indices.add(result_index)
+            if result_ids == use_ids:
+                break
+
+        if result_ids == use_ids:
+            valid_tool_call_indices.add(index)
+            valid_tool_result_indices.update(result_indices)
+
     repaired: list[Message] = []
-    for msg in messages:
-        use_ids = _extract_tool_use_ids(msg.content)
-        result_ids = _extract_tool_result_ids(msg.content)
+    for index, message in enumerate(messages):
+        use_ids = _extract_tool_use_ids(message.content)
+        result_ids = _extract_tool_result_ids(message.content)
 
-        # If message has tool blocks and ALL are orphaned, skip it
-        if use_ids and use_ids.issubset(orphan_uses) and not isinstance(msg.content, str):
+        if use_ids and index not in valid_tool_call_indices:
             continue
-        if result_ids and result_ids.issubset(orphan_results) and not isinstance(msg.content, str):
+        if result_ids and index not in valid_tool_result_indices:
             continue
 
-        repaired.append(msg)
+        repaired.append(message)
 
-    return repaired
+    return messages if len(repaired) == len(messages) else repaired
 
 
 def _coerce_tool_input(raw: Any) -> dict[str, Any]:

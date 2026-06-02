@@ -1095,6 +1095,11 @@ class SlackChannelEntry(ConfiguredChannelEntry):
     slack_channel_id: str = ""
     signing_secret: str | None = None
     reply_in_thread: bool = False
+    # ``socket`` uses Slack Socket Mode (an outbound websocket long-connection,
+    # like Feishu) and needs no public Request URL; ``webhook`` keeps the
+    # Events API webhook. Socket Mode additionally requires ``app_token``.
+    connection_mode: Literal["webhook", "socket"] = "webhook"
+    app_token: str = ""
 
 
 class FeishuChannelEntry(ConfiguredChannelEntry):

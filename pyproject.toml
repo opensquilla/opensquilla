@@ -185,6 +185,7 @@ module = [
     "src.router.*",
     "tiktoken.*",
     "tokenizers.*",
+    "websockets.*",
     "yaml.*",
     "yoyo.*",
 ]

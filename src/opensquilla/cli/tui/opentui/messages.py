@@ -18,6 +18,10 @@ class RouterPluginState:
     saving: str
     context: str
     style: str = "normal"
+    baseline_model: str = ""
+    source: str = ""
+    routing_applied: bool = True
+    rollout_phase: str = "full"
 
 
 @dataclass(frozen=True)

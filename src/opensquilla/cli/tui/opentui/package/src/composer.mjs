@@ -39,6 +39,10 @@ export function createComposer(deps) {
     saving: "pending",
     context: "pending",
     style: "dim",
+    baselineModel: "",
+    source: "",
+    routingApplied: true,
+    rolloutPhase: "full",
   };
 
   const turnStatus = {
@@ -73,6 +77,37 @@ export function createComposer(deps) {
   // instead of landing on a blink-off frame.
   function wakeCursor() {
     cursorVisible = true;
+  }
+
+  // Last path segment of a model id ("vendor/big-model" -> "big-model").
+  function shortModel(m) {
+    return m ? m.split("/").pop() : m;
+  }
+
+  // Router model row: when the resolved model differs from the routed-away-from
+  // baseline, show the downgrade as "baseline → model" so the saving is legible.
+  function routerModelValue() {
+    const modelShort = shortModel(routerState.model);
+    const baselineShort = shortModel(routerState.baselineModel);
+    if (baselineShort && baselineShort !== modelShort) {
+      return `${baselineShort} → ${modelShort}`;
+    }
+    return modelShort || routerState.model;
+  }
+
+  // Router route row: tag the route when it is not a normal applied decision so
+  // forced/observe/fallback states are distinguishable. A normal route adds no
+  // marker to keep the panel quiet.
+  function routerRouteValue() {
+    const route = routerState.route;
+    const source = routerState.source;
+    if (routerState.rolloutPhase === "observe" || routerState.routingApplied === false) {
+      return `${route} observe`;
+    }
+    if (source === "forced" || source === "observe" || source === "fallback") {
+      return `${route} ·${source}`;
+    }
+    return route;
   }
 
   function fixedRouterRow(label, value) {
@@ -157,8 +192,8 @@ export function createComposer(deps) {
       paddingRight: 1,
       flexDirection: "column",
     });
-    routerNode.add(new TextRenderable(renderer, { id: "router-model", content: fixedRouterRow("model", routerState.model), fg: THEME.text }));
-    routerNode.add(new TextRenderable(renderer, { id: "router-route", content: fixedRouterRow("route", routerState.route), fg: THEME.routeText }));
+    routerNode.add(new TextRenderable(renderer, { id: "router-model", content: fixedRouterRow("model", routerModelValue()), fg: THEME.text }));
+    routerNode.add(new TextRenderable(renderer, { id: "router-route", content: fixedRouterRow("route", routerRouteValue()), fg: THEME.routeText }));
     routerNode.add(new TextRenderable(renderer, { id: "router-saving", content: fixedRouterRow("save", routerState.saving), fg: THEME.savingText }));
     routerNode.add(new TextRenderable(renderer, { id: "router-context", content: fixedRouterRow("ctx", routerState.context), fg: THEME.routerWarning }));
     inputBox.add(routerNode);
@@ -403,6 +438,10 @@ export function createComposer(deps) {
       saving: String(message.saving ?? routerState.saving),
       context: String(message.context ?? routerState.context),
       style: String(message.style ?? routerState.style),
+      baselineModel: String(message.baseline_model ?? routerState.baselineModel),
+      source: String(message.source ?? routerState.source),
+      routingApplied: message.routing_applied ?? routerState.routingApplied,
+      rolloutPhase: String(message.rollout_phase ?? routerState.rolloutPhase),
     });
     rerenderInputRegion();
   }

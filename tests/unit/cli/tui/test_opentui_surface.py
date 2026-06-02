@@ -81,6 +81,10 @@ def test_opentui_output_toolbar_invalidates_router_plugin() -> None:
 
     output.set_toolbar("router_hud", "route standard -> fake-terminal 99% save 42%")
     output.set_toolbar("router_hud_style", "normal")
+    output.set_toolbar("router_baseline_model", "vendor/big-model")
+    output.set_toolbar("router_source", "router")
+    output.set_toolbar("router_routing_applied", True)
+    output.set_toolbar("router_rollout_phase", "full")
     output.invalidate()
 
     assert bridge.sent == [
@@ -93,10 +97,66 @@ def test_opentui_output_toolbar_invalidates_router_plugin() -> None:
                     saving="42%",
                     context="-",
                     style="normal",
+                    baseline_model="vendor/big-model",
+                    source="router",
+                    routing_applied=True,
+                    rollout_phase="full",
                 )
             ),
         )
     ]
+
+
+def test_router_plugin_state_carries_observe_source_and_usage() -> None:
+    bridge = FakeOpenTuiBridge()
+    output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
+
+    output.set_toolbar("router_hud", "observe standard -> fake-terminal 80%")
+    output.set_toolbar("router_hud_style", "dim")
+    output.set_toolbar("router_source", "observe")
+    output.set_toolbar("router_routing_applied", False)
+    output.set_toolbar("router_rollout_phase", "observe")
+    output.set_toolbar("router_usage", "1.2k/856")
+    output.invalidate()
+
+    (_, payload) = bridge.sent[0]
+    assert payload["source"] == "observe"
+    assert payload["routing_applied"] is False
+    assert payload["rollout_phase"] == "observe"
+    assert payload["context"] == "1.2k/856"
+
+
+def test_router_plugin_state_fallback_keeps_defaults_and_usage() -> None:
+    bridge = FakeOpenTuiBridge()
+    output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
+
+    output.set_toolbar("router_hud", "fallback -> fake-terminal")
+    output.set_toolbar("router_hud_style", "warning")
+    output.set_toolbar("router_source", "fallback")
+    output.set_toolbar("router_usage", "856/12")
+    output.invalidate()
+
+    (_, payload) = bridge.sent[0]
+    assert payload["model"] == "fake-terminal"
+    assert payload["route"] == "fallback"
+    assert payload["source"] == "fallback"
+    assert payload["context"] == "856/12"
+    assert payload["style"] == "warning"
+
+
+def test_router_plugin_state_pending_defaults_without_usage() -> None:
+    bridge = FakeOpenTuiBridge()
+    output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
+
+    output.invalidate()
+
+    (_, payload) = bridge.sent[0]
+    assert payload["model"] == "pending"
+    assert payload["route"] == "pending"
+    assert payload["context"] == "-"
+    assert payload["baseline_model"] == ""
+    assert payload["routing_applied"] is True
+    assert payload["rollout_phase"] == "full"
 
 
 @pytest.mark.asyncio

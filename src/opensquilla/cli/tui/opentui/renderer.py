@@ -200,9 +200,36 @@ class OpenTuiStreamRenderer:
             "turn.status", TurnStatusState(phase="idle", label="ready", active=False)
         )
         await self._emit_raw("composer.set", {"disabled": False})
+        self._publish_usage_to_router_toolbar(usage)
+
+    def _publish_usage_to_router_toolbar(self, usage: Any | None) -> None:
+        # Surface this turn's token in/out in the router panel's ctx row. The
+        # router panel reads its data from the output handle's toolbar and
+        # repaints on invalidate(); defensively guard both methods so test
+        # recording handles (which expose neither) never crash the turn.
+        if usage is None:
+            return
+        in_tok = getattr(usage, "input_tokens", None)
+        out_tok = getattr(usage, "output_tokens", None)
+        if in_tok is None and out_tok is None:
+            return
+        set_toolbar = getattr(self.output_handle, "set_toolbar", None)
+        if not callable(set_toolbar):
+            return
+        set_toolbar("router_usage", f"{_format_tokens(in_tok)}/{_format_tokens(out_tok)}")
+        invalidate = getattr(self.output_handle, "invalidate", None)
+        if callable(invalidate):
+            invalidate()
 
     async def aclose(self) -> None:
         return None
+
+
+def _format_tokens(value: Any) -> str:
+    count = int(value or 0)
+    if count >= 1000:
+        return f"{count / 1000:.1f}k"
+    return str(count)
 
 
 def _format_usage(usage: Any) -> str:

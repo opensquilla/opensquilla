@@ -147,6 +147,20 @@ def test_composer_input_region_behaviors() -> None:
     assert ("pageup" in composer) or ("pagedown" in composer)
 
 
+def test_composer_router_state_carries_structured_fields() -> None:
+    composer = _read("composer.mjs")
+    # routerState seeds the new structured fields.
+    assert "baselineModel" in composer
+    assert "rolloutPhase" in composer
+    # setRouterState reads the snake_case keys Python sends via asdict.
+    assert "baseline_model" in composer
+    assert "routing_applied" in composer
+    assert "rollout_phase" in composer
+    # the model row can render a downgrade arrow and source markers exist.
+    assert "shortModel" in composer
+    assert "→" in composer
+
+
 def test_main_is_thin_entry_with_mouse_and_alt_screen() -> None:
     main = _read("main.mjs")
     assert 'screenMode: "alternate-screen"' in main

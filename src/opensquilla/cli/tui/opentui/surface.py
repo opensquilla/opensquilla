@@ -208,6 +208,11 @@ def _send_bridge_message(
 def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPluginState:
     label = str(toolbar.get("router_hud") or "")
     style = str(toolbar.get("router_hud_style") or "dim")
+    context = str(toolbar.get("router_usage") or "-")
+    baseline_model = str(toolbar.get("router_baseline_model") or "")
+    source = str(toolbar.get("router_source") or "")
+    routing_applied = bool(toolbar.get("router_routing_applied", True))
+    rollout_phase = str(toolbar.get("router_rollout_phase") or "full")
     match = _ROUTER_LABEL_RE.match(label)
     if match:
         tier = match.group("tier")
@@ -216,8 +221,12 @@ def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPlugi
             model=match.group("model"),
             route=f"{tier} {confidence}" if confidence else tier,
             saving=match.group("saving") or "-",
-            context="-",
+            context=context,
             style=_normalize_router_style(style),
+            baseline_model=baseline_model,
+            source=source,
+            routing_applied=routing_applied,
+            rollout_phase=rollout_phase,
         )
 
     fallback = _FALLBACK_LABEL_RE.match(label)
@@ -226,15 +235,19 @@ def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPlugi
             model=fallback.group("model"),
             route="fallback",
             saving="-",
-            context="-",
+            context=context,
             style="warning",
+            baseline_model=baseline_model,
+            source=source or "fallback",
+            routing_applied=routing_applied,
+            rollout_phase=rollout_phase,
         )
 
     return RouterPluginState(
         model="pending",
         route="pending",
         saving="-",
-        context="-",
+        context=context,
         style="dim",
     )
 

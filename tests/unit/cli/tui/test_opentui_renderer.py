@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer
+from opensquilla.cli.chat.turn import UsageSummary
+from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer, _format_tokens
 from opensquilla.cli.tui.terminal.stream import _summarize_result
 
 
@@ -12,6 +13,19 @@ class _RecordingHandle:
 
     async def send_message(self, message_type: str, payload: dict) -> None:
         self.sent.append((message_type, payload))
+
+
+class _ToolbarRecordingHandle(_RecordingHandle):
+    def __init__(self) -> None:
+        super().__init__()
+        self.toolbar: dict[str, object] = {}
+        self.invalidated = 0
+
+    def set_toolbar(self, key: str, value: object | None) -> None:
+        self.toolbar[key] = value
+
+    def invalidate(self) -> None:
+        self.invalidated += 1
 
 
 @pytest.mark.asyncio
@@ -123,6 +137,47 @@ async def test_anonymous_tools_each_close_independently() -> None:
     end_ids = {p["id"] for p in ends}
     assert len(begin_ids) == 2
     assert begin_ids <= end_ids
+
+
+def test_format_tokens_abbreviates_thousands() -> None:
+    assert _format_tokens(856) == "856"
+    assert _format_tokens(1234) == "1.2k"
+    assert _format_tokens(0) == "0"
+    assert _format_tokens(None) == "0"
+
+
+@pytest.mark.asyncio
+async def test_afinalize_writes_usage_to_toolbar_and_invalidates() -> None:
+    handle = _ToolbarRecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("done")
+    await r.afinalize(UsageSummary(input_tokens=1234, output_tokens=856))
+    assert handle.toolbar.get("router_usage") == "1.2k/856"
+    assert handle.invalidated == 1
+
+
+@pytest.mark.asyncio
+async def test_afinalize_no_usage_does_not_touch_toolbar() -> None:
+    handle = _ToolbarRecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("done")
+    await r.afinalize(None)
+    assert "router_usage" not in handle.toolbar
+    assert handle.invalidated == 0
+
+
+@pytest.mark.asyncio
+async def test_afinalize_tolerates_handle_without_set_toolbar() -> None:
+    # The plain recording handle has no set_toolbar/invalidate — afinalize must
+    # not crash when wiring usage into the router toolbar.
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("done")
+    await r.afinalize(UsageSummary(input_tokens=5, output_tokens=7))
+    assert [t for t, _ in handle.sent if t == "turn.end"]
 
 
 def test_tool_result_summary_keeps_meaningful_lines_without_banners() -> None:

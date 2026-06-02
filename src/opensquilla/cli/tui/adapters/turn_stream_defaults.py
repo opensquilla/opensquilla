@@ -67,6 +67,10 @@ def router_hud_event_sink_factory(
             return
         _set_toolbar_value(tui_output, "router_hud", snapshot.label)
         _set_toolbar_value(tui_output, "router_hud_style", snapshot.style)
+        _set_toolbar_value(tui_output, "router_baseline_model", snapshot.baseline_model)
+        _set_toolbar_value(tui_output, "router_source", snapshot.source)
+        _set_toolbar_value(tui_output, "router_routing_applied", snapshot.routing_applied)
+        _set_toolbar_value(tui_output, "router_rollout_phase", snapshot.rollout_phase)
         _invalidate_output(tui_output)
 
     return _sink

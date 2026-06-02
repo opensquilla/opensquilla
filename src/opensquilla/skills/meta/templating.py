@@ -66,6 +66,35 @@ def _filter_contains_cjk(value: object) -> bool:
     return bool(re.search(r"[\u3400-\u9fff\uf900-\ufaff]", str(value or "")))
 
 
+def _filter_int(value: object, default: int = 0) -> int:
+    """Parse ``value`` as an integer, returning ``default`` on failure.
+
+    Mirrors Jinja2's stock ``int`` filter (which the meta engine omits
+    from its allowlist). Used by templates that coerce LLM-emitted
+    duration strings like "5", "5s", "__SHOT_ABSENT__", or chain-of-
+    thought text down to a clean integer with a safe fallback.
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value or "").strip()
+    if not text:
+        return default
+    try:
+        return int(text)
+    except ValueError:
+        match = re.search(r"-?\d+", text)
+        if match:
+            try:
+                return int(match.group(0))
+            except ValueError:
+                return default
+        return default
+
+
 def _build_jinja_env() -> jinja2.Environment:
     env = jinja2.Environment(
         undefined=jinja2.StrictUndefined,
@@ -86,6 +115,7 @@ def _build_jinja_env() -> jinja2.Environment:
         "lower": lambda value: str(value).lower(),
         "extract_path": _filter_extract_path,
         "contains_cjk": _filter_contains_cjk,
+        "int": _filter_int,
     }
     return env
 

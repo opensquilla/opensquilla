@@ -1,14 +1,17 @@
 """Sandbox backend implementations and selection helper.
 
-Four concrete backends ship today:
+Five concrete backends ship today:
 
 * :class:`~opensquilla.sandbox.backend.bubblewrap.BubblewrapBackend` — the Linux
   primary path; uses the ``bwrap`` binary for namespace isolation.
 * :class:`~opensquilla.sandbox.backend.seatbelt.SeatbeltBackend` — macOS
   primary path; uses ``sandbox-exec`` with a generated SBPL profile.
+* :class:`~opensquilla.sandbox.backend.windows_appcontainer.WindowsAppContainerBackend` —
+  native Windows primary path; delegates to an AppContainer helper and fails
+  closed until policy enforcement is implemented.
 * :class:`~opensquilla.sandbox.backend.windows_restricted_token.WindowsRestrictedTokenBackend` —
-  native Windows path; delegates to a restricted-token helper and fails closed
-  when policy enforcement is unavailable.
+  legacy/degraded native Windows path; delegates to a restricted-token helper
+  and fails closed when policy enforcement is unavailable.
 * :class:`~opensquilla.sandbox.backend.noop.NoopBackend` — used when the sandbox
   feature switch is off; runs the command through the existing rlimit
   wrapper and emits a warning on every invocation so the bypass is visible
@@ -26,6 +29,7 @@ from opensquilla.sandbox.backend.base import Backend
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.backend.seatbelt import SeatbeltBackend
+from opensquilla.sandbox.backend.windows_appcontainer import WindowsAppContainerBackend
 from opensquilla.sandbox.backend.windows_restricted_token import WindowsRestrictedTokenBackend
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.types import SandboxBackendError
@@ -44,9 +48,12 @@ def _auto_backend() -> Backend:
         if seatbelt.available():
             return seatbelt
     if sys.platform.startswith("win"):
-        windows = WindowsRestrictedTokenBackend()
-        if windows.available():
-            return windows
+        appcontainer = WindowsAppContainerBackend()
+        if appcontainer.available():
+            return appcontainer
+        restricted_token = WindowsRestrictedTokenBackend()
+        if restricted_token.available():
+            return restricted_token
     return NoopBackend()
 
 
@@ -71,6 +78,8 @@ def select_backend(settings: SandboxSettings) -> Backend:
         backend = SeatbeltBackend()
     elif choice == "noop":
         backend = NoopBackend()
+    elif choice == "windows_appcontainer":
+        backend = WindowsAppContainerBackend()
     elif choice == "windows_restricted_token":
         backend = WindowsRestrictedTokenBackend()
     else:  # pragma: no cover — pydantic Literal constrains this upstream
@@ -98,6 +107,7 @@ __all__ = [
     "BubblewrapBackend",
     "NoopBackend",
     "SeatbeltBackend",
+    "WindowsAppContainerBackend",
     "WindowsRestrictedTokenBackend",
     "select_backend",
 ]

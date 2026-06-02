@@ -25,7 +25,14 @@ from opensquilla.sandbox.types import SecurityLevel
 
 log = logging.getLogger(__name__)
 
-BackendName = Literal["auto", "bubblewrap", "seatbelt", "noop", "windows_restricted_token"]
+BackendName = Literal[
+    "auto",
+    "bubblewrap",
+    "seatbelt",
+    "noop",
+    "windows_appcontainer",
+    "windows_restricted_token",
+]
 NetworkDefault = Literal["none", "proxy_allowlist"]
 RunModeName = Literal["standard", "trusted", "full"]
 

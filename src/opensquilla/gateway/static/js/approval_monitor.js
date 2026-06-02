@@ -129,7 +129,9 @@ const ApprovalMonitor = (() => {
     if (!inline.dataset.bound) {
       inline.dataset.bound = '1';
       inline.addEventListener('click', () => {
-        if (window.Router) Router.navigate('/approvals');
+        if (_modal) return;
+        _resetPollBackoff();
+        _poll();
       });
     }
   }

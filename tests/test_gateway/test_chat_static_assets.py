@@ -15,7 +15,6 @@ from pathlib import Path
 APP_JS = Path("src/opensquilla/gateway/static/js/app.js")
 CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
 APPROVAL_MONITOR_JS = Path("src/opensquilla/gateway/static/js/approval_monitor.js")
-APPROVALS_JS = Path("src/opensquilla/gateway/static/js/views/approvals.js")
 CONFIG_JS = Path("src/opensquilla/gateway/static/js/views/config.js")
 CHAT_CSS = Path("src/opensquilla/gateway/static/css/views/chat.css")
 BASE_CSS = Path("src/opensquilla/gateway/static/css/base.css")
@@ -31,10 +30,6 @@ def _read_chat_js() -> str:
 
 def _read_approval_monitor_js() -> str:
     return APPROVAL_MONITOR_JS.read_text(encoding="utf-8")
-
-
-def _read_approvals_js() -> str:
-    return APPROVALS_JS.read_text(encoding="utf-8")
 
 
 def _read_config_js() -> str:
@@ -170,21 +165,23 @@ def test_chat_does_not_render_persistent_bypass_warning_chip() -> None:
 def test_webui_removes_bypass_approval_shortcuts() -> None:
     chat_source = _read_chat_js()
     monitor_source = _read_approval_monitor_js()
-    approvals_source = _read_approvals_js()
-    combined = "\n".join([chat_source, monitor_source, approvals_source])
+    app_source = _read_app_js()
+    template_source = Path("src/opensquilla/gateway/templates/index.html").read_text(
+        encoding="utf-8"
+    )
+    combined = "\n".join([chat_source, monitor_source])
 
     assert "Bypass Approvals" not in combined
     assert "Bypass approvals" not in combined
     assert 'data-approval-action="bypass"' not in monitor_source
-    assert 'data-decision="bypass"' not in approvals_source
     assert "action === 'bypass'" not in monitor_source
-    assert "decision === 'bypass'" not in approvals_source
     assert "elevatedMode" not in monitor_source
-    assert "elevatedMode" not in approvals_source
     assert "opensquilla:elevated-mode" not in monitor_source
-    assert "opensquilla:elevated-mode" not in approvals_source
     assert "maps to /elevated full" not in combined
     assert "Bypass All Permissions" not in combined
+    assert "Router.register('/approvals'" not in app_source
+    assert "/static/js/views/approvals.js" not in template_source
+    assert "/static/css/views/approvals.css" not in template_source
 
 
 def test_app_uses_dynamic_viewport_height_after_100vh_fallback_for_mobile_composer() -> None:

@@ -28,14 +28,17 @@ from opensquilla.gateway.channel_dispatch import (
     _build_reply_message,
     _deliver_artifacts_as_channel_files,
     _deliver_runtime_channel_reply,
+    _dispatch_channel_slash_command,
     _dispatch_combined_message_after_debounce,
     _ingest_channel_message_attachments,
+    _preserve_route_channel_metadata,
     _route_envelope_reply_message,
     _run_turn_batch_path,
     _run_turn_with_streaming,
     _RuntimeChannelStreamRelay,
 )
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
+from opensquilla.gateway.protocol import make_ok_res
 from opensquilla.gateway.routing import build_channel_route_envelope
 from opensquilla.safety.permission_matrix import Principal, is_tool_allowed
 from opensquilla.tools.types import CallerKind
@@ -89,6 +92,61 @@ def test_route_envelope_reply_preserves_channel_for_thread_target() -> None:
 
     assert reply.reply_to == "1700000000.000100"
     assert reply.metadata == {"channel": "C42"}
+
+
+def test_preserve_route_channel_metadata_for_registry_thread_reply() -> None:
+    route_envelope = SimpleNamespace(channel_id="C42", thread_id="1700000000.000100")
+    reply = OutgoingMessage(
+        content="done",
+        reply_to="1700000000.000100",
+        metadata={"command": "compact"},
+    )
+
+    fixed = _preserve_route_channel_metadata(reply, route_envelope)
+
+    assert fixed.reply_to == "1700000000.000100"
+    assert fixed.metadata == {"command": "compact", "channel": "C42"}
+
+
+@pytest.mark.asyncio
+async def test_registered_slash_command_preserves_channel_for_thread_target() -> None:
+    msg = IncomingMessage(
+        sender_id="U1",
+        channel_id="C42",
+        content="/compact",
+        metadata={"thread_ts": "1700000000.000100"},
+    )
+    route_envelope = build_channel_route_envelope(
+        msg,
+        session_key="agent:main:slack:group:C42:thread:1700000000.000100",
+        session_prefix="slack",
+        agent_id="main",
+    )
+
+    class FakeDispatcher:
+        async def dispatch(self, req_id, method, params, ctx):
+            return make_ok_res(
+                req_id,
+                {
+                    "status": "skipped",
+                    "compacted": False,
+                },
+            )
+
+    reply = await _dispatch_channel_slash_command(
+        route_envelope=route_envelope,
+        msg=msg,
+        session_manager=object(),
+        session_key=route_envelope.session_key,
+        session_prefix="slack",
+        rpc_dispatcher=FakeDispatcher(),
+        context_factory=lambda _envelope: object(),
+    )
+
+    assert reply is not None
+    assert reply.reply_to == "1700000000.000100"
+    assert reply.metadata["channel"] == "C42"
+    assert reply.metadata["command"] == "compact"
 
 
 def test_channel_stream_policy_prefers_adapter_stream_updates() -> None:

@@ -660,12 +660,15 @@ async def _dispatch_channel_slash_command(
             context_factory=context_factory,
         )
 
-    return await DEFAULT_COMMAND_REGISTRY.dispatch(
+    reply = await DEFAULT_COMMAND_REGISTRY.dispatch(
         envelope=route_envelope,
         message_content=msg.content,
         rpc_dispatcher=rpc_dispatcher,
         context_factory=context_factory,
     )
+    if reply is None:
+        return None
+    return _preserve_route_channel_metadata(reply, route_envelope)
 
 
 async def _dispatch_channel_new_command(
@@ -719,7 +722,7 @@ async def _dispatch_channel_new_command(
             route_envelope,
             metadata={"command": "new", "method": "sessions.reset", "denied": False},
         )
-    return reply
+    return _preserve_route_channel_metadata(reply, route_envelope)
 
 
 # fmt: off
@@ -1205,6 +1208,27 @@ def _route_envelope_reply_message(
             content=content,
             reply_to=thread_id or channel_id,
             metadata=merged_metadata,
+        )
+    )
+
+
+def _preserve_route_channel_metadata(
+    reply: OutgoingMessage,
+    route_envelope: Any,
+) -> OutgoingMessage:
+    """Add route channel metadata to thread-targeted replies when needed."""
+    channel_id = getattr(route_envelope, "channel_id", None)
+    thread_id = getattr(route_envelope, "thread_id", None)
+    if not channel_id or not thread_id or reply.reply_to != thread_id:
+        return _sanitize_outgoing_message(reply)
+    metadata = dict(reply.metadata or {})
+    metadata.setdefault("channel", channel_id)
+    return _sanitize_outgoing_message(
+        OutgoingMessage(
+            content=reply.content,
+            attachments=list(reply.attachments),
+            metadata=metadata,
+            reply_to=reply.reply_to,
         )
     )
 

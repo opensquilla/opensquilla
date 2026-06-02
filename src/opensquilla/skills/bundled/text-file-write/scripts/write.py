@@ -24,10 +24,16 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    text = sys.stdin.read()
-    if not text:
+    # Read stdin as raw bytes and decode as UTF-8 ourselves. On Windows
+    # sys.stdin defaults to the console code page (cp936/GBK in CN
+    # locales), which mis-decodes UTF-8 CJK bytes into surrogates and
+    # then breaks the UTF-8 file writer with a misleading "codec can't
+    # encode" error. Going through .buffer guarantees a UTF-8 round-trip.
+    raw = sys.stdin.buffer.read()
+    if not raw:
         print("Error: stdin was empty.", file=sys.stderr)
         return 1
+    text = raw.decode("utf-8", errors="replace")
 
     out_path = Path(args.output).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)

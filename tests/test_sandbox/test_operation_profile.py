@@ -67,6 +67,9 @@ def test_classify_url_fetch_normalizes_url_punctuation() -> None:
         "https://example.com?x=1",
         "https://example.com#fragment",
         "https://example.com).",
+        "<https://example.com>",
+        "`https://example.com`",
+        "https://example.com],",
     ):
         profile = classify_command(("curl", url))
         assert profile.name == "url_fetch"
@@ -103,6 +106,18 @@ def test_shell_wrapper_with_url_is_conservative() -> None:
 
 def test_shell_wrapper_preserves_obvious_destructive_impact() -> None:
     profile = classify_command(("sh", "-lc", "rm -rf dist && curl https://example.com"))
+    assert profile.name == "destructive_shell"
+    assert profile.high_impact is True
+
+
+def test_shell_wrapper_detects_adjacent_separator_destructive_command() -> None:
+    profile = classify_command(("sh", "-lc", "echo ok;rm -rf dist"))
+    assert profile.name == "destructive_shell"
+    assert profile.high_impact is True
+
+
+def test_shell_wrapper_detects_env_prefixed_destructive_command() -> None:
+    profile = classify_command(("sh", "-lc", "X=1 rm -rf dist"))
     assert profile.name == "destructive_shell"
     assert profile.high_impact is True
 

@@ -13,7 +13,9 @@ _URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _NODE_INSTALL_COMMANDS = frozenset({"add", "ci", "install"})
 _SHELL_WRAPPERS = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
 _DESTRUCTIVE_COMMANDS = frozenset({"del", "erase", "format", "mkfs", "rm"})
-_TRAILING_URL_PUNCTUATION = ".,;:!?)]}\"'"
+_SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|"})
+_ASSIGNMENT_RE = re.compile(r"[a-z_][a-z0-9_]*=.*")
+_TRAILING_URL_PUNCTUATION = ".,;:!?)]}\"'`>"
 
 
 @dataclass(frozen=True)
@@ -104,21 +106,28 @@ def _is_shell_wrapper(lowered: tuple[str, ...]) -> bool:
 
 
 def _shell_script_is_destructive(lowered: tuple[str, ...]) -> bool:
-    script = _shell_script(lowered)
-    try:
-        tokens = shlex.split(script)
-    except ValueError:
-        tokens = script.split()
-
     command_expected = True
-    for token in tokens:
-        if token in {"&&", "||", ";", "|"}:
+    for token in _shell_tokens(_shell_script(lowered)):
+        if token in _SHELL_SEPARATORS:
             command_expected = True
             continue
-        if command_expected and _command_name(token.lower()) in _DESTRUCTIVE_COMMANDS:
-            return True
-        command_expected = False
+        if command_expected:
+            lowered_token = token.lower()
+            if _ASSIGNMENT_RE.fullmatch(lowered_token):
+                continue
+            if _command_name(lowered_token) in _DESTRUCTIVE_COMMANDS:
+                return True
+            command_expected = False
     return False
+
+
+def _shell_tokens(script: str) -> tuple[str, ...]:
+    try:
+        lexer = shlex.shlex(script, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        return tuple(lexer)
+    except ValueError:
+        return tuple(script.split())
 
 
 def _shell_script(lowered: tuple[str, ...]) -> str:

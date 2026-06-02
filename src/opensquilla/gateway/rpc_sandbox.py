@@ -12,6 +12,7 @@ from opensquilla.gateway.rpc import (
     get_dispatcher,
 )
 from opensquilla.gateway.session_services import get_session_storage
+from opensquilla.sandbox.package_bundles import expand_package_bundle
 from opensquilla.sandbox.run_context import RunContext, get_run_context, set_run_mode
 from opensquilla.sandbox.run_context_service import (
     add_domain_grant,
@@ -40,6 +41,40 @@ def _require_session_key(params: dict[str, Any]) -> str:
     if not isinstance(session_key, str) or not session_key:
         raise ValueError("params.sessionKey is required")
     return session_key
+
+
+def _require_string_param(
+    params: dict[str, Any],
+    name: str,
+    message: str,
+) -> str:
+    value = params.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(message)
+    return value
+
+
+def _require_one_string_param(
+    params: dict[str, Any],
+    names: tuple[str, ...],
+    message: str,
+) -> str:
+    for name in names:
+        value = params.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    raise ValueError(message)
+
+
+def _require_bundle_id(params: dict[str, Any]) -> str:
+    bundle_id = _require_one_string_param(
+        params,
+        ("bundleId", "bundle_id"),
+        "params.bundleId is required",
+    )
+    if not expand_package_bundle(bundle_id.strip()):
+        raise ValueError("unknown_package_bundle")
+    return bundle_id
 
 
 def _require_session_manager(ctx: RpcContext) -> Any:
@@ -192,6 +227,7 @@ async def _handle_sandbox_mount_add(params: dict | None, ctx: RpcContext) -> dic
     params = _require_params(params)
     session_key = _require_session_key(params)
     _require_owner(ctx, "sandbox.mount.add")
+    path = _require_string_param(params, "path", "params.path is required")
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
@@ -200,7 +236,7 @@ async def _handle_sandbox_mount_add(params: dict | None, ctx: RpcContext) -> dic
     context = await add_mount_grant(
         manager,
         session_key,
-        path=str(params.get("path") or ""),
+        path=path,
         access=str(params.get("access") or "ro"),
         scope=str(params.get("scope") or "chat"),
         config=ctx.config,
@@ -214,6 +250,7 @@ async def _handle_sandbox_mount_remove(params: dict | None, ctx: RpcContext) -> 
     params = _require_params(params)
     session_key = _require_session_key(params)
     _require_owner(ctx, "sandbox.mount.remove")
+    path = _require_string_param(params, "path", "params.path is required")
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
@@ -222,7 +259,7 @@ async def _handle_sandbox_mount_remove(params: dict | None, ctx: RpcContext) -> 
     context = await remove_mount_grant(
         manager,
         session_key,
-        path=str(params.get("path") or ""),
+        path=path,
         config=ctx.config,
         workspace=workspace,
     )
@@ -234,6 +271,7 @@ async def _handle_sandbox_domain_add(params: dict | None, ctx: RpcContext) -> di
     params = _require_params(params)
     session_key = _require_session_key(params)
     _require_owner(ctx, "sandbox.domain.add")
+    domain = _require_string_param(params, "domain", "params.domain is required")
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
@@ -242,7 +280,7 @@ async def _handle_sandbox_domain_add(params: dict | None, ctx: RpcContext) -> di
     context = await add_domain_grant(
         manager,
         session_key,
-        domain=str(params.get("domain") or ""),
+        domain=domain,
         scope=str(params.get("scope") or "workspace"),
         config=ctx.config,
         workspace=workspace,
@@ -255,6 +293,7 @@ async def _handle_sandbox_domain_remove(params: dict | None, ctx: RpcContext) ->
     params = _require_params(params)
     session_key = _require_session_key(params)
     _require_owner(ctx, "sandbox.domain.remove")
+    domain = _require_string_param(params, "domain", "params.domain is required")
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
@@ -263,7 +302,7 @@ async def _handle_sandbox_domain_remove(params: dict | None, ctx: RpcContext) ->
     context = await remove_domain_grant(
         manager,
         session_key,
-        domain=str(params.get("domain") or ""),
+        domain=domain,
         config=ctx.config,
         workspace=workspace,
     )
@@ -275,6 +314,7 @@ async def _handle_sandbox_bundle_enable(params: dict | None, ctx: RpcContext) ->
     params = _require_params(params)
     session_key = _require_session_key(params)
     _require_owner(ctx, "sandbox.bundle.enable")
+    bundle_id = _require_bundle_id(params)
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
@@ -283,7 +323,7 @@ async def _handle_sandbox_bundle_enable(params: dict | None, ctx: RpcContext) ->
     context = await enable_bundle_grant(
         manager,
         session_key,
-        bundle_id=str(params.get("bundleId") or params.get("bundle_id") or ""),
+        bundle_id=bundle_id,
         scope=str(params.get("scope") or "workspace"),
         config=ctx.config,
         workspace=workspace,
@@ -296,6 +336,7 @@ async def _handle_sandbox_bundle_disable(params: dict | None, ctx: RpcContext) -
     params = _require_params(params)
     session_key = _require_session_key(params)
     _require_owner(ctx, "sandbox.bundle.disable")
+    bundle_id = _require_bundle_id(params)
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
@@ -304,7 +345,7 @@ async def _handle_sandbox_bundle_disable(params: dict | None, ctx: RpcContext) -
     context = await disable_bundle_grant(
         manager,
         session_key,
-        bundle_id=str(params.get("bundleId") or params.get("bundle_id") or ""),
+        bundle_id=bundle_id,
         config=ctx.config,
         workspace=workspace,
     )
@@ -316,6 +357,11 @@ async def _handle_sandbox_workspace_set(params: dict | None, ctx: RpcContext) ->
     params = _require_params(params)
     session_key = _require_session_key(params)
     _require_owner(ctx, "sandbox.workspace.set")
+    workspace_path = _require_one_string_param(
+        params,
+        ("workspace", "workspacePath"),
+        "params.workspace is required",
+    )
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
@@ -324,7 +370,7 @@ async def _handle_sandbox_workspace_set(params: dict | None, ctx: RpcContext) ->
     context = await set_workspace(
         manager,
         session_key,
-        workspace_path=str(params.get("workspace") or params.get("workspacePath") or ""),
+        workspace_path=workspace_path,
         config=ctx.config,
         current_workspace=current_workspace,
     )

@@ -13,12 +13,24 @@ class _SessionManager:
             origin=None,
         )
         self.sessions = {self.node.session_key: self.node}
+        self.created: list[str] = []
 
     async def get_session(self, session_key: str):
         return self.sessions.get(session_key)
 
     async def get_or_create(self, session_key: str, agent_id: str = "main", **kwargs):
-        return self.sessions[session_key], False
+        existing = self.sessions.get(session_key)
+        if existing is not None:
+            return existing, False
+        node = SimpleNamespace(
+            session_key=session_key,
+            agent_id=agent_id,
+            origin=None,
+            **kwargs,
+        )
+        self.sessions[session_key] = node
+        self.created.append(session_key)
+        return node, True
 
     async def update(self, session_key: str, **fields):
         node = self.sessions[session_key]
@@ -90,6 +102,37 @@ async def test_rpc_add_mount_rejects_non_owner() -> None:
         )
 
     assert manager.node.origin is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler_name", "params"),
+    [
+        ("_handle_sandbox_mount_add", {}),
+        ("_handle_sandbox_mount_add", {"path": ""}),
+        ("_handle_sandbox_mount_add", {"path": "   "}),
+        ("_handle_sandbox_mount_remove", {}),
+        ("_handle_sandbox_mount_remove", {"path": ""}),
+        ("_handle_sandbox_mount_remove", {"path": "   "}),
+    ],
+)
+async def test_rpc_mount_mutations_require_path_without_mutating_origin(
+    handler_name: str,
+    params: dict[str, str],
+) -> None:
+    import opensquilla.gateway.rpc_sandbox as rpc_sandbox
+
+    manager = _SessionManager()
+    handler = getattr(rpc_sandbox, handler_name)
+
+    with pytest.raises(ValueError, match="params.path is required"):
+        await handler(
+            {"sessionKey": manager.node.session_key, **params},
+            _ctx(manager),
+        )
+
+    assert manager.node.origin is None
+    assert manager.created == []
 
 
 @pytest.mark.asyncio
@@ -224,3 +267,44 @@ async def test_rpc_sandbox_mutations_reject_non_owner(
         )
 
     assert manager.node.origin is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler_name", "params", "message"),
+    [
+        ("_handle_sandbox_domain_add", {}, "params.domain is required"),
+        ("_handle_sandbox_domain_remove", {"domain": ""}, "params.domain is required"),
+        ("_handle_sandbox_bundle_enable", {}, "params.bundleId is required"),
+        (
+            "_handle_sandbox_bundle_enable",
+            {"bundleId": "unknown-package-install"},
+            "unknown_package_bundle",
+        ),
+        (
+            "_handle_sandbox_bundle_disable",
+            {"bundle_id": "   "},
+            "params.bundleId is required",
+        ),
+        ("_handle_sandbox_workspace_set", {}, "params.workspace is required"),
+    ],
+)
+async def test_rpc_sandbox_invalid_params_do_not_create_missing_session(
+    handler_name: str,
+    params: dict[str, str],
+    message: str,
+) -> None:
+    import opensquilla.gateway.rpc_sandbox as rpc_sandbox
+
+    manager = _SessionManager()
+    missing_session_key = "agent:main:webchat:missing"
+    handler = getattr(rpc_sandbox, handler_name)
+
+    with pytest.raises(ValueError, match=message):
+        await handler(
+            {"sessionKey": missing_session_key, **params},
+            _ctx(manager),
+        )
+
+    assert missing_session_key not in manager.sessions
+    assert manager.created == []

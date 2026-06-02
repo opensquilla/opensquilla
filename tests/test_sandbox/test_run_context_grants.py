@@ -182,6 +182,129 @@ async def test_remove_mount_grant_rejects_root_or_sensitive_path_without_mutatio
 
 
 @pytest.mark.asyncio
+async def test_absent_removals_do_not_create_saved_context(tmp_path):
+    from opensquilla.sandbox.run_context_service import (
+        disable_bundle_grant,
+        remove_domain_grant,
+        remove_mount_grant,
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    manager = _SessionManager()
+    await remove_mount_grant(
+        manager,
+        manager.node.session_key,
+        path=str(outside),
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert manager.node.origin is None
+
+    manager = _SessionManager()
+    await remove_domain_grant(
+        manager,
+        manager.node.session_key,
+        domain="pypi.org",
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert manager.node.origin is None
+
+    manager = _SessionManager()
+    await disable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id="python-package-install",
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert manager.node.origin is None
+
+
+@pytest.mark.asyncio
+async def test_absent_removals_preserve_saved_origin(tmp_path):
+    from opensquilla.sandbox.run_context_service import (
+        disable_bundle_grant,
+        remove_domain_grant,
+        remove_mount_grant,
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    absent_mount = tmp_path / "absent"
+    absent_mount.mkdir()
+    saved_origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": str(workspace),
+            "mounts": [
+                {
+                    "path": str(mounted),
+                    "access": "ro",
+                    "scope": "chat",
+                }
+            ],
+            "domains": [
+                {
+                    "domain": "pypi.org",
+                    "scope": "chat",
+                    "source": "manual",
+                }
+            ],
+            "bundles": [
+                {
+                    "bundle_id": "python-package-install",
+                    "scope": "workspace",
+                    "source": "manual",
+                }
+            ],
+        }
+    }
+
+    manager = _SessionManager()
+    manager.node.origin = saved_origin
+    await remove_mount_grant(
+        manager,
+        manager.node.session_key,
+        path=str(absent_mount),
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert manager.node.origin is saved_origin
+    assert manager.node.origin == saved_origin
+
+    manager = _SessionManager()
+    manager.node.origin = saved_origin
+    await remove_domain_grant(
+        manager,
+        manager.node.session_key,
+        domain="files.pythonhosted.org",
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert manager.node.origin is saved_origin
+    assert manager.node.origin == saved_origin
+
+    manager = _SessionManager()
+    manager.node.origin = saved_origin
+    await disable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id="node-package-install",
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert manager.node.origin is saved_origin
+    assert manager.node.origin == saved_origin
+
+
+@pytest.mark.asyncio
 async def test_duplicate_mount_grant_replaces_existing_entry(tmp_path):
     from opensquilla.sandbox.run_context_service import add_mount_grant
 

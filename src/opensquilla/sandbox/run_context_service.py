@@ -122,6 +122,8 @@ async def remove_mount_grant(
     normalized_path = decision.normalized_path
     removal_paths = {normalized_path, path}
     mounts = tuple(m for m in existing.mounts if m.path not in removal_paths)
+    if mounts == existing.mounts:
+        return existing
     return await persist_run_context(
         session_manager,
         session_key,
@@ -180,6 +182,8 @@ async def remove_domain_grant(
         workspace=workspace,
     )
     domains = tuple(d for d in existing.domains if d.domain != normalized)
+    if domains == existing.domains:
+        return existing
     return await persist_run_context(
         session_manager,
         session_key,
@@ -238,6 +242,8 @@ async def disable_bundle_grant(
         workspace=workspace,
     )
     bundles = tuple(b for b in existing.bundles if b.bundle_id != normalized_bundle_id)
+    if bundles == existing.bundles:
+        return existing
     return await persist_run_context(
         session_manager,
         session_key,

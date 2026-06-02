@@ -39,8 +39,8 @@ ENTRY_MODELS = {
     "telegram": TelegramChannelEntry,
 }
 
-EXPECTED_PUBLIC_URL = {"slack", "wecom"}
-CONDITIONAL_PUBLIC_URL = {"feishu", "telegram"}
+EXPECTED_PUBLIC_URL = {"wecom"}
+CONDITIONAL_PUBLIC_URL = {"feishu", "slack", "telegram"}
 
 
 def test_catalog_includes_all_channels():
@@ -83,7 +83,7 @@ def test_required_pydantic_fields_are_required_in_spec(type_name: str):
 def test_slack_secrets_are_marked_secret():
     spec = get_channel_setup_spec("slack")
     secrets = {f.name for f in spec.fields if f.secret}
-    assert {"token", "signing_secret"} <= secrets
+    assert {"token", "app_token", "signing_secret"} <= secrets
 
 
 def test_telegram_secrets_are_marked_secret():
@@ -98,6 +98,24 @@ def test_feishu_connection_mode_choices():
     assert field.field_type == "select"
     assert field.default == "websocket"
     assert field.choices == ("webhook", "websocket")
+
+
+def test_slack_connection_mode_choices():
+    spec = get_channel_setup_spec("slack")
+    field = next(f for f in spec.fields if f.name == "connection_mode")
+    assert field.field_type == "select"
+    assert field.default == "webhook"
+    assert field.choices == ("webhook", "socket")
+    assert field.advanced is False
+
+
+def test_slack_mode_specific_fields_are_conditional():
+    spec = get_channel_setup_spec("slack")
+    fields = {f.name: f for f in spec.fields}
+    assert fields["app_token"].show_when == {"connection_mode": "socket"}
+    assert fields["signing_secret"].show_when == {"connection_mode": "webhook"}
+    assert fields["signing_secret"].required is True
+    assert fields["slack_channel_id"].required is False
 
 
 def test_feishu_status_reactions_are_enabled_by_default():
@@ -149,7 +167,10 @@ def test_channel_catalog_payload_exposes_ui_metadata():
     assert feishu["whatYouNeed"]
     slack = next(c for c in payload if c["type"] == "slack")
     assert "public URL" in slack["help"]
-    assert any("public URL" in item for item in slack["whatYouNeed"])
+    assert slack["transport"] == "mixed"
+    assert slack["requiresPublicUrl"] is False
+    slack_fields = {f["name"]: f for f in slack["fields"]}
+    assert slack_fields["app_token"]["showWhen"] == {"connection_mode": "socket"}
 
 
 def test_matrix_encryption_choices():

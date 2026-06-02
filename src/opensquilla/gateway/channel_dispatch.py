@@ -452,9 +452,9 @@ async def run_channel_dispatch(
                     cap=_in_flight.cap,
                 )
                 await channel.send(
-                    OutgoingMessage(
-                        content="Server busy, please retry",
-                        reply_to=route_envelope.thread_id or route_envelope.channel_id,
+                    _route_envelope_reply_message(
+                        "Server busy, please retry",
+                        route_envelope,
                     )
                 )
                 await status_reactor.completed(msg)
@@ -511,12 +511,12 @@ async def run_channel_dispatch(
                     raise
                 await status_reactor.failed(msg)
                 await channel.send(
-                    OutgoingMessage(
-                        content=(
+                    _route_envelope_reply_message(
+                        (
                             "The session task queue is full. "
                             f"Try again after queued work completes. ({exc})"
                         ),
-                        reply_to=route_envelope.thread_id or route_envelope.channel_id,
+                        route_envelope,
                     )
                 )
             else:
@@ -643,9 +643,9 @@ async def _dispatch_channel_slash_command(
         head = _slash_command_head(msg.content)
         if head is None:
             return None
-        return OutgoingMessage(
-            content=f"Unsupported command: {head}. Try /help.",
-            reply_to=route_envelope.thread_id or route_envelope.channel_id,
+        return _route_envelope_reply_message(
+            f"Unsupported command: {head}. Try /help.",
+            route_envelope,
             metadata={"command": head[1:].lower(), "method": None, "unsupported": True},
         )
 
@@ -661,12 +661,15 @@ async def _dispatch_channel_slash_command(
             context_factory=context_factory,
         )
 
-    return await DEFAULT_COMMAND_REGISTRY.dispatch(
+    reply = await DEFAULT_COMMAND_REGISTRY.dispatch(
         envelope=route_envelope,
         message_content=msg.content,
         rpc_dispatcher=rpc_dispatcher,
         context_factory=context_factory,
     )
+    if reply is None:
+        return None
+    return _preserve_route_channel_metadata(reply, route_envelope)
 
 
 async def _dispatch_channel_new_command(
@@ -692,12 +695,12 @@ async def _dispatch_channel_new_command(
     )
     if not allowed:
         detail = f": missing {missing}" if missing else ""
-        return OutgoingMessage(
-            content=(
+        return _route_envelope_reply_message(
+            (
                 "/new denied: Insufficient scope for method: "
                 f"sessions.reset{detail}"
             ),
-            reply_to=route_envelope.thread_id or route_envelope.channel_id,
+            route_envelope,
             metadata={"command": "new", "method": "sessions.reset", "denied": True},
         )
 
@@ -715,12 +718,12 @@ async def _dispatch_channel_new_command(
         context_factory=lambda _envelope: ctx,
     )
     if reply is None:
-        return OutgoingMessage(
-            content="/new failed: command unavailable",
-            reply_to=route_envelope.thread_id or route_envelope.channel_id,
+        return _route_envelope_reply_message(
+            "/new failed: command unavailable",
+            route_envelope,
             metadata={"command": "new", "method": "sessions.reset", "denied": False},
         )
-    return reply
+    return _preserve_route_channel_metadata(reply, route_envelope)
 
 
 # fmt: off
@@ -765,9 +768,9 @@ async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any,
                 cap=_in_flight.cap,
             )
             await channel.send(
-                OutgoingMessage(
-                    content="Server busy, please retry",
-                    reply_to=route_envelope.thread_id or route_envelope.channel_id,
+                _route_envelope_reply_message(
+                    "Server busy, please retry",
+                    route_envelope,
                 )
             )
             await status_reactor.completed(msg)
@@ -805,7 +808,7 @@ async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any,
         if isinstance(exc, TaskQueueFullError):
             await status_reactor.failed(msg)
             log.warning("channel_dispatch.debounce_enqueue_failed", session_key=session_key, reason="queue_full", coalesced_count=combined.coalesced_count)  # noqa: E501
-            await channel.send(OutgoingMessage(content="Your messages couldn't be processed because the queue is full. Please retry.", reply_to=route_envelope.thread_id or route_envelope.channel_id))  # noqa: E501
+            await channel.send(_route_envelope_reply_message("Your messages couldn't be processed because the queue is full. Please retry.", route_envelope))  # noqa: E501
             return
         log.exception("channel_dispatch.debounce_enqueue_failed", session_key=session_key, reason="unexpected")  # noqa: E501
         await status_reactor.failed(msg)
@@ -1187,6 +1190,48 @@ def _build_reply_message(channel: Any, content: str, msg: IncomingMessage) -> Ou
         if isinstance(reply, OutgoingMessage):
             return _sanitize_outgoing_message(reply)
     return _sanitize_outgoing_message(OutgoingMessage(content=content))
+
+
+def _route_envelope_reply_message(
+    content: str,
+    route_envelope: Any,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> OutgoingMessage:
+    """Build a reply that preserves channel id when targeting a thread id."""
+    channel_id = getattr(route_envelope, "channel_id", None)
+    thread_id = getattr(route_envelope, "thread_id", None)
+    merged_metadata = dict(metadata or {})
+    if thread_id and channel_id:
+        merged_metadata.setdefault("channel", channel_id)
+    return _sanitize_outgoing_message(
+        OutgoingMessage(
+            content=content,
+            reply_to=thread_id or channel_id,
+            metadata=merged_metadata,
+        )
+    )
+
+
+def _preserve_route_channel_metadata(
+    reply: OutgoingMessage,
+    route_envelope: Any,
+) -> OutgoingMessage:
+    """Add route channel metadata to thread-targeted replies when needed."""
+    channel_id = getattr(route_envelope, "channel_id", None)
+    thread_id = getattr(route_envelope, "thread_id", None)
+    if not channel_id or not thread_id or reply.reply_to != thread_id:
+        return _sanitize_outgoing_message(reply)
+    metadata = dict(reply.metadata or {})
+    metadata.setdefault("channel", channel_id)
+    return _sanitize_outgoing_message(
+        OutgoingMessage(
+            content=reply.content,
+            attachments=list(reply.attachments),
+            metadata=metadata,
+            reply_to=reply.reply_to,
+        )
+    )
 
 
 def _status_reactor(channel: Any) -> Any:

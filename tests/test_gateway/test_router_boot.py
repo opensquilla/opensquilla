@@ -1235,7 +1235,13 @@ def test_configured_agent_ids_include_enabled_registry_agents_and_channels() -> 
                 AgentEntryConfig(id="disabled", enabled=False),
             ]
         ),
-        entry_payload={"type": "slack", "name": "work", "token": "x", "agent_id": "channel"},
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": "x",
+            "signing_secret": "ss",
+            "agent_id": "channel",
+        },
     )
 
     assert _configured_agent_ids(result.config) == ["channel", "main", "ops"]

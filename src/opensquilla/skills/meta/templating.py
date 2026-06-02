@@ -67,6 +67,29 @@ def _filter_contains_cjk(value: object) -> bool:
     return bool(re.search(r"[\u3400-\u9fff\uf900-\ufaff]", str(value or "")))
 
 
+def _filter_int(value: object, default: int = 0) -> int:
+    """Parse ``value`` as an integer, returning ``default`` on failure."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value or "").strip()
+    if not text:
+        return default
+    try:
+        return int(text)
+    except ValueError:
+        match = re.search(r"-?\d+", text)
+        if match:
+            try:
+                return int(match.group(0))
+            except ValueError:
+                return default
+        return default
+
+
 def _build_jinja_env() -> jinja2.sandbox.ImmutableSandboxedEnvironment:
     # ``ImmutableSandboxedEnvironment`` blocks Python attribute introspection
     # (``__class__`` / ``__mro__`` / ``__subclasses__``) and mutation
@@ -95,6 +118,7 @@ def _build_jinja_env() -> jinja2.sandbox.ImmutableSandboxedEnvironment:
         "lower": lambda value: str(value).lower(),
         "extract_path": _filter_extract_path,
         "contains_cjk": _filter_contains_cjk,
+        "int": _filter_int,
     }
     return env
 

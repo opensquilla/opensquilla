@@ -844,96 +844,113 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                         )
                         errors = [f"nl_extract failed: {exc}"]
                     else:
-                        # Soft-clarify path (free-form continuation):
-                        # whatever the extractor produced — fields,
-                        # intent, ambiguous_fields — is now used to
-                        # decide whether the DAG resumes or whether
-                        # the user gets another chance to chat
-                        # without blocking on a modal form.
                         nl_intent = (nl_result.intent or "FILL").upper()
+                        if nl_result.errors:
+                            errors = list(nl_result.errors)
+                        elif not nl_result.fields and nl_intent == "FILL":
+                            # The LLM produced valid JSON but omitted every
+                            # field — typical when the reply is terse ("ok",
+                            # "继续") and the model decides nothing was
+                            # explicitly stated. Fall through to the
+                            # deterministic parser, which copes fine with a
+                            # single catch-all string field (the whole reply
+                            # becomes its value). Leaving nl_attempted True
+                            # would otherwise strand the user in an
+                            # unrecoverable "no fields extracted" loop.
+                            nl_attempted = False
+                        else:
+                            # Soft-clarify path (free-form continuation):
+                            # whatever the extractor produced — fields,
+                            # intent, ambiguous_fields — is now used to
+                            # decide whether the DAG resumes or whether
+                            # the user gets another chance to chat
+                            # without blocking on a modal form.
+                            # Explicit cancel: same effect as the
+                            # deterministic cancel_keyword path.
+                            if nl_intent == "CANCEL_ALL":
+                                writer.mark_cancelled(
+                                    run_id=awaiting.run_id, reason="user_cancel_nl",
+                                )
+                                ctx.metadata["meta_clarify_cancelled"] = awaiting
+                                ctx.metadata["meta_clarify_cancel_reason"] = (
+                                    "user_cancel_nl"
+                                )
+                                return ctx
 
-                        # Explicit cancel: same effect as the
-                        # deterministic cancel_keyword path.
-                        if nl_intent == "CANCEL_ALL":
-                            writer.mark_cancelled(
-                                run_id=awaiting.run_id, reason="user_cancel_nl",
-                            )
-                            ctx.metadata["meta_clarify_cancelled"] = awaiting
-                            ctx.metadata["meta_clarify_cancel_reason"] = "user_cancel_nl"
-                            return ctx
+                            # Always merge any new fields into the
+                            # incremental ``awaiting_filled_json`` so the
+                            # next turn starts from the cumulative state.
+                            # Carry the prefill audit forward so the
+                            # surface keeps rendering ``confirmed_fields``
+                            # / ``ambiguous_fields`` markers across the
+                            # whole soft-clarify session.
+                            cumulative = {**previously_filled, **nl_result.fields}
+                            # Persist flat ``{field: value, __prefill_audit__: ...}``
+                            # — that's the shape the awaiting-resume path
+                            # reads. Wrapping fields under another ``filled``
+                            # key would break the next turn's
+                            # ``previously_filled`` view.
+                            progress_payload: dict[str, Any] = dict(cumulative)
+                            if isinstance(prefill_audit, dict) and prefill_audit:
+                                progress_payload["__prefill_audit__"] = prefill_audit
+                            try:
+                                writer.update_awaiting_partial(
+                                    run_id=awaiting.run_id,
+                                    filled_json=json.dumps(
+                                        progress_payload,
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                    ),
+                                    awaiting_since=time.time(),
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                log.warning(
+                                    "meta_resolution.update_filled_failed",
+                                    error=str(exc),
+                                )
 
-                        # Always merge any new fields into the
-                        # incremental ``awaiting_filled_json`` so the
-                        # next turn starts from the cumulative state.
-                        # Carry the prefill audit forward so the
-                        # surface keeps rendering ``confirmed_fields``
-                        # / ``ambiguous_fields`` markers across the
-                        # whole soft-clarify session.
-                        cumulative = {**previously_filled, **nl_result.fields}
-                        # Persist flat ``{field: value, __prefill_audit__: ...}``
-                        # — that's the shape the awaiting-resume path
-                        # reads. Wrapping fields under another ``filled``
-                        # key would break the next turn's
-                        # ``previously_filled`` view.
-                        progress_payload: dict[str, Any] = dict(cumulative)
-                        if isinstance(prefill_audit, dict) and prefill_audit:
-                            progress_payload["__prefill_audit__"] = prefill_audit
-                        try:
-                            writer.update_awaiting_partial(
-                                run_id=awaiting.run_id,
-                                filled_json=json.dumps(
-                                    progress_payload, ensure_ascii=False, sort_keys=True,
-                                ),
-                                awaiting_since=time.time(),
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            log.warning(
-                                "meta_resolution.update_filled_failed",
-                                error=str(exc),
-                            )
+                            missing_required = [
+                                f.name for f in schema.fields
+                                if f.required and f.name not in cumulative
+                            ]
 
-                        missing_required = [
-                            f.name for f in schema.fields
-                            if f.required and f.name not in cumulative
-                        ]
-
-                        if nl_intent == "PROCEED_NOW":
-                            # User explicitly wants to start. Resume if
-                            # required fields are satisfied; otherwise
-                            # surface a targeted message about what's
-                            # still missing and stay in soft-clarify.
-                            if missing_required:
-                                ctx.metadata["meta_clarify_proceed_blocked"] = {
+                            if nl_intent == "PROCEED_NOW":
+                                # User explicitly wants to start. Resume if
+                                # required fields are satisfied; otherwise
+                                # surface a targeted message about what's
+                                # still missing and stay in soft-clarify.
+                                if missing_required:
+                                    ctx.metadata["meta_clarify_proceed_blocked"] = {
+                                        "awaiting": awaiting,
+                                        "filled": cumulative,
+                                        "missing_required": missing_required,
+                                    }
+                                    return ctx
+                                parsed, errors = cumulative, []
+                            elif missing_required:
+                                # FILL intent but not done yet — let the
+                                # turn flow through as a normal LLM chat
+                                # response. The model sees
+                                # ``meta_clarify_soft_progress`` and can
+                                # naturally acknowledge what was captured
+                                # while continuing the conversation.
+                                ctx.metadata["meta_clarify_soft_progress"] = {
                                     "awaiting": awaiting,
+                                    "step_id": awaiting.step_id,
                                     "filled": cumulative,
+                                    "newly_filled": list(nl_result.fields.keys()),
                                     "missing_required": missing_required,
+                                    "ambiguous_fields": [
+                                        {"name": a.name, "reason": a.reason}
+                                        for a in nl_result.ambiguous_fields
+                                    ],
                                 }
                                 return ctx
-                            parsed, errors = cumulative, []
-                        elif missing_required:
-                            # FILL intent but not done yet — let the
-                            # turn flow through as a normal LLM chat
-                            # response. The model sees
-                            # ``meta_clarify_soft_progress`` and can
-                            # naturally acknowledge what was captured
-                            # while continuing the conversation.
-                            ctx.metadata["meta_clarify_soft_progress"] = {
-                                "awaiting": awaiting,
-                                "step_id": awaiting.step_id,
-                                "filled": cumulative,
-                                "newly_filled": list(nl_result.fields.keys()),
-                                "missing_required": missing_required,
-                                "ambiguous_fields": [
-                                    {"name": a.name, "reason": a.reason}
-                                    for a in nl_result.ambiguous_fields
-                                ],
-                            }
-                            return ctx
-                        else:
-                            # All required satisfied without explicit
-                            # PROCEED_NOW — resume the DAG so the
-                            # workflow moves forward on its own.
-                            parsed, errors = cumulative, []
+                            else:
+                                # All required satisfied without explicit
+                                # PROCEED_NOW — resume the DAG so the
+                                # workflow moves forward on its own.
+                                parsed, errors = cumulative, []
             if not parsed and (not schema.nl_extract or not nl_attempted):
                 # Bug-X + Bug-Y mirror for the deterministic path: the
                 # parser's ``_check_required`` only sees this turn's

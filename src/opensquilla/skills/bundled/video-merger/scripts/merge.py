@@ -7,6 +7,16 @@ import argparse
 import os
 import sys
 
+# Force UTF-8 stdio so emoji prints in the underlying VideoMerger don't
+# blow up on the Windows GBK console code page when the gateway captures
+# stdout via subprocess pipes. Without this, the success "✅ 合并完成"
+# print at the end of merge() raises UnicodeEncodeError AFTER final.mp4
+# is already on disk, the wrapper returns exit 1, and the orchestrator
+# treats a successful merge as a failure.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # 添加项目根目录到Python路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.video_merger import VideoMerger
@@ -71,7 +81,7 @@ def main():
 
         sys.exit(0 if success else 1)
     except Exception as e:
-        print(f"❌ 错误：{str(e)}", file=sys.stderr)
+        print(f"[ERROR] {str(e)}", file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":

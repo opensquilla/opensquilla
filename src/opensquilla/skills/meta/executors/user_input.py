@@ -238,8 +238,13 @@ async def run_user_input_step(
         if deterministic_hits:
             for name, value in deterministic_hits.items():
                 prefilled_values[name] = value
-            current_audit_fields = list(
-                prefill_audit.get("fields") if isinstance(prefill_audit, dict) else [],
+            raw_audit_fields = (
+                prefill_audit.get("fields") if isinstance(prefill_audit, dict) else []
+            )
+            current_audit_fields = (
+                list(raw_audit_fields)
+                if isinstance(raw_audit_fields, list | tuple | set)
+                else []
             )
             merged_fields = sorted({*current_audit_fields, *deterministic_hits.keys()})
             if not isinstance(prefill_audit, dict):

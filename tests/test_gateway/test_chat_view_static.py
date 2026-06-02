@@ -117,6 +117,21 @@ def test_chat_sent_attachment_images_render_as_separate_thumbnail_attachments() 
     assert "var(--accent)" not in thumb_block
 
 
+def test_chat_user_message_bubbles_preserve_multiline_text() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    user_start = css.index(".chat-msg--user .chat-msg-text,")
+    user_end = css.index("/* Assistant", user_start)
+    user_block = css[user_start:user_end]
+    text_start = css.index(".msg.user .msg-body--has-attachments .msg-attachment-text {")
+    text_end = css.index(".msg.user .msg-body--has-attachments .msg-attachments", text_start)
+    attachment_text_block = css[text_start:text_end]
+
+    assert "white-space: pre-wrap;" in user_block
+    assert "overflow-wrap: anywhere;" in user_block
+    assert "white-space: pre-wrap;" in attachment_text_block
+    assert "overflow-wrap: anywhere;" in attachment_text_block
+
+
 def test_chat_non_image_message_attachments_render_download_links_when_data_exists() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     render_start = source.index("function _renderMessageAttachmentHtml(att)")

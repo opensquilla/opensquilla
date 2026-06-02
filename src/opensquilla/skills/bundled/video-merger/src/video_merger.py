@@ -178,7 +178,7 @@ class VideoMerger:
             # 验证输出文件
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 file_size = os.path.getsize(output_path) / 1024 / 1024
-                print(f"✅ 合并完成！输出文件：{output_path}")
+                print(f"[OK] 合并完成！输出文件：{output_path}")
                 print(f"文件大小：{file_size:.1f}MB")
                 return True
             else:
@@ -264,7 +264,7 @@ class VideoMerger:
                 preset
             )
 
-        print(f"✅ 分块合并完成！共生成 {chunk_index} 个分块，保存在：{output_dir}")
+        print(f"[OK] 分块合并完成！共生成 {chunk_index} 个分块，保存在：{output_dir}")
         return True
 
     def _merge_single_chunk(self,

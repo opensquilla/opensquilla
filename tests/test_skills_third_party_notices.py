@@ -54,7 +54,7 @@ ORIGINALS = {
     "srt-from-script",
     "subtitle-burner",
     "summarize",
-    "text-file-write",
+    "text-file-read",
     "title-card-image",
     "tmux",
     "video-still-animator",

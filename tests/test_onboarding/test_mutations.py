@@ -164,7 +164,12 @@ def test_upsert_channel_appends_new():
     cfg = GatewayConfig()
     res = upsert_channel(
         cfg,
-        entry_payload={"type": "slack", "name": "work", "token": "xoxb-secret"},
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": "xoxb-secret",
+            "signing_secret": "ss-secret",
+        },
     )
     assert res.restart_required is True
     entries = list_channel_entries(res.config)
@@ -177,7 +182,12 @@ def test_upsert_channel_updates_same_name():
     cfg = GatewayConfig()
     res1 = upsert_channel(
         cfg,
-        entry_payload={"type": "slack", "name": "work", "token": "old"},
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": "old",
+            "signing_secret": "ss-old",
+        },
     )
     res2 = upsert_channel(
         res1.config,
@@ -197,11 +207,38 @@ def test_upsert_channel_redacts_secrets_in_payload():
     assert res.public_payload["token"] == REDACTED_PLACEHOLDER
 
 
+def test_slack_webhook_channel_requires_signing_secret():
+    cfg = GatewayConfig()
+    with pytest.raises(ValueError, match="signing_secret"):
+        upsert_channel(
+            cfg,
+            entry_payload={"type": "slack", "name": "w", "token": "xoxb-test"},
+        )
+
+
+def test_slack_socket_channel_does_not_require_signing_secret():
+    cfg = GatewayConfig()
+    res = upsert_channel(
+        cfg,
+        entry_payload={
+            "type": "slack",
+            "name": "w",
+            "token": "xoxb-test",
+            "connection_mode": "socket",
+            "app_token": "xapp-test",
+        },
+    )
+
+    entry = list_channel_entries(res.config)[0]
+    assert entry["connection_mode"] == "socket"
+    assert "signing_secret" not in entry or entry["signing_secret"] in (None, "")
+
+
 def test_remove_channel():
     cfg = GatewayConfig()
     res1 = upsert_channel(
         cfg,
-        entry_payload={"type": "slack", "name": "w", "token": "x"},
+        entry_payload={"type": "slack", "name": "w", "token": "x", "signing_secret": "ss"},
     )
     res2 = remove_channel(res1.config, name="w")
     assert list_channel_entries(res2.config) == []
@@ -218,7 +255,7 @@ def test_set_channel_enabled_toggles():
     cfg = GatewayConfig()
     res1 = upsert_channel(
         cfg,
-        entry_payload={"type": "slack", "name": "w", "token": "x"},
+        entry_payload={"type": "slack", "name": "w", "token": "x", "signing_secret": "ss"},
     )
     res2 = set_channel_enabled(res1.config, name="w", enabled=False)
     assert list_channel_entries(res2.config)[0]["enabled"] is False
@@ -418,7 +455,9 @@ def test_upsert_llm_provider_does_not_carry_key_across_providers():
 
 
 def test_validate_channel_entry_returns_normalized_payload():
-    out = validate_channel_entry({"type": "slack", "name": "w", "token": "x"})
+    out = validate_channel_entry(
+        {"type": "slack", "name": "w", "token": "x", "signing_secret": "ss"}
+    )
     assert out["type"] == "slack"
     assert out["enabled"] is True
     assert out["agent_id"] == "main"
@@ -598,7 +637,12 @@ def test_upsert_channel_replaces_secret_when_provided():
     cfg = GatewayConfig()
     first = upsert_channel(
         cfg,
-        entry_payload={"type": "slack", "name": "w", "token": "xoxb-old"},
+        entry_payload={
+            "type": "slack",
+            "name": "w",
+            "token": "xoxb-old",
+            "signing_secret": "ss-old",
+        },
     )
     second = upsert_channel(
         first.config,

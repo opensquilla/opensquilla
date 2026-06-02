@@ -134,6 +134,7 @@ def test_dispatcher_routes_block_and_legacy_messages() -> None:
         "turn.end",
         "turn.status",
         "composer.set",
+        "completion.context",
         "router.update",
         "block.begin",
         "block.append",
@@ -172,6 +173,7 @@ def test_composer_router_state_carries_structured_fields() -> None:
     # the model row can render a downgrade marker and source markers exist.
     assert "shortModel" in composer
     assert "↓" in composer
+    assert "setCompletionContext" in composer
 
 
 def test_composer_router_model_downgrade_keeps_target_model_visible() -> None:

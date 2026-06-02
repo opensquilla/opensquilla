@@ -113,6 +113,21 @@ class ComposerState:
 
 
 @dataclass(frozen=True)
+class CompletionCandidate:
+    label: str
+    description: str
+    insert_text: str
+    category: str
+
+
+@dataclass(frozen=True)
+class CompletionContext:
+    catalog: tuple[CompletionCandidate, ...] = ()
+    files: tuple[str, ...] = ()
+    filters_sensitive_paths: bool = True
+
+
+@dataclass(frozen=True)
 class TurnStatusState:
     phase: str
     label: str
@@ -152,6 +167,13 @@ class HostResize:
 
 
 @dataclass(frozen=True)
+class HostCompletionRequest:
+    kind: str
+    query: str
+    request_id: int
+
+
+@dataclass(frozen=True)
 class HostError:
     message: str
     detail: str | None = None
@@ -163,6 +185,7 @@ type HostToPythonMessage = (
     | HostInputCancel
     | HostInputEof
     | HostResize
+    | HostCompletionRequest
     | HostError
 )
 
@@ -202,6 +225,12 @@ def host_message_from_json(raw: str) -> HostToPythonMessage:
         return HostResize(
             width=_required_int(payload, "resize.width", "width"),
             height=_required_int(payload, "resize.height", "height"),
+        )
+    if message_type == "completion.request":
+        return HostCompletionRequest(
+            kind=_required_str(payload, "completion.kind", "kind"),
+            query=_required_str(payload, "completion.query", "query"),
+            request_id=_required_int(payload, "completion.request_id", "request_id"),
         )
     if message_type == "error":
         return HostError(

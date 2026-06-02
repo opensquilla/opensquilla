@@ -7,11 +7,14 @@ import os
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from pathlib import Path
 from typing import Protocol
 
 from opensquilla.cli.tui.backend.contracts import TuiSurface
 from opensquilla.cli.tui.opentui.bridge import OpenTuiBridge
+from opensquilla.cli.tui.opentui.completion import build_completion_context
 from opensquilla.cli.tui.opentui.messages import (
+    CompletionContext,
     ComposerState,
     HostError,
     HostInputCancel,
@@ -163,6 +166,7 @@ async def open_opentui_surface(
     ready_marker: str | None = None,
     print_ready_marker: bool = True,
     bridge: OpenTuiBridge | None = None,
+    completion_context: CompletionContext | None = None,
 ) -> AsyncIterator[TuiSurface]:
     del model, session_id
     active_bridge = bridge or OpenTuiBridge()
@@ -179,9 +183,22 @@ async def open_opentui_surface(
             "composer.set",
             ComposerState(placeholder="send a message"),
         )
+        await active_bridge.send(
+            "completion.context",
+            completion_context
+            if completion_context is not None
+            else build_completion_context(surface, workspace_dir=_workspace_dir()),
+        )
         yield OpenTuiSurface(active_bridge, approval_surface=surface)
     finally:
         await active_bridge.close()
+
+
+def _workspace_dir() -> Path | None:
+    workspace = os.environ.get("OPENSQUILLA_WORKSPACE_DIR")
+    if not workspace:
+        return None
+    return Path(workspace)
 
 
 def _send_bridge_message(

@@ -7,13 +7,18 @@ from typing import Any
 import pytest
 
 from opensquilla.cli.tui.opentui.messages import (
+    CompletionContext,
     HostInputCancel,
     HostInputEof,
     HostInputSubmit,
     RouterPluginState,
     ScrollbackWrite,
 )
-from opensquilla.cli.tui.opentui.surface import OpenTuiOutputHandle, OpenTuiSurface
+from opensquilla.cli.tui.opentui.surface import (
+    OpenTuiOutputHandle,
+    OpenTuiSurface,
+    open_opentui_surface,
+)
 from opensquilla.engine.commands import Surface
 
 
@@ -32,6 +37,12 @@ class FakeOpenTuiBridge:
 
     async def next_message(self) -> object | None:
         return await self.messages.get()
+
+    async def start(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -72,6 +83,39 @@ async def test_opentui_output_handle_writes_to_scrollback() -> None:
             "scrollback.write",
             asdict(ScrollbackWrite(text="tool output\nfinal answer")),
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_open_opentui_surface_sends_completion_context_on_startup() -> None:
+    bridge = FakeOpenTuiBridge()
+
+    async with open_opentui_surface(
+        surface=Surface.CLI_GATEWAY,
+        ready_marker="",
+        print_ready_marker=False,
+        bridge=bridge,
+        completion_context=CompletionContext(catalog=(), files=()),
+    ):
+        pass
+
+    assert bridge.sent == [
+        (
+            "composer.set",
+            {
+                "placeholder": "send a message",
+                "text": "",
+                "disabled": False,
+            },
+        ),
+        (
+            "completion.context",
+            {
+                "catalog": (),
+                "files": (),
+                "filters_sensitive_paths": True,
+            },
+        ),
     ]
 
 

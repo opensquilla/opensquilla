@@ -20,6 +20,7 @@ export function createDispatcher(h) {
       case "turn.end": return h.turnEnd(m);
       case "turn.status": return h.turnStatus(m);
       case "composer.set": return h.composerSet(m);
+      case "completion.context": return h.completionContext?.(m);
       case "router.update": return h.routerUpdate(m);
       case "block.begin": return h.blockBegin(m);
       case "block.append": return h.blockAppend(m);

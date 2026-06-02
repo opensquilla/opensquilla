@@ -92,6 +92,7 @@ async function main() {
       composer.setTurnStatus(m);
     },
     composerSet: (m) => composer.setComposerState(m),
+    completionContext: (m) => composer.setCompletionContext(m),
     routerUpdate: (m) => composer.setRouterState(m),
     blockBegin: (m) => ensureTurn().begin(m.id, m.kind, m.meta),
     blockAppend: (m) => activeTurn?.append(m.id, m.delta),

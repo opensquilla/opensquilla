@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.cli.tui.opentui.messages import (
+    CompletionCandidate,
+    CompletionContext,
     HostInputCancel,
     HostInputEof,
     HostInputSubmit,
@@ -31,6 +33,38 @@ def test_python_message_to_json_serializes_router_update() -> None:
     assert '"type":"router.update"' in payload
     assert '"model":"gpt-5.5"' in payload
     assert '"route":"T3 | 91%"' in payload
+
+
+def test_python_message_to_json_serializes_completion_context() -> None:
+    payload = python_message_to_json(
+        "completion.context",
+        CompletionContext(
+            catalog=(
+                CompletionCandidate(
+                    label="/compact",
+                    description="Compact chat context.",
+                    insert_text="/compact",
+                    category="command",
+                ),
+                CompletionCandidate(
+                    label="/code-review",
+                    description="Run a comprehensive code review",
+                    insert_text="use the code-review skill: ",
+                    category="skill",
+                ),
+            ),
+            files=("src/main.py",),
+            filters_sensitive_paths=True,
+        ),
+    )
+
+    assert payload.endswith("\n")
+    assert '"type":"completion.context"' in payload
+    assert '"label":"/compact"' in payload
+    assert '"category":"command"' in payload
+    assert '"insert_text":"use the code-review skill: "' in payload
+    assert '"files":["src/main.py"]' in payload
+    assert '"filters_sensitive_paths":true' in payload
 
 
 def test_host_message_from_json_parses_ready_and_submit() -> None:

@@ -82,6 +82,12 @@ export function createComposer(deps) {
     active: false,
   };
 
+  const completionContext = {
+    catalog: [],
+    files: [],
+    filtersSensitivePaths: true,
+  };
+
   function colorForStyle(style) {
     if (style === "warning") return THEME.routerWarning;
     if (style === "error") return THEME.routerError;
@@ -459,6 +465,14 @@ export function createComposer(deps) {
     rerenderInputRegion();
   }
 
+  function setCompletionContext(message) {
+    completionContext.catalog = Array.isArray(message.catalog) ? message.catalog : [];
+    completionContext.files = Array.isArray(message.files) ? message.files : [];
+    completionContext.filtersSensitivePaths = Boolean(
+      message.filters_sensitive_paths ?? completionContext.filtersSensitivePaths,
+    );
+  }
+
   // main.mjs owns the pulse timer; it calls tickPulse(frame) each tick so the
   // status pill glyph advances. This replaces the old syncPulseTimer's per-tick
   // rerenderInputRegion().
@@ -479,6 +493,7 @@ export function createComposer(deps) {
     setComposerState,
     setRouterState,
     setTurnStatus,
+    setCompletionContext,
     onResize,
     tickPulse,
   };

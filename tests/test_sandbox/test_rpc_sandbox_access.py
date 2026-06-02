@@ -136,6 +136,22 @@ async def test_rpc_mount_mutations_require_path_without_mutating_origin(
 
 
 @pytest.mark.asyncio
+async def test_rpc_mutation_rejects_whitespace_session_key_without_creating_session() -> None:
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_mount_add
+
+    manager = _SessionManager()
+
+    with pytest.raises(ValueError, match="params.sessionKey is required"):
+        await _handle_sandbox_mount_add(
+            {"sessionKey": "   ", "path": "/tmp/ws/extras"},
+            _ctx(manager),
+        )
+
+    assert "   " not in manager.sessions
+    assert manager.created == []
+
+
+@pytest.mark.asyncio
 async def test_rpc_run_context_get_includes_bundles_and_temporary_grants() -> None:
     from opensquilla.gateway.rpc_sandbox import _handle_sandbox_run_context_get
     from opensquilla.sandbox.run_context import (
@@ -290,6 +306,43 @@ async def test_rpc_sandbox_mutations_reject_non_owner(
     ],
 )
 async def test_rpc_sandbox_invalid_params_do_not_create_missing_session(
+    handler_name: str,
+    params: dict[str, str],
+    message: str,
+) -> None:
+    import opensquilla.gateway.rpc_sandbox as rpc_sandbox
+
+    manager = _SessionManager()
+    missing_session_key = "agent:main:webchat:missing"
+    handler = getattr(rpc_sandbox, handler_name)
+
+    with pytest.raises(ValueError, match=message):
+        await handler(
+            {"sessionKey": missing_session_key, **params},
+            _ctx(manager),
+        )
+
+    assert missing_session_key not in manager.sessions
+    assert manager.created == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler_name", "params", "message"),
+    [
+        ("_handle_sandbox_domain_add", {"domain": "127.0.0.1"}, "ip_literal"),
+        ("_handle_sandbox_domain_remove", {"domain": "*.com"}, "broad_wildcard"),
+        ("_handle_sandbox_workspace_set", {"workspace": "/"}, "sensitive_path"),
+        (
+            "_handle_sandbox_workspace_set",
+            {"workspacePath": "/tmp/ws/.aws/credentials"},
+            "sensitive_path",
+        ),
+        ("_handle_sandbox_mount_add", {"path": "/etc/shadow"}, "sensitive_path"),
+        ("_handle_sandbox_mount_remove", {"path": "/"}, "sensitive_path"),
+    ],
+)
+async def test_rpc_sandbox_semantic_validation_does_not_create_missing_session(
     handler_name: str,
     params: dict[str, str],
     message: str,

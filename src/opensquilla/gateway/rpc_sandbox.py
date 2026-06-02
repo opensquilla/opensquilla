@@ -12,8 +12,15 @@ from opensquilla.gateway.rpc import (
     get_dispatcher,
 )
 from opensquilla.gateway.session_services import get_session_storage
+from opensquilla.sandbox.domain_validation import validate_domain_pattern
 from opensquilla.sandbox.package_bundles import expand_package_bundle
-from opensquilla.sandbox.run_context import RunContext, get_run_context, set_run_mode
+from opensquilla.sandbox.path_validation import decide_path_access, normalize_mount_access
+from opensquilla.sandbox.run_context import (
+    RunContext,
+    get_run_context,
+    normalize_workspace_path,
+    set_run_mode,
+)
 from opensquilla.sandbox.run_context_service import (
     add_domain_grant,
     add_mount_grant,
@@ -38,9 +45,9 @@ def _require_params(params: dict | None) -> dict[str, Any]:
 
 def _require_session_key(params: dict[str, Any]) -> str:
     session_key = params.get("sessionKey")
-    if not isinstance(session_key, str) or not session_key:
+    if not isinstance(session_key, str) or not session_key.strip():
         raise ValueError("params.sessionKey is required")
-    return session_key
+    return session_key.strip()
 
 
 def _require_string_param(
@@ -75,6 +82,16 @@ def _require_bundle_id(params: dict[str, Any]) -> str:
     if not expand_package_bundle(bundle_id.strip()):
         raise ValueError("unknown_package_bundle")
     return bundle_id
+
+
+def _validate_domain_param(domain: str) -> None:
+    decision = validate_domain_pattern(domain)
+    if decision.status == "blocked":
+        raise ValueError(decision.reason)
+
+
+def _validate_workspace_param(workspace: str) -> str:
+    return normalize_workspace_path(workspace)
 
 
 def _require_session_manager(ctx: RpcContext) -> Any:
@@ -117,6 +134,20 @@ async def _ensure_session_for_set(session_manager: Any, session_key: str) -> Any
     return None
 
 
+async def _workspace_for_session_or_config(
+    session_manager: Any,
+    session_key: str,
+    config: Any,
+) -> str | None:
+    agent_id = parse_agent_id(session_key)
+    session = await _session_for_key(session_manager, session_key)
+    session_agent_id = getattr(session, "agent_id", None) if session is not None else None
+    if isinstance(session_agent_id, str) and session_agent_id:
+        agent_id = session_agent_id
+    workspace = resolve_agent_workspace_dir(agent_id, config)
+    return str(workspace) if workspace is not None else None
+
+
 async def _workspace_for_session(
     session_manager: Any,
     session_key: str,
@@ -131,6 +162,31 @@ async def _workspace_for_session(
         agent_id = session_agent_id
     workspace = resolve_agent_workspace_dir(agent_id, config)
     return str(workspace) if workspace is not None else None
+
+
+async def _validate_mount_path_for_rpc(
+    session_manager: Any,
+    session_key: str,
+    config: Any,
+    *,
+    path: str,
+    access: str = "ro",
+) -> None:
+    workspace = await _workspace_for_session_or_config(session_manager, session_key, config)
+    context = await get_run_context(
+        session_manager,
+        session_key,
+        config=config,
+        workspace=workspace,
+    )
+    decision = decide_path_access(
+        path,
+        workspace=context.workspace or workspace,
+        mounts=context.mounts,
+        write=normalize_mount_access(access) == "rw",
+    )
+    if decision.status == "blocked":
+        raise ValueError(decision.reason or "mount_blocked")
 
 
 def _payload(context: RunContext) -> dict[str, Any]:
@@ -229,6 +285,14 @@ async def _handle_sandbox_mount_add(params: dict | None, ctx: RpcContext) -> dic
     _require_owner(ctx, "sandbox.mount.add")
     path = _require_string_param(params, "path", "params.path is required")
     manager = _require_session_manager(ctx)
+    access = str(params.get("access") or "ro")
+    await _validate_mount_path_for_rpc(
+        manager,
+        session_key,
+        ctx.config,
+        path=path,
+        access=access,
+    )
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
         raise KeyError(f"Session not found: {session_key}")
@@ -237,7 +301,7 @@ async def _handle_sandbox_mount_add(params: dict | None, ctx: RpcContext) -> dic
         manager,
         session_key,
         path=path,
-        access=str(params.get("access") or "ro"),
+        access=access,
         scope=str(params.get("scope") or "chat"),
         config=ctx.config,
         workspace=workspace,
@@ -252,6 +316,12 @@ async def _handle_sandbox_mount_remove(params: dict | None, ctx: RpcContext) -> 
     _require_owner(ctx, "sandbox.mount.remove")
     path = _require_string_param(params, "path", "params.path is required")
     manager = _require_session_manager(ctx)
+    await _validate_mount_path_for_rpc(
+        manager,
+        session_key,
+        ctx.config,
+        path=path,
+    )
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
         raise KeyError(f"Session not found: {session_key}")
@@ -272,6 +342,7 @@ async def _handle_sandbox_domain_add(params: dict | None, ctx: RpcContext) -> di
     session_key = _require_session_key(params)
     _require_owner(ctx, "sandbox.domain.add")
     domain = _require_string_param(params, "domain", "params.domain is required")
+    _validate_domain_param(domain)
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
@@ -294,6 +365,7 @@ async def _handle_sandbox_domain_remove(params: dict | None, ctx: RpcContext) ->
     session_key = _require_session_key(params)
     _require_owner(ctx, "sandbox.domain.remove")
     domain = _require_string_param(params, "domain", "params.domain is required")
+    _validate_domain_param(domain)
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
@@ -362,6 +434,7 @@ async def _handle_sandbox_workspace_set(params: dict | None, ctx: RpcContext) ->
         ("workspace", "workspacePath"),
         "params.workspace is required",
     )
+    workspace_path = _validate_workspace_param(workspace_path)
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:

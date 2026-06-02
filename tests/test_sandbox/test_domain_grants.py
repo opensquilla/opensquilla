@@ -32,6 +32,8 @@ def test_normalize_domain(raw: str, expected: str) -> None:
         "127.0.0.1",
         "127.1",
         "0177.0.0.1",
+        "0x7f.0.0.1",
+        "0x7f.1",
         "10.0.0.2",
         "169.254.169.254",
         "8.8.8.8",
@@ -53,6 +55,11 @@ def test_validate_domain_pattern_allows_exact_and_narrow_wildcard() -> None:
     assert validate_domain_pattern("pypi.org") == DomainDecision(
         status="allowed",
         normalized="pypi.org",
+        reason="exact_domain",
+    )
+    assert validate_domain_pattern("3m.com") == DomainDecision(
+        status="allowed",
+        normalized="3m.com",
         reason="exact_domain",
     )
     assert validate_domain_pattern("*.pythonhosted.org") == DomainDecision(

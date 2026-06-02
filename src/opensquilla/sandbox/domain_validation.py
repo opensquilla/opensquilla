@@ -35,7 +35,7 @@ _BROAD_WILDCARD_SUFFIXES = {
 }
 
 _DNS_LABEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
-_IPV4_NUMERIC_ALIAS_RE = re.compile(r"\d+(?:\.\d+){1,3}")
+_IPV4_NUMERIC_ALIAS_LABEL_RE = re.compile(r"(?:\d+|0x[0-9a-f]+)")
 
 
 def normalize_domain(raw: str) -> str:
@@ -112,8 +112,15 @@ def _is_ip_literal(value: str) -> bool:
     try:
         ipaddress.ip_address(candidate)
     except ValueError:
-        return _IPV4_NUMERIC_ALIAS_RE.fullmatch(candidate) is not None
+        return _is_ipv4_numeric_alias(candidate)
     return True
+
+
+def _is_ipv4_numeric_alias(value: str) -> bool:
+    labels = value.split(".")
+    if not 1 <= len(labels) <= 4:
+        return False
+    return all(_IPV4_NUMERIC_ALIAS_LABEL_RE.fullmatch(label) is not None for label in labels)
 
 
 __all__ = [

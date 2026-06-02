@@ -121,6 +121,11 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 - `video-still-animator`
 - `weather`
 - `xlsx`
+- `advanced-dubbing-studio`
+- `music-and-singing-studio`
+- `voice-clone-lab`
+- `voice-conversion-studio`
+- `voiceover-studio`
 
 ## tokenjuice adapted reduction rules
 

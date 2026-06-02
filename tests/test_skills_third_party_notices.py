@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
 NOTICES = ROOT / "THIRD_PARTY_NOTICES.md"
 ORIGINALS = {
+    "advanced-dubbing-studio",
     "cron",
     "deep-research",
     "docx",
@@ -28,6 +29,7 @@ ORIGINALS = {
     "meta-skill-creator",
     "meta-web-research-to-report",
     "multi-search-engine",
+    "music-and-singing-studio",
     "nano-pdf",
     "paper-abstract-author",
     "paper-citation-planner",
@@ -58,6 +60,9 @@ ORIGINALS = {
     "title-card-image",
     "tmux",
     "video-still-animator",
+    "voice-clone-lab",
+    "voice-conversion-studio",
+    "voiceover-studio",
     "weather",
     "xlsx",
 }

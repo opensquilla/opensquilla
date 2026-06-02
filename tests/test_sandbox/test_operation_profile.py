@@ -59,17 +59,41 @@ def test_npm_run_install_is_not_package_install() -> None:
 
 
 def test_classify_rust_package_install() -> None:
-    profile = classify_command(("cargo", "build"))
-    assert profile.name == "package_install"
-    assert profile.package_manager == "rust"
-    assert profile.needs_network is True
+    for command in (
+        ("cargo", "build"),
+        ("cargo", "test"),
+        ("cargo", "install", "cargo-edit"),
+    ):
+        profile = classify_command(command)
+        assert profile.name == "package_install"
+        assert profile.package_manager == "rust"
+        assert profile.needs_network is True
+
+
+def test_cargo_help_install_is_not_package_install() -> None:
+    profile = classify_command(("cargo", "help", "install"))
+    assert profile.name == "unknown_shell"
+    assert profile.package_manager is None
 
 
 def test_classify_go_package_install() -> None:
-    profile = classify_command(("go", "mod", "download"))
-    assert profile.name == "package_install"
-    assert profile.package_manager == "go"
-    assert profile.needs_network is True
+    for command in (
+        ("go", "get", "example.com/mod"),
+        ("go", "install", "example.com/cmd/tool"),
+        ("go", "mod", "download"),
+        ("go", "mod", "tidy"),
+    ):
+        profile = classify_command(command)
+        assert profile.name == "package_install"
+        assert profile.package_manager == "go"
+        assert profile.needs_network is True
+
+
+def test_go_help_commands_are_not_package_install() -> None:
+    for command in (("go", "help", "install"), ("go", "help", "get")):
+        profile = classify_command(command)
+        assert profile.name == "unknown_shell"
+        assert profile.package_manager is None
 
 
 def test_classify_url_fetch() -> None:
@@ -94,6 +118,12 @@ def test_classify_url_fetch_normalizes_url_punctuation() -> None:
 
 def test_classify_destructive_shell() -> None:
     profile = classify_command(("rm", "-rf", "dist"))
+    assert profile.name == "destructive_shell"
+    assert profile.high_impact is True
+
+
+def test_top_level_destructive_command_dominates_url_detection() -> None:
+    profile = classify_command(("rm", "-rf", "https://example.com"))
     assert profile.name == "destructive_shell"
     assert profile.high_impact is True
 

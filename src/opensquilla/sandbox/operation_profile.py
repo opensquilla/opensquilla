@@ -35,23 +35,19 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
         return OperationProfile("package_install", True, "python")
     if _is_node_install(lowered):
         return OperationProfile("package_install", True, "node")
-    if lowered and _command_name(lowered[0]) == "cargo" and any(
-        p in lowered for p in {"install", "build", "test"}
-    ):
+    if _is_rust_package_install(lowered):
         return OperationProfile("package_install", True, "rust")
-    if lowered and _command_name(lowered[0]) == "go" and any(
-        p in lowered for p in {"get", "mod", "install"}
-    ):
+    if _is_go_package_install(lowered):
         return OperationProfile("package_install", True, "go")
     if _is_shell_wrapper(lowered):
         if _shell_script_is_destructive(lowered):
             return OperationProfile("destructive_shell", high_impact=True)
         return OperationProfile("unknown_shell")
+    if _is_destructive(lowered):
+        return OperationProfile("destructive_shell", high_impact=True)
     domains = _domains_from_argv(parts)
     if domains:
         return OperationProfile("url_fetch", True, requested_domains=domains)
-    if _is_destructive(lowered):
-        return OperationProfile("destructive_shell", high_impact=True)
     if lowered and lowered[0] in {"cat", "ls", "find", "rg"}:
         return OperationProfile("workspace_read")
     return OperationProfile("unknown_shell")
@@ -83,6 +79,25 @@ def _is_node_install(lowered: tuple[str, ...]) -> bool:
     if not lowered or _command_name(lowered[0]) not in {"npm", "pnpm", "yarn"}:
         return False
     return len(lowered) >= 2 and lowered[1] in _NODE_INSTALL_COMMANDS
+
+
+def _is_rust_package_install(lowered: tuple[str, ...]) -> bool:
+    return (
+        len(lowered) >= 2
+        and _command_name(lowered[0]) == "cargo"
+        and lowered[1] in {"build", "install", "test"}
+    )
+
+
+def _is_go_package_install(lowered: tuple[str, ...]) -> bool:
+    if len(lowered) < 2 or _command_name(lowered[0]) != "go":
+        return False
+    if lowered[1] in {"get", "install"}:
+        return True
+    return len(lowered) >= 3 and lowered[1] == "mod" and lowered[2] in {
+        "download",
+        "tidy",
+    }
 
 
 def _domains_from_argv(parts: tuple[str, ...]) -> tuple[str, ...]:

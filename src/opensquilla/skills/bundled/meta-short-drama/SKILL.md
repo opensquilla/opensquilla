@@ -65,33 +65,45 @@ composition:
             RENDER_STYLE and IDENTITY_ANCHOR. Downstream models accept
             Chinese natively (seedance is Chinese-first).
           - If user named a render style verbatim → copy it, AUTO_FILLED_RENDER_STYLE: no.
-          - Else INFER the style from the TOPIC genre and pick the best
-            match below. AUTO_FILLED_RENDER_STYLE: yes. Do NOT default to
-            anime for live-action genres — most short-drama topics
-            (职场反转 / 都市爽剧 / 霸总 / 校园 / 悬疑 / 古装宫斗) want
-            photoreal. Anime is correct ONLY when the topic itself reads
-            as animated (童话 / 二次元 / 治愈系动画 / fairy tale / cute
-            mascot). When unsure between photoreal and stylised → pick
-            photoreal; the user will adjust at step 3 if wrong.
-
-              短剧 / 都市 / 职场 / 霸总 / 校园 / 现代 / 悬疑 / 罪案
-                EN: `cinematic photoreal, 35mm film grain, dramatic lighting, shallow depth of field`
-                中: `电影级写实,真实摄影,戏剧化布光,浅景深`
-              古装 / 武侠 / 仙侠 / 国风
-                EN: `cinematic photoreal, period costume drama, soft natural light, painterly grading`
-                中: `电影级写实,古装年代剧,柔和自然光,水墨色调`
-              带货 / 商品 / 产品 / 广告
-                EN: `studio lighting, hero product shot, clean background, shallow depth of field`
-                中: `专业棚拍,产品主体光,干净背景,浅景深`
-              童话 / 儿童 / 二次元 / 卡通 / fairy tale / cute / mascot
-                EN: `2D anime illustration, flat colour, soft cel-shading`
-                中: `2D 动漫插画,扁平上色,柔和赛璐璐阴影`
-              科普 / 教育 / 知识
-                EN: `isometric infographic, flat colour, bright key light, clean composition`
-                中: `等距信息图风格,扁平配色,明亮主光,干净构图`
-              fallback (genre unclear)
-                EN: `cinematic photoreal, 35mm film grain, dramatic lighting, shallow depth of field`
-                中: `电影级写实,真实摄影,戏剧化布光,浅景深`
+          - Else INFER a render style from the TOPIC's genre, era, and
+            tone — DO NOT default to anime. Pick whichever of these
+            best fits the story you just read; fall through to a fresh
+            descriptor if none match exactly. Use the user's language.
+              * 现代职场 / 都市爽剧 / 商战 / 反转 / corporate drama →
+                  电影级写实, 真实摄影, 戏剧化强光对比, 高对比度色调
+                  / Cinematic realism, dramatic high-contrast lighting
+              * 古风 / 武侠 / 仙侠 / 宫廷 / wuxia / xianxia →
+                  水墨风, 中国传统工笔画, 柔和留白构图
+                  / Ink-wash painting, traditional Chinese gongbi style
+              * 校园 / 青春 / 恋爱 / 治愈 / slice-of-life / romance →
+                  日系胶片质感, 柔和自然光, 浅景深, 温暖调色
+                  / Japanese film aesthetic, soft natural light, warm grade
+              * 科幻 / 赛博朋克 / 未来 / sci-fi / cyberpunk →
+                  赛博朋克霓虹, 体积光雾气, 高对比反射, 未来感
+                  / Cyberpunk neon, volumetric haze, future-noir
+              * 恐怖 / 悬疑 / 惊悚 / horror / thriller / noir →
+                  低调照明, 高反差暗调, 电影黑色风格
+                  / Low-key lighting, high-contrast noir, cinematic shadow
+              * 童话 / 绘本 / 儿童 / fairytale / picture-book / kids →
+                  水彩绘本插画, 柔和纸面纹理, 暖色调
+                  / Watercolour storybook, soft paper texture, warm palette
+              * 商品 / 广告 / 带货 / product / commercial →
+                  影棚布光, 浅景深产品特写, 干净背景
+                  / Studio lighting, hero-product close-up, clean background
+              * 美食 / 烹饪 / food / cooking →
+                  顶光美食摄影, 自然质感, 浅景深
+                  / Top-down food photography, natural texture, shallow DOF
+              * 科普 / 教学 / 信息图 / explainer / educational →
+                  扁平信息图风格, 简洁配色, 平面构图
+                  / Flat infographic style, clean palette, geometric layout
+              * 卡通 / 动画 / 二次元 / 萌系 — only when the user really
+                wants anime → 2D 动漫插画, 扁平上色, 柔和赛璐璐阴影
+                                / 2D anime illustration, flat cel-shading
+              * none of the above → write ONE descriptive line that
+                matches the topic's mood (NOT anime by default). Examples:
+                  documentary realism / oil-painting cinematic / vintage
+                  super-8 grain / minimalist black-and-white photography.
+            AUTO_FILLED_RENDER_STYLE: yes
           - If user described main character(s) with at least
             ethnicity + age + hair + outfit → summarise ≤40 words,
             AUTO_FILLED_IDENTITY_ANCHOR: no.

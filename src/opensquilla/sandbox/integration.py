@@ -29,18 +29,23 @@ host.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import functools
 import inspect
 import json
 import logging
-from collections.abc import Awaitable, Callable
+import os
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from opensquilla.sandbox.backend import Backend, NoopBackend, select_backend
 from opensquilla.sandbox.config import EffectiveMode, SandboxSettings
+from opensquilla.sandbox.domain_validation import validate_domain_pattern
 from opensquilla.sandbox.governance import (
     ApprovalGate,
     DenialLedger,
@@ -76,6 +81,19 @@ from opensquilla.sandbox.types import (
 )
 
 log = logging.getLogger(__name__)
+
+_IN_PROCESS_PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+)
+_IN_PROCESS_PROXY_BYPASS_ENV_KEYS = ("NO_PROXY", "no_proxy")
+_TRUST_ENV_KEY = "OPENSQUILLA_TRUST_ENV"
+_MANAGED_IN_PROCESS_ENV_LOCK = asyncio.Lock()
+_MISSING_ENV = object()
 
 
 # ─── Approval queue / context protocols ──────────────────────────────────
@@ -551,7 +569,33 @@ def sandboxed(
             if isinstance(decision, DenialResult):
                 return json.dumps(decision.to_dict())
 
-            result = await fn(*args, **kwargs)
+            if policy.network == NetworkMode.PROXY_ALLOWLIST:
+                rt = get_runtime()
+                if rt is None:
+                    return json.dumps(
+                        DenialResult(
+                            reason=DenialReason.RUNTIME_UNCONFIGURED,
+                            suggested_next_step=SuggestedNextStep.ASK_USER,
+                            level=policy.level,
+                            action_fingerprint=action_fingerprint(request),
+                            message=(
+                                "Sandbox runtime is not configured. "
+                                "Managed in-process network tools refuse to run."
+                            ),
+                            retryable=False,
+                        ).to_dict()
+                    )
+                prepared = await _prepare_in_process_managed_network(request, rt)
+                if isinstance(prepared, DenialResult):
+                    return json.dumps(prepared.to_dict())
+                result = await _run_in_process_with_managed_network(
+                    fn,
+                    args,
+                    kwargs,
+                    context=prepared,
+                )
+            else:
+                result = await fn(*args, **kwargs)
             if record_payload:
                 try:
                     await record_success(request, result)
@@ -593,6 +637,119 @@ def _string_env(value: Any) -> dict[str, str] | None:
     if not isinstance(value, dict):
         return None
     return {str(k): str(v) for k, v in value.items()}
+
+
+async def _prepare_in_process_managed_network(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+) -> RunContext | DenialResult:
+    context = _current_run_context_for_network_proxy()
+    if context is None:
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            "NetworkMode.PROXY_ALLOWLIST requires Run Context grants to run "
+            "in-process network tools through the managed proxy.",
+        )
+    if not _argv_has_explicit_network_target(request.action_kind, request.argv):
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            "NetworkMode.PROXY_ALLOWLIST requires an explicit URL target for "
+            "in-process network tools; provider search actions cannot safely "
+            "be constrained without provider-specific plumbing.",
+        )
+    return context
+
+
+async def _managed_in_process_denial(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+    message: str,
+) -> DenialResult:
+    denial = DenialResult(
+        reason=DenialReason.POLICY_DENIED,
+        suggested_next_step=SuggestedNextStep.REPLAN,
+        level=request.policy.level,
+        action_fingerprint=action_fingerprint(request),
+        message=message,
+        retryable=False,
+    )
+    await runtime.ledger.record_denial(
+        _resolve_session_id(runtime, None),
+        denial.action_fingerprint,
+        denial.reason,
+    )
+    return denial
+
+
+async def _run_in_process_with_managed_network(
+    fn: HandlerT,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    context: RunContext,
+) -> Any:
+    proxy = SandboxProxyServer(lambda host: decide_network_access(host, context))
+    await proxy.start()
+    try:
+        proxy_url = f"http://{proxy.host}:{proxy.port}"
+        async with _MANAGED_IN_PROCESS_ENV_LOCK:
+            with _temporary_managed_proxy_env(proxy_url):
+                return await fn(*args, **kwargs)
+    finally:
+        await proxy.stop()
+
+
+@contextmanager
+def _temporary_managed_proxy_env(proxy_url: str) -> Iterator[None]:
+    keys = (
+        *_IN_PROCESS_PROXY_ENV_KEYS,
+        *_IN_PROCESS_PROXY_BYPASS_ENV_KEYS,
+        _TRUST_ENV_KEY,
+    )
+    original = {key: os.environ.get(key, _MISSING_ENV) for key in keys}
+    try:
+        for key in _IN_PROCESS_PROXY_ENV_KEYS:
+            os.environ[key] = proxy_url
+        for key in _IN_PROCESS_PROXY_BYPASS_ENV_KEYS:
+            os.environ[key] = ""
+        os.environ[_TRUST_ENV_KEY] = "1"
+        yield
+    finally:
+        for key, value in original.items():
+            if value is _MISSING_ENV:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = str(value)
+
+
+def _argv_has_explicit_network_target(action_kind: str, argv: tuple[str, ...]) -> bool:
+    tool_name = argv[0] if argv else ""
+    if tool_name == "web_search":
+        return False
+    return any(_is_explicit_network_target(action_kind, value) for value in argv[1:])
+
+
+def _is_explicit_network_target(action_kind: str, value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if _is_http_url(text):
+        return True
+    if action_kind != "web.fetch":
+        decision = validate_domain_pattern(text)
+        return decision.status == "allowed"
+    return False
+
+
+def _is_http_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        parsed.port
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.hostname)
 
 
 async def escalate_backend_denial(

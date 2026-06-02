@@ -13,9 +13,24 @@ from opensquilla.sandbox.network_guard import NetworkDecision
 
 _HEADER_LIMIT = 64 * 1024
 _MAX_BODY_BYTES = 1_048_576
+_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 _DEFAULT_HEADER_READ_TIMEOUT_SECONDS = 5.0
 _DEFAULT_BODY_READ_TIMEOUT_SECONDS = 5.0
+_DEFAULT_RESPONSE_READ_TIMEOUT_SECONDS = 5.0
 _CHUNK_SIZE = 64 * 1024
+_HOP_BY_HOP_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +57,8 @@ class SandboxProxyServer:
         port: int = 0,
         header_read_timeout_seconds: float = _DEFAULT_HEADER_READ_TIMEOUT_SECONDS,
         body_read_timeout_seconds: float = _DEFAULT_BODY_READ_TIMEOUT_SECONDS,
+        response_read_timeout_seconds: float = _DEFAULT_RESPONSE_READ_TIMEOUT_SECONDS,
+        max_response_bytes: int = _MAX_RESPONSE_BYTES,
         resolver: Callable[[str, int], tuple[str, int]] | None = None,
     ) -> None:
         self._decide = decide
@@ -50,6 +67,8 @@ class SandboxProxyServer:
         self.port = port
         self._header_read_timeout_seconds = header_read_timeout_seconds
         self._body_read_timeout_seconds = body_read_timeout_seconds
+        self._response_read_timeout_seconds = response_read_timeout_seconds
+        self._max_response_bytes = max(1, max_response_bytes)
         self._server: asyncio.Server | None = None
         self._active_tasks: set[asyncio.Task[None]] = set()
         self._active_writers: set[asyncio.StreamWriter] = set()
@@ -214,10 +233,28 @@ class SandboxProxyServer:
             upstream_writer.write(_rewrite_http_header(request, header) + body)
             await upstream_writer.drain()
 
-            while True:
-                chunk = await upstream_reader.read(_CHUNK_SIZE)
+            response_bytes = 0
+            while response_bytes < self._max_response_bytes:
+                read_size = min(_CHUNK_SIZE, self._max_response_bytes - response_bytes)
+                try:
+                    chunk = await asyncio.wait_for(
+                        upstream_reader.read(read_size),
+                        timeout=self._response_read_timeout_seconds,
+                    )
+                except TimeoutError:
+                    if response_bytes == 0:
+                        await _write_response(
+                            writer,
+                            _response(
+                                502,
+                                "Bad Gateway",
+                                b"Upstream response timed out.\n",
+                            ),
+                        )
+                    break
                 if not chunk:
                     break
+                response_bytes += len(chunk)
                 writer.write(chunk)
                 await writer.drain()
         finally:
@@ -246,6 +283,8 @@ def _parse_request(header: bytes) -> _ParsedRequest:
     version = request_parts[2].upper()
     if not version.startswith("HTTP/"):
         raise ValueError("malformed_request_line")
+    if _transfer_encoding_values(lines[1:]):
+        raise ValueError("unsupported_transfer_encoding")
     content_length = _content_length(lines[1:])
     if content_length > _MAX_BODY_BYTES:
         raise ValueError("request_body_too_large")
@@ -405,6 +444,15 @@ def _content_length(lines: list[str]) -> int:
     return length
 
 
+def _transfer_encoding_values(lines: list[str]) -> list[str]:
+    values: list[str] = []
+    for line in lines:
+        name, separator, value = line.partition(":")
+        if separator and name.strip().lower() == "transfer-encoding":
+            values.append(value.strip())
+    return values
+
+
 def _origin_form_target(target: str) -> str:
     if not target:
         raise ValueError("empty_request_target")
@@ -419,6 +467,7 @@ def _rewrite_http_header(request: _ParsedRequest, header: bytes) -> bytes:
     text = header.decode("iso-8859-1", errors="replace")
     lines = text.split("\r\n")
     header_lines = lines[1:-2]
+    hop_by_hop = _hop_by_hop_header_names(header_lines)
     rewritten: list[str] = [
         f"{request.method} {request.origin_form} {request.version}",
         f"Host: {_authority_for_request(request)}",
@@ -428,11 +477,23 @@ def _rewrite_http_header(request: _ParsedRequest, header: bytes) -> bytes:
         if not separator:
             continue
         lowered = name.strip().lower()
-        if lowered in {"host", "connection", "proxy-connection"}:
+        if lowered == "host" or lowered in hop_by_hop:
             continue
         rewritten.append(f"{name}:{value}")
     rewritten.append("Connection: close")
     return ("\r\n".join(rewritten) + "\r\n\r\n").encode("iso-8859-1")
+
+
+def _hop_by_hop_header_names(header_lines: list[str]) -> set[str]:
+    names = set(_HOP_BY_HOP_HEADERS)
+    for line in header_lines:
+        name, separator, value = line.partition(":")
+        if separator and name.strip().lower() == "connection":
+            for token in value.split(","):
+                token = token.strip().lower()
+                if token:
+                    names.add(token)
+    return names
 
 
 def _authority_for_request(request: _ParsedRequest) -> str:

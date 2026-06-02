@@ -53,6 +53,28 @@ async def _send_proxy_request_with_timeout(
         await writer.wait_closed()
 
 
+async def _send_proxy_request_until_eof(
+    server: SandboxProxyServer,
+    request: bytes,
+    *,
+    timeout: float = 1.0,
+) -> bytes:
+    reader, writer = await asyncio.open_connection(server.host, server.port)
+    chunks: list[bytes] = []
+    try:
+        writer.write(request)
+        await writer.drain()
+        while True:
+            chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_proxy_forwards_allowed_absolute_http_request_to_upstream() -> None:
     seen_hosts: list[str] = []
     resolver_calls: list[tuple[str, int]] = []
@@ -248,6 +270,61 @@ async def test_proxy_rejects_oversized_content_length_without_reading_body() -> 
     assert response.startswith((b"HTTP/1.1 403", b"HTTP/1.1 413"))
 
 
+async def test_proxy_rejects_chunked_request_without_opening_upstream() -> None:
+    seen_hosts: list[str] = []
+    resolver_calls: list[tuple[str, int]] = []
+
+    def decide(host: str) -> NetworkDecision:
+        seen_hosts.append(host)
+        return _allow_decision(host)
+
+    def resolver(host: str, port: int) -> tuple[str, int]:
+        resolver_calls.append((host, port))
+        return "127.0.0.1", 9
+
+    server = SandboxProxyServer(decide, resolver=resolver)
+    await server.start()
+    try:
+        response = await _send_proxy_request(
+            server,
+            b"POST http://Allowed.test/upload HTTP/1.1\r\n"
+            b"Transfer-Encoding: chunked\r\n"
+            b"\r\n"
+            b"5\r\nhello\r\n0\r\n\r\n",
+        )
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 403")
+    assert seen_hosts == []
+    assert resolver_calls == []
+
+
+async def test_proxy_rejects_transfer_encoding_content_length_conflict() -> None:
+    seen_hosts: list[str] = []
+
+    def decide(host: str) -> NetworkDecision:
+        seen_hosts.append(host)
+        return _allow_decision(host)
+
+    server = SandboxProxyServer(decide)
+    await server.start()
+    try:
+        response = await _send_proxy_request(
+            server,
+            b"POST http://Allowed.test/upload HTTP/1.1\r\n"
+            b"Transfer-Encoding: chunked\r\n"
+            b"Content-Length: 5\r\n"
+            b"\r\n"
+            b"hello",
+        )
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 403")
+    assert seen_hosts == []
+
+
 async def test_proxy_returns_403_for_unknown_absolute_http_host() -> None:
     seen_hosts: list[str] = []
 
@@ -358,6 +435,87 @@ async def test_proxy_forwards_allowed_origin_form_http_request_to_upstream() -> 
         b"Connection: close\r\n"
         b"\r\n"
     ]
+
+
+async def test_proxy_times_out_upstream_response_that_never_arrives() -> None:
+    async def handle_upstream(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        await asyncio.sleep(1.0)
+        writer.close()
+        with suppress(ConnectionError):
+            await writer.wait_closed()
+
+    upstream = await asyncio.start_server(handle_upstream, "127.0.0.1", 0)
+    upstream_socket = next(iter(upstream.sockets or ()), None)
+    assert upstream_socket is not None
+    upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+
+    server = SandboxProxyServer(
+        _allow_decision,
+        resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+        response_read_timeout_seconds=0.05,
+    )
+    await server.start()
+    try:
+        response = await _send_proxy_request_until_eof(
+            server,
+            b"GET http://Allowed.test/slow HTTP/1.1\r\n\r\n",
+            timeout=0.5,
+        )
+    finally:
+        await server.stop()
+        upstream.close()
+        await upstream.wait_closed()
+
+    assert response.startswith(b"HTTP/1.1 502")
+
+
+async def test_proxy_caps_oversized_upstream_response() -> None:
+    async def handle_upstream(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Length: 4096\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+            + (b"x" * 4096)
+        )
+        await writer.drain()
+        await asyncio.sleep(1.0)
+        writer.close()
+        with suppress(ConnectionError):
+            await writer.wait_closed()
+
+    upstream = await asyncio.start_server(handle_upstream, "127.0.0.1", 0)
+    upstream_socket = next(iter(upstream.sockets or ()), None)
+    assert upstream_socket is not None
+    upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+
+    server = SandboxProxyServer(
+        _allow_decision,
+        resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+        max_response_bytes=96,
+    )
+    await server.start()
+    try:
+        response = await _send_proxy_request_until_eof(
+            server,
+            b"GET http://Allowed.test/large HTTP/1.1\r\n\r\n",
+            timeout=0.5,
+        )
+    finally:
+        await server.stop()
+        upstream.close()
+        await upstream.wait_closed()
+
+    assert response.startswith(b"HTTP/1.1 200 OK")
+    assert len(response) == 96
 
 
 async def test_proxy_stop_is_idempotent() -> None:

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "start": "bun src/main.mjs",
-    "smoke": "bun src/main.mjs --help"
+    "smoke": "bun src/main.mjs --help",
+    "test": "node --test --test-force-exit $(ls src/*.test.mjs | grep -v '\\.bun\\.test\\.mjs')",
+    "test:bun": "bun test src/*.bun.test.mjs"
   },
   "dependencies": {
     "@opentui/core": "0.3.0"

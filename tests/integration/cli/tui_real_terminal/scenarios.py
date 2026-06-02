@@ -242,6 +242,38 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
             requires_prompt_ready=False,
         ),
         TuiScenario(
+            scenario_id="completion_menu_preserves_history",
+            family="completion_menu",
+            initial_size=TerminalSize(cols=100, rows=30),
+            steps=(
+                ScenarioStep("wait-ready", "wait_text", "OPEN_SQUILLA_TUI_READY", "ready"),
+                ScenarioStep(
+                    "send-message",
+                    "send_text",
+                    "history before menu",
+                    "after-input",
+                ),
+                ScenarioStep(
+                    "wait-response",
+                    "wait_text",
+                    "fake-response:history before menu",
+                    "after-response",
+                ),
+                ScenarioStep("open-slash-menu", "key", "/", "menu-open-over-history"),
+                ScenarioStep(
+                    "capture-menu-over-history",
+                    "capture",
+                    "",
+                    "menu-over-history",
+                    timeout_s=0.3,
+                ),
+            ),
+            # The conversation text rendered before the menu must remain visible:
+            # the overlay layer must not paint a filled rectangle over history.
+            expected_text=("fake-response:history before menu", "/compact"),
+            requires_prompt_ready=False,
+        ),
+        TuiScenario(
             scenario_id="completion_menu_resize",
             family="completion_menu",
             initial_size=TerminalSize(cols=100, rows=30),

@@ -414,6 +414,9 @@ export function createComposer(deps) {
       height: Math.min(8, rows.length + 2),
       borderStyle: "rounded",
       borderColor: THEME.composerBorder,
+      // Opaque fill so the conversation behind the menu cannot show through and
+      // collide with the menu rows (a transparent box leaks the backdrop).
+      backgroundColor: THEME.overlayBg,
       title: menu.kind === "file" ? " files " : " commands ",
       titleAlignment: "left",
       flexDirection: "column",

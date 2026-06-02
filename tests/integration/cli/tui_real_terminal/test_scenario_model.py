@@ -43,6 +43,7 @@ def test_all_abcd_scenarios_are_declared() -> None:
         "complex_ui_state",
         "architecture_prompt",
         "completion_file_menu_escape",
+        "completion_menu_preserves_history",
         "completion_menu_resize",
         "completion_slash_menu_filter",
         "live_opentui_architecture_prompt",
@@ -54,6 +55,7 @@ def test_all_abcd_scenarios_are_declared() -> None:
     assert scenarios["complex_ui_state"].family == "complex_ui_state"
     assert scenarios["architecture_prompt"].family == "architecture_prompt"
     assert scenarios["completion_file_menu_escape"].family == "completion_menu"
+    assert scenarios["completion_menu_preserves_history"].family == "completion_menu"
     assert scenarios["completion_menu_resize"].family == "completion_menu"
     assert scenarios["completion_slash_menu_filter"].family == "completion_menu"
     assert scenarios["live_opentui_architecture_prompt"].family == "live_prompt"

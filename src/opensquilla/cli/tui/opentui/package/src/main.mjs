@@ -64,7 +64,10 @@ async function main() {
   // and any future confirm/hint popups). Lives as a root sibling of the
   // conversation and footer so overlays never bleed into the scrollback buffer
   // or get clipped by the fixed-height footer; its high zIndex keeps it painted
-  // above both. The layer itself is invisible — only mounted overlays draw.
+  // above both. shouldFill:false is critical — a BoxRenderable fills its whole
+  // rectangle with the background color by default, and a full-screen filled
+  // box would paint over the conversation the moment a menu opens. The layer
+  // must stay transparent so only the mounted overlay nodes actually draw.
   const overlayLayer = new BoxRenderable(renderer, {
     id: "overlay-layer",
     position: "absolute",
@@ -73,6 +76,7 @@ async function main() {
     right: 0,
     bottom: 0,
     zIndex: 1000,
+    shouldFill: false,
   });
   renderer.root.add(overlayLayer);
 

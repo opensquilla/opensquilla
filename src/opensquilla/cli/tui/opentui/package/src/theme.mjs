@@ -9,6 +9,10 @@ export const THEME = Object.freeze({
   faint: "#3E4A57",
   frame: "#5a6b7a",
   composerBorder: "#77B7FF",
+  // Opaque panel background for floating overlays (completion menu). Without an
+  // opaque fill a BoxRenderable defaults to a transparent background, so the
+  // conversation behind the menu shows through and the two collide on screen.
+  overlayBg: "#11161C",
   composerDisabledBorder: "#354453",
   routerNormal: "#73D0A7",
   routerWarning: "#F6C177",

@@ -137,6 +137,51 @@ async def test_remove_mount_grant_normalizes_caller_path(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path_kind", ["root", "sensitive"])
+async def test_remove_mount_grant_rejects_root_or_sensitive_path_without_mutation(
+    tmp_path,
+    path_kind,
+):
+    from opensquilla.sandbox.run_context_service import (
+        add_mount_grant,
+        remove_mount_grant,
+    )
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sensitive_path = tmp_path / ".ssh" / "id_rsa"
+
+    await add_mount_grant(
+        manager,
+        manager.node.session_key,
+        path=str(outside),
+        access="ro",
+        scope="chat",
+        config=_config(),
+        workspace=str(workspace),
+    )
+    origin_before = manager.node.origin
+    removal_path = "/" if path_kind == "root" else str(sensitive_path)
+
+    with pytest.raises(ValueError, match="sensitive_path"):
+        await remove_mount_grant(
+            manager,
+            manager.node.session_key,
+            path=removal_path,
+            config=_config(),
+            workspace=str(workspace),
+        )
+
+    assert manager.node.origin is origin_before
+    assert manager.node.origin["sandbox_run_context"]["mounts"] == [
+        {"path": str(outside.resolve(strict=False)), "access": "ro", "scope": "chat"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_duplicate_mount_grant_replaces_existing_entry(tmp_path):
     from opensquilla.sandbox.run_context_service import add_mount_grant
 
@@ -392,6 +437,42 @@ async def test_saved_unknown_bundle_payload_is_ignored(tmp_path):
     )
 
     assert [bundle.bundle_id for bundle in ctx.bundles] == ["python-package-install"]
+
+
+@pytest.mark.asyncio
+async def test_saved_duplicate_bundle_payload_keeps_last_value(tmp_path):
+    from opensquilla.sandbox.run_context import get_run_context
+
+    manager = _SessionManager()
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "standard",
+            "workspace": str(tmp_path),
+            "bundles": [
+                {
+                    "bundle_id": "python-package-install",
+                    "scope": "chat",
+                    "source": "legacy",
+                },
+                {
+                    "bundleId": " python-package-install ",
+                    "scope": "workspace",
+                    "source": "manual",
+                },
+            ],
+        }
+    }
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert [
+        (bundle.bundle_id, bundle.scope, bundle.source) for bundle in ctx.bundles
+    ] == [("python-package-install", "workspace", "manual")]
 
 
 @pytest.mark.asyncio

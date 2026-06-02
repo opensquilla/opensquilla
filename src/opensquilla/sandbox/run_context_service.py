@@ -112,7 +112,14 @@ async def remove_mount_grant(
         config=config,
         workspace=workspace,
     )
-    normalized_path = str(normalize_path(path))
+    decision = decide_path_access(
+        path,
+        workspace=existing.workspace or workspace,
+        mounts=existing.mounts,
+    )
+    if decision.status == "blocked":
+        raise ValueError(decision.reason or "mount_blocked")
+    normalized_path = decision.normalized_path
     removal_paths = {normalized_path, path}
     mounts = tuple(m for m in existing.mounts if m.path not in removal_paths)
     return await persist_run_context(

@@ -197,7 +197,7 @@ def _domains_from_payload(value: Any) -> tuple[DomainGrant, ...]:
 def _bundles_from_payload(value: Any) -> tuple[PackageBundleGrant, ...]:
     if not isinstance(value, Iterable) or isinstance(value, (str, bytes, dict)):
         return ()
-    bundles: list[PackageBundleGrant] = []
+    bundles: dict[str, PackageBundleGrant] = {}
     for item in value:
         if not isinstance(item, dict):
             continue
@@ -206,14 +206,14 @@ def _bundles_from_payload(value: Any) -> tuple[PackageBundleGrant, ...]:
             continue
         if not expand_package_bundle(bundle_id):
             continue
-        bundles.append(
-            PackageBundleGrant(
-                bundle_id=bundle_id,
-                scope=_string_value(item.get("scope"), "workspace") or "workspace",
-                source=_string_value(item.get("source"), "manual") or "manual",
-            )
+        grant = PackageBundleGrant(
+            bundle_id=bundle_id,
+            scope=_string_value(item.get("scope"), "workspace") or "workspace",
+            source=_string_value(item.get("source"), "manual") or "manual",
         )
-    return tuple(bundles)
+        bundles.pop(grant.bundle_id, None)
+        bundles[grant.bundle_id] = grant
+    return tuple(bundles.values())
 
 
 def _temporary_grants_from_payload(value: Any) -> tuple[TemporaryGrant, ...]:

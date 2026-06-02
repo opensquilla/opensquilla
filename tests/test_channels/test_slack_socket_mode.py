@@ -160,6 +160,36 @@ def test_ingest_dedupes_replayed_event() -> None:
     assert ch._queue.qsize() == 1
 
 
+def test_ingest_dedupes_app_mention_and_message_pair() -> None:
+    ch = _mk()
+    ch._ingest_event_callback(
+        {
+            "event_id": "EvMention",
+            "event": {
+                "type": "app_mention",
+                "user": "UUSER",
+                "channel": "C123",
+                "text": "<@UBOT> hi",
+                "ts": "10.1",
+            },
+        }
+    )
+    ch._ingest_event_callback(
+        {
+            "event_id": "EvMessage",
+            "event": {
+                "type": "message",
+                "user": "UUSER",
+                "channel": "C123",
+                "text": "<@UBOT> hi",
+                "ts": "10.1",
+            },
+        }
+    )
+
+    assert ch._queue.qsize() == 1
+
+
 class _FakeSocket:
     def __init__(self) -> None:
         self.sent: list[str] = []

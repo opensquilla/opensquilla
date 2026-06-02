@@ -668,10 +668,13 @@ class SlackChannel:
             return
         if self._is_own_message(event):
             return
+        event_instance_key = (
+            f"{event.get('channel')}:{event.get('ts')}"
+            if event.get("channel") and event.get("ts")
+            else ""
+        )
         dedupe_key = str(
-            data.get("event_id")
-            or event.get("client_msg_id")
-            or f"{event.get('channel', '')}:{event.get('ts', '')}"
+            event.get("client_msg_id") or event_instance_key or data.get("event_id") or ""
         ).strip(":")
         if dedupe_key and not self._dedupe.check_and_add(dedupe_key):
             return

@@ -18,14 +18,16 @@ The returned handler:
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from opensquilla.scheduler.payloads import payload_agent_id
 from opensquilla.scheduler.types import CronJob, HandlerResult
-from opensquilla.skills.creator.auto_propose import auto_propose
+from opensquilla.skills.creator.auto_propose import (
+    auto_propose,
+    is_auto_propose_disabled,
+)
 
 if TYPE_CHECKING:
     from opensquilla.gateway.config import MetaSkillAutoProposeConfig
@@ -51,7 +53,12 @@ def make_auto_propose_handler(
 
     async def handle_auto_propose(job: CronJob) -> HandlerResult:
         agent_id = payload_agent_id(job.payload) or "main"
-        if os.getenv("OPENSQUILLA_AUTO_PROPOSE_DISABLED") == "1":
+        # Pre-flight kill switch: ``is_auto_propose_disabled`` is the
+        # single source of truth shared with the dream callback and
+        # manual creator paths. Checking here too lets us skip the
+        # expensive orchestrator build, but the load-bearing guard
+        # lives inside ``auto_propose`` itself.
+        if is_auto_propose_disabled():
             logger.info(
                 "auto_propose.skipped",
                 extra={"agent_id": agent_id, "job_id": job.id, "reason": "kill_switch"},

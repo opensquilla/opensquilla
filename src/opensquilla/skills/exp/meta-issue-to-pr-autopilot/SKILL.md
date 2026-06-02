@@ -1,17 +1,22 @@
 ---
 name: meta-issue-to-pr-autopilot
-description: "Triage a GitHub issue, delegate a fix to sub-agent, draft the PR description, and open the PR. Use when the user names a specific issue (e.g. `#123` or full URL) and asks to fix it / open a PR for it / autopilot the issue end-to-end. NOT for: exploratory bug investigation (issue context too thin), issues blocked on cross-team discussion (auto-fix premature), or repos without `gh` auth configured."
+description: "[DEPRECATED] Issue-to-PR autopilot — opens a PR via `gh`, runs a sub-agent fix loop, and writes to git. Disabled pending the E5 bounded sub-agent contract + side-effect ledger (plan §3.1 A8 / §5.3 E4): no risk metadata enforcement, no per-step budget, no rollback path. Do not re-enable without `metadata.opensquilla.risk: high` + capabilities {vcs, filesystem-write, network-write, subprocess} and a saga-style compensation step."
 kind: meta
-meta_priority: 35
+meta_priority: 0
 always: false
-triggers:
-  - "issue 自动修"
-  - "issue to pr"
-  - "autopilot pr"
-  - "fix issue"
+disable-model-invocation: true
+triggers: []
 provenance:
   origin: opensquilla-original
   license: Apache-2.0
+metadata:
+  opensquilla:
+    risk: high
+    capabilities:
+      - vcs
+      - filesystem-write
+      - network-write
+      - subprocess
 composition:
   steps:
     - id: fetch_issue

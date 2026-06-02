@@ -5321,16 +5321,23 @@ class Agent:
                 return
             # PR7: a paused MetaResult (awaiting user_input) is NOT a
             # failure. Render the form description into assistant text
-            # so IM/CLI/Web fallbacks all see it; the surface-specific
-            # rich card (PR5/6) rides on the synthetic ToolResultEvent
-            # already emitted by the scheduler.
+            # so IM/CLI fallbacks see it; the Web surface has its own
+            # rich form card driven by the synthetic ToolResultEvent
+            # emitted by the scheduler, so we suppress the text fallback
+            # there to avoid the user seeing both a plain-text dump AND
+            # the form (the text was leaking out and looking like the
+            # "real" reply in review.
             if result.paused:
                 from opensquilla.engine.turn_runner.turn_finalizer_stage import (
                     render_paused_outcome,
                 )
-                paused_text = render_paused_outcome(result)
-                if paused_text:
-                    yield TextDeltaEvent(text=paused_text)
+                from opensquilla.tools.types import CallerKind
+                caller_kind = getattr(self._tool_context, "caller_kind", None)
+                is_rich_surface = caller_kind is CallerKind.WEB
+                if not is_rich_surface:
+                    paused_text = render_paused_outcome(result)
+                    if paused_text:
+                        yield TextDeltaEvent(text=paused_text)
                 yield ToolResult(
                     tool_use_id=tc.tool_use_id,
                     tool_name="meta_invoke",
@@ -5537,6 +5544,21 @@ class Agent:
         race_lost = metadata.pop("meta_clarify_race_lost", None)
         if race_lost is not None:
             return "你之前的回答已被处理。", True
+
+        # Soft-clarify (free-form continuation) — pop the resolver's
+        # progress markers so they don't accumulate, then return None
+        # to let the turn flow through to the LLM normally. The model
+        # responds based on the user's actual message plus the
+        # webui's visible clarify form; we deliberately do NOT
+        # template a reply here because the whole point of
+        # soft-clarify is that the user is having a natural
+        # conversation, not getting a form-style canned response.
+        # A follow-up commit will inject a brief status hint into
+        # the system prompt so the model knows what's still missing;
+        # for now the visible form (Web) / CLI prompt is the source
+        # of truth for "what's needed".
+        metadata.pop("meta_clarify_soft_progress", None)
+        metadata.pop("meta_clarify_proceed_blocked", None)
 
         return None
 

@@ -40,6 +40,93 @@ from opensquilla.skills.meta.types import MetaMatch, MetaPaused, MetaResult, Met
 log = structlog.get_logger(__name__)
 
 
+# Surface-side hint copy that ships in every clarify_skip_summary so a
+# renderer always has a sensible default label. Surfaces are free to
+# replace it with localised copy via the ``label`` key.
+_CLARIFY_SKIP_DEFAULT_LABEL = (
+    "We inferred the answers below from earlier context. "
+    "Confirm to continue, or reply 'change <field>' to redo."
+)
+
+# How many characters of each upstream context excerpt to ship to the
+# surface. Bounded so a 4 KB step output doesn't bloat every tool
+# result. Surfaces can still request more via a follow-up if needed.
+_CLARIFY_SKIP_EXCERPT_CHARS = 600
+
+
+def _build_clarify_skip_summary(
+    step: MetaStep,
+    inputs: dict[str, Any],
+    outputs: dict[str, str],
+) -> dict[str, Any] | None:
+    """Build a transparency payload for a ``when:``-skipped user_input
+    step (the "trust gap" close-out from the (c)/(d) protocol).
+
+    Returns ``None`` for non-user_input skipped steps so the surface
+    only renders a card when the gap is real. The payload includes:
+
+    * ``label``           — default copy the surface can localise.
+    * ``step_id``         — the skipped step's id so the surface can
+                            attribute the card.
+    * ``fields``          — the field names the user *would* have been
+                            asked for, including each field's prompt
+                            and required flag. Lets the surface render
+                            "destination (required): city" rows even
+                            though no values were collected.
+    * ``inferred_from``   — bounded excerpts of the upstream step
+                            outputs the meta author's ``when:``
+                            expression keyed off. The user can read
+                            these to verify the system inferred their
+                            intent correctly.
+    * ``trigger_message`` — the original user message that launched
+                            the meta-skill (capped). Lets the surface
+                            show "you said: ..." attribution.
+    * ``hint_action``     — short ``"reply: change"`` snippet a CLI
+                            surface can echo as a one-liner.
+    """
+    if step.kind != "user_input":
+        return None
+    cfg = getattr(step, "clarify_config", None)
+    if cfg is None:
+        return None
+
+    field_payload: list[dict[str, Any]] = []
+    for field in cfg.fields:
+        entry: dict[str, Any] = {
+            "name": field.name,
+            "required": bool(field.required),
+        }
+        if getattr(field, "prompt", None):
+            entry["prompt"] = field.prompt
+        field_payload.append(entry)
+
+    inferred_from: list[dict[str, str]] = []
+    for upstream_id in step.depends_on:
+        text = outputs.get(upstream_id, "")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        excerpt = text.strip()
+        if len(excerpt) > _CLARIFY_SKIP_EXCERPT_CHARS:
+            excerpt = excerpt[:_CLARIFY_SKIP_EXCERPT_CHARS] + "...[truncated]"
+        inferred_from.append({"step": upstream_id, "excerpt": excerpt})
+
+    trigger_message = ""
+    raw_message = inputs.get("user_message")
+    if isinstance(raw_message, str) and raw_message.strip():
+        trigger_message = raw_message.strip()
+        if len(trigger_message) > _CLARIFY_SKIP_EXCERPT_CHARS:
+            trigger_message = trigger_message[:_CLARIFY_SKIP_EXCERPT_CHARS] + "...[truncated]"
+
+    return {
+        "label": _CLARIFY_SKIP_DEFAULT_LABEL,
+        "step_id": step.id,
+        "fields": field_payload,
+        "inferred_from": inferred_from,
+        "trigger_message": trigger_message,
+        "hint_action": "reply 'change' to redo",
+    }
+
+
 async def run_dag(
     match: MetaMatch,
     *,
@@ -213,6 +300,30 @@ async def run_dag(
                     ),
                 )
                 outputs[step.id] = ""
+                # Step-(c)/(d) follow-up — close the "trust gap" the
+                # skipped user_input path used to open. When a meta
+                # author writes ``when: 'NEEDS_CLARIFICATION: yes' in
+                # outputs.x`` to suppress an unnecessary clarify form,
+                # the user never sees what the system inferred —
+                # confirmed_fields / ambiguous_fields / unknown_mentions
+                # only fire on the MetaPaused path. Attach a
+                # ``clarify_skip_summary`` payload here so the surface
+                # can render a "we inferred this — confirm / change"
+                # card without forcing the form back open.
+                clarify_skip_summary = _build_clarify_skip_summary(
+                    step, match.inputs, outputs,
+                )
+                arguments: dict[str, Any] = {
+                    "kind": step.kind,
+                    "skill": step.skill,
+                    "default_skill": step.skill,
+                    "routed": False,
+                    "skipped": True,
+                    "when": step.when,
+                    "output_chars": 0,
+                }
+                if clarify_skip_summary is not None:
+                    arguments["clarify_skip_summary"] = clarify_skip_summary
                 await event_queue.put(
                     (
                         step.id,
@@ -221,15 +332,7 @@ async def run_dag(
                             tool_name=step_tool_name,
                             result="skipped: condition evaluated false",
                             is_error=False,
-                            arguments={
-                                "kind": step.kind,
-                                "skill": step.skill,
-                                "default_skill": step.skill,
-                                "routed": False,
-                                "skipped": True,
-                                "when": step.when,
-                                "output_chars": 0,
-                            },
+                            arguments=arguments,
                         ),
                     ),
                 )
@@ -512,7 +615,10 @@ async def run_dag(
                 paused_tool_name = f"meta-step:{item.step_id}"
                 from opensquilla.skills.meta.clarify_schema import schema_to_protocol
                 clarify_protocol = schema_to_protocol(
-                    item.schema, intro_override=item.intro,
+                    item.schema,
+                    intro_override=item.intro,
+                    confirmed_fields=item.confirmed_fields,
+                    prefill_audit=item.prefill_audit,
                 )
                 yield ToolResultEvent(
                     tool_use_id=paused_use_id,
@@ -543,7 +649,7 @@ async def run_dag(
             if isinstance(item, Exception):
                 failure = item
                 failed_step_id = step_id
-                # codex-a P2 fix #3: mark the step row as ``failed`` so
+                # Mark the step row as ``failed`` so
                 # ``skills meta runs steps <id>`` does not show a stale
                 # ``running`` row after the run finalises. The failover
                 # path (``_FailoverTriggered``) is unchanged and still

@@ -293,11 +293,21 @@ def write_proposal(
     runtime_gate = _evaluate_runtime_e2e(creator_mode, runtime_e2e_result)
     collision_gate = _evaluate_collision_check(creator_mode, collision_result)
     risk_gate = _evaluate_risk_classify(creator_mode, risk_result)
+    # D1: ``degraded`` smoke (no fixture LLM available → deterministic
+    # stub fixtures) flags G3/G4 as ``passed: True`` even though no
+    # cross-vendor verification actually happened. Treating it as
+    # eligible would let an unattended creator pipeline auto-enable a
+    # candidate that has never been validated against a real model.
+    # Refuse eligibility whenever the smoke result is degraded;
+    # ``acceptance/runtime_e2e`` may still proceed so the proposal
+    # lands for human review.
+    smoke_degraded = bool(smoke_result.get("degraded", False))
     gate_eligible = (
         lint_result.get("G1", {}).get("passed", False)
         and lint_result.get("G2", {}).get("passed", False)
         and smoke_result.get("G3", {}).get("passed", False)
         and smoke_result.get("G4", {}).get("passed", False)
+        and not smoke_degraded
     )
     eligible = (
         gate_eligible

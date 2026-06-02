@@ -25,9 +25,11 @@ Behaviour (post-hard-takeover-removal)
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import structlog
@@ -205,11 +207,24 @@ def _clip_context_value(value: Any, *, max_chars: int = 2000) -> Any:
     return _clip_context_value(str(value), max_chars=max_chars)
 
 
-def _clarify_extract_context(awaiting, active_fields) -> dict[str, Any]:
+def _clarify_extract_context(
+    awaiting, active_fields, ctx: TurnContext | None = None,
+) -> dict[str, Any]:
     """Build bounded prior context for nl_extract reference resolution.
 
     This context is advisory only: ``clarify_nl_extract`` still white-lists
     returned keys against ``active_fields`` and re-runs field validators.
+
+    When ``ctx`` is supplied we pull a bounded slice of the conversation
+    that preceded the trigger turn from
+    ``ctx.metadata["conversation_history"]`` (a list of role/content
+    dicts produced by the upstream gateway/agent). The slice is the
+    LAST three turns, each clipped to a small character cap, formatted
+    as plain ``[role] text`` lines so the NL extractor can mine
+    pre-stated field values without being shown the entire chat
+    transcript. The metadata key is optional — when absent (e.g. unit
+    tests, channels that don't yet inject it), the resolver behaves
+    exactly as before.
     """
 
     inputs = _json_object(awaiting.inputs_json)
@@ -229,7 +244,134 @@ def _clarify_extract_context(awaiting, active_fields) -> dict[str, Any]:
         context["already_filled"] = _clip_context_value(already_filled)
     if step_outputs:
         context["prior_step_outputs"] = _clip_context_value(step_outputs)
+    history_block = _conversation_history_block(ctx)
+    if history_block:
+        context["conversation_history"] = history_block
     return context
+
+
+# Tunables for the conversation_history channel (F-history step b).
+# Three turns balances "user has likely already said the answer" with
+# "don't blow out the prompt budget"; 200 characters per turn is enough
+# for a sentence and matches the operator's expectation that long
+# pasted artefacts (logs, code) are summarised away rather than dumped.
+_CONVERSATION_HISTORY_TURNS = 3
+_CONVERSATION_HISTORY_CHARS_PER_TURN = 200
+_CONVERSATION_HISTORY_TOTAL_CAP = 1500
+
+
+def _conversation_history_block(ctx: TurnContext | None) -> str:
+    """Render the last few conversation turns as ``[role] text`` lines.
+
+    The resolver consults two sources, in order:
+
+    * ``ctx.metadata["conversation_history"]`` — the canonical
+      role/content list. When the upstream gateway / agent / channel
+      adapter populates this directly we use it as-is. Each entry is
+      expected to be a Mapping with ``role`` and ``content`` keys; the
+      OpenAI/Anthropic content-block list shape is also accepted.
+
+    * ``ctx.metadata["router_history_user_texts"]`` +
+      ``ctx.metadata["router_prev_assistant_text"]`` — fallback C2
+      producer. The squilla router already populates these for every
+      turn (``runtime.py``), so we synthesise a minimal
+      ``[user]``/``[assistant]`` interleave when no explicit history
+      key is present. This is what lights up ``conversation_history``
+      for live traffic without adding a new ingress hop.
+
+    Both sources are bounded by the same per-turn / per-block char
+    caps and the three-turn slice (newest last). Anything else is
+    skipped silently — clarify resolution is fail-open by design.
+    """
+    if ctx is None:
+        return ""
+    raw_history = ctx.metadata.get("conversation_history")
+    if isinstance(raw_history, list) and raw_history:
+        return _render_history_entries(raw_history)
+    fallback = _conversation_history_from_router_metadata(ctx)
+    if fallback:
+        return _render_history_entries(fallback)
+    return ""
+
+
+def _render_history_entries(raw: list) -> str:
+    """Shared formatter for history entries (canonical or fallback)."""
+    lines: list[str] = []
+    used = 0
+    for entry in raw[-_CONVERSATION_HISTORY_TURNS:]:
+        if not isinstance(entry, Mapping):
+            continue
+        role = str(entry.get("role") or "user").strip().lower() or "user"
+        content = entry.get("content")
+        text = _coerce_history_content(content)
+        text = text.strip()
+        if not text:
+            continue
+        clipped = text[:_CONVERSATION_HISTORY_CHARS_PER_TURN]
+        if len(text) > _CONVERSATION_HISTORY_CHARS_PER_TURN:
+            clipped = clipped + "...[truncated]"
+        line = f"[{role}] {clipped}"
+        used += len(line) + 1
+        if used > _CONVERSATION_HISTORY_TOTAL_CAP:
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _conversation_history_from_router_metadata(
+    ctx: TurnContext,
+) -> list[Mapping[str, Any]]:
+    """Build a role/content history from the router's existing
+    metadata channels. ``router_history_user_texts`` carries the
+    last few user turns (excluding the current one);
+    ``router_prev_assistant_text`` carries the most recent
+    assistant reply. Interleaving them as ``[user]...[assistant]
+    user`` gives the NL extractor enough context to recognise
+    references like 'I said earlier' without forcing every channel
+    adapter to inject a separate history payload.
+    """
+    user_texts = ctx.metadata.get("router_history_user_texts")
+    prev_assistant = ctx.metadata.get("router_prev_assistant_text")
+    if not isinstance(user_texts, list) or not user_texts:
+        if not (isinstance(prev_assistant, str) and prev_assistant.strip()):
+            return []
+        return [{"role": "assistant", "content": prev_assistant}]
+    # Take the last (3 - 1) = 2 user turns so the assembled list
+    # interleave doesn't exceed the 3-turn slice when an assistant
+    # reply is also present.
+    tail = list(user_texts)[-(_CONVERSATION_HISTORY_TURNS - 1):]
+    history: list[Mapping[str, Any]] = []
+    for text in tail:
+        if isinstance(text, str) and text.strip():
+            history.append({"role": "user", "content": text})
+    if isinstance(prev_assistant, str) and prev_assistant.strip():
+        # The router-published assistant reply belongs immediately
+        # after the most recent user turn but before the trigger
+        # turn. Insert at the tail; the truncator will keep the
+        # newest slice.
+        history.append({"role": "assistant", "content": prev_assistant})
+    return history
+
+
+def _coerce_history_content(content: Any) -> str:
+    """Flatten the heterogeneous shapes ``content`` can take.
+
+    Accepts a plain string, a list of ``{"type": "text", "text": ...}``
+    blocks (OpenAI / Anthropic shape), or an arbitrary structure
+    (which we cast through ``str``). Skips non-text blocks.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, Mapping):
+                if block.get("type") == "text" and isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+            elif isinstance(block, str):
+                parts.append(block)
+        return " ".join(parts)
+    return ""
 
 
 def _deserialize_awaiting_schema(schema_json: str):
@@ -653,6 +795,26 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
             parsed: dict[str, Any] = {}
             errors: list[str] = []
             nl_attempted = False
+            # Fields the user filled in earlier turns of the SAME step
+            # (chat mode collects one field per turn; form mode can re-prompt
+            # after a parse failure with partial fills carried forward).
+            # Both parse paths must merge this with the current turn before
+            # the DAG resumes, otherwise the cumulative state visible to
+            # downstream steps loses every previously answered field.
+            #
+            # Step (d) reserves the ``__prefill_audit__`` key inside
+            # ``awaiting_filled_json`` for the auto-prefill audit
+            # payload (see ``executors/user_input.py``). Strip it
+            # before treating the remainder as field values so the
+            # downstream merge / required-completeness checks never
+            # see it as a field name. Surface it on ``ctx.metadata``
+            # so the surface can render the ``confirmed_fields``
+            # protocol (which fields were inferred + from where).
+            raw_filled = _json_object(awaiting.awaiting_filled_json)
+            prefill_audit = raw_filled.pop("__prefill_audit__", None)
+            previously_filled = raw_filled
+            if isinstance(prefill_audit, dict) and prefill_audit:
+                ctx.metadata["meta_clarify_prefill_audit"] = prefill_audit
             if schema.nl_extract:
                 # PR9+: when explicitly enabled, prefer LLM extraction over
                 # deterministic text parsing. Validators are reapplied inside
@@ -673,7 +835,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                             active_fields=active,
                             llm_chat=nl_chat,
                             tier=schema.nl_extract_tier,
-                            context=_clarify_extract_context(awaiting, active),
+                            context=_clarify_extract_context(awaiting, active, ctx),
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.warning(
@@ -682,9 +844,10 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                         )
                         errors = [f"nl_extract failed: {exc}"]
                     else:
-                        if not nl_result.errors and nl_result.fields:
-                            parsed, errors = nl_result.fields, []
-                        elif not nl_result.errors and not nl_result.fields:
+                        nl_intent = (nl_result.intent or "FILL").upper()
+                        if nl_result.errors:
+                            errors = list(nl_result.errors)
+                        elif not nl_result.fields and nl_intent == "FILL":
                             # The LLM produced valid JSON but omitted every
                             # field — typical when the reply is terse ("ok",
                             # "继续") and the model decides nothing was
@@ -696,14 +859,126 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                             # unrecoverable "no fields extracted" loop.
                             nl_attempted = False
                         else:
-                            errors = nl_result.errors or [
-                                "nl_extract: no fields extracted",
+                            # Soft-clarify path (free-form continuation):
+                            # whatever the extractor produced — fields,
+                            # intent, ambiguous_fields — is now used to
+                            # decide whether the DAG resumes or whether
+                            # the user gets another chance to chat
+                            # without blocking on a modal form.
+                            # Explicit cancel: same effect as the
+                            # deterministic cancel_keyword path.
+                            if nl_intent == "CANCEL_ALL":
+                                writer.mark_cancelled(
+                                    run_id=awaiting.run_id, reason="user_cancel_nl",
+                                )
+                                ctx.metadata["meta_clarify_cancelled"] = awaiting
+                                ctx.metadata["meta_clarify_cancel_reason"] = (
+                                    "user_cancel_nl"
+                                )
+                                return ctx
+
+                            # Always merge any new fields into the
+                            # incremental ``awaiting_filled_json`` so the
+                            # next turn starts from the cumulative state.
+                            # Carry the prefill audit forward so the
+                            # surface keeps rendering ``confirmed_fields``
+                            # / ``ambiguous_fields`` markers across the
+                            # whole soft-clarify session.
+                            cumulative = {**previously_filled, **nl_result.fields}
+                            # Persist flat ``{field: value, __prefill_audit__: ...}``
+                            # — that's the shape the awaiting-resume path
+                            # reads. Wrapping fields under another ``filled``
+                            # key would break the next turn's
+                            # ``previously_filled`` view.
+                            progress_payload: dict[str, Any] = dict(cumulative)
+                            if isinstance(prefill_audit, dict) and prefill_audit:
+                                progress_payload["__prefill_audit__"] = prefill_audit
+                            try:
+                                writer.update_awaiting_partial(
+                                    run_id=awaiting.run_id,
+                                    filled_json=json.dumps(
+                                        progress_payload,
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                    ),
+                                    awaiting_since=time.time(),
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                log.warning(
+                                    "meta_resolution.update_filled_failed",
+                                    error=str(exc),
+                                )
+
+                            missing_required = [
+                                f.name for f in schema.fields
+                                if f.required and f.name not in cumulative
                             ]
+
+                            if nl_intent == "PROCEED_NOW":
+                                # User explicitly wants to start. Resume if
+                                # required fields are satisfied; otherwise
+                                # surface a targeted message about what's
+                                # still missing and stay in soft-clarify.
+                                if missing_required:
+                                    ctx.metadata["meta_clarify_proceed_blocked"] = {
+                                        "awaiting": awaiting,
+                                        "filled": cumulative,
+                                        "missing_required": missing_required,
+                                    }
+                                    return ctx
+                                parsed, errors = cumulative, []
+                            elif missing_required:
+                                # FILL intent but not done yet — let the
+                                # turn flow through as a normal LLM chat
+                                # response. The model sees
+                                # ``meta_clarify_soft_progress`` and can
+                                # naturally acknowledge what was captured
+                                # while continuing the conversation.
+                                ctx.metadata["meta_clarify_soft_progress"] = {
+                                    "awaiting": awaiting,
+                                    "step_id": awaiting.step_id,
+                                    "filled": cumulative,
+                                    "newly_filled": list(nl_result.fields.keys()),
+                                    "missing_required": missing_required,
+                                    "ambiguous_fields": [
+                                        {"name": a.name, "reason": a.reason}
+                                        for a in nl_result.ambiguous_fields
+                                    ],
+                                }
+                                return ctx
+                            else:
+                                # All required satisfied without explicit
+                                # PROCEED_NOW — resume the DAG so the
+                                # workflow moves forward on its own.
+                                parsed, errors = cumulative, []
             if not parsed and (not schema.nl_extract or not nl_attempted):
+                # Bug-X + Bug-Y mirror for the deterministic path: the
+                # parser's ``_check_required`` only sees this turn's
+                # reply and wipes ``parsed`` to ``{}`` on any error
+                # (``clarify_text.py`` returns ``({}, errors)`` whenever
+                # the error list is non-empty). In chat mode that means
+                # a user filling one required field per turn would
+                # always be reprompted because earlier turns' fields
+                # appear "missing" to the parser. Relax ``required`` on
+                # fields the user has already answered before invoking
+                # the parser, then merge the cumulative state on
+                # success.
+                effective_schema = schema
+                if previously_filled:
+                    from dataclasses import replace
+                    relaxed_fields = tuple(
+                        replace(f, required=False)
+                        if f.name in previously_filled
+                        else f
+                        for f in schema.fields
+                    )
+                    effective_schema = replace(schema, fields=relaxed_fields)
                 parsed, errors = parse_clarify_reply(
-                    ctx.message, schema,
+                    ctx.message, effective_schema,
                     surface=getattr(ctx, "surface_kind", "unknown"),
                 )
+                if not errors and parsed and previously_filled:
+                    parsed = {**previously_filled, **parsed}
             if errors:
                 failure_count = writer.increment_parse_failures(
                     run_id=awaiting.run_id,

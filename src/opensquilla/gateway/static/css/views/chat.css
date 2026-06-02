@@ -2714,6 +2714,182 @@ select.clarify-form-input {
 
 
 /* ──────────────────────────────────────────────────────────────────
+ * Auto-prefill transparency block (step (d) of the clarify rebuild).
+ *
+ * When the prefill scan inferred values from the user's earlier
+ * messages, the server attaches confirmed_fields / ambiguous_fields /
+ * unknown_mentions to the form payload. The renderer surfaces them at
+ * the top of the form so the user knows what was detected and can
+ * confirm or override per-field. The styling stays visually quiet —
+ * a translucent panel above the form fields rather than a competing
+ * primary surface — because these are *system inferences* the user
+ * is reviewing, not new prompts to act on.
+ * ────────────────────────────────────────────────────────────────── */
+.clarify-form-prefill {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(80, 130, 200, 0.25);
+  border-radius: 6px;
+  background: rgba(80, 130, 200, 0.05);
+  font-size: 0.9em;
+}
+
+.clarify-form-prefill-note {
+  font-weight: 500;
+  margin-bottom: 6px;
+  opacity: 0.85;
+}
+
+.clarify-form-prefill-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.clarify-form-prefill-list li {
+  padding: 2px 0;
+  line-height: 1.45;
+  font-family: inherit;
+}
+
+.clarify-form-prefill-confirmed {
+  color: rgba(60, 130, 70, 0.95);
+}
+
+.clarify-form-prefill-ambiguous {
+  color: rgba(180, 110, 30, 0.95);
+}
+
+.clarify-form-prefill-unknown {
+  color: rgba(80, 80, 80, 0.85);
+  font-style: italic;
+}
+
+/* Per-row markers attached below the input itself — the local
+ * counterpart of the top-of-form summary so each field shows where
+ * its current value came from without forcing the user to scroll. */
+.clarify-form-row-marker {
+  margin-top: 4px;
+  font-size: 0.85em;
+  line-height: 1.35;
+  opacity: 0.85;
+}
+
+.clarify-form-row-marker-confirmed {
+  color: rgba(60, 130, 70, 0.9);
+}
+
+.clarify-form-row-marker-ambiguous {
+  color: rgba(180, 110, 30, 0.9);
+}
+
+.clarify-form-input-confirmed {
+  /* Visual cue that the input was auto-filled — a subtle left border
+   * accent. Users can still edit/clear normally; the cue just
+   * disambiguates "system inferred this" from "I typed this". */
+  border-left: 3px solid rgba(60, 130, 70, 0.6);
+  background-color: rgba(60, 130, 70, 0.04);
+}
+
+.clarify-form-dual-channel-hint {
+  /* Soft, low-key callout right under the form header that tells the
+   * user the main chat input still works while the form is open.
+   * Quiet styling on purpose — this is a permission marker, not a
+   * call to action. */
+  margin: 2px 0 10px;
+  padding: 6px 10px;
+  font-size: 0.85em;
+  line-height: 1.45;
+  color: rgba(80, 80, 120, 0.85);
+  background: rgba(120, 100, 200, 0.04);
+  border-left: 2px solid rgba(120, 100, 200, 0.35);
+  border-radius: 3px;
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
+ * Clarify-skip transparency card.
+ *
+ * When a meta author's ``when:`` expression suppresses an otherwise-
+ * required user_input step (because the upstream context-extraction
+ * already filled the answers), the scheduler attaches a
+ * ``clarify_skip_summary`` so the user sees what was inferred
+ * without the form being forced back open. The card sits inline in
+ * the assistant stream — quieter than the active form, louder than a
+ * passive log entry, and always offers an undo path.
+ * ────────────────────────────────────────────────────────────────── */
+.clarify-skip-summary {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px dashed rgba(120, 100, 200, 0.35);
+  border-radius: 6px;
+  background: rgba(120, 100, 200, 0.05);
+  font-size: 0.9em;
+}
+
+.clarify-skip-summary-header {
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: rgba(100, 80, 180, 0.95);
+}
+
+.clarify-skip-summary-note {
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+
+.clarify-skip-summary-trigger {
+  margin-bottom: 6px;
+  font-style: italic;
+  opacity: 0.8;
+}
+
+.clarify-skip-summary-fields-header,
+.clarify-skip-summary-inferred-header {
+  margin-top: 6px;
+  margin-bottom: 4px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.clarify-skip-summary-fields {
+  list-style: none;
+  padding-left: 12px;
+  margin: 0 0 6px;
+}
+
+.clarify-skip-summary-fields li {
+  padding: 1px 0;
+  line-height: 1.4;
+}
+
+.clarify-skip-summary-inferred-entry {
+  margin: 2px 0;
+  padding: 4px 8px;
+  border-left: 2px solid rgba(120, 100, 200, 0.35);
+  background: rgba(120, 100, 200, 0.03);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.clarify-skip-summary-inferred-step {
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.clarify-skip-summary-hint {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dotted rgba(120, 100, 200, 0.25);
+  opacity: 0.8;
+  font-size: 0.85em;
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
  * Router slider — arcade-brutalist whac-a-mole grid that fires when
  * the squilla router lands a tier.
  *

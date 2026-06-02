@@ -139,7 +139,10 @@ class MetaPaused(Exception):  # noqa: N818
     convention.
     """
 
-    __slots__ = ("run_id", "step_id", "schema", "intro", "language")
+    __slots__ = (
+        "run_id", "step_id", "schema", "intro", "language",
+        "confirmed_fields", "prefill_audit",
+    )
 
     def __init__(
         self,
@@ -149,6 +152,8 @@ class MetaPaused(Exception):  # noqa: N818
         schema: ClarifyStepConfig,
         intro: str = "",
         language: str = "",
+        confirmed_fields: dict[str, Any] | None = None,
+        prefill_audit: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(f"meta-skill paused at step {step_id!r}")
         self.run_id = run_id
@@ -156,6 +161,12 @@ class MetaPaused(Exception):  # noqa: N818
         self.schema = schema
         self.intro = intro
         self.language = language
+        # Step (c)/(d): values the prefill scan inferred from earlier
+        # context plus the audit payload describing where they came
+        # from. Both default to ``None`` so call sites that don't run
+        # a prefill scan keep the historical signal unchanged.
+        self.confirmed_fields = confirmed_fields
+        self.prefill_audit = prefill_audit
 
 
 @dataclass(frozen=True)

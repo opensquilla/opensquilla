@@ -594,3 +594,659 @@ async def test_real_parser_positional_success_claims_resume(tmp_path):
     assert "meta_resume" in out.metadata
     _, parsed = out.metadata["meta_resume"]
     assert parsed == {"x": "Shanghai"}
+
+
+# ── Bug-X (required completeness) + Bug-Y (awaiting_filled merge) ──
+
+
+def _seed_awaiting_multi_field(
+    writer,
+    *,
+    fields: tuple[ClarifyField, ...],
+    awaiting_filled: dict | None = None,
+    nl_extract: bool = False,
+):
+    """Seed an awaiting run with a multi-field schema and optional pre-filled
+    answers. Mirrors ``_seed_awaiting`` but accepts a custom field tuple and
+    allows pre-populating ``awaiting_filled_json`` to model the chat-mode
+    scenario where the user answered one field per turn."""
+    cfg = ClarifyStepConfig(
+        mode="form",
+        fields=fields,
+        timeout_hours=24,
+        cancel_keywords=(),
+        nl_extract=nl_extract,
+    )
+    plan = MetaPlan(
+        name="t",
+        triggers=(),
+        priority=0,
+        steps=(
+            MetaStep(
+                id="collect", skill="collect", kind="user_input",
+                clarify_config=cfg,
+            ),
+        ),
+    )
+    snapshot = to_jsonable(plan)
+    with writer._lock:
+        writer._conn.execute(
+            "INSERT INTO meta_skill_runs "
+            "(run_id, meta_skill_name, meta_skill_digest, plan_snapshot_json, "
+            " triggered_by, session_key, status, started_at_ms, inputs_json, "
+            " awaiting_step_id, awaiting_schema_json, awaiting_since, "
+            " awaiting_filled_json, step_outputs_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("r1", "t", "d", json.dumps(snapshot),
+             "soft_meta_invoke", "S1", "awaiting_user", 0,
+             json.dumps({"user_message": "original trigger", "collected": {}}),
+             "collect",
+             json.dumps(snapshot["plan"]["steps"][0]["clarify_config"]),
+             time.time(),
+             json.dumps(awaiting_filled or {}), "{}"),
+        )
+        writer._conn.commit()
+    return plan
+
+
+@pytest.mark.asyncio
+async def test_deterministic_success_merges_previously_filled(tmp_path):
+    """Bug-Y deterministic branch: a chat-mode user who filled ``city``
+    in an earlier turn and ``days`` in the current turn must see the
+    cumulative ``{city, days}`` propagated to ``meta_resume``. Without
+    the merge, ``city`` would silently disappear from the DAG resume
+    payload."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+            ClarifyField(name="days", type="int", required=True, min=1, max=30),
+        ),
+        awaiting_filled={"city": "Tokyo"},
+    )
+    ctx = _ctx(writer, message="days: 5", session_id="S1")
+    out = await meta_resolution(ctx)
+    assert "meta_resume" in out.metadata, (
+        f"expected resume after merge; got metadata={dict(out.metadata)}"
+    )
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {"city": "Tokyo", "days": 5}, (
+        f"merged state must include both previously-filled and current-turn "
+        f"fields; got {parsed!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_nl_success_rejects_incomplete_required(tmp_path):
+    """Soft-clarify contract: when the NL extractor returns only some
+    required fields with the default FILL intent, the DAG must NOT
+    resume (Bug-X), but it must ALSO NOT slam the form back as a
+    hard reprompt. Instead the resolver writes the partial fill to
+    ``awaiting_filled_json`` and stashes a ``meta_clarify_soft_progress``
+    payload so the LLM can naturally acknowledge what was captured
+    while letting the user keep chatting."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+            ClarifyField(name="days", type="int", required=True, min=1, max=30),
+        ),
+        nl_extract=True,
+    )
+    # LLM extracts only ``city`` — ``days`` is still required but missing
+    # both from previously_filled and from the current reply.
+    ctx = _ctx_with_nl_chat(
+        writer,
+        message="we want to go to Tokyo",
+        llm_response=json.dumps({
+            "intent": "FILL",
+            "fields": {"city": "Tokyo"},
+            "ambiguous_fields": [],
+            "unknown_mentions": [],
+        }),
+    )
+    out = await meta_resolution(ctx)
+    assert "meta_resume" not in out.metadata, (
+        f"NL path must not resume with missing required field; got "
+        f"metadata={dict(out.metadata)}"
+    )
+    # Soft-clarify: no hard reprompt, just incremental progress.
+    assert "meta_clarify_errors" not in out.metadata
+    progress = out.metadata.get("meta_clarify_soft_progress")
+    assert progress is not None, (
+        f"expected soft_progress, got metadata={dict(out.metadata)}"
+    )
+    assert progress["filled"] == {"city": "Tokyo"}
+    assert progress["missing_required"] == ["days"]
+    assert "city" in progress["newly_filled"]
+
+
+@pytest.mark.asyncio
+async def test_deterministic_real_missing_required_still_reprompts(tmp_path):
+    """Bug-Y guardrail: relaxing ``required`` for previously_filled
+    fields must NOT mask a genuinely missing required field. A turn
+    that fills only one of two required fields, with NO prior state,
+    must still trigger the standard reprompt path."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+            ClarifyField(name="days", type="int", required=True, min=1, max=30),
+        ),
+        # No awaiting_filled — both fields are genuinely missing until
+        # this turn's reply is parsed.
+    )
+    ctx = _ctx(writer, message="days: 5", session_id="S1")
+    out = await meta_resolution(ctx)
+    assert "meta_resume" not in out.metadata, (
+        f"genuinely missing required field must still reprompt; got "
+        f"metadata={dict(out.metadata)}"
+    )
+    assert "meta_clarify_errors" in out.metadata
+    errors = out.metadata["meta_clarify_errors"]
+    assert any("city" in err for err in errors), (
+        f"reprompt must name the truly missing field; got {errors!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_nl_success_merges_previously_filled(tmp_path):
+    """Bug-Y NL branch: the NL extractor returning the LAST missing
+    required field must resume with the cumulative state, not just the
+    just-extracted slice. Combined with Bug-X this is the chat-mode
+    happy path where the user filled ``city`` last turn and ``days``
+    this turn."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+            ClarifyField(name="days", type="int", required=True, min=1, max=30),
+        ),
+        awaiting_filled={"city": "Tokyo"},
+        nl_extract=True,
+    )
+    ctx = _ctx_with_nl_chat(
+        writer,
+        message="five days please",
+        llm_response=json.dumps({"days": 5}),
+    )
+    out = await meta_resolution(ctx)
+    assert "meta_resume" in out.metadata, (
+        f"NL path must resume once the merged state satisfies all required; "
+        f"got metadata={dict(out.metadata)}"
+    )
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {"city": "Tokyo", "days": 5}, (
+        f"merged state must include both previously-filled and NL-extracted "
+        f"fields; got {parsed!r}"
+    )
+
+
+# ── F-history step (b): conversation_history injection ──
+
+
+def _awaiting_stub(*, step_id="collect", inputs=None, filled=None, outputs=None):
+    """Lightweight stand-in for ``writer.peek_awaiting`` rows used by
+    ``_clarify_extract_context``. We rely only on the four JSON columns
+    so a SimpleNamespace is enough — no DB."""
+    return SimpleNamespace(
+        run_id="r-test",
+        step_id=step_id,
+        awaiting_since=time.time(),
+        awaiting_session_id="S1",
+        awaiting_schema_json="{}",
+        awaiting_filled_json=json.dumps(filled or {}),
+        step_outputs_json=json.dumps(outputs or {}),
+        inputs_json=json.dumps(inputs or {"user_message": "trigger"}),
+        parse_failure_count=0,
+    )
+
+
+def _ctx_stub(*, conversation_history=None) -> SimpleNamespace:
+    """Minimal TurnContext-shaped stub. ``_clarify_extract_context``
+    only reads ``ctx.metadata``, so a SimpleNamespace is sufficient."""
+    metadata: dict[str, object] = {}
+    if conversation_history is not None:
+        metadata["conversation_history"] = conversation_history
+    return SimpleNamespace(metadata=metadata)
+
+
+def test_clarify_context_omits_history_when_metadata_missing() -> None:
+    """Without an upstream gateway/agent injecting history, the
+    resolver must behave exactly as before — the
+    ``conversation_history`` key is absent so the NL extractor sees
+    today's prompt shape."""
+    from opensquilla.engine.steps.meta_resolution import _clarify_extract_context
+
+    awaiting = _awaiting_stub()
+    ctx = _ctx_stub()  # no conversation_history key
+
+    out = _clarify_extract_context(awaiting, [], ctx)
+    assert "conversation_history" not in out
+
+
+def test_clarify_context_omits_history_when_ctx_is_none() -> None:
+    """Backwards compatibility: ``ctx`` is optional. Callers that
+    haven't migrated yet still get a fully-formed context dict."""
+    from opensquilla.engine.steps.meta_resolution import _clarify_extract_context
+
+    out = _clarify_extract_context(_awaiting_stub(), [])
+    assert "conversation_history" not in out
+
+
+def test_clarify_context_renders_history_with_role_lines() -> None:
+    """Three-turn slice (newest last) rendered as ``[role] text`` lines.
+    Each turn is clipped to 200 chars; the OpenAI-style content-block
+    list is flattened to plain text."""
+    from opensquilla.engine.steps.meta_resolution import _clarify_extract_context
+
+    long_user_text = "user said " * 80   # ~800 chars → must be clipped
+    history = [
+        {"role": "user", "content": "I want to plan a trip"},
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "Sure, where to?"},
+            {"type": "image", "image_url": "..."},
+        ]},
+        {"role": "user", "content": long_user_text},
+    ]
+    ctx = _ctx_stub(conversation_history=history)
+
+    out = _clarify_extract_context(_awaiting_stub(), [], ctx)
+    block = out.get("conversation_history")
+    assert isinstance(block, str) and block
+
+    # Three lines, in order, each prefixed with role.
+    lines = block.splitlines()
+    assert len(lines) == 3
+    assert lines[0].startswith("[user] I want to plan a trip")
+    assert lines[1].startswith("[assistant] Sure, where to?")
+    # Image block ignored, text-only flattened.
+    assert "image_url" not in lines[1]
+    # Long turn clipped.
+    assert lines[2].startswith("[user] ")
+    assert "...[truncated]" in lines[2]
+    assert len(lines[2]) <= 200 + len("[user] ") + len("...[truncated]")
+
+
+def test_clarify_context_history_takes_last_three_turns_only() -> None:
+    """A long backlog must be sliced to the last three turns so the
+    prompt budget stays bounded."""
+    from opensquilla.engine.steps.meta_resolution import _clarify_extract_context
+
+    history = [
+        {"role": "user", "content": f"turn {i}"} for i in range(10)
+    ]
+    ctx = _ctx_stub(conversation_history=history)
+
+    out = _clarify_extract_context(_awaiting_stub(), [], ctx)
+    block = out["conversation_history"]
+    lines = block.splitlines()
+    assert len(lines) == 3
+    # The retained slice is the LAST three turns (7, 8, 9).
+    assert lines[0].endswith("turn 7")
+    assert lines[2].endswith("turn 9")
+
+
+def test_clarify_context_history_skips_non_text_entries() -> None:
+    """Malformed or unknown-shape entries must not break the channel —
+    the resolver is fail-open by design so a bad history feed cannot
+    block a clarify run."""
+    from opensquilla.engine.steps.meta_resolution import _clarify_extract_context
+
+    history = [
+        "raw string with no role",  # not a Mapping
+        {"role": "tool", "content": ""},  # empty content
+        {"role": "user", "content": "real turn"},
+    ]
+    ctx = _ctx_stub(conversation_history=history)
+
+    out = _clarify_extract_context(_awaiting_stub(), [], ctx)
+    block = out.get("conversation_history", "")
+    assert block == "[user] real turn"
+
+
+def test_clarify_context_history_ignores_non_list_metadata() -> None:
+    """If a misconfigured upstream sets the metadata key to a string
+    or dict instead of a list, the resolver must not crash. Ignoring
+    it silently mirrors the existing fail-open contract."""
+    from opensquilla.engine.steps.meta_resolution import _clarify_extract_context
+
+    for bogus in ("not a list", {"role": "user"}, 42):
+        ctx = _ctx_stub(conversation_history=bogus)
+        out = _clarify_extract_context(_awaiting_stub(), [], ctx)
+        assert "conversation_history" not in out
+
+
+# ── C2 producer fallback: synthesise history from router metadata ──
+
+
+def test_clarify_context_history_uses_router_metadata_fallback() -> None:
+    """When no explicit ``conversation_history`` is injected, the
+    resolver must synthesise a history block from the squilla router's
+    existing ``router_history_user_texts`` and
+    ``router_prev_assistant_text`` channels (already populated for
+    every turn). This is the C2 producer hook — without an extra
+    ingress hop, every live-traffic clarify run automatically gets
+    the last user turns + the last assistant reply."""
+    from opensquilla.engine.steps.meta_resolution import _clarify_extract_context
+
+    ctx = SimpleNamespace(metadata={
+        "router_history_user_texts": [
+            "I want to plan a trip next month",
+            "Probably Tokyo or Osaka",
+        ],
+        "router_prev_assistant_text": "Sure, what dates are you thinking?",
+    })
+    out = _clarify_extract_context(_awaiting_stub(), [], ctx)
+    block = out.get("conversation_history", "")
+    lines = block.splitlines()
+    # Expect the two router-recorded user turns plus the assistant
+    # reply, in order, each tagged with its role.
+    assert any(
+        line.startswith("[user] I want to plan a trip next month")
+        for line in lines
+    ), block
+    assert any(
+        line.startswith("[user] Probably Tokyo or Osaka")
+        for line in lines
+    ), block
+    assert any(
+        line.startswith("[assistant] Sure, what dates")
+        for line in lines
+    ), block
+
+
+def test_clarify_context_explicit_history_takes_priority_over_router_fallback() -> None:
+    """If both the canonical ``conversation_history`` key and the
+    router fallback are present, the canonical key wins. This makes
+    the upgrade path safe — a future channel adapter that wants to
+    inject a richer history (e.g. from a longer transcript window)
+    fully replaces the router-derived fallback rather than
+    appending to it."""
+    from opensquilla.engine.steps.meta_resolution import _clarify_extract_context
+
+    ctx = SimpleNamespace(metadata={
+        "conversation_history": [
+            {"role": "user", "content": "explicit injection"},
+        ],
+        "router_history_user_texts": ["should not appear"],
+        "router_prev_assistant_text": "should not appear either",
+    })
+    out = _clarify_extract_context(_awaiting_stub(), [], ctx)
+    block = out["conversation_history"]
+    assert "explicit injection" in block
+    assert "should not appear" not in block
+
+
+def test_clarify_context_history_router_fallback_assistant_only() -> None:
+    """A turn with no user history (first turn after a reset, but the
+    previous assistant reply survived) must still produce a useful
+    one-line history block from the assistant text alone."""
+    from opensquilla.engine.steps.meta_resolution import _clarify_extract_context
+
+    ctx = SimpleNamespace(metadata={
+        "router_prev_assistant_text": "I can help plan a Tokyo trip.",
+    })
+    out = _clarify_extract_context(_awaiting_stub(), [], ctx)
+    block = out.get("conversation_history", "")
+    assert block.startswith("[assistant] I can help plan a Tokyo trip.")
+
+
+# ── Step (d): prefill audit propagates to ctx.metadata ──
+
+
+@pytest.mark.asyncio
+async def test_prefill_audit_surfaces_to_metadata_on_reprompt(tmp_path):
+    """Step (d) + soft-clarify: when the prefill scan seeded
+    ``awaiting_filled_json`` with a ``__prefill_audit__`` payload,
+    the resolver must extract it and stash it on
+    ``ctx.metadata["meta_clarify_prefill_audit"]`` regardless of
+    which branch handles this turn. Under the new soft-clarify
+    contract a missing required field yields
+    ``meta_clarify_soft_progress`` (not the legacy ``meta_clarify_reprompt``)
+    while the audit stays visible so the surface can keep rendering
+    the ``confirmed_fields`` protocol."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+            ClarifyField(name="days", type="int", required=True, min=1, max=30),
+        ),
+        awaiting_filled={
+            "city": "Tokyo",
+            "__prefill_audit__": {
+                "source": "auto_prefill",
+                "fields": ["city"],
+                "ambiguous": [{"name": "days", "reason": "no duration"}],
+                "unknown_mentions": [],
+            },
+        },
+        nl_extract=True,
+    )
+    # The user's reply does not satisfy the missing required ``days``,
+    # so this turn stays in soft-clarify rather than resuming.
+    ctx = _ctx_with_nl_chat(
+        writer,
+        message="Tokyo it is",
+        llm_response=json.dumps({
+            "intent": "FILL",
+            "fields": {"city": "Tokyo"},
+            "ambiguous_fields": [],
+            "unknown_mentions": [],
+        }),
+    )
+    out = await meta_resolution(ctx)
+
+    audit = out.metadata.get("meta_clarify_prefill_audit")
+    assert isinstance(audit, dict)
+    assert audit["source"] == "auto_prefill"
+    assert audit["fields"] == ["city"]
+    # Soft-clarify path — no resume, no legacy reprompt, but the
+    # progress payload tells the LLM what's still missing.
+    assert "meta_resume" not in out.metadata
+    progress = out.metadata.get("meta_clarify_soft_progress")
+    assert progress is not None
+    assert "days" in progress["missing_required"]
+
+
+@pytest.mark.asyncio
+async def test_prefill_audit_stripped_from_resume_payload(tmp_path):
+    """Step (d): the reserved ``__prefill_audit__`` key must NOT
+    leak into the merged state passed to the DAG resume. Downstream
+    steps see only schema-declared fields. Without this guard,
+    ``__prefill_audit__`` would be visible to every step that
+    reads ``inputs.collected``."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+            ClarifyField(name="days", type="int", required=True, min=1, max=30),
+        ),
+        awaiting_filled={
+            "city": "Tokyo",
+            "__prefill_audit__": {
+                "source": "auto_prefill",
+                "fields": ["city"],
+                "ambiguous": [],
+                "unknown_mentions": [],
+            },
+        },
+        nl_extract=True,
+    )
+    ctx = _ctx_with_nl_chat(
+        writer,
+        message="five days",
+        llm_response=json.dumps({"days": 5}),
+    )
+    out = await meta_resolution(ctx)
+
+    assert "meta_resume" in out.metadata
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {"city": "Tokyo", "days": 5}
+    assert "__prefill_audit__" not in parsed
+
+
+# ── Soft-clarify (free-form continuation) ──
+
+
+@pytest.mark.asyncio
+async def test_soft_clarify_proceed_now_with_complete_required_resumes(
+    tmp_path,
+):
+    """When the user explicitly signals readiness (``intent: PROCEED_NOW``)
+    and every required field is satisfied (either by this turn's
+    extract or carried-over state), the DAG resumes immediately
+    without forcing another round of clarification."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+            ClarifyField(name="days", type="int", required=True, min=1, max=30),
+        ),
+        awaiting_filled={"city": "Tokyo"},
+        nl_extract=True,
+    )
+    ctx = _ctx_with_nl_chat(
+        writer,
+        message="five days, go ahead",
+        llm_response=json.dumps({
+            "intent": "PROCEED_NOW",
+            "fields": {"days": 5},
+            "ambiguous_fields": [],
+            "unknown_mentions": [],
+        }),
+    )
+    out = await meta_resolution(ctx)
+    assert "meta_resume" in out.metadata
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {"city": "Tokyo", "days": 5}
+
+
+@pytest.mark.asyncio
+async def test_soft_clarify_proceed_now_blocked_when_required_missing(
+    tmp_path,
+):
+    """If the user says PROCEED_NOW but a required field is still
+    unfilled, the resolver must NOT resume blindly. It surfaces a
+    ``meta_clarify_proceed_blocked`` payload so the assistant can
+    naturally tell the user what's still missing."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+            ClarifyField(name="days", type="int", required=True, min=1, max=30),
+        ),
+        nl_extract=True,
+    )
+    ctx = _ctx_with_nl_chat(
+        writer,
+        message="just start already",
+        llm_response=json.dumps({
+            "intent": "PROCEED_NOW",
+            "fields": {},
+            "ambiguous_fields": [],
+            "unknown_mentions": [],
+        }),
+    )
+    out = await meta_resolution(ctx)
+    assert "meta_resume" not in out.metadata
+    blocked = out.metadata.get("meta_clarify_proceed_blocked")
+    assert blocked is not None
+    assert set(blocked["missing_required"]) == {"city", "days"}
+
+
+@pytest.mark.asyncio
+async def test_soft_clarify_cancel_all_intent_marks_cancelled(tmp_path):
+    """The CANCEL_ALL intent emitted by the NL extractor must take
+    the same path as a substring cancel keyword — the awaiting run
+    is marked cancelled and the resolver surfaces
+    ``meta_clarify_cancelled``."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+        ),
+        nl_extract=True,
+    )
+    ctx = _ctx_with_nl_chat(
+        writer,
+        message="actually never mind, drop the whole thing",
+        llm_response=json.dumps({
+            "intent": "CANCEL_ALL",
+            "fields": {},
+            "ambiguous_fields": [],
+            "unknown_mentions": [],
+        }),
+    )
+    out = await meta_resolution(ctx)
+    assert out.metadata.get("meta_clarify_cancelled") is not None
+    assert out.metadata.get("meta_clarify_cancel_reason") == "user_cancel_nl"
+
+
+@pytest.mark.asyncio
+async def test_soft_clarify_persists_partial_fill_across_turns(tmp_path):
+    """Soft-clarify must persist every partial fill into
+    ``awaiting_filled_json`` so the next turn's prior_filled view is
+    cumulative. Run two ``meta_resolution`` turns and assert the
+    persisted state grows."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+            ClarifyField(name="days", type="int", required=True, min=1, max=30),
+        ),
+        nl_extract=True,
+    )
+
+    # Turn 1 — fill city only.
+    ctx1 = _ctx_with_nl_chat(
+        writer,
+        message="we want to go to Tokyo",
+        llm_response=json.dumps({
+            "intent": "FILL",
+            "fields": {"city": "Tokyo"},
+            "ambiguous_fields": [],
+            "unknown_mentions": [],
+        }),
+    )
+    out1 = await meta_resolution(ctx1)
+    assert "meta_resume" not in out1.metadata
+    assert "meta_clarify_soft_progress" in out1.metadata
+    # The persisted state must now include city at the top level
+    # (matching the awaiting-resume contract: flat ``{field: value,
+    # __prefill_audit__: ...}``).
+    awaiting1 = writer.peek_awaiting(session_id="S1")
+    assert awaiting1 is not None
+    persisted1 = json.loads(awaiting1.awaiting_filled_json)
+    assert persisted1.get("city") == "Tokyo"
+
+    # Turn 2 — provide days. Cumulative state should include both
+    # AND the DAG should resume because everything required is now
+    # satisfied (FILL intent + complete = auto-resume).
+    ctx2 = _ctx_with_nl_chat(
+        writer,
+        message="five days please",
+        llm_response=json.dumps({
+            "intent": "FILL",
+            "fields": {"days": 5},
+            "ambiguous_fields": [],
+            "unknown_mentions": [],
+        }),
+    )
+    out2 = await meta_resolution(ctx2)
+    assert "meta_resume" in out2.metadata, (
+        f"expected auto-resume on complete fields, got "
+        f"metadata={dict(out2.metadata)}"
+    )
+    _, parsed = out2.metadata["meta_resume"]
+    assert parsed == {"city": "Tokyo", "days": 5}

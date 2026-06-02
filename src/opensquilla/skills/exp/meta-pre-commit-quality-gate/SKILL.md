@@ -11,6 +11,13 @@ triggers:
 provenance:
   origin: opensquilla-original
   license: Apache-2.0
+metadata:
+  opensquilla:
+    risk: high
+    capabilities:
+      - subprocess
+      - filesystem-read
+      - filesystem-write
 composition:
   steps:
     - id: collect_staged

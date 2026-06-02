@@ -2364,6 +2364,34 @@ def test_tool_summary_exposes_visible_running_status() -> None:
     assert "statusSpan.hidden = !visibleStatus;" in source
 
 
+def test_live_clarify_form_closes_matching_tool_card_before_return() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    result_start = source.index("function _appendToolResult(payload)")
+    clarify_start = source.index("if (\n      _args", result_start)
+    clarify_end = source.index("    // Skipped user_input step", clarify_start)
+    clarify_body = source[clarify_start:clarify_end]
+
+    assert "_settleToolResultCard(payload, false);" in clarify_body
+    assert clarify_body.index("_settleToolResultCard(payload, false);") < clarify_body.index(
+        "_appendClarifyForm(payload, _args);"
+    )
+
+
+def test_historical_clarify_tool_results_reconstruct_form_not_raw_card() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    history_start = source.index("function _reconstructToolCalls(bubbleDiv, segments)")
+    history_end = source.index("  function _renderMessageTags", history_start)
+    history_body = source[history_start:history_end]
+
+    assert "const clarifyArgs = _clarifyArgsFromHistoricalSegment(seg, details);" in history_body
+    assert "_appendClarifyFormToBody(body, seg, clarifyArgs);" in history_body
+    clarify_form_index = history_body.index(
+        "_appendClarifyFormToBody(body, seg, clarifyArgs);"
+    )
+    raw_result_index = history_body.index("const resultDiv = _buildToolResultDOM(")
+    assert clarify_form_index < raw_result_index
+
+
 def test_router_fx_settles_but_preserves_winner_animation_when_output_begins() -> None:
     # The moment output renders, the panel should stop roaming, but the winner
     # lock/settle animation must remain visible instead of becoming a static

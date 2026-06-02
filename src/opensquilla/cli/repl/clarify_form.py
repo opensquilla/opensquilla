@@ -25,9 +25,18 @@ from dataclasses import dataclass
 from typing import Any
 
 # Bool-coercion tables (mirror clarify_text.py so the CLI form
-# accepts the same literals as a hand-typed reply).
-_TRUE_VALUES = frozenset({"true", "yes", "1", "on", "是", "y"})
-_FALSE_VALUES = frozenset({"false", "no", "0", "off", "否", "n"})
+# accepts the same literals as a hand-typed reply). When extending
+# either side, mirror the change here so multi-surface skills do not
+# diverge — a user who answers "好" in chat must succeed the same way
+# as a user who types "好" into the CLI form.
+_TRUE_VALUES = frozenset({
+    "true", "yes", "1", "on", "y",
+    "是", "好", "对", "嗯", "可以", "确认", "没问题", "ok",
+})
+_FALSE_VALUES = frozenset({
+    "false", "no", "0", "off", "n",
+    "否", "不", "不要", "不行", "不用", "算了",
+})
 
 
 # ── Pure helpers ──
@@ -192,12 +201,60 @@ async def prompt_clarify_form(
 
     ``writer`` prints status / error lines; defaults to ``print``.
     Tests pass a list-appending stub.
+
+    When the schema carries the (d)-protocol auto-prefill payload —
+    ``confirmed_fields`` / ``ambiguous_fields`` / ``unknown_mentions`` —
+    the form prints a transparency header at the top, then offers each
+    confirmed field for one-keystroke acceptance instead of
+    re-collection. The user can still override any pre-filled value
+    by typing a new one; pressing Enter on an empty line accepts the
+    pre-filled value as-is. Ambiguous fields and unknown mentions are
+    surfaced verbatim so the operator and the user both see what the
+    system inferred and where it was uncertain.
     """
     print_fn = writer or print
 
     intro = schema.get("intro") or ""
     if intro:
         print_fn(intro)
+
+    confirmed_entries = _entries(schema.get("confirmed_fields"))
+    ambiguous_entries = _entries(schema.get("ambiguous_fields"))
+    unknown_entries = _entries(schema.get("unknown_mentions"))
+    confirmed_by_name: dict[str, Any] = {
+        str(e.get("name")): e
+        for e in confirmed_entries
+        if isinstance(e, dict) and "name" in e
+    }
+    ambiguous_by_name: dict[str, str] = {
+        str(e.get("name")): str(e.get("reason") or "")
+        for e in ambiguous_entries
+        if isinstance(e, dict) and "name" in e
+    }
+
+    if confirmed_by_name or ambiguous_by_name or unknown_entries:
+        print_fn(
+            "(we noticed details from your earlier messages — please "
+            "confirm or override below)",
+        )
+    for name, entry in confirmed_by_name.items():
+        print_fn(
+            f"  ✓ {name} = {entry.get('value')!r} "
+            f"(source: {entry.get('source') or 'auto_prefill'})",
+        )
+    for name, reason in ambiguous_by_name.items():
+        suffix = f" — {reason}" if reason else ""
+        print_fn(f"  ⚠ {name}: needs your input{suffix}")
+    for entry in unknown_entries:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("text") or "").strip()
+        if not text:
+            continue
+        guess = str(entry.get("guess") or "").strip()
+        suffix = f" (looked like: {guess})" if guess else ""
+        print_fn(f"  · we also noticed: {text}{suffix}")
+
     print_fn("(filling form — type a cancel keyword or hit Ctrl-D to abort)")
 
     cancel_keywords = schema.get("cancel_keywords") or []
@@ -208,22 +265,50 @@ async def prompt_clarify_form(
 
     collected: dict[str, Any] = {}
     for field in fields:
+        field_name = field.get("name")
+        confirmed_entry = confirmed_by_name.get(str(field_name))
+        ambiguous_reason = ambiguous_by_name.get(str(field_name))
         while True:
             label = render_field_label(field)
-            line = await prompt_fn(f"{label}\n> ")
+            extras: list[str] = []
+            if confirmed_entry is not None:
+                extras.append(
+                    f"already filled: {confirmed_entry.get('value')!r} "
+                    f"— press Enter to confirm, or type a new value to override",
+                )
+            elif ambiguous_reason:
+                extras.append(f"unclear: {ambiguous_reason}")
+            extra_block = ("\n  " + "\n  ".join(extras)) if extras else ""
+            line = await prompt_fn(f"{label}{extra_block}\n> ")
             if line is None:
                 return ClarifyFormResult(fields={}, cancelled=True)
             if is_cancel_token(line, cancel_keywords):
                 return ClarifyFormResult(fields={}, cancelled=True)
+            stripped = line.strip()
+            if not stripped and confirmed_entry is not None:
+                # User pressed Enter on an empty line for a pre-filled
+                # field → accept the inferred value as-is. The audit
+                # payload already records the source ("auto_prefill")
+                # so downstream steps can see this was confirmed
+                # rather than typed.
+                collected[str(field_name)] = confirmed_entry.get("value")
+                break
             value, error = coerce_field_input(field, line)
             if error:
                 print_fn(f"  ✗ {error}; please try again.")
                 continue
             if value is not None:
-                collected[field["name"]] = value
+                collected[str(field_name)] = value
             break
 
     return ClarifyFormResult(fields=collected, cancelled=False)
+
+
+def _entries(raw: Any) -> list:
+    """Coerce a protocol field that may be missing / non-list to a list."""
+    if isinstance(raw, list):
+        return raw
+    return []
 
 
 def _default_prompt_fn() -> PromptFn:

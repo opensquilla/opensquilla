@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from typing import Any, Protocol
 
+import structlog
+
+from opensquilla.skills.meta.clarify_text import _coerce_and_validate
 from opensquilla.skills.meta.templating import evaluate_when, render_with_args
 from opensquilla.skills.meta.types import (
     ClarifyField,
@@ -33,7 +35,18 @@ from opensquilla.skills.meta.types import (
     MetaStep,
 )
 
-log = logging.getLogger(__name__)
+# Reserved key inside ``awaiting_filled_json`` carrying the prefill
+# audit payload (which fields were auto-extracted, from which source,
+# at what time). Surfaces consume this to render "we noticed X from
+# your earlier message — please confirm" rather than treating the
+# prefill values as user-entered. The leading double-underscore keeps
+# it out of any field-name collision since clarify field names cannot
+# start with ``__`` (parser invariant).
+_PREFILL_AUDIT_KEY = "__prefill_audit__"
+
+LLMChatProto = Callable[[str, str], Awaitable[str]]
+
+log = structlog.get_logger(__name__)
 
 _EN_INTRO = (
     "A few required details are still missing. Please provide the fields "
@@ -108,6 +121,7 @@ class _DAOProto(Protocol):
         inputs_json: str,
         step_outputs_json: str,
         awaiting_since: float,
+        awaiting_filled_json: str = "{}",
     ) -> bool: ...
 
 
@@ -120,6 +134,8 @@ async def run_user_input_step(
     session_id: str,
     dao: _DAOProto,
     now: Callable[[], float],
+    llm_chat: LLMChatProto | None = None,
+    prefill_context: Mapping[str, Any] | None = None,
 ) -> str:
     """Either pass through (skip_if true) or raise MetaPaused.
 
@@ -127,6 +143,23 @@ async def run_user_input_step(
     consumers see a defined output value. Never returns a non-empty
     string: the only "filled" content comes from the resume path,
     which writes via ``MetaOrchestrator.resume``.
+
+    When ``llm_chat`` and ``prefill_context`` are both supplied AND the
+    step's clarify config has ``nl_extract: true``, run a single NL
+    extraction pass over the context BEFORE claiming the awaiting
+    state (step c — "ask the user only what we cannot already
+    answer"). High-confidence extracted fields are merged into the
+    initial ``awaiting_filled_json`` so the surface can render them
+    as pre-confirmed values for the user to verify rather than re-
+    enter. Ambiguous fields are NOT pre-filled — the user must still
+    answer those explicitly. The audit payload (which fields came
+    from prefill, with what reasons) lands under the reserved
+    ``__prefill_audit__`` key so step (d)'s ``confirmed_fields``
+    protocol can surface it.
+
+    Both arguments default to ``None`` so existing call sites (and
+    every test that constructs the executor without LLM wiring)
+    behave exactly as before.
     """
 
     cfg = step.clarify_config
@@ -147,23 +180,113 @@ async def run_user_input_step(
             # as "skip-not-applicable" — proceed to pause.
             log.warning(
                 "meta_user_input.skip_if_error",
-                extra={"step": step.id, "error": str(exc)},
+                step=step.id,
+                error=str(exc),
             )
             should_skip = False
         if should_skip:
-            log.info("meta_user_input.skipped", extra={"step": step.id})
+            log.info("meta_user_input.skipped", step=step.id)
             return ""
 
     rendered_cfg = _render_clarify_config(cfg, inputs=inputs, outputs=outputs)
     rendered_cfg = _localize_clarify_config(rendered_cfg, inputs)
+
+    # Step c: pre-fill scan — pull field values out of the context the
+    # user already supplied (original_user_message,
+    # conversation_history, previously_collected, etc.) so we never
+    # ask the user to repeat themselves. Best-effort: any failure
+    # here downgrades to "no pre-fill" and we proceed to the normal
+    # pause path.
+    prefilled_values: dict[str, Any] = {}
+    prefill_audit: dict[str, Any] = {}
+    if (
+        rendered_cfg.nl_extract
+        and llm_chat is not None
+        and prefill_context
+    ):
+        # Deterministic pre-pass — extract KEY: value lines from any
+        # upstream step output where KEY matches an active field
+        # name. This catches the common case where an "intel_context"
+        # / "preferences" / "doc_context" llm_chat step already
+        # emitted ``ACCOUNTS: OpenAI`` / ``TIME_WINDOW: LAST_MONTH``,
+        # so the form's accounts / time_window field doesn't need a
+        # second LLM call to recover the same value. The LLM scan
+        # still runs after, but it now sees the already-resolved
+        # fields and focuses on the unresolved ones (or fills
+        # ``ambiguous_fields`` for them).
+        deterministic_hits = _deterministic_upstream_prefill(
+            rendered_cfg, prefill_context,
+        )
+        log.info(
+            "meta_user_input.prefill_scan_started",
+            step=step.id,
+            context_keys=sorted(prefill_context.keys()),
+            field_count=len(rendered_cfg.fields),
+            deterministic_prefilled=sorted(deterministic_hits.keys()),
+        )
+        prefilled_values, prefill_audit = await _run_prefill_scan(
+            cfg=rendered_cfg,
+            llm_chat=llm_chat,
+            context=prefill_context,
+            step_id=step.id,
+        )
+        # Deterministic hits win on conflict — they came directly
+        # from an upstream emitter that we know followed the
+        # ``KEY: value`` contract, while the LLM scan is best-effort
+        # interpretation. The audit records both sources so the
+        # surface can show provenance.
+        if deterministic_hits:
+            for name, value in deterministic_hits.items():
+                prefilled_values[name] = value
+            raw_audit_fields = (
+                prefill_audit.get("fields") if isinstance(prefill_audit, dict) else []
+            )
+            current_audit_fields = (
+                list(raw_audit_fields)
+                if isinstance(raw_audit_fields, list | tuple | set)
+                else []
+            )
+            merged_fields = sorted({*current_audit_fields, *deterministic_hits.keys()})
+            if not isinstance(prefill_audit, dict):
+                prefill_audit = {}
+            prefill_audit["fields"] = merged_fields
+            prefill_audit.setdefault("source", "auto_prefill")
+            prefill_audit["deterministic_fields"] = sorted(deterministic_hits.keys())
+        log.info(
+            "meta_user_input.prefill_scan_finished",
+            step=step.id,
+            prefilled_count=len(prefilled_values),
+            ambiguous_count=len(prefill_audit.get("ambiguous", []) or []),
+            errors=list(prefill_audit.get("errors", []) or [])[:2],
+        )
+    else:
+        log.info(
+            "meta_user_input.prefill_scan_skipped",
+            step=step.id,
+            nl_extract=bool(rendered_cfg.nl_extract),
+            has_llm_chat=llm_chat is not None,
+            has_prefill_context=bool(prefill_context),
+        )
+
+    initial_filled: dict[str, Any] = dict(prefilled_values)
+    if prefill_audit:
+        initial_filled[_PREFILL_AUDIT_KEY] = prefill_audit
+
     schema_json = _serialize_schema(rendered_cfg)
     inputs_json = json.dumps(inputs, ensure_ascii=False, sort_keys=True)
     step_outputs_json = json.dumps(outputs, ensure_ascii=False, sort_keys=True)
+    awaiting_filled_json = json.dumps(
+        initial_filled, ensure_ascii=False, sort_keys=True,
+    )
 
     awaiting_since = now()
 
     # CancelledError MUST propagate so the scheduler can tear down
     # sibling tasks consistently — see design §8.1.
+    # ``awaiting_filled_json`` is now a required slot in both the
+    # ``_DAOProto`` declaration and the real ``MetaRunWriter`` SQL —
+    # no broad ``TypeError`` swallow here, otherwise a legitimate
+    # call-site signature mismatch silently dumps the prefill.
     try:
         claimed = await asyncio.to_thread(
             dao.try_claim_awaiting,
@@ -174,6 +297,7 @@ async def run_user_input_step(
             inputs_json=inputs_json,
             step_outputs_json=step_outputs_json,
             awaiting_since=awaiting_since,
+            awaiting_filled_json=awaiting_filled_json,
         )
     except asyncio.CancelledError:
         raise
@@ -190,7 +314,73 @@ async def run_user_input_step(
         schema=rendered_cfg,
         intro=rendered_cfg.intro,
         language=str(inputs.get("user_language") or ""),
+        confirmed_fields=dict(prefilled_values) if prefilled_values else None,
+        prefill_audit=dict(prefill_audit) if prefill_audit else None,
     )
+
+
+async def _run_prefill_scan(
+    *,
+    cfg: ClarifyStepConfig,
+    llm_chat: LLMChatProto,
+    context: Mapping[str, Any],
+    step_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Single LLM pass that extracts pre-stated field values.
+
+    Returns ``(prefilled, audit)`` where:
+
+    * ``prefilled`` is the validated ``{field_name: value}`` dict for
+      fields the model is confident about. Ambiguous fields and
+      genuinely missing fields are NOT pre-filled.
+    * ``audit`` is a metadata payload describing which fields the
+      pre-fill scan touched, mapped to ``{"source": "auto_prefill",
+      "ambiguous": [...], "unknown_mentions": [...]}``. Surfaces
+      consume this through the ``confirmed_fields`` protocol (step
+      d) to show the user which answers were inferred and from
+      where.
+
+    Failure modes (LLM error, malformed JSON, every field validator
+    rejecting) downgrade silently to ``({}, {"error": "..."})`` —
+    pre-fill is best-effort; falling through to the normal ask-the-
+    user path is always safe.
+    """
+    # Local import to avoid a circular import: clarify_nl_extract
+    # depends on clarify_text.py which lives next to executors/.
+    from opensquilla.skills.meta.clarify_nl_extract import extract  # noqa: PLC0415
+
+    try:
+        result = await extract(
+            reply_text="",  # nothing from the user yet — purely scan context
+            schema=cfg,
+            active_fields=cfg.fields,
+            llm_chat=llm_chat,
+            tier=cfg.nl_extract_tier,
+            context=context,
+        )
+    except Exception as exc:  # noqa: BLE001 — pre-fill is best-effort
+        log.warning(
+            "meta_user_input.prefill_scan_failed",
+            step=step_id,
+            error=str(exc),
+        )
+        return {}, {"error": str(exc)[:200]}
+
+    audit: dict[str, Any] = {
+        "source": "auto_prefill",
+        "fields": list(result.fields.keys()),
+        "ambiguous": [
+            {"name": a.name, "reason": a.reason}
+            for a in result.ambiguous_fields
+        ],
+        "unknown_mentions": [
+            {"text": m.text, "guess": m.guess}
+            for m in result.unknown_mentions
+        ],
+    }
+    if result.errors:
+        audit["errors"] = list(result.errors)
+    return dict(result.fields), audit
 
 
 def _render_clarify_config(
@@ -246,6 +436,110 @@ def _serialize_schema(cfg: ClarifyStepConfig) -> str:
 
     payload = clarify_config_to_jsonable(cfg)
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+# Sentinel values that upstream "context-extraction" steps emit to
+# mean "I considered this field but couldn't fill it" — these MUST
+# NOT be treated as valid values for deterministic prefill, otherwise
+# we'd silently lock the form to ``UNKNOWN``.
+_DETERMINISTIC_PREFILL_SENTINELS: frozenset[str] = frozenset({
+    "", "unknown", "n/a", "na", "none", "null", "tbd", "todo",
+    "unspecified", "[]", "<missing>", "<unknown>", "<none>", "未指定",
+    "未提供", "无",
+})
+
+
+def _deterministic_upstream_prefill(
+    cfg: ClarifyStepConfig,
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Extract ``KEY: value`` lines from upstream step outputs whose
+    KEY matches an active schema field name (case-insensitive).
+
+    Returns ``{field_name: validated_value}``. Fields that fail
+    type/range/choice validation are silently skipped (the LLM scan
+    or the user will fill them). Sentinel values (UNKNOWN / N/A /
+    none / 未指定 / etc.) are skipped — they mean "upstream couldn't
+    fill this", not "the answer is literally 'UNKNOWN'".
+
+    This is the deterministic pre-pass that runs BEFORE the LLM
+    prefill scan. It catches the common case where a
+    context-extraction llm_chat step emitted structured output that
+    happens to match the form's field names — no second LLM call
+    needed.
+    """
+    if not context:
+        return {}
+    prior = context.get("prior_step_outputs")
+    if not isinstance(prior, Mapping) or not prior:
+        return {}
+
+    field_by_name_ci: dict[str, ClarifyField] = {
+        f.name.lower(): f for f in cfg.fields
+    }
+    if not field_by_name_ci:
+        return {}
+
+    hits: dict[str, Any] = {}
+    for upstream_output in prior.values():
+        if not isinstance(upstream_output, str) or not upstream_output.strip():
+            continue
+        lines = upstream_output.splitlines()
+        i = 0
+        while i < len(lines):
+            raw_line = lines[i]
+            stripped = raw_line.strip()
+            if not stripped or ":" not in stripped:
+                i += 1
+                continue
+            key, _, inline_value = stripped.partition(":")
+            key_norm = key.strip().lower()
+            inline_value = inline_value.strip()
+            field = field_by_name_ci.get(key_norm)
+            if field is None:
+                i += 1
+                continue
+
+            # Resolve the field's value. Three cases:
+            #   1. ``KEY: value`` — inline, the original common case.
+            #   2. ``KEY:`` followed by indented ``- item`` lines —
+            #      YAML block list; join items as comma-separated.
+            #   3. ``KEY: []`` / ``KEY:\n  - <missing>`` etc. — falls
+            #      through to the sentinel filter below.
+            value: str = inline_value
+            if not value:
+                items: list[str] = []
+                j = i + 1
+                while j < len(lines):
+                    follow_raw = lines[j]
+                    if not follow_raw.strip():
+                        j += 1
+                        continue
+                    indent = len(follow_raw) - len(follow_raw.lstrip())
+                    if indent == 0:
+                        break
+                    follow_stripped = follow_raw.strip()
+                    if not follow_stripped.startswith("-"):
+                        break
+                    item = follow_stripped.lstrip("-").strip()
+                    if item and item.lower() not in _DETERMINISTIC_PREFILL_SENTINELS:
+                        items.append(item)
+                    j += 1
+                i = j
+                if items:
+                    value = ", ".join(items)
+            else:
+                i += 1
+
+            if field.name in hits:
+                continue
+            if not value or value.lower() in _DETERMINISTIC_PREFILL_SENTINELS:
+                continue
+            coerced, errs = _coerce_and_validate(field, value)
+            if errs or coerced is None:
+                continue
+            hits[field.name] = coerced
+    return hits
 
 
 __all__ = ["run_user_input_step"]

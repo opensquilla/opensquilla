@@ -44,6 +44,7 @@ from opensquilla.channels.artifact_delivery import (
 from opensquilla.channels.artifact_delivery import (
     strip_delivered_artifact_image_references as _strip_delivered_artifact_image_references,
 )
+from opensquilla.channels.contract import channel_capability_profile
 from opensquilla.channels.stream_policy import resolve_channel_stream_policy
 from opensquilla.channels.types import IncomingMessage, OutgoingMessage
 from opensquilla.engine.start_turn import start_turn_via_runtime
@@ -1583,6 +1584,199 @@ def _tool_result_payload(event: ToolResultEvent) -> dict[str, Any]:
     return payload
 
 
+def _clarify_tool_arguments(event: ToolResultEvent) -> dict[str, Any] | None:
+    args = event.arguments
+    if not isinstance(args, dict):
+        return None
+    schema = args.get("clarify_schema")
+    if (
+        args.get("kind") == "user_input"
+        and args.get("paused") is True
+        and isinstance(schema, dict)
+    ):
+        return args
+    return None
+
+
+def _channel_accepts_metadata_card(channel: Any) -> bool:
+    profile = channel_capability_profile(channel)
+    if profile is None:
+        return bool(getattr(channel, "supports_clarify_cards", False))
+    if not (profile.cards or profile.interactive_cards or profile.card_actions):
+        return False
+    return profile.channel_type == "feishu" or bool(
+        getattr(channel, "supports_clarify_cards", False)
+    )
+
+
+def _clarify_field_label(field: dict[str, Any]) -> str:
+    name = str(field.get("name") or "").strip()
+    prompt = str(field.get("prompt") or "").strip()
+    if prompt and prompt != name:
+        return f"{name} - {prompt}"
+    return name or prompt or "field"
+
+
+def _clarify_field_required_text(field: dict[str, Any]) -> str:
+    if field.get("required") is True:
+        return "required"
+    if field.get("default") not in (None, ""):
+        return f"default: {field['default']}"
+    return "optional"
+
+
+def _clarify_field_element(field: dict[str, Any]) -> dict[str, Any] | None:
+    name = str(field.get("name") or "").strip()
+    if not name:
+        return None
+    label = _clarify_field_label(field)
+    placeholder = {
+        "tag": "plain_text",
+        "content": label,
+    }
+    field_type = str(field.get("type") or "string").lower()
+    if field_type == "enum" and isinstance(field.get("choices"), list):
+        options: list[dict[str, Any]] = []
+        for choice in field["choices"]:
+            rendered = str(choice)
+            options.append(
+                {
+                    "text": {"tag": "plain_text", "content": rendered},
+                    "value": rendered,
+                }
+            )
+        return {
+            "tag": "select_static",
+            "name": name,
+            "placeholder": placeholder,
+            "options": options,
+        }
+    if field_type == "bool":
+        return {
+            "tag": "select_static",
+            "name": name,
+            "placeholder": placeholder,
+            "options": [
+                {"text": {"tag": "plain_text", "content": "true"}, "value": "true"},
+                {"text": {"tag": "plain_text", "content": "false"}, "value": "false"},
+            ],
+        }
+    return {
+        "tag": "input",
+        "name": name,
+        "placeholder": placeholder,
+    }
+
+
+def _build_clarify_channel_card(args: dict[str, Any], msg: IncomingMessage) -> dict[str, Any]:
+    schema = cast(dict[str, Any], args["clarify_schema"])
+    fields = schema.get("fields")
+    if not isinstance(fields, list):
+        fields = []
+    intro = str(schema.get("intro") or "").strip()
+    elements: list[dict[str, Any]] = []
+    if intro:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": intro}})
+
+    rows: list[str] = []
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        rows.append(f"- **{_clarify_field_label(field)}** ({_clarify_field_required_text(field)})")
+    if rows:
+        elements.append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "**Fields**\n" + "\n".join(rows),
+                },
+            }
+        )
+    for field in fields:
+        if isinstance(field, dict) and (element := _clarify_field_element(field)):
+            elements.append(element)
+
+    value: dict[str, Any] = {
+        "opensquilla_action": "clarify_submit",
+        "channel_id": msg.channel_id,
+    }
+    is_group = msg.metadata.get("is_group")
+    if isinstance(is_group, bool):
+        value["is_group"] = is_group
+    chat_type = msg.metadata.get("chat_type")
+    if isinstance(chat_type, str) and chat_type:
+        value["chat_type"] = chat_type
+    if isinstance(args.get("run_id"), str) and args["run_id"]:
+        value["run_id"] = args["run_id"]
+    if isinstance(args.get("step"), str) and args["step"]:
+        value["step"] = args["step"]
+
+    cancel_keywords = schema.get("cancel_keywords")
+    if isinstance(cancel_keywords, list) and cancel_keywords:
+        elements.append(
+            {
+                "tag": "note",
+                "elements": [
+                    {
+                        "tag": "plain_text",
+                        "content": "Cancel: " + " / ".join(str(item) for item in cancel_keywords),
+                    }
+                ],
+            }
+        )
+
+    elements.append(
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "Submit"},
+                    "type": "primary",
+                    "value": value,
+                }
+            ],
+        }
+    )
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "blue",
+            "title": {"tag": "plain_text", "content": "需要补充信息"},
+        },
+        "elements": elements,
+    }
+
+
+async def _maybe_send_clarify_channel_card(
+    channel: Any,
+    msg: IncomingMessage,
+    event: ToolResultEvent,
+) -> bool:
+    args = _clarify_tool_arguments(event)
+    if args is None or not _channel_accepts_metadata_card(channel):
+        return False
+    card = _build_clarify_channel_card(args, msg)
+    try:
+        await channel.send(
+            OutgoingMessage(
+                content="OpenSquilla clarification form",
+                reply_to=msg.channel_id,
+                metadata={"card": card},
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - keep text fallback available
+        log.warning(
+            "channel_dispatch.clarify_card_send_failed",
+            channel_type=type(channel).__name__,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return False
+    return True
+
+
 async def _read_transcript_rows(session_manager: Any, session_key: str) -> list[Any]:
     read_transcript = getattr(session_manager, "read_transcript", None)
     if not callable(read_transcript):
@@ -1906,6 +2100,7 @@ async def _run_turn_batch_path(
     text_parts: list[str] = []
     artifacts: list[dict[str, Any]] = []
     error_occurred = False
+    clarify_card_sent = False
 
     run_kwargs: dict[str, Any] = {
         "tool_context": tool_ctx,
@@ -1926,6 +2121,8 @@ async def _run_turn_batch_path(
         )
         async for event in _wrap_channel_turn_stream(stream, config):
             if isinstance(event, TextDeltaEvent):
+                if clarify_card_sent:
+                    continue
                 text_parts.append(event.text)
                 if event_bridge is not None:
                     await event_bridge.emit(
@@ -1964,6 +2161,8 @@ async def _run_turn_batch_path(
                         "session.event.tool_result",
                         _tool_result_payload(event),
                     )
+                if await _maybe_send_clarify_channel_card(channel, msg, event):
+                    clarify_card_sent = True
             elif isinstance(event, ErrorEvent):
                 log.error(
                     "channel_dispatch.agent_error",
@@ -2036,6 +2235,7 @@ async def _run_turn_streaming_path(
     stream_delivered_index = 0
     artifacts: list[dict[str, Any]] = []
     stream_sanitizer = _DirectiveTagStreamSanitizer()
+    clarify_card_sent = False
 
     async def _chunk_iter() -> AsyncIterator[str]:
         """Async iterator that yields text chunks from the queue."""
@@ -2082,6 +2282,8 @@ async def _run_turn_streaming_path(
         )
         async for event in _wrap_channel_turn_stream(stream, config):
             if isinstance(event, TextDeltaEvent):
+                if clarify_card_sent:
+                    continue
                 cleaned = _strip_artifact_markers_from_channel_text(event.text)
                 if cleaned:
                     text_emitted = True
@@ -2123,6 +2325,8 @@ async def _run_turn_streaming_path(
                         "session.event.tool_result",
                         _tool_result_payload(event),
                     )
+                if await _maybe_send_clarify_channel_card(channel, msg, event):
+                    clarify_card_sent = True
             elif isinstance(event, ErrorEvent):
                 log.error(
                     "channel_dispatch.agent_error",

@@ -175,6 +175,97 @@ def test_render_with_args_unknown_variable_raises() -> None:
         )
 
 
+def test_render_with_args_blocks_class_introspection_escape() -> None:
+    """A1: the Jinja environment must block ``__class__`` attribute access so
+    a SKILL.md author cannot escape via Python's MRO chain
+    (``{{ inputs.__class__.__mro__[1].__subclasses__() }}``)."""
+    with pytest.raises(ValueError, match="security violation"):
+        render_with_args(
+            {"hack": "{{ inputs.__class__ }}"},
+            inputs={"x": 1},
+            outputs={},
+        )
+
+
+def test_render_with_args_blocks_subclasses_walk() -> None:
+    """A1: full attribute chain that previously let a template enumerate
+    every loaded Python subclass must raise SecurityError (wrapped as
+    ValueError for the orchestrator's step-failure path)."""
+    with pytest.raises(ValueError, match="security violation"):
+        render_with_args(
+            {"hack": "{{ inputs.__class__.__mro__[1].__subclasses__() }}"},
+            inputs={"x": 1},
+            outputs={},
+        )
+
+
+def test_render_with_args_preserves_nested_get_chain() -> None:
+    """A1 regression guard: the sandbox upgrade must preserve the
+    ``inputs.get('collected', {}).get('field', default)`` pattern that
+    bundled creator skills (meta-skill-creator, meta-paper-write, etc.)
+    rely on. Without this guard a sandbox-strictness change could break
+    every bundled meta skill silently."""
+    rendered = render_with_args(
+        {"out": "{{ inputs.get('collected', {}).get('field', 'fallback') }}"},
+        inputs={"collected": {"field": "got it"}},
+        outputs={},
+    )
+    assert rendered == {"out": "got it"}
+
+
+def test_render_with_args_preserves_subscript_and_filter_pipeline() -> None:
+    """A1 regression guard: subscript access, the ``tojson`` filter, and
+    the ``length`` filter must all survive the sandbox upgrade. These are
+    the load-bearing primitives for the bundled meta-skill-creator DAG.
+
+    NOTE: the third pipeline uses ``outputs.numbers`` rather than ``items``
+    on purpose — ``obj.items`` resolves to the bound dict method via
+    Jinja's getattr-first attribute protocol, which would fail under any
+    Jinja environment (sandboxed or not). The pipeline shape we care
+    about is "dotted access into a stored list, then ``| length``"."""
+    rendered = render_with_args(
+        {
+            "subscript": "{{ inputs['user_message'] | truncate(8) }}",
+            "tojson": "{{ outputs.payload | tojson }}",
+            "length": "{{ outputs.numbers | length }}",
+        },
+        inputs={"user_message": "hello-world-meta-skill"},
+        outputs={"payload": {"k": "v"}, "numbers": [1, 2, 3]},
+    )
+    assert rendered["subscript"] == "hello-wo"
+    assert rendered["tojson"] == '{"k": "v"}'
+    assert rendered["length"] == "3"
+
+
+def test_resolve_route_blocks_class_introspection_escape() -> None:
+    """A1: ``route.when`` expressions go through ``compile_expression`` on
+    the same sandboxed env; introspection escapes must surface as
+    ValueError so the orchestrator treats them as a step failure rather
+    than a silent allow."""
+    from opensquilla.skills.meta.templating import resolve_route
+    from opensquilla.skills.meta.types import RouteCase
+
+    with pytest.raises(ValueError, match="security violation"):
+        resolve_route(
+            (RouteCase(when="inputs.__class__.__name__ == 'dict'", to="x"),),
+            inputs={"x": 1},
+            outputs={},
+        )
+
+
+def test_evaluate_when_blocks_class_introspection_escape() -> None:
+    """A1: step-level ``when`` expressions follow the same contract as
+    ``route.when`` — sandbox violations must raise ValueError."""
+    from opensquilla.skills.meta.templating import evaluate_when
+
+    with pytest.raises(ValueError, match="security violation"):
+        evaluate_when(
+            "inputs.__class__.__name__ == 'dict'",
+            inputs={"x": 1},
+            outputs={},
+        )
+
+
 def test_when_expression_supports_lower_filter() -> None:
     from opensquilla.skills.meta.templating import evaluate_when
 

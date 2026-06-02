@@ -94,8 +94,7 @@ def _slack_spec() -> ChannelSetupSpec:
                               required=False, default=False),
             ChannelSetupField("connection_mode", "Connection mode", "select",
                               required=False, default="webhook",
-                              choices=("webhook", "socket"),
-                              advanced=True),
+                              choices=("webhook", "socket")),
         ),
     )
 

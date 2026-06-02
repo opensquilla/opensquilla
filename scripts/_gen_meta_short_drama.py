@@ -505,7 +505,12 @@ EXEC_TMPL = '''
         input_reference: "<<SLUG>>/reference.png"
         input_reference_2: "<<SLUG>>/{N}_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{{{ outputs.shot{N}_duration | truncate(3) }}}}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{{{ outputs.shot{N}_duration | int(5) }}}}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -515,7 +520,7 @@ EXEC_TMPL = '''
       with:
         input_image: "<<SLUG>>/{N}_shot.png"
         output_path: "<<SLUG>>/{N}_shot.mp4"
-        duration: "{{{{ outputs.shot{N}_duration | truncate(3) }}}}"
+        duration: "{{{{ outputs.shot{N}_duration | int(5) }}}}"
         width: 720
         height: 1280
         fps: 24

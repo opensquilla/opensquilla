@@ -881,7 +881,12 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/1_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{ outputs.shot1_duration | truncate(3) }}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{ outputs.shot1_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -891,7 +896,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/1_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/1_shot.mp4"
-        duration: "{{ outputs.shot1_duration | truncate(3) }}"
+        duration: "{{ outputs.shot1_duration | int(5) }}"
         width: 720
         height: 1280
         fps: 24
@@ -932,7 +937,12 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/2_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{ outputs.shot2_duration | truncate(3) }}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{ outputs.shot2_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -942,7 +952,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/2_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/2_shot.mp4"
-        duration: "{{ outputs.shot2_duration | truncate(3) }}"
+        duration: "{{ outputs.shot2_duration | int(5) }}"
         width: 720
         height: 1280
         fps: 24
@@ -983,7 +993,12 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/3_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{ outputs.shot3_duration | truncate(3) }}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{ outputs.shot3_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -993,7 +1008,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/3_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/3_shot.mp4"
-        duration: "{{ outputs.shot3_duration | truncate(3) }}"
+        duration: "{{ outputs.shot3_duration | int(5) }}"
         width: 720
         height: 1280
         fps: 24
@@ -1034,7 +1049,12 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/4_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{ outputs.shot4_duration | truncate(3) }}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{ outputs.shot4_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1044,7 +1064,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/4_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/4_shot.mp4"
-        duration: "{{ outputs.shot4_duration | truncate(3) }}"
+        duration: "{{ outputs.shot4_duration | int(5) }}"
         width: 720
         height: 1280
         fps: 24
@@ -1085,7 +1105,12 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/5_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{ outputs.shot5_duration | truncate(3) }}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{ outputs.shot5_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1095,7 +1120,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/5_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/5_shot.mp4"
-        duration: "{{ outputs.shot5_duration | truncate(3) }}"
+        duration: "{{ outputs.shot5_duration | int(5) }}"
         width: 720
         height: 1280
         fps: 24
@@ -1136,7 +1161,12 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/6_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{ outputs.shot6_duration | truncate(3) }}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{ outputs.shot6_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1146,7 +1176,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/6_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/6_shot.mp4"
-        duration: "{{ outputs.shot6_duration | truncate(3) }}"
+        duration: "{{ outputs.shot6_duration | int(5) }}"
         width: 720
         height: 1280
         fps: 24
@@ -1187,7 +1217,12 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/7_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{ outputs.shot7_duration | truncate(3) }}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{ outputs.shot7_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1197,7 +1232,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/7_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/7_shot.mp4"
-        duration: "{{ outputs.shot7_duration | truncate(3) }}"
+        duration: "{{ outputs.shot7_duration | int(5) }}"
         width: 720
         height: 1280
         fps: 24
@@ -1238,7 +1273,12 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/8_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{ outputs.shot8_duration | truncate(3) }}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{ outputs.shot8_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1248,7 +1288,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/8_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/8_shot.mp4"
-        duration: "{{ outputs.shot8_duration | truncate(3) }}"
+        duration: "{{ outputs.shot8_duration | int(5) }}"
         width: 720
         height: 1280
         fps: 24
@@ -1289,7 +1329,12 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/9_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{ outputs.shot9_duration | truncate(3) }}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{ outputs.shot9_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1299,7 +1344,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/9_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/9_shot.mp4"
-        duration: "{{ outputs.shot9_duration | truncate(3) }}"
+        duration: "{{ outputs.shot9_duration | int(5) }}"
         width: 720
         height: 1280
         fps: 24
@@ -1340,7 +1385,12 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/10_shot.png"
         aspect_ratio: "9:16"
-        duration: "{{ outputs.shot10_duration | truncate(3) }}"
+        # `| int(5)` parses the duration extract as an integer, falling
+        # back to 5 if the LLM emitted anything non-numeric (sentinel
+        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
+        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
+        # the downstream CLI's duration validator.
+        duration: "{{ outputs.shot10_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1350,7 +1400,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/10_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/10_shot.mp4"
-        duration: "{{ outputs.shot10_duration | truncate(3) }}"
+        duration: "{{ outputs.shot10_duration | int(5) }}"
         width: 720
         height: 1280
         fps: 24

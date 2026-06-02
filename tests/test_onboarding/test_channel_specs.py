@@ -106,7 +106,7 @@ def test_slack_connection_mode_choices():
     assert field.field_type == "select"
     assert field.default == "webhook"
     assert field.choices == ("webhook", "socket")
-    assert field.advanced is True
+    assert field.advanced is False
 
 
 def test_slack_mode_specific_fields_are_conditional():

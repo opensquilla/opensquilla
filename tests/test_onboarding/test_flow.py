@@ -1490,6 +1490,8 @@ def test_interactive_channel_add_uses_explicit_config_path(tmp_path, monkeypatch
         def select(self, message: str, **kwargs):
             if message == "Channel type":
                 return _Answer("slack")
+            if message == "Connection mode":
+                return _Answer("webhook")
             raise AssertionError(f"unexpected select prompt: {message}")
 
         def text(self, message: str, **kwargs):
@@ -1516,6 +1518,59 @@ def test_interactive_channel_add_uses_explicit_config_path(tmp_path, monkeypatch
 
     assert 'type = "slack"' in target.read_text()
     assert not default_target.exists()
+
+
+def test_interactive_slack_channel_add_can_select_socket_mode(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from opensquilla.onboarding import flow
+
+    target = tmp_path / "socket.toml"
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary(types.SimpleNamespace):
+        def select(self, message: str, **kwargs):
+            if message == "Channel type":
+                return _Answer("slack")
+            if message == "Connection mode":
+                return _Answer("socket")
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def text(self, message: str, **kwargs):
+            if message == "Channel name":
+                return _Answer("slack-socket")
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            if message == "Bot token (xoxb-...)":
+                return _Answer("xoxb-test")
+            if message == "App-level token (xapp-...)":
+                return _Answer("xapp-test")
+            raise AssertionError(f"unexpected password prompt: {message}")
+
+        def confirm(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+        def checkbox(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected checkbox prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    flow.run_interactive_channel_add(None, config_path=target)
+
+    data = target.read_text()
+    assert 'type = "slack"' in data
+    assert 'connection_mode = "socket"' in data
+    assert 'app_token = "xapp-test"' in data
+    assert "signing_secret" not in data
 
 
 def test_optional_onboarding_section_receives_explicit_config_path(tmp_path):

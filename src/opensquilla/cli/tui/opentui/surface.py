@@ -208,7 +208,7 @@ def _send_bridge_message(
 def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPluginState:
     label = str(toolbar.get("router_hud") or "")
     style = str(toolbar.get("router_hud_style") or "dim")
-    context = str(toolbar.get("router_usage") or "-")
+    context = _router_context_from_toolbar(toolbar)
     baseline_model = str(toolbar.get("router_baseline_model") or "")
     source = str(toolbar.get("router_source") or "")
     routing_applied = bool(toolbar.get("router_routing_applied", True))
@@ -250,6 +250,38 @@ def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPlugi
         context=context,
         style="dim",
     )
+
+
+def _router_context_from_toolbar(toolbar: dict[str, object]) -> str:
+    usage = toolbar.get("router_usage")
+    if not usage:
+        return "-"
+
+    usage_text = str(usage)
+    session_input = _coerce_nonnegative_int(toolbar.get("router_session_input"))
+    context_window = _coerce_positive_int(toolbar.get("router_context_window"))
+    if session_input is None or context_window is None:
+        return usage_text
+
+    pressure = min(max(session_input / context_window, 0.0), 1.0)
+    percent = int(pressure * 100 + 0.5)
+    return f"{percent}% · {usage_text}"
+
+
+def _coerce_nonnegative_int(value: object | None) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_positive_int(value: object | None) -> int | None:
+    coerced = _coerce_nonnegative_int(value)
+    if coerced is None or coerced <= 0:
+        return None
+    return coerced
 
 
 def _normalize_router_style(style: str) -> str:

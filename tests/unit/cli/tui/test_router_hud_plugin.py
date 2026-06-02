@@ -265,6 +265,25 @@ def test_terminal_router_sink_updates_toolbar_only_for_router_events() -> None:
     assert output.invalidations == 1
 
 
+def test_terminal_router_sink_writes_resolved_context_window() -> None:
+    class _Output:
+        def __init__(self) -> None:
+            self.updates: list[tuple[str, object | None]] = []
+
+        def set_toolbar(self, key: str, value: object | None) -> None:
+            self.updates.append((key, value))
+
+        def invalidate(self) -> None:
+            return None
+
+    output = _Output()
+    sink = router_hud_event_sink_factory(output)
+
+    sink(_router_event({**ROUTER_PAYLOAD, "model": "gpt-5.5"}))
+
+    assert ("router_context_window", 1_000_000) in output.updates
+
+
 def test_terminal_router_sink_reuses_launch_scoped_plugin_manager() -> None:
     class _Output:
         def __init__(self, plugin_manager: TuiPluginManager) -> None:

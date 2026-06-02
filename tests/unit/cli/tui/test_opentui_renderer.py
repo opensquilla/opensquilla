@@ -5,6 +5,7 @@ import pytest
 from opensquilla.cli.chat.turn import UsageSummary
 from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer, _format_tokens
 from opensquilla.cli.tui.terminal.stream import _summarize_result
+from opensquilla.engine.usage import SessionTotalsSnapshot
 
 
 class _RecordingHandle:
@@ -159,6 +160,39 @@ async def test_afinalize_writes_usage_to_toolbar_and_invalidates() -> None:
     await r.aappend_text("done")
     await r.afinalize(UsageSummary(input_tokens=1234, output_tokens=856))
     assert handle.toolbar.get("router_usage") == "1.2k/856"
+    assert handle.invalidated == 2
+
+
+@pytest.mark.asyncio
+async def test_afinalize_writes_session_input_to_toolbar() -> None:
+    handle = _ToolbarRecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("done")
+    await r.afinalize(
+        UsageSummary(
+            input_tokens=1,
+            output_tokens=2,
+            session_totals=SessionTotalsSnapshot(input_tokens=84_000),
+        )
+    )
+
+    assert handle.toolbar.get("router_usage") == "1/2"
+    assert handle.toolbar.get("router_session_input") == 84_000
+    assert handle.invalidated == 2
+
+
+@pytest.mark.asyncio
+async def test_afinalize_clears_stale_session_input_when_snapshot_missing() -> None:
+    handle = _ToolbarRecordingHandle()
+    handle.toolbar["router_session_input"] = 84_000
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("done")
+    await r.afinalize(UsageSummary(input_tokens=1, output_tokens=2))
+
+    assert handle.toolbar.get("router_usage") == "1/2"
+    assert "router_session_input" not in handle.toolbar
     assert handle.invalidated == 2
 
 

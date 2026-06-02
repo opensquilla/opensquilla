@@ -60,6 +60,7 @@ class OpenTuiStreamRenderer:
             return
         self._began = True
         self._turn_id = f"t{next(_turn_ids)}"
+        self._set_router_session_input(None)
         self._set_router_usage(None)
         await self._emit("turn.begin", TurnBegin(id=self._turn_id))
         await self._emit(
@@ -214,7 +215,13 @@ class OpenTuiStreamRenderer:
         out_tok = getattr(usage, "output_tokens", None)
         if in_tok is None and out_tok is None:
             return
+        self._set_router_session_input(_session_input_tokens(usage))
         self._set_router_usage(f"{_format_tokens(in_tok)}/{_format_tokens(out_tok)}")
+
+    def _set_router_session_input(self, value: object | None) -> None:
+        set_toolbar = getattr(self.output_handle, "set_toolbar", None)
+        if callable(set_toolbar):
+            set_toolbar("router_session_input", value)
 
     def _set_router_usage(self, value: object | None) -> None:
         set_toolbar = getattr(self.output_handle, "set_toolbar", None)
@@ -234,6 +241,13 @@ def _format_tokens(value: Any) -> str:
     if count >= 1000:
         return f"{count / 1000:.1f}k"
     return str(count)
+
+
+def _session_input_tokens(usage: Any) -> Any | None:
+    session_totals = getattr(usage, "session_totals", None)
+    if session_totals is None:
+        return None
+    return getattr(session_totals, "input_tokens", None)
 
 
 def _format_usage(usage: Any) -> str:

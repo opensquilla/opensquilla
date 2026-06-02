@@ -42,11 +42,13 @@ def decide_network_access(host: str, context: RunContext) -> NetworkDecision:
     for grant in context.domains:
         if domain_matches(grant.domain, normalized_host):
             grant_validation = validate_domain_pattern(grant.domain)
+            reason = "system_domain_grant" if grant.source == "system" else "domain_grant"
+            source_prefix = "system" if grant.source == "system" else "domain"
             return NetworkDecision(
                 status="allow",
                 normalized_host=normalized_host,
-                reason="domain_grant",
-                source=f"domain:{grant_validation.normalized}",
+                reason=reason,
+                source=f"{source_prefix}:{grant_validation.normalized}",
             )
 
     for grant in context.bundles:

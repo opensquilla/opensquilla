@@ -224,14 +224,44 @@ async def test_web_fetch_cache_hit_requires_current_run_context_grant(
 
 
 @pytest.mark.asyncio
-async def test_rpc_search_query_fails_closed_under_managed_network(
+async def test_rpc_search_query_allows_search_provider_endpoint_under_managed_network(
     monkeypatch: pytest.MonkeyPatch,
     managed_context: ToolContext,
 ) -> None:
-    async def fail_search(*args: object, **kwargs: object) -> dict[str, object]:
-        raise AssertionError("search provider should not run")
+    seen: dict[str, object] = {}
 
-    monkeypatch.setattr(rpc_tools, "run_web_search_payload", fail_search)
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            provider_decision = self._decide("api.search.brave.com")
+            unknown_decision = self._decide("not-approved.example")
+            assert isinstance(provider_decision, NetworkDecision)
+            assert isinstance(unknown_decision, NetworkDecision)
+            seen["provider_decision"] = provider_decision.status
+            seen["provider_reason"] = provider_decision.reason
+            seen["unknown_decision"] = unknown_decision.status
+
+        async def stop(self) -> None:
+            return None
+
+    async def fake_search(*args: object, **kwargs: object) -> dict[str, object]:
+        seen["search_called"] = True
+        seen["provider_kwargs"] = web_mod._search_provider_kwargs("brave")
+        return {
+            "ok": True,
+            "query": "python packages",
+            "provider": "brave",
+            "results": [{"title": "PyPI", "url": "https://pypi.org", "snippet": ""}],
+        }
+
+    monkeypatch.setattr(rpc_tools, "run_web_search_payload", fake_search)
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+    web_mod.configure_search("brave", api_key="test-key")
     ctx = RpcContext(
         conn_id="c",
         principal=Principal(
@@ -244,10 +274,19 @@ async def test_rpc_search_query_fails_closed_under_managed_network(
 
     result = await rpc_tools._handle_search_query({"query": "python packages"}, ctx)
 
-    assert result["ok"] is False
-    assert result["results"] == []
-    assert result["error"]["kind"] == "policy_denied"
-    assert "explicit URL" in result["error"]["message"]
+    assert result["ok"] is True
+    assert result["provider"] == "brave"
+    assert seen == {
+        "provider_decision": "allow",
+        "provider_reason": "system_domain_grant",
+        "unknown_decision": "ask",
+        "provider_kwargs": {
+            "proxy": "http://127.0.0.1:28080",
+            "use_env_proxy": False,
+            "api_key": "test-key",
+        },
+        "search_called": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -320,16 +359,30 @@ async def test_inprocess_network_action_without_run_context_fails_closed(
 
 
 @pytest.mark.asyncio
-async def test_web_search_shaped_inprocess_action_fails_closed_without_url(
+async def test_web_search_shaped_inprocess_action_uses_search_provider_endpoint_grant(
     monkeypatch: pytest.MonkeyPatch,
     managed_context: ToolContext,
 ) -> None:
-    monkeypatch.setattr(
-        integration_mod,
-        "SandboxProxyServer",
-        lambda *args, **kwargs: pytest.fail("proxy should not start without URL target"),
-    )
-    called = False
+    seen: dict[str, object] = {}
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("html.duckduckgo.com")
+            assert isinstance(decision, NetworkDecision)
+            seen["decision"] = decision.status
+            seen["reason"] = decision.reason
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+    web_mod.configure_search("duckduckgo")
 
     @sandboxed(
         "web.fetch",
@@ -341,14 +394,69 @@ async def test_web_search_shaped_inprocess_action_fails_closed_without_url(
         record_payload=False,
     )
     async def dummy_web_search(query: str, max_results: int | None = None) -> str:
-        nonlocal called
-        called = True
+        seen["called"] = True
         return query
 
     result = await dummy_web_search("python packages", 5)
 
+    assert result == "python packages"
+    assert seen == {
+        "decision": "allow",
+        "reason": "system_domain_grant",
+        "called": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_inprocess_network_action_with_network_none_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reset_runtime()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    configure_runtime(
+        SandboxSettings(
+            run_mode="standard",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="none",
+        ),
+        workspace=workspace,
+    )
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.CLI,
+        workspace_dir=str(tmp_path),
+        session_key="s1",
+        run_mode="standard",
+        sandbox_run_context=RunContext(run_mode=RunMode.STANDARD),
+    )
+    token = current_tool_context.set(ctx)
+    monkeypatch.setattr(
+        integration_mod,
+        "SandboxProxyServer",
+        lambda *args, **kwargs: pytest.fail("proxy should not start when network is none"),
+    )
+    called = False
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        nonlocal called
+        called = True
+        return url
+
+    try:
+        result = await dummy_http_request("http://example.com")
+    finally:
+        current_tool_context.reset(token)
+
     payload = json.loads(result)
     assert payload["status"] == "denied"
     assert payload["reason"] == "policy_denied"
-    assert "explicit URL" in payload["message"]
+    assert "network is disabled" in payload["message"]
     assert called is False

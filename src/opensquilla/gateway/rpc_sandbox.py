@@ -14,7 +14,11 @@ from opensquilla.gateway.rpc import (
 from opensquilla.gateway.session_services import get_session_storage
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
 from opensquilla.sandbox.package_bundles import expand_package_bundle
-from opensquilla.sandbox.path_validation import decide_path_access, normalize_mount_access
+from opensquilla.sandbox.path_validation import (
+    decide_path_access,
+    normalize_mount_access,
+    normalize_path,
+)
 from opensquilla.sandbox.run_context import (
     RunContext,
     get_run_context,
@@ -92,6 +96,33 @@ def _validate_domain_param(domain: str) -> None:
 
 def _validate_workspace_param(workspace: str) -> str:
     return normalize_workspace_path(workspace)
+
+
+def _pick_directory_path(initial_dir: str | None = None) -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:  # pragma: no cover - host environment dependent
+        raise RpcUnavailableError("Directory picker is not available on this host.") from exc
+
+    root = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        selected = filedialog.askdirectory(
+            parent=root,
+            initialdir=initial_dir or "",
+            mustexist=True,
+        )
+    except Exception as exc:  # pragma: no cover - host environment dependent
+        raise RpcUnavailableError("Directory picker is not available on this host.") from exc
+    finally:
+        if root is not None:
+            root.destroy()
+
+    if not selected:
+        raise RpcUnavailableError("Directory selection was cancelled.")
+    return selected
 
 
 def _require_session_manager(ctx: RpcContext) -> Any:
@@ -422,6 +453,35 @@ async def _handle_sandbox_bundle_disable(params: dict | None, ctx: RpcContext) -
         workspace=workspace,
     )
     return _payload(context)
+
+
+@_d.method("sandbox.path.pick", scope="operator.write")
+async def _handle_sandbox_path_pick(params: dict | None, ctx: RpcContext) -> dict:
+    params = _require_params(params)
+    session_key = _require_session_key(params)
+    _require_owner(ctx, "sandbox.path.pick")
+    kind = str(params.get("kind") or "workspace").strip().lower()
+    if kind not in {"workspace", "mount"}:
+        raise ValueError("params.kind must be workspace or mount")
+
+    manager = _require_session_manager(ctx)
+    initial_dir = params.get("initialPath")
+    selected = _pick_directory_path(
+        str(initial_dir) if isinstance(initial_dir, str) and initial_dir.strip() else None
+    )
+
+    if kind == "workspace":
+        return {"path": _validate_workspace_param(selected), "kind": kind}
+
+    access = str(params.get("access") or "ro")
+    await _validate_mount_path_for_rpc(
+        manager,
+        session_key,
+        ctx.config,
+        path=selected,
+        access=access,
+    )
+    return {"path": str(normalize_path(selected)), "kind": kind}
 
 
 @_d.method("sandbox.workspace.set", scope="operator.write")

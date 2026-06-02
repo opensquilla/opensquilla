@@ -87,3 +87,41 @@ def test_decide_network_access_allows_package_bundle_domain() -> None:
         reason="package_bundle",
         source="bundle:node-package-install",
     )
+
+
+def test_package_install_bundles_cover_common_registry_and_artifact_hosts() -> None:
+    expectations = {
+        "python-package-install": {
+            "pypi.org",
+            "files.pythonhosted.org",
+            "pypi.python.org",
+            "bootstrap.pypa.io",
+        },
+        "node-package-install": {
+            "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "yarnpkg.com",
+            "nodejs.org",
+        },
+        "rust-package-install": {
+            "crates.io",
+            "static.crates.io",
+            "index.crates.io",
+            "github.com",
+            "objects.githubusercontent.com",
+        },
+        "go-package-install": {
+            "proxy.golang.org",
+            "sum.golang.org",
+            "go.dev",
+            "golang.org",
+            "storage.googleapis.com",
+        },
+    }
+
+    for bundle_id, hosts in expectations.items():
+        context = _context(bundles=(PackageBundleGrant(bundle_id),))
+        for host in hosts:
+            decision = decide_network_access(host, context)
+            assert decision.status == "allow", (bundle_id, host, decision)
+            assert decision.reason == "package_bundle"

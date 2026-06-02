@@ -91,18 +91,28 @@ def test_package_bundles_expand_to_known_domains() -> None:
     assert expand_package_bundle("python-package-install") == (
         "pypi.org",
         "files.pythonhosted.org",
+        "pypi.python.org",
+        "bootstrap.pypa.io",
     )
-    assert expand_package_bundle("node-package-install") == ("registry.npmjs.org",)
+    assert expand_package_bundle("node-package-install") == (
+        "registry.npmjs.org",
+        "registry.yarnpkg.com",
+        "yarnpkg.com",
+        "nodejs.org",
+    )
     assert expand_package_bundle("rust-package-install") == (
         "crates.io",
         "static.crates.io",
         "index.crates.io",
         "github.com",
+        "objects.githubusercontent.com",
     )
     assert expand_package_bundle("go-package-install") == (
         "proxy.golang.org",
         "sum.golang.org",
         "go.dev",
+        "golang.org",
+        "storage.googleapis.com",
     )
     assert "rust-package-install" in PACKAGE_BUNDLES
     assert expand_package_bundle("unknown") == ()

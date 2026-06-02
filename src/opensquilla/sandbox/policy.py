@@ -155,9 +155,7 @@ def _resolve_network(
     if action_kind in _NETWORK_TAGS and level == SecurityLevel.STANDARD:
         if settings.network_default == "proxy_allowlist":
             return NetworkMode.PROXY_ALLOWLIST
-        # STANDARD + explicit network tag: operators running `web.fetch` at
-        # L1 expect egress; isolation still applies to FS/process state.
-        return NetworkMode.HOST
+        return NetworkMode.NONE
     return NetworkMode.NONE
 
 

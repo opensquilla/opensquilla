@@ -88,7 +88,7 @@ class SandboxSettings(BaseSettings):
     allow_legacy_mode: bool = False
     run_mode: RunModeName | None = None
 
-    network_default: NetworkDefault = "none"
+    network_default: NetworkDefault = "proxy_allowlist"
     denial_threshold: int = 3
 
     extra_ro_mounts: list[str] = Field(default_factory=list)

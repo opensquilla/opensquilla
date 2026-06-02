@@ -51,7 +51,7 @@ from opensquilla.sandbox.governance import (
     gate_execution,
     on_successful_exec,
 )
-from opensquilla.sandbox.network_guard import decide_network_access
+from opensquilla.sandbox.network_guard import NetworkDecision, decide_network_access
 from opensquilla.sandbox.network_proxy import SandboxProxyServer
 from opensquilla.sandbox.path_validation import (
     decide_path_access,
@@ -59,7 +59,7 @@ from opensquilla.sandbox.path_validation import (
     normalize_path,
 )
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
-from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_context import DomainGrant, RunContext
 from opensquilla.sandbox.stale_output_cache import StaleOutputCache, get_stale_output_cache
 from opensquilla.sandbox.types import (
     ALLOW,
@@ -84,6 +84,14 @@ _MANAGED_NETWORK_PROXY_URL: contextvars.ContextVar[str | None] = contextvars.Con
     "opensquilla_managed_network_proxy_url",
     default=None,
 )
+
+_IN_PROCESS_NETWORK_TAGS: frozenset[str] = frozenset(
+    {"network.fetch", "network.http", "web.fetch"}
+)
+_SEARCH_PROVIDER_SYSTEM_DOMAINS: dict[str, tuple[str, ...]] = {
+    "brave": ("api.search.brave.com",),
+    "duckduckgo": ("html.duckduckgo.com",),
+}
 
 
 # ─── Approval queue / context protocols ──────────────────────────────────
@@ -580,6 +588,29 @@ def sandboxed(
             if isinstance(decision, DenialResult):
                 return json.dumps(decision.to_dict())
 
+            if policy.network == NetworkMode.NONE and _is_in_process_network_action(kind):
+                rt = get_runtime()
+                if rt is None:
+                    return json.dumps(
+                        DenialResult(
+                            reason=DenialReason.RUNTIME_UNCONFIGURED,
+                            suggested_next_step=SuggestedNextStep.ASK_USER,
+                            level=policy.level,
+                            action_fingerprint=action_fingerprint(request),
+                            message=(
+                                "Sandbox runtime is not configured. "
+                                "Network-disabled in-process tools refuse to run."
+                            ),
+                            retryable=False,
+                        ).to_dict()
+                    )
+                denial = await _managed_in_process_denial(
+                    request,
+                    rt,
+                    "Sandbox network is disabled for this in-process network tool.",
+                )
+                return json.dumps(denial.to_dict())
+
             if policy.network == NetworkMode.PROXY_ALLOWLIST:
                 rt = get_runtime()
                 if rt is None:
@@ -662,8 +693,12 @@ async def _prepare_in_process_managed_network(
             "NetworkMode.PROXY_ALLOWLIST requires Run Context grants to run "
             "in-process network tools through the managed proxy.",
         )
+    system_domains = _system_domain_grants_for_request(request)
+    effective_context = _context_with_system_domain_grants(context, system_domains)
     targets = _explicit_network_target_hosts(request.action_kind, request.argv)
     if not targets:
+        if system_domains:
+            return effective_context
         return await _managed_in_process_denial(
             request,
             runtime,
@@ -672,7 +707,7 @@ async def _prepare_in_process_managed_network(
             "be constrained without provider-specific plumbing.",
         )
     for host in targets:
-        decision = decide_network_access(host, context)
+        decision = decide_network_access(host, effective_context)
         if decision.status != "allow":
             return await _managed_in_process_denial(
                 request,
@@ -682,7 +717,7 @@ async def _prepare_in_process_managed_network(
                     f"target {host!r}: {decision.reason}."
                 ),
             )
-    return context
+    return effective_context
 
 
 async def _managed_in_process_denial(
@@ -745,6 +780,15 @@ async def guard_in_process_network_action(
     )
     if isinstance(decision, DenialResult):
         return decision
+    if policy.network == NetworkMode.NONE and _is_in_process_network_action(action_kind):
+        rt = runtime or get_runtime()
+        if rt is None:
+            return None
+        return await _managed_in_process_denial(
+            request,
+            rt,
+            "Sandbox network is disabled for this in-process network tool.",
+        )
     if policy.network != NetworkMode.PROXY_ALLOWLIST:
         return None
     rt = runtime or get_runtime()
@@ -752,6 +796,74 @@ async def guard_in_process_network_action(
         return None
     prepared = await _prepare_in_process_managed_network(request, rt)
     return prepared if isinstance(prepared, DenialResult) else None
+
+
+async def run_in_process_network_action(
+    *,
+    action_kind: str,
+    argv: tuple[str, ...],
+    callback: Callable[[], Awaitable[Any]],
+    runtime: SandboxRuntime | None = None,
+) -> Any | DenialResult:
+    """Run an undecorated in-process network action under sandbox networking.
+
+    Some gateway RPC handlers call provider code directly instead of going
+    through a registered tool decorator. This helper gives those paths the
+    same fail-closed and managed-proxy behavior as :func:`sandboxed`.
+    """
+    decision, policy, request = await gate_action(
+        action_kind=action_kind,
+        argv=argv,
+        runtime=runtime,
+    )
+    if isinstance(decision, DenialResult):
+        return decision
+
+    if policy.network == NetworkMode.NONE and _is_in_process_network_action(action_kind):
+        rt = runtime or get_runtime()
+        if rt is None:
+            return DenialResult(
+                reason=DenialReason.RUNTIME_UNCONFIGURED,
+                suggested_next_step=SuggestedNextStep.ASK_USER,
+                level=policy.level,
+                action_fingerprint=action_fingerprint(request),
+                message=(
+                    "Sandbox runtime is not configured. "
+                    "Network-disabled in-process tools refuse to run."
+                ),
+                retryable=False,
+            )
+        return await _managed_in_process_denial(
+            request,
+            rt,
+            "Sandbox network is disabled for this in-process network tool.",
+        )
+
+    if policy.network != NetworkMode.PROXY_ALLOWLIST:
+        return await callback()
+
+    rt = runtime or get_runtime()
+    if rt is None:
+        return DenialResult(
+            reason=DenialReason.RUNTIME_UNCONFIGURED,
+            suggested_next_step=SuggestedNextStep.ASK_USER,
+            level=policy.level,
+            action_fingerprint=action_fingerprint(request),
+            message=(
+                "Sandbox runtime is not configured. "
+                "Managed in-process network tools refuse to run."
+            ),
+            retryable=False,
+        )
+    prepared = await _prepare_in_process_managed_network(request, rt)
+    if isinstance(prepared, DenialResult):
+        return prepared
+    return await _run_in_process_with_managed_network(
+        callback,
+        (),
+        {},
+        context=prepared,
+    )
 
 
 def _explicit_network_target_hosts(action_kind: str, argv: tuple[str, ...]) -> tuple[str, ...]:
@@ -764,6 +876,54 @@ def _explicit_network_target_hosts(action_kind: str, argv: tuple[str, ...]) -> t
         if host and host not in hosts:
             hosts.append(host)
     return tuple(hosts)
+
+
+def _is_in_process_network_action(action_kind: str) -> bool:
+    return action_kind in _IN_PROCESS_NETWORK_TAGS
+
+
+def _system_domain_grants_for_request(request: SandboxRequest) -> tuple[str, ...]:
+    tool_name = request.argv[0] if request.argv else ""
+    if tool_name != "web_search":
+        return ()
+    try:
+        from opensquilla.tools.builtin.web import (
+            get_active_provider,
+            get_search_fallback_policy,
+        )
+
+        provider = get_active_provider()
+        fallback_policy = get_search_fallback_policy()
+    except Exception:  # pragma: no cover - defensive against import-time cycles
+        return ()
+
+    domains: list[str] = []
+    for domain in _SEARCH_PROVIDER_SYSTEM_DOMAINS.get(provider, ()):
+        if domain not in domains:
+            domains.append(domain)
+    if fallback_policy == "network" and provider != "duckduckgo":
+        for domain in _SEARCH_PROVIDER_SYSTEM_DOMAINS.get("duckduckgo", ()):
+            if domain not in domains:
+                domains.append(domain)
+    return tuple(domains)
+
+
+def _context_with_system_domain_grants(
+    context: RunContext,
+    domains: tuple[str, ...],
+) -> RunContext:
+    if not domains:
+        return context
+    existing = {grant.domain for grant in context.domains}
+    grants = list(context.domains)
+    for domain in domains:
+        if domain in existing:
+            continue
+        grants.append(DomainGrant(domain=domain, scope="chat", source="system"))
+        existing.add(domain)
+    if len(grants) == len(context.domains):
+        return context
+    return dataclasses.replace(context, domains=tuple(grants))
 
 
 def _explicit_network_target_host(action_kind: str, value: object) -> str | None:
@@ -858,6 +1018,7 @@ __all__ = [
     "managed_network_httpx_kwargs",
     "record_success",
     "reset_runtime",
+    "run_in_process_network_action",
     "run_under_backend",
     "sandboxed",
 ]

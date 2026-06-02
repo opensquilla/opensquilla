@@ -48,12 +48,58 @@ def test_sandbox_assets_define_icon_and_control_sections() -> None:
     icons = _read(ICONS_JS)
 
     assert "icons.sandbox" in icons
-    assert "Status" in sandbox_js
+    assert "Run Mode" in sandbox_js
     assert "Workspace & Mounts" in sandbox_js
     assert "Managed Network" in sandbox_js
-    assert ("Recent Decisions" in sandbox_js) or ("Sandbox Rules" in sandbox_js)
+    assert "Full Host Access" in sandbox_js
+    assert "Browse" in sandbox_js
+    assert "Status" not in sandbox_js
+    assert "Target" not in sandbox_js
+    assert "Sandbox Rules" not in sandbox_js
+    assert "Recent Decisions" not in sandbox_js
+    assert "sandbox-status-card" not in sandbox_css
+    assert ".sandbox-strip" not in sandbox_css
     assert "Approval activity" not in sandbox_js
     assert ".sandbox-stage" in sandbox_css
+
+
+def test_sandbox_view_exposes_realtime_run_context_editing() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+    sandbox_css = _read(SANDBOX_CSS)
+
+    for method in (
+        "sandbox.workspace.set",
+        "sandbox.mount.add",
+        "sandbox.mount.remove",
+        "sandbox.domain.add",
+        "sandbox.domain.remove",
+        "sandbox.bundle.enable",
+        "sandbox.bundle.disable",
+        "sandbox.run_context.set",
+        "sandbox.path.pick",
+    ):
+        assert method in sandbox_js
+
+    assert "data-sandbox-action=\"run-mode-set\"" in sandbox_js
+    assert "data-sandbox-action=\"workspace-save\"" in sandbox_js
+    assert "data-sandbox-action=\"workspace-browse\"" in sandbox_js
+    assert "data-sandbox-action=\"mount-add\"" in sandbox_js
+    assert "data-sandbox-action=\"mount-browse\"" in sandbox_js
+    assert "data-sandbox-action=\"domain-add\"" in sandbox_js
+    assert "data-sandbox-action=\"bundle-toggle\"" in sandbox_js
+    assert ".sandbox-inline-form" in sandbox_css
+    assert ".sandbox-icon-btn" in sandbox_css
+    assert ".sandbox-run-mode-grid" in sandbox_css
+    assert ".sandbox-path-field" in sandbox_css
+
+
+def test_sandbox_view_hides_editing_panels_for_full_host_access() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    assert "function _isFullHostAccess" in sandbox_js
+    assert "function _renderFullHostAccessEmpty" in sandbox_js
+    assert "_renderFullHostAccessEmpty(runContext)" in sandbox_js
+    assert "No sandbox mounts, domains, or bundles are applied in this mode." in sandbox_js
 
 
 def test_standalone_approvals_view_assets_are_removed() -> None:
@@ -84,8 +130,8 @@ def test_sandbox_view_tracks_pending_approval_activity() -> None:
     assert "window.removeEventListener('opensquilla:approvals-pending', _onApprovalsPending);" in sandbox
     assert "function _onApprovalsPending(event)" in sandbox
     assert "function _updateApprovalActivity(count)" in sandbox
-    assert "root.querySelector('#sandbox-rules-count')" in sandbox
-    assert "root.querySelector('#sandbox-rules')" in sandbox
+    assert "root.querySelector('#sandbox-approval-count')" in sandbox
+    assert "root.querySelector('#sandbox-approval-activity')" in sandbox
     assert "Approvals pending" in sandbox
     assert "#sb-activity" not in sandbox
 
@@ -93,13 +139,9 @@ def test_sandbox_view_tracks_pending_approval_activity() -> None:
 def test_sandbox_approval_activity_preserves_rules_panel_base_state() -> None:
     sandbox = _read(SANDBOX_JS)
     update_start = sandbox.index("function _updateApprovalActivity(count)")
-    update_body = sandbox[update_start : sandbox.index("  function _detailRow", update_start)]
+    update_body = sandbox[update_start : sandbox.index("  function _setNotice", update_start)]
 
-    assert "_setRulesContent(root, _renderEmpty('Loading rules'), '0 rules');" in sandbox
-    assert (
-        "_setRulesContent(root, _renderEmpty('Sandbox rules are unavailable'), '0 rules');"
-        in sandbox
-    )
-    assert "insertAdjacentHTML('afterbegin', activity)" in update_body
-    assert "rulesCount.textContent = _rulesBaseCountLabel;" in update_body
+    assert "_rulesBaseCountLabel" not in sandbox
+    assert "countEl.textContent = `${safeCount}`;" in update_body
+    assert "activityEl.innerHTML = activity;" in update_body
     assert "_renderEmpty('No sandbox rules reported')" not in update_body

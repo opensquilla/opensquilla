@@ -222,6 +222,46 @@ async def test_rpc_sandbox_status_reports_backend_managed_network_and_run_mode()
         "security_grading": True,
         "network_default": "proxy_allowlist",
     }
+    assert result["bundle_catalog"] == [
+        {
+            "bundle_id": "python-package-install",
+            "domains": [
+                "pypi.org",
+                "files.pythonhosted.org",
+                "pypi.python.org",
+                "bootstrap.pypa.io",
+            ],
+        },
+        {
+            "bundle_id": "node-package-install",
+            "domains": [
+                "registry.npmjs.org",
+                "registry.yarnpkg.com",
+                "yarnpkg.com",
+                "nodejs.org",
+            ],
+        },
+        {
+            "bundle_id": "rust-package-install",
+            "domains": [
+                "crates.io",
+                "static.crates.io",
+                "index.crates.io",
+                "github.com",
+                "objects.githubusercontent.com",
+            ],
+        },
+        {
+            "bundle_id": "go-package-install",
+            "domains": [
+                "proxy.golang.org",
+                "sum.golang.org",
+                "go.dev",
+                "golang.org",
+                "storage.googleapis.com",
+            ],
+        },
+    ]
     assert result["permissions"] == {"default_mode": "off"}
 
 
@@ -324,6 +364,53 @@ async def test_rpc_sandbox_invalid_params_do_not_create_missing_session(
 
     assert missing_session_key not in manager.sessions
     assert manager.created == []
+
+
+@pytest.mark.asyncio
+async def test_rpc_sandbox_path_pick_validates_workspace_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.gateway.rpc_sandbox as rpc_sandbox
+
+    manager = _SessionManager()
+    monkeypatch.setattr(rpc_sandbox, "_pick_directory_path", lambda initial_dir=None: "/etc")
+
+    with pytest.raises(ValueError, match="sensitive_path"):
+        await rpc_sandbox._handle_sandbox_path_pick(
+            {
+                "sessionKey": manager.node.session_key,
+                "kind": "workspace",
+            },
+            _ctx(manager),
+        )
+
+
+@pytest.mark.asyncio
+async def test_rpc_sandbox_path_pick_returns_valid_mount_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import opensquilla.gateway.rpc_sandbox as rpc_sandbox
+
+    manager = _SessionManager()
+    selected = tmp_path / "external"
+    selected.mkdir()
+    monkeypatch.setattr(
+        rpc_sandbox,
+        "_pick_directory_path",
+        lambda initial_dir=None: str(selected),
+    )
+
+    result = await rpc_sandbox._handle_sandbox_path_pick(
+        {
+            "sessionKey": manager.node.session_key,
+            "kind": "mount",
+            "access": "ro",
+        },
+        _ctx(manager),
+    )
+
+    assert result == {"path": str(selected), "kind": "mount"}
 
 
 @pytest.mark.asyncio

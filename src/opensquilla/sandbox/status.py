@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from opensquilla.sandbox.package_bundles import PACKAGE_BUNDLES
 from opensquilla.sandbox.run_mode import config_run_mode, display_name, execution_target
 
 
@@ -32,6 +33,10 @@ def status_payload(config: Any, *, restart_required: bool = False) -> dict[str, 
             "security_grading": bool(sandbox_cfg.security_grading),
             "network_default": network_default,
         },
+        "bundle_catalog": [
+            {"bundle_id": bundle_id, "domains": list(domains)}
+            for bundle_id, domains in PACKAGE_BUNDLES.items()
+        ],
         "permissions": {
             "default_mode": str(config.permissions.default_mode),
         },

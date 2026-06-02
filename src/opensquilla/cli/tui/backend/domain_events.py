@@ -11,6 +11,8 @@ TuiDomainEventSource = Literal["runtime", "gateway", "turn_runner", "renderer"]
 
 KIND_TEXT_DELTA = "text_delta"
 KIND_TEXT_FLUSH = "text_flush"
+KIND_REASONING_DELTA = "reasoning_delta"
+KIND_REASONING_FLUSH = "reasoning_flush"
 KIND_TOOL_STARTED = "tool_started"
 KIND_TOOL_FINISHED = "tool_finished"
 KIND_ROUTER_DECISION = "router_decision"

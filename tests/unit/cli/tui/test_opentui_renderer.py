@@ -35,7 +35,10 @@ class _ToolbarRecordingHandle(_RecordingHandle):
 
 
 @pytest.mark.asyncio
-async def test_text_then_tool_becomes_thinking_block() -> None:
+async def test_text_before_tool_stays_answer_never_retyped() -> None:
+    """Text the model speaks before a tool call is real answer text, not
+    thinking. It must stay an answer block — never retyped — and the protocol
+    must emit no block.retype at all."""
     handle = _RecordingHandle()
     r = OpenTuiStreamRenderer(output_handle=handle)
     r.__enter__()
@@ -44,14 +47,40 @@ async def test_text_then_tool_becomes_thinking_block() -> None:
     await r.atool_finished("c1", success=True, result="result line")
     await r.aappend_text("Final answer")
     await r.afinalize(None)
-    retypes = [p for t, p in handle.sent if t == "block.retype"]
-    assert retypes and retypes[0]["kind"] == "thinking"
+    assert not [t for t, _ in handle.sent if t == "block.retype"]
     tool_begins = [p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "tool"]
     assert tool_begins and tool_begins[0]["meta"]["name"] == "web_search"
     answer_begins = [p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "answer"]
     assert len(answer_begins) == 2
-    ends = [t for t, _ in handle.sent if t == "block.end"]
-    assert ends
+    # the pre-tool text was never reclassified as thinking
+    assert not [
+        p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "thinking"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_renders_as_distinct_thinking_block() -> None:
+    """Reasoning arrives via aappend_reasoning and renders as its own thinking
+    block, opened before the answer block — no retype, no shared block."""
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_reasoning("thinking it through")
+    await r.aappend_text("the answer")
+    await r.afinalize(None)
+
+    begins = [
+        (p["id"], p["kind"])
+        for t, p in handle.sent
+        if t == "block.begin" and p.get("kind") in {"thinking", "answer"}
+    ]
+    kinds = [kind for _id, kind in begins]
+    assert kinds == ["thinking", "answer"]
+    assert not [t for t, _ in handle.sent if t == "block.retype"]
+    # the thinking block is closed before the answer block opens
+    thinking_id = begins[0][0]
+    ends = [p["id"] for t, p in handle.sent if t == "block.end"]
+    assert thinking_id in ends
 
 
 @pytest.mark.asyncio

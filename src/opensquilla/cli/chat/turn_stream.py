@@ -18,6 +18,7 @@ from opensquilla.cli.chat.turn import TurnResult, UsageSummary
 from opensquilla.cli.tui.backend.domain_events import (
     KIND_DONE,
     KIND_ERROR,
+    KIND_REASONING_FLUSH,
     KIND_ROUTER_DECISION,
     KIND_STATUS,
     KIND_TOOL_FINISHED,
@@ -352,6 +353,49 @@ async def _finish_text_delta_stream(
             plane,
             flush.text,
         )
+
+
+async def _flush_streaming_reasoning(
+    renderer: Any,
+    plane: StreamingPlane,
+    text: str,
+) -> None:
+    del plane
+    append = getattr(renderer, "aappend_reasoning", None)
+    if append is not None:
+        await append(text)
+
+
+async def _append_reasoning_delta(
+    renderer: Any,
+    deps: TurnStreamDependencies,
+    plane: StreamingPlane | None,
+    delta: str,
+    *,
+    source: TuiDomainEventSource,
+    turn_id: str | None,
+) -> None:
+    if plane is None:
+        await _flush_streaming_reasoning(renderer, plane, delta)
+        return
+    flush = plane.append(delta)
+    if flush is not None:
+        await _flush_streaming_reasoning(renderer, plane, flush.text)
+
+
+async def _finish_reasoning_stream(
+    renderer: Any,
+    deps: TurnStreamDependencies,
+    plane: StreamingPlane | None,
+    *,
+    source: TuiDomainEventSource,
+    turn_id: str | None,
+) -> None:
+    if plane is None:
+        return
+    flush = plane.finish()
+    if flush is not None:
+        await _flush_streaming_reasoning(renderer, plane, flush.text)
 
 
 def _async_renderer_method(method: object) -> Callable[..., Awaitable[None]]:
@@ -939,6 +983,7 @@ async def stream_response_turnrunner(
         RouterDecisionEvent,
         RunHeartbeatEvent,
         TextDeltaEvent,
+        ThinkingEvent,
         ToolResultEvent,
         ToolUseStartEvent,
         WarningEvent,
@@ -978,6 +1023,19 @@ async def stream_response_turnrunner(
             if tui_output is not None or stream_deps.tui_event_sink is not None
             else None
         )
+        # Reasoning streams on its own plane so its coalescing buffer never
+        # interleaves with the answer text buffer (the two arrive as separate
+        # event kinds and must stay separate on screen).
+        reasoning_plane = (
+            StreamingPlane(
+                event_sink=stream_deps.tui_event_sink,
+                source="turn_runner",
+                turn_id=session_key,
+                flush_kind=KIND_REASONING_FLUSH,
+            )
+            if tui_output is not None or stream_deps.tui_event_sink is not None
+            else None
+        )
         try:
             try:
                 stream = turn_runner.run(
@@ -994,6 +1052,15 @@ async def stream_response_turnrunner(
                             renderer,
                             stream_deps,
                             streaming_plane,
+                            event.text,
+                            source="turn_runner",
+                            turn_id=session_key,
+                        )
+                    elif isinstance(event, ThinkingEvent):
+                        await _append_reasoning_delta(
+                            renderer,
+                            stream_deps,
+                            reasoning_plane,
                             event.text,
                             source="turn_runner",
                             turn_id=session_key,
@@ -1020,6 +1087,15 @@ async def stream_response_turnrunner(
                             renderer,
                             stream_deps,
                             streaming_plane,
+                            source="turn_runner",
+                            turn_id=session_key,
+                        )
+                        # Reasoning ends when the model turns to a tool: flush
+                        # the thinking block before the tool block opens.
+                        await _finish_reasoning_stream(
+                            renderer,
+                            stream_deps,
+                            reasoning_plane,
                             source="turn_runner",
                             turn_id=session_key,
                         )
@@ -1193,6 +1269,13 @@ async def stream_response_turnrunner(
                 renderer,
                 stream_deps,
                 streaming_plane,
+                source="turn_runner",
+                turn_id=session_key,
+            )
+            await _finish_reasoning_stream(
+                renderer,
+                stream_deps,
+                reasoning_plane,
                 source="turn_runner",
                 turn_id=session_key,
             )

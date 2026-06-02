@@ -200,6 +200,7 @@ class OpenTuiReplayRenderer:
     """Headless renderer facade used for backend contract tests and evaluation."""
 
     buffer: str = ""
+    reasoning_buffer: str = ""
     flush_count: int = 0
     statuses: list[tuple[str, str]] = field(default_factory=list)
     tool_events: list[tuple[str, str | None]] = field(default_factory=list)
@@ -207,6 +208,9 @@ class OpenTuiReplayRenderer:
     async def aappend_text(self, delta: str) -> None:
         self.buffer += delta
         self.flush_count += 1
+
+    async def aappend_reasoning(self, delta: str) -> None:
+        self.reasoning_buffer += delta
 
     async def atool_start(
         self,

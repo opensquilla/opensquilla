@@ -40,12 +40,14 @@ class StreamingPlane:
         event_sink: Callable[[TuiDomainEvent], None] | None = None,
         source: TuiDomainEventSource = "renderer",
         turn_id: str | None = None,
+        flush_kind: str = KIND_TEXT_FLUSH,
     ) -> None:
         self.policy = StreamingFlushPolicy() if policy is None else policy
         self._clock_ms = clock_ms
         self._event_sink = event_sink
         self._source = source
         self._turn_id = turn_id
+        self._flush_kind = flush_kind
         self._buffer: list[str] = []
         self._buffer_chars = 0
         self._last_flush_ms = clock_ms()
@@ -110,7 +112,7 @@ class StreamingPlane:
             return
         self._event_sink(
             TuiDomainEvent(
-                kind=KIND_TEXT_FLUSH,
+                kind=self._flush_kind,
                 source=self._source,
                 payload={
                     "text": flush.text,

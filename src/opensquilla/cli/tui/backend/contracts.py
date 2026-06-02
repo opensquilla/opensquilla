@@ -57,6 +57,8 @@ class TuiRenderer(Protocol):
 
     async def aappend_text(self, delta: str) -> None: ...
 
+    async def aappend_reasoning(self, delta: str) -> None: ...
+
     async def atool_start(
         self,
         name: str,

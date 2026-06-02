@@ -17,7 +17,6 @@ from opensquilla.cli.tui.opentui.messages import (
     BlockAppend,
     BlockBegin,
     BlockEnd,
-    BlockRetype,
     BlockUpdate,
     TurnBegin,
     TurnEnd,
@@ -39,6 +38,7 @@ class OpenTuiStreamRenderer:
         self._saw_output = False
         self._block_seq = 0
         self._open_text_id: str | None = None
+        self._open_reasoning_id: str | None = None
         self._tool_block_ids: dict[str, str] = {}
         self._last_tool_block_id: str | None = None
         self._open_tool_ids: set[str] = set()
@@ -96,6 +96,10 @@ class OpenTuiStreamRenderer:
             await self._emit(
                 "turn.status", TurnStatusState(phase="output", label="output", active=True)
             )
+        # Answer text and reasoning are distinct from the source: a reasoning
+        # stream that was open must close before the answer begins so the two
+        # render as separate blocks (never the same block re-typed).
+        await self._close_reasoning()
         self.buffer += delta
         if self._open_text_id is None:
             self._open_text_id = self._next_block_id()
@@ -104,13 +108,32 @@ class OpenTuiStreamRenderer:
             )
         await self._emit("block.append", BlockAppend(id=self._open_text_id, delta=delta))
 
-    async def _close_text_as(self, kind: Literal["thinking", "answer"]) -> None:
+    async def aappend_reasoning(self, delta: str) -> None:
+        if not delta:
+            return
+        await self._ensure_begin()
+        if self._open_reasoning_id is None:
+            self._open_reasoning_id = self._next_block_id()
+            await self._emit(
+                "block.begin",
+                BlockBegin(id=self._open_reasoning_id, kind="thinking", meta={}),
+            )
+        await self._emit(
+            "block.append", BlockAppend(id=self._open_reasoning_id, delta=delta)
+        )
+
+    async def _close_text(self) -> None:
         if self._open_text_id is None:
             return
         block_id = self._open_text_id
         self._open_text_id = None
-        if kind == "thinking":
-            await self._emit("block.retype", BlockRetype(id=block_id, kind="thinking"))
+        await self._emit("block.end", BlockEnd(id=block_id))
+
+    async def _close_reasoning(self) -> None:
+        if self._open_reasoning_id is None:
+            return
+        block_id = self._open_reasoning_id
+        self._open_reasoning_id = None
         await self._emit("block.end", BlockEnd(id=block_id))
 
     async def astatus(self, message: str, *, style: str = "dim") -> None:
@@ -127,7 +150,8 @@ class OpenTuiStreamRenderer:
         tool_use_id: str | None = None,
     ) -> None:
         await self._ensure_begin()
-        await self._close_text_as("thinking")
+        await self._close_reasoning()
+        await self._close_text()
         summary = summarize_args(name, args)
         block_id = tool_use_id or self._next_block_id()
         if tool_use_id:
@@ -181,7 +205,8 @@ class OpenTuiStreamRenderer:
 
     async def afinalize(self, usage: Any | None = None, *, cancelled: bool = False) -> None:
         await self._ensure_begin()
-        await self._close_text_as("answer")
+        await self._close_reasoning()
+        await self._close_text()
         # Force-close any tool blocks still open (e.g. a turn cancelled mid-tool
         # never reaches atool_finished). They resolve to ✗: a cancelled in-flight
         # tool did not succeed, so error is the honest status.

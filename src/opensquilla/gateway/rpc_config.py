@@ -260,13 +260,14 @@ def _sync_provider_selector(ctx: RpcContext, config: Any) -> None:
 
 
 def _sync_image_generation(config: Any) -> None:
-    from opensquilla.tools.builtin.media import configure_image_generation
+    from opensquilla.tools.builtin.media import configure_audio, configure_image_generation
 
     configure_image_generation(
         getattr(config, "image_generation", None),
         llm_config=getattr(config, "llm", None),
         squilla_router_config=getattr(config, "squilla_router", None),
     )
+    configure_audio(getattr(config, "audio", None))
 
 
 # Read-only paths that cannot be modified via config.set/patch/apply

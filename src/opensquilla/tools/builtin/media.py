@@ -21,6 +21,22 @@ from opensquilla.artifacts import (
     artifact_payload,
 )
 from opensquilla.env import trust_env as _trust_env
+from opensquilla.provider.audio import (
+    AudioGenerationResult,
+    DubbingDownloadRequest,
+    DubbingRequest,
+    DubbingStatusRequest,
+    ElevenLabsAudioProductionProvider,
+    ElevenLabsSharedVoicesRequest,
+    ElevenLabsSubscriptionRequest,
+    ElevenLabsTextToSpeechRequest,
+    ElevenLabsVoicesListRequest,
+    MusicGenerationRequest,
+    MusicGenerationResult,
+    VoiceCloneRequest,
+    VoiceConversionRequest,
+    VoiceConversionResult,
+)
 from opensquilla.provider.image_generation import (
     ImageGenerationRequest,
     generate_with_fallbacks,
@@ -43,13 +59,15 @@ from opensquilla.tools.types import (
 )
 
 _SUPPORTED_IMAGE_FORMATS = {"png", "jpg", "jpeg", "gif", "webp"}
+_SUPPORTED_AUDIO_FORMATS = {"aac", "flac", "m4a", "mp3", "mp4", "mpeg", "ogg", "wav", "webm"}
 _IMAGE_SIZE_LIMIT = 20 * 1024 * 1024  # 20 MB
+_AUDIO_SIZE_LIMIT = 100 * 1024 * 1024  # 100 MB
 _PDF_RENDER_SCALE = 2.0
 _PDF_TEXT_LIMIT = 50_000
-_TTS_VALID_VOICES = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
 _MAX_REDIRECTS = 5
 _VISION_ANALYSIS_TIMEOUT_SECONDS = 180.0
 _image_generation_config: Any | None = None
+_audio_config: Any | None = None
 _media_llm_config: Any | None = None
 _media_squilla_router_config: Any | None = None
 
@@ -65,6 +83,11 @@ def configure_image_generation(
     _media_llm_config = llm_config
     _media_squilla_router_config = squilla_router_config
     reset_image_generation_providers(config, llm_config=llm_config)
+
+
+def configure_audio(config: Any | None) -> None:
+    global _audio_config
+    _audio_config = config
 
 
 # ---------------------------------------------------------------------------
@@ -873,6 +896,976 @@ def _resolve_provider_config(scope: str, *, default_model: str):
 # ---------------------------------------------------------------------------
 
 
+def _resolve_audio_config() -> Any:
+    if _audio_config is not None:
+        return _audio_config
+    from opensquilla.gateway.config import AudioConfig
+
+    return AudioConfig()
+
+
+def _audio_provider_config(config: Any) -> Any:
+    providers = getattr(config, "providers", None)
+    return getattr(providers, "elevenlabs", None)
+
+
+def _audio_configured(config: Any) -> bool:
+    if not getattr(config, "enabled", False):
+        return False
+    provider_config = _audio_provider_config(config)
+    if provider_config is None:
+        return False
+    api_key = str(getattr(provider_config, "api_key", "") or "")
+    api_key_env = str(getattr(provider_config, "api_key_env", "") or "ELEVENLABS_API_KEY")
+    return bool(api_key or os.environ.get(api_key_env))
+
+
+def _elevenlabs_provider(config: Any) -> ElevenLabsAudioProductionProvider:
+    provider_config = _audio_provider_config(config)
+    api_key_env = str(getattr(provider_config, "api_key_env", "") or "ELEVENLABS_API_KEY")
+    return ElevenLabsAudioProductionProvider(
+        api_key=str(getattr(provider_config, "api_key", "") or "") or None,
+        api_key_env=api_key_env,
+        base_url=str(getattr(provider_config, "base_url", "") or "https://api.elevenlabs.io"),
+    )
+
+
+def _audio_not_available_payload(
+    *,
+    tool_name: str,
+    missing_capability: str,
+    note: str,
+) -> str:
+    return json.dumps(
+        {
+            "status": "not_available",
+            "tool": tool_name,
+            "provider": "elevenlabs",
+            "missing_capability": missing_capability,
+            "note": note,
+        }
+    )
+
+
+def _consent_required_payload(*, tool_name: str, note: str) -> str:
+    return json.dumps(
+        {
+            "status": "consent_required",
+            "tool": tool_name,
+            "provider": "elevenlabs",
+            "note": note,
+        }
+    )
+
+
+def _has_consent_metadata(consent_metadata: dict[str, Any] | None) -> bool:
+    if not isinstance(consent_metadata, dict):
+        return False
+    consent = consent_metadata.get("consent")
+    if isinstance(consent, bool):
+        return consent
+    if isinstance(consent, str):
+        return consent.strip().lower() in {"1", "true", "yes", "y", "confirmed"}
+    return bool(consent_metadata.get("speaker") and consent_metadata.get("source"))
+
+
+def _audio_mime_type(path: Path) -> str:
+    ext = path.suffix.lstrip(".").lower()
+    mapping = {
+        "aac": "audio/aac",
+        "flac": "audio/flac",
+        "m4a": "audio/mp4",
+        "mp3": "audio/mpeg",
+        "mp4": "audio/mp4",
+        "mpeg": "audio/mpeg",
+        "ogg": "audio/ogg",
+        "wav": "audio/wav",
+        "webm": "audio/webm",
+    }
+    return mapping.get(ext, "application/octet-stream")
+
+
+async def _resolve_supported_audio_file_for_tool(
+    *, tool_name: str, path: str
+) -> tuple[Path, bytes, str]:
+    resolved = _resolve_media_path(path)
+    path_block = _sensitive_media_path_block(tool_name, resolved, path)
+    if path_block is not None:
+        raise SafeToolError(path_block["message"])
+    if not resolved.exists():
+        raise SafeToolError(f"Audio file not found: {path} (resolved={resolved})")
+    ext = resolved.suffix.lstrip(".").lower()
+    if ext not in _SUPPORTED_AUDIO_FORMATS:
+        raise ToolError(
+            f"Unsupported audio format: {ext}. "
+            f"Supported: {', '.join(sorted(_SUPPORTED_AUDIO_FORMATS))}"
+        )
+    loop = asyncio.get_event_loop()
+    audio_bytes: bytes = await loop.run_in_executor(None, resolved.read_bytes)
+    if len(audio_bytes) > _AUDIO_SIZE_LIMIT:
+        raise ToolError("Audio file exceeds 100MB size limit")
+    return resolved, audio_bytes, _audio_mime_type(resolved)
+
+
+def _audio_extension(response_format: str, mime_type: str) -> str:
+    normalized = (response_format or "").lower()
+    if normalized.startswith("mp3"):
+        return "mp3"
+    if normalized.startswith("pcm"):
+        return "pcm16"
+    if normalized in {"wav", "flac", "opus"}:
+        return normalized
+    mime = mime_type.split(";", 1)[0].lower()
+    return {
+        "audio/mpeg": "mp3",
+        "audio/mp3": "mp3",
+        "audio/wav": "wav",
+        "audio/x-wav": "wav",
+        "audio/flac": "flac",
+        "audio/ogg": "ogg",
+        "audio/opus": "opus",
+        "audio/l16": "pcm16",
+    }.get(mime, "mp3")
+
+
+def _resolve_generated_audio_path(
+    output_path: str | None,
+    *,
+    response_format: str,
+    mime_type: str,
+    prefix: str,
+) -> Path:
+    ext = _audio_extension(response_format, mime_type)
+    raw = output_path or f"{prefix}-{uuid.uuid4().hex[:12]}.{ext}"
+    reject_foreign_host_path(raw, platform=os.name)
+    ctx = current_tool_context.get()
+    root = (
+        Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+        if ctx and ctx.workspace_dir
+        else Path.cwd()
+    )
+    candidate = Path(raw).expanduser()
+    if not candidate.suffix:
+        candidate = candidate.with_suffix(f".{ext}")
+    target = candidate if candidate.is_absolute() else root / candidate
+    resolved = target.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ToolError(f"Audio output path is outside workspace: {output_path}") from exc
+    return resolved
+
+
+def _publish_generated_audio_artifact(
+    target: Path,
+    mime_type: str,
+    *,
+    source: str,
+) -> dict[str, Any] | None:
+    ctx = current_tool_context.get()
+    if (
+        ctx is None
+        or ctx.caller_kind is CallerKind.SUBAGENT
+        or not ctx.artifact_media_root
+        or not ctx.artifact_session_id
+        or not ctx.session_key
+    ):
+        return None
+    store = ArtifactStore(ctx.artifact_media_root)
+    try:
+        ref = store.publish_file(
+            target,
+            session_id=ctx.artifact_session_id,
+            session_key=ctx.session_key,
+            name=target.name,
+            mime=mime_type or "application/octet-stream",
+            source=source,
+            max_bytes=ctx.artifact_max_bytes
+            if ctx.artifact_max_bytes is not None
+            else DEFAULT_ARTIFACT_MAX_BYTES,
+            disk_budget_bytes=ctx.artifact_disk_budget_bytes
+            if ctx.artifact_disk_budget_bytes is not None
+            else DEFAULT_ARTIFACT_DISK_BUDGET_BYTES,
+        )
+    except ArtifactBudgetError as exc:
+        raise ToolError(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise ToolError(f"artifact storage path is unavailable: {exc}") from exc
+    payload = artifact_payload(ref)
+    ctx.published_artifacts.append(payload)
+    return payload
+
+
+def _write_generated_audio_payload(
+    result: AudioGenerationResult | VoiceConversionResult | MusicGenerationResult,
+    *,
+    output_path: str | None,
+    prefix: str,
+    artifact_source: str,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    target = _resolve_generated_audio_path(
+        output_path,
+        response_format=result.response_format,
+        mime_type=result.mime_type,
+        prefix=prefix,
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(result.audio_bytes)
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "path": str(target),
+        "provider": result.provider,
+        "model": result.model,
+        "response_format": result.response_format,
+        "mime_type": result.mime_type,
+        "size_bytes": len(result.audio_bytes),
+    }
+    voice = getattr(result, "voice", None)
+    if voice:
+        payload["voice"] = voice
+    generation_id = getattr(result, "generation_id", None)
+    if generation_id:
+        payload["generation_id"] = generation_id
+    if extra:
+        payload.update(extra)
+    artifact = _publish_generated_audio_artifact(
+        target,
+        result.mime_type,
+        source=artifact_source,
+    )
+    if artifact is not None:
+        payload["artifact"] = {k: v for k, v in artifact.items() if k != "download_url"}
+        payload["artifact"]["registered_for_delivery"] = True
+        payload["artifact"]["delivery_managed_by_surface"] = True
+    return json.dumps(payload)
+
+
+def _bounded_float(
+    name: str,
+    value: float | int | None,
+    *,
+    minimum: float = 0.0,
+    maximum: float = 1.0,
+) -> float | None:
+    if value is None:
+        return None
+    numeric = float(value)
+    if numeric < minimum or numeric > maximum:
+        raise ToolError(f"{name} must be between {minimum:g} and {maximum:g}")
+    return numeric
+
+
+def _tts_voice_settings(
+    *,
+    speed: float,
+    stability: float | None,
+    similarity_boost: float | None,
+    style: float | None,
+    use_speaker_boost: bool | None,
+    tts_config: Any,
+) -> dict[str, Any]:
+    settings: dict[str, Any] = {}
+    resolved_stability = _bounded_float(
+        "Stability",
+        stability
+        if stability is not None
+        else getattr(tts_config, "stability", None),
+    )
+    resolved_similarity = _bounded_float(
+        "Similarity boost",
+        similarity_boost
+        if similarity_boost is not None
+        else getattr(tts_config, "similarity_boost", None),
+    )
+    resolved_style = _bounded_float(
+        "Style",
+        style if style is not None else getattr(tts_config, "style", None),
+    )
+    if resolved_stability is not None:
+        settings["stability"] = resolved_stability
+    if resolved_similarity is not None:
+        settings["similarity_boost"] = resolved_similarity
+    if resolved_style is not None:
+        settings["style"] = resolved_style
+    resolved_boost = (
+        use_speaker_boost
+        if use_speaker_boost is not None
+        else getattr(tts_config, "use_speaker_boost", None)
+    )
+    if resolved_boost is not None:
+        settings["use_speaker_boost"] = bool(resolved_boost)
+    settings["speed"] = speed
+    return settings
+
+
+def _shared_voice_summary(voice: dict[str, Any]) -> dict[str, Any]:
+    raw_labels = voice.get("labels")
+    labels = raw_labels if isinstance(raw_labels, dict) else {}
+    summary = {
+        "name": voice.get("name"),
+        "voice_id": voice.get("voice_id"),
+        "public_owner_id": voice.get("public_owner_id"),
+        "language": voice.get("language") or labels.get("language"),
+        "accent": voice.get("accent") or labels.get("accent"),
+        "locale": voice.get("locale") or labels.get("locale"),
+        "gender": voice.get("gender") or labels.get("gender"),
+        "age": voice.get("age") or labels.get("age"),
+        "category": voice.get("category"),
+        "description": voice.get("description"),
+    }
+    return {key: value for key, value in summary.items() if value not in (None, "")}
+
+
+def _provider_quota_exceeded(error: RuntimeError) -> bool:
+    text = str(error).lower()
+    return "quota_exceeded" in text or (
+        "credits remaining" in text and "required" in text
+    )
+
+
+def _short_song_preview_lyrics(lyrics: str) -> str:
+    lines = [line.strip() for line in lyrics.splitlines() if line.strip()]
+    preview: list[str] = []
+    for line in lines:
+        preview.append(line)
+        if len(preview) >= 6 or len("\n".join(preview)) >= 120:
+            break
+    return "\n".join(preview).strip() or lyrics.strip()
+
+
+@tool(
+    name="voice_clone",
+    description=(
+        "Clone a voice from a local audio sample through ElevenLabs. "
+        "Requires explicit consent_metadata for the sampled speaker."
+    ),
+    params={
+        "sample_audio": {"type": "string", "description": "Local audio sample path."},
+        "name": {"type": "string", "description": "Name for the cloned voice."},
+        "description": {"type": "string", "description": "Optional voice description."},
+        "consent_metadata": {
+            "type": "object",
+            "description": "Consent proof, e.g. {'speaker': 'me', 'consent': true}.",
+        },
+    },
+    required=["sample_audio", "name"],
+)
+async def voice_clone(
+    sample_audio: str,
+    name: str,
+    description: str | None = None,
+    consent_metadata: dict[str, Any] | None = None,
+) -> str:
+    if not name or not name.strip():
+        raise ToolError("Voice name must not be empty")
+    if not _has_consent_metadata(consent_metadata):
+        return _consent_required_payload(
+            tool_name="voice_clone",
+            note="Voice cloning requires explicit consent metadata for the target voice.",
+        )
+    config = _resolve_audio_config()
+    if not _audio_configured(config):
+        return _audio_not_available_payload(
+            tool_name="voice_clone",
+            missing_capability="voice_cloning",
+            note="ElevenLabs voice-cloning provider is disabled or not configured.",
+        )
+    resolved, audio_bytes, mime_type = await _resolve_supported_audio_file_for_tool(
+        tool_name="voice_clone",
+        path=sample_audio,
+    )
+    try:
+        result = await _elevenlabs_provider(config).clone_voice(
+            VoiceCloneRequest(
+                sample_audio_bytes=audio_bytes,
+                sample_filename=resolved.name,
+                sample_mime_type=mime_type,
+                name=name.strip(),
+                description=description.strip() if description else None,
+            )
+        )
+    except RuntimeError as exc:
+        return _audio_not_available_payload(
+            tool_name="voice_clone",
+            missing_capability="voice_cloning",
+            note=str(exc),
+        )
+    return json.dumps(
+        {
+            "status": "ok",
+            "provider": result.provider,
+            "voice_id": result.voice_id,
+            "name": result.name,
+            "preview_url": result.preview_url,
+            "requires_verification": result.requires_verification,
+            "source_path": str(resolved),
+        }
+    )
+
+
+@tool(
+    name="voice_convert",
+    description=(
+        "Convert a local source audio file into a target ElevenLabs voice. "
+        "Requires explicit consent_metadata for the source speaker."
+    ),
+    params={
+        "source_audio": {"type": "string", "description": "Local source audio path."},
+        "target_voice": {"type": "string", "description": "ElevenLabs target voice id."},
+        "output_path": {"type": "string", "description": "Optional output audio path."},
+        "consent_metadata": {
+            "type": "object",
+            "description": "Consent proof, e.g. {'speaker': 'me', 'consent': true}.",
+        },
+    },
+    required=["source_audio", "target_voice"],
+)
+async def voice_convert(
+    source_audio: str,
+    target_voice: str,
+    output_path: str | None = None,
+    consent_metadata: dict[str, Any] | None = None,
+) -> str:
+    if not target_voice or not target_voice.strip():
+        raise ToolError("Target voice must not be empty")
+    if not _has_consent_metadata(consent_metadata):
+        return _consent_required_payload(
+            tool_name="voice_convert",
+            note="Voice conversion requires explicit consent metadata for the source voice.",
+        )
+    config = _resolve_audio_config()
+    if not _audio_configured(config):
+        return _audio_not_available_payload(
+            tool_name="voice_convert",
+            missing_capability="voice_conversion",
+            note="ElevenLabs voice-conversion provider is disabled or not configured.",
+        )
+    provider_config = _audio_provider_config(config)
+    model_id = str(
+        getattr(provider_config, "voice_conversion_model", "")
+        or "eleven_multilingual_sts_v2"
+    )
+    output_format = str(
+        getattr(provider_config, "music_output_format", "") or "mp3_44100_128"
+    )
+    resolved, audio_bytes, mime_type = await _resolve_supported_audio_file_for_tool(
+        tool_name="voice_convert",
+        path=source_audio,
+    )
+    try:
+        result = await _elevenlabs_provider(config).convert_voice(
+            VoiceConversionRequest(
+                source_audio_bytes=audio_bytes,
+                source_filename=resolved.name,
+                source_mime_type=mime_type,
+                target_voice=target_voice.strip(),
+                model_id=model_id,
+                output_format=output_format,
+            )
+        )
+    except RuntimeError as exc:
+        return _audio_not_available_payload(
+            tool_name="voice_convert",
+            missing_capability="voice_conversion",
+            note=str(exc),
+        )
+    return _write_generated_audio_payload(
+        result,
+        output_path=output_path,
+        prefix="voice-converted",
+        artifact_source="voice_convert",
+        extra={"source_path": str(resolved)},
+    )
+
+
+@tool(
+    name="dubbing_generate",
+    description="Submit a local audio/video file for ElevenLabs dubbing.",
+    params={
+        "source_media": {"type": "string", "description": "Local source media path."},
+        "target_language": {"type": "string", "description": "Target language code."},
+        "source_language": {"type": "string", "description": "Optional source language code."},
+        "name": {"type": "string", "description": "Optional dubbing job name."},
+        "num_speakers": {"type": "integer", "description": "Optional speaker count."},
+    },
+    required=["source_media", "target_language"],
+)
+async def dubbing_generate(
+    source_media: str,
+    target_language: str,
+    source_language: str | None = None,
+    name: str | None = None,
+    num_speakers: int | None = None,
+) -> str:
+    if not target_language or not target_language.strip():
+        raise ToolError("Target language must not be empty")
+    config = _resolve_audio_config()
+    if not _audio_configured(config):
+        return _audio_not_available_payload(
+            tool_name="dubbing_generate",
+            missing_capability="advanced_dubbing",
+            note="ElevenLabs dubbing provider is disabled or not configured.",
+        )
+    resolved, audio_bytes, mime_type = await _resolve_supported_audio_file_for_tool(
+        tool_name="dubbing_generate",
+        path=source_media,
+    )
+    try:
+        result = await _elevenlabs_provider(config).create_dubbing(
+            DubbingRequest(
+                source_bytes=audio_bytes,
+                filename=resolved.name,
+                mime_type=mime_type,
+                target_language=target_language.strip(),
+                source_language=source_language.strip() if source_language else None,
+                name=name.strip() if name else None,
+                num_speakers=num_speakers,
+                watermark=True,
+            )
+        )
+    except RuntimeError as exc:
+        return _audio_not_available_payload(
+            tool_name="dubbing_generate",
+            missing_capability="advanced_dubbing",
+            note=str(exc),
+        )
+    return json.dumps(
+        {
+            "status": "ok",
+            "provider": result.provider,
+            "dubbing_id": result.dubbing_id,
+            "dubbing_status": result.status,
+            "source_path": str(resolved),
+            "source_language": result.source_language,
+            "target_language": result.target_language,
+            "note": (
+                "Dubbing job submitted; call dubbing_status or dubbing_download "
+                "to fetch completion."
+            ),
+        }
+    )
+
+
+@tool(
+    name="dubbing_status",
+    description="Check the status of an ElevenLabs dubbing job.",
+    params={"dubbing_id": {"type": "string", "description": "ElevenLabs dubbing job id."}},
+    required=["dubbing_id"],
+)
+async def dubbing_status(dubbing_id: str) -> str:
+    if not dubbing_id or not dubbing_id.strip():
+        raise ToolError("Dubbing id must not be empty")
+    config = _resolve_audio_config()
+    if not _audio_configured(config):
+        return _audio_not_available_payload(
+            tool_name="dubbing_status",
+            missing_capability="advanced_dubbing",
+            note="ElevenLabs dubbing provider is disabled or not configured.",
+        )
+    try:
+        result = await _elevenlabs_provider(config).get_dubbing_status(
+            DubbingStatusRequest(dubbing_id=dubbing_id.strip())
+        )
+    except RuntimeError as exc:
+        return _audio_not_available_payload(
+            tool_name="dubbing_status",
+            missing_capability="advanced_dubbing",
+            note=str(exc),
+        )
+    return json.dumps(
+        {
+            "status": "ok",
+            "provider": result.provider,
+            "dubbing_id": result.dubbing_id,
+            "dubbing_status": result.status,
+            "raw": result.raw,
+        }
+    )
+
+
+_DUBBING_READY_STATUSES = {"dubbed", "done", "complete", "completed", "ready"}
+_DUBBING_FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
+
+
+@tool(
+    name="dubbing_download",
+    description="Download completed ElevenLabs dubbing audio, optionally polling until ready.",
+    params={
+        "dubbing_id": {"type": "string", "description": "ElevenLabs dubbing job id."},
+        "language_code": {"type": "string", "description": "Dubbed language code."},
+        "output_path": {"type": "string", "description": "Optional output audio path."},
+        "wait_for_completion": {"type": "boolean", "description": "Poll until ready."},
+        "poll_interval_seconds": {"type": "number", "description": "Polling interval."},
+        "timeout_seconds": {"type": "number", "description": "Max wait time."},
+    },
+    required=["dubbing_id", "language_code"],
+)
+async def dubbing_download(
+    dubbing_id: str,
+    language_code: str,
+    output_path: str | None = None,
+    wait_for_completion: bool = True,
+    poll_interval_seconds: float = 5.0,
+    timeout_seconds: float = 300.0,
+) -> str:
+    if not dubbing_id or not dubbing_id.strip():
+        raise ToolError("Dubbing id must not be empty")
+    if not language_code or not language_code.strip():
+        raise ToolError("Language code must not be empty")
+    config = _resolve_audio_config()
+    if not _audio_configured(config):
+        return _audio_not_available_payload(
+            tool_name="dubbing_download",
+            missing_capability="advanced_dubbing",
+            note="ElevenLabs dubbing provider is disabled or not configured.",
+        )
+    provider = _elevenlabs_provider(config)
+    final_status = "unknown"
+    if wait_for_completion:
+        deadline = asyncio.get_event_loop().time() + max(timeout_seconds, 0.0)
+        while True:
+            status_result = await provider.get_dubbing_status(
+                DubbingStatusRequest(dubbing_id=dubbing_id.strip())
+            )
+            final_status = status_result.status
+            normalized = final_status.strip().lower()
+            if normalized in _DUBBING_READY_STATUSES:
+                break
+            if normalized in _DUBBING_FAILED_STATUSES:
+                raise ToolError(f"Dubbing job {dubbing_id} failed with status {final_status}")
+            if asyncio.get_event_loop().time() >= deadline:
+                raise ToolError(
+                    f"Dubbing job {dubbing_id} was not ready before timeout; "
+                    f"last status={final_status}"
+                )
+            await asyncio.sleep(max(poll_interval_seconds, 0.1))
+    try:
+        download = await provider.download_dubbing_audio(
+            DubbingDownloadRequest(
+                dubbing_id=dubbing_id.strip(),
+                language_code=language_code.strip(),
+            )
+        )
+    except RuntimeError as exc:
+        return _audio_not_available_payload(
+            tool_name="dubbing_download",
+            missing_capability="advanced_dubbing",
+            note=str(exc),
+        )
+    result = AudioGenerationResult(
+        audio_bytes=download.audio_bytes,
+        provider=download.provider,
+        model="dubbing",
+        voice=None,
+        response_format="mp3",
+        mime_type=download.mime_type,
+    )
+    return _write_generated_audio_payload(
+        result,
+        output_path=output_path,
+        prefix="dubbed-audio",
+        artifact_source="dubbing_download",
+        extra={
+            "dubbing_id": download.dubbing_id,
+            "language_code": download.language_code,
+            "dubbing_status": final_status,
+        },
+    )
+
+
+@tool(
+    name="music_generate",
+    description="Generate instrumental music through ElevenLabs.",
+    params={
+        "prompt": {"type": "string", "description": "Music prompt."},
+        "style": {"type": "string", "description": "Optional style hint."},
+        "duration_seconds": {"type": "number", "description": "Optional duration."},
+        "output_path": {"type": "string", "description": "Optional output audio path."},
+    },
+    required=["prompt"],
+)
+async def music_generate(
+    prompt: str,
+    style: str | None = None,
+    duration_seconds: float | None = None,
+    output_path: str | None = None,
+) -> str:
+    if not prompt or not prompt.strip():
+        raise ToolError("Prompt must not be empty")
+    config = _resolve_audio_config()
+    if not _audio_configured(config):
+        return _audio_not_available_payload(
+            tool_name="music_generate",
+            missing_capability="music_generation",
+            note="ElevenLabs music provider is disabled or not configured.",
+        )
+    provider_config = _audio_provider_config(config)
+    final_prompt = prompt.strip()
+    if style and style.strip():
+        final_prompt = f"{final_prompt}\nStyle: {style.strip()}"
+    try:
+        result = await _elevenlabs_provider(config).generate_music(
+            MusicGenerationRequest(
+                prompt=final_prompt,
+                model_id=str(getattr(provider_config, "music_model", "") or "music_v1"),
+                output_format=str(
+                    getattr(provider_config, "music_output_format", "")
+                    or "mp3_44100_128"
+                ),
+                duration_seconds=duration_seconds,
+                force_instrumental=True,
+            )
+        )
+    except RuntimeError as exc:
+        return _audio_not_available_payload(
+            tool_name="music_generate",
+            missing_capability="music_generation",
+            note=str(exc),
+        )
+    return _write_generated_audio_payload(
+        result,
+        output_path=output_path,
+        prefix="generated-music",
+        artifact_source="music_generate",
+    )
+
+
+@tool(
+    name="song_generate",
+    description="Generate a song with sung vocals through ElevenLabs music generation.",
+    params={
+        "lyrics": {"type": "string", "description": "Original lyrics to sing."},
+        "vocal_style": {"type": "string", "description": "Optional vocal style."},
+        "backing_style": {"type": "string", "description": "Optional backing style."},
+        "duration_seconds": {"type": "number", "description": "Optional duration."},
+        "output_path": {"type": "string", "description": "Optional output audio path."},
+    },
+    required=["lyrics"],
+)
+async def song_generate(
+    lyrics: str,
+    vocal_style: str | None = None,
+    backing_style: str | None = None,
+    duration_seconds: float | None = None,
+    output_path: str | None = None,
+) -> str:
+    if not lyrics or not lyrics.strip():
+        raise ToolError("Lyrics must not be empty")
+    config = _resolve_audio_config()
+    if not _audio_configured(config):
+        return _audio_not_available_payload(
+            tool_name="song_generate",
+            missing_capability="singing_generation",
+            note="ElevenLabs music provider is disabled or not configured.",
+        )
+    provider_config = _audio_provider_config(config)
+    prompt_parts = ["Generate a complete song with sung vocals."]
+    if vocal_style and vocal_style.strip():
+        prompt_parts.append(f"Vocal style: {vocal_style.strip()}")
+    if backing_style and backing_style.strip():
+        prompt_parts.append(f"Backing style: {backing_style.strip()}")
+    provider = _elevenlabs_provider(config)
+    lyrics_text = lyrics.strip()
+    model_id = str(getattr(provider_config, "music_model", "") or "music_v1")
+    output_format = str(
+        getattr(provider_config, "music_output_format", "") or "mp3_44100_128"
+    )
+    try:
+        result = await provider.generate_music(
+            MusicGenerationRequest(
+                prompt="\n".join(prompt_parts),
+                lyrics=lyrics_text,
+                model_id=model_id,
+                output_format=output_format,
+                duration_seconds=duration_seconds,
+                force_instrumental=False,
+            )
+        )
+    except RuntimeError as exc:
+        if _provider_quota_exceeded(exc):
+            preview_lyrics = _short_song_preview_lyrics(lyrics_text)
+            preview_duration = min(float(duration_seconds or 8.0), 8.0)
+            try:
+                result = await provider.generate_music(
+                    MusicGenerationRequest(
+                        prompt="\n".join([*prompt_parts, "Fallback: short preview demo."]),
+                        lyrics=preview_lyrics,
+                        model_id=model_id,
+                        output_format=output_format,
+                        duration_seconds=preview_duration,
+                        force_instrumental=False,
+                    )
+                )
+            except RuntimeError as retry_exc:
+                return _audio_not_available_payload(
+                    tool_name="song_generate",
+                    missing_capability="singing_generation",
+                    note=str(retry_exc),
+                )
+            return _write_generated_audio_payload(
+                result,
+                output_path=output_path,
+                prefix="generated-song",
+                artifact_source="song_generate",
+                extra={
+                    "quota_retry": {
+                        "strategy": "short_preview",
+                        "duration_seconds": preview_duration,
+                        "lyrics_truncated": preview_lyrics != lyrics_text,
+                        "original_note": str(exc),
+                    }
+                },
+            )
+        return _audio_not_available_payload(
+            tool_name="song_generate",
+            missing_capability="singing_generation",
+            note=str(exc),
+        )
+    return _write_generated_audio_payload(
+        result,
+        output_path=output_path,
+        prefix="generated-song",
+        artifact_source="song_generate",
+    )
+
+
+@tool(
+    name="audio_provider_capabilities",
+    description="Report configured ElevenLabs audio provider capabilities.",
+    params={
+        "probe_live": {
+            "type": "boolean",
+            "description": "When true, call read-only ElevenLabs subscription and voices APIs.",
+        }
+    },
+    required=[],
+)
+async def audio_provider_capabilities(probe_live: bool = False) -> str:
+    config = _resolve_audio_config()
+    configured = _audio_configured(config)
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "provider": "elevenlabs",
+        "configured": configured,
+        "capabilities": {
+            "text_to_speech": {"status": "available" if configured else "unavailable"},
+            "voice_search": {"status": "available" if configured else "unavailable"},
+            "voice_conversion": {"status": "available" if configured else "unavailable"},
+            "advanced_dubbing": {"status": "available" if configured else "unavailable"},
+            "dubbing_download": {"status": "available" if configured else "unavailable"},
+            "voice_cloning": {"status": "unknown" if configured else "unavailable"},
+            "music_generation": {"status": "unknown" if configured else "unavailable"},
+            "singing_generation": {"status": "unknown" if configured else "unavailable"},
+        },
+    }
+    if not configured or not probe_live:
+        return json.dumps(payload)
+    provider = _elevenlabs_provider(config)
+    try:
+        subscription = await provider.get_subscription(ElevenLabsSubscriptionRequest())
+        voices = await provider.list_voices(ElevenLabsVoicesListRequest())
+    except RuntimeError as exc:
+        payload["probe_error"] = str(exc)
+        return json.dumps(payload)
+    tier = (subscription.tier or "").strip().lower()
+    paid = tier not in {"", "free"}
+    payload["subscription"] = {
+        "tier": subscription.tier,
+        "status": subscription.status,
+    }
+    payload["voice_count"] = len(voices.voices)
+    for key in ("voice_cloning", "music_generation", "singing_generation"):
+        payload["capabilities"][key] = (
+            {"status": "available"}
+            if paid
+            else {"status": "unavailable", "reason": "paid_plan_required"}
+        )
+    return json.dumps(payload)
+
+
+@tool(
+    name="voice_search",
+    description=(
+        "Search ElevenLabs shared voices by language, locale, accent, gender, age, "
+        "category, or free-text query before choosing a voice for TTS."
+    ),
+    params={
+        "language": {
+            "type": "string",
+            "description": "Language code such as zh, en, ja, ko, fr, de, es, or pt.",
+        },
+        "accent": {
+            "type": "string",
+            "description": (
+                "Desired accent label, e.g. beijing mandarin, british, american, "
+                "mexican, taiwan mandarin."
+            ),
+        },
+        "locale": {
+            "type": "string",
+            "description": "Optional locale hint such as zh-CN, zh-TW, en-GB, or es-MX.",
+        },
+        "gender": {"type": "string", "description": "Optional gender filter."},
+        "age": {"type": "string", "description": "Optional age filter."},
+        "category": {"type": "string", "description": "Optional voice category filter."},
+        "search": {"type": "string", "description": "Optional free-text search query."},
+        "page_size": {
+            "type": "integer",
+            "description": "Number of voices to return (1 to 50, default 10).",
+            "minimum": 1,
+            "maximum": 50,
+        },
+    },
+    required=[],
+)
+async def voice_search(
+    language: str = "",
+    accent: str = "",
+    locale: str = "",
+    gender: str = "",
+    age: str = "",
+    category: str = "",
+    search: str = "",
+    page_size: int = 10,
+) -> str:
+    config = _resolve_audio_config()
+    if not _audio_configured(config):
+        return _audio_not_available_payload(
+            tool_name="voice_search",
+            missing_capability="voice_search",
+            note="ElevenLabs voice search provider is disabled or not configured.",
+        )
+    try:
+        result = await _elevenlabs_provider(config).search_shared_voices(
+            ElevenLabsSharedVoicesRequest(
+                language=language.strip() or None,
+                accent=accent.strip() or None,
+                locale=locale.strip() or None,
+                gender=gender.strip() or None,
+                age=age.strip() or None,
+                category=category.strip() or None,
+                search=search.strip() or None,
+                page_size=page_size,
+            )
+        )
+    except RuntimeError as exc:
+        return _audio_not_available_payload(
+            tool_name="voice_search",
+            missing_capability="voice_search",
+            note=str(exc),
+        )
+    return json.dumps(
+        {
+            "status": "ok",
+            "provider": result.provider,
+            "voices": [_shared_voice_summary(voice) for voice in result.voices],
+            "has_more": result.raw.get("has_more"),
+            "total_count": result.raw.get("total_count"),
+        }
+    )
+
+
 @tool(
     name="tts",
     description=(
@@ -887,12 +1880,19 @@ def _resolve_provider_config(scope: str, *, default_model: str):
         "voice": {
             "type": "string",
             "description": (
-                "Voice identifier. Available: alloy, echo, fable, onyx, nova, shimmer."
+                "ElevenLabs voice identifier. Uses audio.tts.voice when omitted."
             ),
         },
         "output_path": {
             "type": "string",
             "description": "Output file path. Auto-generated if omitted.",
+        },
+        "language_code": {
+            "type": "string",
+            "description": (
+                "Optional BCP-47 language/locale hint such as zh, zh-CN, "
+                "en-US, en-GB, ja-JP, ko-KR, es-MX, or fr-FR."
+            ),
         },
         "speed": {
             "type": "number",
@@ -900,14 +1900,43 @@ def _resolve_provider_config(scope: str, *, default_model: str):
             "minimum": 0.25,
             "maximum": 4.0,
         },
+        "stability": {
+            "type": "number",
+            "description": "Optional ElevenLabs stability voice setting (0.0 to 1.0).",
+            "minimum": 0.0,
+            "maximum": 1.0,
+        },
+        "similarity_boost": {
+            "type": "number",
+            "description": (
+                "Optional ElevenLabs similarity boost voice setting (0.0 to 1.0)."
+            ),
+            "minimum": 0.0,
+            "maximum": 1.0,
+        },
+        "style": {
+            "type": "number",
+            "description": "Optional ElevenLabs style exaggeration setting (0.0 to 1.0).",
+            "minimum": 0.0,
+            "maximum": 1.0,
+        },
+        "use_speaker_boost": {
+            "type": "boolean",
+            "description": "Optional ElevenLabs speaker boost setting.",
+        },
     },
     required=["text"],
 )
 async def tts(
     text: str,
-    voice: str = "alloy",
+    voice: str = "",
     output_path: str | None = None,
+    language_code: str = "",
     speed: float = 1.0,
+    stability: float | None = None,
+    similarity_boost: float | None = None,
+    style: float | None = None,
+    use_speaker_boost: bool | None = None,
 ) -> str:
     if not text or not text.strip():
         raise ToolError("Text must not be empty")
@@ -915,19 +1944,56 @@ async def tts(
     if len(text) > 4096:
         raise ToolError(f"Text exceeds 4096 character limit ({len(text)} chars)")
 
-    if voice not in _TTS_VALID_VOICES:
-        raise ToolError(
-            f"Unknown voice: {voice}. Available: {', '.join(sorted(_TTS_VALID_VOICES))}"
-        )
-
     if speed < 0.25 or speed > 4.0:
         raise ToolError("Speed must be between 0.25 and 4.0")
 
-    return json.dumps(
-        {
-            "status": "not_available",
-            "note": "TTS provider not configured",
-            "voice": voice,
-            "text_length": len(text),
-        }
+    config = _resolve_audio_config()
+    if not _audio_configured(config):
+        return _audio_not_available_payload(
+            tool_name="tts",
+            missing_capability="text_to_speech",
+            note="ElevenLabs audio provider is disabled or not configured.",
+        )
+    tts_config = getattr(config, "tts", None)
+    model_id = str(getattr(tts_config, "model", "") or "eleven_multilingual_v2")
+    resolved_voice = str(voice or getattr(tts_config, "voice", "") or "").strip()
+    if not resolved_voice:
+        raise ToolError("Voice must not be empty")
+    resolved_language_code = str(
+        language_code or getattr(tts_config, "language_code", "") or ""
+    ).strip()
+    voice_settings = _tts_voice_settings(
+        speed=speed,
+        stability=stability,
+        similarity_boost=similarity_boost,
+        style=style,
+        use_speaker_boost=use_speaker_boost,
+        tts_config=tts_config,
+    )
+    output_format = str(getattr(tts_config, "output_format", "") or "mp3_44100_128")
+    timeout_seconds = float(getattr(tts_config, "timeout_seconds", 120.0) or 120.0)
+    provider = _elevenlabs_provider(config)
+    try:
+        result = await provider.text_to_speech(
+            ElevenLabsTextToSpeechRequest(
+                text=text,
+                voice=resolved_voice,
+                model_id=model_id,
+                output_format=output_format,
+                timeout_seconds=timeout_seconds,
+                language_code=resolved_language_code or None,
+                voice_settings=voice_settings,
+            )
+        )
+    except RuntimeError as exc:
+        return _audio_not_available_payload(
+            tool_name="tts",
+            missing_capability="text_to_speech",
+            note=str(exc),
+        )
+    return _write_generated_audio_payload(
+        result,
+        output_path=output_path,
+        prefix="speech",
+        artifact_source="tts",
     )

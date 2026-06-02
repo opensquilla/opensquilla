@@ -33,6 +33,13 @@ def redact_image_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def redact_audio_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    out = dict(payload)
+    if out.get("api_key"):
+        out["api_key"] = REDACTED_PLACEHOLDER
+    return out
+
+
 def redact_memory_embedding_payload(payload: dict[str, Any]) -> dict[str, Any]:
     out = dict(payload)
     if out.get("api_key"):

@@ -272,6 +272,24 @@ def test_chat_artifact_images_render_as_preview_cards_and_refresh_on_done() -> N
     assert ".msg-artifact-preview" in css
 
 
+def test_chat_audio_artifacts_render_inline_players_with_download_fallback() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    render_start = source.index("function _renderArtifacts(artifacts)")
+    render_end = source.index("  async function _downloadArtifact", render_start)
+    render_body = source[render_start:render_end]
+
+    assert "function _isAudioArtifact(artifact)" in source
+    assert "_isAudioArtifact(artifact)" in render_body
+    assert '<div class="msg-artifact-card msg-artifact-card--audio"' in render_body
+    assert '<audio class="msg-artifact-audio" controls preload="metadata"' in render_body
+    assert 'src="${_escAttr(downloadHref)}"' in render_body
+    assert '<a class="msg-artifact-card__action"' in render_body
+    assert 'download="${_escAttr(name)}"' in render_body
+    assert ".msg-artifact-card--audio" in css
+    assert ".msg-artifact-audio" in css
+
+
 def test_chat_final_text_reconciliation_preserves_live_artifacts() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("function _replaceStreamText(finalText)")

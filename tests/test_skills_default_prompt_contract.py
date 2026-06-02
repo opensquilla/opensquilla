@@ -14,6 +14,13 @@ from opensquilla.skills.loader import SkillLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
+AUDIO_DEFAULTS = {
+    "advanced-dubbing-studio",
+    "music-and-singing-studio",
+    "voice-clone-lab",
+    "voice-conversion-studio",
+    "voiceover-studio",
+}
 DEFAULTS = {
     "ai-video-script",
     "cron",
@@ -63,7 +70,8 @@ DEFAULTS = {
     "video-still-animator",
     "weather",
     "xlsx",
-}
+} | AUDIO_DEFAULTS
+PROMPT_DEFAULTS_WITHOUT_AUDIO_TOOLS = DEFAULTS - AUDIO_DEFAULTS
 INTERNAL_HELPERS = {
     "skill-creator-linter",
     "skill-creator-proposals",
@@ -167,8 +175,10 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
     ctx = await filter_skills(_ctx(loader))
 
     prompt = ctx.system_prompt[1]
-    for name in DEFAULTS:
+    for name in PROMPT_DEFAULTS_WITHOUT_AUDIO_TOOLS:
         assert f"<name>{name}</name>" in prompt
+    for name in AUDIO_DEFAULTS:
+        assert f"<name>{name}</name>" not in prompt
     for name in INTERNAL_HELPERS:
         assert f"<name>{name}</name>" not in prompt
     assert "<name>healthcheck</name>" not in prompt

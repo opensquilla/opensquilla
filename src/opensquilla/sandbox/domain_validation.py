@@ -18,22 +18,7 @@ class DomainDecision:
     reason: str
 
 
-_BROAD_WILDCARD_SUFFIXES = {
-    "com",
-    "org",
-    "net",
-    "io",
-    "dev",
-    "co.uk",
-    "github.io",
-    "pages.dev",
-    "appspot.com",
-    "cloudfront.net",
-    "herokuapp.com",
-    "netlify.app",
-    "vercel.app",
-}
-
+_ALLOWED_WILDCARD_SUFFIXES = {"pythonhosted.org"}
 _DNS_LABEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 _IPV4_NUMERIC_ALIAS_LABEL_RE = re.compile(r"(?:\d+|0x[0-9a-f]+)")
 
@@ -56,9 +41,11 @@ def normalize_domain(raw: str) -> str:
 
 
 def validate_domain_pattern(raw: str) -> DomainDecision:
-    normalized = normalize_domain(raw)
+    normalized, extraction_error = _extract_validation_host(raw)
     if not normalized:
         return DomainDecision("blocked", normalized, "empty_domain")
+    if extraction_error is not None:
+        return DomainDecision("blocked", normalized, extraction_error)
     if _is_ip_literal(normalized):
         return DomainDecision("blocked", normalized, "ip_literal")
     if normalized.startswith("*."):
@@ -67,11 +54,16 @@ def validate_domain_pattern(raw: str) -> DomainDecision:
             return DomainDecision("blocked", normalized, "broad_wildcard")
         if not _is_valid_dns_name(suffix):
             return DomainDecision("blocked", normalized, "invalid_domain")
-        if suffix in _BROAD_WILDCARD_SUFFIXES:
+        if suffix not in _ALLOWED_WILDCARD_SUFFIXES:
             return DomainDecision("blocked", normalized, "broad_wildcard")
         return DomainDecision("allowed", normalized, "wildcard_domain")
     if "*" in normalized:
         return DomainDecision("blocked", normalized, "invalid_wildcard")
+    normalized = _normalize_exact_validation_host(normalized)
+    if not normalized:
+        return DomainDecision("blocked", normalized, "empty_domain")
+    if _is_ip_literal(normalized):
+        return DomainDecision("blocked", normalized, "ip_literal")
     if "." not in normalized:
         return DomainDecision("blocked", normalized, "not_fqdn")
     if not _is_valid_dns_name(normalized):
@@ -84,13 +76,62 @@ def domain_matches(pattern: str, host: str) -> bool:
     if decision.status != "allowed":
         return False
     normalized_pattern = decision.normalized
-    normalized_host = normalize_domain(host)
+    normalized_host, extraction_error = _extract_validation_host(host)
+    if extraction_error is not None:
+        return False
+    normalized_host = _normalize_exact_validation_host(normalized_host)
     if _is_ip_literal(normalized_host) or not _is_valid_dns_name(normalized_host):
         return False
     if normalized_pattern.startswith("*."):
         suffix = normalized_pattern[2:]
         return normalized_host.endswith(f".{suffix}")
     return normalized_host == normalized_pattern
+
+
+def _extract_validation_host(raw: str) -> tuple[str, str | None]:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return "", None
+    if "://" in text:
+        parsed = urlparse(text)
+        try:
+            parsed.port
+        except ValueError:
+            return parsed.hostname or "", "invalid_port"
+        return parsed.hostname or "", None
+
+    host = text.split("/", 1)[0]
+    if host.startswith("["):
+        bracket_end = host.find("]")
+        if bracket_end == -1:
+            return host, "invalid_domain"
+        bracketed_host = host[: bracket_end + 1]
+        remainder = host[bracket_end + 1 :]
+        if remainder:
+            if not remainder.startswith(":"):
+                return host, "invalid_domain"
+            if not _is_valid_port(remainder[1:]):
+                return bracketed_host, "invalid_port"
+        return bracketed_host, None
+    if host.count(":") == 1:
+        host_part, port = host.rsplit(":", 1)
+        if not _is_valid_port(port):
+            return host_part, "invalid_port"
+        return host_part, None
+    return host, None
+
+
+def _normalize_exact_validation_host(value: str) -> str:
+    if value.endswith(".") and not value.startswith("*."):
+        return value[:-1]
+    return value
+
+
+def _is_valid_port(value: str) -> bool:
+    if not value.isdigit():
+        return False
+    port = int(value)
+    return 0 <= port <= 65535
 
 
 def _is_valid_dns_name(value: str) -> bool:

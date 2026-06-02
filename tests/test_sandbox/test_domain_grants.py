@@ -42,6 +42,11 @@ def test_normalize_domain(raw: str, expected: str) -> None:
         "*.com",
         "*.co.uk",
         "*.github.io",
+        "*.pages.dev",
+        "*.appspot.com",
+        "*.cloudfront.net",
+        "*.azurewebsites.net",
+        "*.example.com",
         "*",
         "",
     ],
@@ -62,6 +67,11 @@ def test_validate_domain_pattern_allows_exact_and_narrow_wildcard() -> None:
         normalized="3m.com",
         reason="exact_domain",
     )
+    assert validate_domain_pattern("example.com") == DomainDecision(
+        status="allowed",
+        normalized="example.com",
+        reason="exact_domain",
+    )
     assert validate_domain_pattern("*.pythonhosted.org") == DomainDecision(
         status="allowed",
         normalized="*.pythonhosted.org",
@@ -74,7 +84,18 @@ def test_package_bundles_expand_to_known_domains() -> None:
         "pypi.org",
         "files.pythonhosted.org",
     )
-    assert "registry.npmjs.org" in expand_package_bundle("node-package-install")
+    assert expand_package_bundle("node-package-install") == ("registry.npmjs.org",)
+    assert expand_package_bundle("rust-package-install") == (
+        "crates.io",
+        "static.crates.io",
+        "index.crates.io",
+        "github.com",
+    )
+    assert expand_package_bundle("go-package-install") == (
+        "proxy.golang.org",
+        "sum.golang.org",
+        "go.dev",
+    )
     assert "rust-package-install" in PACKAGE_BUNDLES
     assert expand_package_bundle("unknown") == ()
 
@@ -82,10 +103,16 @@ def test_package_bundles_expand_to_known_domains() -> None:
 @pytest.mark.parametrize(
     "raw",
     [
+        ".example.com",
+        "..example.com..",
         "example..com",
         "-example.com",
         "example.com-",
         "exa_mple.com",
+        "*.*.example.com",
+        "foo.*.example.com",
+        "*.",
+        "example.com:abc",
     ],
 )
 def test_validate_domain_pattern_blocks_malformed_hostnames(raw: str) -> None:
@@ -109,3 +136,19 @@ def test_domain_matches_requires_label_boundary() -> None:
 
 def test_domain_matches_returns_false_for_invalid_pattern() -> None:
     assert not domain_matches("*.github.io", "project.github.io")
+    assert not domain_matches("*.example.com", "api.example.com")
+    assert not domain_matches("foo.*.example.com", "foo.api.example.com")
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        ".pypi.org",
+        "pypi..org",
+        "pypi.org:abc",
+        "exa_mple.com",
+        "8.8.8.8",
+    ],
+)
+def test_domain_matches_returns_false_for_invalid_host(host: str) -> None:
+    assert not domain_matches("pypi.org", host)

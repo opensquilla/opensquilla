@@ -84,6 +84,28 @@ def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
     }
 
 
+def _vite_asset_url(raw_url: str, base_path: str) -> str:
+    """Normalize a Vite asset URL to the configured Control UI base path."""
+    if not raw_url:
+        return ""
+    if raw_url.startswith(("http://", "https://", "//")):
+        return raw_url
+
+    base = base_path.rstrip("/") or ""
+    asset_prefix = f"{base}/static/dist/"
+    if raw_url.startswith(asset_prefix):
+        return raw_url
+
+    marker = "/static/dist/"
+    if raw_url.startswith("/") and marker in raw_url:
+        return f"{asset_prefix}{raw_url.split(marker, 1)[1]}"
+    if raw_url.startswith("./"):
+        return f"{asset_prefix}{raw_url[2:]}"
+    if raw_url.startswith("assets/"):
+        return f"{asset_prefix}{raw_url}"
+    return raw_url
+
+
 def _read_vite_assets(base_path: str) -> tuple[str, str]:
     """Read the Vite-generated index.html and extract the main JS/CSS assets.
 
@@ -98,16 +120,11 @@ def _read_vite_assets(base_path: str) -> tuple[str, str]:
 
     # Extract the main JS module
     js_match = re.search(r'<script type="module"[^>]*src="([^"]+)"', html)
-    js_url = js_match.group(1) if js_match else ""
-    # Prepend base path to relative URLs
-    if js_url and js_url.startswith("./"):
-        js_url = f"{base_path}/static/dist/{js_url[2:]}"
+    js_url = _vite_asset_url(js_match.group(1) if js_match else "", base_path)
 
     # Extract the main CSS link
     css_match = re.search(r'<link rel="stylesheet"[^>]*href="([^"]+)"', html)
-    css_url = css_match.group(1) if css_match else ""
-    if css_url and css_url.startswith("./"):
-        css_url = f"{base_path}/static/dist/{css_url[2:]}"
+    css_url = _vite_asset_url(css_match.group(1) if css_match else "", base_path)
 
     return (js_url, css_url)
 
@@ -118,15 +135,21 @@ def create_control_ui_routes(config: GatewayConfig) -> list[Route | Mount]:
         return []
 
     base = config.control_ui.base_path
-    js_url, css_url = _read_vite_assets(base)
     template = _get_jinja_env().get_template("index.html")
 
     async def serve_index(request: Request) -> HTMLResponse:
         ctx = _build_bootstrap_context(config, request)
-        ctx["vite_js_url"] = js_url
-        ctx["vite_css_url"] = css_url
+        # Re-read latest Vite assets on every request so rebuilds are picked up
+        # without restarting the gateway.
+        live_js, live_css = _read_vite_assets(base)
+        ctx["vite_js_url"] = live_js
+        ctx["vite_css_url"] = live_css
         html = template.render(**ctx)
-        return HTMLResponse(html)
+        response = HTMLResponse(html)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
     routes: list[Route | Mount] = [
         Mount(

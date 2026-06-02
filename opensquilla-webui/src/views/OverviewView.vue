@@ -663,12 +663,14 @@ function saveConnectionSettings(url: string, token: string): void {
   opacity: 0.85;
 }
 .ov-stat__label {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
   color: var(--text-dim);
+  display: block;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
   margin-bottom: 6px;
+  text-transform: uppercase;
 }
 .ov-stat__value {
   font-size: 1.75rem;

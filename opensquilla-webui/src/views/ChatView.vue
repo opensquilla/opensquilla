@@ -1,22 +1,9 @@
 <template>
-  <div class="chat">
+  <div class="chat" :class="{ 'chat--new-landing': isNewChatLanding }">
     <!-- Header -->
-    <div class="chat-header">
+    <div v-if="!isNewChatLanding" class="chat-header">
       <div class="chat-header-left">
-        <label class="chat-label">Chat session</label>
-        <button
-          type="button"
-          class="chat-session-chip"
-          :aria-label="`Switch chat session: ${sessionKey}`"
-          aria-haspopup="dialog"
-          :aria-expanded="sessionPopoverOpen"
-          @click="toggleSessionPopover"
-        >
-          <span class="chat-session-chip-key" :title="sessionKey">{{ sessionKey }}</span>
-          <span class="chat-session-chip-caret" aria-hidden="true">
-            <Icon name="chevronDown" :size="12" />
-          </span>
-        </button>
+        <label class="chat-label" :title="sessionKey">{{ currentChatTitle }}</label>
         <button
           class="chat-session-copy-btn"
           title="Copy session key"
@@ -29,48 +16,6 @@
       <div class="chat-header-right">
         <span class="chip" :class="runStatusChipClass" :title="runStatusTitle">{{ runStatusLabel }}</span>
         <span v-if="contextWarningVisible" class="chat-ctx-warn">Context &gt; 85%</span>
-      </div>
-    </div>
-
-    <!-- Session Popover -->
-    <div v-if="sessionPopoverOpen" class="chat-session-popover" role="dialog" aria-label="Switch session">
-      <input
-        ref="sessionSearchRef"
-        v-model="sessionSearch"
-        type="search"
-        class="chat-session-popover-search"
-        placeholder="Search sessions…"
-        autocomplete="off"
-        spellcheck="false"
-        @keydown.enter.prevent="switchToTypedSession"
-      />
-      <div class="chat-session-popover-list">
-        <template v-if="sessionListError">
-          <div class="chat-session-popover-empty">Session list unavailable. Enter a key above.</div>
-          <button type="button" class="chat-session-popover-item" @click="switchToTypedSession">
-            <span class="chat-session-popover-item-key">Switch to typed session</span>
-          </button>
-        </template>
-        <template v-else-if="groupedSessions.length === 0">
-          <div class="chat-session-popover-empty">{{ sessionSearch ? 'No matches.' : 'No sessions found.' }}</div>
-        </template>
-        <template v-else>
-          <div v-for="group in groupedSessions" :key="group.label" class="chat-session-popover-group">
-            <div class="chat-session-popover-group-label">{{ group.label }}</div>
-            <button
-              v-for="item in group.items"
-              :key="item.key"
-              type="button"
-              class="chat-session-popover-item"
-              :class="{ 'is-current': item.key === sessionKey }"
-              @click="switchToSession(item.key)"
-            >
-              <span class="chat-session-popover-item-key" :title="item.key">{{ item.key }}</span>
-              <span v-if="item.runStatus && item.runStatus !== 'idle'" class="chat-session-popover-item-run" :class="`chat-session-popover-item-run--${item.runStatus}`">{{ item.runLabel }}</span>
-              <span v-if="item.key === sessionKey" class="chat-session-popover-item-tag">current</span>
-            </button>
-          </div>
-        </template>
       </div>
     </div>
 
@@ -88,15 +33,22 @@
         @drop.prevent="onThreadDrop"
         :class="{ 'drag-over': threadDragOver }"
       >
-        <div v-if="messages.length === 0 && !isStreaming" class="chat-empty">No messages yet.</div>
+        <div v-if="isNewChatLanding" class="chat-landing-brand" aria-label="OpenSquilla new chat">
+          <img class="chat-landing-lockup" :src="landingLockupUrl" alt="OpenSquilla" />
+        </div>
+        <div v-else-if="messages.length === 0 && !isStreaming" class="chat-empty">No messages yet.</div>
 
         <!-- Rendered messages -->
         <template v-for="(msg, idx) in renderedMessages" :key="msg.id || `${msg.role}-${idx}`">
-          <!-- Day separator -->
-          <div v-if="msg.daySeparator" class="chat-day-sep"><span>{{ msg.dayLabel }}</span></div>
-
           <!-- Router FX strip -->
-          <div v-else-if="msg.isRouterStrip" class="router-fx" :data-state="msg.routerState">
+          <div
+            v-if="msg.isRouterStrip"
+            class="router-fx"
+            :data-state="msg.routerState"
+            :data-source="msg.routerSource"
+            :data-observe="msg.routerObserve ? 'true' : undefined"
+            :data-static="msg.routerStatic ? 'true' : undefined"
+          >
             <div class="router-fx-header">
               <span class="glyph">&#8592;</span>
               <span class="title">model router</span>
@@ -107,43 +59,36 @@
                 v-for="(cell, ci) in msg.gridCells"
                 :key="ci"
                 class="router-fx-cell"
+                :data-kind="cell.kind"
+                :data-cell-idx="ci"
+                :data-tiers="cell.tiers?.join(',')"
                 :class="{ win: ci === msg.winnerIdx }"
               >
                 <span class="nm">{{ cell.displayName }}</span>
               </div>
+              <div
+                v-if="Number(msg.winnerIdx) >= 0"
+                class="router-fx-selector visible lock"
+                :class="{ 'lock-impact': !msg.routerStatic }"
+                :style="routerSelectorStyle(msg)"
+                aria-hidden="true"
+              />
+              <div v-if="Number(msg.winnerIdx) >= 0 && !msg.routerStatic" class="router-fx-burst" :style="routerBurstStyle(msg)" aria-hidden="true">
+                <i v-for="n in 6" :key="n" />
+              </div>
             </div>
           </div>
 
-          <!-- Message bubble -->
+          <!-- User message -->
           <div
-            v-else
-            class="msg"
-            :class="[msg.displayRole, { streaming: msg.isStreaming }]"
-            :data-history-role="msg.displayRole"
+            v-else-if="msg.displayRole === 'user'"
+            class="msg-user"
             :data-message-id="msg.messageId"
           >
-            <div v-if="msg.showHeader" class="msg-header">
-              <span class="role-label">{{ msg.roleLabel }}</span>
-              <span v-if="msg.provenanceKind === 'cron'" class="cron-tag">Cron</span>
-              <span class="msg-time">{{ msg.timeStr }}</span>
-            </div>
-            <div class="msg-body" :class="{ 'msg-body--has-attachments': msg.hasAttachments }">
-              <template v-if="msg.displayRole === 'assistant' && msg.text">
-                <div class="msg-text-seg" v-html="renderMarkdown(msg.text)" />
-              </template>
-              <template v-else-if="msg.displayRole === 'subagent'">
-                <details class="chat-subagent-disclosure">
-                  <summary class="chat-subagent-disclosure-summary">{{ subagentSummary(msg.text) }}</summary>
-                  <pre class="chat-subagent-disclosure-body">{{ subagentBody(msg.text) }}</pre>
-                </details>
-              </template>
-              <template v-else-if="msg.displayRole === 'system' && msg.text">
-                {{ msg.text }}
-              </template>
-              <template v-else-if="msg.text">
+            <div class="msg-user-bubble" :class="{ 'msg-user-bubble--has-attachments': msg.hasAttachments }">
+              <template v-if="msg.text">
                 {{ stripTimePrefix(msg.text) }}
               </template>
-
               <!-- Attachments -->
               <div v-if="msg.attachments?.length" class="msg-attachments">
                 <template v-for="att in msg.attachments" :key="att.name">
@@ -155,29 +100,131 @@
                   </span>
                 </template>
               </div>
+            </div>
+            <div class="msg-user-actions">
+              <button type="button" class="msg-action" title="Copy" @click="copyMessage(msg)"><Icon name="copy" :size="12" /></button>
+              <button type="button" class="msg-action" title="Edit" @click="editMessage(idx)"><Icon name="edit" :size="12" /></button>
+            </div>
+          </div>
 
-              <!-- Tool calls -->
-              <template v-if="msg.toolCalls?.length">
-                <details
-                  v-for="tc in msg.toolCalls"
-                  :key="tc.toolId"
-                  class="chat-tools-collapse"
-                  :class="{ 'chat-tools-collapse--running': tc.isRunning, 'chat-tools-collapse--success': tc.status === 'success', 'chat-tools-collapse--error': tc.status === 'error' }"
-                  :open="tc.isOpen"
-                >
-                  <summary class="chat-tools-summary" @click.prevent="tc.isRunning && $event.preventDefault()">
-                    <span class="chat-tools-icon">{{ toolEmoji(tc.name) }}</span>
-                    {{ tc.displayName }}
-                  </summary>
-                  <div class="chat-tools-body">
-                    <div v-if="tc.inputPreview" class="chat-tool-input">{{ tc.inputPreview }}</div>
-                    <div v-if="tc.result" class="chat-tool-result" :class="{ 'chat-tool-result--error': tc.isError }">
-                      <div class="chat-tool-result-preview">{{ tc.resultPreview }}</div>
-                      <button v-if="tc.result.length > 200" class="btn btn--sm btn--ghost chat-tool-view-btn" @click="showToolResultModal(tc.result)">View full</button>
+          <!-- AI message -->
+          <div
+            v-else-if="msg.displayRole === 'assistant'"
+            class="msg-ai"
+            :data-message-id="msg.messageId"
+          >
+            <div class="msg-ai-avatar">
+              <img class="msg-ai-avatar__img" :src="assistantAvatarUrl" alt="" aria-hidden="true" />
+            </div>
+            <div class="msg-ai-main">
+              <template v-if="msg.timelineItems?.length">
+                <template v-for="item in msg.timelineItems" :key="item.key">
+                  <div v-if="item.type === 'text'" class="msg-ai-text" v-html="item.html" />
+                  <div v-else class="step-card">
+                    <div
+                      class="step-group"
+                      :class="{ 'step-group--running': item.group.isRunning, 'step-group--error': item.group.isError, 'is-open': isToolGroupOpen(item.group.groupId) }"
+                    >
+                      <button type="button" class="step-group-header" @click="toggleToolGroup(item.group.groupId)">
+                        <span class="step-icon">
+                          <Icon :name="item.group.iconName" :size="15" />
+                        </span>
+                        <span class="step-body">
+                          <span class="step-title-row">
+                            <span class="step-title">{{ item.group.label }}</span>
+                            <span v-if="item.group.calls.length > 1" class="step-count">{{ item.group.calls.length }} 次</span>
+                            <span v-if="item.group.secondary" class="step-secondary">{{ item.group.secondary }}</span>
+                          </span>
+                        </span>
+                        <span class="step-trailing">
+                          <span class="step-status">{{ toolGroupStatusText(item.group) }}</span>
+                          <Icon class="step-chevron" name="chevronRight" :size="14" />
+                        </span>
+                      </button>
+                      <div v-if="isToolGroupOpen(item.group.groupId)" class="step-group-members">
+                        <div
+                          v-for="tc in item.group.calls"
+                          :key="tc.renderKey"
+                          class="step-subitem"
+                          :class="{ 'step-item--running': tc.isRunning, 'step-item--success': tc.status === 'success', 'step-item--error': tc.status === 'error', 'is-open': isToolItemOpen(tc.renderKey) }"
+                          @click="toggleToolItem(tc.renderKey)"
+                        >
+                          <div class="step-body">
+                            <div class="step-title-row">
+                              <span class="step-subtitle">{{ tc.displayName }}</span>
+                              <span v-if="toolSecondaryText(tc)" class="step-secondary">{{ toolSecondaryText(tc) }}</span>
+                            </div>
+                            <div v-if="tc.inputPreview && isToolItemOpen(tc.renderKey)" class="step-detail">{{ tc.inputPreview }}</div>
+                            <div v-if="tc.result && isToolItemOpen(tc.renderKey)" class="step-result" :class="{ 'step-result--error': tc.isError }">
+                              <pre class="step-result-pre">{{ tc.resultPreview }}</pre>
+                              <button v-if="tc.result.length > 200" class="step-view-btn" @click.stop="showToolResultModal(tc.result, tc.displayName)">View full</button>
+                            </div>
+                          </div>
+                          <div class="step-trailing">
+                            <span class="step-status">{{ toolStatusText(tc) }}</span>
+                            <Icon class="step-chevron" name="chevronRight" :size="14" />
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </details>
+                </template>
               </template>
+              <template v-else>
+                <div v-if="msg.text" class="msg-ai-text" v-html="renderMarkdown(msg.text)" />
+              </template>
+
+              <!-- Step card (legacy tool calls without timeline) -->
+              <div v-if="!msg.timelineItems?.length && msg.toolCalls?.length" class="step-card">
+                <div
+                  v-for="group in toolCallGroups(msg.toolCalls, msg.messageId || msg.id || String(idx))"
+                  :key="group.groupId"
+                  class="step-group"
+                  :class="{ 'step-group--running': group.isRunning, 'step-group--error': group.isError, 'is-open': isToolGroupOpen(group.groupId) }"
+                >
+                  <button type="button" class="step-group-header" @click="toggleToolGroup(group.groupId)">
+                    <span class="step-icon">
+                      <Icon :name="group.iconName" :size="15" />
+                    </span>
+                    <span class="step-body">
+                      <span class="step-title-row">
+                        <span class="step-title">{{ group.label }}</span>
+                        <span v-if="group.calls.length > 1" class="step-count">{{ group.calls.length }} 次</span>
+                        <span v-if="group.secondary" class="step-secondary">{{ group.secondary }}</span>
+                      </span>
+                    </span>
+                    <span class="step-trailing">
+                      <span class="step-status">{{ toolGroupStatusText(group) }}</span>
+                      <Icon class="step-chevron" name="chevronRight" :size="14" />
+                    </span>
+                  </button>
+                  <div v-if="isToolGroupOpen(group.groupId)" class="step-group-members">
+                    <div
+                      v-for="tc in group.calls"
+                      :key="tc.renderKey"
+                      class="step-subitem"
+                      :class="{ 'step-item--running': tc.isRunning, 'step-item--success': tc.status === 'success', 'step-item--error': tc.status === 'error', 'is-open': isToolItemOpen(tc.renderKey) }"
+                      @click="toggleToolItem(tc.renderKey)"
+                    >
+                      <div class="step-body">
+                        <div class="step-title-row">
+                          <span class="step-subtitle">{{ tc.displayName }}</span>
+                          <span v-if="toolSecondaryText(tc)" class="step-secondary">{{ toolSecondaryText(tc) }}</span>
+                        </div>
+                        <div v-if="tc.inputPreview && isToolItemOpen(tc.renderKey)" class="step-detail">{{ tc.inputPreview }}</div>
+                        <div v-if="tc.result && isToolItemOpen(tc.renderKey)" class="step-result" :class="{ 'step-result--error': tc.isError }">
+                          <pre class="step-result-pre">{{ tc.resultPreview }}</pre>
+                          <button v-if="tc.result.length > 200" class="step-view-btn" @click.stop="showToolResultModal(tc.result, tc.displayName)">View full</button>
+                        </div>
+                      </div>
+                      <div class="step-trailing">
+                        <span class="step-status">{{ toolStatusText(tc) }}</span>
+                        <Icon class="step-chevron" name="chevronRight" :size="14" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
               <!-- Artifacts -->
               <div v-if="msg.artifacts?.length" class="msg-artifacts">
@@ -189,75 +236,121 @@
                     class="msg-artifact-chip"
                     @click="downloadArtifact(art)"
                   >
-                    <span class="msg-file-chip__icon" aria-hidden="true">{{ artifactCategoryLabel(art) }}</span>
-                    <span class="msg-file-chip__name">{{ art.name || 'artifact' }}</span>
-                    <span class="msg-file-chip__meta">{{ artifactMeta(art) }}</span>
+                    <span class="msg-artifact-icon" :data-kind="artifactCategory(art)" aria-hidden="true">
+                      <Icon :name="artifactIconName(art)" :size="22" />
+                    </span>
+                    <span class="msg-artifact-info">
+                      <span class="msg-artifact-name">{{ artifactFileTitle(art) }}</span>
+                      <span class="msg-artifact-meta">{{ artifactFileSubtitle(art) }}</span>
+                    </span>
+                    <span class="msg-artifact-action">{{ artifactActionLabel(art) }}</span>
                   </button>
                 </div>
               </div>
-            </div>
 
-            <!-- Hover actions -->
-            <div v-if="msg.displayRole === 'user' || msg.displayRole === 'assistant'" class="msg-actions" role="toolbar" :aria-label="`${msg.roleLabel} message actions`">
-              <button type="button" class="msg-action" title="Copy message" aria-label="Copy message" @click="copyMessage(msg)">
-                <Icon name="copy" :size="14" />
-              </button>
-              <button v-if="msg.displayRole === 'assistant'" type="button" class="msg-action" title="Regenerate" aria-label="Regenerate response" @click="regenerateMessage(idx)">
-                <Icon name="refresh" :size="14" />
-              </button>
-              <button v-if="msg.displayRole === 'user'" type="button" class="msg-action" title="Edit message" aria-label="Edit message" @click="editMessage(idx)">
-                <Icon name="edit" :size="14" />
-              </button>
+              <!-- Meta & Actions -->
+              <div class="msg-ai-footer">
+                <div v-if="msg.meta" class="msg-ai-meta">
+                  <span v-if="msg.meta.model" class="msg-meta__model">{{ msg.meta.modelShort }}</span>
+                  <span v-if="msg.meta.hasTokens">
+                    &#8593;{{ fmtTok(msg.meta.input) }} &#8595;{{ fmtTok(msg.meta.output) }}
+                  </span>
+                  <span v-if="msg.meta.cachedTokens">cache:{{ fmtTok(msg.meta.cachedTokens) }}</span>
+                  <span v-if="msg.meta.reasoningTokens">think:{{ fmtTok(msg.meta.reasoningTokens) }}</span>
+                  <span v-if="msg.meta.costUsd">${{ msg.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
+                </div>
+                <div class="msg-ai-actions">
+                  <button type="button" class="msg-action" title="Copy" @click="copyMessage(msg)"><Icon name="copy" :size="12" /></button>
+                  <button type="button" class="msg-action" title="Regenerate" @click="regenerateMessage(idx)"><Icon name="refresh" :size="12" /></button>
+                </div>
+              </div>
             </div>
+          </div>
 
-            <!-- Meta footer -->
-            <div v-if="msg.meta" class="msg-meta">
-              <span v-if="msg.meta.model" class="msg-meta__model">{{ msg.meta.modelShort }}</span>
-              <span v-if="msg.meta.hasTokens" class="msg-meta__tokens" :title="`Turn -- input: ${msg.meta.input?.toLocaleString()}, output: ${msg.meta.output?.toLocaleString()} tokens`">
-                &#8593;{{ fmtTok(msg.meta.input) }} &#8595;{{ fmtTok(msg.meta.output) }}
-              </span>
-              <span v-if="msg.meta.cachedTokens" class="msg-meta__cached" :title="`Cached tokens: ${msg.meta.cachedTokens.toLocaleString()}`">cache:{{ fmtTok(msg.meta.cachedTokens) }}</span>
-              <span v-if="msg.meta.reasoningTokens" class="msg-meta__reasoning" :title="`Reasoning tokens: ${msg.meta.reasoningTokens.toLocaleString()}`">think:{{ fmtTok(msg.meta.reasoningTokens) }}</span>
-              <span v-if="msg.meta.costUsd" class="msg-meta__cost" :title="`Turn cost: $${msg.meta.costUsd.toFixed(6)}`">${{ msg.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
-              <span v-if="msg.meta.hasSaved" class="msg-meta__saved" :title="`Squilla router routed this turn (~${Math.round(msg.meta.turnSavedPct)}% vs flagship)`">
-                <svg class="msg-meta__saved-flame" viewBox="0 0 16 16" aria-hidden="true" width="1em" height="1em"><path d="M8 16c3.4 0 6-2.55 6-5.78 0-3.05-2.7-4.6-2.7-7.55 0 0-1.55 1.45-2.5 4.4C8.55 4.5 8.4 1 6.5 0 6.6 3 4 4.45 4 7.6 4 11.05 5.65 16 8 16z" fill="currentColor"/></svg>
-                <span class="msg-meta__saved-label">{{ msg.meta.savedLabel }}</span>
-              </span>
+          <!-- System / Subagent / Error messages -->
+          <div
+            v-else
+            class="msg-system-wrap"
+          >
+            <div class="msg-system" :class="msg.displayRole">
+              <span class="msg-system-label">{{ msg.roleLabel }}</span>
+              <template v-if="msg.displayRole === 'subagent'">
+                <details class="chat-subagent-disclosure">
+                  <summary class="chat-subagent-disclosure-summary">{{ subagentSummary(msg.text) }}</summary>
+                  <pre class="chat-subagent-disclosure-body">{{ subagentBody(msg.text) }}</pre>
+                </details>
+              </template>
+              <template v-else-if="msg.text">
+                {{ msg.text }}
+              </template>
             </div>
-
-            <!-- Interrupted marker -->
-            <span v-if="msg.interrupted" class="msg-interrupt-mark">interrupted</span>
           </div>
         </template>
 
-        <!-- Streaming bubble -->
-        <div v-if="isStreaming && streamBubble" class="msg assistant streaming" data-history-role="assistant" aria-live="polite">
-          <div v-if="streamShowHeader" class="msg-header">
-            <span class="role-label">Assistant</span>
-            <span class="savings-indicator"></span>
-            <span class="msg-time"></span>
+        <!-- Streaming AI message (Kimi style) -->
+        <div v-if="isStreaming && streamBubble" class="msg-ai" data-history-role="assistant" aria-live="polite">
+          <div class="msg-ai-avatar">
+            <img class="msg-ai-avatar__img" :src="assistantAvatarUrl" alt="" aria-hidden="true" />
           </div>
-          <div class="msg-body">
-            <div v-for="(seg, si) in streamSegments" :key="si" class="msg-text-seg" v-html="seg.html" />
-            <!-- Tool calls in stream -->
-            <template v-for="tc in streamToolCalls" :key="tc.toolId">
-              <details
-                class="chat-tools-collapse"
-                :class="{ 'chat-tools-collapse--running': tc.isRunning, 'chat-tools-collapse--success': tc.status === 'success', 'chat-tools-collapse--error': tc.status === 'error' }"
-              >
-                <summary class="chat-tools-summary" @click.prevent="tc.isRunning && $event.preventDefault()">
-                  <span class="chat-tools-icon">{{ toolEmoji(tc.name) }}</span>
-                  {{ tc.displayName }}
-                </summary>
-                <div class="chat-tools-body">
-                  <div v-if="tc.inputPreview" class="chat-tool-input">{{ tc.inputPreview }}</div>
-                  <div v-if="tc.result" class="chat-tool-result" :class="{ 'chat-tool-result--error': tc.isError }">
-                    <div class="chat-tool-result-preview">{{ tc.resultPreview }}</div>
-                    <button v-if="tc.result.length > 200" class="btn btn--sm btn--ghost chat-tool-view-btn" @click="showToolResultModal(tc.result)">View full</button>
+          <div class="msg-ai-main">
+            <!-- Streaming timeline -->
+            <template v-for="item in streamTimelineItems" :key="item.key">
+              <div v-if="item.type === 'text'" class="msg-ai-text" v-html="item.html" />
+              <div v-else class="step-card">
+                <div
+                  class="step-group"
+                  :class="{ 'step-group--running': item.group.isRunning, 'step-group--error': item.group.isError, 'is-open': isToolGroupOpen(item.group.groupId) }"
+                >
+                  <button type="button" class="step-group-header" @click="toggleToolGroup(item.group.groupId)">
+                    <span class="step-icon">
+                      <Icon :name="item.group.iconName" :size="15" />
+                    </span>
+                    <span class="step-body">
+                      <span class="step-title-row">
+                        <span class="step-title">{{ item.group.label }}</span>
+                        <span v-if="item.group.calls.length > 1" class="step-count">{{ item.group.calls.length }} 次</span>
+                        <span v-if="item.group.secondary" class="step-secondary">{{ item.group.secondary }}</span>
+                      </span>
+                    </span>
+                    <span class="step-trailing">
+                      <span class="step-status">{{ toolGroupStatusText(item.group) }}</span>
+                      <Icon class="step-chevron" name="chevronRight" :size="14" />
+                    </span>
+                  </button>
+                  <div v-if="isToolGroupOpen(item.group.groupId)" class="step-group-members">
+                    <div
+                      v-for="tc in item.group.calls"
+                      :key="tc.renderKey"
+                      class="step-subitem"
+                      :class="{ 'step-item--running': tc.isRunning, 'step-item--success': tc.status === 'success', 'step-item--error': tc.status === 'error', 'is-open': isToolItemOpen(tc.renderKey) }"
+                      @click="toggleToolItem(tc.renderKey)"
+                    >
+                      <div class="step-body">
+                        <div class="step-title-row">
+                          <span class="step-subtitle">{{ tc.displayName }}</span>
+                          <span v-if="toolSecondaryText(tc)" class="step-secondary">{{ toolSecondaryText(tc) }}</span>
+                        </div>
+                        <div v-if="tc.inputPreview && isToolItemOpen(tc.renderKey)" class="step-detail">{{ tc.inputPreview }}</div>
+                        <div v-if="tc.result && isToolItemOpen(tc.renderKey)" class="step-result" :class="{ 'step-result--error': tc.isError }">
+                          <pre class="step-result-pre">{{ tc.resultPreview }}</pre>
+                          <button v-if="tc.result.length > 200" class="step-view-btn" @click.stop="showToolResultModal(tc.result, tc.displayName)">View full</button>
+                        </div>
+                      </div>
+                      <div class="step-trailing">
+                        <span class="step-status">{{ toolStatusText(tc) }}</span>
+                        <Icon class="step-chevron" name="chevronRight" :size="14" />
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </details>
+              </div>
             </template>
+
+            <div v-if="streamActivityVisible" class="stream-activity" role="status" aria-live="polite">
+              <span class="stream-activity-dot" aria-hidden="true" />
+              <span class="stream-activity-text activity-shimmer">{{ streamActivityText }}</span>
+            </div>
+
             <!-- Stream artifacts -->
             <div v-if="streamArtifacts.length" class="msg-artifacts">
               <div class="msg-artifact-files">
@@ -268,26 +361,30 @@
                   class="msg-artifact-chip"
                   @click="downloadArtifact(art)"
                 >
-                  <span class="msg-file-chip__icon" aria-hidden="true">{{ artifactCategoryLabel(art) }}</span>
-                  <span class="msg-file-chip__name">{{ art.name || 'artifact' }}</span>
-                  <span class="msg-file-chip__meta">{{ artifactMeta(art) }}</span>
+                  <span class="msg-artifact-icon" :data-kind="artifactCategory(art)" aria-hidden="true">
+                    <Icon :name="artifactIconName(art)" :size="22" />
+                  </span>
+                  <span class="msg-artifact-info">
+                    <span class="msg-artifact-name">{{ artifactFileTitle(art) }}</span>
+                    <span class="msg-artifact-meta">{{ artifactFileSubtitle(art) }}</span>
+                  </span>
+                  <span class="msg-artifact-action">{{ artifactActionLabel(art) }}</span>
                 </button>
               </div>
             </div>
+
           </div>
         </div>
 
         <!-- Thinking indicator -->
-        <div v-if="thinkingVisible" class="msg assistant thinking" role="status" aria-live="polite">
-          <div v-if="lastHeaderRole !== 'assistant'" class="msg-header">
-            <span class="role-label">Assistant</span>
+        <div v-if="thinkingVisible" class="msg-ai thinking" role="status" aria-live="polite">
+          <div class="msg-ai-avatar">
+            <img class="msg-ai-avatar__img" :src="assistantAvatarUrl" alt="" aria-hidden="true" />
           </div>
-          <div class="msg-body thinking-body">
+          <div class="msg-ai-main">
             <div class="thinking-status">
-              <div class="typing-indicator">
-                <span v-for="i in 3" :key="i" class="dot" />
-              </div>
-              <span class="thinking-elapsed" aria-live="off">{{ thinkingText }}</span>
+              <span class="stream-activity-dot" aria-hidden="true" />
+              <span class="thinking-elapsed activity-shimmer" aria-live="off">{{ thinkingText }}</span>
             </div>
           </div>
         </div>
@@ -337,97 +434,56 @@
 
     <!-- Composer -->
     <div ref="composerRef" class="chat-composer">
-      <div v-if="pendingAttachments.length > 0" class="chat-attachments">
-        <div
-          v-for="(att, i) in pendingAttachments"
-          :key="att.local_id"
-          class="attachment-chip"
-          :class="{ 'attachment-chip--busy': att.kind === 'inline_pending' || att.kind === 'uploading' }"
-          :data-mime="att.mime || ''"
-        >
-          <span class="attachment-chip__icon" aria-hidden="true">
-            <span v-if="att.kind === 'inline_pending' || att.kind === 'uploading'" class="spinner attachment-chip__spinner" />
-            <span v-else>file</span>
-          </span>
-          <span class="attachment-chip__name">{{ att.name }}</span>
-          <span class="attachment-chip__meta">{{ attachmentMeta(att) }}</span>
-          <button class="attachment-remove" title="Remove" @click="removeAttachment(i)">&times;</button>
-        </div>
-      </div>
-      <div class="chat-input-bar">
-        <button class="btn btn--icon btn--ghost" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON" aria-label="Attach files" @click="fileInputRef?.click()">
-          <Icon name="paperclip" :size="16" />
-        </button>
-        <div class="chat-toolbar-wrap">
-          <button
-            type="button"
-            class="btn btn--icon btn--ghost chat-toolbar-trigger"
-            :class="{ 'is-glowing': toolbarTriggerActive, 'has-dot-bypass': isApprovalBypassMode(effectiveElevatedMode), 'has-dot-router': toolbarState.router === false }"
-            :title="toolbarTriggerTitle"
-            :aria-label="toolbarTriggerTitle"
-            aria-haspopup="dialog"
-            :aria-expanded="toolbarPopoverOpen"
-            @click="toggleToolbarPopover"
+      <div class="chat-composer-inner">
+        <div v-if="pendingAttachments.length > 0" class="chat-attachments">
+          <div
+            v-for="(att, i) in pendingAttachments"
+            :key="att.local_id"
+            class="attachment-chip"
+            :class="{ 'attachment-chip--busy': att.kind === 'inline_pending' || att.kind === 'uploading' }"
+            :data-mime="att.mime || ''"
           >
-            <Icon name="settings" :size="14" />
-            <span class="chat-toolbar-trigger-dots" aria-hidden="true">
-              <i data-dot="bypass" />
-              <i data-dot="router" />
+            <span class="attachment-chip__icon" aria-hidden="true">
+              <span v-if="att.kind === 'inline_pending' || att.kind === 'uploading'" class="spinner attachment-chip__spinner" />
+              <span v-else>file</span>
             </span>
-          </button>
-          <div v-if="toolbarPopoverOpen" class="chat-toolbar-popover" role="dialog" aria-label="Composer settings">
-            <div class="chat-toolbar-popover-arrow" aria-hidden="true" />
-            <div class="chat-toolbar-popover-inner">
-              <div class="chat-toolbar-row">
-                <span class="chat-toolbar-row-label">Approvals</span>
-                <button
-                  class="chat-pill"
-                  :class="{ 'chat-pill--danger': !effectiveElevatedMode, 'is-active': !!effectiveElevatedMode, 'chat-pill--disabled': elevatedUnavailable }"
-                  :aria-disabled="elevatedUnavailable ? 'true' : undefined"
-                  @click="toggleElevatedMode"
-                >
-                  {{ elevatedPillText }}
-                </button>
-              </div>
-              <div class="chat-toolbar-row">
-                <span class="chat-toolbar-row-label">Squilla Router</span>
-                <div class="toggle-switch-wrap" title="Squilla router">
-                  <label class="toggle-switch" aria-label="Squilla Router">
-                    <input v-model="routerEnabled" type="checkbox" @change="onRouterToggle" />
-                    <span class="toggle-track"><span class="toggle-thumb" /></span>
-                  </label>
-                </div>
-              </div>
+            <span class="attachment-chip__name">{{ att.name }}</span>
+            <span class="attachment-chip__meta">{{ attachmentMeta(att) }}</span>
+            <button class="attachment-remove" title="Remove" @click="removeAttachment(i)">&times;</button>
+          </div>
+        </div>
+        <div class="chat-input-panel">
+          <div class="chat-input-wrap">
+            <textarea
+              ref="textareaRef"
+              v-model="inputText"
+              class="chat-textarea"
+              rows="1"
+              :placeholder="composerPlaceholder"
+              maxlength="100000"
+              aria-label="Message to send"
+              @input="onTextareaInput"
+              @keydown="onTextareaKeydown"
+              @compositionstart="composing = true"
+              @compositionend="composing = false"
+            />
+          </div>
+          <div class="chat-input-footer">
+            <div class="chat-input-actions chat-input-actions--left">
+              <button class="btn btn--icon btn--ghost chat-plus-btn" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON" aria-label="Attach files" @click="fileInputRef?.click()">
+                <Icon name="plus" :size="18" />
+              </button>
+            </div>
+            <div class="chat-input-actions chat-input-actions--right">
+              <button class="btn btn--icon btn--primary chat-send-btn" :class="{ 'is-ready': hasSendContent }" :title="sendButtonTitle" aria-label="Send" @click="onSend">
+                <Icon name="arrowUp" :size="17" />
+              </button>
+              <button v-if="isStreaming" class="btn btn--icon btn--danger chat-send-btn" title="Stop current response (Esc)" aria-label="Stop current response" @click="onStop">
+                <Icon name="stop" :size="16" />
+              </button>
             </div>
           </div>
         </div>
-        <div class="chat-input-wrap">
-          <textarea
-            ref="textareaRef"
-            v-model="inputText"
-            class="chat-textarea"
-            rows="1"
-            :placeholder="composerPlaceholder"
-            maxlength="100000"
-            aria-label="Message to send"
-            @input="onTextareaInput"
-            @keydown="onTextareaKeydown"
-            @compositionstart="composing = true"
-            @compositionend="composing = false"
-          />
-        </div>
-        <button class="btn btn--icon btn--ghost" title="New chat session in the current agent" aria-label="New chat session in the current agent" @click="newSession">
-          <Icon name="plus" :size="16" />
-        </button>
-        <button class="btn btn--icon btn--ghost" title="Export as Markdown" aria-label="Export as Markdown" @click="exportMarkdown">
-          <Icon name="download" :size="16" />
-        </button>
-        <button class="btn btn--icon btn--primary" :title="sendButtonTitle" aria-label="Send" @click="onSend">
-          <Icon name="send" :size="16" />
-        </button>
-        <button v-if="isStreaming" class="btn btn--icon btn--danger" title="Stop current response (Esc)" aria-label="Stop current response" @click="onStop">
-          <Icon name="stop" :size="16" />
-        </button>
       </div>
     </div>
 
@@ -439,15 +495,29 @@
       class="hidden"
       @change="onFileInputChange"
     />
+
+    <!-- Tool Result Modal -->
+    <div v-if="toolResultModal.open" class="tool-modal-overlay" @click.self="toolResultModal.open = false">
+      <div class="tool-modal">
+        <div class="tool-modal__header">
+          <h3 class="tool-modal__title">{{ toolResultModal.title }}</h3>
+          <button class="btn btn--icon btn--ghost" title="Close" aria-label="Close" @click="toolResultModal.open = false">
+            <Icon name="x" :size="16" />
+          </button>
+        </div>
+        <pre class="tool-modal__body">{{ toolResultModal.content }}</pre>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useAppStore } from '@/stores/app'
 import Icon from '@/components/Icon.vue'
+import type { IconName } from '@/utils/icons'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
@@ -474,8 +544,10 @@ interface Message {
   role: string
   text: string
   ts: string | number | null
+  routerDecision?: any
   artifacts?: any[]
   tool_calls?: any[]
+  timeline?: any[]
   attachments?: Attachment[]
   provenanceKind?: string
   provenanceSourceSessionKey?: string
@@ -489,12 +561,22 @@ interface Message {
   input_tokens?: number
   output?: number
   output_tokens?: number
+  restoredFromHistory?: boolean
+}
+
+interface RouterCell {
+  kind: 'real' | 'decoy'
+  tier?: string
+  tiers?: string[]
+  displayName: string
 }
 
 interface StreamToolCall {
   toolId: string
   name: string
   displayName: string
+  groupId?: string
+  inputRaw?: string
   inputPreview: string
   isRunning: boolean
   status: '' | 'success' | 'error'
@@ -504,11 +586,34 @@ interface StreamToolCall {
   isOpen: boolean
 }
 
-interface StreamSegment {
-  type: 'text'
-  raw: string
-  html: string
+type ToolCallRenderItem = StreamToolCall & {
+  renderKey: string
 }
+
+interface ToolCallGroup {
+  groupId: string
+  operationKey: string
+  label: string
+  iconName: IconName
+  calls: ToolCallRenderItem[]
+  secondary: string
+  isRunning: boolean
+  isError: boolean
+  status: '' | 'success' | 'error'
+}
+
+interface StreamSegment {
+  type: 'text' | 'tool-group'
+  raw?: string
+  html?: string
+  dirty?: boolean
+  groupId?: string
+  operationKey?: string
+}
+
+type StreamTimelineItem =
+  | { type: 'text'; key: string; html: string }
+  | { type: 'tool-group'; key: string; group: ToolCallGroup }
 
 interface RenderedMessage {
   id?: string
@@ -523,6 +628,7 @@ interface RenderedMessage {
   hasAttachments?: boolean
   attachments?: Attachment[]
   toolCalls?: any[]
+  timelineItems?: StreamTimelineItem[]
   artifacts?: any[]
   meta?: any
   interrupted?: boolean
@@ -531,19 +637,11 @@ interface RenderedMessage {
   dayLabel?: string
   isRouterStrip?: boolean
   routerState?: string
-  gridCells?: any[]
+  routerSource?: string
+  routerObserve?: boolean
+  routerStatic?: boolean
+  gridCells?: RouterCell[]
   winnerIdx?: number
-}
-
-interface SessionItem {
-  key: string
-  runStatus: string
-  runLabel: string
-}
-
-interface SessionGroup {
-  label: string
-  items: SessionItem[]
 }
 
 /* ── Constants ─────────────────────────────────────────────────────── */
@@ -560,7 +658,7 @@ const ATTACHMENT_PDF_HARD_CAP_BYTES = 30 * 1024 * 1024
 const MAX_PENDING = 5
 const THINKING_DELAY_MS = 400
 const THINKING_TTL_MS = 60000
-const SQUILLA_VERBS = ['Watching', 'Tracking', 'Sensing', 'Pulsing', 'Thinking', 'Drafting', 'Polishing']
+const SQUILLA_VERBS = ['正在组织下一步', '正在梳理上下文', '正在等待模型响应', '正在准备输出']
 const SQUILLA_DWELL_MS = 2500
 
 const ATTACHMENT_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
@@ -572,11 +670,28 @@ const ATTACHMENT_EXTENSION_MIMES: Record<string, string> = {
   markdown: 'text/markdown', html: 'text/html', htm: 'text/html', csv: 'text/csv', json: 'application/json',
 }
 
-const TOOL_EMOJI: Record<string, string> = {
-  bash: '&#128187;', read_file: '&#128196;', write_file: '&#9997;', edit_file: '&#9997;',
-  web_search: '&#128269;', search: '&#128269;', http_request: '&#127760;', web_fetch: '&#127760;',
-  list_files: '&#128194;', memory_search: '&#129504;', memory_store: '&#129504;',
-}
+const ROUTER_FX_GRID_COLS = 4
+const ROUTER_FX_GRID_CELLS = 12
+const ROUTER_FX_DECOY_POOL = [
+  'claude-sonnet-4.6',
+  'claude-haiku-4.5',
+  'gpt-5-mini',
+  'gemini-2.5-flash',
+  'deepseek-r1',
+  'gpt-5',
+  'claude-opus-4.7',
+  'gemini-2.5-pro',
+  'gemini-2.0-flash',
+  'llama-4-405b',
+  'mistral-large-3',
+  'qwen-3-72b',
+  'grok-3-mini',
+  'sonar-large',
+  'command-r-plus',
+  'jamba-1.5-large',
+]
+
+const toolResultModal = ref({ open: false, title: '', content: '' })
 
 const ARTIFACT_MIME_CATEGORIES: Record<string, string> = {
   'application/json': 'data', 'application/ndjson': 'data', 'application/pdf': 'document',
@@ -595,6 +710,15 @@ const ARTIFACT_EXTENSION_CATEGORIES: Record<string, string> = {
 const rpc = useRpcStore()
 const appStore = useAppStore()
 const route = useRoute()
+const router = useRouter()
+const assistantAvatarUrl = computed(() => {
+  const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
+  return `${base}/static/img/opensquilla-mark.png`
+})
+const landingLockupUrl = computed(() => {
+  const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
+  return `${base}/static/img/opensquilla-long-logo.png?v=20260601`
+})
 
 /* ── DOM refs ──────────────────────────────────────────────────────── */
 
@@ -602,7 +726,6 @@ const threadRef = ref<HTMLElement | null>(null)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const composerRef = ref<HTMLElement | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
-const sessionSearchRef = ref<HTMLInputElement | null>(null)
 
 /* ── State ─────────────────────────────────────────────────────────── */
 
@@ -616,14 +739,51 @@ const messages = ref<Message[]>([])
 const pendingAttachments = ref<Attachment[]>([])
 const pendingQueue = ref<PendingItem[]>([])
 const nextAttachmentId = ref(1)
+const pendingRouterDecision = ref<{ payload: any; decision: any } | null>(null)
 
 // Streaming
 const streamRaw = ref('')
 const streamSegments = ref<StreamSegment[]>([])
 const streamArtifacts = ref<any[]>([])
 const streamToolCalls = ref<StreamToolCall[]>([])
+const openToolGroups = ref<Set<string>>(new Set())
+const openToolItems = ref<Set<string>>(new Set())
+let streamToolGroupSeq = 0
 const streamBubble = ref(false)
 const streamShowHeader = ref(false)
+const streamHasVisibleOutput = computed(() => {
+  return streamSegments.value.length > 0 ||
+    streamToolCalls.value.length > 0 ||
+    streamArtifacts.value.length > 0
+})
+const streamActivity = ref({ label: '正在发送', startedAt: 0 })
+const streamActivityTick = ref(0)
+let streamActivityTimer: ReturnType<typeof setInterval> | null = null
+const streamActivityVisible = computed(() => {
+  return isStreaming.value &&
+    streamBubble.value &&
+    !streamHasVisibleOutput.value
+})
+const streamActivityText = computed(() => {
+  streamActivityTick.value
+  const startedAt = streamActivity.value.startedAt || Date.now()
+  const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+  const base = seconds >= 10 && streamActivity.value.label === '正在组织下一步'
+    ? '仍在等待模型响应'
+    : streamActivity.value.label
+  return `${base} · ${seconds}s`
+})
+const streamTimelineItems = computed<StreamTimelineItem[]>(() => {
+  const groupsById = new Map(toolCallGroups(streamToolCalls.value, 'stream').map(group => [group.groupId, group]))
+  return streamSegments.value.flatMap((seg, idx): StreamTimelineItem[] => {
+    if (seg.type === 'text') {
+      if (!seg.raw && !seg.html) return []
+      return [{ type: 'text', key: `text-${idx}`, html: seg.html || '' }]
+    }
+    const group = seg.groupId ? groupsById.get(seg.groupId) : null
+    return group ? [{ type: 'tool-group', key: seg.groupId || `tool-${idx}`, group }] : []
+  })
+})
 
 // Thinking
 const thinkingVisible = ref(false)
@@ -636,11 +796,7 @@ let thinkingStartTime = 0
 const lastHeaderRole = ref('')
 const lastHeaderDay = ref('')
 const threadDragOver = ref(false)
-const sessionPopoverOpen = ref(false)
 const toolbarPopoverOpen = ref(false)
-const sessionSearch = ref('')
-const sessionsList = ref<any[]>([])
-const sessionListError = ref(false)
 
 // Elevated mode
 const elevatedMode = ref('')
@@ -650,6 +806,8 @@ const elevatedUnavailable = ref(false)
 // Router
 const routerEnabled = ref(false)
 const toolbarState = ref({ bypass: false, router: true })
+const routerFxSlotList = ref<string[]>([])
+const routerFxModels = ref<Record<string, string>>({})
 
 // Run status
 const runStatus = ref({ status: 'idle', label: 'Idle', task: null as any })
@@ -732,30 +890,20 @@ const effectiveElevatedMode = computed(() => {
   return m === 'on' || m === 'bypass' || m === 'full' ? m : ''
 })
 
-const elevatedPillText = computed(() => {
-  if (elevatedUnavailable.value) return 'Bypass N/A'
-  const eff = effectiveElevatedMode.value
-  if (elevatedMode.value) return `Session ${eff.toUpperCase()}`
-  if (globalElevatedMode.value) return `Global ${globalElevatedMode.value.toUpperCase()}`
-  return 'Bypass Off'
-})
-
-const toolbarTriggerActive = computed(() => {
-  return toolbarState.value.bypass || toolbarState.value.router === false
-})
-
-const toolbarTriggerTitle = computed(() => {
-  const eff = effectiveElevatedMode.value
-  const bypass = eff === 'bypass' || eff === 'full'
-  const parts: string[] = []
-  if (eff === 'full') parts.push('FULL: Full permission mode active')
-  else if (bypass) parts.push('BYPASS: Approvals bypassed')
-  if (toolbarState.value.router === false) parts.push('router off')
-  return parts.length ? `Run modes: ${parts.join(', ')}` : 'Run modes'
+const isNewChatLanding = computed(() => {
+  return messages.value.length === 0 &&
+    !isStreaming.value &&
+    pendingQueue.value.length === 0 &&
+    !compactStatus.value.visible
 })
 
 const composerPlaceholder = computed(() => {
+  if (isNewChatLanding.value) return '分配一个任务或提问任何问题'
   return window.innerWidth <= 480 ? 'Message...' : 'Send a message...'
+})
+
+const hasSendContent = computed(() => {
+  return inputText.value.trim().length > 0 || pendingAttachments.value.length > 0
 })
 
 const sendButtonTitle = computed(() => {
@@ -764,23 +912,14 @@ const sendButtonTitle = computed(() => {
   return 'Send'
 })
 
-const groupedSessions = computed((): SessionGroup[] => {
-  const groups: Record<string, SessionItem[]> = {
-    'Web chat': [], CLI: [], 'Sub-agents': [], Agents: [], Sessions: [], Other: [],
+const currentChatTitle = computed(() => {
+  const firstUser = messages.value.find(msg => msg.role === 'user' && stripTimePrefix(msg.text || '').trim())
+  if (firstUser) {
+    return truncate(stripTimePrefix(firstUser.text).replace(/\s+/g, ' ').trim(), 28)
   }
-  for (const item of sessionsList.value) {
-    const key = itemKey(item)
-    if (!key || key === 'unknown') continue
-    const g = classifyKey(item)
-    if (g) groups[g].push({ key, runStatus: normalizeRunStatus(item.status || item.run_status), runLabel: runStatusLabelText(normalizeRunStatus(item.status || item.run_status)) })
-  }
-  const f = sessionSearch.value.toLowerCase()
-  const result: SessionGroup[] = []
-  for (const [label, items] of Object.entries(groups)) {
-    const visible = f ? items.filter(it => it.key.toLowerCase().includes(f)) : items
-    if (visible.length) result.push({ label, items: visible })
-  }
-  return result
+  const suffix = sessionKey.value.split(':').pop() || ''
+  if (!suffix || suffix === 'default') return 'New chat'
+  return `Chat ${suffix}`
 })
 
 const renderedMessages = computed((): RenderedMessage[] => {
@@ -792,10 +931,58 @@ const renderedMessages = computed((): RenderedMessage[] => {
     const msg = messages.value[i]
     const day = dayKey(msg.ts)
 
-    // Day separator
+    // Track day changes for grouping, but keep the thread visually pure.
     if (day && day !== prevDay) {
-      result.push({ daySeparator: true, dayLabel: dayLabel(day), role: '', displayRole: '', roleLabel: '', text: '', timeStr: '', showHeader: false })
       prevDay = day
+      prevRole = ''
+    }
+
+    const routerDecision = normalizeRouterDecision(msg.routerDecision || (msg.provenanceKind === 'router_decision' ? msg : null))
+    if (routerDecision) {
+      const cells = routerDecisionCells(routerDecision)
+      const winnerIdx = routerWinnerCellIndex(cells, routerDecision.tier)
+      result.push({
+        id: `router-${msg.messageId || i}`,
+        role: 'router',
+        displayRole: 'router',
+        roleLabel: 'Router',
+        text: '',
+        timeStr: msg.ts ? relTime(msg.ts) : '',
+        showHeader: false,
+        isRouterStrip: true,
+        routerState: routerDecisionState(routerDecision),
+        routerSource: routerDecision.source || 'none',
+        routerObserve: routerDecision.routing_applied === false,
+        routerStatic: msg.restoredFromHistory === true,
+        gridCells: cells,
+        winnerIdx,
+        messageId: msg.messageId,
+      })
+      prevRole = ''
+      continue
+    }
+
+    const usageRouterDecision = routerDecisionFromUsage(msg)
+    if (usageRouterDecision) {
+      const cells = routerDecisionCells(usageRouterDecision)
+      const winnerIdx = routerWinnerCellIndex(cells, usageRouterDecision.tier)
+      result.push({
+        id: `router-usage-${msg.messageId || i}`,
+        role: 'router',
+        displayRole: 'router',
+        roleLabel: 'Router',
+        text: '',
+        timeStr: msg.ts ? relTime(msg.ts) : '',
+        showHeader: false,
+        isRouterStrip: true,
+        routerState: routerDecisionState(usageRouterDecision),
+        routerSource: usageRouterDecision.source || 'none',
+        routerObserve: usageRouterDecision.routing_applied === false,
+        routerStatic: msg.restoredFromHistory === true,
+        gridCells: cells,
+        winnerIdx,
+        messageId: `${msg.messageId || i}-router`,
+      })
       prevRole = ''
     }
 
@@ -830,6 +1017,9 @@ const renderedMessages = computed((): RenderedMessage[] => {
       }
     }
 
+    const ownerKey = msg.messageId || `${msg.role}-${i}`
+    const toolCalls = normalizeToolCalls(msg.tool_calls)
+    const timelineItems = normalizeMessageTimeline(msg, ownerKey)
     result.push({
       id: `${msg.role}-${i}`,
       role: msg.role,
@@ -841,7 +1031,8 @@ const renderedMessages = computed((): RenderedMessage[] => {
       messageId: msg.messageId,
       hasAttachments: !!msg.attachments?.length,
       attachments: msg.attachments,
-      toolCalls: msg.tool_calls,
+      toolCalls,
+      timelineItems,
       artifacts: msg.artifacts,
       meta,
       interrupted: msg.interrupted,
@@ -878,19 +1069,392 @@ function dayKey(ts: string | number | null): string {
   return d.toISOString().slice(0, 10)
 }
 
-function dayLabel(isoDay: string): string {
-  if (!isoDay) return ''
-  const today = new Date().toISOString().slice(0, 10)
-  const yester = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
-  if (isoDay === today) return 'Today'
-  if (isoDay === yester) return 'Yesterday'
-  const d = new Date(isoDay + 'T12:00:00')
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-}
-
 function truncate(s: string, max = 200): string {
   if (!s || s.length <= max) return s || ''
   return s.slice(0, max) + '…'
+}
+
+function normalizeRouterDecision(raw: any): any | null {
+  if (!raw || typeof raw !== 'object') return null
+  const tier = String(raw.tier || raw.routed_tier || '').trim()
+  if (!tier) return null
+  return {
+    ...raw,
+    tier,
+    model: raw.model || raw.routed_model || '',
+    baseline_model: raw.baseline_model || raw.baselineModel || '',
+  }
+}
+
+function routerDecisionFromUsage(msg: Message): any | null {
+  const usage = msg.usage || msg.turn_usage
+  if (!usage || usage.routing_source === 'none') return null
+  const tier = typeof usage.routed_tier === 'string' ? usage.routed_tier : ''
+  if (!tier) return null
+  return normalizeRouterDecision({
+    tier,
+    model: usage.routed_model || usage.model || msg.model || '',
+    source: usage.routing_source || 'none',
+    confidence: typeof usage.routing_confidence === 'number' ? usage.routing_confidence : 0,
+    fallback: usage.routing_source === 'fallback',
+    routing_applied: usage.routing_applied !== false,
+    rollout_phase: usage.rollout_phase || 'full',
+  })
+}
+
+function routerDecisionState(decision: any): string {
+  if (decision.routing_applied === false) return 'observe'
+  if (decision.fallback) return 'fallback'
+  return 'settled'
+}
+
+function shortModelName(model: string): string {
+  const raw = String(model || '').trim()
+  if (!raw) return ''
+  const last = raw.includes('/') ? raw.split('/').pop() || raw : raw
+  return last.replace(/^claude-/, '').replace(/^gpt-/, 'gpt-')
+}
+
+function routerFxStripProvider(name: string): string {
+  const raw = String(name || '').trim()
+  if (!raw) return ''
+  const idx = raw.lastIndexOf('/')
+  return idx >= 0 ? raw.slice(idx + 1) : raw
+}
+
+function routerFxHashSeed(key: string): number {
+  let h = 0x811c9dc5
+  const s = String(key || '')
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return h >>> 0
+}
+
+function routerFxMulberry32(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6D2B79F5) >>> 0
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function routerFxShuffle<T>(items: T[], seedKey: string): T[] {
+  const rng = routerFxMulberry32(routerFxHashSeed(seedKey))
+  const arr = items.slice()
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1))
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr
+}
+
+function routerFxSortTiers(list: string[]): string[] {
+  return list.slice().sort((a, b) => {
+    const am = /^t(\d+)$/.exec(a)
+    const bm = /^t(\d+)$/.exec(b)
+    if (am && bm) return parseInt(am[1], 10) - parseInt(bm[1], 10)
+    if (am) return -1
+    if (bm) return 1
+    return a.localeCompare(b)
+  })
+}
+
+function routerDecisionCells(decision: any): RouterCell[] {
+  const winnerTier = String(decision.tier || '').toLowerCase()
+  const configuredTiers = routerFxSlotList.value.length ? routerFxSlotList.value.slice() : []
+  if (winnerTier && !configuredTiers.includes(winnerTier)) configuredTiers.push(winnerTier)
+  const sourceTiers = configuredTiers.length ? configuredTiers : (winnerTier ? [winnerTier] : [])
+  const realByModel = new Map<string, RouterCell>()
+
+  for (const tier of sourceTiers) {
+    const model = routerFxModels.value[tier] || (tier === winnerTier ? String(decision.model || '') : '')
+    if (!model && tier !== winnerTier) continue
+    const key = model || `winner:${tier}`
+    const existing = realByModel.get(key)
+    if (existing) {
+      existing.tiers = [...(existing.tiers || []), tier]
+      continue
+    }
+    realByModel.set(key, {
+      kind: 'real',
+      tier,
+      tiers: [tier],
+      displayName: shortModelName(routerFxStripProvider(model)) || 'selected model',
+    })
+  }
+
+  const realCells = Array.from(realByModel.values())
+  const realNames = new Set(realCells.map(cell => cell.displayName).filter(Boolean))
+  const decoys: RouterCell[] = []
+  for (const name of ROUTER_FX_DECOY_POOL) {
+    if (realCells.length + decoys.length >= ROUTER_FX_GRID_CELLS) break
+    if (realNames.has(name)) continue
+    decoys.push({ kind: 'decoy', displayName: name })
+  }
+  while (realCells.length + decoys.length < ROUTER_FX_GRID_CELLS) {
+    decoys.push({ kind: 'decoy', displayName: '-' })
+  }
+  const seedKey = `${sessionKey.value}:${decision.tier || ''}:${decision.model || ''}:${decision.messageId || ''}`
+  return routerFxShuffle([...realCells, ...decoys], seedKey)
+}
+
+function routerWinnerCellIndex(cells: RouterCell[], tier: string): number {
+  const norm = String(tier || '').toLowerCase()
+  return cells.findIndex(cell => cell.kind === 'real' && (cell.tiers || []).includes(norm))
+}
+
+function routerSelectorStyle(msg: RenderedMessage): Record<string, string> {
+  const idx = Math.max(0, Number(msg.winnerIdx ?? 0))
+  const col = idx % ROUTER_FX_GRID_COLS
+  const row = Math.floor(idx / ROUTER_FX_GRID_COLS)
+  const lefts = [
+    '8px',
+    'calc(((100% - 28px) / 4) + 12px)',
+    'calc(((100% - 28px) / 2) + 16px)',
+    'calc(((100% - 28px) * 3 / 4) + 20px)',
+  ]
+  return {
+    '--router-left': lefts[col] || '8px',
+    '--router-top': `${8 + row * 34}px`,
+  }
+}
+
+function routerBurstStyle(msg: RenderedMessage): Record<string, string> {
+  const idx = Math.max(0, Number(msg.winnerIdx ?? 0))
+  const col = idx % ROUTER_FX_GRID_COLS
+  const row = Math.floor(idx / ROUTER_FX_GRID_COLS)
+  const lefts = [
+    'calc(((100% - 28px) / 8) + 8px)',
+    'calc(((100% - 28px) * 3 / 8) + 12px)',
+    'calc(((100% - 28px) * 5 / 8) + 16px)',
+    'calc(((100% - 28px) * 7 / 8) + 20px)',
+  ]
+  return {
+    '--router-burst-left': lefts[col] || 'calc(12.5% + 4.5px)',
+    '--router-burst-top': `${23 + row * 34}px`,
+  }
+}
+
+function normalizeToolCalls(raw: any[] | undefined): any[] {
+  if (!raw || !Array.isArray(raw)) return []
+  const merged: any[] = []
+  const byId = new Map<string, any>()
+
+  raw.forEach((tc: any, index: number) => {
+    const name = normalizeToolName(tc)
+    if (!name) return
+    if (isInternalToolName(name)) return
+    const input = normalizeToolInputText(tc)
+    const result = tc.result || tc.content || tc.output || ''
+    const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+    const isError = !!(tc.is_error || tc.isError || tc.error || (tc.execution_status && ['error', 'timeout', 'cancelled'].includes(tc.execution_status.status)))
+    const toolId = tc.tool_use_id || tc.toolId || tc.id || `${name}:${index}`
+    let item = byId.get(toolId)
+    if (!item) {
+      item = {
+        toolId,
+        name,
+        displayName: toolDisplayName(name, input),
+        groupId: tc.groupId || tc.group_id,
+        inputRaw: input,
+        inputPreview: '',
+        isRunning: false,
+        status: '' as '' | 'success' | 'error',
+        isError: false,
+        result: '',
+        resultPreview: '',
+        isOpen: false,
+      }
+      byId.set(toolId, item)
+      merged.push(item)
+    }
+    if (!item.inputPreview && input) {
+      item.inputRaw = input
+      item.inputPreview = truncate(input, 200)
+      item.displayName = toolDisplayName(item.name, input)
+    }
+    if (resultStr) {
+      item.result = resultStr
+      item.resultPreview = truncate(resultStr, 200)
+      item.status = isError ? 'error' : 'success'
+    }
+    if (isError) {
+      item.isError = true
+      item.status = 'error'
+    }
+  })
+
+  return merged.map((tc: any) => ({
+    toolId: tc.toolId,
+    name: tc.name,
+    displayName: tc.displayName,
+    groupId: tc.groupId,
+    inputRaw: tc.inputRaw,
+    inputPreview: tc.inputPreview,
+    isRunning: tc.isRunning,
+    status: tc.status,
+    isError: tc.isError,
+    result: tc.result,
+    resultPreview: tc.resultPreview,
+    isOpen: false,
+  }))
+}
+
+function normalizeMessageTimeline(msg: Message, ownerKey: string): StreamTimelineItem[] {
+  if (msg.role !== 'assistant') return []
+  const explicitTimeline = Array.isArray(msg.timeline) ? msg.timeline : []
+  if (explicitTimeline.length) {
+    const calls = normalizeToolCalls(msg.tool_calls)
+    return timelineFromSegments(explicitTimeline, calls, ownerKey)
+  }
+  const rawSegments = Array.isArray(msg.tool_calls) ? msg.tool_calls : []
+  const hasPersistedTimeline = rawSegments.some((seg: any) => ['text', 'tool_use', 'tool_result'].includes(String(seg?.type || '')))
+  if (!hasPersistedTimeline) return []
+  return timelineFromPersistedSegments(rawSegments, ownerKey)
+}
+
+function timelineFromSegments(segments: any[], calls: StreamToolCall[], ownerKey: string): StreamTimelineItem[] {
+  const groupsById = new Map(toolCallGroups(calls, ownerKey).map(group => [group.groupId, group]))
+  return segments.flatMap((seg: any, idx: number): StreamTimelineItem[] => {
+    if (seg?.type === 'text') {
+      const raw = String(seg.raw ?? seg.text ?? '')
+      return raw ? [{ type: 'text', key: `${ownerKey}:timeline:text:${idx}`, html: renderMarkdown(raw) }] : []
+    }
+    if (seg?.type === 'tool-group') {
+      const groupId = String(seg.groupId || seg.group_id || '')
+      const group = groupId ? groupsById.get(groupId) : null
+      return group ? [{ type: 'tool-group', key: groupId, group }] : []
+    }
+    return []
+  })
+}
+
+function timelineFromPersistedSegments(segments: any[], ownerKey: string): StreamTimelineItem[] {
+  const items: StreamTimelineItem[] = []
+  const callsById = new Map<string, StreamToolCall>()
+  let groupSeq = 0
+
+  const appendToolItem = (segment: any, index: number): StreamToolCall | null => {
+    const name = normalizeToolName(segment)
+    if (!name || isInternalToolName(name)) return null
+    const toolId = segment.tool_use_id || segment.toolId || segment.id || `${name}:${index}`
+    let call = callsById.get(toolId)
+    if (!call) {
+      const operationKey = toolOperationKey(name)
+      const last = items[items.length - 1]
+      let group = last?.type === 'tool-group' && last.group.operationKey === operationKey
+        ? last.group
+        : null
+      if (!group) {
+        group = {
+          groupId: `${ownerKey}:timeline:tool-group:${operationKey}:${groupSeq++}`,
+          operationKey,
+          label: toolActionLabel(name),
+          iconName: toolIconName(name),
+          calls: [],
+          secondary: '',
+          isRunning: false,
+          isError: false,
+          status: '',
+        }
+        items.push({ type: 'tool-group', key: group.groupId, group })
+      }
+      const input = normalizeToolInputText(segment)
+      call = {
+        toolId,
+        name,
+        displayName: toolDisplayName(name, input),
+        groupId: group.groupId,
+        inputRaw: input,
+        inputPreview: truncate(input, 200),
+        isRunning: false,
+        status: '',
+        isError: false,
+        result: '',
+        resultPreview: '',
+        isOpen: false,
+        renderKey: `${ownerKey}:tool:${toolId}:${group.calls.length}`,
+      } as ToolCallRenderItem
+      group.calls.push(call as ToolCallRenderItem)
+      callsById.set(toolId, call)
+    }
+    return call
+  }
+
+  segments.forEach((segment: any, index: number) => {
+    const type = String(segment?.type || '')
+    if (type === 'text') {
+      const raw = String(segment.text || segment.raw || '')
+      if (raw) items.push({ type: 'text', key: `${ownerKey}:timeline:text:${index}`, html: renderMarkdown(raw) })
+      return
+    }
+    if (type === 'tool_use') {
+      appendToolItem(segment, index)
+      return
+    }
+    if (type === 'tool_result') {
+      const call = appendToolItem(segment, index)
+      if (!call) return
+      const result = segment.result || segment.content || segment.output || ''
+      const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+      const input = normalizeToolInputText(segment)
+      if (input && !call.inputPreview) {
+        call.inputRaw = input
+        call.inputPreview = truncate(input, 200)
+        call.displayName = toolDisplayName(call.name, input)
+      }
+      call.isRunning = false
+      call.isError = toolResultIsError(segment)
+      call.status = call.isError ? 'error' : 'success'
+      call.result = resultStr
+      call.resultPreview = truncate(resultStr, 200)
+    }
+  })
+
+  for (const item of items) {
+    if (item.type !== 'tool-group') continue
+    item.group.isRunning = item.group.calls.some(tc => tc.isRunning)
+    item.group.isError = item.group.calls.some(tc => tc.isError || tc.status === 'error')
+    item.group.status = item.group.isError ? 'error' : (item.group.calls.every(tc => tc.status === 'success') ? 'success' : '')
+    item.group.secondary = item.group.calls.length === 1
+      ? toolSecondaryText(item.group.calls[0])
+      : summarizeToolGroup(item.group.calls)
+  }
+
+  return items
+}
+
+function normalizeToolName(raw: any): string {
+  const value = raw?.name ?? raw?.tool_name ?? raw?.toolName ?? raw?.function?.name
+  const name = typeof value === 'string' ? value.trim() : ''
+  return name && name !== 'tool' ? name : ''
+}
+
+function isInternalToolName(name: string): boolean {
+  return name === 'router_control'
+}
+
+function normalizeToolInputText(raw: any): string {
+  const value = raw?.input ?? raw?.arguments ?? ''
+  if (value == null) return ''
+  if (typeof value === 'string') {
+    const text = value.trim()
+    return isEmptyToolPreview(text) ? '' : text
+  }
+  if (Array.isArray(value) && value.length === 0) return ''
+  if (typeof value === 'object' && Object.keys(value).length === 0) return ''
+  const text = JSON.stringify(value, null, 2)
+  return isEmptyToolPreview(text) ? '' : text
+}
+
+function isEmptyToolPreview(text: string): boolean {
+  const value = String(text || '').trim()
+  return !value || value === '""' || value === "''" || value === '{}' || value === '[]'
 }
 
 function normalizeAgentId(agentId: string): string {
@@ -951,31 +1515,6 @@ function sessionRunStatus(source: any): { status: string; label: string; task: a
   if (active && (activeStatus === 'queued' || activeStatus === 'running')) status = activeStatus
   const task = active || last || null
   return { status, label: runStatusLabelText(status), task }
-}
-
-function itemKey(item: any): string {
-  return typeof item === 'string' ? item : (item.key || item.session || item.sessionKey || '')
-}
-
-function classifyKey(item: any): string | null {
-  const key = itemKey(item)
-  if (!key || key === 'unknown') return null
-  const channelKind = item?.channel_kind || item?.channelKind || item?.channel || ''
-  const sourceKind = item?.source_kind || item?.sourceKind || ''
-  if (channelKind === 'webchat' || sourceKind === 'webui') return 'Web chat'
-  if (channelKind === 'cli' || sourceKind === 'cli') return 'CLI'
-  if (key.startsWith('agent:')) {
-    if (key.includes(':webchat')) return 'Web chat'
-    if (key.includes(':cli:') || key.includes(':standalone:')) return 'CLI'
-    if (key.includes(':subagent')) return 'Sub-agents'
-    return 'Agents'
-  }
-  if (key.startsWith('sess-')) return 'Sessions'
-  return 'Other'
-}
-
-function toolEmoji(name: string): string {
-  return TOOL_EMOJI[name] || '⚡'
 }
 
 function isAllowedAttachmentMime(mime: string): boolean {
@@ -1121,6 +1660,30 @@ function artifactCategoryLabel(artifact: any): string {
   }
 }
 
+function artifactIconName(artifact: any): IconName {
+  const cat = artifactCategory(artifact)
+  if (cat === 'visual') return 'image'
+  if (cat === 'data') return 'table'
+  if (cat === 'code') return 'fileCode'
+  return 'fileText'
+}
+
+function artifactFileTitle(artifact: any): string {
+  return artifactName(artifact)
+}
+
+function artifactFileSubtitle(artifact: any): string {
+  const label = artifactCategoryLabel(artifact)
+  const meta = artifactMeta(artifact)
+  const action = artifactActionLabel(artifact) === '预览' ? '预览文件' : '下载文件'
+  return [action, label.toUpperCase(), meta].filter(Boolean).join(' · ')
+}
+
+function artifactActionLabel(artifact: any): string {
+  const cat = artifactCategory(artifact)
+  return cat === 'visual' || cat === 'document' ? '预览' : '下载'
+}
+
 function artifactMeta(artifact: any): string {
   const mime = artifact?.mime ? String(artifact.mime) : ''
   const size = artifact?.size ? `${Math.max(1, Math.round(Number(artifact.size) / 1024))} KB` : ''
@@ -1177,8 +1740,30 @@ function persistSession(key: string) {
     const url = new URL(window.location.href)
     url.searchParams.set('session', sessionKey.value)
     url.searchParams.delete('agent')
+    url.searchParams.delete('new')
+    url.searchParams.delete('newChat')
     history.replaceState(null, '', url)
   } catch {}
+}
+
+function hasNewChatRouteSignal(): boolean {
+  if (route.query.newChat === '1' || route.query.new === '1') return true
+  try {
+    const params = new URL(window.location.href).searchParams
+    return params.get('newChat') === '1' || params.get('new') === '1'
+  } catch {
+    return false
+  }
+}
+
+function replaceRouteWithCurrentSession() {
+  if (!sessionKey.value) return
+  router.replace({ path: '/chat', query: { session: sessionKey.value } }).catch(() => {})
+}
+
+function consumeNewChatRouteSignal() {
+  newSession()
+  replaceRouteWithCurrentSession()
 }
 
 function readSessionFromUrl(): string {
@@ -1248,47 +1833,38 @@ async function syncElevatedMode(mode: string) {
   }
 }
 
-function toggleElevatedMode() {
-  if (elevatedUnavailable.value) {
-    console.warn('Bypass requires a local owner session (loopback only).')
-    return
-  }
-  if (effectiveElevatedMode.value) {
-    setElevatedMode('', { toast: true, sync: true })
-    return
-  }
-  const ok = window.confirm('Enable approval bypass for this browser session?')
-  if (ok) setElevatedMode('bypass', { toast: true, sync: true })
-}
-
-async function onRouterToggle() {
-  const enabled = routerEnabled.value
-  try {
-    await rpc.waitForConnection()
-    await rpc.call('config.patch.safe', {
-      patches: {
-        'squilla_router.enabled': enabled,
-        'squilla_router.rollout_phase': enabled ? 'full' : 'observe',
-      },
-    })
-    toolbarState.value.router = enabled
-    console.info('Squilla Router:', enabled ? 'ON' : 'OFF')
-  } catch (e: any) {
-    routerEnabled.value = !enabled
-    console.warn('Failed:', e.message)
-  }
-}
-
 /* ── Session switching ─────────────────────────────────────────────── */
+
+function resetLiveTurnState() {
+  hideThinkingIndicator()
+  clearStreamActivity()
+  clearStreamIdleTimer()
+  streamIdlePausedForApproval.value = false
+  isStreaming.value = false
+  aborted.value = false
+  streamRaw.value = ''
+  streamSegments.value = []
+  streamArtifacts.value = []
+  streamToolCalls.value = []
+  streamBubble.value = false
+  pendingRouterDecision.value = null
+}
+
+function resetSessionRuntimeState() {
+  currentEpoch.value = 0
+  lastStreamSeq.value = 0
+  activeTaskGroups.value.clear()
+  resetLiveTurnState()
+}
 
 function switchToSession(key: string) {
   if (!key || key === sessionKey.value) {
-    sessionPopoverOpen.value = false
     return
   }
   unsubscribeSession()
   sessionKey.value = canonicalSessionKey(key)
   persistSession(key)
+  resetSessionRuntimeState()
   messages.value = []
   pendingSessionIntent.value = null
   clearPendingDrainAfterTerminalTimer()
@@ -1306,13 +1882,6 @@ function switchToSession(key: string) {
   loadCurrentSessionUsage()
   subscribeSession()
   loadHistory()
-  sessionPopoverOpen.value = false
-}
-
-function switchToTypedSession() {
-  const key = sessionSearch.value.trim()
-  if (!key) return
-  switchToSession(key)
 }
 
 function newSession() {
@@ -1320,6 +1889,7 @@ function newSession() {
   const key = genKey()
   sessionKey.value = key
   persistSession(key)
+  resetSessionRuntimeState()
   clearPendingDrainAfterTerminalTimer()
   setCompactInFlight(false)
   hideCompactStatus()
@@ -1334,36 +1904,6 @@ function newSession() {
   resetSavingsPopupCooldown()
   subscribeSession()
   console.info('New chat session:', key)
-}
-
-async function toggleSessionPopover() {
-  if (sessionPopoverOpen.value) {
-    sessionPopoverOpen.value = false
-    return
-  }
-  sessionPopoverOpen.value = true
-  sessionSearch.value = ''
-  sessionListError.value = false
-
-  nextTick(() => {
-    sessionSearchRef.value?.focus()
-  })
-
-  try {
-    const resp = await fetch('/api/sessions')
-    if (resp.ok) {
-      const data = await resp.json()
-      sessionsList.value = (data.sessions || data.keys || []).filter((s: any) => !!(typeof s === 'string' ? s : (s.key || s.session || s.sessionKey)))
-    } else {
-      sessionListError.value = true
-    }
-  } catch {
-    sessionListError.value = true
-  }
-}
-
-function toggleToolbarPopover() {
-  toolbarPopoverOpen.value = !toolbarPopoverOpen.value
 }
 
 function copySessionKey() {
@@ -1384,10 +1924,14 @@ function copySessionKey() {
 
 async function subscribeSession() {
   if (!sessionKey.value) return
+  const key = sessionKey.value
+  const sinceStreamSeq = lastStreamSeq.value
   try {
     await rpc.waitForConnection()
-    const params: any = { key: sessionKey.value, since_stream_seq: lastStreamSeq.value }
+    if (key !== sessionKey.value) return
+    const params: any = { key, since_stream_seq: sinceStreamSeq }
     const res = await rpc.call('sessions.messages.subscribe', params) as any
+    if (key !== sessionKey.value) return
     if (res && res.subscribed === false) throw new Error('No subscription manager available')
     applySessionRunState(res)
     if (res && res.replay_complete === false) {
@@ -1479,6 +2023,24 @@ function syncTerminalSessionChange(payload: any = {}) {
 
 /* ── Streaming ─────────────────────────────────────────────────────── */
 
+function setStreamActivity(label: string) {
+  streamActivity.value = { label, startedAt: Date.now() }
+  streamActivityTick.value++
+  if (!streamActivityTimer) {
+    streamActivityTimer = setInterval(() => {
+      streamActivityTick.value++
+    }, 1000)
+  }
+}
+
+function clearStreamActivity() {
+  if (streamActivityTimer) {
+    clearInterval(streamActivityTimer)
+    streamActivityTimer = null
+  }
+  streamActivityTick.value++
+}
+
 function startStreaming() {
   isStreaming.value = true
   applySessionRunState({ run_status: 'running', active_task: { status: 'running' } })
@@ -1486,8 +2048,13 @@ function startStreaming() {
   streamSegments.value = []
   streamArtifacts.value = []
   streamToolCalls.value = []
+  openToolGroups.value = new Set()
+  openToolItems.value = new Set()
+  streamToolGroupSeq = 0
   streamBubble.value = true
   streamShowHeader.value = lastHeaderRole.value !== 'assistant'
+  pendingRouterDecision.value = null
+  setStreamActivity('正在发送')
   autoScroll.value = true
   resetStreamIdleTimer()
 }
@@ -1495,6 +2062,7 @@ function startStreaming() {
 function endStreaming(opts?: { reason?: string }) {
   const wasAborted = opts?.reason === 'aborted'
   hideThinkingIndicator()
+  clearStreamActivity()
   clearStreamIdleTimer()
   streamIdlePausedForApproval.value = false
 
@@ -1524,12 +2092,26 @@ function endStreaming(opts?: { reason?: string }) {
       return
     }
 
+    if (!cleanedText && streamArtifacts.value.length === 0 && streamToolCalls.value.length === 0) {
+      streamBubble.value = false
+      isStreaming.value = false
+      streamRaw.value = ''
+      streamSegments.value = []
+      streamToolCalls.value = []
+      streamArtifacts.value = []
+      return
+    }
+
     // Record the message
+    const historyToolCalls = streamToolCalls.value.map(streamToolCallToHistoryCall)
+    const historyTimeline = streamTimelineSnapshot(cleanedText)
     messages.value.push({
       role: 'assistant',
       text: cleanedText,
       ts: new Date().toISOString(),
       artifacts: streamArtifacts.value.slice(),
+      tool_calls: historyToolCalls,
+      timeline: historyTimeline,
       interrupted: wasAborted || undefined,
     })
   }
@@ -1542,23 +2124,57 @@ function endStreaming(opts?: { reason?: string }) {
   streamArtifacts.value = []
 }
 
+function resetStreamForRouterReplay() {
+  streamRaw.value = ''
+  streamSegments.value = []
+  streamArtifacts.value = []
+  streamToolCalls.value = []
+  streamToolGroupSeq = 0
+  streamBubble.value = true
+  streamShowHeader.value = lastHeaderRole.value !== 'assistant'
+  setStreamActivity('正在切换模型')
+  renderDirty = false
+  if (renderRafId) {
+    clearTimeout(renderRafId)
+    renderRafId = null
+  }
+}
+
+function removeTrailingRouterStrips() {
+  while (messages.value[messages.value.length - 1]?.role === 'router') {
+    messages.value.pop()
+  }
+}
+
+function handleRouterControlReplay() {
+  if (!isStreaming.value) startStreaming()
+  pendingRouterDecision.value = null
+  resetStreamForRouterReplay()
+  removeTrailingRouterStrips()
+  resetStreamIdleTimer()
+  scrollToBottom()
+}
+
 function appendDelta(text: string) {
   if (aborted.value) return
   if (!isStreaming.value) startStreaming()
+  clearStreamActivity()
   streamRaw.value += text
 
   // Update or create text segment
-  if (streamSegments.value.length === 0 || streamSegments.value[streamSegments.value.length - 1].type !== 'text') {
-    streamSegments.value.push({ type: 'text', raw: text, html: '' })
+  const lastSegment = streamSegments.value[streamSegments.value.length - 1]
+  if (!lastSegment || lastSegment.type !== 'text') {
+    streamSegments.value.push({ type: 'text', raw: text, html: '', dirty: true })
   } else {
-    const seg = streamSegments.value[streamSegments.value.length - 1]
-    seg.raw += text
+    const seg = lastSegment
+    seg.raw = (seg.raw || '') + text
+    seg.dirty = true
   }
 
-  // Debounced render
+  // Debounced render — throttle to every 80ms to avoid re-parsing markdown on every token
   renderDirty = true
   if (!renderRafId) {
-    renderRafId = requestAnimationFrame(flushRender)
+    renderRafId = setTimeout(flushRender, 80)
   }
 }
 
@@ -1567,8 +2183,9 @@ function flushRender() {
   if (!renderDirty) return
 
   for (const seg of streamSegments.value) {
-    if (seg.type === 'text') {
-      seg.html = renderMarkdown(seg.raw)
+    if (seg.type === 'text' && seg.dirty) {
+      seg.html = renderMarkdown(seg.raw || '')
+      seg.dirty = false
     }
   }
 
@@ -1577,6 +2194,10 @@ function flushRender() {
 }
 
 function showThinkingIndicator() {
+  if (streamBubble.value) {
+    if (!streamHasVisibleOutput.value) setStreamActivity('正在组织下一步')
+    return
+  }
   if (thinkingVisible.value || thinkingDelayTimer) return
   thinkingStartTime = Date.now()
   thinkingDelayTimer = setTimeout(() => {
@@ -1592,7 +2213,7 @@ function updateThinkingText() {
   const elapsed = Date.now() - thinkingStartTime
   const seconds = Math.floor(elapsed / 1000)
   const verb = SQUILLA_VERBS[Math.floor(elapsed / SQUILLA_DWELL_MS) % SQUILLA_VERBS.length]
-  thinkingText.value = `${verb} (${seconds}s)`
+  thinkingText.value = `${verb} · ${seconds}s`
   if (seconds >= THINKING_TTL_MS / 1000) {
     hideThinkingIndicator()
     messages.value.push({ role: 'system', text: 'Still waiting for agent response...', ts: new Date().toISOString() })
@@ -1629,6 +2250,45 @@ function scrollToBottom() {
   })
 }
 
+function appendRouterDecision(payload: any, decision = normalizeRouterDecision(payload)) {
+  if (!decision) return
+  const messageId = payload?.stream_seq
+    ? `router-${sessionKey.value}-${payload.stream_seq}`
+    : `router-${sessionKey.value}-${Date.now()}`
+  const last = messages.value[messages.value.length - 1]
+  if (last?.messageId === messageId) return
+  messages.value.push({
+    role: 'router',
+    text: '',
+    ts: new Date().toISOString(),
+    routerDecision: decision,
+    provenanceKind: 'router_decision',
+    messageId,
+  })
+  scrollToBottom()
+}
+
+function queueRouterDecision(payload: any) {
+  const decision = normalizeRouterDecision(payload)
+  if (!decision) return
+  if (isStreaming.value && streamBubble.value && !streamHasVisibleOutput.value) {
+    const model = shortModelName(decision.model || decision.routed_model || '')
+    setStreamActivity(model ? `模型路由完成 · ${model}` : '模型路由完成')
+  }
+  pendingRouterDecision.value = { payload, decision }
+}
+
+function flushPendingRouterDecision() {
+  const pending = pendingRouterDecision.value
+  if (!pending) return
+  pendingRouterDecision.value = null
+  appendRouterDecision(pending.payload, pending.decision)
+}
+
+function clearPendingRouterDecision() {
+  pendingRouterDecision.value = null
+}
+
 function onThreadScroll() {
   if (!threadRef.value) return
   const gap = threadRef.value.scrollHeight - threadRef.value.scrollTop - threadRef.value.clientHeight
@@ -1637,44 +2297,173 @@ function onThreadScroll() {
 
 /* ── Tool calls ────────────────────────────────────────────────────── */
 
-function appendToolCall(payload: any) {
-  if (!payload) return
-  const name = payload.name || payload.tool_name || 'tool'
-  const input = typeof payload.input === 'string' ? payload.input : JSON.stringify(payload.input || payload.arguments || '', null, 2)
-  const toolId = payload.tool_use_id || ''
+function toolCallGroups(calls: StreamToolCall[] | undefined, ownerKey: string): ToolCallGroup[] {
+  if (!calls?.length) return []
+  const groups: ToolCallGroup[] = []
 
-  // Check for duplicate
-  if (streamToolCalls.value.find(tc => tc.toolId === toolId)) return
+  calls.forEach((call, index) => {
+    const operationKey = toolOperationKey(call.name)
+    const renderKey = `${ownerKey}:tool:${call.toolId || call.name || index}:${index}`
+    const last = groups[groups.length - 1]
+    if (!last || last.operationKey !== operationKey || (call.groupId && last.groupId !== call.groupId)) {
+      groups.push({
+        groupId: call.groupId || `${ownerKey}:tool-group:${operationKey}:${groups.length}`,
+        operationKey,
+        label: toolActionLabel(call.name),
+        iconName: toolIconName(call.name),
+        calls: [],
+        secondary: '',
+        isRunning: false,
+        isError: false,
+        status: '',
+      })
+    }
 
-  streamToolCalls.value.push({
+    groups[groups.length - 1].calls.push({ ...call, renderKey })
+  })
+
+  groups.forEach(group => {
+    group.isRunning = group.calls.some(tc => tc.isRunning)
+    group.isError = group.calls.some(tc => tc.isError || tc.status === 'error')
+    group.status = group.isError ? 'error' : (group.calls.every(tc => tc.status === 'success') ? 'success' : '')
+    group.secondary = group.calls.length === 1
+      ? toolSecondaryText(group.calls[0])
+      : summarizeToolGroup(group.calls)
+  })
+
+  return groups
+}
+
+function summarizeToolGroup(calls: StreamToolCall[]): string {
+  const running = calls.filter(tc => tc.isRunning).length
+  const done = calls.filter(tc => tc.status === 'success').length
+  const failed = calls.filter(tc => tc.status === 'error').length
+  const sample = calls.map(tc => toolSecondaryText(tc)).find(Boolean)
+  const parts = []
+  if (running) parts.push(`${running} 个运行中`)
+  if (done) parts.push(`${done} 个完成`)
+  if (failed) parts.push(`${failed} 个失败`)
+  if (sample) parts.push(sample)
+  return parts.join(' · ')
+}
+
+function isToolGroupOpen(groupId: string): boolean {
+  return openToolGroups.value.has(groupId)
+}
+
+function toggleToolGroup(groupId: string) {
+  const next = new Set(openToolGroups.value)
+  next.has(groupId) ? next.delete(groupId) : next.add(groupId)
+  openToolGroups.value = next
+}
+
+function isToolItemOpen(itemId: string): boolean {
+  return openToolItems.value.has(itemId)
+}
+
+function toggleToolItem(itemId: string) {
+  const next = new Set(openToolItems.value)
+  next.has(itemId) ? next.delete(itemId) : next.add(itemId)
+  openToolItems.value = next
+}
+
+function ensureStreamToolCall(payload: any, options: { running: boolean }): StreamToolCall | null {
+  if (!payload) return null
+  const name = normalizeToolName(payload)
+  if (!name) return null
+  if (isInternalToolName(name)) return null
+  if (!isStreaming.value) startStreaming()
+  const input = normalizeToolInputText(payload)
+  const toolId = payload.tool_use_id || payload.toolUseId || payload.id || `${name}:${payload.stream_seq || Date.now()}`
+
+  const existing = streamToolCalls.value.find(tc => tc.toolId === toolId)
+  if (existing) {
+    if (input) {
+      existing.inputRaw = input
+      existing.inputPreview = truncate(input, 200)
+      existing.displayName = toolDisplayName(existing.name, input)
+    }
+    return existing
+  }
+
+  const operationKey = toolOperationKey(name)
+  const lastSegment = streamSegments.value[streamSegments.value.length - 1]
+  const groupId = lastSegment?.type === 'tool-group' && lastSegment.operationKey === operationKey && lastSegment.groupId
+    ? lastSegment.groupId
+    : `stream:tool-group:${operationKey}:${streamToolGroupSeq++}`
+
+  if (lastSegment?.type !== 'tool-group' || lastSegment.groupId !== groupId) {
+    streamSegments.value.push({ type: 'tool-group', groupId, operationKey })
+  }
+
+  const call: StreamToolCall = {
     toolId,
     name,
     displayName: toolDisplayName(name, input),
+    groupId,
+    inputRaw: input,
     inputPreview: truncate(input, 200),
-    isRunning: true,
+    isRunning: options.running,
     status: '',
     isError: false,
     result: '',
     resultPreview: '',
     isOpen: false,
-  })
-
-  // Add new text segment after tool
-  if (streamSegments.value.length > 0) {
-    streamSegments.value.push({ type: 'text', raw: '', html: '' })
   }
+  streamToolCalls.value.push(call)
+  return call
+}
 
+function appendToolCall(payload: any) {
+  const tc = ensureStreamToolCall(payload, { running: true })
+  if (!tc) return
+
+  clearStreamActivity()
+  scrollToBottom()
+}
+
+function appendToolDelta(payload: any) {
+  if (!payload || aborted.value) return
+  if (isStreaming.value && streamBubble.value && !streamHasVisibleOutput.value) {
+    setStreamActivity('正在接收工具参数')
+  }
+  const toolId = payload.tool_use_id || payload.toolUseId || payload.id || ''
+  const fragment = payload.json_fragment ?? payload.jsonFragment ?? payload.fragment ?? ''
+  const fragmentText = typeof fragment === 'string' ? fragment : String(fragment || '')
+  if (!toolId || !fragmentText) return
+
+  const existing = streamToolCalls.value.find(t => t.toolId === toolId)
+  const tc = existing || ensureStreamToolCall(payload, { running: true })
+  if (!tc) return
+  clearStreamActivity()
+
+  const nextInput = `${tc.inputRaw || ''}${fragmentText}`
+  tc.inputRaw = nextInput
+  if (!isEmptyToolPreview(nextInput)) {
+    tc.inputPreview = truncate(nextInput, 200)
+    tc.displayName = toolDisplayName(tc.name, nextInput)
+  }
   scrollToBottom()
 }
 
 function appendToolResult(payload: any) {
   if (!payload) return
+  const name = normalizeToolName(payload)
+  if (name && isInternalToolName(name)) return
+  if (!isStreaming.value) startStreaming()
   const raw = payload.result || payload.content || payload.output || ''
   const content = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2)
-  const toolId = payload.tool_use_id || ''
+  const toolId = payload.tool_use_id || payload.toolUseId || payload.id || ''
 
-  const tc = streamToolCalls.value.find(t => t.toolId === toolId)
+  const tc = streamToolCalls.value.find(t => t.toolId === toolId) || ensureStreamToolCall(payload, { running: false })
   if (tc) {
+    clearStreamActivity()
+    const input = normalizeToolInputText(payload)
+    if (input) {
+      tc.inputRaw = input
+      tc.inputPreview = truncate(input, 200)
+      tc.displayName = toolDisplayName(tc.name, input)
+    }
     tc.isRunning = false
     tc.status = toolResultIsError(payload) ? 'error' : 'success'
     tc.isError = toolResultIsError(payload)
@@ -1685,13 +2474,130 @@ function appendToolResult(payload: any) {
   scrollToBottom()
 }
 
+function streamToolCallToHistoryCall(tc: StreamToolCall): any {
+  return {
+    id: tc.toolId,
+    toolId: tc.toolId,
+    tool_use_id: tc.toolId,
+    name: tc.name,
+    tool_name: tc.name,
+    input: tc.inputRaw || tc.inputPreview,
+    groupId: tc.groupId,
+    result: tc.result,
+    is_error: tc.isError,
+    isError: tc.isError,
+    execution_status: tc.status ? { status: tc.status } : undefined,
+  }
+}
+
+function streamTimelineSnapshot(fallbackText = ''): any[] {
+  const segments = streamSegments.value
+    .map((seg) => {
+      if (seg.type === 'text') {
+        const raw = String(seg.raw || '')
+        return raw ? { type: 'text', raw } : null
+      }
+      if (seg.type === 'tool-group') {
+        return {
+          type: 'tool-group',
+          groupId: seg.groupId,
+          operationKey: seg.operationKey,
+        }
+      }
+      return null
+    })
+    .filter(Boolean) as any[]
+  if (segments.length === 0 && fallbackText) return [{ type: 'text', raw: fallbackText }]
+  return segments
+}
+
 function toolDisplayName(name: string, input: any): string {
   if (name === 'publish_artifact') {
     const inputObj = typeof input === 'string' ? (() => { try { return JSON.parse(input) } catch { return null } })() : input
     const target = inputObj?.name || inputObj?.path
     if (target) return `${name} - ${target.split(/[\\/]+/).filter(Boolean).pop() || target}`
   }
-  return name || 'tool'
+  return name
+}
+
+function toolIconName(name: string): IconName {
+  const n = String(name || '').toLowerCase()
+  if (n.includes('search') || n.includes('google') || n.includes('bing')) return 'search'
+  if (n.includes('fetch') || n.includes('http') || n.includes('curl') || n.includes('wget')) return 'monitor'
+  if (n.includes('python') || n === 'py' || n.includes('exec') || n.includes('bash') || n.includes('shell')) return 'config'
+  if (n.includes('write') || n.includes('edit') || n.includes('patch')) return 'edit'
+  if (n.includes('read') || n.includes('file') || n.includes('cat') || n.includes('list') || n === 'ls' || n.includes('glob') || n.includes('find')) return 'logs'
+  if (n.includes('artifact') || n.includes('download')) return 'download'
+  if (n.includes('memory')) return 'clock'
+  return 'gear'
+}
+
+function toolOperationKey(name: string): string {
+  const n = String(name || '').toLowerCase()
+  if (n.includes('web_search') || n === 'search' || n.includes('google') || n.includes('bing')) return 'web.search'
+  if (n.includes('web_fetch') || n.includes('http') || n.includes('fetch') || n.includes('curl') || n.includes('wget')) return 'web.read'
+  if (n.includes('python') || n === 'py') return 'code.python'
+  if (n.includes('bash') || n.includes('shell') || n.includes('exec')) return 'command.run'
+  if (n.includes('write')) return 'file.write'
+  if (n.includes('edit') || n.includes('patch')) return 'file.edit'
+  if (n.includes('read') || n.includes('cat') || n.includes('list') || n === 'ls' || n.includes('glob') || n.includes('find') || n.includes('file')) return 'file.inspect'
+  if (n.includes('publish_artifact') || n.includes('artifact')) return 'artifact.create'
+  if (n.includes('memory')) return 'memory.search'
+  return `tool.${n.replace(/[^a-z0-9]+/g, '.') || 'unknown'}`
+}
+
+function toolActionLabel(name: string): string {
+  const key = toolOperationKey(name)
+  if (key === 'web.search') return '搜索网页'
+  if (key === 'web.read') return '读取网页'
+  if (key === 'code.python') return '运行 Python 代码'
+  if (key === 'command.run') return '运行命令'
+  if (key === 'file.inspect') return '查看文件'
+  if (key === 'file.write') return '写入文件'
+  if (key === 'file.edit') return '修改文件'
+  if (key === 'artifact.create') return '生成文件'
+  if (key === 'memory.search') return '检索记忆'
+  return name.replace(/[_-]+/g, ' ')
+}
+
+function toolSecondaryText(tc: StreamToolCall): string {
+  const source = String(tc.inputPreview || tc.resultPreview || '').replace(/\s+/g, ' ').trim()
+  if (isEmptyToolPreview(source)) return ''
+  return truncate(source.replace(/^"|"$/g, ''), 86)
+}
+
+function toolStatusText(tc: StreamToolCall): string {
+  if (tc.isRunning) return '运行中'
+  if (tc.status === 'error') return '失败'
+  const count = toolResultCount(tc.result)
+  if (count !== null) return `${count} 个结果`
+  if (tc.status === 'success') return '完成'
+  return '等待'
+}
+
+function toolGroupStatusText(group: ToolCallGroup): string {
+  if (group.isRunning) return '运行中'
+  if (group.isError) return '失败'
+  const counts = group.calls.map(tc => toolResultCount(tc.result)).filter((n): n is number => n !== null)
+  if (counts.length && group.calls.length === 1) return `${counts[0]} 个结果`
+  if (counts.length) return `${counts.reduce((sum, n) => sum + n, 0)} 个结果`
+  if (group.status === 'success') return '完成'
+  return '等待'
+}
+
+function toolResultCount(raw: string): number | null {
+  const text = String(raw || '').trim()
+  if (!text) return null
+  const match = /(?:^|\D)(\d{1,4})\s*(?:results?|结果)(?:\D|$)/i.exec(text)
+  if (match) return Number(match[1])
+  try {
+    const parsed = JSON.parse(text)
+    if (Array.isArray(parsed)) return parsed.length
+    for (const key of ['results', 'items', 'data', 'matches']) {
+      if (Array.isArray(parsed?.[key])) return parsed[key].length
+    }
+  } catch {}
+  return null
 }
 
 function toolResultIsError(payload: any): boolean {
@@ -1702,13 +2608,13 @@ function toolResultIsError(payload: any): boolean {
   return !!(payload?.is_error || payload?.isError || payload?.error)
 }
 
-function showToolResultModal(content: string) {
-  // Simple modal via alert for now - can be replaced with a proper modal component
-  console.info('Tool result:', content)
+function showToolResultModal(content: string, title = 'Tool Result') {
+  toolResultModal.value = { open: true, title, content }
 }
 
 function appendArtifact(payload: any) {
   if (!payload) return
+  clearStreamActivity()
   streamArtifacts.value.push(payload)
   scrollToBottom()
 }
@@ -2058,13 +2964,13 @@ function selectSlashCmd(cmd: any, _args = '') {
     case '/reset':
       rpc.call('sessions.reset', { key: sessionKey.value })
         .then(() => {
+          resetSessionRuntimeState()
           messages.value = []
           clearPendingDrainAfterTerminalTimer()
           setCompactInFlight(false)
           hideCompactStatus()
           pendingQueue.value = []
           contextStatus.value = null
-          activeTaskGroups.value.clear()
           console.info('Session reset')
         })
         .catch((err: any) => console.warn('Reset failed:', err.message))
@@ -2125,9 +3031,12 @@ function scheduleHistorySync() {
 
 async function loadHistory() {
   if (!sessionKey.value) return
+  const key = sessionKey.value
   try {
     await rpc.waitForConnection()
-    const data = await rpc.call('chat.history', { sessionKey: sessionKey.value }) as any
+    if (key !== sessionKey.value) return
+    const data = await rpc.call('chat.history', { sessionKey: key }) as any
+    if (key !== sessionKey.value) return
     const msgs = data.messages || []
 
     if (msgs.length === 0) {
@@ -2141,8 +3050,10 @@ async function loadHistory() {
       role: msg.role,
       text: msg.role === 'user' ? stripTimePrefix(msg.text || '') : msg.text || '',
       ts: msg.timestamp || msg.ts || null,
+      routerDecision: msg.router_decision || msg.routerDecision || null,
       artifacts: msg.artifacts || [],
       tool_calls: msg.tool_calls || [],
+      timeline: msg.timeline || [],
       attachments: msg.attachments || [],
       provenanceKind: msg.provenance_kind || '',
       provenanceSourceSessionKey: msg.provenance_source_session_key || '',
@@ -2152,6 +3063,7 @@ async function loadHistory() {
       input: msg.input || msg.input_tokens || null,
       output: msg.output || msg.output_tokens || null,
       messageId: msg.message_id || msg.id || '',
+      restoredFromHistory: true,
     }))
 
     lastHeaderRole.value = ''
@@ -2161,30 +3073,6 @@ async function loadHistory() {
   } catch {
     // History endpoint may not exist yet
   }
-}
-
-/* ── Export ────────────────────────────────────────────────────────── */
-
-function exportMarkdown() {
-  if (messages.value.length === 0) {
-    console.warn('No messages to export')
-    return
-  }
-  let md = `# Chat Export -- ${sessionKey.value}\n\n`
-  md += `Exported: ${new Date().toISOString()}\n\n---\n\n`
-  messages.value.forEach((msg) => {
-    const role = msg.role === 'user' ? 'You' : msg.role === 'assistant' ? 'Assistant' : msg.role
-    const time = msg.ts ? ` _(${new Date(msg.ts).toLocaleString()})_` : ''
-    md += `### ${role}${time}\n\n${msg.text}\n\n---\n\n`
-  })
-
-  const blob = new Blob([md], { type: 'text/markdown' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = `chat-${sessionKey.value}.md`
-  a.click()
-  URL.revokeObjectURL(a.href)
-  console.info('Exported as Markdown')
 }
 
 /* ── Message actions ───────────────────────────────────────────────── */
@@ -2427,6 +3315,22 @@ async function loadFeatureToggles() {
     const routerOn = (cfg?.squilla_router?.enabled ?? false) && cfg?.squilla_router?.rollout_phase === 'full'
     routerEnabled.value = routerOn
     toolbarState.value.router = routerOn
+    const tiers = cfg?.squilla_router?.tiers
+    const tierKeys: string[] = []
+    const tierModels: Record<string, string> = {}
+    if (tiers && typeof tiers === 'object') {
+      Object.keys(tiers).forEach((tier) => {
+        if (!tier) return
+        const lower = String(tier).toLowerCase()
+        tierKeys.push(lower)
+        const model = tiers[tier]?.model
+        if (typeof model === 'string' && model.trim()) {
+          tierModels[lower] = model.trim()
+        }
+      })
+    }
+    routerFxSlotList.value = routerFxSortTiers(tierKeys)
+    routerFxModels.value = tierModels
     globalElevatedMode.value = normalizeElevatedMode(cfg?.permissions?.default_mode)
     toolbarState.value.bypass = isApprovalBypassMode(effectiveElevatedMode.value)
     await loadCurrentSessionUsage()
@@ -2442,6 +3346,7 @@ function isStaleEpoch(payload: any): boolean {
 }
 
 function acceptStreamSeq(payload: any): boolean {
+  if (!isCurrentSessionPayload(payload)) return false
   const seq = payload?.stream_seq
   if (typeof seq !== 'number' || !Number.isFinite(seq)) return true
   if (seq <= lastStreamSeq.value) return false
@@ -2506,7 +3411,6 @@ function onDocumentKeydown(e: KeyboardEvent) {
 
   // Close popovers first
   if (toolbarPopoverOpen.value) { toolbarPopoverOpen.value = false; e.preventDefault(); return }
-  if (sessionPopoverOpen.value) { sessionPopoverOpen.value = false; e.preventDefault(); return }
 
   if (isStreaming.value) {
     e.preventDefault()
@@ -2524,9 +3428,6 @@ function onDocumentKeydown(e: KeyboardEvent) {
 
 function onDocumentClick(e: MouseEvent) {
   const target = e.target as HTMLElement
-  if (sessionPopoverOpen.value && !target.closest('.chat-session-popover') && !target.closest('.chat-session-chip')) {
-    sessionPopoverOpen.value = false
-  }
   if (toolbarPopoverOpen.value && !target.closest('.chat-toolbar-popover') && !target.closest('.chat-toolbar-trigger')) {
     toolbarPopoverOpen.value = false
   }
@@ -2536,6 +3437,7 @@ function onDocumentClick(e: MouseEvent) {
 
 onMounted(async () => {
   // Initialize session key
+  const startNewChatOnMount = hasNewChatRouteSignal()
   const urlSession = readSessionFromUrl()
   const urlAgent = readAgentFromUrl()
   const storedSession = localStorage.getItem('opensquilla_active_session') || ''
@@ -2564,6 +3466,14 @@ onMounted(async () => {
     appendToolCall(payload)
   }))
 
+  unsubs.push(rpc.on('session.event.tool_use_delta', (payload: any) => {
+    if (isStaleEpoch(payload)) return
+    if (aborted.value) return
+    if (!acceptStreamSeq(payload)) return
+    resetStreamIdleTimer()
+    appendToolDelta(payload)
+  }))
+
   unsubs.push(rpc.on('session.event.tool_result', (payload: any) => {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
@@ -2586,9 +3496,21 @@ onMounted(async () => {
     if (!acceptStreamSeq(payload)) return
     resetStreamIdleTimer()
     const to = payload.to_state || payload.toState || ''
-    if (to === 'thinking' && !streamBubble.value) {
-      if (!isStreaming.value) startStreaming()
-      showThinkingIndicator()
+    const activeState = ['thinking', 'streaming', 'tool_calling', 'tool_use', 'running'].includes(String(to))
+    if (!isStreaming.value && activeState) startStreaming()
+    if (!isStreaming.value) return
+    if (to === 'thinking') {
+      if (streamBubble.value && !streamHasVisibleOutput.value) {
+        setStreamActivity('正在组织下一步')
+      } else if (!streamBubble.value) {
+        showThinkingIndicator()
+      }
+    } else if (to === 'streaming' && streamBubble.value && !streamHasVisibleOutput.value) {
+      setStreamActivity('模型正在生成')
+    } else if ((to === 'tool_calling' || to === 'tool_use') && streamBubble.value && !streamHasVisibleOutput.value) {
+      setStreamActivity('正在准备工具调用')
+    } else if (to && streamBubble.value && !streamHasVisibleOutput.value) {
+      setStreamActivity('仍在运行')
     }
   }))
 
@@ -2598,7 +3520,11 @@ onMounted(async () => {
     if (!acceptStreamSeq(payload)) return
     if (!isStreaming.value) startStreaming()
     resetStreamIdleTimer()
-    if (!streamBubble.value) showThinkingIndicator()
+    if (streamBubble.value && !streamHasVisibleOutput.value) {
+      setStreamActivity('正在组织下一步')
+    } else if (!streamBubble.value) {
+      showThinkingIndicator()
+    }
   }))
 
   unsubs.push(rpc.on('session.event.compaction', (payload: any, meta: any) => {
@@ -2667,8 +3593,14 @@ onMounted(async () => {
   unsubs.push(rpc.on('session.event.router_decision', (payload: any) => {
     if (isStaleEpoch(payload)) return
     if (!acceptStreamSeq(payload)) return
-    // Router decision - simplified for now
-    console.info('Router decision:', payload)
+    queueRouterDecision(payload)
+  }))
+
+  unsubs.push(rpc.on('session.event.router_control_replay', (payload: any) => {
+    if (isStaleEpoch(payload)) return
+    if (aborted.value) return
+    if (!acceptStreamSeq(payload)) return
+    handleRouterControlReplay()
   }))
 
   unsubs.push(rpc.on('*', (rawEvent: string, rawPayload: any) => {
@@ -2714,6 +3646,11 @@ onMounted(async () => {
         streamRaw.value = finalText
       }
 
+      if (payload?.reason === 'aborted') {
+        clearPendingRouterDecision()
+      } else {
+        flushPendingRouterDecision()
+      }
       endStreaming()
       scheduleHistorySync()
 
@@ -2730,6 +3667,7 @@ onMounted(async () => {
         schedulePendingDrainAfterTerminal()
       }
     } else if (event.endsWith('.error')) {
+      clearPendingRouterDecision()
       endStreaming()
       messages.value.push({ role: 'error', text: sessionErrorMessage(payload), ts: new Date().toISOString() })
       scheduleHistorySync()
@@ -2768,9 +3706,13 @@ onMounted(async () => {
     composerResizeObserver.observe(composerRef.value)
   }
 
-  // Load history
-  subscribeSession()
-  loadHistory()
+  // Load the requested chat state.
+  if (startNewChatOnMount) {
+    consumeNewChatRouteSignal()
+  } else {
+    subscribeSession()
+    loadHistory()
+  }
   loadSlashCommands()
 
   // Focus textarea on desktop
@@ -2782,12 +3724,13 @@ onMounted(async () => {
 onUnmounted(() => {
   unsubs.forEach(fn => fn())
   unsubs = []
-  if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null }
+  if (renderRafId) { clearTimeout(renderRafId); renderRafId = null }
   clearStreamIdleTimer()
   clearPendingDrainAfterTerminalTimer()
   if (historySyncTimer) { clearTimeout(historySyncTimer); historySyncTimer = null }
   if (thinkingDelayTimer) { clearTimeout(thinkingDelayTimer); thinkingDelayTimer = null }
   if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null }
+  clearStreamActivity()
   if (composerResizeObserver) { composerResizeObserver.disconnect(); composerResizeObserver = null }
   document.documentElement.style.removeProperty('--composer-h')
   document.removeEventListener('paste', onDocumentPaste)
@@ -2800,6 +3743,14 @@ onUnmounted(() => {
 watch(() => route.query.session, (newSession) => {
   if (newSession && typeof newSession === 'string') {
     switchToSession(newSession)
+  }
+})
+
+// Watch for "new chat" signals from the sidebar. The legacy ?new=1 signal is
+// still accepted so older links do not silently restore the previous session.
+watch(() => [route.query.newChat, route.query.new], () => {
+  if (hasNewChatRouteSignal()) {
+    consumeNewChatRouteSignal()
   }
 })
 
@@ -2868,15 +3819,29 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  background: #fff;
+  color: #18181b;
+  border: 1px solid rgba(31, 35, 40, 0.05);
+  border-radius: 10px;
+  box-shadow:
+    0 1px 1px rgba(31, 35, 40, 0.025),
+    0 8px 18px rgba(31, 35, 40, 0.032);
+}
+
+.chat--new-landing {
+  justify-content: flex-start;
+  gap: 1.125rem;
+  padding: clamp(5.25rem, 17vh, 9.5rem) 0 2rem;
 }
 
 .chat-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--border-color, #e5e5e5);
-  background: var(--bg-secondary, #f5f5f5);
+  height: 48px;
+  padding: 0 20px;
+  border-bottom: 0;
+  background: #fff;
   flex-shrink: 0;
 }
 
@@ -2892,15 +3857,19 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   align-items: center;
   gap: 0.5rem;
   flex-shrink: 0;
+  margin-right: 56px;
 }
 
 .chat-label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted, #666);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: #242428;
   flex-shrink: 0;
+  max-width: min(42vw, 360px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-session-chip {
@@ -2957,6 +3926,10 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   color: var(--text-muted, #666);
 }
 
+.chat-header-right .chip {
+  display: none;
+}
+
 .chip-warn {
   background: #fef3c7;
   color: #92400e;
@@ -2983,135 +3956,182 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  background: #fff;
+}
+
+.chat--new-landing .chat-body {
+  flex: 0 0 auto;
+  overflow: visible;
 }
 
 .chat-thread {
   flex: 1;
   overflow-y: auto;
-  padding: 1rem;
+  padding: 0.25rem 0 1.5rem;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.25rem;
+  background: #fff;
+}
+
+.chat--new-landing .chat-thread {
+  flex: 0 0 auto;
+  overflow: visible;
+  padding: 0;
+  gap: 0;
+}
+
+.chat-landing-brand {
+  width: min(calc(100% - 48px), 720px);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.chat-landing-lockup {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 252px;
+  object-fit: contain;
+  filter: drop-shadow(0 18px 34px rgba(31, 35, 40, 0.13));
 }
 
 .chat-empty {
   text-align: center;
-  color: var(--text-muted, #666);
+  color: #9ca3af;
   padding: 3rem 1rem;
   font-size: 0.875rem;
 }
 
-.chat-day-sep {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin: 0.5rem 0;
-  font-size: 0.75rem;
-  color: var(--text-muted, #666);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.chat-day-sep::before,
-.chat-day-sep::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--border-color, #e5e5e5);
-}
-
 /* Messages */
-.msg {
+/* ── Kimi-style Messages ─────────────────────────────────────────────── */
+
+/* User message */
+.msg-user {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  max-width: 100%;
-  position: relative;
+  align-items: flex-end;
+  width: min(calc(100% - 48px), 980px);
+  margin: 0 auto;
+  padding: 0.5rem 0;
+  max-width: calc(100% - 48px);
 }
 
-.msg.user {
-  align-self: flex-end;
-  max-width: 80%;
-}
-
-.msg.assistant,
-.msg.system,
-.msg.subagent,
-.msg.error {
-  align-self: flex-start;
-  max-width: 90%;
-}
-
-.msg-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-muted, #666);
-  padding: 0 0.25rem;
-}
-
-.role-label {
-  text-transform: capitalize;
-}
-
-.msg-time {
-  font-weight: 400;
-  font-size: 0.6875rem;
-  color: var(--text-muted, #999);
-}
-
-.msg-body {
-  padding: 0.625rem 0.875rem;
-  border-radius: 0.75rem;
+.msg-user-bubble {
+  background: #f4f4f5;
+  color: #18181b;
+  padding: 0.5rem 0.875rem;
+  border-radius: 1rem;
   font-size: 0.875rem;
   line-height: 1.5;
+  max-width: 82%;
   word-break: break-word;
 }
 
-.msg.user .msg-body {
-  background: var(--accent-color, #3b82f6);
-  color: #fff;
-  border-bottom-right-radius: 0.25rem;
-}
-
-.msg.assistant .msg-body,
-.msg.streaming .msg-body {
-  background: var(--bg-secondary, #f5f5f5);
-  color: var(--text-primary, #1a1a1a);
-  border-bottom-left-radius: 0.25rem;
-}
-
-.msg.system .msg-body,
-.msg.subagent .msg-body {
-  background: var(--bg-tertiary, #e5e5e5);
-  color: var(--text-muted, #666);
-  font-size: 0.8125rem;
-  border-bottom-left-radius: 0.25rem;
-}
-
-.msg.error .msg-body {
-  background: #fee2e2;
-  color: #991b1b;
-  border-bottom-left-radius: 0.25rem;
-}
-
-.msg.streaming .msg-body {
-  opacity: 0.9;
-}
-
-/* Message actions */
-.msg-actions {
+/* AI message */
+.msg-ai {
   display: flex;
-  gap: 0.25rem;
+  gap: 0.625rem;
+  width: min(calc(100% - 48px), 980px);
+  margin: 0 auto;
+  padding: 0.5rem 0;
+  align-items: flex-start;
+  max-width: calc(100% - 48px);
+}
+
+.msg-ai-avatar {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid rgba(32, 39, 34, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 0.0625rem;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.05);
+}
+
+.msg-ai-avatar__img {
+  width: 1.125rem;
+  height: 1.125rem;
+  object-fit: contain;
+  display: block;
+}
+
+.msg-ai-main {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  padding-top: 0.0625rem;
+}
+
+.msg-ai-text {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: #27272a;
+  word-break: break-word;
+  margin-bottom: 0.5rem;
+}
+
+.msg-ai-text :deep(p) { margin: 0.375rem 0; }
+.msg-ai-text :deep(p:first-child) { margin-top: 0; }
+.msg-ai-text :deep(ul), .msg-ai-text :deep(ol) { margin: 0.375rem 0; padding-left: 1.25rem; }
+.msg-ai-text :deep(li) { margin: 0.125rem 0; }
+.msg-ai-text :deep(code) {
+  background: #f4f4f5;
+  padding: 0.0625rem 0.25rem;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: #52525b;
+}
+.msg-ai-text :deep(pre) {
+  background: #fafafa;
+  border: 1px solid #e4e4e7;
+  border-radius: 6px;
+  padding: 0.625rem;
+  overflow-x: auto;
+  margin: 0.375rem 0;
+}
+.msg-ai-text :deep(pre code) {
+  background: transparent;
+  padding: 0;
+}
+
+.msg-ai-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 0.25rem;
+}
+
+.msg-ai-actions {
+  display: flex;
+  gap: 0.125rem;
   opacity: 0;
   transition: opacity 0.15s;
-  padding: 0 0.25rem;
 }
 
-.msg:hover .msg-actions,
-.msg:focus-within .msg-actions {
+.msg-ai:hover .msg-ai-actions {
+  opacity: 1;
+}
+
+.msg-user-actions {
+  display: flex;
+  gap: 0.125rem;
+  margin-top: 0.125rem;
+  opacity: 0;
+  transition: opacity 0.15s;
+  justify-content: flex-end;
+}
+
+.msg-user:hover .msg-user-actions {
   opacity: 1;
 }
 
@@ -3119,94 +4139,357 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0.25rem;
+  padding: 0.125rem;
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--text-muted, #666);
-  border-radius: 0.25rem;
+  color: #c4c4c4;
+  border-radius: 3px;
+  font-size: 0.6875rem;
 }
 
 .msg-action:hover {
-  color: var(--text-primary, #1a1a1a);
-  background: var(--bg-tertiary, #e5e5e5);
+  color: #a1a1aa;
+  background: #f4f4f5;
 }
 
-/* Meta footer */
-.msg-meta {
+.msg-ai-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 0 0.25rem;
-  font-size: 0.6875rem;
-  color: var(--text-muted, #999);
+  gap: 0.375rem;
+  font-size: 0.625rem;
+  color: #c4c4c4;
 }
 
-.msg-meta__model {
-  font-weight: 500;
+/* System / Subagent / Error messages */
+.msg-system-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 0.375rem 2rem;
 }
 
-.msg-meta__tokens {
-  font-family: monospace;
+.msg-system {
+  font-size: 0.75rem;
+  color: #a1a1aa;
+  padding: 0.25rem 0.625rem;
+  border-radius: 6px;
+  max-width: 70%;
+  text-align: center;
 }
 
-.msg-meta__saved {
+.msg-system.error {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.msg-system-label {
+  font-weight: 600;
+  margin-right: 0.375rem;
+}
+
+/* Step card */
+.step-card {
+  background: #fff;
+  border: 1px solid rgba(31, 35, 40, 0.08);
+  border-radius: 8px;
+  padding: 0.25rem;
+  overflow: hidden;
+  margin: 0.625rem 0;
+  box-shadow:
+    0 1px 1px rgba(31, 35, 40, 0.025),
+    0 8px 18px rgba(31, 35, 40, 0.032);
+}
+
+.stream-activity {
   display: inline-flex;
   align-items: center;
-  gap: 0.125rem;
-  color: #ea580c;
-  font-weight: 500;
+  gap: 0.5rem;
+  min-height: 1.625rem;
+  padding: 0.375rem 0;
 }
 
-.msg-meta__saved-flame {
-  width: 1em;
-  height: 1em;
+.stream-activity-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 999px;
+  background: #76a98c;
+  box-shadow: 0 0 0 0 rgba(118, 169, 140, 0.28);
+  animation: activityPulse 1.8s ease-out infinite;
+  flex-shrink: 0;
 }
 
-.msg-interrupt-mark {
-  font-size: 0.75rem;
-  font-style: italic;
-  color: var(--text-muted, #999);
-  padding: 0 0.25rem;
+.stream-activity-text {
+  font-size: 0.8125rem;
+  line-height: 1.5;
 }
 
-/* Thinking indicator */
-.thinking-body {
+.activity-shimmer {
+  color: #8c938b;
+  background:
+    linear-gradient(
+      105deg,
+      #8c938b 0%,
+      #8c938b 36%,
+      #232824 48%,
+      #8c938b 60%,
+      #8c938b 100%
+    );
+  background-size: 240% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: activityTextShimmer 2.2s ease-in-out infinite;
+}
+
+.step-group {
+  border-radius: 7px;
+}
+
+.step-group + .step-group {
+  margin-top: 0.125rem;
+}
+
+.step-group-header,
+.step-subitem {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.12s ease, color 0.12s ease;
+  min-height: 2.5rem;
+  color: inherit;
 }
 
+.step-group-header {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.step-subitem {
+  position: relative;
+  padding: 0.5625rem 0.75rem 0.5625rem 2.25rem;
+}
+
+.step-group-header:hover,
+.step-subitem:hover {
+  background: #f7f8f6;
+}
+
+.step-group.is-open > .step-group-header,
+.step-subitem.is-open {
+  background: #fafbf9;
+}
+
+.step-group--running > .step-group-header,
+.step-item--running {
+  background: rgba(184, 68, 4, 0.045);
+}
+
+.step-group--running .step-icon,
+.step-item--running .step-icon {
+  color: #b84404;
+}
+
+.step-group--error .step-title,
+.step-group--error .step-status,
+.step-item--error .step-title,
+.step-item--error .step-subtitle,
+.step-item--error .step-status {
+  color: #c2410c;
+}
+
+.step-group-members {
+  margin: 0.125rem 0 0.25rem;
+  padding-left: 1.25rem;
+}
+
+.step-group-members::before {
+  content: '';
+  display: block;
+  width: calc(100% - 1.25rem);
+  height: 1px;
+  margin: 0 0 0.125rem 1.25rem;
+  background: rgba(31, 35, 40, 0.045);
+}
+
+.step-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #6b716b;
+}
+
+.step-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.step-title {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #272a27;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.step-count {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  line-height: 1.3;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  color: #71766f;
+  background: rgba(31, 35, 40, 0.055);
+}
+
+.step-subtitle {
+  font-size: 0.765625rem;
+  font-weight: 500;
+  color: #4b514a;
+  line-height: 1.4;
+  flex-shrink: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-secondary {
+  min-width: 0;
+  color: #90958f;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-detail {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  background: #f8f9f7;
+  border: 1px solid rgba(31, 35, 40, 0.06);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: #676d66;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+.step-result {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  background: #f8f9f7;
+  border: 1px solid rgba(31, 35, 40, 0.06);
+  border-radius: 6px;
+}
+
+.step-result--error {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.step-result-pre {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: #27272a;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 100px;
+  overflow-y: auto;
+  margin: 0;
+}
+
+.step-view-btn {
+  margin-top: 0.25rem;
+  padding: 0.125rem 0.375rem;
+  font-size: 0.6875rem;
+  color: #b84404;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.step-view-btn:hover {
+  text-decoration: underline;
+}
+
+.step-trailing {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-shrink: 0;
+  color: #a4aaa3;
+}
+
+.step-status {
+  font-size: 0.75rem;
+  color: #9ca29b;
+  white-space: nowrap;
+}
+
+.step-chevron {
+  transition: transform 0.12s ease;
+}
+
+.step-group.is-open > .step-group-header .step-chevron,
+.step-subitem.is-open .step-chevron {
+  transform: rotate(90deg);
+}
+
+/* Thinking indicator */
 .thinking-status {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-}
-
-.typing-indicator {
-  display: flex;
-  gap: 0.25rem;
-}
-
-.dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-muted, #999);
-  animation: typingBounce 1.4s infinite ease-in-out both;
-}
-
-.dot:nth-child(1) { animation-delay: -0.32s; }
-.dot:nth-child(2) { animation-delay: -0.16s; }
-
-@keyframes typingBounce {
-  0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
-  40% { transform: scale(1); opacity: 1; }
+  padding: 0.375rem 0;
 }
 
 .thinking-elapsed {
-  font-size: 0.75rem;
-  color: var(--text-muted, #666);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+@keyframes activityPulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.6;
+    box-shadow: 0 0 0 0 rgba(118, 169, 140, 0.24);
+  }
+  55% {
+    transform: scale(1);
+    opacity: 1;
+    box-shadow: 0 0 0 5px rgba(118, 169, 140, 0);
+  }
+  100% {
+    transform: scale(0.9);
+    opacity: 0.65;
+    box-shadow: 0 0 0 0 rgba(118, 169, 140, 0);
+  }
+}
+
+@keyframes activityTextShimmer {
+  0% { background-position: 140% 0; }
+  45% { background-position: -20% 0; }
+  100% { background-position: -20% 0; }
 }
 
 /* Pending queue */
@@ -3371,10 +4654,26 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 
 /* Composer */
 .chat-composer {
-  padding: 0.5rem 1rem;
-  border-top: 1px solid var(--border-color, #e5e5e5);
-  background: var(--bg-primary, #fff);
+  padding: 0.75rem 1.5rem 1.875rem;
+  border-top: 0;
+  background: #fff;
   flex-shrink: 0;
+}
+
+.chat--new-landing .chat-composer {
+  width: min(calc(100% - 48px), 820px);
+  margin: 0 auto;
+  padding: 0;
+  background: transparent;
+}
+
+.chat-composer-inner {
+  width: min(100%, 820px);
+  margin: 0 auto;
+}
+
+.chat--new-landing .chat-composer-inner {
+  width: 100%;
 }
 
 .chat-attachments {
@@ -3389,7 +4688,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   align-items: center;
   gap: 0.375rem;
   padding: 0.25rem 0.5rem;
-  background: var(--bg-secondary, #f5f5f5);
+  background: #f9fafb;
   border: 1px solid var(--border-color, #e5e5e5);
   border-radius: 0.375rem;
   font-size: 0.75rem;
@@ -3447,36 +4746,89 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   color: #dc2626;
 }
 
-.chat-input-bar {
+.chat-input-panel {
   display: flex;
-  align-items: flex-end;
-  gap: 0.375rem;
+  flex-direction: column;
+  min-height: 128px;
+  border: 1px solid #d9d9de;
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+}
+
+.chat--new-landing .chat-input-panel {
+  min-height: 148px;
+  border-color: rgba(32, 39, 34, 0.10);
+  border-radius: 24px;
+  box-shadow:
+    0 1px 2px rgba(31, 35, 40, 0.025),
+    0 18px 42px rgba(31, 35, 40, 0.065);
+}
+
+.chat--new-landing .chat-input-panel:focus-within {
+  border-color: rgba(32, 39, 34, 0.18);
+  box-shadow:
+    0 1px 2px rgba(31, 35, 40, 0.025),
+    0 22px 48px rgba(31, 35, 40, 0.08);
+}
+
+.chat-input-footer,
+.chat-input-actions {
+  display: flex;
+  align-items: center;
+}
+
+.chat-input-footer {
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.25rem 0.625rem 0.625rem;
+}
+
+.chat-input-actions {
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.chat-input-actions--right {
+  flex-shrink: 0;
 }
 
 .chat-input-wrap {
   flex: 1;
   min-width: 0;
+  display: flex;
 }
 
 .chat-textarea {
   width: 100%;
-  min-height: 36px;
+  min-height: 68px;
   max-height: 160px;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--border-color, #e5e5e5);
-  border-radius: 0.5rem;
-  background: var(--bg-primary, #fff);
-  color: var(--text-primary, #1a1a1a);
-  font-size: 0.875rem;
+  padding: 1rem 1rem 0.375rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #1a1a1a;
+  font-size: 0.9375rem;
   line-height: 1.5;
   resize: none;
   outline: none;
   font-family: inherit;
 }
 
+.chat--new-landing .chat-textarea {
+  min-height: 86px;
+  padding: 1.125rem 1.25rem 0.5rem;
+}
+
 .chat-textarea:focus {
-  border-color: var(--accent-color, #3b82f6);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.chat-input-panel:focus-within {
+  border-color: #c9c9d1;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
 }
 
 /* Buttons */
@@ -3499,6 +4851,46 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   height: 36px;
 }
 
+.chat-composer .btn--icon {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  border-radius: 999px;
+  padding: 0;
+}
+
+.chat-plus-btn {
+  border: 1px solid #e1e1e5;
+  color: #303034;
+}
+
+.chat-aux-action-wrap,
+.chat-aux-action {
+  width: 0 !important;
+  min-width: 0 !important;
+  height: 34px;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-4px);
+  transition: opacity 120ms ease, width 120ms ease, min-width 120ms ease, transform 120ms ease;
+}
+
+.chat-input-panel:hover .chat-aux-action-wrap,
+.chat-input-panel:focus-within .chat-aux-action-wrap,
+.chat-input-panel:hover .chat-aux-action,
+.chat-input-panel:focus-within .chat-aux-action,
+.chat-aux-action-wrap.is-visible,
+.chat-aux-action.is-glowing {
+  width: 34px !important;
+  min-width: 34px !important;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
 .btn--ghost {
   background: none;
   border-color: transparent;
@@ -3510,14 +4902,44 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   color: var(--text-primary, #1a1a1a);
 }
 
-.btn--primary {
-  background: var(--accent-color, #3b82f6);
+.chat-send-btn.btn--primary {
+  background: #d6d6da;
   color: #fff;
-  border-color: var(--accent-color, #3b82f6);
+  border-color: #d6d6da;
 }
 
-.btn--primary:hover {
-  opacity: 0.9;
+.chat-send-btn.btn--primary:hover {
+  background: #c9c9ce;
+  border-color: #c9c9ce;
+}
+
+.chat-send-btn.btn--primary.is-ready {
+  background: #202722 !important;
+  border-color: #202722 !important;
+  color: #fff;
+}
+
+.chat-send-btn.btn--primary.is-ready:hover {
+  background: #111612 !important;
+  border-color: #111612 !important;
+}
+
+.chat-send-btn {
+  color: #fff;
+}
+
+.chat-model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  max-width: 160px;
+  min-height: 32px;
+  padding: 0 0.375rem 0 0.625rem;
+  color: #2f2f33;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .btn--danger {
@@ -3799,85 +5221,71 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   color: var(--text-muted, #666);
 }
 
-/* Tool calls */
-.chat-tools-collapse {
-  margin-top: 0.5rem;
-  border: 1px solid var(--border-color, #e5e5e5);
-  border-radius: 0.5rem;
-  overflow: hidden;
-}
-
-.chat-tools-summary {
+/* Tool Result Modal */
+.tool-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
-  gap: 0.375rem;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  cursor: pointer;
-  background: var(--bg-secondary, #f5f5f5);
-  user-select: none;
+  justify-content: center;
+  padding: var(--sp-4);
 }
 
-.chat-tools-collapse--running .chat-tools-summary {
-  cursor: default;
-  opacity: 0.7;
+.tool-modal {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 720px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg);
 }
 
-.chat-tools-icon {
-  font-size: 1rem;
+.tool-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
 }
 
-.chat-tools-body {
-  padding: 0.5rem 0.75rem;
-  font-size: 0.8125rem;
+.tool-modal__title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  margin: 0;
+  color: var(--text);
 }
 
-.chat-tool-input {
-  padding: 0.5rem;
-  background: var(--bg-tertiary, #e5e5e5);
-  border-radius: 0.25rem;
-  font-family: monospace;
-  font-size: 0.75rem;
+.tool-modal__body {
+  flex: 1;
+  padding: var(--sp-4);
+  margin: 0;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 120px;
-  overflow-y: auto;
-}
-
-.chat-tool-result {
-  margin-top: 0.5rem;
-  padding: 0.5rem;
-  background: #f0fdf4;
-  border-radius: 0.25rem;
-  font-size: 0.8125rem;
-}
-
-.chat-tool-result--error {
-  background: #fef2f2;
-}
-
-.chat-tool-result-preview {
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 120px;
-  overflow-y: auto;
-}
-
-.chat-tool-view-btn {
-  margin-top: 0.375rem;
+  background: var(--bg-primary);
+  color: var(--text);
 }
 
 /* Artifacts */
 .msg-artifacts {
-  margin-top: 0.5rem;
+  margin: 0.75rem 0 0.875rem;
 }
 
 .msg-artifact-gallery,
 .msg-artifact-files {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.375rem;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .msg-artifact-card {
@@ -3923,15 +5331,147 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 }
 
 .msg-artifact-chip {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.875rem;
+  width: 100%;
+  min-height: 4.625rem;
+  padding: 0.75rem 1rem 0.75rem 0.75rem;
+  background: linear-gradient(180deg, #fff 0%, #fbfcfa 100%);
+  border: 1px solid rgba(31, 35, 40, 0.1);
+  border-radius: 10px;
+  box-shadow:
+    0 1px 1px rgba(31, 35, 40, 0.02),
+    0 8px 18px rgba(31, 35, 40, 0.026);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.msg-artifact-chip:hover {
+  background: #fff;
+  border-color: rgba(32, 39, 34, 0.16);
+  box-shadow:
+    0 1px 1px rgba(31, 35, 40, 0.03),
+    0 10px 22px rgba(31, 35, 40, 0.045);
+}
+
+.msg-artifact-chip:focus-visible {
+  outline: 2px solid rgba(184, 68, 4, 0.28);
+  outline-offset: 2px;
+}
+
+.msg-artifact-icon {
+  position: relative;
+  width: 3.25rem;
+  height: 3.25rem;
   display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
-  padding: 0.375rem 0.625rem;
-  background: var(--bg-primary, #fff);
-  border: 1px solid var(--border-color, #e5e5e5);
-  border-radius: 0.375rem;
+  justify-content: center;
+  color: #5d645d;
+  background: #f6f7f4;
+  border: 1px solid rgba(31, 35, 40, 0.08);
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.msg-artifact-icon::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 0.875rem;
+  height: 0.875rem;
+  background: linear-gradient(135deg, rgba(31, 35, 40, 0.08) 50%, #fff 50%);
+  border-bottom-left-radius: 4px;
+}
+
+.msg-artifact-icon[data-kind="visual"] {
+  color: #315f68;
+  background: #f2f8f7;
+}
+
+.msg-artifact-icon[data-kind="data"] {
+  color: #5d552f;
+  background: #faf7ec;
+}
+
+.msg-artifact-icon[data-kind="code"] {
+  color: #70452b;
+  background: #fbf4ef;
+}
+
+.msg-artifact-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.msg-artifact-name {
+  color: #202722;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-artifact-meta {
+  color: #8a9189;
   font-size: 0.8125rem;
-  cursor: pointer;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-artifact-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 4rem;
+  min-height: 2.125rem;
+  padding: 0 0.875rem;
+  border-radius: 999px;
+  background: #f6f7f4;
+  color: #262b27;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.msg-artifact-chip:hover .msg-artifact-action {
+  background: #202722;
+  color: #fff;
+}
+
+@media (max-width: 640px) {
+  .msg-artifact-chip {
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 0.625rem;
+  }
+
+  .msg-artifact-icon {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .msg-artifact-action {
+    grid-column: 2;
+    justify-self: start;
+    min-height: 1.875rem;
+    min-width: 3.5rem;
+    margin-top: 0.125rem;
+  }
 }
 
 .msg-file-chip__icon {
@@ -3993,49 +5533,375 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 
 /* Router FX */
 .router-fx {
-  margin: 0.5rem 0;
-  padding: 0.75rem;
-  background: var(--bg-secondary, #f5f5f5);
-  border: 1px solid var(--border-color, #e5e5e5);
-  border-radius: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(calc(100% - 48px), 620px);
+  margin: 0.375rem auto 0.25rem;
+  padding: 0;
+  user-select: none;
+  --router-accent: var(--accent, #f56600);
+  --router-bg: #fff;
+  --router-surface: #fafafa;
+  --router-hairline: rgba(24, 24, 27, 0.09);
+  --router-text: #27272a;
+  --router-muted: #8b8b93;
+  --router-danger: #dc2626;
 }
 
 .router-fx-header {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  font-size: 0.75rem;
+  gap: 16px;
+  padding: 2px 0 0;
+  color: var(--router-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted, #666);
-  margin-bottom: 0.5rem;
+  letter-spacing: 0.44em;
+}
+
+.router-fx-header .title {
+  padding-left: 0.44em;
+}
+
+.router-fx-header .glyph {
+  color: var(--router-accent);
+  font-size: 12px;
+  letter-spacing: 0;
+  animation: router-fx-chev 900ms cubic-bezier(.4,0,.6,1) 2;
+}
+
+.router-fx-header .glyph:last-child {
+  animation-delay: 450ms;
+}
+
+@keyframes router-fx-chev {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(3px); }
 }
 
 .router-fx-grid {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 0.375rem;
+  grid-template-rows: repeat(3, 30px);
+  gap: 4px;
+  padding: 8px;
+  background:
+    radial-gradient(rgba(24, 24, 27, 0.08) 0.7px, transparent 1.2px) 0 0 / 8px 8px,
+    var(--router-surface);
+  border: 1px solid var(--router-hairline);
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .router-fx-cell {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0.375rem;
-  background: var(--bg-primary, #fff);
-  border: 1px solid var(--border-color, #e5e5e5);
-  border-radius: 0.25rem;
-  font-size: 0.6875rem;
-  text-align: center;
-  min-height: 32px;
+  min-width: 0;
+  padding: 0 6px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--router-hairline);
+  border-radius: 4px;
+  color: var(--router-text);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: transform 220ms cubic-bezier(.34,1.65,.5,1), background 240ms ease, color 240ms ease, border-color 240ms ease, box-shadow 240ms ease;
+}
+
+.router-fx-cell[data-kind="real"]::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--router-accent);
+  opacity: 0.72;
+}
+
+.router-fx-cell[data-kind="decoy"] {
+  color: var(--router-muted);
+  font-style: italic;
+  opacity: 0.78;
+}
+
+@keyframes router-fx-mole-pop {
+  0% { transform: translateY(0) scale(1); background: rgba(255, 255, 255, 0.72); }
+  35% { transform: translateY(-2px) scale(1.14); background: color-mix(in srgb, var(--router-accent) 14%, #fff); }
+  100% { transform: translateY(0) scale(1); background: rgba(255, 255, 255, 0.72); }
+}
+
+.router-fx-cell:nth-child(2),
+.router-fx-cell:nth-child(6),
+.router-fx-cell:nth-child(9),
+.router-fx-cell:nth-child(4) {
+  animation: router-fx-mole-pop 190ms cubic-bezier(.34,1.7,.5,1) both;
+}
+
+.router-fx-cell:nth-child(2) { animation-delay: 80ms; }
+.router-fx-cell:nth-child(6) { animation-delay: 280ms; }
+.router-fx-cell:nth-child(9) { animation-delay: 520ms; }
+.router-fx-cell:nth-child(4) { animation-delay: 760ms; }
+
+.router-fx-cell .nm {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .router-fx-cell.win {
-  background: #d1fae5;
-  border-color: #34d399;
+  font-style: normal;
+  animation: router-fx-winner-reveal 1.42s linear both;
+}
+
+.router-fx-cell.win::after {
+  animation: router-fx-winner-dot-reveal 1.42s linear both;
+}
+
+.router-fx[data-source="fallback"] .router-fx-cell.win {
+  animation-name: router-fx-winner-reveal-fallback;
+}
+
+.router-fx[data-source="fallback"] .router-fx-cell.win::after {
+  background: var(--router-danger);
+}
+
+@keyframes router-fx-winner-reveal {
+  0%, 89% {
+    color: var(--router-text);
+    background: rgba(255, 255, 255, 0.72);
+    border-color: var(--router-hairline);
+    font-weight: 400;
+    transform: translateY(0);
+    box-shadow: none;
+  }
+  100% {
+    color: var(--router-accent);
+    background: color-mix(in srgb, var(--router-accent) 9%, #fff);
+    border-color: var(--router-accent);
+    font-weight: 600;
+    transform: translateY(-1px);
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--router-accent) 35%, transparent);
+  }
+}
+
+@keyframes router-fx-winner-reveal-fallback {
+  0%, 89% {
+    color: var(--router-text);
+    background: rgba(255, 255, 255, 0.72);
+    border-color: var(--router-hairline);
+    font-weight: 400;
+    transform: translateY(0);
+    box-shadow: none;
+  }
+  100% {
+    color: var(--router-danger);
+    background: color-mix(in srgb, var(--router-danger) 9%, #fff);
+    border-color: var(--router-danger);
+    font-weight: 600;
+    transform: translateY(-1px);
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--router-danger) 35%, transparent);
+  }
+}
+
+@keyframes router-fx-winner-dot-reveal {
+  0%, 89% { opacity: 0.72; }
+  100% { opacity: 1; }
+}
+
+.router-fx-selector {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  left: 8px;
+  width: calc((100% - 28px) / 4);
+  height: 30px;
+  border: 2px solid color-mix(in srgb, var(--router-accent) 80%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--router-accent) 6%, transparent);
+  pointer-events: none;
+  opacity: 0;
+  transform: rotate(0deg);
+}
+
+.router-fx-selector.visible {
+  opacity: 1;
+}
+
+.router-fx-selector.lock {
+  border-color: var(--router-accent);
+  background: color-mix(in srgb, var(--router-accent) 12%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--router-accent) 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--router-accent) 8%, transparent);
+}
+
+.router-fx[data-source="fallback"] .router-fx-selector.lock {
+  border-color: var(--router-danger);
+  background: color-mix(in srgb, var(--router-danger) 12%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--router-danger) 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--router-danger) 8%, transparent);
+}
+
+@keyframes router-fx-selector-chase {
+  0% { opacity: 1; left: 8px; top: 8px; transform: rotate(1.4deg); }
+  12% { left: calc(((100% - 28px) / 2) + 16px); top: 8px; transform: rotate(-1.4deg); }
+  25% { left: calc(((100% - 28px) / 4) + 12px); top: 42px; transform: rotate(1.4deg); }
+  42% { left: calc(((100% - 28px) * 3 / 4) + 20px); top: 42px; transform: rotate(-1.4deg); }
+  62% { left: 8px; top: 76px; transform: rotate(1.4deg); }
+  78% { left: calc(((100% - 28px) / 2) + 16px); top: 76px; transform: rotate(-1.4deg); }
+  100% { opacity: 1; left: var(--router-left); top: var(--router-top); transform: rotate(0deg); }
+}
+
+.router-fx-selector.lock-impact {
+  animation: router-fx-selector-chase 1.28s cubic-bezier(.18,1.25,.45,1) both, router-fx-impact 280ms cubic-bezier(.34,1.6,.5,1) 1.28s both;
+}
+
+@keyframes router-fx-impact {
+  0% { outline: 0 solid transparent; outline-offset: 0; }
+  35% { outline: 2px solid color-mix(in srgb, var(--router-accent) 70%, transparent); outline-offset: 4px; }
+  100% { outline: 0 solid transparent; outline-offset: 0; }
+}
+
+.router-fx-burst {
+  position: absolute;
+  z-index: 4;
+  left: var(--router-burst-left);
+  top: var(--router-burst-top);
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.router-fx-burst i {
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 1px;
+  background: var(--router-accent);
+  opacity: 0;
+  animation: router-fx-burst 540ms cubic-bezier(.2,.7,.2,1) 1.38s forwards;
+}
+
+.router-fx-burst i:nth-child(1) { --bx: -22px; --by: -10px; }
+.router-fx-burst i:nth-child(2) { --bx: 22px; --by: -10px; }
+.router-fx-burst i:nth-child(3) { --bx: -22px; --by: 10px; }
+.router-fx-burst i:nth-child(4) { --bx: 22px; --by: 10px; }
+.router-fx-burst i:nth-child(5) { --bx: 0; --by: -18px; width: 3px; height: 3px; }
+.router-fx-burst i:nth-child(6) { --bx: 0; --by: 18px; width: 3px; height: 3px; }
+
+@keyframes router-fx-burst {
+  0% { opacity: 1; transform: translate(0, 0) scale(1); }
+  60% { opacity: 0.7; }
+  100% { opacity: 0; transform: translate(var(--bx, 16px), var(--by, 0)) scale(0.4); }
+}
+
+.router-fx[data-source="fallback"] .router-fx-burst i {
+  background: var(--router-danger);
+}
+
+.router-fx[data-observe="true"] {
+  opacity: 0.55;
+}
+
+.router-fx[data-observe="true"] .router-fx-header::after {
+  content: 'observe';
+  margin-left: 12px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(139, 139, 147, 0.16);
+  color: var(--router-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.router-fx[data-observe="true"] .router-fx-selector.lock-impact,
+.router-fx[data-observe="true"] .router-fx-burst i,
+.router-fx[data-observe="true"] .router-fx-header .glyph {
+  animation: none;
+}
+
+.router-fx[data-observe="true"] .router-fx-selector {
+  left: var(--router-left);
+  top: var(--router-top);
+  transform: rotate(0deg);
+  opacity: 1;
+}
+
+.router-fx[data-observe="true"] .router-fx-cell.win {
+  animation: none;
+  background: rgba(139, 139, 147, 0.08);
+  border-color: rgba(139, 139, 147, 0.35);
+  color: var(--router-muted);
+  font-weight: 500;
+}
+
+.router-fx[data-static="true"] .router-fx-cell,
+.router-fx[data-static="true"] .router-fx-header .glyph,
+.router-fx[data-static="true"] .router-fx-selector {
+  animation: none;
+}
+
+.router-fx[data-static="true"] .router-fx-selector {
+  left: var(--router-left);
+  top: var(--router-top);
+  transform: rotate(0deg);
+  opacity: 1;
+}
+
+.router-fx[data-static="true"] .router-fx-cell.win {
+  animation: none;
+  color: var(--router-accent);
+  background: color-mix(in srgb, var(--router-accent) 9%, #fff);
+  border-color: var(--router-accent);
   font-weight: 600;
+  transform: translateY(-1px);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--router-accent) 35%, transparent);
+}
+
+.router-fx[data-static="true"][data-source="fallback"] .router-fx-cell.win {
+  color: var(--router-danger);
+  background: color-mix(in srgb, var(--router-danger) 9%, #fff);
+  border-color: var(--router-danger);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--router-danger) 35%, transparent);
+}
+
+.router-fx[data-static="true"] .router-fx-cell.win::after {
+  animation: none;
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .router-fx-cell,
+  .router-fx-selector,
+  .router-fx-burst i,
+  .router-fx-header .glyph {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .router-fx-selector {
+    left: var(--router-left);
+    top: var(--router-top);
+    transform: rotate(0deg);
+    opacity: 1;
+  }
 }
 
 /* Code blocks */
@@ -4091,49 +5957,22 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 }
 
 /* Dark mode adjustments */
-:root[data-theme="dark"] .msg.user .msg-body {
-  background: #2563eb;
-}
-
-:root[data-theme="dark"] .msg.assistant .msg-body,
-:root[data-theme="dark"] .msg.streaming .msg-body {
-  background: #374151;
-  color: #f3f4f6;
-}
-
-:root[data-theme="dark"] .chat-textarea {
-  background: #1f2937;
-  border-color: #374151;
-  color: #f3f4f6;
-}
-
-:root[data-theme="dark"] .chat-session-chip,
-:root[data-theme="dark"] .attachment-chip,
-:root[data-theme="dark"] .chat-pending-chip,
-:root[data-theme="dark"] .msg-artifact-chip,
-:root[data-theme="dark"] .chat-session-popover,
-:root[data-theme="dark"] .chat-toolbar-popover,
-:root[data-theme="dark"] .chat-slash {
-  background: #1f2937;
-  border-color: #374151;
-}
-
-:root[data-theme="dark"] .chat-header,
-:root[data-theme="dark"] .chat-composer,
-:root[data-theme="dark"] .chat-pending {
-  background: #111827;
-  border-color: #374151;
-}
-
-:root[data-theme="dark"] .chat-session-popover-item:hover,
-:root[data-theme="dark"] .chat-session-popover-item.is-current,
-:root[data-theme="dark"] .chat-slash-item:hover,
-:root[data-theme="dark"] .chat-slash-item--active {
-  background: #374151;
-}
-
 /* Mobile */
 @media (max-width: 768px) {
+  .chat--new-landing {
+    padding: clamp(3.25rem, 13vh, 5.5rem) 0.75rem 1.25rem;
+    gap: 0.875rem;
+  }
+
+  .chat-landing-brand,
+  .chat--new-landing .chat-composer {
+    width: 100%;
+  }
+
+  .chat-landing-lockup {
+    max-height: 152px;
+  }
+
   .chat-header {
     padding: 0.5rem 0.75rem;
   }
@@ -4142,15 +5981,8 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
     max-width: 180px;
   }
 
-  .msg.user {
-    max-width: 90%;
-  }
-
-  .msg.assistant,
-  .msg.system,
-  .msg.subagent,
-  .msg.error {
-    max-width: 95%;
+  .msg-user-bubble {
+    max-width: 85%;
   }
 
   .chat-thread {
@@ -4161,8 +5993,5 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
     padding: 0.5rem 0.75rem;
   }
 
-  .router-fx-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
 }
 </style>

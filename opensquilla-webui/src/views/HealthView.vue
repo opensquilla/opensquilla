@@ -703,9 +703,10 @@ function findingBadgeClass(finding: Finding): string {
 .health-count span:first-child {
   color: var(--text-dim);
   display: block;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
   text-transform: uppercase;
 }
 

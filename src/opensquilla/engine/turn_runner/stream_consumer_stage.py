@@ -886,6 +886,7 @@ class StreamConsumerStage:
             ErrorEvent,
             TextDeltaEvent,
             ToolResultEvent,
+            ToolUseDeltaEvent,
             ToolUseStartEvent,
             WarningEvent,
         )
@@ -903,6 +904,8 @@ class StreamConsumerStage:
                 transformed = self._text_delta_handler.handle(event, state)
             elif isinstance(event, ToolUseStartEvent):
                 transformed = self._tool_use_start_handler.handle(event, state)
+            elif isinstance(event, ToolUseDeltaEvent):
+                transformed = event
             elif isinstance(event, ToolResultEvent):
                 transformed = self._tool_result_handler.handle(event, state)
             elif isinstance(event, ArtifactEvent):

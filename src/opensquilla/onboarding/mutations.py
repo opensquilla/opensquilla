@@ -676,6 +676,12 @@ def validate_channel_entry(payload: dict[str, Any]) -> dict[str, Any]:
         entry = parse_channel_entry(full)
     except ValidationError as exc:
         raise ValueError(str(exc)) from exc
+    if (
+        type_name == "slack"
+        and getattr(entry, "connection_mode", "webhook") == "webhook"
+        and not str(getattr(entry, "signing_secret", "") or "").strip()
+    ):
+        raise ValueError("slack webhook channels require signing_secret")
     return entry.model_dump(mode="python")
 
 

@@ -1063,7 +1063,7 @@ const SetupView = (() => {
     const rawName = String(field.name || 'field');
     const fieldName = `setup_${scope}_${rawName}`;
     const fieldId = `setup-${scope}-${rawName.replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
-    const attrs = `data-name="${_esc(rawName)}" data-scope="${scope}" data-show-when="${showWhen}"`;
+    const attrs = `data-name="${_esc(rawName)}" data-scope="${scope}" data-show-when="${showWhen}" data-required="${field.required ? 'true' : 'false'}"`;
     if (field.type === 'bool') {
       return `<label class="setup-check" ${attrs} for="${_esc(fieldId)}"><input id="${_esc(fieldId)}" name="${_esc(fieldName)}" type="checkbox" ${field.default ? ' checked' : ''}><span>${_esc(field.label)}${required}${desc}</span></label>`;
     }
@@ -1420,6 +1420,19 @@ const SetupView = (() => {
     return out;
   }
 
+  function _validateScopedRequiredFields(scope) {
+    let missing = '';
+    _el.querySelectorAll(`[data-scope="${scope}"][data-name][data-required="true"]`).forEach(label => {
+      if (missing || label.hidden) return;
+      const input = label.querySelector('input, select');
+      if (!input || input.type === 'checkbox') return;
+      if (String(input.value || '').trim()) return;
+      const labelText = label.querySelector('span')?.textContent || label.dataset.name || 'required field';
+      missing = labelText.replace(/\s*\*\s*$/, '').trim();
+    });
+    return missing;
+  }
+
   async function _saveProvider() {
     const providerId = _el.querySelector('[data-provider-select]')?.value;
     if (!providerId) {
@@ -1481,6 +1494,11 @@ const SetupView = (() => {
   }
 
   async function _saveChannel() {
+    const missing = _validateScopedRequiredFields('channel');
+    if (missing) {
+      UI.toast(`${missing} is required.`, 'err');
+      return;
+    }
     const entry = Object.assign({ type: _el.querySelector('[data-channel-type]')?.value }, _readScopedFields('channel'));
     try {
       await _rpc.call('onboarding.channel.probe', { entry });

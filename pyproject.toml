@@ -148,7 +148,7 @@ select = ["E", "F", "I", "N", "W", "UP"]
 "src/opensquilla/skills/bundled/seedance-2-prompt/scripts/*.py" = ["E501"]
 "src/opensquilla/skills/bundled/srt-from-script/scripts/*.py" = ["E501"]
 "src/opensquilla/skills/bundled/subtitle-burner/scripts/*.py" = ["E501"]
-"src/opensquilla/skills/bundled/text-file-write/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/text-file-read/scripts/*.py" = ["E501"]
 "src/opensquilla/skills/bundled/title-card-image/scripts/*.py" = ["E501"]
 "src/opensquilla/skills/bundled/video-merger/scripts/*.py" = ["E501"]
 # video-merger src/ is vendored from upstream MIT-0 clawhub package; keep

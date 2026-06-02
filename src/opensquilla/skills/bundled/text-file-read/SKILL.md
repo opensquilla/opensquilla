@@ -1,6 +1,6 @@
 ---
 name: text-file-read
-description: "Read a UTF-8 text file and emit its content on stdout. Tiny helper for meta-skills that need to round-trip an artefact through disk so the user can hand-edit it between steps (e.g. tweak script.txt during a review pause)."
+description: "Read a UTF-8 text file and emit its raw content on stdout. Tiny helper for meta-skills that need to round-trip an artefact through disk so the user can hand-edit it between steps (e.g. tweak script.txt during a review pause). Unlike the builtin read_file tool — which returns line-numbered output for model display — this returns bytes verbatim, suitable for downstream parsers."
 provenance:
   origin: opensquilla-original
   license: Apache-2.0
@@ -23,10 +23,16 @@ entrypoint:
 
 # text-file-read
 
-Reads a UTF-8 text file and prints its contents to stdout. Pair with
-`text-file-write` to let a user hand-edit an artefact during a meta-
-skill review pause: write before the pause, read after, downstream
-steps consume the (possibly edited) re-read content.
+Reads a UTF-8 text file and prints its contents verbatim to stdout
+(no line numbers, no decoration). Use this when a meta-skill needs
+to round-trip an artefact through disk between steps so the user can
+hand-edit the file during a clarify pause.
+
+This skill exists alongside OpenSquilla's builtin `read_file` tool
+on purpose: `read_file` is designed for LLM display and prepends a
+`lineno\t` prefix to every line, which corrupts structured files
+(scripts, SRT, YAML) when piped back into downstream parsers. This
+skill returns the bytes unmodified.
 
 ## Inputs (`with:`)
 

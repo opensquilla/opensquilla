@@ -35,7 +35,6 @@ metadata:
       - srt-from-script
       - subtitle-burner
       - title-card-image
-      - text-file-write
       - text-file-read
 composition:
   steps:
@@ -158,12 +157,13 @@ composition:
     #     reply doesn't mention them.
     # =========================================================================
     - id: script_save_draft
-      kind: skill_exec
-      skill: text-file-write
+      kind: tool_call
+      tool: write_file
+      tool_allowlist: [write_file]
       depends_on: [script_draft]
-      with:
-        text: "{{ outputs.script_draft }}"
-        output: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/script.txt"
+      tool_args:
+        path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/script.txt"
+        content: "{{ outputs.script_draft }}"
 
     # =========================================================================
     # 3. ONE combined review gate — free-form. The user can approve,
@@ -329,12 +329,13 @@ composition:
     #    by hand).
     # =========================================================================
     - id: script_save
-      kind: skill_exec
-      skill: text-file-write
+      kind: tool_call
+      tool: write_file
+      tool_allowlist: [write_file]
       depends_on: [final_script]
-      with:
-        text: "{{ outputs.final_script }}"
-        output: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/script.txt"
+      tool_args:
+        path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/script.txt"
+        content: "{{ outputs.final_script }}"
 
     # =========================================================================
     # 8. Title / subtitle / ending text extracts (cheap llm_chat).
@@ -1705,7 +1706,7 @@ to disk regardless of outcome.
 | `srt-from-script` | VOICEOVER → SRT with cover offset | Python stdlib |
 | `subtitle-burner` | Burn SRT into MP4 | ffmpeg + libass |
 | `title-card-image` | Pillow cover + ending PNG cards | Pillow |
-| `text-file-write` | Save script.txt | Python stdlib |
+| (builtin) `write_file` | Save script.txt (no skill needed) | OpenSquilla builtin |
 | `text-file-read` | Re-read script.txt after review pause | Python stdlib |
 
 Environment:

@@ -30,6 +30,7 @@ const App = (() => {
 
     Router.register('/overview', (el) => _renderStandardView(OverviewView, el), () => OverviewView.destroy(), { title: 'Overview' });
     Router.register('/health', (el) => _renderStandardView(HealthView, el), () => HealthView.destroy(), { title: 'Health' });
+    Router.register('/sandbox', (el) => _renderStandardView(SandboxView, el), () => SandboxView.destroy(), { title: 'Sandbox' });
     Router.register('/chat', (el) => ChatView.render(el), () => ChatView.destroy(), { title: 'Chat' });
     Router.register('/sessions', (el) => _renderStandardView(SessionsView, el), () => SessionsView.destroy(), { title: 'Sessions' });
     Router.register('/agents', (el) => _renderStandardView(AgentsView, el), () => AgentsView.destroy(), { title: 'Agents' });
@@ -38,7 +39,6 @@ const App = (() => {
     Router.register('/config', (el) => _renderStandardView(ConfigView, el), () => ConfigView.destroy(), { title: 'Config' });
     Router.register('/setup', (el) => _renderStandardView(SetupView, el), () => SetupView.destroy(), { title: 'Setup' });
     Router.register('/channels', (el) => _renderStandardView(ChannelsView, el), () => ChannelsView.destroy(), { title: 'Channels' });
-    Router.register('/approvals', (el) => _renderStandardView(ApprovalsView, el), () => ApprovalsView.destroy(), { title: 'Approvals' });
     Router.register('/skills', (el) => _renderStandardView(SkillsView, el), () => SkillsView.destroy(), { title: 'Skills' });
     Router.register('/logs', (el) => _renderStandardView(LogsView, el), () => LogsView.destroy(), { title: 'Logs' });
 
@@ -74,6 +74,7 @@ const App = (() => {
         <div class="nav-group-label">Control</div>
         <a class="nav-item" href="#" data-path="/overview">${icons.home()} Overview</a>
         <a class="nav-item" href="#" data-path="/health">${icons.logs()} Health</a>
+        <a class="nav-item" href="#" data-path="/sandbox">${icons.sandbox()} Sandbox</a>
         <a class="nav-item" href="#" data-path="/channels">${icons.channels()} Channels</a>
         <a class="nav-item" href="#" data-path="/skills">${icons.skills()} Skills</a>
         <a class="nav-item" href="#" data-path="/sessions">${icons.sessions()} Sessions</a>
@@ -83,7 +84,6 @@ const App = (() => {
         <div class="nav-group-label">Settings</div>
         <a class="nav-item" href="#" data-path="/config">${icons.config()} Config</a>
         <a class="nav-item" href="#" data-path="/logs">${icons.logs()} Logs</a>
-        <a class="nav-item" href="#" data-path="/approvals">${icons.approvals()} Approvals <span class="nav-badge hidden" id="approval-count">0</span></a>
         ${navFootHTML}
       </nav>
       <div class="main">

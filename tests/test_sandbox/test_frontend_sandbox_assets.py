@@ -88,3 +88,18 @@ def test_sandbox_view_tracks_pending_approval_activity() -> None:
     assert "root.querySelector('#sandbox-rules')" in sandbox
     assert "Approvals pending" in sandbox
     assert "#sb-activity" not in sandbox
+
+
+def test_sandbox_approval_activity_preserves_rules_panel_base_state() -> None:
+    sandbox = _read(SANDBOX_JS)
+    update_start = sandbox.index("function _updateApprovalActivity(count)")
+    update_body = sandbox[update_start : sandbox.index("  function _detailRow", update_start)]
+
+    assert "_setRulesContent(root, _renderEmpty('Loading rules'), '0 rules');" in sandbox
+    assert (
+        "_setRulesContent(root, _renderEmpty('Sandbox rules are unavailable'), '0 rules');"
+        in sandbox
+    )
+    assert "insertAdjacentHTML('afterbegin', activity)" in update_body
+    assert "rulesCount.textContent = _rulesBaseCountLabel;" in update_body
+    assert "_renderEmpty('No sandbox rules reported')" not in update_body

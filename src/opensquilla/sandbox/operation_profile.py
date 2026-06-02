@@ -37,7 +37,7 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
         return OperationProfile("package_install", True, "go")
     domains = _domains_from_argv(parts)
     if domains:
-        return OperationProfile("network_fetch", True, requested_domains=domains)
+        return OperationProfile("url_fetch", True, requested_domains=domains)
     if _is_destructive(lowered):
         return OperationProfile("destructive_shell", high_impact=True)
     if lowered and lowered[0] in {"cat", "ls", "find", "rg"}:

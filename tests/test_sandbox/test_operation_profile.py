@@ -40,7 +40,7 @@ def test_classify_go_package_install() -> None:
 
 def test_classify_url_fetch() -> None:
     profile = classify_command(("curl", "https://example.com/index.html"))
-    assert profile.name == "network_fetch"
+    assert profile.name == "url_fetch"
     assert profile.requested_domains == ("example.com",)
 
 

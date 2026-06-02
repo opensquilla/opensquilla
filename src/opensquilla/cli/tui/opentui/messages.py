@@ -79,25 +79,8 @@ class BlockUpdate:
 
 
 @dataclass(frozen=True)
-class BlockRetype:
-    id: str
-    kind: str
-
-
-@dataclass(frozen=True)
 class BlockEnd:
     id: str
-
-
-@dataclass(frozen=True)
-class AnswerText:
-    text: str
-
-
-@dataclass(frozen=True)
-class AnswerDemote:
-    reason: str = "tool_start"
-    tool_id: str | None = None
 
 
 @dataclass(frozen=True)

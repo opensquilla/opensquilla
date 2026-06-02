@@ -45,7 +45,6 @@ export function createToolBlock(ctx) {
       }
       renderer.requestRender?.();
     },
-    retype() {},
     end() { if (node) node._done = true; },
   };
 }

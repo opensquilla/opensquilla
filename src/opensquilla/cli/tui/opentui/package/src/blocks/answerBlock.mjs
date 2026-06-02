@@ -17,8 +17,6 @@ export function createAnswerBlock(ctx) {
     },
     append(delta) { text += String(delta); if (md) md.content = stripTerminalControls(text); renderer.requestRender?.(); },
     update() {},
-    retype() {},
-    teardown() { [gap, top, body, bot].forEach((n) => { if (n) box.remove?.(n.id); }); },
     end() {
       if (md) md.streaming = false;
       bot = new TextRenderable(renderer, { id: `${idPrefix}-bot`, content: `╰${CARD_RULE_SHORT}`, fg: THEME.toolAccent }); box.add(bot);

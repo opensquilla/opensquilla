@@ -59,7 +59,10 @@ async def _render_response(
         _set_toolbar(output, "router_hud_style", "normal")
         _invalidate(output)
         await renderer.astatus("router route standard -> fake-terminal 99% save 42%")
-        await renderer.aappend_text(
+        # Reasoning streamed before the tool call: it renders as a purple ✱
+        # thinking timeline, distinct from the answer card, and must not flicker
+        # the answer card while streaming.
+        await renderer.aappend_reasoning(
             "intermediate-before-tool "
             + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 6
             + "\nsecond-intermediate-line "

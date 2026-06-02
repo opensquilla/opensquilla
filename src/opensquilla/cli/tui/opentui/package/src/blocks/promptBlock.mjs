@@ -14,6 +14,6 @@ export function createPromptBlock(ctx) {
       add("bot", `╰${CARD_RULE_SHORT}`);
       renderer.requestRender?.();
     },
-    append() {}, update() {}, retype() {}, end() {},
+    append() {}, update() {}, end() {},
   };
 }

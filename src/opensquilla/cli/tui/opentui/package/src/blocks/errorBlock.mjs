@@ -10,6 +10,6 @@ export function createErrorBlock(ctx) {
       });
       box.add(n); renderer.requestRender?.();
     },
-    append() {}, update() {}, retype() {}, end() {},
+    append() {}, update() {}, end() {},
   };
 }

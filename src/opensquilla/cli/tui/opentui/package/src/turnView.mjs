@@ -28,17 +28,6 @@ export function createTurnView(deps, id) {
       entry.r.update(patch);
       if (entry.kind === "tool" && (patch?.status === "ok" || patch?.status === "error")) runningTools.delete(entry.r);
     },
-    retype(blockId, kind) {
-      const entry = blocks.get(blockId);
-      if (!entry) return;
-      if (entry.kind === "answer" && kind === "thinking") {
-        const text = entry.r.text;
-        entry.r.teardown();
-        const t = createBlock("thinking", ctxFor(blockId));
-        t.seedText(text);
-        blocks.set(blockId, { kind: "thinking", r: t });
-      }
-    },
     end(blockId) {
       const entry = blocks.get(blockId);
       if (!entry) return;

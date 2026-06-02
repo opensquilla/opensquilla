@@ -95,8 +95,6 @@ def test_host_message_rejects_malformed_control_payloads() -> None:
 
 def test_python_message_to_json_serializes_structured_blocks() -> None:
     from opensquilla.cli.tui.opentui.messages import (
-        AnswerDemote,
-        AnswerText,
         ModelText,
         PromptEcho,
         ToolCall,
@@ -121,12 +119,6 @@ def test_python_message_to_json_serializes_structured_blocks() -> None:
     assert '"type":"tool.detail"' in python_message_to_json(
         "tool.detail", ToolDetail(text="312 lines")
     )
-    assert '"type":"answer.text"' in python_message_to_json(
-        "answer.text", AnswerText(text="架构分四层")
-    )
-    assert '"type":"answer.demote"' in python_message_to_json(
-        "answer.demote", AnswerDemote(tool_id="c1")
-    )
     assert '"type":"usage"' in python_message_to_json("usage", Usage(text="in 1k / out 2k"))
     status = python_message_to_json(
         "turn.status", TurnStatusState(phase="tool", label="read_file", active=True)
@@ -139,7 +131,6 @@ def test_block_messages_serialize_with_kind_and_fields() -> None:
         BlockAppend,
         BlockBegin,
         BlockEnd,
-        BlockRetype,
         BlockUpdate,
         python_message_to_json,
     )
@@ -154,7 +145,5 @@ def test_block_messages_serialize_with_kind_and_fields() -> None:
     assert '"delta":"line"' in append
     update = python_message_to_json("block.update", BlockUpdate(id="b1", patch={"status": "ok"}))
     assert '"status":"ok"' in update
-    retype = python_message_to_json("block.retype", BlockRetype(id="b1", kind="thinking"))
-    assert '"kind":"thinking"' in retype
     end = python_message_to_json("block.end", BlockEnd(id="b1"))
     assert '"type":"block.end"' in end

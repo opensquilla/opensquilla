@@ -119,7 +119,6 @@ async function main() {
     blockBegin: (m) => ensureTurn().begin(m.id, m.kind, m.meta),
     blockAppend: (m) => activeTurn?.append(m.id, m.delta),
     blockUpdate: (m) => activeTurn?.update(m.id, m.patch),
-    blockRetype: (m) => activeTurn?.retype(m.id, m.kind),
     blockEnd: (m) => activeTurn?.end(m.id),
     // prompt.echo arrives BEFORE turn.begin (it is emitted by the input-echo
     // hook). ensureTurn here starts the turn view; the following turn.begin

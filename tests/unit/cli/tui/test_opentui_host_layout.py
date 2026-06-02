@@ -75,18 +75,19 @@ def test_answer_block_is_streaming_left_border_markdown_card() -> None:
     assert 'border: ["left"]' in answer
     assert "borderColor: THEME.toolAccent" in answer
     assert "╭─ answer ─ squilla" in answer
-    # text getter + teardown form the retype contract with turnView
-    assert "get text()" in answer
-    assert "teardown()" in answer
     # streaming stops on end()
     assert "md.streaming = false" in answer
+    # the retype mechanism is gone: no teardown contract with turnView
+    assert "teardown" not in answer
 
 
 def test_thinking_block_is_purple_glyph_timeline() -> None:
     thinking = _read("blocks/thinkingBlock.mjs")
     assert "✱" in thinking
     assert "THEME.modelText" in thinking
-    assert "seedText" in thinking
+    # reasoning renders incrementally as it streams (render called from append)
+    assert "append(delta)" in thinking
+    assert "render()" in thinking
     # clips to viewport so continuation lines never wrap past the rail
     assert "clipToCells" in thinking
     assert "timelineAvailCells" in thinking
@@ -114,14 +115,15 @@ def test_prompt_and_usage_and_error_blocks() -> None:
     assert "THEME.routerError" in error
 
 
-def test_turnview_routes_and_handles_retype() -> None:
+def test_turnview_routes_block_messages() -> None:
     tv = _read("turnView.mjs")
     assert "createTurnView" in tv
-    for method in ["begin(", "append(", "update(", "retype(", "end(", "refreshPulse("]:
+    for method in ["begin(", "append(", "update(", "end(", "refreshPulse("]:
         assert method in tv, f"turnView missing {method}"
-    # retype tears down the answer and seeds a thinking block
-    assert "teardown" in tv
-    assert "seedText" in tv
+    # the retype mechanism is gone: blocks keep their kind for life
+    assert "retype" not in tv
+    assert "teardown" not in tv
+    assert "seedText" not in tv
     # running-tool pulse set is maintained (no dangling animated nodes)
     assert "runningTools" in tv
 
@@ -139,7 +141,6 @@ def test_dispatcher_routes_block_and_legacy_messages() -> None:
         "block.begin",
         "block.append",
         "block.update",
-        "block.retype",
         "block.end",
         "prompt.echo",
         "shutdown",
@@ -216,8 +217,10 @@ def test_main_is_thin_entry_with_mouse_and_alt_screen() -> None:
 
 
 def test_no_legacy_optimistic_demote_in_host() -> None:
-    # The optimistic-render + demote model is replaced by block.retype.
+    # The optimistic-render + demote/retype model is gone entirely: reasoning
+    # and answer arrive as distinct streams, so no block ever changes kind.
     for f in ["main.mjs", "turnView.mjs"]:
         src = _read(f)
         assert "demoteAnswerToTimeline" not in src
         assert "promoteAnswerToCard" not in src
+        assert "retype" not in src

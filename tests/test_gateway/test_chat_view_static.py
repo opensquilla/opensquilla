@@ -340,6 +340,69 @@ def test_chat_shows_awaiting_model_hint_after_tool_result_heartbeat() -> None:
     assert "document.createTextNode('waiting for model response" not in source
 
 
+def test_chat_streaming_indicator_uses_delayed_bottom_dock() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert ".msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::after" in css
+    assert "padding-bottom: calc(var(--sp-2) + 24px);" in css
+    assert "left: calc(var(--sp-4) + 16px);" in css
+    assert "bottom: calc(var(--sp-2) + 8px);" in css
+    assert "background-image: url('../../img/opensquilla-mark.png');" in css
+    assert "width: 16px;" in css
+    assert "height: 16px;" in css
+    assert "background-size: 11px 11px;" in css
+    assert "border-radius: 50%;" in css
+    assert "0 0 0 1px color-mix(in srgb, var(--accent) 7%, transparent)" in css
+    assert "0 0 6px color-mix(in srgb, var(--accent-secondary) 18%, transparent)" in css
+    assert "animation: squilla-activity-spin 1.6s linear infinite;" in css
+    assert "@keyframes squilla-activity-spin" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css
+    assert ".chat-tools-collapse--running > .chat-tools-summary .chat-tools-icon" not in css
+    assert ".msg-text-seg:not(:empty):last-of-type > :last-child::after" not in css
+    assert "streaming-harbor" not in css
+    assert "animation: squilla-harbor-peek" not in css
+    assert "@keyframes squilla-harbor-peek" not in css
+    assert "animation: squilla-harbor-spin" not in css
+    assert "@keyframes squilla-harbor-spin" not in css
+    assert "animation: squilla-harbor-wave" not in css
+    assert "@keyframes squilla-harbor-wave" not in css
+    assert "animation: squilla-dock-patrol" not in css
+    assert "@keyframes squilla-dock-patrol" not in css
+    assert "animation: shrimp-roll" not in css
+    assert "@keyframes shrimp-roll" not in css
+
+
+def test_chat_streaming_active_mark_reveals_after_visible_bubble_delay() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "const _STREAM_ACTIVE_MARK_CLASS = 'streaming-active-mark';" in source
+    assert "const _STREAM_ACTIVE_MARK_DELAY_MS = 3500;" in source
+    assert "let _streamActiveMarkVisibleStartedAt = 0;" in source
+    assert "function _beginStreamActiveMarkRevealWindow()" in source
+
+    start_stream_start = source.index("function _startStreaming()")
+    start_stream_end = source.index("  function _ensureStreamBubble", start_stream_start)
+    start_stream_body = source[start_stream_start:start_stream_end]
+    assert "_scheduleStreamActiveMarkReveal();" not in start_stream_body
+    assert "_beginStreamActiveMarkRevealWindow();" not in start_stream_body
+
+    ensure_start = source.index("function _ensureStreamBubble()")
+    ensure_end = source.index("  /** Create a new .msg-text-seg", ensure_start)
+    ensure_body = source[ensure_start:ensure_end]
+    assert "_beginStreamActiveMarkRevealWindow();" in ensure_body
+    assert "_maybeRevealStreamActiveMark();" in ensure_body
+
+    reveal_start = source.index("function _maybeRevealStreamActiveMark()")
+    reveal_end = source.index("  function _scheduleStreamActiveMarkReveal", reveal_start)
+    reveal_body = source[reveal_start:reveal_end]
+    assert "_streamActiveMarkVisibleStartedAt ? Date.now() - _streamActiveMarkVisibleStartedAt : 0" in reveal_body
+
+    end_stream_start = source.index("function _endStreaming(opts)")
+    end_stream_end = source.index("  function _hasViewLocalStreamState", end_stream_start)
+    end_stream_body = source[end_stream_start:end_stream_end]
+    assert "_clearStreamActiveMarkReveal();" in end_stream_body
+
+
 def test_chat_clears_awaiting_model_hint_on_next_visible_event_and_stream_reset() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     append_delta_start = source.index("function _appendDelta(text)")

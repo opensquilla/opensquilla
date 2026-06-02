@@ -591,31 +591,32 @@
   position: relative;
 }
 
-/* Streaming indicator — one spinning shrimp anchored inside the bubble,
-   at the bottom of .msg-body. Applies the whole time the assistant turn is
-   in flight (text streaming OR tool execution), so the affordance does not
-   vanish when control moves between text deltas and tool calls. The
-   :not(.awaiting-model) guard lets the pre-first-token "waiting for model
-   response..." text on .msg.streaming.awaiting-model::after be the only
-   marker during the wait, then the shrimp takes over once tokens start. */
-.msg.streaming:not(.awaiting-model) .msg-body::after {
+/* Streaming active mark — delayed bottom dock. The mark appears only after
+   short turns have had time to finish, then sits inside the bubble footer with
+   a small rightward offset so it does not collide with tool-card status rails. */
+.msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body {
+  padding-bottom: calc(var(--sp-2) + 24px);
+}
+
+.msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::after {
   content: '';
   display: block;
-  width: 1.1em;
-  height: 1.1em;
-  margin-top: 6px;
-  position: relative;
-  left: 0;
+  position: absolute;
+  left: calc(var(--sp-4) + 16px);
+  bottom: calc(var(--sp-2) + 8px);
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+  border-radius: 50%;
+  background-color: color-mix(in srgb, var(--bg-surface) 90%, var(--bg) 10%);
   background-image: url('../../img/opensquilla-mark.png');
   background-repeat: no-repeat;
   background-position: center;
-  background-size: contain;
-  /* Wheel kinematics: ~1.1em diameter → ~3.46em circumference per spin. The
-     forward traverse covers ~4 rotations (1440°) over 5s, then the return
-     interpolates back to 0° — so the spin direction reverses with the swim
-     direction, matching a real rolling wheel instead of a sliding one. The
-     two are baked into one keyframes so they stay synchronized. */
-  animation: shrimp-roll 10s linear infinite;
+  background-size: 11px 11px;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 7%, transparent),
+    0 0 6px color-mix(in srgb, var(--accent-secondary) 18%, transparent);
+  animation: squilla-activity-spin 1.6s linear infinite;
 }
 
 .msg.streaming.awaiting-model::after {
@@ -639,9 +640,16 @@
   50%      { opacity: 0.48; }
 }
 
-@keyframes shrimp-roll {
-  0%, 100% { left: 0;                  transform: rotate(0deg); }
-  50%      { left: calc(100% - 1.1em); transform: rotate(1440deg); }
+@keyframes squilla-activity-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::after {
+    animation: none;
+    opacity: 0.72;
+    transform: none;
+  }
 }
 
 @keyframes blink {

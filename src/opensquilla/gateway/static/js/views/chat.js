@@ -43,6 +43,10 @@ const ChatView = (() => {
   let _currentRunStatus = 'idle';
   let _historySyncTimer = null;
   const _AWAITING_MODEL_CLASS = 'awaiting-model';
+  const _STREAM_ACTIVE_MARK_CLASS = 'streaming-active-mark';
+  const _STREAM_ACTIVE_MARK_DELAY_MS = 3500;
+  let _streamActiveMarkTimer = null;
+  let _streamActiveMarkVisibleStartedAt = 0;
   let _lastVisibleStreamEvent = '';
   const _DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000; // server should emit terminal first
   let _streamIdleTimeoutMs = _DEFAULT_STREAM_IDLE_TIMEOUT_MS;
@@ -6402,6 +6406,38 @@ const ChatView = (() => {
     return true;
   }
 
+  function _clearStreamActiveMarkReveal() {
+    if (_streamActiveMarkTimer) {
+      clearTimeout(_streamActiveMarkTimer);
+      _streamActiveMarkTimer = null;
+    }
+    _streamActiveMarkVisibleStartedAt = 0;
+    if (_streamBubble) _streamBubble.classList.remove(_STREAM_ACTIVE_MARK_CLASS);
+  }
+
+  function _beginStreamActiveMarkRevealWindow() {
+    _streamActiveMarkVisibleStartedAt = Date.now();
+    _scheduleStreamActiveMarkReveal();
+  }
+
+  function _maybeRevealStreamActiveMark() {
+    if (!_isStreaming || !_streamBubble) return false;
+    const elapsedMs = _streamActiveMarkVisibleStartedAt ? Date.now() - _streamActiveMarkVisibleStartedAt : 0;
+    if (elapsedMs < _STREAM_ACTIVE_MARK_DELAY_MS) return false;
+    _streamBubble.classList.add(_STREAM_ACTIVE_MARK_CLASS);
+    return true;
+  }
+
+  function _scheduleStreamActiveMarkReveal() {
+    if (_streamActiveMarkTimer) clearTimeout(_streamActiveMarkTimer);
+    const generation = _streamGeneration;
+    _streamActiveMarkTimer = setTimeout(() => {
+      _streamActiveMarkTimer = null;
+      if (_streamGeneration !== generation) return;
+      _maybeRevealStreamActiveMark();
+    }, _STREAM_ACTIVE_MARK_DELAY_MS);
+  }
+
   function _startStreaming() {
     _chatDiag('stream.start.before', {
       wasStreaming: _isStreaming,
@@ -6475,6 +6511,7 @@ const ChatView = (() => {
       }
 
       _thread.appendChild(_streamBubble);
+      _beginStreamActiveMarkRevealWindow();
 
       // Create the first text segment
       _newTextSegment();
@@ -6482,6 +6519,7 @@ const ChatView = (() => {
         streamBubble: _chatDiagDescribeElement(_streamBubble),
       });
     }
+    _maybeRevealStreamActiveMark();
     return _streamBubble;
   }
 
@@ -6580,6 +6618,7 @@ const ChatView = (() => {
     if (_renderRafId) { cancelAnimationFrame(_renderRafId); _renderRafId = null; }
     _renderDirty = false;
     _clearStreamIdleTimer();
+    _clearStreamActiveMarkReveal();
     _streamIdlePausedForApproval = false;
     _approvalPendingForCurrentSession = false;
     if (_streamBubble) {
@@ -9155,6 +9194,7 @@ const ChatView = (() => {
     // Clear the root --composer-h so other views' toasts don't keep that offset.
     document.documentElement.style.removeProperty('--composer-h');
     if (_isStreaming) _endStreaming();
+    _clearStreamActiveMarkReveal();
     _hideThinkingIndicator();
     _cancelPendingRouterFxScan('destroy');
     if (_renderRafId) { cancelAnimationFrame(_renderRafId); _renderRafId = null; }

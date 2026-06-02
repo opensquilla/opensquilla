@@ -3930,7 +3930,7 @@ const ChatView = (() => {
     }
   }
 
-  function _finishPendingRouterFxScan() {
+  async function _finishPendingRouterFxScan() {
     const pending = _routerFxScanPending;
     _routerFxScanDelayTimer = null;
     _routerFxScanPending = null;
@@ -3945,6 +3945,22 @@ const ChatView = (() => {
     if (_isCompactInFlightForCurrentSession()
         || _routerFxIsSuppressedForCompactionTurn(pending.turnIndex)) {
       _chatDiag('router_scan.pending.drop.compaction_suppressed', {
+        sessionKey: pending.sessionKey || '',
+        turnIndex: pending.turnIndex || '',
+      });
+      return;
+    }
+    await _routerFxAwaitConfig();
+    if (pending.sessionKey !== (_sessionKey || '')) {
+      _chatDiag('router_scan.pending.drop.session_changed_after_config', {
+        pendingSessionKey: pending.sessionKey || '',
+        sessionKey: _sessionKey || '',
+      });
+      return;
+    }
+    if (_isCompactInFlightForCurrentSession()
+        || _routerFxIsSuppressedForCompactionTurn(pending.turnIndex)) {
+      _chatDiag('router_scan.pending.drop.compaction_suppressed_after_config', {
         sessionKey: pending.sessionKey || '',
         turnIndex: pending.turnIndex || '',
       });
@@ -3985,7 +4001,7 @@ const ChatView = (() => {
       });
       return false;
     }
-    if (!_routerFxHasMultipleCandidates(requestKind, null)) {
+    if (_routerFxConfigTiers !== null && !_routerFxHasMultipleCandidates(requestKind, null)) {
       _chatDiag('router_scan.schedule.skip.single_candidate', {
         requestKind,
         candidates: _routerFxVisualEntries(requestKind, null).length,
@@ -4000,7 +4016,9 @@ const ChatView = (() => {
       turnIndex: String(_routerFxCountUserMessages()),
       decision: null,
     };
-    _routerFxScanDelayTimer = setTimeout(_finishPendingRouterFxScan, _ROUTER_FX_START_DELAY_MS);
+    _routerFxScanDelayTimer = setTimeout(() => {
+      void _finishPendingRouterFxScan();
+    }, _ROUTER_FX_START_DELAY_MS);
     _chatDiag('router_scan.scheduled', {
       seedKey,
       requestKind,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlparse
@@ -34,6 +35,7 @@ _BROAD_WILDCARD_SUFFIXES = {
 }
 
 _DNS_LABEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
+_IPV4_NUMERIC_ALIAS_RE = re.compile(r"\d+(?:\.\d+){1,3}")
 
 
 def normalize_domain(raw: str) -> str:
@@ -110,7 +112,7 @@ def _is_ip_literal(value: str) -> bool:
     try:
         ipaddress.ip_address(candidate)
     except ValueError:
-        return False
+        return _IPV4_NUMERIC_ALIAS_RE.fullmatch(candidate) is not None
     return True
 
 

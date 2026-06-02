@@ -30,6 +30,8 @@ def test_normalize_domain(raw: str, expected: str) -> None:
     "raw",
     [
         "127.0.0.1",
+        "127.1",
+        "0177.0.0.1",
         "10.0.0.2",
         "169.254.169.254",
         "8.8.8.8",

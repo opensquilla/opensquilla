@@ -11,6 +11,7 @@ from opensquilla.sandbox.run_context import (
     DomainGrant,
     MountGrant,
     PackageBundleGrant,
+    PublicNetworkGrant,
     RunContext,
 )
 from opensquilla.sandbox.run_mode import RunMode
@@ -94,17 +95,18 @@ def test_route_metadata_hydrates_full_sandbox_run_context() -> None:
     ]
 
 
-def test_route_metadata_filters_stale_workspace_mounts_from_legacy_mounts(
+def test_fresh_route_metadata_preserves_user_scope_grants_for_execution(
     tmp_path,
 ) -> None:
     from opensquilla.sandbox.integration import _session_mounts_for_policy
+    from opensquilla.sandbox.network_guard import decide_network_access
     from opensquilla.tools.types import current_tool_context
 
     workspace = tmp_path / "workspace"
     chat_mount = tmp_path / "chat-mount"
-    stale_mount = tmp_path / "stale-mount"
+    user_mount = tmp_path / "user-mount"
     legacy_mount = tmp_path / "legacy-mount"
-    for path in (workspace, chat_mount, stale_mount, legacy_mount):
+    for path in (workspace, chat_mount, user_mount, legacy_mount):
         path.mkdir()
     envelope = build_cli_route_envelope(
         session_key="agent:main:cli",
@@ -115,7 +117,14 @@ def test_route_metadata_filters_stale_workspace_mounts_from_legacy_mounts(
         workspace=str(workspace),
         mounts=(
             MountGrant(path=str(chat_mount), access="ro", scope="chat"),
-            MountGrant(path=str(stale_mount), access="rw", scope="workspace"),
+            MountGrant(path=str(user_mount), access="rw", scope="workspace"),
+        ),
+        domains=(
+            DomainGrant(domain="chat.example", scope="chat"),
+            DomainGrant(domain="user.example", scope="workspace"),
+        ),
+        public_network=(
+            PublicNetworkGrant(scope="workspace", source="manual"),
         ),
     )
 
@@ -128,18 +137,37 @@ def test_route_metadata_filters_stale_workspace_mounts_from_legacy_mounts(
 
     assert envelope.metadata["sandbox_run_context"]["mounts"] == [
         {"path": str(chat_mount), "access": "ro", "scope": "chat"},
-        {"path": str(stale_mount), "access": "rw", "scope": "workspace"},
+        {"path": str(user_mount), "access": "rw", "scope": "workspace"},
     ]
     assert envelope.metadata["sandbox_mounts"] == [
-        {"path": str(chat_mount), "access": "ro", "scope": "chat"}
+        {"path": str(chat_mount), "access": "ro", "scope": "chat"},
+        {"path": str(user_mount), "access": "rw", "scope": "workspace"},
     ]
     assert isinstance(ctx.sandbox_run_context, RunContext)
     assert [(grant.path, grant.scope) for grant in ctx.sandbox_run_context.mounts] == [
-        (str(chat_mount), "chat")
+        (str(chat_mount), "chat"),
+        (str(user_mount), "workspace"),
     ]
+    assert [
+        (grant.domain, grant.scope) for grant in ctx.sandbox_run_context.domains
+    ] == [
+        ("chat.example", "chat"),
+        ("user.example", "workspace"),
+    ]
+    assert ctx.sandbox_run_context.public_network == (
+        PublicNetworkGrant(scope="workspace", source="manual"),
+    )
     assert ctx.sandbox_mounts == [
-        {"path": str(chat_mount), "access": "ro", "scope": "chat"}
+        {"path": str(chat_mount), "access": "ro", "scope": "chat"},
+        {"path": str(user_mount), "access": "rw", "scope": "workspace"},
     ]
+    assert decide_network_access("user.example", ctx.sandbox_run_context).status == "allow"
+    public_network_decision = decide_network_access(
+        "unknown-route-metadata.test",
+        ctx.sandbox_run_context,
+    )
+    assert public_network_decision.status == "allow"
+    assert public_network_decision.source == "public_network:user"
 
     token = current_tool_context.set(ctx)
     try:
@@ -148,7 +176,8 @@ def test_route_metadata_filters_stale_workspace_mounts_from_legacy_mounts(
         current_tool_context.reset(token)
 
     assert [(str(mount.host_path), mount.mode) for mount in policy_mounts] == [
-        (str(chat_mount), "ro")
+        (str(chat_mount), "ro"),
+        (str(user_mount), "rw"),
     ]
 
     legacy_envelope = build_cli_route_envelope(
@@ -166,6 +195,14 @@ def test_route_metadata_filters_stale_workspace_mounts_from_legacy_mounts(
     assert legacy_ctx.sandbox_mounts == [
         {"path": str(chat_mount), "access": "ro", "scope": "chat"}
     ]
+    assert isinstance(legacy_ctx.sandbox_run_context, RunContext)
+    assert [
+        (grant.path, grant.scope) for grant in legacy_ctx.sandbox_run_context.mounts
+    ] == [(str(chat_mount), "chat")]
+    assert [
+        (grant.domain, grant.scope) for grant in legacy_ctx.sandbox_run_context.domains
+    ] == [("chat.example", "chat")]
+    assert legacy_ctx.sandbox_run_context.public_network == ()
     token = current_tool_context.set(legacy_ctx)
     try:
         legacy_policy_mounts = _session_mounts_for_policy(workspace)

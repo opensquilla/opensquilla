@@ -200,6 +200,7 @@ def _apply_run_context_route_metadata(
     filtered_run_context = run_context_from_origin_payload(
         run_context_payload,
         source="route_metadata",
+        preserve_materialized_user_grants=True,
     )
     route_envelope.metadata["run_mode"] = run_context.run_mode.value
     route_envelope.metadata["sandbox_mounts"] = (
@@ -208,6 +209,7 @@ def _apply_run_context_route_metadata(
         else []
     )
     route_envelope.metadata["sandbox_run_context"] = run_context_payload
+    object.__setattr__(route_envelope, "sandbox_run_context_fresh", True)
     if run_context.run_mode.value == "full" and principal_is_owner:
         route_envelope.metadata["elevated"] = "full"
 

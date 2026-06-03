@@ -65,6 +65,7 @@ class RouteEnvelope:
     delivery_context: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     interaction_mode: InteractionMode = InteractionMode.INTERACTIVE
+    sandbox_run_context_fresh: bool = False
 
     def delivery_fields(self) -> dict[str, Any]:
         """Return session routing fields derived from the reply target."""
@@ -405,13 +406,20 @@ def tool_context_from_envelope(
         run_mode = None
     if run_mode == RunMode.FULL and is_owner:
         elevated = "full"
-    sandbox_mounts = _filtered_legacy_sandbox_mounts(
-        envelope.metadata.get("sandbox_mounts")
+    sandbox_run_context_fresh = bool(
+        getattr(envelope, "sandbox_run_context_fresh", False)
     )
     sandbox_run_context = run_context_from_origin_payload(
         envelope.metadata.get("sandbox_run_context"),
         source="route_metadata",
+        preserve_materialized_user_grants=sandbox_run_context_fresh,
     )
+    if sandbox_run_context_fresh and sandbox_run_context is not None:
+        sandbox_mounts = sandbox_run_context.to_origin_payload()["mounts"]
+    else:
+        sandbox_mounts = _filtered_legacy_sandbox_mounts(
+            envelope.metadata.get("sandbox_mounts")
+        )
     ctx = ToolContext(
         is_owner=is_owner,
         caller_kind=caller_kind,

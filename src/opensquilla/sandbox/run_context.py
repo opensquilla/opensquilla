@@ -448,6 +448,7 @@ def run_context_from_origin_payload(
     payload: Any,
     *,
     source: str = "metadata",
+    preserve_materialized_user_grants: bool = False,
 ) -> RunContext | None:
     """Hydrate a validated run context from serialized origin metadata.
 
@@ -455,7 +456,9 @@ def run_context_from_origin_payload(
     silently become grants unless it passes the same normalization as saved
     session context.
     """
-    return _context_from_payload(_without_materialized_user_grants(payload), source)
+    if not preserve_materialized_user_grants:
+        payload = _without_materialized_user_grants(payload)
+    return _context_from_payload(payload, source)
 
 
 def _merge_mount_grants(

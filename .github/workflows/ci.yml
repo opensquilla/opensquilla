@@ -72,7 +72,7 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color=false
 
   ubuntu-quality:
-    name: Ubuntu quality gate
+    name: Lint, test, and build (ubuntu-latest, 3.12)
     needs: classify-changes
     if: needs.classify-changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
@@ -143,7 +143,7 @@ jobs:
         run: uv build --wheel
 
   windows-compat:
-    name: Windows compatibility tests
+    name: Lint, test, and build (windows-latest, 3.12)
     needs: classify-changes
     if: needs.classify-changes.outputs.docs_only != 'true'
     runs-on: windows-latest

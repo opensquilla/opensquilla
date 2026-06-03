@@ -36,6 +36,7 @@ class PendingApproval:
     approved: bool = False
     consumed: bool = False
     claim_token: str | None = None
+    claim_started_at: float | None = None
     _event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -49,10 +50,12 @@ class ApprovalQueue:
         *,
         db_path: str | None = None,
         poll_interval: float = 0.25,
+        claim_ttl_seconds: float = 60.0,
     ):
         self._pending: dict[str, PendingApproval] = {}
         self._timeout = default_timeout
         self._poll_interval = max(0.01, float(poll_interval))
+        self._claim_ttl_seconds = max(0.0, float(claim_ttl_seconds))
         self._global_settings = ApprovalSettings()
         self._node_settings: dict[str, ApprovalSettings] = {}
         self._session_run_modes: dict[str, str] = {}
@@ -81,7 +84,8 @@ class ApprovalQueue:
                 resolved      INTEGER NOT NULL DEFAULT 0,
                 approved      INTEGER NOT NULL DEFAULT 0,
                 consumed      INTEGER NOT NULL DEFAULT 0,
-                claim_token   TEXT
+                claim_token   TEXT,
+                claim_started_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_approval_namespace_status
             ON approval_queue(namespace, resolved);
@@ -92,6 +96,24 @@ class ApprovalQueue:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+        try:
+            self._conn.execute("ALTER TABLE approval_queue ADD COLUMN claim_started_at REAL")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+        self._conn.commit()
+
+    def _release_stale_claims(self) -> None:
+        threshold = time.time() - self._claim_ttl_seconds
+        self._conn.execute("BEGIN IMMEDIATE")
+        self._conn.execute(
+            "UPDATE approval_queue "
+            "SET claim_token = NULL, claim_started_at = NULL "
+            "WHERE resolved = 0 "
+            "AND claim_token IS NOT NULL "
+            "AND (claim_started_at IS NULL OR claim_started_at <= ?)",
+            (threshold,),
+        )
         self._conn.commit()
 
     def _serialize_params(self, params: dict | None) -> str:
@@ -118,14 +140,20 @@ class ApprovalQueue:
             approved=bool(row["approved"]),
             consumed=bool(row["consumed"]),
             claim_token=str(row["claim_token"] or "") or None,
+            claim_started_at=(
+                float(row["claim_started_at"])
+                if row["claim_started_at"] is not None
+                else None
+            ),
             _event=existing._event if existing is not None else asyncio.Event(),
         )
 
     def _load_pending(self) -> None:
         self._pending = {}
+        self._release_stale_claims()
         for row in self._conn.execute(
             "SELECT approval_id, namespace, params, created_at, resolved, approved, "
-            "consumed, claim_token "
+            "consumed, claim_token, claim_started_at "
             "FROM approval_queue WHERE resolved = 0"
         ):
             entry = self._row_to_entry(row)
@@ -136,7 +164,7 @@ class ApprovalQueue:
             sqlite3.Row | None,
             self._conn.execute(
                 "SELECT approval_id, namespace, params, created_at, resolved, approved, consumed "
-                ", claim_token "
+                ", claim_token, claim_started_at "
                 "FROM approval_queue WHERE approval_id = ?",
                 (approval_id,),
             ).fetchone(),
@@ -152,8 +180,8 @@ class ApprovalQueue:
                 self._conn.execute(
                     "INSERT INTO approval_queue "
                     "(approval_id, namespace, params, created_at, resolved, approved, "
-                    "consumed, claim_token) "
-                    "VALUES (?, ?, ?, ?, 0, 0, 0, NULL)",
+                    "consumed, claim_token, claim_started_at) "
+                    "VALUES (?, ?, ?, ?, 0, 0, 0, NULL, NULL)",
                     (approval_id, namespace, payload, now),
                 )
                 self._conn.commit()
@@ -172,6 +200,7 @@ class ApprovalQueue:
         return approval_id
 
     def get(self, approval_id: str) -> PendingApproval:
+        self._release_stale_claims()
         row = self._get_row(approval_id)
         if row is None:
             raise KeyError(f"Approval not found: {approval_id}")
@@ -202,6 +231,7 @@ class ApprovalQueue:
         return self._deny_on_timeout_if_unresolved(approval_id)
 
     def _deny_on_timeout_if_unresolved(self, approval_id: str) -> bool:
+        self._release_stale_claims()
         self._conn.execute("BEGIN IMMEDIATE")
         row = self._get_row(approval_id)
         if row is None:
@@ -239,6 +269,7 @@ class ApprovalQueue:
         elevated_mode: str | None = None,
         allow_idempotent: bool = True,
     ) -> None:
+        self._release_stale_claims()
         self._conn.execute("BEGIN IMMEDIATE")
         row = self._get_row(approval_id)
         if row is None:
@@ -288,7 +319,9 @@ class ApprovalQueue:
             self._persist_command_intent(entry.params, allow_always=allow_always)
 
     def claim_resolution(self, approval_id: str) -> str:
+        self._release_stale_claims()
         token = uuid.uuid4().hex
+        now = time.time()
         self._conn.execute("BEGIN IMMEDIATE")
         row = self._get_row(approval_id)
         if row is None:
@@ -306,9 +339,9 @@ class ApprovalQueue:
             raise ValueError(f"Approval resolution in progress: {approval_id}")
         cursor = self._conn.execute(
             "UPDATE approval_queue "
-            "SET claim_token = ? "
+            "SET claim_token = ?, claim_started_at = ? "
             "WHERE approval_id = ? AND resolved = 0 AND claim_token IS NULL",
-            (token, approval_id),
+            (token, now, approval_id),
         )
         if cursor.rowcount != 1:
             self._conn.rollback()
@@ -349,7 +382,7 @@ class ApprovalQueue:
             raise ValueError(f"Approval resolution claim mismatch: {approval_id}")
         cursor = self._conn.execute(
             "UPDATE approval_queue "
-            "SET resolved = 1, approved = ?, claim_token = NULL "
+            "SET resolved = 1, approved = ?, claim_token = NULL, claim_started_at = NULL "
             "WHERE approval_id = ? AND resolved = 0 AND claim_token = ?",
             (1 if approved else 0, approval_id, claim_token),
         )
@@ -387,12 +420,44 @@ class ApprovalQueue:
             return
         self._conn.execute(
             "UPDATE approval_queue "
-            "SET claim_token = NULL "
+            "SET claim_token = NULL, claim_started_at = NULL "
             "WHERE approval_id = ? AND resolved = 0 AND claim_token = ?",
             (approval_id, claim_token),
         )
         self._conn.commit()
         self._pending[approval_id] = self.get(approval_id)
+
+    def reopen_resolved_approval(
+        self,
+        approval_id: str,
+        *,
+        expected_approved: bool = True,
+    ) -> None:
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if not entry.resolved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            return
+        if entry.approved != expected_approved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolved state mismatch: {approval_id}")
+        self._conn.execute(
+            "UPDATE approval_queue "
+            "SET resolved = 0, approved = 0, consumed = 0, "
+            "claim_token = NULL, claim_started_at = NULL "
+            "WHERE approval_id = ? AND resolved = 1 AND approved = ?",
+            (approval_id, 1 if expected_approved else 0),
+        )
+        self._conn.commit()
+        reopened = self.get(approval_id)
+        reopened._event.clear()
+        self._pending[approval_id] = reopened
 
     def _persist_command_intent(self, params: dict, allow_always: bool = False) -> None:
         if not isinstance(params, dict):
@@ -453,6 +518,7 @@ class ApprovalQueue:
         }
 
     def list_pending(self, namespace: str | None = None) -> list[dict]:
+        self._release_stale_claims()
         if namespace:
             rows = self._conn.execute(
                 "SELECT approval_id, namespace, params, created_at "
@@ -520,10 +586,11 @@ class ApprovalQueue:
         key = session_key.strip()
         if not key:
             return 0
+        self._release_stale_claims()
         count = 0
         for row in self._conn.execute(
             "SELECT approval_id, namespace, params, created_at, resolved, approved, "
-            "consumed, claim_token "
+            "consumed, claim_token, claim_started_at "
             "FROM approval_queue "
             "WHERE resolved = 0 AND claim_token IS NULL AND namespace = 'exec'",
         ).fetchall():

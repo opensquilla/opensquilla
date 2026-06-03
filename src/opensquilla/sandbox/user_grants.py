@@ -6,18 +6,25 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 from opensquilla.paths import state_dir
 
 _STATE_FILE = "sandbox_user_grants.sqlite"
+_LEGACY_STATE_FILE = "sandbox_user_grants.json"
 _KINDS = ("mounts", "domains", "bundles")
+_KEY_FIELDS = {
+    "mounts": "path",
+    "domains": "domain",
+    "bundles": "bundle_id",
+}
 
 
 def load_user_grants_payload() -> dict[str, list[dict[str, Any]]]:
     payload = {kind: [] for kind in _KINDS}
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         for row in conn.execute(
             "SELECT kind, payload FROM sandbox_user_grants ORDER BY rowid"
         ):
@@ -58,6 +65,10 @@ def _state_path() -> Path:
     return state_dir(_STATE_FILE)
 
 
+def _legacy_state_path() -> Path:
+    return state_dir(_LEGACY_STATE_FILE)
+
+
 def _connect() -> sqlite3.Connection:
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,6 +85,7 @@ def _connect() -> sqlite3.Connection:
         "PRIMARY KEY(kind, grant_key)"
         ")"
     )
+    _migrate_legacy_json(conn)
     return conn
 
 
@@ -87,20 +99,65 @@ def _decode_payload(raw: Any) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _upsert_row(
+    conn: sqlite3.Connection,
+    *,
+    kind: str,
+    grant_key: str,
+    payload: dict[str, Any],
+) -> None:
+    encoded = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
+    conn.execute(
+        "INSERT INTO sandbox_user_grants(kind, grant_key, payload, updated_at) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(kind, grant_key) DO UPDATE SET "
+        "payload = excluded.payload, updated_at = excluded.updated_at",
+        (kind, grant_key, encoded, time.time()),
+    )
+
+
+def _legacy_key(kind: str, payload: dict[str, Any]) -> str:
+    key_field = _KEY_FIELDS[kind]
+    if kind == "bundles":
+        return str(payload.get(key_field) or payload.get("bundleId") or "").strip()
+    return str(payload.get(key_field) or "").strip()
+
+
+def _migrate_legacy_json(conn: sqlite3.Connection) -> None:
+    legacy_path = _legacy_state_path()
+    if not legacy_path.exists():
+        return
+    try:
+        parsed = json.loads(legacy_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(parsed, dict):
+        return
+    for kind in _KINDS:
+        values = parsed.get(kind)
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            key = _legacy_key(kind, item)
+            if not key:
+                continue
+            payload = dict(item)
+            if kind == "bundles" and "bundle_id" not in payload and "bundleId" in payload:
+                payload["bundle_id"] = payload["bundleId"]
+            _upsert_row(conn, kind=kind, grant_key=key, payload=payload)
+    conn.commit()
+    legacy_path.unlink()
+
+
 def _upsert(kind: str, key_field: str, payload: dict[str, Any]) -> None:
     key = str(payload.get(key_field) or "").strip()
     if not key:
         return
-    encoded = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "INSERT INTO sandbox_user_grants(kind, grant_key, payload, updated_at) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(kind, grant_key) DO UPDATE SET "
-            "payload = excluded.payload, updated_at = excluded.updated_at",
-            (kind, key, encoded, time.time()),
-        )
+        _upsert_row(conn, kind=kind, grant_key=key, payload=payload)
         conn.commit()
 
 
@@ -108,7 +165,7 @@ def _remove(kind: str, key: str) -> None:
     normalized = str(key or "").strip()
     if not normalized:
         return
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "DELETE FROM sandbox_user_grants WHERE kind = ? AND grant_key = ?",

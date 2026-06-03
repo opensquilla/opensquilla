@@ -152,6 +152,18 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
     if sandbox_approval and approved:
         claim_token = queue.claim_resolution(params["id"])
         try:
+            queue.finalize_claimed_resolution(
+                params["id"],
+                claim_token,
+                approved,
+                allow_always=allow_always,
+                remember_intent=remember_intent,
+                elevated_mode=None,
+            )
+        except Exception:
+            queue.release_resolution_claim(params["id"], claim_token)
+            raise
+        try:
             await apply_sandbox_approval_choice(
                 pending.params,
                 choice=normalized_choice,
@@ -160,16 +172,8 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
                 config=ctx.config,
             )
         except Exception:
-            queue.release_resolution_claim(params["id"], claim_token)
+            queue.reopen_resolved_approval(params["id"], expected_approved=True)
             raise
-        queue.finalize_claimed_resolution(
-            params["id"],
-            claim_token,
-            approved,
-            allow_always=allow_always,
-            remember_intent=remember_intent,
-            elevated_mode=None,
-        )
         return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
 
     queue.resolve(

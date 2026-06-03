@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -425,26 +425,39 @@ def _with_user_grants(context: RunContext) -> RunContext:
     )
 
 
+def _session_persisted_context(context: RunContext) -> RunContext:
+    mounts = tuple(grant for grant in context.mounts if grant.scope != "workspace")
+    domains = tuple(grant for grant in context.domains if grant.scope != "workspace")
+    bundles = tuple(
+        grant
+        for grant in context.bundles
+        if grant.scope != "workspace" or grant.source == "disabled"
+    )
+    if mounts == context.mounts and domains == context.domains and bundles == context.bundles:
+        return context
+    return replace(context, mounts=mounts, domains=domains, bundles=bundles)
+
+
 async def get_run_context(
     session_manager: Any,
     session_key: str,
     *,
     config: Any,
     workspace: str | None,
+    include_user_grants: bool = True,
 ) -> RunContext:
     node = await _get_session_node(session_manager, session_key)
     if node is not None:
         origin = _origin_dict(node)
         saved = _context_from_payload(origin.get(RUN_CONTEXT_ORIGIN_KEY), "saved")
         if saved is not None:
-            return _with_user_grants(saved)
-    return _with_user_grants(
-        RunContext(
-            run_mode=config_run_mode(config),
-            workspace=_workspace_from_payload(workspace),
-            source="default",
-        )
+            return _with_user_grants(saved) if include_user_grants else saved
+    context = RunContext(
+        run_mode=config_run_mode(config),
+        workspace=_workspace_from_payload(workspace),
+        source="default",
     )
+    return _with_user_grants(context) if include_user_grants else context
 
 
 async def persist_run_context(
@@ -456,7 +469,9 @@ async def persist_run_context(
     if node is None:
         raise KeyError(f"Session not found: {session_key}")
     origin = _origin_dict(node)
-    origin[RUN_CONTEXT_ORIGIN_KEY] = context.to_origin_payload()
+    origin[RUN_CONTEXT_ORIGIN_KEY] = (
+        _session_persisted_context(context).to_origin_payload()
+    )
     update = getattr(session_manager, "update", None)
     if not callable(update):
         raise RuntimeError("Session manager does not support update")

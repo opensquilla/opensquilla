@@ -174,21 +174,27 @@ async def test_rpc_mutation_rejects_whitespace_session_key_without_creating_sess
 async def test_rpc_run_context_get_includes_bundles_and_temporary_grants() -> None:
     from opensquilla.gateway.rpc_sandbox import _handle_sandbox_run_context_get
     from opensquilla.sandbox.run_context import (
-        PackageBundleGrant,
         RunContext,
         TemporaryGrant,
         persist_run_context,
     )
     from opensquilla.sandbox.run_mode import RunMode
+    from opensquilla.sandbox.user_grants import upsert_bundle_grant
 
     manager = _SessionManager()
+    upsert_bundle_grant(
+        {
+            "bundle_id": "python-package-install",
+            "scope": "workspace",
+            "source": "manual",
+        }
+    )
     await persist_run_context(
         manager,
         manager.node.session_key,
         RunContext(
             run_mode=RunMode.STANDARD,
             workspace="/tmp/ws",
-            bundles=(PackageBundleGrant(bundle_id="python-package-install"),),
             temporary_grants=(
                 TemporaryGrant(
                     kind="domain",
@@ -355,6 +361,80 @@ async def test_exec_approval_resolve_claim_prevents_deny_race_from_landing_grant
     assert ("example.com", "chat") in [(grant.domain, grant.scope) for grant in context.domains]
 
     reset_approval_queue()
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_resolve_finalize_failure_does_not_land_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.gateway.rpc import get_dispatcher
+    from opensquilla.sandbox.escalation import build_network_approval_params
+    from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import get_run_context
+
+    reset_approval_queue()
+    manager = _SessionManager()
+    ctx = _ctx(manager, scopes=frozenset(["operator.approvals"]))
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace="/tmp/ws",
+        fingerprint="fp123",
+    )
+    assert params is not None
+    queue = get_approval_queue()
+    approval_id = queue.request(namespace="exec", params=params)
+
+    def fail_finalize(*args, **kwargs) -> None:
+        raise RuntimeError("finalize failed")
+
+    monkeypatch.setattr(queue, "finalize_claimed_resolution", fail_finalize)
+
+    result = await get_dispatcher().dispatch(
+        "r1",
+        "exec.approval.resolve",
+        {"id": approval_id, "approved": True, "choice": "allow_chat"},
+        ctx,
+    )
+
+    assert result.error is not None
+    assert "finalize failed" in result.error.message
+    pending = queue.get(approval_id)
+    assert pending.resolved is False
+    assert queue.list_pending("exec")[0]["id"] == approval_id
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=ctx.config,
+        workspace="/tmp/ws",
+    )
+    assert context.domains == ()
+
+    reset_approval_queue()
+
+
+def test_claimed_approval_reappears_after_claim_lease_expires(tmp_path) -> None:
+    from opensquilla.application.approval_queue import ApprovalQueue
+
+    db_path = tmp_path / "approval_queue.sqlite"
+    queue = ApprovalQueue(db_path=str(db_path), claim_ttl_seconds=0)
+    approval_id = queue.request(namespace="exec", params={"command": "echo ok"})
+    queue.claim_resolution(approval_id)
+    queue.close()
+
+    reloaded = ApprovalQueue(db_path=str(db_path), claim_ttl_seconds=0)
+
+    assert [item["id"] for item in reloaded.list_pending("exec")] == [approval_id]
+    reloaded.resolve(approval_id, False)
+    assert reloaded.status(approval_id)["resolved"] is True
+    assert reloaded.status(approval_id)["approved"] is False
+    reloaded.close()
 
 
 @pytest.mark.asyncio

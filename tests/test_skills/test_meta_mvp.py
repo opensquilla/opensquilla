@@ -1451,6 +1451,52 @@ async def test_orchestrator_skill_exec_rejects_cwd_outside_workspace(
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_skill_exec_creates_missing_workspace_dir(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "cwd_skill"
+    skill_dir.mkdir()
+    script = skill_dir / "echo_cwd.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "print(Path.cwd())\n",
+        encoding="utf-8",
+    )
+
+    workspace = tmp_path / "missing" / "workspace"
+    assert not workspace.exists()
+
+    fake_spec = _make_skill_spec("cwd-skill", content="x")
+    fake_spec.base_dir = str(skill_dir)
+    fake_spec.entrypoint = {"command": "python {baseDir}/echo_cwd.py"}
+
+    plan_spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "x", "kind": "skill_exec", "skill": "cwd-skill"},
+            ],
+        },
+    )
+    plan = parse_meta_plan(plan_spec)
+    assert plan is not None
+
+    async def runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("no sub-Agent")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=runner,
+        skill_loader=_FakeLoader([fake_spec]),
+        workspace_dir=str(workspace),
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={}))
+
+    assert result.ok, result.error
+    assert workspace.exists()
+    assert Path(result.step_outputs["x"]) == workspace
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_skill_exec_requires_entrypoint() -> None:
     """A skill with no entrypoint manifest cannot run as skill_exec."""
 

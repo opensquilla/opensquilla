@@ -70,6 +70,8 @@ These bundled skill descriptors are authored and maintained by OpenSquilla and
 are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 
 - `cron`
+- `AwesomeWebpageMetaSkill`
+- `awesome-webpage-research`
 - `deep-research`
 - `docx`
 - `git-diff`
@@ -90,6 +92,7 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 - `meta-web-research-to-report`
 - `multi-search-engine`
 - `nano-pdf`
+- `openrouter-video-generator`
 - `paper-abstract-author`
 - `paper-citation-planner`
 - `paper-experiment-stub`
@@ -205,15 +208,20 @@ SOFTWARE.
 
 - Component: SKILL.md frontmatter and instruction text for these bundled skills:
   - `ai-video-script`
+  - `audio-cog`
   - `deep-research`
   - `docx`
+  - `filesystem`
+  - `html-coder`
   - `html-to-pdf`
   - `multi-search-engine`
   - `nano-banana-pro`
+  - `nano-banana-pro-openrouter`
   - `pdf-toolkit`
   - `pptx`
   - `seedance-2-prompt`
   - `video-merger`
+  - `web-search`
   - `xlsx`
 - Upstream registry: https://clawhub.ai
 - License: MIT-0 (Public-domain-equivalent; no attribution required, but

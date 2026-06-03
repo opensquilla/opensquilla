@@ -10,6 +10,8 @@ NOTICES = ROOT / "THIRD_PARTY_NOTICES.md"
 ORIGINALS = {
     "advanced-dubbing-studio",
     "cron",
+    "AwesomeWebpageMetaSkill",
+    "awesome-webpage-research",
     "deep-research",
     "docx",
     "git-diff",
@@ -31,6 +33,7 @@ ORIGINALS = {
     "multi-search-engine",
     "music-and-singing-studio",
     "nano-pdf",
+    "openrouter-video-generator",
     "paper-abstract-author",
     "paper-citation-planner",
     "paper-experiment-stub",

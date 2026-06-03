@@ -144,6 +144,7 @@ select = ["E", "F", "I", "N", "W", "UP"]
 # ffmpeg filter graphs, Chinese error strings, and OpenRouter payload
 # field comments meant to stay readable as one unit.
 "src/opensquilla/skills/bundled/ai-video-script/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/AwesomeWebpageMetaSkill/scripts/*.py" = ["E501"]
 "src/opensquilla/skills/bundled/nano-banana-pro/scripts/*.py" = ["E501"]
 "src/opensquilla/skills/bundled/seedance-2-prompt/scripts/*.py" = ["E501"]
 "src/opensquilla/skills/bundled/srt-from-script/scripts/*.py" = ["E501"]

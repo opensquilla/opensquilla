@@ -388,7 +388,40 @@ def _deserialize_awaiting_schema(schema_json: str):
 
 
 _META_SKILL_EXPLANATION_RE = re.compile(
-    r"\b(how|what|why|explain|describe)\b.*\bmeta-skill\b"
+    r"\b(how|what|why|explain|describe)\b.*\bmeta[-\s]?skills?\b"
+)
+
+_META_SKILL_SUBJECT_RE = re.compile(
+    r"(?:meta[-_\s]?skills?|元技能|meta\s*技能)",
+    re.IGNORECASE,
+)
+_META_SKILL_DISCUSSION_CUES = (
+    "吗",
+    "么",
+    "是否",
+    "有没有",
+    "调用了",
+    "调用过",
+    "为什么",
+    "怎么",
+    "如何",
+    "机制",
+    "教程",
+    "注意",
+    "原因",
+    "质量",
+    "好差",
+    "太差",
+    "生成的差",
+    "generated poorly",
+    "bad quality",
+    "called",
+    "invoked",
+    "invoke",
+    "why",
+    "how",
+    "explain",
+    "describe",
 )
 
 _PASTED_CONTEXT_MARKERS = (
@@ -425,6 +458,18 @@ def _looks_like_pasted_context(message: str) -> bool:
     if not marker_hit:
         return False
     return len(text) > 1200 or text.count("\n") >= 8
+
+
+def _is_meta_skill_discussion_intent(query: str) -> bool:
+    """Detect questions about meta-skills themselves, not requests to run one."""
+
+    text = (query or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if not _META_SKILL_SUBJECT_RE.search(lower):
+        return False
+    return any(cue in lower for cue in _META_SKILL_DISCUSSION_CUES)
 
 
 def _trigger_match_text(message: str) -> str:
@@ -1038,6 +1083,10 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
     pasted_context = _looks_like_pasted_context(semantic_text)
     if pasted_context:
         _sticky_drop(session_id)
+
+    if _is_meta_skill_discussion_intent(semantic_text):
+        _sticky_drop(session_id)
+        return ctx
 
     # Sticky-cancel: explicit user opt-out always wins over a stale match.
     if _hits_cancel_keywords(semantic_text, _STICKY_CANCEL_KEYWORDS):

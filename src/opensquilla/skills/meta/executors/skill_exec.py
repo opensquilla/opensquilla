@@ -149,6 +149,7 @@ async def run_skill_exec_step(
                 f"{resolved_workdir!s} escapes allowed root "
                 f"{allowed_root!s}",
             )
+        resolved_workdir.mkdir(parents=True, exist_ok=True)
         workdir = str(resolved_workdir)
 
     # Optional assemble: render templated files to disk before exec.

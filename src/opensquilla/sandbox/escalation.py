@@ -17,7 +17,11 @@ from opensquilla.sandbox.run_context import (
     persist_run_context,
     set_run_mode,
 )
-from opensquilla.sandbox.run_context_service import add_domain_grant, add_mount_grant
+from opensquilla.sandbox.run_context_service import (
+    add_domain_grant,
+    add_mount_grant,
+    add_public_network_grant,
+)
 from opensquilla.sandbox.run_mode import RunMode
 
 
@@ -57,8 +61,10 @@ def build_network_approval_params(
         "fingerprint": fingerprint,
         "choices": [
             _choice("allow_once", "Allow once", style="primary"),
-            _choice("allow_chat", "Allow for this chat"),
-            _choice("allow_user", "Allow for this user"),
+            _choice("allow_chat", "Allow this domain for this chat"),
+            _choice("allow_user", "Allow this domain for this user"),
+            _choice("allow_public_chat", "Allow normal public network for this chat"),
+            _choice("allow_public_user", "Allow normal public network for this user"),
             _choice("deny", "Deny", approved=False, style="danger"),
         ],
     }
@@ -437,6 +443,7 @@ def merge_run_context_overlay(
         mounts=overlay.mounts,
         domains=overlay.domains,
         bundles=overlay.bundles,
+        public_network=overlay.public_network,
         temporary_grants=_merge_temporary_grants(base.temporary_grants, overlay.temporary_grants),
         source=overlay.source,
     )
@@ -514,6 +521,38 @@ async def _apply_network_choice(
             session_manager,
             session_key,
             domain=host,
+            scope="workspace",
+            config=config,
+            workspace=workspace,
+        )
+        remember_resolved_run_context(
+            session_key,
+            workspace,
+            updated,
+            session_manager=session_manager,
+            config=config,
+        )
+        return
+    if choice == "allow_public_chat":
+        updated = await add_public_network_grant(
+            session_manager,
+            session_key,
+            scope="chat",
+            config=config,
+            workspace=workspace,
+        )
+        remember_resolved_run_context(
+            session_key,
+            workspace,
+            updated,
+            session_manager=session_manager,
+            config=config,
+        )
+        return
+    if choice == "allow_public_user":
+        updated = await add_public_network_grant(
+            session_manager,
+            session_key,
             scope="workspace",
             config=config,
             workspace=workspace,

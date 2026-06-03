@@ -51,6 +51,12 @@ class PackageBundleGrant:
 
 
 @dataclass(frozen=True)
+class PublicNetworkGrant:
+    scope: str = "chat"
+    source: str = "manual"
+
+
+@dataclass(frozen=True)
 class TemporaryGrant:
     kind: str
     value: str
@@ -65,6 +71,7 @@ class RunContext:
     mounts: tuple[MountGrant, ...] = ()
     domains: tuple[DomainGrant, ...] = ()
     bundles: tuple[PackageBundleGrant, ...] = ()
+    public_network: tuple[PublicNetworkGrant, ...] = ()
     temporary_grants: tuple[TemporaryGrant, ...] = ()
     source: str = "default"
 
@@ -91,6 +98,13 @@ class RunContext:
                     "source": grant.source,
                 }
                 for grant in self.bundles
+            ],
+            "public_network": [
+                {
+                    "scope": grant.scope,
+                    "source": grant.source,
+                }
+                for grant in self.public_network
             ],
             "temporary_grants": [
                 {
@@ -304,6 +318,22 @@ def _bundles_from_payload(value: Any) -> tuple[PackageBundleGrant, ...]:
     return tuple(bundles.values())
 
 
+def _public_network_from_payload(value: Any) -> tuple[PublicNetworkGrant, ...]:
+    if not isinstance(value, Iterable) or isinstance(value, (str, bytes, dict)):
+        return ()
+    grants: dict[str, PublicNetworkGrant] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        grant = PublicNetworkGrant(
+            scope=normalize_scope(item.get("scope"), "chat"),
+            source=_string_value(item.get("source"), "manual") or "manual",
+        )
+        grants.pop(grant.scope, None)
+        grants[grant.scope] = grant
+    return tuple(grants.values())
+
+
 def _temporary_grants_from_payload(value: Any) -> tuple[TemporaryGrant, ...]:
     if not isinstance(value, Iterable) or isinstance(value, (str, bytes, dict)):
         return ()
@@ -349,6 +379,9 @@ def _context_from_payload(payload: Any, source: str) -> RunContext | None:
         mounts=_mounts_from_payload(payload.get("mounts"), workspace=workspace),
         domains=_domains_from_payload(payload.get("domains")),
         bundles=_bundles_from_payload(payload.get("bundles")),
+        public_network=_public_network_from_payload(
+            payload.get("public_network") or payload.get("publicNetwork")
+        ),
         temporary_grants=_temporary_grants_from_payload(payload.get("temporary_grants")),
         source=source,
     )
@@ -387,6 +420,16 @@ def _without_materialized_user_grants(payload: Any) -> Any:
                     == "disabled"
                 )
             )
+        ]
+    public_network = payload.get("public_network")
+    if isinstance(public_network, Iterable) and not isinstance(
+        public_network,
+        (str, bytes, dict),
+    ):
+        filtered["public_network"] = [
+            item
+            for item in public_network
+            if _origin_item_scope(item, "chat") != "workspace"
         ]
     return filtered
 
@@ -435,20 +478,36 @@ def _merge_bundle_grants(
     return tuple(grants.values())
 
 
+def _merge_public_network_grants(
+    base: tuple[PublicNetworkGrant, ...],
+    overlay: tuple[PublicNetworkGrant, ...],
+) -> tuple[PublicNetworkGrant, ...]:
+    grants = {grant.scope: grant for grant in base}
+    for grant in overlay:
+        grants[grant.scope] = grant
+    return tuple(grants.values())
+
+
 def _with_user_grants(context: RunContext) -> RunContext:
     payload = load_user_grants_payload()
     user_mounts = _mounts_from_payload(payload.get("mounts"), workspace=context.workspace)
     user_domains = _domains_from_payload(payload.get("domains"))
     user_bundles = _bundles_from_payload(payload.get("bundles"))
-    if not user_mounts and not user_domains and not user_bundles:
+    user_public_network = _public_network_from_payload(payload.get("public_network"))
+    if not user_mounts and not user_domains and not user_bundles and not user_public_network:
         return context
     mounts = _merge_mount_grants(user_mounts, context.mounts)
     domains = _merge_domain_grants(user_domains, context.domains)
     bundles = _merge_bundle_grants(user_bundles, context.bundles)
+    public_network = _merge_public_network_grants(
+        user_public_network,
+        context.public_network,
+    )
     if (
         mounts == context.mounts
         and domains == context.domains
         and bundles == context.bundles
+        and public_network == context.public_network
     ):
         return context
     return RunContext(
@@ -457,6 +516,7 @@ def _with_user_grants(context: RunContext) -> RunContext:
         mounts=mounts,
         domains=domains,
         bundles=bundles,
+        public_network=public_network,
         temporary_grants=context.temporary_grants,
         source=context.source,
     )
@@ -470,9 +530,23 @@ def _session_persisted_context(context: RunContext) -> RunContext:
         for grant in context.bundles
         if grant.scope != "workspace" or grant.source == "disabled"
     )
-    if mounts == context.mounts and domains == context.domains and bundles == context.bundles:
+    public_network = tuple(
+        grant for grant in context.public_network if grant.scope != "workspace"
+    )
+    if (
+        mounts == context.mounts
+        and domains == context.domains
+        and bundles == context.bundles
+        and public_network == context.public_network
+    ):
         return context
-    return replace(context, mounts=mounts, domains=domains, bundles=bundles)
+    return replace(
+        context,
+        mounts=mounts,
+        domains=domains,
+        bundles=bundles,
+        public_network=public_network,
+    )
 
 
 async def get_run_context(
@@ -539,6 +613,7 @@ async def set_run_mode(
         mounts=existing.mounts,
         domains=existing.domains,
         bundles=existing.bundles,
+        public_network=existing.public_network,
         temporary_grants=existing.temporary_grants,
         source="saved",
     )
@@ -551,6 +626,7 @@ __all__ = [
     "DomainGrant",
     "MountGrant",
     "PackageBundleGrant",
+    "PublicNetworkGrant",
     "RunContext",
     "TemporaryGrant",
     "get_run_context",

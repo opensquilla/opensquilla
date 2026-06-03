@@ -14,11 +14,12 @@ from opensquilla.paths import state_dir
 
 _STATE_FILE = "sandbox_user_grants.sqlite"
 _LEGACY_STATE_FILE = "sandbox_user_grants.json"
-_KINDS = ("mounts", "domains", "bundles")
+_KINDS = ("mounts", "domains", "bundles", "public_network")
 _KEY_FIELDS = {
     "mounts": "path",
     "domains": "domain",
     "bundles": "bundle_id",
+    "public_network": "scope",
 }
 
 
@@ -59,6 +60,14 @@ def upsert_bundle_grant(payload: dict[str, Any]) -> None:
 
 def remove_bundle_grant(bundle_id: str) -> None:
     _remove("bundles", bundle_id)
+
+
+def upsert_public_network_grant(payload: dict[str, Any]) -> None:
+    _upsert("public_network", "scope", payload)
+
+
+def remove_public_network_grant(scope: str) -> None:
+    _remove("public_network", scope)
 
 
 def _state_path() -> Path:
@@ -182,7 +191,9 @@ __all__ = [
     "remove_bundle_grant",
     "remove_domain_grant",
     "remove_mount_grant",
+    "remove_public_network_grant",
     "upsert_bundle_grant",
     "upsert_domain_grant",
     "upsert_mount_grant",
+    "upsert_public_network_grant",
 ]

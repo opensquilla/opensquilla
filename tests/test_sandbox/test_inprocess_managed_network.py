@@ -221,6 +221,8 @@ async def test_unknown_explicit_target_queues_sandbox_network_approval(
         "allow_once",
         "allow_chat",
         "allow_user",
+        "allow_public_chat",
+        "allow_public_user",
         "deny",
     ]
     pending = get_approval_queue().list_pending("exec")
@@ -233,6 +235,8 @@ async def test_unknown_explicit_target_queues_sandbox_network_approval(
         "allow_once",
         "allow_chat",
         "allow_user",
+        "allow_public_chat",
+        "allow_public_user",
         "deny",
     ]
 

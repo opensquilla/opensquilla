@@ -7,7 +7,12 @@ import pytest
 from opensquilla.sandbox.domain_validation import domain_matches
 from opensquilla.sandbox.network_guard import NetworkDecision, decide_network_access
 from opensquilla.sandbox.package_bundles import expand_package_bundle
-from opensquilla.sandbox.run_context import DomainGrant, PackageBundleGrant, RunContext
+from opensquilla.sandbox.run_context import (
+    DomainGrant,
+    PackageBundleGrant,
+    PublicNetworkGrant,
+    RunContext,
+)
 from opensquilla.sandbox.run_mode import RunMode
 
 
@@ -35,11 +40,13 @@ def _context(
     run_mode: RunMode = RunMode.STANDARD,
     domains: tuple[DomainGrant, ...] = (),
     bundles: tuple[PackageBundleGrant, ...] = (),
+    public_network: tuple[PublicNetworkGrant, ...] = (),
 ) -> RunContext:
     return RunContext(
         run_mode=run_mode,
         domains=domains,
         bundles=bundles,
+        public_network=public_network,
     )
 
 
@@ -80,6 +87,45 @@ def test_decide_network_access_asks_for_unknown_valid_domain() -> None:
     )
 
 
+def test_standard_public_network_grant_allows_unknown_public_domain() -> None:
+    context = _context(public_network=(PublicNetworkGrant(scope="chat"),))
+
+    decision = decide_network_access("docs.example.com", context)
+
+    assert decision == NetworkDecision(
+        status="allow",
+        normalized_host="docs.example.com",
+        reason="public_network",
+        source="public_network:chat",
+    )
+
+
+def test_workspace_public_network_grant_reports_user_source() -> None:
+    context = _context(public_network=(PublicNetworkGrant(scope="workspace"),))
+
+    decision = decide_network_access("docs.example.com", context)
+
+    assert decision == NetworkDecision(
+        status="allow",
+        normalized_host="docs.example.com",
+        reason="public_network",
+        source="public_network:user",
+    )
+
+
+def test_standard_public_network_grant_does_not_override_validation_block() -> None:
+    context = _context(public_network=(PublicNetworkGrant(scope="chat"),))
+
+    decision = decide_network_access("127.0.0.1", context)
+
+    assert decision == NetworkDecision(
+        status="block",
+        normalized_host="127.0.0.1",
+        reason="ip_literal",
+        source="validation",
+    )
+
+
 def test_unknown_domain_builds_structured_network_escalation_choices() -> None:
     from opensquilla.sandbox.escalation import build_network_approval_params
 
@@ -101,12 +147,16 @@ def test_unknown_domain_builds_structured_network_escalation_choices() -> None:
         "allow_once",
         "allow_chat",
         "allow_user",
+        "allow_public_chat",
+        "allow_public_user",
         "deny",
     ]
     assert [choice["label"] for choice in proposal["choices"]] == [
         "Allow once",
-        "Allow for this chat",
-        "Allow for this user",
+        "Allow this domain for this chat",
+        "Allow this domain for this user",
+        "Allow normal public network for this chat",
+        "Allow normal public network for this user",
         "Deny",
     ]
 

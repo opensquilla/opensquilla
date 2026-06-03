@@ -17,6 +17,7 @@ from opensquilla.sandbox.run_context import (
     DomainGrant,
     MountGrant,
     PackageBundleGrant,
+    PublicNetworkGrant,
     RunContext,
     get_run_context,
     normalize_scope,
@@ -50,6 +51,15 @@ def _upsert_user_bundle_grant(grant: PackageBundleGrant) -> None:
     user_grants.upsert_bundle_grant(
         {
             "bundle_id": grant.bundle_id,
+            "scope": grant.scope,
+            "source": grant.source,
+        }
+    )
+
+
+def _upsert_user_public_network_grant(grant: PublicNetworkGrant) -> None:
+    user_grants.upsert_public_network_grant(
+        {
             "scope": grant.scope,
             "source": grant.source,
         }
@@ -285,6 +295,48 @@ async def auto_add_trusted_domain_grant(
     )
 
 
+async def add_public_network_grant(
+    session_manager: Any,
+    session_key: str,
+    *,
+    scope: str,
+    config: Any,
+    workspace: str | None,
+    source: str = "manual",
+) -> RunContext:
+    existing = await get_run_context(
+        session_manager,
+        session_key,
+        config=config,
+        workspace=workspace,
+    )
+    grant = PublicNetworkGrant(
+        scope=normalize_scope(scope),
+        source=str(source or "manual").strip() or "manual",
+    )
+    apply_user_store = None
+    if grant.scope == "workspace":
+        apply_user_store = lambda grant=grant: _upsert_user_public_network_grant(grant)
+    if grant in existing.public_network:
+        if apply_user_store is not None:
+            apply_user_store()
+        return existing
+    public_network = tuple(
+        item for item in existing.public_network if item.scope != grant.scope
+    ) + (grant,)
+    if public_network == existing.public_network:
+        if apply_user_store is not None:
+            apply_user_store()
+        return existing
+    return await _persist_then_apply_user_store(
+        session_manager,
+        session_key,
+        existing=existing,
+        updated=replace(existing, public_network=public_network, source="saved"),
+        apply_user_store=apply_user_store,
+    )
+
+
 async def remove_domain_grant(
     session_manager: Any,
     session_key: str,
@@ -409,6 +461,7 @@ async def disable_bundle_grant(
 __all__ = [
     "add_domain_grant",
     "add_mount_grant",
+    "add_public_network_grant",
     "auto_add_trusted_domain_grant",
     "disable_bundle_grant",
     "enable_bundle_grant",

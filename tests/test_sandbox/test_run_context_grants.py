@@ -173,9 +173,11 @@ def test_user_grants_store_round_trips_payloads(tmp_path):
         remove_bundle_grant,
         remove_domain_grant,
         remove_mount_grant,
+        remove_public_network_grant,
         upsert_bundle_grant,
         upsert_domain_grant,
         upsert_mount_grant,
+        upsert_public_network_grant,
     )
 
     mount_path = str((tmp_path / "outside").resolve(strict=False))
@@ -191,6 +193,7 @@ def test_user_grants_store_round_trips_payloads(tmp_path):
             "source": "manual",
         }
     )
+    upsert_public_network_grant({"scope": "workspace", "source": "manual"})
 
     assert load_user_grants_payload() == {
         "domains": [
@@ -204,13 +207,20 @@ def test_user_grants_store_round_trips_payloads(tmp_path):
                 "source": "manual",
             }
         ],
+        "public_network": [{"scope": "workspace", "source": "manual"}],
     }
 
     remove_domain_grant("example.com")
     remove_mount_grant(mount_path)
     remove_bundle_grant("python-package-install")
+    remove_public_network_grant("workspace")
 
-    assert load_user_grants_payload() == {"domains": [], "mounts": [], "bundles": []}
+    assert load_user_grants_payload() == {
+        "domains": [],
+        "mounts": [],
+        "bundles": [],
+        "public_network": [],
+    }
 
 
 def test_user_grants_store_migrates_legacy_json(tmp_path):
@@ -257,6 +267,7 @@ def test_user_grants_store_migrates_legacy_json(tmp_path):
                 "source": "manual",
             }
         ],
+        "public_network": [],
     }
     assert legacy_path.exists() is False
 
@@ -2045,6 +2056,7 @@ async def test_unrelated_mutation_does_not_repersist_unsafe_saved_entries(tmp_pa
 @pytest.mark.asyncio
 async def test_temporary_grants_round_trip(tmp_path):
     from opensquilla.sandbox.run_context import (
+        PublicNetworkGrant,
         RunContext,
         TemporaryGrant,
         get_run_context,
@@ -2066,6 +2078,7 @@ async def test_temporary_grants_round_trip(tmp_path):
         RunContext(
             run_mode=RunMode.STANDARD,
             workspace=str(tmp_path),
+            public_network=(PublicNetworkGrant(scope="chat", source="manual"),),
             temporary_grants=(grant,),
             source="saved",
         ),
@@ -2079,6 +2092,8 @@ async def test_temporary_grants_round_trip(tmp_path):
     payload = ctx.to_origin_payload()
 
     assert ctx.temporary_grants == (grant,)
+    assert ctx.public_network == (PublicNetworkGrant(scope="chat", source="manual"),)
+    assert payload["public_network"] == [{"scope": "chat", "source": "manual"}]
     assert payload["temporary_grants"] == [
         {
             "kind": "domain",
@@ -2093,6 +2108,7 @@ async def test_temporary_grants_round_trip(tmp_path):
 async def test_set_run_mode_preserves_bundle_and_temporary_grants(tmp_path):
     from opensquilla.sandbox.run_context import (
         PackageBundleGrant,
+        PublicNetworkGrant,
         RunContext,
         TemporaryGrant,
         persist_run_context,
@@ -2103,6 +2119,7 @@ async def test_set_run_mode_preserves_bundle_and_temporary_grants(tmp_path):
 
     manager = _SessionManager()
     bundle = PackageBundleGrant(bundle_id="python-package-install")
+    public_network = PublicNetworkGrant(scope="chat")
     temporary = TemporaryGrant(
         kind="domain",
         value="pypi.org",
@@ -2121,6 +2138,7 @@ async def test_set_run_mode_preserves_bundle_and_temporary_grants(tmp_path):
         RunContext(
             run_mode=RunMode.STANDARD,
             workspace=str(tmp_path),
+            public_network=(public_network,),
             temporary_grants=(temporary,),
             source="saved",
         ),
@@ -2135,6 +2153,7 @@ async def test_set_run_mode_preserves_bundle_and_temporary_grants(tmp_path):
     )
 
     assert updated.bundles == (bundle,)
+    assert updated.public_network == (public_network,)
     assert updated.temporary_grants == (temporary,)
 
 
@@ -2261,6 +2280,102 @@ async def test_apply_network_choice_persists_user_domain_grant_with_workspace_sc
         workspace=str(workspace),
     )
     assert ("example.com", "workspace") in [(grant.domain, grant.scope) for grant in ctx.domains]
+
+
+@pytest.mark.asyncio
+async def test_apply_network_choice_persists_chat_public_network_grant(tmp_path):
+    from opensquilla.sandbox.escalation import (
+        apply_sandbox_approval_choice,
+        build_network_approval_params,
+        resolved_run_context_overlay,
+    )
+    from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import PublicNetworkGrant, get_run_context
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace=str(workspace),
+        fingerprint="fp123",
+    )
+
+    await apply_sandbox_approval_choice(
+        params,
+        choice="allow_public_chat",
+        approved=True,
+        session_manager=manager,
+        config=_config(),
+    )
+
+    expected = PublicNetworkGrant(scope="chat", source="manual")
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert expected in ctx.public_network
+    overlay = resolved_run_context_overlay(manager.node.session_key, str(workspace))
+    assert overlay is not None
+    assert expected in overlay.public_network
+
+
+@pytest.mark.asyncio
+async def test_apply_network_choice_persists_user_public_network_grant(tmp_path):
+    from opensquilla.sandbox.escalation import (
+        apply_sandbox_approval_choice,
+        build_network_approval_params,
+    )
+    from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import PublicNetworkGrant, get_run_context
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace=str(workspace),
+        fingerprint="fp123",
+    )
+
+    await apply_sandbox_approval_choice(
+        params,
+        choice="allow_public_user",
+        approved=True,
+        session_manager=manager,
+        config=_config(),
+    )
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert PublicNetworkGrant(scope="workspace", source="manual") in ctx.public_network
+
+    fresh = _manager_with_session_key("agent:main:webchat:fresh")
+    fresh_ctx = await get_run_context(
+        fresh,
+        fresh.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert PublicNetworkGrant(scope="workspace", source="manual") in fresh_ctx.public_network
 
 
 @pytest.mark.asyncio

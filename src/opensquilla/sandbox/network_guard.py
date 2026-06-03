@@ -11,7 +11,7 @@ from opensquilla.sandbox.package_bundles import (
     DEFAULT_PACKAGE_BUNDLE_IDS,
     expand_package_bundle,
 )
-from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_context import PublicNetworkGrant, RunContext
 from opensquilla.sandbox.run_mode import RunMode
 
 NetworkDecisionStatus = Literal["allow", "ask", "block"]
@@ -111,6 +111,16 @@ def decide_network_access(host: str, context: RunContext) -> NetworkDecision:
                     source=f"bundle:{bundle_id}",
                 )
 
+    public_network_grant = _public_network_grant(context)
+    if public_network_grant is not None:
+        scope = "user" if public_network_grant.scope == "workspace" else "chat"
+        return NetworkDecision(
+            status="allow",
+            normalized_host=normalized_host,
+            reason="public_network",
+            source=f"public_network:{scope}",
+        )
+
     return NetworkDecision(
         status="ask",
         normalized_host=normalized_host,
@@ -132,6 +142,14 @@ def _is_recognized_default_host(
         if bundle_id not in disabled_bundle_ids
         for bundled_domain in expand_package_bundle(bundle_id)
     )
+
+
+def _public_network_grant(context: RunContext) -> PublicNetworkGrant | None:
+    for scope in ("chat", "workspace"):
+        for grant in context.public_network:
+            if grant.scope == scope:
+                return grant
+    return None
 
 
 __all__ = ["NetworkDecision", "NetworkDecisionStatus", "decide_network_access"]

@@ -105,6 +105,31 @@ async def test_escalate_routes_to_approval_gate_with_require_approval(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_full_host_access_does_not_route_backend_failure_to_host_once(
+    tmp_path: Path,
+) -> None:
+    queue = _ApproveQueue(approve=True)
+    configure_runtime(
+        SandboxSettings(
+            sandbox=False,
+            backend="noop",
+            security_grading=False,
+            run_mode="full",
+        ),
+        approval_queue=queue,
+        workspace=tmp_path,
+    )
+    policy = _policy(tmp_path)
+    request = _request(tmp_path, policy)
+    result = _result_with_notes(("execve.denied: sandbox blocked execve of /bin/sh",))
+
+    decision = await escalate_backend_denial(result, request, policy)
+
+    assert isinstance(decision, DenialResult)
+    assert queue.last_params is None
+
+
+@pytest.mark.asyncio
 async def test_escalate_returns_allow_on_user_approval(tmp_path: Path) -> None:
     configure_runtime(
         SandboxSettings(sandbox=True, backend="noop", security_grading=False),

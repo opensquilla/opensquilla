@@ -73,6 +73,7 @@ from opensquilla.sandbox.path_validation import (
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
 from opensquilla.sandbox.run_context import DomainGrant, RunContext
 from opensquilla.sandbox.run_context_service import auto_add_trusted_domain_grant
+from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.sandbox.stale_output_cache import StaleOutputCache, get_stale_output_cache
 from opensquilla.sandbox.types import (
     ALLOW,
@@ -1132,6 +1133,21 @@ async def escalate_backend_denial(
         )
 
     session_id = _resolve_session_id(rt, None)
+    if _runtime_is_full_host_access(rt):
+        denial = DenialResult(
+            reason=DenialReason.SEATBELT_DENIED,
+            suggested_next_step=SuggestedNextStep.ASK_USER,
+            level=policy.level,
+            action_fingerprint=fp,
+            message=(
+                f"Sandbox denied the command ({notes_str}). "
+                "Full Host Access is active, so no sandbox escalation prompt was created."
+            ),
+            retryable=False,
+        )
+        await rt.ledger.record_denial(session_id, fp, denial.reason)
+        return denial
+
     escalation_reason = f"host once requested after sandbox denied: {notes_str}"
     escalation_request = dataclasses.replace(request, reason=escalation_reason)
     escalation_policy = dataclasses.replace(policy, require_approval=True)
@@ -1159,6 +1175,13 @@ async def escalate_backend_denial(
     )
     await rt.ledger.record_denial(session_id, fp, denial.reason)
     return denial
+
+
+def _runtime_is_full_host_access(runtime: SandboxRuntime) -> bool:
+    if runtime.settings.run_mode is not None:
+        return normalize_run_mode(runtime.settings.run_mode) == RunMode.FULL
+    context = current_tool_run_context()
+    return context is not None and context.run_mode == RunMode.FULL
 
 
 __all__ = [

@@ -293,7 +293,11 @@ default_mode = "bypass"                 # off | on | bypass | full
 # name = "my-slack"
 # type = "slack"
 # token = "xoxb-..."
+# connection_mode = "socket"  # socket = no public URL; webhook = Events API
+# app_token = "xapp-..."      # required for Slack Socket Mode
+# signing_secret = ""         # required for Slack webhook mode
 # slack_channel_id = "C12345"
+# reply_in_thread = false
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Meta-Skill subsystem

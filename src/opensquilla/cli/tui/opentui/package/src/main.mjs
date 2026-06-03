@@ -77,6 +77,12 @@ async function main() {
     bottom: 0,
     zIndex: 1000,
     shouldFill: false,
+    // Start hidden. A full-screen, top-zIndex layer participates in mouse
+    // hit-testing even with shouldFill:false, so a permanently-present overlay
+    // swallows wheel events and the conversation ScrollBox can never scroll.
+    // visible:false makes hit-testing pass through to the ScrollBox underneath;
+    // the composer flips it visible only while a completion menu is mounted.
+    visible: false,
   });
   renderer.root.add(overlayLayer);
 

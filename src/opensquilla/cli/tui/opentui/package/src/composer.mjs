@@ -392,6 +392,9 @@ export function createComposer(deps) {
   // shrinking menu never leaves a stale node behind and re-renders don't stack.
   function clearOverlay() {
     overlayLayer?.remove?.("completion-menu");
+    // Hide the layer again so it stops intercepting wheel events — otherwise a
+    // permanently-visible full-screen overlay blocks conversation scrolling.
+    if (overlayLayer) overlayLayer.visible = false;
   }
 
   function renderCompletionMenu() {
@@ -431,6 +434,9 @@ export function createComposer(deps) {
       }));
     });
     overlayLayer.add(menuNode);
+    // Reveal the layer only now that it carries a menu, so it intercepts mouse
+    // events solely while the menu is open (clearOverlay hides it again).
+    overlayLayer.visible = true;
   }
 
   // Split the input into display lines and splice the caret into the line/column

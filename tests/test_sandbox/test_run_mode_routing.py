@@ -51,7 +51,10 @@ def test_route_metadata_hydrates_full_sandbox_run_context() -> None:
     run_context = RunContext(
         run_mode=RunMode.STANDARD,
         domains=(DomainGrant(domain="pypi.org"),),
-        bundles=(PackageBundleGrant(bundle_id="python-package-install"),),
+        bundles=(
+            PackageBundleGrant(bundle_id="python-package-install", scope="chat"),
+            PackageBundleGrant(bundle_id="node-package-install", source="disabled"),
+        ),
     )
 
     _apply_run_context_route_metadata(
@@ -66,11 +69,27 @@ def test_route_metadata_hydrates_full_sandbox_run_context() -> None:
     assert envelope.metadata["sandbox_run_context"]["domains"] == [
         {"domain": "pypi.org", "scope": "chat", "source": "manual"}
     ]
+    assert envelope.metadata["sandbox_run_context"]["bundles"] == [
+        {
+            "bundle_id": "python-package-install",
+            "scope": "chat",
+            "source": "manual",
+        },
+        {
+            "bundle_id": "node-package-install",
+            "scope": "workspace",
+            "source": "disabled",
+        },
+    ]
     assert ctx.run_mode == "standard"
     assert isinstance(ctx.sandbox_run_context, RunContext)
     assert [grant.domain for grant in ctx.sandbox_run_context.domains] == ["pypi.org"]
-    assert [grant.bundle_id for grant in ctx.sandbox_run_context.bundles] == [
-        "python-package-install"
+    assert [
+        (grant.bundle_id, grant.scope, grant.source)
+        for grant in ctx.sandbox_run_context.bundles
+    ] == [
+        ("python-package-install", "chat", "manual"),
+        ("node-package-install", "workspace", "disabled"),
     ]
 
 

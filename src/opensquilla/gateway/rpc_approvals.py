@@ -24,6 +24,30 @@ from opensquilla.sandbox.escalation import (
 _d = get_dispatcher()
 
 
+def _complete_sandbox_resolution_claim(
+    queue: Any,
+    approval_id: str,
+    claim_token: str,
+    *,
+    allow_always: bool,
+    remember_intent: bool,
+) -> None:
+    try:
+        queue.complete_claimed_resolution(
+            approval_id,
+            claim_token,
+            allow_always=allow_always,
+            remember_intent=remember_intent,
+        )
+    except Exception:
+        queue.complete_claimed_resolution(
+            approval_id,
+            claim_token,
+            allow_always=allow_always,
+            remember_intent=remember_intent,
+        )
+
+
 @_d.method("exec.approvals.get", scope="operator.approvals")
 async def _handle_exec_approvals_get(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     queue = get_approval_queue()
@@ -174,12 +198,12 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         except Exception:
             queue.reopen_resolved_approval(params["id"], expected_approved=True)
             raise
-        queue.complete_claimed_resolution(
+        _complete_sandbox_resolution_claim(
+            queue,
             params["id"],
             claim_token,
             allow_always=allow_always,
             remember_intent=remember_intent,
-            elevated_mode=None,
         )
         return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
 

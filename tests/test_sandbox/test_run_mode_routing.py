@@ -103,7 +103,8 @@ def test_route_metadata_filters_stale_workspace_mounts_from_legacy_mounts(
     workspace = tmp_path / "workspace"
     chat_mount = tmp_path / "chat-mount"
     stale_mount = tmp_path / "stale-mount"
-    for path in (workspace, chat_mount, stale_mount):
+    legacy_mount = tmp_path / "legacy-mount"
+    for path in (workspace, chat_mount, stale_mount, legacy_mount):
         path.mkdir()
     envelope = build_cli_route_envelope(
         session_key="agent:main:cli",
@@ -156,12 +157,22 @@ def test_route_metadata_filters_stale_workspace_mounts_from_legacy_mounts(
     )
     legacy_payload = run_context.to_origin_payload()
     legacy_envelope.metadata["sandbox_run_context"] = legacy_payload
-    legacy_envelope.metadata["sandbox_mounts"] = legacy_payload["mounts"]
+    legacy_envelope.metadata["sandbox_mounts"] = legacy_payload["mounts"] + [
+        {"path": str(legacy_mount), "access": "rw"}
+    ]
 
     legacy_ctx = tool_context_from_envelope(legacy_envelope, is_owner=True)
 
     assert legacy_ctx.sandbox_mounts == [
         {"path": str(chat_mount), "access": "ro", "scope": "chat"}
+    ]
+    token = current_tool_context.set(legacy_ctx)
+    try:
+        legacy_policy_mounts = _session_mounts_for_policy(workspace)
+    finally:
+        current_tool_context.reset(token)
+    assert [(str(mount.host_path), mount.mode) for mount in legacy_policy_mounts] == [
+        (str(chat_mount), "ro")
     ]
 
 

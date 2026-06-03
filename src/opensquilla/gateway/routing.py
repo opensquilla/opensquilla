@@ -353,7 +353,7 @@ def _filtered_legacy_sandbox_mounts(value: Any) -> list[dict[str, Any]]:
     for item in value:
         if not isinstance(item, dict):
             continue
-        if normalize_scope(item.get("scope"), "chat") == "workspace":
+        if normalize_scope(item.get("scope"), "once") != "chat":
             continue
         mounts.append(dict(item))
     return mounts

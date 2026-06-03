@@ -109,7 +109,8 @@ class ApprovalQueue:
         self._conn.execute(
             "UPDATE approval_queue "
             "SET claim_token = NULL, claim_started_at = NULL "
-            "WHERE claim_token IS NOT NULL "
+            "WHERE resolved = 0 "
+            "AND claim_token IS NOT NULL "
             "AND (claim_started_at IS NULL OR claim_started_at <= ?)",
             (threshold,),
         )
@@ -415,6 +416,13 @@ class ApprovalQueue:
             self._conn.rollback()
             raise KeyError(f"Approval not found: {approval_id}")
         entry = self._row_to_entry(row)
+        if entry.resolved and entry.approved and entry.claim_token is None:
+            self._conn.rollback()
+            entry._event.set()
+            self._pending[approval_id] = entry
+            if entry.namespace == "exec" and (allow_always or remember_intent):
+                self._persist_command_intent(entry.params, allow_always=allow_always)
+            return
         if not entry.resolved or not entry.approved:
             self._conn.rollback()
             self._pending[approval_id] = entry

@@ -446,6 +446,67 @@ async def test_exec_approval_wait_and_consume_wait_for_sandbox_grant_apply(
 
 
 @pytest.mark.asyncio
+async def test_exec_approval_resolve_recovers_complete_failure_after_grant_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.gateway.rpc import get_dispatcher
+    from opensquilla.sandbox.escalation import build_network_approval_params
+    from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import get_run_context
+
+    reset_approval_queue()
+    manager = _SessionManager()
+    ctx = _ctx(manager, scopes=frozenset(["operator.approvals"]))
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace="/tmp/ws",
+        fingerprint="fp123",
+    )
+    assert params is not None
+    queue = get_approval_queue()
+    approval_id = queue.request(namespace="exec", params=params)
+    original_complete = queue.complete_claimed_resolution
+    attempts = 0
+
+    def fail_once_then_complete(*args, **kwargs) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient complete failed")
+        original_complete(*args, **kwargs)
+
+    monkeypatch.setattr(queue, "complete_claimed_resolution", fail_once_then_complete)
+
+    result = await get_dispatcher().dispatch(
+        "approve",
+        "exec.approval.resolve",
+        {"id": approval_id, "approved": True, "choice": "allow_chat"},
+        ctx,
+    )
+
+    assert result.error is None, result.error
+    assert attempts == 2
+    assert queue.status(approval_id)["resolved"] is True
+    assert queue.status(approval_id)["approved"] is True
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=ctx.config,
+        workspace="/tmp/ws",
+    )
+    assert ("example.com", "chat") in [(grant.domain, grant.scope) for grant in context.domains]
+
+    reset_approval_queue()
+
+
+@pytest.mark.asyncio
 async def test_exec_approval_resolve_finalize_failure_does_not_land_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

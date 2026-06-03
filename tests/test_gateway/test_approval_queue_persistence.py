@@ -178,7 +178,8 @@ def test_approval_queue_consume_is_one_shot_with_stale_unconsumed_read(
         queue.close()
 
 
-def test_approval_queue_recovers_stale_resolved_claim_as_ready(tmp_path) -> None:
+@pytest.mark.asyncio
+async def test_approval_queue_keeps_stale_resolved_claim_not_ready(tmp_path) -> None:
     db_path = tmp_path / "approval_queue.sqlite"
     queue = ApprovalQueue(db_path=str(db_path), default_timeout=1.0, poll_interval=0.01)
     approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
@@ -194,10 +195,14 @@ def test_approval_queue_recovers_stale_resolved_claim_as_ready(tmp_path) -> None
 
         entry = queue.get(approval_id)
 
-        assert entry.claim_token is None
+        assert entry.claim_token == "stale-token"
         assert entry.resolved is True
         assert entry.approved is True
-        queue.consume(approval_id)
-        assert queue.status(approval_id)["consumed"] is True
+        assert queue.status(approval_id)["resolved"] is False
+        assert queue.status(approval_id)["approved"] is False
+        with pytest.raises(ValueError, match="in progress"):
+            queue.consume(approval_id)
+        with pytest.raises(ValueError, match="in progress"):
+            await queue.wait(approval_id, timeout=0.02)
     finally:
         queue.close()

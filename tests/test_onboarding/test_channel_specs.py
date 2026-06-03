@@ -92,6 +92,33 @@ def test_telegram_secrets_are_marked_secret():
     assert {"token", "webhook_secret_token"} <= secrets
 
 
+def test_discord_gateway_auth_fields_do_not_expose_interactions_public_key():
+    spec = get_channel_setup_spec("discord")
+    fields = {f.name: f for f in spec.fields}
+
+    assert fields["token"].required is True
+    assert fields["token"].secret is True
+    assert fields["application_id"].secret is False
+    assert "public_key" not in fields
+
+
+def test_dingtalk_stream_credentials_are_marked_correctly():
+    spec = get_channel_setup_spec("dingtalk")
+    fields = {f.name: f for f in spec.fields}
+
+    assert fields["client_id"].required is True
+    assert fields["client_id"].secret is False
+    assert fields["client_secret"].required is True
+    assert fields["client_secret"].secret is True
+
+
+def test_feishu_webhook_secrets_are_marked_secret():
+    spec = get_channel_setup_spec("feishu")
+    secrets = {f.name for f in spec.fields if f.secret}
+
+    assert {"app_secret", "encrypt_key", "verification_token"} <= secrets
+
+
 def test_feishu_connection_mode_choices():
     spec = get_channel_setup_spec("feishu")
     field = next(f for f in spec.fields if f.name == "connection_mode")

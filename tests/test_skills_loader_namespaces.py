@@ -147,6 +147,61 @@ metadata:
     assert spec.metadata.capabilities == []
 
 
+def test_env_any_requires_parse(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "env-any-parse",
+        """---
+name: env-any-parse
+description: Synthetic skill exercising requires.envAny parsing.
+metadata:
+  opensquilla:
+    requires:
+      envAny: [OPENROUTER_API_KEY, ARK_API_KEY]
+---
+
+# body
+""",
+    )
+    loader = SkillLoader(bundled_dir=tmp_path)
+    spec = loader.get_by_name("env-any-parse")
+    assert spec is not None
+    assert spec.metadata is not None
+    assert spec.metadata.requires is not None
+    assert spec.metadata.requires.env_any == ["OPENROUTER_API_KEY", "ARK_API_KEY"]
+
+
+def test_env_any_snapshot_roundtrip(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "env-any-snapshot",
+        """---
+name: env-any-snapshot
+description: Synthetic skill exercising requires.envAny snapshot restore.
+metadata:
+  opensquilla:
+    requires:
+      envAny: [BRAVE_SEARCH_API_KEY, BRAVE_API_KEY]
+---
+
+# body
+""",
+    )
+    loader = SkillLoader(bundled_dir=tmp_path, snapshot_path=tmp_path / "snapshot.json")
+    loader.load_all()
+    loader.save_snapshot()
+    restored = loader.load_snapshot()
+
+    assert restored is not None
+    spec = next(item for item in restored if item.name == "env-any-snapshot")
+    assert spec.metadata is not None
+    assert spec.metadata.requires is not None
+    assert spec.metadata.requires.env_any == [
+        "BRAVE_SEARCH_API_KEY",
+        "BRAVE_API_KEY",
+    ]
+
+
 def test_existing_bundled_skills_still_parse() -> None:
     """Regression guard: every bundled SKILL.md must still parse after the patch."""
     loader = SkillLoader(bundled_dir=BUNDLED)

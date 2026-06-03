@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.skills.dependency_summary import build_dependency_summary
 from opensquilla.skills.eligibility import (
     EligibilityContext,
     EligibilityReport,
@@ -61,6 +62,10 @@ def _status_from_report(report: EligibilityReport) -> str:
     return "not_declared"
 
 
+def _format_env_any_group(group: list[str]) -> str:
+    return " or ".join(group)
+
+
 def _status_detail(spec: Any, report: EligibilityReport) -> str:
     """Human-readable tooltip detail for the skill status dot/chip."""
     if not report.eligible:
@@ -70,7 +75,11 @@ def _status_detail(spec: Any, report: EligibilityReport) -> str:
             meta = getattr(spec, "metadata", None)
             os_list = list(meta.os) if meta and meta.os else []
             return f"Needs setup — wrong OS (requires: {', '.join(os_list)})"
-        missing = list(report.missing_bins) + list(report.missing_env)
+        missing = (
+            list(report.missing_bins)
+            + list(report.missing_env)
+            + [_format_env_any_group(group) for group in report.missing_env_any]
+        )
         if missing:
             return f"Needs setup — missing: {', '.join(missing)}"
         return "Needs setup"
@@ -81,7 +90,12 @@ def _status_detail(spec: Any, report: EligibilityReport) -> str:
     if requires is None:
         total = 0
     else:
-        total = len(requires.bins) + (1 if requires.any_bins else 0) + len(requires.env)
+        total = (
+            len(requires.bins)
+            + (1 if requires.any_bins else 0)
+            + len(requires.env)
+            + (1 if requires.env_any else 0)
+        )
     return f"Ready — {total}/{total} dependencies satisfied"
 
 
@@ -160,6 +174,7 @@ def _skill_to_dict(
     os_name: str = "",
     *,
     skill_index: dict[str, Any] | None = None,
+    loader: SkillLoader | None = None,
     eligibility_ctx: EligibilityContext | None = None,
 ) -> dict[str, Any]:
     """Convert a SkillSpec to a dict with eligibility diagnostics.
@@ -248,10 +263,17 @@ def _skill_to_dict(
     d["declared"] = report.declared
     d["status"] = _status_from_report(report)
     d["status_detail"] = _status_detail(spec, report)
+    d["dependency_summary"] = build_dependency_summary(
+        spec,
+        loader=loader,
+        ctx=eligibility_ctx,
+        report=report,
+    )
     if not report.eligible:
         d["reasons"] = report.reasons
         d["missing_bins"] = report.missing_bins
         d["missing_env"] = report.missing_env
+        d["missing_env_any"] = report.missing_env_any
     return d
 
 
@@ -271,6 +293,7 @@ async def _handle_skills_status(params: dict | None, ctx: RpcContext) -> list[di
             diagnose_eligibility(skill, ctx_eligible),
             ctx_eligible.os_name,
             skill_index=skill_index,
+            loader=loader,
             eligibility_ctx=ctx_eligible,
         )
         for skill in skills
@@ -295,6 +318,7 @@ async def _handle_skills_list(params: dict | None, ctx: RpcContext) -> dict[str,
                 diagnose_eligibility(skill, ctx_eligible),
                 ctx_eligible.os_name,
                 skill_index=skill_index,
+                loader=loader,
                 eligibility_ctx=ctx_eligible,
             )
             for skill in skills
@@ -346,6 +370,7 @@ async def _handle_skills_get(params: dict | None, ctx: RpcContext) -> dict[str, 
         diagnose_eligibility(skill, ctx_eligible),
         ctx_eligible.os_name,
         skill_index=skill_index,
+        loader=loader,
         eligibility_ctx=ctx_eligible,
     )
     result["content"] = skill.content
@@ -551,6 +576,7 @@ async def _handle_skills_deps_install(params: dict | None, ctx: RpcContext) -> d
         "missing_still": {
             "bins": list(report.missing_bins),
             "env": list(report.missing_env),
+            "env_any": [list(group) for group in report.missing_env_any],
         },
     }
 

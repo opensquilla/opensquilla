@@ -31,9 +31,9 @@ MAX_SKILL_FILE_BYTES = 256_000  # 256KB per SKILL.md
 MAX_SKILLS_PER_SOURCE = 200  # per layer cap
 
 # Bump when on-disk snapshot fields change so stale caches are invalidated
-# instead of silently losing new fields. v6 adds skill risk/capability metadata
-# for unattended meta-skill auto-enable decisions.
-_SNAPSHOT_SCHEMA_VERSION = 7
+# instead of silently losing new fields. v8 adds requires.envAny snapshot
+# persistence for eligibility decisions.
+_SNAPSHOT_SCHEMA_VERSION = 8
 
 
 def _string_list(value: object) -> list[str]:
@@ -114,6 +114,7 @@ def _resolve_metadata(frontmatter: dict) -> SkillPlatformMeta | None:
             bins=bins_value if isinstance(bins_value, list) else [],
             any_bins=raw_req.get("anyBins", []),
             env=raw_req.get("env", []),
+            env_any=raw_req.get("envAny", []),
             config=raw_req.get("config", []),
         )
 
@@ -305,6 +306,9 @@ class SkillLoader:
                         "requires_env": s.metadata.requires.env
                         if s.metadata and s.metadata.requires
                         else [],
+                        "requires_env_any": s.metadata.requires.env_any
+                        if s.metadata and s.metadata.requires
+                        else [],
                         "install": [
                             {
                                 "kind": i.kind,
@@ -391,6 +395,7 @@ class SkillLoader:
                         bins=raw_meta.get("requires_bins", []),
                         any_bins=raw_meta.get("requires_any_bins", []),
                         env=raw_meta.get("requires_env", []),
+                        env_any=raw_meta.get("requires_env_any", []),
                     ),
                     install=install_specs,
                     risk_level=str(raw_meta.get("risk_level", "")).strip().lower(),

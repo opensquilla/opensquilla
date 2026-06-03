@@ -26,6 +26,7 @@ class SkillRequires:
     bins: list[str] = field(default_factory=list)
     any_bins: list[str] = field(default_factory=list)
     env: list[str] = field(default_factory=list)
+    env_any: list[str] = field(default_factory=list)
     config: list[str] = field(default_factory=list)
 
 

@@ -167,6 +167,27 @@ async def test_workspace_bundle_grant_does_not_write_user_store_when_session_per
     assert load_user_grants_payload()["bundles"] == []
 
 
+@pytest.mark.asyncio
+async def test_workspace_public_network_grant_does_not_write_user_store_when_session_persist_fails(
+    tmp_path,
+):
+    from opensquilla.sandbox.run_context_service import add_public_network_grant
+    from opensquilla.sandbox.user_grants import load_user_grants_payload
+
+    manager = _FailingUpdateSessionManager()
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        await add_public_network_grant(
+            manager,
+            manager.node.session_key,
+            scope="workspace",
+            config=_config(),
+            workspace=str(tmp_path),
+        )
+
+    assert load_user_grants_payload()["public_network"] == []
+
+
 def test_user_grants_store_round_trips_payloads(tmp_path):
     from opensquilla.sandbox.user_grants import (
         load_user_grants_payload,
@@ -250,6 +271,12 @@ def test_user_grants_store_migrates_legacy_json(tmp_path):
                         "source": "manual",
                     }
                 ],
+                "public_network": [
+                    {
+                        "scope": "workspace",
+                        "source": "manual",
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -267,7 +294,7 @@ def test_user_grants_store_migrates_legacy_json(tmp_path):
                 "source": "manual",
             }
         ],
-        "public_network": [],
+        "public_network": [{"scope": "workspace", "source": "manual"}],
     }
     assert legacy_path.exists() is False
 
@@ -402,6 +429,7 @@ async def test_user_domain_revoke_in_fresh_session_does_not_leave_saved_copy(tmp
 async def test_legacy_materialized_user_grants_in_origin_are_ignored(tmp_path):
     from opensquilla.sandbox.run_context import (
         PackageBundleGrant,
+        PublicNetworkGrant,
         get_run_context,
         run_context_from_origin_payload,
     )
@@ -441,6 +469,16 @@ async def test_legacy_materialized_user_grants_in_origin_are_ignored(tmp_path):
                     "source": "disabled",
                 },
             ],
+            "publicNetwork": [
+                {
+                    "scope": "workspace",
+                    "source": "manual",
+                },
+                {
+                    "scope": "chat",
+                    "source": "manual",
+                },
+            ],
         }
     }
     manager.node.origin = origin_payload
@@ -461,6 +499,7 @@ async def test_legacy_materialized_user_grants_in_origin_are_ignored(tmp_path):
             source="disabled",
         ),
     )
+    assert ctx.public_network == (PublicNetworkGrant(scope="chat", source="manual"),)
 
     routed = run_context_from_origin_payload(
         origin_payload["sandbox_run_context"],
@@ -470,6 +509,7 @@ async def test_legacy_materialized_user_grants_in_origin_are_ignored(tmp_path):
     assert routed.mounts == ()
     assert routed.domains == ()
     assert routed.bundles == ctx.bundles
+    assert routed.public_network == ctx.public_network
 
 
 @pytest.mark.asyncio

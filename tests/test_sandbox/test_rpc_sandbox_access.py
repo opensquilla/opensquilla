@@ -174,6 +174,7 @@ async def test_rpc_mutation_rejects_whitespace_session_key_without_creating_sess
 async def test_rpc_run_context_get_includes_bundles_and_temporary_grants() -> None:
     from opensquilla.gateway.rpc_sandbox import _handle_sandbox_run_context_get
     from opensquilla.sandbox.run_context import (
+        PublicNetworkGrant,
         RunContext,
         TemporaryGrant,
         persist_run_context,
@@ -195,6 +196,7 @@ async def test_rpc_run_context_get_includes_bundles_and_temporary_grants() -> No
         RunContext(
             run_mode=RunMode.STANDARD,
             workspace="/tmp/ws",
+            public_network=(PublicNetworkGrant(scope="chat", source="manual"),),
             temporary_grants=(
                 TemporaryGrant(
                     kind="domain",
@@ -215,6 +217,12 @@ async def test_rpc_run_context_get_includes_bundles_and_temporary_grants() -> No
         {
             "bundle_id": "python-package-install",
             "scope": "workspace",
+            "source": "manual",
+        }
+    ]
+    assert result["publicNetwork"] == [
+        {
+            "scope": "chat",
             "source": "manual",
         }
     ]

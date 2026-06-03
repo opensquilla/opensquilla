@@ -271,6 +271,7 @@ def _payload(context: RunContext) -> dict[str, Any]:
         "mounts": origin_payload["mounts"],
         "domains": origin_payload["domains"],
         "bundles": origin_payload.get("bundles", []),
+        "publicNetwork": origin_payload.get("public_network", []),
         "temporaryGrants": origin_payload.get("temporary_grants", []),
         "source": context.source,
     }

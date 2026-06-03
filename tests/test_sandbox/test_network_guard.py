@@ -116,14 +116,38 @@ def test_workspace_public_network_grant_reports_user_source() -> None:
 def test_standard_public_network_grant_does_not_override_validation_block() -> None:
     context = _context(public_network=(PublicNetworkGrant(scope="chat"),))
 
-    decision = decide_network_access("127.0.0.1", context)
+    for host, expected in (
+        (
+            "127.0.0.1",
+            NetworkDecision(
+                status="block",
+                normalized_host="127.0.0.1",
+                reason="ip_literal",
+                source="validation",
+            ),
+        ),
+        (
+            "localhost",
+            NetworkDecision(
+                status="block",
+                normalized_host="localhost",
+                reason="not_fqdn",
+                source="validation",
+            ),
+        ),
+        (
+            "*.com",
+            NetworkDecision(
+                status="block",
+                normalized_host="*.com",
+                reason="broad_wildcard",
+                source="validation",
+            ),
+        ),
+    ):
+        decision = decide_network_access(host, context)
 
-    assert decision == NetworkDecision(
-        status="block",
-        normalized_host="127.0.0.1",
-        reason="ip_literal",
-        source="validation",
-    )
+        assert decision == expected
 
 
 def test_unknown_domain_builds_structured_network_escalation_choices() -> None:

@@ -431,6 +431,16 @@ def _without_materialized_user_grants(payload: Any) -> Any:
             for item in public_network
             if _origin_item_scope(item, "chat") != "workspace"
         ]
+    public_network = payload.get("publicNetwork")
+    if isinstance(public_network, Iterable) and not isinstance(
+        public_network,
+        (str, bytes, dict),
+    ):
+        filtered["publicNetwork"] = [
+            item
+            for item in public_network
+            if _origin_item_scope(item, "chat") != "workspace"
+        ]
     return filtered
 
 

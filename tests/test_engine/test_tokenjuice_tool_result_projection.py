@@ -612,7 +612,7 @@ def test_python_backend_generic_fallback_indexes_equals_flag_path_keyword() -> N
     assert "signal: command-keyword zip.rb" in result.inline_text
 
 
-def test_python_backend_generic_fallback_char_cap_noops_instead_of_corrupting_map() -> None:
+def test_python_backend_generic_fallback_char_cap_uses_plain_projection() -> None:
     lines = [f"line {index:03d} normal output with enough body text" for index in range(900)]
     lines[450] = "line 450 ERROR initialize failed at zip.rb:14"
     output = "\n".join(lines)
@@ -626,7 +626,15 @@ def test_python_backend_generic_fallback_char_cap_noops_instead_of_corrupting_ma
         max_inline_chars=6_000,
     )
 
-    assert result is None
+    assert result is not None
+    assert result.reducer == "generic/fallback"
+    assert result.raw_chars == len(output)
+    assert result.reduced_chars <= 6_000
+    assert result.inline_text.startswith("exit 1\nline 000 normal output")
+    assert "... omitted chars ..." in result.inline_text
+    assert "[generic_fallback_index]" not in result.inline_text
+    assert "shown_ranges:" not in result.inline_text
+    assert "omitted_ranges:" not in result.inline_text
 
 
 def test_python_backend_generic_fallback_short_output_noops() -> None:

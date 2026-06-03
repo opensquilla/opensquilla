@@ -519,6 +519,28 @@ async def _persist_auto_trusted_host_if_available(
     )
 
 
+def _auto_trusted_persistence_callback(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+    *,
+    context: RunContext,
+) -> Callable[[NetworkDecision], Awaitable[None]] | None:
+    if context.run_mode != RunMode.TRUSTED:
+        return None
+    session_manager, config = _current_sandbox_persistence_handles()
+    if session_manager is None or config is None:
+        return None
+
+    async def _persist(decision: NetworkDecision) -> None:
+        await _persist_auto_trusted_host_if_available(
+            request,
+            runtime,
+            decision=decision,
+        )
+
+    return _persist
+
+
 async def _run_with_managed_network_proxy(
     request: SandboxRequest,
     runtime: SandboxRuntime,
@@ -535,14 +557,6 @@ async def _run_with_managed_network_proxy(
         fingerprint=fingerprint,
     )
     original_context = _current_run_context_for_network_proxy()
-    explicit_targets = _explicit_network_target_hosts(request.action_kind, request.argv)
-    for host in explicit_targets:
-        decision = decide_network_access(host, context)
-        await _persist_auto_trusted_host_if_available(
-            request,
-            runtime,
-            decision=decision,
-        )
     consumed_hosts: set[str] = set()
 
     def _decide(host: str) -> NetworkDecision:
@@ -564,7 +578,15 @@ async def _run_with_managed_network_proxy(
             consumed_hosts.add(decision.normalized_host)
         return decision
 
-    proxy = SandboxProxyServer(_decide)
+    on_upstream_opened = _auto_trusted_persistence_callback(
+        request,
+        runtime,
+        context=context,
+    )
+    if on_upstream_opened is None:
+        proxy = SandboxProxyServer(_decide)
+    else:
+        proxy = SandboxProxyServer(_decide, on_upstream_opened=on_upstream_opened)
     await proxy.start()
     try:
         policy = dataclasses.replace(
@@ -731,6 +753,8 @@ def sandboxed(
                     fn,
                     args,
                     kwargs,
+                    request=request,
+                    runtime=rt,
                     context=prepared,
                 )
             else:
@@ -812,11 +836,6 @@ async def _prepare_in_process_managed_network(
     for host in targets:
         decision = decide_network_access(host, effective_context)
         if decision.status == "allow":
-            await _persist_auto_trusted_host_if_available(
-                request,
-                runtime,
-                decision=decision,
-            )
             continue
         if decision.status == "ask":
             params = build_network_approval_params(
@@ -896,9 +915,22 @@ async def _run_in_process_with_managed_network(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     *,
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
     context: RunContext,
 ) -> Any:
-    proxy = SandboxProxyServer(lambda host: decide_network_access(host, context))
+    def decide(host: str) -> NetworkDecision:
+        return decide_network_access(host, context)
+
+    on_upstream_opened = _auto_trusted_persistence_callback(
+        request,
+        runtime,
+        context=context,
+    )
+    if on_upstream_opened is None:
+        proxy = SandboxProxyServer(decide)
+    else:
+        proxy = SandboxProxyServer(decide, on_upstream_opened=on_upstream_opened)
     await proxy.start()
     try:
         proxy_url = f"http://{proxy.host}:{proxy.port}"
@@ -1016,6 +1048,8 @@ async def run_in_process_network_action(
         callback,
         (),
         {},
+        request=request,
+        runtime=rt,
         context=prepared,
     )
 

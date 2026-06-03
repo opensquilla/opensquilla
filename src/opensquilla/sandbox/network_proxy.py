@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -74,9 +74,11 @@ class SandboxProxyServer:
         response_read_timeout_seconds: float = _DEFAULT_RESPONSE_READ_TIMEOUT_SECONDS,
         max_response_bytes: int = _MAX_RESPONSE_BYTES,
         resolver: Callable[[str, int], tuple[str, int]] | None = None,
+        on_upstream_opened: Callable[[NetworkDecision], Awaitable[None] | None] | None = None,
     ) -> None:
         self._decide = decide
         self._resolver = resolver or _resolve_validated_upstream
+        self._on_upstream_opened = on_upstream_opened
         self.host = host
         self.port = port
         self._header_read_timeout_seconds = header_read_timeout_seconds
@@ -168,12 +170,9 @@ class SandboxProxyServer:
             if decision.status == "allow" and request.host:
                 try:
                     if request.method == "CONNECT":
-                        await _write_response(
-                            writer,
-                            _response(403, "Forbidden", b"Network access denied.\n"),
-                        )
+                        await self._tunnel_connect(request, reader, writer, decision)
                     else:
-                        await self._forward_http(request, header, reader, writer)
+                        await self._forward_http(request, header, reader, writer, decision)
                 except _ProxyDeniedError:
                     await _write_response(
                         writer,
@@ -227,17 +226,29 @@ class SandboxProxyServer:
         self._active_writers.add(upstream_writer)
         return upstream_reader, upstream_writer
 
+    async def _notify_upstream_opened(self, decision: NetworkDecision) -> None:
+        if self._on_upstream_opened is None:
+            return
+        try:
+            result = self._on_upstream_opened(decision)
+            if result is not None:
+                await result
+        except Exception:
+            return
+
     async def _forward_http(
         self,
         request: _ParsedRequest,
         header: bytes,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
+        decision: NetworkDecision,
     ) -> None:
         if request.origin_form is None:
             raise ValueError("missing_origin_form")
         upstream_reader, upstream_writer = await self._open_upstream(request)
         try:
+            await self._notify_upstream_opened(decision)
             body = b""
             if request.content_length:
                 try:
@@ -279,6 +290,61 @@ class SandboxProxyServer:
             upstream_writer.close()
             with suppress(ConnectionError, RuntimeError):
                 await upstream_writer.wait_closed()
+
+    async def _tunnel_connect(
+        self,
+        request: _ParsedRequest,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        decision: NetworkDecision,
+    ) -> None:
+        upstream_reader, upstream_writer = await self._open_upstream(request)
+        try:
+            await self._notify_upstream_opened(decision)
+            await _write_response(
+                writer,
+                b"HTTP/1.1 200 Connection Established\r\n\r\n",
+            )
+            await _relay_tunnel(reader, writer, upstream_reader, upstream_writer)
+        finally:
+            self._active_writers.discard(upstream_writer)
+            upstream_writer.close()
+            with suppress(ConnectionError, RuntimeError):
+                await upstream_writer.wait_closed()
+
+
+async def _relay_tunnel(
+    client_reader: asyncio.StreamReader,
+    client_writer: asyncio.StreamWriter,
+    upstream_reader: asyncio.StreamReader,
+    upstream_writer: asyncio.StreamWriter,
+) -> None:
+    client_to_upstream = asyncio.create_task(
+        _relay_stream(client_reader, upstream_writer),
+    )
+    upstream_to_client = asyncio.create_task(
+        _relay_stream(upstream_reader, client_writer),
+    )
+    tasks = {client_to_upstream, upstream_to_client}
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*done, *pending, return_exceptions=True)
+
+
+async def _relay_stream(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+) -> None:
+    try:
+        while True:
+            chunk = await reader.read(_CHUNK_SIZE)
+            if not chunk:
+                break
+            writer.write(chunk)
+            await writer.drain()
+    except (ConnectionError, RuntimeError):
+        return
 
 
 def _extract_request_host(header: bytes) -> str:

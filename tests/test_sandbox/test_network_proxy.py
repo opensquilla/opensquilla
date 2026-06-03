@@ -230,7 +230,68 @@ async def test_proxy_forwards_absolute_http_without_host_using_approved_host() -
     ]
 
 
-async def test_proxy_rejects_allowed_connect_without_opening_upstream() -> None:
+async def test_proxy_tunnels_allowed_connect_after_validated_upstream() -> None:
+    seen_hosts: list[str] = []
+    resolver_calls: list[tuple[str, int]] = []
+    upstream_payloads: list[bytes] = []
+    upstream_opened: list[NetworkDecision] = []
+
+    async def handle_upstream(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        upstream_payloads.append(await reader.readexactly(4))
+        writer.write(b"pong")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    upstream = await asyncio.start_server(handle_upstream, "127.0.0.1", 0)
+    upstream_socket = next(iter(upstream.sockets or ()), None)
+    assert upstream_socket is not None
+    upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+
+    def decide(host: str) -> NetworkDecision:
+        seen_hosts.append(host)
+        return _allow_decision(host)
+
+    def resolver(host: str, port: int) -> tuple[str, int]:
+        resolver_calls.append((host, port))
+        return str(upstream_host), int(upstream_port)
+
+    async def on_upstream_opened(decision: NetworkDecision) -> None:
+        upstream_opened.append(decision)
+
+    server = SandboxProxyServer(
+        decide,
+        resolver=resolver,
+        on_upstream_opened=on_upstream_opened,
+    )
+    await server.start()
+    reader, writer = await asyncio.open_connection(server.host, server.port)
+    try:
+        writer.write(b"CONNECT Allowed.test:443 HTTP/1.1\r\n\r\n")
+        await writer.drain()
+        response = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=1.0)
+        writer.write(b"ping")
+        await writer.drain()
+        tunneled = await asyncio.wait_for(reader.readexactly(4), timeout=1.0)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await server.stop()
+        upstream.close()
+        await upstream.wait_closed()
+
+    assert response.startswith(b"HTTP/1.1 200 Connection Established")
+    assert tunneled == b"pong"
+    assert seen_hosts == ["allowed.test"]
+    assert resolver_calls == [("allowed.test", 443)]
+    assert upstream_payloads == [b"ping"]
+    assert upstream_opened == [_allow_decision("allowed.test")]
+
+
+async def test_proxy_rejects_allowed_connect_when_resolver_denies_upstream() -> None:
     seen_hosts: list[str] = []
     resolver_calls: list[tuple[str, int]] = []
 
@@ -240,7 +301,7 @@ async def test_proxy_rejects_allowed_connect_without_opening_upstream() -> None:
 
     def resolver(host: str, port: int) -> tuple[str, int]:
         resolver_calls.append((host, port))
-        return "127.0.0.1", 9
+        raise ValueError("unsafe resolution")
 
     server = SandboxProxyServer(decide, resolver=resolver)
     await server.start()
@@ -254,7 +315,7 @@ async def test_proxy_rejects_allowed_connect_without_opening_upstream() -> None:
 
     assert response.startswith(b"HTTP/1.1 403")
     assert seen_hosts == ["allowed.test"]
-    assert resolver_calls == []
+    assert resolver_calls == [("allowed.test", 443)]
 
 
 async def test_proxy_rejects_oversized_content_length_without_reading_body() -> None:

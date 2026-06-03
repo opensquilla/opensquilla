@@ -1,23 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import socket
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 
 from opensquilla.env import trust_env
-from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.gateway import rpc_tools
+from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.sandbox import integration as integration_mod
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime, sandboxed
-from opensquilla.sandbox.network_guard import NetworkDecision
-from opensquilla.sandbox.network_guard import decide_network_access
+from opensquilla.sandbox.network_guard import NetworkDecision, decide_network_access
+from opensquilla.sandbox.network_proxy import SandboxProxyServer as RealSandboxProxyServer
 from opensquilla.sandbox.run_context import (
     DomainGrant,
     PublicNetworkGrant,
@@ -72,6 +75,66 @@ def managed_context(tmp_path: Path) -> Iterator[ToolContext]:
         yield ctx
     finally:
         current_tool_context.reset(token)
+
+
+async def _send_current_managed_proxy_request(request: bytes) -> bytes:
+    proxy_url = integration_mod.current_managed_network_proxy_url()
+    assert proxy_url is not None
+    parsed = urlsplit(proxy_url)
+    assert parsed.hostname is not None
+    assert parsed.port is not None
+    reader, writer = await asyncio.open_connection(parsed.hostname, parsed.port)
+    try:
+        writer.write(request)
+        await writer.drain()
+        return await reader.read(4096)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+def _install_trusted_session_handles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from opensquilla.tools.builtin import sessions as sessions_mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    manager = SimpleNamespace()
+    manager.node = SimpleNamespace(
+        session_key="s1",
+        agent_id="main",
+        origin={
+            "sandbox_run_context": RunContext(run_mode=RunMode.TRUSTED).to_origin_payload(),
+        },
+    )
+
+    async def _get_session(session_key: str):
+        return manager.node if session_key == manager.node.session_key else None
+
+    async def _update(session_key: str, **fields):
+        for key, value in fields.items():
+            setattr(manager.node, key, value)
+        return manager.node
+
+    manager.get_session = _get_session
+    manager.update = _update
+    config = SimpleNamespace(
+        workspace_dir=str(workspace),
+        agents=[],
+        sandbox=SimpleNamespace(
+            run_mode="trusted",
+            sandbox=True,
+            security_grading=True,
+            backend="noop",
+            network_default="proxy_allowlist",
+        ),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+    monkeypatch.setattr(sessions_mod, "_session_manager", manager)
+    monkeypatch.setattr(sessions_mod, "_gateway_config", config)
+    return workspace, manager, config
 
 
 @pytest.mark.asyncio
@@ -378,7 +441,12 @@ async def test_allow_once_resolve_allows_one_retry_then_expires_for_explicit_tar
     allowed = await dummy_http_request("http://unknown.test/path")
     assert allowed == "ok"
 
-    saved = await get_run_context(manager, "s1", config=config, workspace=managed_context.workspace_dir)
+    saved = await get_run_context(
+        manager,
+        "s1",
+        config=config,
+        workspace=managed_context.workspace_dir,
+    )
     assert saved.temporary_grants == ()
 
     second = json.loads(await dummy_http_request("http://unknown.test/path"))
@@ -530,23 +598,214 @@ async def test_persisted_temporary_grant_from_saved_origin_does_not_allow_after_
 
 
 @pytest.mark.asyncio
-async def test_trusted_explicit_target_auto_adds_chat_domain_grant_in_production_path(
+async def test_trusted_explicit_target_does_not_auto_add_before_proxy_upstream(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from opensquilla.tools.builtin import sessions as sessions_mod
-
     class FakeProxy:
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
             decision = self._decide("api.github.com")
             assert isinstance(decision, NetworkDecision)
             assert decision.status == "allow"
+            assert decision.reason == "auto_trusted"
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+    workspace, manager, config = _install_trusted_session_handles(monkeypatch, tmp_path)
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        return "ok"
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(run_mode=RunMode.TRUSTED, source="route_metadata"),
+        )
+    )
+    try:
+        result = await dummy_http_request("https://api.github.com/repos/openai")
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "ok"
+    saved = await get_run_context(manager, "s1", config=config, workspace=str(workspace))
+    assert DomainGrant(
+        domain="api.github.com",
+        scope="chat",
+        source="auto_trusted",
+    ) not in saved.domains
+
+
+@pytest.mark.asyncio
+async def test_trusted_inprocess_auto_trust_does_not_persist_private_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, manager, config = _install_trusted_session_handles(monkeypatch, tmp_path)
+    real_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host: str, port: int, *args: object, **kwargs: object) -> list[tuple]:
+        if host == "new-public.example":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    socket.IPPROTO_TCP,
+                    "",
+                    ("127.0.0.1", port),
+                )
+            ]
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> bytes:
+        return await _send_current_managed_proxy_request(
+            b"GET http://new-public.example/path HTTP/1.1\r\n\r\n"
+        )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(run_mode=RunMode.TRUSTED, source="route_metadata"),
+        )
+    )
+    try:
+        response = await dummy_http_request("http://new-public.example/path")
+    finally:
+        current_tool_context.reset(token)
+
+    assert response.startswith(b"HTTP/1.1 403")
+    saved = await get_run_context(manager, "s1", config=config, workspace=str(workspace))
+    assert DomainGrant(
+        domain="new-public.example",
+        scope="chat",
+        source="auto_trusted",
+    ) not in saved.domains
+
+
+@pytest.mark.asyncio
+async def test_trusted_inprocess_auto_trust_persists_after_safe_proxy_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def handle_upstream(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Length: 2\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+            b"ok"
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    upstream = await asyncio.start_server(handle_upstream, "127.0.0.1", 0)
+    upstream_socket = next(iter(upstream.sockets or ()), None)
+    assert upstream_socket is not None
+    upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+
+    def proxy_factory(decide: object, **kwargs: object) -> RealSandboxProxyServer:
+        return RealSandboxProxyServer(
+            decide,
+            resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", proxy_factory)
+    workspace, manager, config = _install_trusted_session_handles(monkeypatch, tmp_path)
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> bytes:
+        return await _send_current_managed_proxy_request(
+            b"GET http://new-public.example/path HTTP/1.1\r\n\r\n"
+        )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(run_mode=RunMode.TRUSTED, source="route_metadata"),
+        )
+    )
+    try:
+        response = await dummy_http_request("http://new-public.example/path")
+    finally:
+        current_tool_context.reset(token)
+        upstream.close()
+        await upstream.wait_closed()
+
+    assert response.startswith(b"HTTP/1.1 200 OK")
+    saved = await get_run_context(manager, "s1", config=config, workspace=str(workspace))
+    assert DomainGrant(
+        domain="new-public.example",
+        scope="chat",
+        source="auto_trusted",
+    ) in saved.domains
+
+
+@pytest.mark.asyncio
+async def test_trusted_explicit_target_auto_adds_chat_domain_grant_in_production_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import sessions as sessions_mod
+
+    seen: dict[str, object] = {}
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object, **kwargs: object) -> None:
+            self._decide = decide
+            self._on_upstream_opened = kwargs.get("on_upstream_opened")
+
+        async def start(self) -> None:
+            decision = self._decide("api.github.com")
+            assert isinstance(decision, NetworkDecision)
+            assert decision.status == "allow"
+            assert self._on_upstream_opened is not None
+            await self._on_upstream_opened(decision)
+            seen["callback_called"] = True
 
         async def stop(self) -> None:
             return None
@@ -612,6 +871,7 @@ async def test_trusted_explicit_target_auto_adds_chat_domain_grant_in_production
         current_tool_context.reset(token)
 
     assert result == "ok"
+    assert seen["callback_called"] is True
     saved = await get_run_context(manager, "s1", config=config, workspace=str(workspace))
     assert DomainGrant(
         domain="api.github.com",
@@ -796,6 +1056,90 @@ async def test_run_with_managed_network_proxy_honors_temporary_domain_grant(
     assert isinstance(decision, NetworkDecision)
     assert decision.status == "allow"
     assert decision.reason == "domain_grant"
+
+
+@pytest.mark.asyncio
+async def test_run_with_managed_network_proxy_does_not_auto_add_before_proxy_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object, **kwargs: object) -> None:
+            self._decide = decide
+            seen["has_callback"] = kwargs.get("on_upstream_opened") is not None
+
+        async def start(self) -> None:
+            decision = self._decide("api.github.com")
+            assert isinstance(decision, NetworkDecision)
+            assert decision.status == "allow"
+            assert decision.reason == "auto_trusted"
+
+        async def stop(self) -> None:
+            return None
+
+    class FakeBackend:
+        name = "fake"
+
+        async def run(self, request):
+            seen["policy"] = request.policy
+            return SimpleNamespace(
+                returncode=0,
+                stdout="ok",
+                stderr="",
+                wall_time_s=0.1,
+                backend_used="fake",
+                backend_notes=(),
+            )
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+    workspace, manager, config = _install_trusted_session_handles(monkeypatch, tmp_path)
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+    request = integration_mod.build_request(
+        action_kind="network.http",
+        argv=("http_request", "GET", "https://api.github.com/repos/openai"),
+        cwd=workspace,
+        policy=policy,
+    )
+    runtime = SimpleNamespace(
+        backend=FakeBackend(),
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(run_mode=RunMode.TRUSTED, source="route_metadata"),
+        )
+    )
+    try:
+        result = await integration_mod._run_with_managed_network_proxy(request, runtime)
+    finally:
+        current_tool_context.reset(token)
+
+    assert result.stdout == "ok"
+    assert seen["has_callback"] is True
+    saved = await get_run_context(manager, "s1", config=config, workspace=str(workspace))
+    assert DomainGrant(
+        domain="api.github.com",
+        scope="chat",
+        source="auto_trusted",
+    ) not in saved.domains
 
 
 @pytest.mark.asyncio

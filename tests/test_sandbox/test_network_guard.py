@@ -88,6 +88,17 @@ def test_decide_network_access_asks_for_unknown_valid_domain() -> None:
     )
 
 
+def test_trusted_sandbox_auto_trusts_unknown_public_host_for_this_chat() -> None:
+    decision = decide_network_access("docs.example.com", _context(run_mode=RunMode.TRUSTED))
+
+    assert decision == NetworkDecision(
+        status="allow",
+        normalized_host="docs.example.com",
+        reason="auto_trusted",
+        source="auto_trusted:chat",
+    )
+
+
 def test_standard_public_network_grant_allows_unknown_public_domain() -> None:
     context = _context(public_network=(PublicNetworkGrant(scope="chat"),))
 
@@ -406,7 +417,12 @@ async def test_trusted_sandbox_auto_trust_idempotent_second_call_does_not_mutate
         workspace="/tmp/ws",
     )
 
-    assert first.domains == saved_after_first.domains == saved_after_second.domains == second.domains
+    assert (
+        first.domains
+        == saved_after_first.domains
+        == saved_after_second.domains
+        == second.domains
+    )
     assert [grant.domain for grant in saved_after_second.domains] == [
         "registry.npmjs.org",
         "api.github.com",
@@ -415,7 +431,7 @@ async def test_trusted_sandbox_auto_trust_idempotent_second_call_does_not_mutate
 
 
 @pytest.mark.asyncio
-async def test_trusted_sandbox_auto_trust_does_not_persist_unsafe_or_unknown_hosts() -> None:
+async def test_trusted_sandbox_auto_trust_does_not_persist_unsafe_hosts() -> None:
     from opensquilla.sandbox.run_context import get_run_context
     from opensquilla.sandbox.run_context_service import auto_add_trusted_domain_grant
 
@@ -429,7 +445,6 @@ async def test_trusted_sandbox_auto_trust_does_not_persist_unsafe_or_unknown_hos
         "127.0.0.1",
         "169.254.169.254",
         "*.com",
-        "totally-unrecognized.example",
     ):
         manager = _SessionManager()
 
@@ -457,7 +472,7 @@ async def test_trusted_sandbox_auto_trust_does_not_persist_unsafe_or_unknown_hos
             assert getattr(result, "status", "block") in {"ask", "block"}, (host, result)
 
 
-def test_trusted_sandbox_does_not_auto_trust_unsafe_or_unknown_hosts() -> None:
+def test_trusted_sandbox_does_not_auto_trust_unsafe_hosts() -> None:
     context = _context(run_mode=RunMode.TRUSTED)
 
     for host in (
@@ -467,7 +482,6 @@ def test_trusted_sandbox_does_not_auto_trust_unsafe_or_unknown_hosts() -> None:
         "169.254.169.254",
         "*.example.com",
         "*.com",
-        "totally-unrecognized.example",
     ):
         decision = decide_network_access(host, context)
         assert decision.status != "allow", (host, decision)

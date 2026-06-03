@@ -121,6 +121,14 @@ def decide_network_access(host: str, context: RunContext) -> NetworkDecision:
             source=f"public_network:{scope}",
         )
 
+    if context.run_mode == RunMode.TRUSTED:
+        return NetworkDecision(
+            status="allow",
+            normalized_host=normalized_host,
+            reason="auto_trusted",
+            source="auto_trusted:chat",
+        )
+
     return NetworkDecision(
         status="ask",
         normalized_host=normalized_host,

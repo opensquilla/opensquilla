@@ -166,6 +166,7 @@ from opensquilla.session.compaction_lifecycle import (
     flush_receipt_allows_destructive_compaction,
     flush_receipt_is_successful_flush,
     flush_receipt_status_for_compaction,
+    flush_trigger_enabled,
     mark_compaction_flush_status_with_retry,
     new_compaction_id,
     pre_compaction_flush_requires_safe_receipt,
@@ -4374,13 +4375,18 @@ class TurnRunner:
             return _T3_HANDLED
 
         compaction_config = None
-        if compaction_provider is not None or compaction_model:
+        configured_compaction = getattr(getattr(self, "_config", None), "compaction", None)
+        if (
+            compaction_provider is not None
+            or compaction_model
+            or configured_compaction is not None
+        ):
             from opensquilla.session.compaction import build_compaction_config_from_provider
 
             compaction_config = build_compaction_config_from_provider(
                 compaction_provider,
                 model_override=compaction_model,
-                compaction_config=getattr(getattr(self, "_config", None), "compaction", None),
+                compaction_config=configured_compaction,
             )
 
         from opensquilla.session.compaction import CompactionConfig, estimate_entry_replay_tokens
@@ -4768,15 +4774,20 @@ class TurnRunner:
                     ),
                 )
                 return
-        compaction_config = None
         skip_reason = "empty_summary"
-        if compaction_provider is not None or compaction_model:
+        compaction_config = None
+        configured_compaction = getattr(getattr(self, "_config", None), "compaction", None)
+        if (
+            compaction_provider is not None
+            or compaction_model
+            or configured_compaction is not None
+        ):
             from opensquilla.session.compaction import build_compaction_config_from_provider
 
             compaction_config = build_compaction_config_from_provider(
                 compaction_provider,
                 model_override=compaction_model,
-                compaction_config=getattr(getattr(self, "_config", None), "compaction", None),
+                compaction_config=configured_compaction,
             )
         from opensquilla.session.compaction import call_compact_with_optional_config
 
@@ -4948,19 +4959,7 @@ class TurnRunner:
             )
 
     def _pre_compaction_flush_enabled(self) -> bool:
-        from opensquilla.memory.flush_config import is_session_flush_enabled
-
-        if not is_session_flush_enabled():
-            return False
-
-        memory_cfg = getattr(self._config, "memory", None)
-        if memory_cfg is None:
-            return False
-
-        raw_enabled = getattr(memory_cfg, "flush_enabled", False)
-        if isinstance(raw_enabled, str):
-            return raw_enabled.strip().lower() not in {"0", "false", "no", "off"}
-        return bool(raw_enabled)
+        return flush_trigger_enabled(self._config, "pre_compaction")
 
     def _pre_compaction_flush_requires_safe_receipt(self) -> bool:
         return pre_compaction_flush_requires_safe_receipt(self._config)

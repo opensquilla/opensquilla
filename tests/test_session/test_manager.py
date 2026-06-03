@@ -1032,7 +1032,7 @@ async def test_compact_with_result_writes_portable_context_state(manager):
 @pytest.mark.asyncio
 async def test_compact_with_result_preserves_tool_metadata_for_boundary_cut(manager):
     await manager.create("agent:main:main")
-    await manager.append_message("agent:main:main", "user", "old context", token_count=30)
+    await manager.append_message("agent:main:main", "user", "old context", token_count=300)
     await manager.append_message(
         "agent:main:main",
         "assistant",
@@ -1052,7 +1052,7 @@ async def test_compact_with_result_preserves_tool_metadata_for_boundary_cut(mana
 
     result = await manager.compact_with_result(
         "agent:main:main",
-        context_window_tokens=50,
+        context_window_tokens=100,
         config=CompactionConfig(safety_margin=1.0),
     )
 

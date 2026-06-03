@@ -6,7 +6,7 @@ import hashlib
 import inspect
 import json
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import httpx
 import structlog
@@ -23,6 +23,7 @@ log = structlog.get_logger(__name__)
 
 _COMPACTION_TIMEOUT = 90.0
 _MAX_CUSTOM_INSTRUCTIONS_CHARS = 2000
+CompactionProfile = Literal["conversation", "coding", "research", "support"]
 
 
 @dataclass
@@ -37,6 +38,8 @@ class CompactionConfig:
     base_url: str = "https://openrouter.ai/api/v1"
     timeout_seconds: float = 90.0
     coverage_blocking: bool = False
+    compaction_profile: CompactionProfile = "conversation"
+    protected_recent_messages: int = 0
 
 
 @dataclass
@@ -64,6 +67,7 @@ class CompactionResult:
     missing_obligations: list[str] | None = None
     critical_carry_forward: list[str] | None = None
     skip_reason: str | None = None
+    quality_report: dict[str, Any] = field(default_factory=dict)
 
 
 def _string_value(value: Any) -> str:
@@ -91,6 +95,12 @@ def build_compaction_config_from_provider(
         timeout = _COMPACTION_TIMEOUT
 
     cfg = CompactionConfig(timeout_seconds=timeout)
+    for attr in (
+        "compaction_profile",
+        "protected_recent_messages",
+    ):
+        if compaction_config is not None and hasattr(compaction_config, attr):
+            setattr(cfg, attr, getattr(compaction_config, attr))
     if compaction_config is not None and not bool(getattr(compaction_config, "enabled", True)):
         return cfg
 
@@ -225,6 +235,93 @@ def estimate_entry_model_replay_tokens(entry: Any) -> int:
 
 def _entry_tokens(entry: dict[str, Any]) -> int:
     return estimate_entry_replay_tokens(entry)
+
+
+def _profile_protected_recent_messages(cfg: CompactionConfig) -> int:
+    configured = max(0, int(getattr(cfg, "protected_recent_messages", 0) or 0))
+    if configured:
+        return configured
+    profile = str(getattr(cfg, "compaction_profile", "conversation") or "conversation")
+    if profile in {"coding", "research", "support"}:
+        return 12
+    return 0
+
+
+def _apply_protected_tail(
+    entries: list[dict[str, Any]],
+    cut: int,
+    cfg: CompactionConfig,
+) -> int:
+    protected_recent = _profile_protected_recent_messages(cfg)
+    if protected_recent <= 0:
+        return cut
+    protected_start = max(0, len(entries) - protected_recent)
+    return min(cut, protected_start)
+
+
+def _retreat_to_turn_boundary(entries: list[dict[str, Any]], cut: int) -> int:
+    """Move cut earlier until it does not orphan a kept tool result."""
+
+    while cut > 0:
+        first_kept = entries[cut] if cut < len(entries) else None
+        if _is_tool_result_entry(first_kept):
+            result_start = cut
+            while result_start > 0 and _is_tool_result_entry(entries[result_start - 1]):
+                result_start -= 1
+            if result_start > 0 and _is_assistant_tool_call_entry(
+                entries[result_start - 1]
+            ):
+                cut = result_start - 1
+                continue
+            if result_start != cut:
+                cut = result_start
+                continue
+        if not (
+            _is_assistant_tool_call_entry(entries[cut - 1])
+            and _is_tool_result_entry(first_kept)
+        ):
+            return cut
+        cut -= 1
+    return 0
+
+
+def _compaction_quality_report(
+    *,
+    cfg: CompactionConfig,
+    entries: list[dict[str, Any]],
+    kept: list[dict[str, Any]],
+    tokens_before: int,
+    tokens_after: int,
+    removed_count: int,
+    context_window_tokens: int,
+) -> dict[str, Any]:
+    protected_recent = _profile_protected_recent_messages(cfg)
+    protected_tail_preserved = True
+    if protected_recent > 0:
+        protected_tail = entries[-protected_recent:]
+        protected_tail_preserved = (
+            len(kept) >= len(protected_tail)
+            and kept[-len(protected_tail) :] == protected_tail
+        )
+    compression_ratio = (
+        float(tokens_after) / float(tokens_before)
+        if tokens_before > 0
+        else 1.0
+    )
+    fits_context_window = bool(tokens_after * cfg.safety_margin <= context_window_tokens)
+    passes_structural_gate = bool(
+        removed_count > 0
+        and protected_tail_preserved
+        and tokens_after < tokens_before
+    )
+    return {
+        "profile": str(getattr(cfg, "compaction_profile", "conversation") or "conversation"),
+        "protected_recent_messages": protected_recent,
+        "protected_tail_preserved": protected_tail_preserved,
+        "compression_ratio": compression_ratio,
+        "fits_context_window": fits_context_window,
+        "passes_structural_gate": passes_structural_gate,
+    }
 
 
 def _chunk_entries(entries: list[dict[str, Any]], chunk_ratio: float) -> list[list[dict[str, Any]]]:
@@ -619,10 +716,14 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
 
     # compaction: use turn-boundary-aware cut instead of raw token split.
     cut = _find_turn_boundary_cut(entries, keep_budget)
+    cut = _retreat_to_turn_boundary(entries, _apply_protected_tail(entries, cut, cfg))
     kept = entries[cut:]
     to_compact = entries[:cut]
 
     if not to_compact:
+        skip_reason = "no_safe_turn_boundary"
+        if _profile_protected_recent_messages(cfg) > 0:
+            skip_reason = "protected_tail_exhausts_compaction_window"
         return CompactionResult(
             summary="",
             kept_entries=entries,
@@ -632,7 +733,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             tokens_before=total_tokens,
             tokens_after=total_tokens,
             remaining_budget_tokens=max(window - total_tokens, 0),
-            skip_reason="no_safe_turn_boundary",
+            skip_reason=skip_reason,
         )
 
     chunk_ratio = max(cfg.min_chunk_ratio, cfg.base_chunk_ratio / cfg.default_parts)
@@ -684,6 +785,15 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
         block_missing_critical=cfg.coverage_blocking,
     )
     if coverage.blocked:
+        quality_report = _compaction_quality_report(
+            cfg=cfg,
+            entries=entries,
+            kept=entries,
+            tokens_before=total_tokens,
+            tokens_after=total_tokens,
+            removed_count=0,
+            context_window_tokens=window,
+        )
         log.warning(
             "compaction.coverage_blocked",
             missing_obligations=len(coverage.missing_obligations),
@@ -704,6 +814,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             missing_obligations=coverage.missing_obligations,
             critical_carry_forward=coverage.critical_carry_forward,
             skip_reason="coverage_blocked",
+            quality_report=quality_report,
         )
 
     log.info(
@@ -715,6 +826,41 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
         summary_source=summary_source,
         prev_summary_chars=len(prev_summary),
     )
+
+    quality_report = _compaction_quality_report(
+        cfg=cfg,
+        entries=entries,
+        kept=kept,
+        tokens_before=total_tokens,
+        tokens_after=tokens_after,
+        removed_count=len(to_compact),
+        context_window_tokens=window,
+    )
+    if not bool(quality_report.get("passes_structural_gate", False)):
+        log.warning(
+            "compaction.quality_gate_failed",
+            profile=quality_report.get("profile"),
+            protected_tail_preserved=quality_report.get("protected_tail_preserved"),
+            compression_ratio=quality_report.get("compression_ratio"),
+            fits_context_window=quality_report.get("fits_context_window"),
+        )
+        return CompactionResult(
+            summary="",
+            kept_entries=entries,
+            removed_count=0,
+            chunks_processed=len(chunks),
+            summary_source=summary_source,
+            tokens_before=total_tokens,
+            tokens_after=total_tokens,
+            remaining_budget_tokens=max(window - total_tokens, 0),
+            summary_payload=structured_summary.model_dump(mode="json"),
+            summary_format="structured_v1",
+            coverage_status=coverage.status,
+            missing_obligations=coverage.missing_obligations,
+            critical_carry_forward=coverage.critical_carry_forward,
+            skip_reason="quality_gate_failed",
+            quality_report=quality_report,
+        )
 
     return CompactionResult(
         summary=merged,
@@ -730,6 +876,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
         coverage_status=coverage.status,
         missing_obligations=coverage.missing_obligations,
         critical_carry_forward=coverage.critical_carry_forward,
+        quality_report=quality_report,
     )
 
 

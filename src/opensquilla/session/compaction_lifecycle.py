@@ -15,9 +15,21 @@ FlushCompactionDecision = Literal[
     "disabled",
 ]
 FlushCompactionSafetyMode = Literal["protect", "best_effort", "block", "off"]
+FlushTrigger = Literal["session_reset", "manual", "idle", "pre_compaction"]
 CompactionSafetyStatus = Literal["safe", "degraded_archive", "unsafe", "not_required"]
 SemanticMemoryStatus = Literal["healthy", "pending", "degraded", "failed", "not_required"]
 CompactionDurability = Literal["durable", "request_scoped", "none"]
+ALL_FLUSH_TRIGGERS: Final[tuple[FlushTrigger, ...]] = (
+    "session_reset",
+    "manual",
+    "idle",
+    "pre_compaction",
+)
+DEFAULT_FLUSH_TRIGGERS: Final[tuple[FlushTrigger, ...]] = (
+    "session_reset",
+    "manual",
+    "idle",
+)
 
 SAFE_FLUSH_OUTPUT_COVERAGE_STATUSES: Final[frozenset[str]] = frozenset({"ok"})
 SAFE_FLUSH_OBLIGATION_STATUSES: Final[frozenset[str]] = frozenset(
@@ -48,6 +60,21 @@ ARCHIVED_DEGRADED_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset(
     {"parse_failed_archived", "provider_failed_archived", "apply_failed_archived"}
 )
 FAILED_FLUSH_RESULT_STATUSES: Final[frozenset[str]] = frozenset({"archive_failed"})
+_FLUSH_TRIGGER_ALIASES: Final[dict[str, FlushTrigger]] = {
+    "reset": "session_reset",
+    "session-reset": "session_reset",
+    "session_reset": "session_reset",
+    "sessions_reset": "session_reset",
+    "manual": "manual",
+    "idle": "idle",
+    "pre-compaction": "pre_compaction",
+    "pre_compaction": "pre_compaction",
+    "compaction": "pre_compaction",
+    "context-compaction": "pre_compaction",
+    "context_compaction": "pre_compaction",
+    "inline-overflow": "pre_compaction",
+    "inline_overflow": "pre_compaction",
+}
 
 
 @dataclass(frozen=True)
@@ -76,6 +103,95 @@ def new_compaction_id() -> str:
     """Return an opaque id used to correlate one compaction attempt's events."""
 
     return f"cmp_{uuid4().hex}"
+
+
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        raw = value.strip().lower()
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        return default
+    return bool(value)
+
+
+def _flush_memory_config(config: Any) -> Any:
+    memory_cfg = getattr(config, "memory", None)
+    return memory_cfg if memory_cfg is not None else config
+
+
+def normalize_flush_triggers(value: Any) -> frozenset[FlushTrigger]:
+    """Normalize flush trigger config into canonical trigger names."""
+
+    if value is None:
+        return frozenset(DEFAULT_FLUSH_TRIGGERS)
+    if isinstance(value, str):
+        items: list[Any] = [item for item in value.replace(";", ",").split(",")]
+    else:
+        try:
+            items = list(value)
+        except TypeError:
+            items = [value]
+
+    normalized: set[FlushTrigger] = set()
+    for item in items:
+        raw = str(item or "").strip().lower().replace("_", "-")
+        if not raw:
+            continue
+        if raw == "all":
+            return frozenset(ALL_FLUSH_TRIGGERS)
+        trigger = _FLUSH_TRIGGER_ALIASES.get(raw)
+        if trigger is not None:
+            normalized.add(trigger)
+    return frozenset(normalized)
+
+
+def normalize_flush_triggers_strict(value: Any) -> tuple[FlushTrigger, ...]:
+    """Normalize trigger config and reject unknown trigger names."""
+
+    if value is None:
+        return DEFAULT_FLUSH_TRIGGERS
+    if isinstance(value, str):
+        items: list[Any] = [item for item in value.replace(";", ",").split(",")]
+    else:
+        try:
+            items = list(value)
+        except TypeError:
+            items = [value]
+
+    normalized = normalize_flush_triggers(items)
+    invalid: list[str] = []
+    for item in items:
+        raw = str(item or "").strip()
+        if not raw:
+            continue
+        if raw.strip().lower().replace("_", "-") == "all":
+            continue
+        if not normalize_flush_triggers([raw]):
+            invalid.append(raw)
+    if invalid:
+        raise ValueError(f"unknown flush trigger(s): {', '.join(invalid)}")
+    return tuple(trigger for trigger in ALL_FLUSH_TRIGGERS if trigger in normalized)
+
+
+def flush_trigger_enabled(config: Any, trigger: FlushTrigger) -> bool:
+    """Return whether a specific flush trigger is enabled for a config."""
+
+    from opensquilla.memory.flush_config import is_session_flush_enabled
+
+    if not is_session_flush_enabled():
+        return False
+    memory_cfg = _flush_memory_config(config)
+    if not _coerce_bool(getattr(memory_cfg, "flush_enabled", False)):
+        return False
+    if trigger == "pre_compaction" and _coerce_bool(
+        getattr(memory_cfg, "flush_pre_compaction", False)
+    ):
+        return True
+    return trigger in normalize_flush_triggers(getattr(memory_cfg, "flush_triggers", None))
 
 
 def compaction_event_chain(event: str) -> list[str]:
@@ -201,6 +317,9 @@ def compaction_result_payload(
     skip_reason = str(getattr(result, "skip_reason", "") or "")
     if skip_reason:
         payload["skip_reason"] = skip_reason
+    quality_report = getattr(result, "quality_report", None)
+    if isinstance(quality_report, dict) and quality_report:
+        payload["quality_report"] = dict(quality_report)
     return payload
 
 
@@ -257,7 +376,7 @@ def normalize_flush_compaction_safety_mode(
 def flush_compaction_safety_mode(config: Any) -> FlushCompactionSafetyMode:
     memory_cfg = getattr(config, "memory", None)
     if memory_cfg is None:
-        return "protect"
+        memory_cfg = config
     legacy_requires_safe_receipt = bool(
         getattr(memory_cfg, "flush_compaction_requires_safe_receipt", False)
     )
@@ -466,12 +585,7 @@ def compaction_memory_status(
 
 
 def pre_compaction_flush_enabled(config: Any) -> bool:
-    from opensquilla.memory.flush_config import is_session_flush_enabled
-
-    if not is_session_flush_enabled():
-        return False
-    memory_cfg = getattr(config, "memory", None)
-    return bool(getattr(memory_cfg, "flush_enabled", False))
+    return flush_trigger_enabled(config, "pre_compaction")
 
 
 def pre_compaction_flush_requires_safe_receipt(config: Any) -> bool:

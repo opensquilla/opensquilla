@@ -12,6 +12,7 @@ import pytest
 from opensquilla.engine import runtime as runtime_module
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.runtime import TurnRunner
+from opensquilla.session.compaction import CompactionConfig
 from opensquilla.session.models import TranscriptEntry
 
 # ---------------------------------------------------------------------------
@@ -23,6 +24,7 @@ class _FakeSessionManager:
     def __init__(self, transcript: list[TranscriptEntry] | None = None) -> None:
         self._transcript = transcript or []
         self.compact_calls: list[tuple[str, int]] = []
+        self.compact_configs: list[object | None] = []
 
     async def get_transcript(self, session_key: str, **kwargs: Any) -> list[TranscriptEntry]:
         return list(self._transcript)
@@ -40,6 +42,7 @@ class _ResultCompactionSessionManager(_FakeSessionManager):
         config: object | None = None,
     ) -> SimpleNamespace:
         self.compact_calls.append((session_key, context_window_tokens))
+        self.compact_configs.append(config)
         return SimpleNamespace(
             summary="summary",
             kept_entries=[{"role": "assistant", "content": "tail"}],
@@ -61,6 +64,7 @@ class _StaleResultCompactionSessionManager(_FakeSessionManager):
         **kwargs: Any,
     ) -> SimpleNamespace:
         self.compact_calls.append((session_key, context_window_tokens))
+        self.compact_configs.append(config)
         return SimpleNamespace(
             summary="",
             kept_entries=list(self._transcript),
@@ -197,12 +201,16 @@ def _make_runner(
     flush_enabled: bool = True,
     flush_timeout_seconds: float = 15.0,
     flush_background_timeout_seconds: float = 120.0,
+    flush_pre_compaction: bool = True,
     flush_compaction_requires_safe_receipt: bool = False,
+    compaction_config: Any = None,
 ) -> TurnRunner:
     config = SimpleNamespace(
         squilla_router=SimpleNamespace(upgrade_to_c3_compaction_enabled=enabled),
+        compaction=compaction_config,
         memory=SimpleNamespace(
             flush_enabled=flush_enabled,
+            flush_pre_compaction=flush_pre_compaction,
             flush_timeout_seconds=flush_timeout_seconds,
             flush_background_timeout_seconds=flush_background_timeout_seconds,
             flush_compaction_requires_safe_receipt=flush_compaction_requires_safe_receipt,
@@ -235,6 +243,38 @@ async def test_t2_to_t3_triggers_flush_then_compact() -> None:
     assert len(fs.execute_calls) == 1
     assert len(sm.compact_calls) == 1
     assert sm.compact_calls[0] == ("agent:main:webchat:default", 100_000)
+
+
+@pytest.mark.asyncio
+async def test_t3_passes_profile_config_without_provider_or_model() -> None:
+    sm = _ResultCompactionSessionManager(_sample_transcript())
+    fs = _FakeFlushService()
+    runner = _make_runner(
+        session_manager=sm,
+        flush_service=fs,
+        compaction_config=SimpleNamespace(
+            enabled=False,
+            compaction_profile="coding",
+            protected_recent_messages=5,
+            timeout_seconds=11.0,
+        ),
+    )
+
+    turn = _make_turn(routed_tier="t3", previous_tier="t2")
+    result = await runner._maybe_compact_on_t3_upgrade(
+        "agent:main:webchat:default",
+        turn,
+        100_000,
+    )
+
+    assert result == "handled"
+    config = sm.compact_configs[0]
+    assert isinstance(config, CompactionConfig)
+    assert config.model is None
+    assert config.api_key == ""
+    assert config.compaction_profile == "coding"
+    assert config.protected_recent_messages == 5
+    assert config.timeout_seconds == 11.0
 
 
 @pytest.mark.asyncio

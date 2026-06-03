@@ -47,8 +47,8 @@ from opensquilla.session.compaction_lifecycle import (
     flush_receipt_is_successful_flush,
     flush_receipt_status_for_compaction,
     flush_receipt_to_dict,
+    flush_trigger_enabled,
     new_compaction_id,
-    pre_compaction_flush_enabled,
     pre_compaction_flush_requires_safe_receipt,
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
@@ -1550,6 +1550,22 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
         agent_id = normalize_agent_id(getattr(session, "agent_id", None) or "main")
 
         transcript = await ctx.session_manager.get_transcript(key)
+        reset_flush_enabled = flush_trigger_enabled(ctx.config, "session_reset")
+
+        if not reset_flush_enabled:
+            updated, rotated = await ctx.session_manager.apply_intent(
+                key,
+                SessionIntent.RESET_SAME_KEY,
+            )
+            new_epoch = await _increment_and_emit_epoch(ctx, storage, key)
+            return {
+                "key": key,
+                "reset": True,
+                "rotated": rotated,
+                "previous_session_id": previous_session_id,
+                "session_id": updated.session_id,
+                "epoch": new_epoch,
+            }
 
         if ctx.flush_service is None:
             # Fail-closed when flush is unavailable: refuse to clear a non-empty
@@ -1892,7 +1908,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             **compaction_lifecycle_payload(compaction_id, COMPACTION_TRIGGERED_EVENT),
         )
         transcript = []
-        flush_enabled = pre_compaction_flush_enabled(ctx.config)
+        flush_enabled = flush_trigger_enabled(ctx.config, "manual")
         try:
             if flush_enabled:
                 get_transcript = getattr(ctx.session_manager, "get_transcript", None)
@@ -2018,6 +2034,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             missing_obligation_count = 0
             critical_carry_forward_count = 0
             state_kind = "text"
+            quality_report: dict[str, Any] = {}
             skip_reason = ""
             compact_with_result = getattr(ctx.session_manager, "compact_with_result", None)
             if callable(compact_with_result):
@@ -2052,6 +2069,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                     getattr(result, "critical_carry_forward", None) or []
                 )
                 state_kind = str(getattr(result, "summary_format", "text") or "text")
+                quality_report = dict(getattr(result, "quality_report", None) or {})
                 if removed_count > 0 and summary:
                     for event in (
                         COMPACTION_CHUNK_SUMMARIZED_EVENT,
@@ -2113,6 +2131,8 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             "critical_carry_forward_count": critical_carry_forward_count,
             "state_kind": state_kind,
         }
+        if quality_report:
+            payload["quality_report"] = quality_report
         if not removed_count:
             payload["skip_reason"] = skip_reason or "empty_summary"
             payload["reason"] = payload["skip_reason"]
@@ -2144,6 +2164,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
             missing_obligation_count=missing_obligation_count,
             critical_carry_forward_count=critical_carry_forward_count,
             state_kind=state_kind,
+            quality_report=quality_report,
             summary_len=len(summary),
             summary_source=summary_source,
             flush_receipt_status=flush_receipt_status,
@@ -2184,7 +2205,8 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
             session = await storage.get_session(key)
         previous_session_id = getattr(session, "session_id", None) if session else None
 
-        if ctx.flush_service is None:
+        truncate_flush_enabled = flush_trigger_enabled(ctx.config, "session_reset")
+        if truncate_flush_enabled and ctx.flush_service is None:
             # Fail-closed: refuse to truncate a non-empty transcript without
             # an admin force override. Empty transcripts are safe to truncate.
             transcript = await ctx.session_manager.get_transcript(key)
@@ -2219,7 +2241,7 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
                     message="force=true on sessions.truncate requires operator.admin scope.",
                     details={"key": key, "session_id": previous_session_id},
                 )
-        else:
+        elif truncate_flush_enabled:
             if storage is None:
                 raise KeyError("No session storage available")
             if session is None:

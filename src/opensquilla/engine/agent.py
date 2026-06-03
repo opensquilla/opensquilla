@@ -97,7 +97,9 @@ from opensquilla.session.compaction_lifecycle import (
     compaction_result_payload,
     flush_receipt_allows_destructive_compaction,
     flush_receipt_is_successful_flush,
+    flush_trigger_enabled,
     new_compaction_id,
+    pre_compaction_flush_requires_safe_receipt,
 )
 from opensquilla.session.terminal_reply import build_terminal_reply
 from opensquilla.tool_boundary import AgentToolHandler as ToolHandler
@@ -4001,10 +4003,13 @@ class Agent:
         return "The generated file is ready."
 
     def _build_compaction_config(self) -> CompactionConfig:
-        return build_compaction_config_from_provider(
+        config = build_compaction_config_from_provider(
             self.provider,
             default_model=self.config.model_id,
         )
+        config.compaction_profile = self.config.compaction_profile
+        config.protected_recent_messages = self.config.compaction_protected_recent_messages
+        return config
 
     @staticmethod
     def _live_request_jsonable(value: Any) -> Any:
@@ -4129,7 +4134,12 @@ class Agent:
                     return None
             return None
 
-        if not self._flush_done_this_cycle and self.config.flush_enabled:
+        pre_compaction_flush_enabled = flush_trigger_enabled(
+            self.config,
+            "pre_compaction",
+        )
+
+        if not self._flush_done_this_cycle and pre_compaction_flush_enabled:
             try:
                 from opensquilla.memory.flush import (
                     resolve_flush_plan,
@@ -4174,7 +4184,7 @@ class Agent:
             except Exception:
                 logger.debug("memory_flush.skipped", reason="flush module unavailable")
 
-        if self.config.flush_enabled:
+        if pre_compaction_flush_enabled:
             if (
                 flush_task is not None
                 and not flush_task.done()
@@ -4199,7 +4209,7 @@ class Agent:
                     indexed_chunk_count=getattr(receipt, "indexed_chunk_count", None),
                 )
                 self._flush_done_this_cycle = False
-                if self.config.flush_compaction_requires_safe_receipt:
+                if pre_compaction_flush_requires_safe_receipt(self.config):
                     self._last_compaction_refusal_reason = reason
                     if self._session_key:
                         notify_compaction(
@@ -5725,6 +5735,8 @@ class Agent:
             context_window_tokens=self.config.context_window_tokens,
             workspace_dir=spec.workspace_dir or self.config.workspace_dir,
             flush_enabled=self.config.flush_enabled,
+            flush_triggers=list(self.config.flush_triggers),
+            flush_pre_compaction=self.config.flush_pre_compaction,
             flush_timeout_seconds=self.config.flush_timeout_seconds,
             flush_background_timeout_seconds=self.config.flush_background_timeout_seconds,
             flush_backoff_initial_seconds=self.config.flush_backoff_initial_seconds,
@@ -5734,6 +5746,10 @@ class Agent:
                 self.config.flush_compaction_requires_safe_receipt
             ),
             flush_compaction_safety_mode=self.config.flush_compaction_safety_mode,
+            compaction_profile=self.config.compaction_profile,
+            compaction_protected_recent_messages=(
+                self.config.compaction_protected_recent_messages
+            ),
             tool_result_projection_max_inline_chars=(
                 self.config.tool_result_projection_max_inline_chars
             ),

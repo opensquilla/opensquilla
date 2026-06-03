@@ -139,8 +139,8 @@ async def test_new_avoids_mid_turn_cut():
 async def test_new_avoids_mid_turn_cut_for_agent_flattened_tool_blocks():
     """Turn-boundary cut must match the Agent's flattened tool-use entries."""
     entries = [
-        {"role": "user", "content": "old context", "token_count": 10},
-        {"role": "user", "content": "q1", "token_count": 5},
+        {"role": "user", "content": "old context", "token_count": 100},
+        {"role": "user", "content": "q1", "token_count": 100},
         {"role": "assistant", "content": "[Used tool: read_file]", "token_count": 5},
         {
             "role": "user",
@@ -153,7 +153,7 @@ async def test_new_avoids_mid_turn_cut_for_agent_flattened_tool_blocks():
     request = CompactionRequest(
         session_id="agent-flattened-boundary-test",
         entries=entries,
-        context_window_tokens=30,
+        context_window_tokens=100,
         config=CompactionConfig(safety_margin=1.0),
     )
     result = await compact_context_new(request)

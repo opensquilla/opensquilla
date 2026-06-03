@@ -604,6 +604,21 @@ def test_agent_child_config_inherits_tool_failure_loop_thresholds() -> None:
     assert child.config.tool_failure_loop_block_threshold == 7
 
 
+def test_agent_config_normalizes_flush_triggers_and_clamps_compaction_tail() -> None:
+    config = AgentConfig(
+        flush_triggers=["reset", "inline_overflow"],
+        compaction_protected_recent_messages=-4,
+    )
+
+    assert config.flush_triggers == ["session_reset", "pre_compaction"]
+    assert config.compaction_protected_recent_messages == 0
+
+
+def test_agent_config_rejects_unknown_flush_triggers() -> None:
+    with pytest.raises(ValueError, match="unknown flush trigger"):
+        AgentConfig(flush_triggers=["manual", "bogus"])
+
+
 def test_agent_child_config_inherits_context_and_flush_budget_policy() -> None:
     agent = Agent(
         provider=_ContextOverflowProvider(success_after=1),
@@ -619,6 +634,8 @@ def test_agent_child_config_inherits_context_and_flush_budget_policy() -> None:
             max_turn_billed_cost_usd=0.75,
             max_turn_tool_errors=4,
             flush_enabled=True,
+            flush_triggers=["session_reset", "manual", "idle", "pre_compaction"],
+            flush_pre_compaction=True,
             flush_timeout_seconds=1.5,
             flush_background_timeout_seconds=15.0,
             flush_backoff_initial_seconds=3.0,
@@ -640,6 +657,13 @@ def test_agent_child_config_inherits_context_and_flush_budget_policy() -> None:
     assert child.config.max_turn_billed_cost_usd == 0.75
     assert child.config.max_turn_tool_errors == 4
     assert child.config.flush_enabled is True
+    assert child.config.flush_triggers == [
+        "session_reset",
+        "manual",
+        "idle",
+        "pre_compaction",
+    ]
+    assert child.config.flush_pre_compaction is True
     assert child.config.flush_timeout_seconds == 1.5
     assert child.config.flush_background_timeout_seconds == 15.0
     assert child.config.flush_backoff_initial_seconds == 3.0
@@ -1086,6 +1110,7 @@ async def test_inline_overflow_uses_live_context_not_cumulative_provider_usage(
             context_window_tokens=20_000,
             context_overflow_threshold=0.5,
             flush_enabled=True,
+            flush_pre_compaction=True,
             flush_timeout_seconds=0.01,
             max_iterations=10,
         ),
@@ -1147,6 +1172,7 @@ async def test_inline_overflow_still_triggers_for_large_live_provider_request(
             context_window_tokens=3000,
             context_overflow_threshold=0.5,
             flush_enabled=True,
+            flush_pre_compaction=True,
             flush_timeout_seconds=0.01,
             system_prompt="live request system context " + ("s" * 2000),
         ),
@@ -1160,6 +1186,55 @@ async def test_inline_overflow_still_triggers_for_large_live_provider_request(
     assert any(isinstance(event, DoneEvent) for event in events)
     assert len(provider.calls) == 1
     assert flush_calls == [1]
+    assert len(compact_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_inline_overflow_flush_enabled_without_trigger_skips_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.engine.agent as agent_module
+
+    provider = _HighUsageToolLoopProvider(tool_rounds=0, input_tokens_per_call=1)
+    flush_calls: list[int] = []
+    compact_requests: list[Any] = []
+
+    async def _flush(_plan: Any, flush_messages: list[Message]) -> Any:
+        flush_calls.append(len(flush_messages))
+
+    async def _compact(request: Any) -> CompactionResult:
+        compact_requests.append(request)
+        return CompactionResult(
+            summary="",
+            kept_entries=request.entries,
+            removed_count=0,
+            chunks_processed=0,
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            context_window_tokens=3000,
+            context_overflow_threshold=0.5,
+            flush_enabled=True,
+            flush_pre_compaction=False,
+            system_prompt="live request system context " + ("s" * 2000),
+        ),
+        tool_definitions=[
+            ToolDefinition(
+                name="large_context_tool",
+                description="large live request surface " + ("z" * 6000),
+                input_schema=ToolInputSchema(),
+            )
+        ],
+    )
+    monkeypatch.setattr(agent, "_run_flush", _flush)
+    monkeypatch.setattr(agent_module, "compact_context", _compact)
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert any(isinstance(event, DoneEvent) for event in events)
+    assert flush_calls == []
     assert len(compact_requests) == 1
 
 
@@ -1496,6 +1571,7 @@ async def test_context_overflow_flush_timeout_records_backoff_and_retries(
             max_provider_retries=0,
             max_overflow_retries=2,
             flush_enabled=True,
+            flush_pre_compaction=True,
             flush_timeout_seconds=0.01,
             flush_backoff_initial_seconds=10.0,
         ),

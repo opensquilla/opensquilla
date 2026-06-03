@@ -64,6 +64,7 @@ from opensquilla.engine.turn_runner.turn_finalizer_stage import (
     TurnErrorPersistPort,
     TurnMemoryCapturePort,
 )
+from opensquilla.session.compaction_lifecycle import normalize_flush_triggers_strict
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -75,6 +76,10 @@ if TYPE_CHECKING:
     from opensquilla.observability.turn_call_log import TurnCallLogger
     from opensquilla.provider.protocol import LLMProvider
     from opensquilla.tools.types import ToolContext
+
+
+def _coerce_flush_triggers(value: Any) -> list[str]:
+    return list(normalize_flush_triggers_strict(value))
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +437,11 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
             if runner._config
             else None
         )
+        compaction_cfg = (
+            getattr(runner._config, "compaction", None)
+            if runner._config
+            else None
+        )
         thinking = runner._resolve_turn_thinking(turn)
         return _AgentConfigAuxiliaries(
             thinking=thinking,
@@ -441,6 +451,10 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
             ),
             tool_result_store_session_id=session_id_for_log or session_key,
             flush_enabled=getattr(mem_cfg, "flush_enabled", False),
+            flush_triggers=_coerce_flush_triggers(
+                getattr(mem_cfg, "flush_triggers", None)
+            ),
+            flush_pre_compaction=getattr(mem_cfg, "flush_pre_compaction", False),
             flush_timeout_seconds=getattr(mem_cfg, "flush_timeout_seconds", 15.0),
             flush_background_timeout_seconds=getattr(
                 mem_cfg, "flush_background_timeout_seconds", 120.0
@@ -463,6 +477,16 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
                 mem_cfg,
                 "flush_compaction_safety_mode",
                 "protect",
+            ),
+            compaction_profile=getattr(
+                compaction_cfg,
+                "compaction_profile",
+                "conversation",
+            ),
+            compaction_protected_recent_messages=getattr(
+                compaction_cfg,
+                "protected_recent_messages",
+                0,
             ),
             tool_result_projection_max_inline_chars=getattr(
                 agent_token_cfg,

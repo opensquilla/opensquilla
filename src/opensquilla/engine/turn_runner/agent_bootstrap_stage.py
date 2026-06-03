@@ -71,6 +71,8 @@ class _AgentConfigAuxiliaries:
     tool_result_store_session_id: str
     # Memory-cfg-derived (defaults match the inline ``getattr`` defaults)
     flush_enabled: bool
+    flush_triggers: list[str]
+    flush_pre_compaction: bool
     flush_timeout_seconds: float
     flush_background_timeout_seconds: float
     flush_backoff_initial_seconds: float
@@ -78,6 +80,8 @@ class _AgentConfigAuxiliaries:
     flush_archive_max_bytes: int
     flush_compaction_requires_safe_receipt: bool
     flush_compaction_safety_mode: Literal["protect", "best_effort", "block", "off"]
+    compaction_profile: Literal["conversation", "coding", "research", "support"]
+    compaction_protected_recent_messages: int
     # Agent-token-cfg-derived
     tool_result_projection_max_inline_chars: int
     tool_result_store_max_bytes: int
@@ -416,6 +420,8 @@ class AgentBootstrapStage:
             context_window_tokens=catalog.context_window,
             max_history_turns=_route_max_history_turns(inp.turn.metadata),
             flush_enabled=aux.flush_enabled,
+            flush_triggers=aux.flush_triggers,
+            flush_pre_compaction=aux.flush_pre_compaction,
             flush_timeout_seconds=aux.flush_timeout_seconds,
             flush_background_timeout_seconds=aux.flush_background_timeout_seconds,
             flush_backoff_initial_seconds=aux.flush_backoff_initial_seconds,
@@ -425,6 +431,10 @@ class AgentBootstrapStage:
                 aux.flush_compaction_requires_safe_receipt
             ),
             flush_compaction_safety_mode=aux.flush_compaction_safety_mode,
+            compaction_profile=aux.compaction_profile,
+            compaction_protected_recent_messages=(
+                aux.compaction_protected_recent_messages
+            ),
             flush_workspace_dir=aux.flush_workspace_dir,
             model_capabilities=catalog.capabilities,
             thinking=aux.thinking,

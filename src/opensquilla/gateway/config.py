@@ -33,6 +33,11 @@ from opensquilla.router_tiers import (
     normalize_tier_mapping,
 )
 from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.session.compaction_lifecycle import (
+    DEFAULT_FLUSH_TRIGGERS,
+    FlushTrigger,
+    normalize_flush_triggers_strict,
+)
 
 
 class ContextOverflowPolicy(StrEnum):
@@ -497,6 +502,10 @@ class MemoryConfig(BaseSettings):
 
     # Flush (pre-compaction memory save)
     flush_enabled: bool = False
+    flush_triggers: list[FlushTrigger] = Field(
+        default_factory=lambda: list(DEFAULT_FLUSH_TRIGGERS)
+    )
+    flush_pre_compaction: bool = False
     flush_timeout_seconds: float = 15.0
     flush_background_timeout_seconds: float = 120.0
     flush_backoff_initial_seconds: float = 30.0
@@ -507,6 +516,11 @@ class MemoryConfig(BaseSettings):
     repair_enabled: bool = True
     repair_interval_seconds: float = Field(default=60.0, ge=0.0)
     repair_max_items_per_tick: int = Field(default=5, ge=1)
+
+    @field_validator("flush_triggers", mode="before")
+    @classmethod
+    def _normalize_flush_triggers(cls, value: object) -> list[FlushTrigger]:
+        return list(normalize_flush_triggers_strict(value))
 
     # Per-turn auto capture / recall
     auto_capture_enabled: bool = True
@@ -978,6 +992,8 @@ class CompactionLlmConfig(BaseSettings):
     model: str | None = None  # None = use session model
     timeout_seconds: float = 90.0
     enabled: bool = True
+    compaction_profile: Literal["conversation", "coding", "research", "support"] = "conversation"
+    protected_recent_messages: int = Field(default=0, ge=0)
 
 
 class MCPServerEntry(BaseSettings):

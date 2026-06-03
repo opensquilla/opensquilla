@@ -7,6 +7,10 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
 from opensquilla.execution_status import ExecutionStatus
+from opensquilla.session.compaction_lifecycle import (
+    DEFAULT_FLUSH_TRIGGERS,
+    normalize_flush_triggers_strict,
+)
 from opensquilla.tool_boundary import ToolCall as ToolCall
 from opensquilla.tool_boundary import ToolResult as ToolResult
 
@@ -325,6 +329,10 @@ class AgentConfig:
     skills_context_prompt: str | None = None
     # Pre-compaction memory flush
     flush_enabled: bool = False
+    flush_triggers: list[str] = field(
+        default_factory=lambda: list(DEFAULT_FLUSH_TRIGGERS)
+    )
+    flush_pre_compaction: bool = False
     flush_timeout_seconds: float = 15.0
     flush_background_timeout_seconds: float = 120.0
     flush_backoff_initial_seconds: float = 30.0
@@ -332,6 +340,8 @@ class AgentConfig:
     flush_archive_max_bytes: int = 800_000
     flush_compaction_requires_safe_receipt: bool = False
     flush_compaction_safety_mode: Literal["protect", "best_effort", "block", "off"] = "protect"
+    compaction_profile: Literal["conversation", "coding", "research", "support"] = "conversation"
+    compaction_protected_recent_messages: int = 0
     repair_enabled: bool = True
     repair_interval_seconds: float = 60.0
     repair_max_items_per_tick: int = 5
@@ -363,6 +373,13 @@ class AgentConfig:
     tool_result_store_disk_budget_bytes: int | None = 256 * 1024 * 1024
     tool_result_store_retention_seconds: int | None = 7 * 24 * 60 * 60
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.flush_triggers = list(normalize_flush_triggers_strict(self.flush_triggers))
+        self.compaction_protected_recent_messages = max(
+            0,
+            int(self.compaction_protected_recent_messages or 0),
+        )
 
     def resolve_thinking(self, prompt: str | None = None) -> tuple[bool, int]:
         """Return (enabled, budget_tokens) based on the thinking field.

@@ -1713,8 +1713,16 @@ def test_agent_provider_request_messages_project_overflow_retry_tool_results() -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "strict_flush_config",
+    [
+        {"flush_compaction_requires_safe_receipt": True},
+        {"flush_compaction_safety_mode": "block"},
+    ],
+)
 async def test_agent_inline_strict_flush_receipt_refuses_destructive_compaction(
     monkeypatch: pytest.MonkeyPatch,
+    strict_flush_config: dict[str, Any],
 ) -> None:
     agent = Agent(
         provider=CapturingProvider(),
@@ -1722,8 +1730,9 @@ async def test_agent_inline_strict_flush_receipt_refuses_destructive_compaction(
             context_window_tokens=10,
             context_overflow_threshold=0.1,
             flush_enabled=True,
+            flush_pre_compaction=True,
             flush_timeout_seconds=0.1,
-            flush_compaction_requires_safe_receipt=True,
+            **strict_flush_config,
         ),
     )
     messages = [Message(role="user", content="important history")]

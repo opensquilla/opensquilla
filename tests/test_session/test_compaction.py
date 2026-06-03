@@ -5,11 +5,15 @@ import pytest
 from opensquilla.session.compaction import (
     CompactionConfig,
     CompactionRequest,
+    build_compaction_config_from_provider,
     call_compaction_llm,
     compact_context,
     estimate_entry_replay_tokens,
 )
-from opensquilla.session.compaction_lifecycle import compaction_effect_payload
+from opensquilla.session.compaction_lifecycle import (
+    compaction_effect_payload,
+    compaction_result_payload,
+)
 
 
 def _make_entries(n: int, tokens_each: int = 100) -> list[dict]:
@@ -83,7 +87,8 @@ async def test_compaction_occurs_when_over_budget():
         CompactionRequest(
             session_id="s1",
             entries=entries,
-            context_window_tokens=1000,  # tight window
+            context_window_tokens=1600,  # tight enough to compact, large enough for the result
+            config=CompactionConfig(safety_margin=1.0),
         )
     )
     assert result.removed_count > 0
@@ -115,6 +120,26 @@ def test_replay_token_estimate_uses_tool_payload_summary_not_raw_arguments():
     tokens = estimate_entry_replay_tokens(entry)
 
     assert tokens < 500
+
+
+def test_provider_config_preserves_profile_when_compaction_llm_disabled():
+    cfg = build_compaction_config_from_provider(
+        None,
+        compaction_config=type(
+            "CompactionSettings",
+            (),
+            {
+                "enabled": False,
+                "compaction_profile": "coding",
+                "protected_recent_messages": 6,
+            },
+        )(),
+    )
+
+    assert cfg.model is None
+    assert cfg.api_key == ""
+    assert cfg.compaction_profile == "coding"
+    assert cfg.protected_recent_messages == 6
 
 
 @pytest.mark.asyncio
@@ -172,13 +197,166 @@ async def test_compaction_keeps_recent_entries():
         CompactionRequest(
             session_id="s1",
             entries=entries,
-            context_window_tokens=1000,
+            context_window_tokens=1500,
         )
     )
     # kept entries should be a tail of the original
     if result.kept_entries:
         last_kept = result.kept_entries[-1]
         assert last_kept in entries[-len(result.kept_entries) :]
+
+
+@pytest.mark.asyncio
+async def test_coding_profile_preserves_configured_recent_tail():
+    entries = _make_entries(30, tokens_each=250)
+    protected_tail = [
+        {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"active task message {i}",
+            "token_count": 5,
+        }
+        for i in range(4)
+    ]
+    entries.extend(protected_tail)
+
+    result = await compact_context(
+        CompactionRequest(
+            session_id="s1",
+            entries=entries,
+            context_window_tokens=1500,
+            config=CompactionConfig(
+                safety_margin=1.0,
+                compaction_profile="coding",
+                protected_recent_messages=4,
+            ),
+        )
+    )
+
+    assert result.removed_count > 0
+    assert result.kept_entries[-4:] == protected_tail
+    assert result.quality_report["profile"] == "coding"
+    assert result.quality_report["protected_recent_messages"] == 4
+    assert result.quality_report["protected_tail_preserved"] is True
+    assert result.quality_report["fits_context_window"] is True
+    assert result.quality_report["passes_structural_gate"] is True
+    assert compaction_result_payload(result)["quality_report"][
+        "passes_structural_gate"
+    ] is True
+
+
+@pytest.mark.asyncio
+async def test_quality_report_marks_compaction_that_still_exceeds_window():
+    entries = [
+        {"role": "user", "content": "old context", "token_count": 10_000},
+        *[
+            {
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"large protected tail {i}",
+                "token_count": 500,
+            }
+            for i in range(5)
+        ],
+    ]
+
+    result = await compact_context(
+        CompactionRequest(
+            session_id="s1",
+            entries=entries,
+            context_window_tokens=1000,
+            config=CompactionConfig(
+                safety_margin=1.0,
+                protected_recent_messages=5,
+            ),
+        )
+    )
+
+    assert result.removed_count > 0
+    assert result.quality_report["fits_context_window"] is False
+    assert result.quality_report["passes_structural_gate"] is True
+    assert compaction_result_payload(result)["quality_report"][
+        "fits_context_window"
+    ] is False
+
+
+@pytest.mark.asyncio
+async def test_protected_tail_retreats_to_tool_boundary():
+    entries = [
+        {"role": "user", "content": "old context", "token_count": 300},
+        {
+            "role": "assistant",
+            "content": "[Used tool: read_file]",
+            "token_count": 5,
+        },
+        {
+            "role": "user",
+            "content": "[Tool result (toolu_1): file contents]",
+            "token_count": 5,
+        },
+        {"role": "user", "content": "next question", "token_count": 5},
+        {"role": "assistant", "content": "answer", "token_count": 5},
+    ]
+
+    result = await compact_context(
+        CompactionRequest(
+            session_id="s1",
+            entries=entries,
+            context_window_tokens=100,
+            config=CompactionConfig(
+                safety_margin=1.0,
+                protected_recent_messages=3,
+            ),
+        )
+    )
+
+    assert result.removed_count > 0
+    assert result.kept_entries[0]["content"] == "[Used tool: read_file]"
+    assert result.kept_entries[1]["content"].startswith("[Tool result ")
+    assert result.quality_report["protected_tail_preserved"] is True
+
+
+@pytest.mark.asyncio
+async def test_protected_tail_retreats_over_multi_result_tool_segment():
+    entries = [
+        {"role": "user", "content": "old context", "token_count": 300},
+        {
+            "role": "assistant",
+            "content": "calling tool",
+            "tool_calls": [{"id": "call_1", "type": "function"}],
+            "token_count": 5,
+        },
+        {
+            "role": "tool",
+            "content": "first result",
+            "tool_call_id": "call_1",
+            "token_count": 5,
+        },
+        {
+            "role": "tool",
+            "content": "second result",
+            "tool_call_id": "call_1",
+            "token_count": 5,
+        },
+        {"role": "user", "content": "next question", "token_count": 5},
+        {"role": "assistant", "content": "answer", "token_count": 5},
+    ]
+
+    result = await compact_context(
+        CompactionRequest(
+            session_id="s1",
+            entries=entries,
+            context_window_tokens=120,
+            config=CompactionConfig(
+                safety_margin=1.0,
+                protected_recent_messages=3,
+            ),
+        )
+    )
+
+    assert result.removed_count > 0
+    assert result.kept_entries[0]["role"] == "assistant"
+    assert result.kept_entries[1]["content"] == "first result"
+    assert result.kept_entries[2]["content"] == "second result"
+    assert result.quality_report["protected_tail_preserved"] is True
 
 
 @pytest.mark.asyncio
@@ -210,7 +388,7 @@ async def test_custom_config():
         CompactionRequest(
             session_id="s1",
             entries=entries,
-            context_window_tokens=500,
+            context_window_tokens=1000,
             config=cfg,
         )
     )

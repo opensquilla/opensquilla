@@ -14,6 +14,7 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { BoxRenderable, TextRenderable, MarkdownRenderable } from "@opentui/core";
 
 import { createThinkingBlock } from "./blocks/thinkingBlock.mjs";
+import { createReasoningBlock } from "./blocks/reasoningBlock.mjs";
 import { createAnswerBlock } from "./blocks/answerBlock.mjs";
 
 const WIDTH = 60;
@@ -76,4 +77,18 @@ test("a streaming answer block does render its card border", async () => {
   // paints its card top rail immediately.
   expect(text).toContain("answer");
   expect(text).toContain("╭");
+});
+
+test("a reasoning block shows only a collapsed Thinking… marker, never the process text", async () => {
+  // The reasoning block is fed the same deltas via renderBlock (which calls
+  // append), but it must NOT surface the verbatim reasoning — only the marker.
+  const text = flatText(await renderBlock(createReasoningBlock));
+  expect(text).toContain("✱");
+  expect(text).toContain("Thinking");
+  // the decisive checks: the reasoning PROCESS text is never shown, and no card
+  expect(text).not.toContain("partial reasoning");
+  expect(text).not.toContain("still streaming");
+  expect(text).not.toContain("answer");
+  expect(text).not.toContain("╭");
+  expect(text).not.toContain("╰");
 });

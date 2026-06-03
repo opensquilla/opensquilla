@@ -7,6 +7,7 @@ export function createTurnView(deps, id) {
   conversationBox.add(box);
   const blocks = new Map();      // blockId -> { kind, r }
   const runningTools = new Set(); // toolBlock renderers animating
+  const runningReasoning = new Set(); // reasoning markers animating
 
   function ctxFor(blockId) {
     return { renderer, BoxRenderable, TextRenderable, MarkdownRenderable, syntaxStyle, box, idPrefix: `turn-${id}-${blockId}` };
@@ -20,6 +21,7 @@ export function createTurnView(deps, id) {
       blocks.set(blockId, { kind, r });
       r.begin(meta ?? {});
       if (kind === "tool") runningTools.add(r);
+      if (kind === "reasoning") runningReasoning.add(r);
     },
     append(blockId, delta) { blocks.get(blockId)?.r.append(delta); },
     update(blockId, patch) {
@@ -33,10 +35,13 @@ export function createTurnView(deps, id) {
       if (!entry) return;
       entry.r.end();
       if (entry.kind === "tool") runningTools.delete(entry.r);
+      if (entry.kind === "reasoning") runningReasoning.delete(entry.r);
     },
     refreshPulse(frame) {
-      const glyph = STATUS_PULSE_FRAMES.tool[frame % STATUS_PULSE_FRAMES.tool.length];
-      for (const r of runningTools) r.setGlyph(glyph);
+      const toolGlyph = STATUS_PULSE_FRAMES.tool[frame % STATUS_PULSE_FRAMES.tool.length];
+      const thinkingGlyph = STATUS_PULSE_FRAMES.thinking[frame % STATUS_PULSE_FRAMES.thinking.length];
+      for (const r of runningTools) r.setGlyph(toolGlyph);
+      for (const r of runningReasoning) r.setGlyph(thinkingGlyph);
     },
   };
 }

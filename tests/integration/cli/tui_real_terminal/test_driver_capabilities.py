@@ -24,6 +24,23 @@ from tui_real_terminal.driver import (  # noqa: E402
 )
 
 
+class _FakePtyModule:
+    """Stand-in for the Unix-only :mod:`pty` module.
+
+    Probe logic keys off ``driver.pty`` exposing ``openpty``; on Windows
+    ``import pty`` yields ``None``. Patching this fake in lets the capability
+    tests exercise the probe's PTY branch on any platform instead of skipping.
+    """
+
+    @staticmethod
+    def openpty() -> tuple[int, int]:  # pragma: no cover - never invoked in probe
+        raise NotImplementedError
+
+
+def _force_pty_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(driver, "pty", _FakePtyModule)
+
+
 def test_terminal_size_validates_positive_dimensions() -> None:
     size = TerminalSize(cols=100, rows=30)
 
@@ -76,6 +93,7 @@ def test_capability_probe_prefers_tmux_when_available(
 
     monkeypatch.setattr(driver.shutil, "which", fake_which)
     monkeypatch.setattr(driver.sys, "platform", "linux")
+    _force_pty_module(monkeypatch)
 
     capabilities = probe_terminal_capabilities()
 
@@ -92,6 +110,7 @@ def test_capability_probe_falls_back_to_pty(
 ) -> None:
     monkeypatch.setattr(driver.shutil, "which", lambda name: None)
     monkeypatch.setattr(driver.sys, "platform", "linux")
+    _force_pty_module(monkeypatch)
 
     capabilities = probe_terminal_capabilities()
 
@@ -113,7 +132,8 @@ def test_capability_probe_reports_none_when_no_terminal_driver(
     assert capabilities.pty_available is False
     assert capabilities.preferred_driver == "none"
     assert capabilities.resize_available is False
-    assert capabilities.skip_reason == "tmux and PTY are unavailable"
+    assert capabilities.skip_reason is not None
+    assert "WSL2" in capabilities.skip_reason
 
 
 def test_factory_selects_available_driver_and_reports_unavailable(
@@ -122,6 +142,7 @@ def test_factory_selects_available_driver_and_reports_unavailable(
 ) -> None:
     monkeypatch.setattr(driver.shutil, "which", lambda name: None)
     monkeypatch.setattr(driver.sys, "platform", "linux")
+    _force_pty_module(monkeypatch)
 
     session = open_real_terminal_session(
         command=[sys.executable, "-c", "print('ready')"],
@@ -155,7 +176,7 @@ def test_factory_reports_when_no_driver_is_available(
     monkeypatch.setattr(driver.shutil, "which", lambda name: None)
     monkeypatch.setattr(driver.sys, "platform", "win32")
 
-    with pytest.raises(RuntimeError, match="tmux and PTY are unavailable"):
+    with pytest.raises(RuntimeError, match="WSL2"):
         open_real_terminal_session(
             command=[sys.executable, "-c", "print('ready')"],
             cwd=tmp_path,

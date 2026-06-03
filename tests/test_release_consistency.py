@@ -3,7 +3,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-CURRENT_VERSION = "0.3.0"
+CURRENT_VERSION = "0.3.1"
 CURRENT_TAG = f"v{CURRENT_VERSION}"
 PREVIEW_VERSION = "0.2.0rc1"
 PREVIEW_TAG = f"v{PREVIEW_VERSION}"

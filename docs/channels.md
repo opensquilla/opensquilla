@@ -24,7 +24,7 @@ This build exposes the following channel families:
 | `feishu` | Feishu / Lark | mixed | depends on mode |
 | `matrix` | Matrix | websocket | no |
 | `qq` | QQ Bot | websocket | no |
-| `slack` | Slack | webhook | yes |
+| `slack` | Slack | mixed | depends on mode |
 | `telegram` | Telegram | mixed | depends on mode |
 | `wecom` | WeCom | webhook | yes |
 
@@ -45,10 +45,20 @@ Add a channel explicitly:
 opensquilla channels add telegram --name personal
 ```
 
-Add provider-specific fields as needed:
+Add provider-specific fields as needed. Slack supports two modes:
 
 ```sh
-opensquilla channels add slack --name team --field signing_secret=... --token ...
+# Slack Socket Mode: outbound websocket, no public URL.
+opensquilla channels add slack --name team \
+  --field connection_mode=socket \
+  --field app_token=xapp-... \
+  --token xoxb-...
+
+# Slack Events API webhook: requires a public Request URL and signing secret.
+opensquilla channels add slack --name team-webhook \
+  --field connection_mode=webhook \
+  --field signing_secret=... \
+  --token xoxb-...
 ```
 
 Restart the gateway process after config edits:
@@ -82,10 +92,23 @@ opensquilla channels remove <name>
 Use `gateway restart` after config changes. Use `channels restart <name>` only
 for an already-loaded live adapter.
 
+## Slack Modes
+
+Slack Socket Mode uses an outbound websocket and does not require a public
+Request URL. It requires the bot token (`xoxb-...`) plus an app-level token
+(`xapp-...`) saved as `app_token`.
+
+Slack webhook mode uses the Events API Request URL. It requires the bot token
+plus `signing_secret`, and the gateway must be reachable by Slack.
+
+Leave `slack_channel_id` empty when the adapter should reply to the incoming
+conversation. Set it only when you want a default fallback channel. Enable
+`reply_in_thread` when replies should stay in Slack threads.
+
 ## Webhook Channels
 
-Slack and WeCom require a public, provider-reachable URL. Feishu and Telegram
-may require one depending on mode.
+Slack webhook mode and WeCom require a public, provider-reachable URL. Feishu
+and Telegram may require one depending on mode.
 
 For public channels:
 

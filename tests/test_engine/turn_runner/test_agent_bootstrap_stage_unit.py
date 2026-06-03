@@ -27,7 +27,6 @@ from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
     _ResolvedBudgets,
     _ResolvedCatalog,
 )
-from opensquilla.engine.turn_runner.harness import _coerce_flush_triggers
 from opensquilla.engine.turn_runner.outcome import StageOutcome
 from opensquilla.engine.types import ThinkingLevel
 
@@ -83,18 +82,6 @@ def _default_aux(
         tool_result_store_disk_budget_bytes=4_000_000,
         tool_result_store_retention_seconds=3600,
     )
-
-
-def test_harness_flush_triggers_normalize_comma_delimited_aliases() -> None:
-    assert _coerce_flush_triggers("reset, inline_overflow") == [
-        "session_reset",
-        "pre_compaction",
-    ]
-
-
-def test_harness_flush_triggers_reject_unknown_aliases() -> None:
-    with pytest.raises(ValueError, match="unknown flush trigger"):
-        _coerce_flush_triggers(["manual", "bogus"])
 
 
 @dataclass

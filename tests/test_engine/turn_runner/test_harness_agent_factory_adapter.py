@@ -5,7 +5,24 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from opensquilla.engine.turn_runner.harness import _TurnRunnerAgentFactoryAdapter
+import pytest
+
+from opensquilla.engine.turn_runner.harness import (
+    _coerce_flush_triggers,
+    _TurnRunnerAgentFactoryAdapter,
+)
+
+
+def test_harness_flush_triggers_normalize_comma_delimited_aliases() -> None:
+    assert _coerce_flush_triggers("reset, inline_overflow") == [
+        "session_reset",
+        "pre_compaction",
+    ]
+
+
+def test_harness_flush_triggers_reject_unknown_aliases() -> None:
+    with pytest.raises(ValueError, match="unknown flush trigger"):
+        _coerce_flush_triggers(["manual", "bogus"])
 
 
 def test_agent_factory_adapter_passes_runner_tool_registry(monkeypatch) -> None:

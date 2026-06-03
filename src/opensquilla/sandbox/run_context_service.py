@@ -23,6 +23,7 @@ from opensquilla.sandbox.run_context import (
     normalize_workspace_path,
     persist_run_context,
 )
+from opensquilla.sandbox import user_grants
 
 
 def _normalize_bundle_id(bundle_id: Any) -> str:
@@ -86,6 +87,10 @@ async def add_mount_grant(
         access=mount_access,
         scope=normalize_scope(scope),
     )
+    if grant.scope == "workspace":
+        user_grants.upsert_mount_grant(
+            {"path": grant.path, "access": grant.access, "scope": grant.scope}
+        )
     if grant in existing.mounts:
         return existing
     mounts = tuple(m for m in existing.mounts if m.path != grant.path) + (grant,)
@@ -120,6 +125,7 @@ async def remove_mount_grant(
     if decision.status == "blocked":
         raise ValueError(decision.reason or "mount_blocked")
     normalized_path = decision.normalized_path
+    user_grants.remove_mount_grant(normalized_path)
     removal_paths = {normalized_path, path}
     mounts = tuple(m for m in existing.mounts if m.path not in removal_paths)
     if mounts == existing.mounts:
@@ -155,6 +161,14 @@ async def add_domain_grant(
         scope=normalize_scope(scope),
         source=source,
     )
+    if grant.scope == "workspace":
+        user_grants.upsert_domain_grant(
+            {
+                "domain": grant.domain,
+                "scope": grant.scope,
+                "source": grant.source,
+            }
+        )
     if grant in existing.domains:
         return existing
     domains = tuple(d for d in existing.domains if d.domain != grant.domain) + (grant,)
@@ -227,6 +241,7 @@ async def remove_domain_grant(
     if decision.status == "blocked":
         raise ValueError(decision.reason)
     normalized = decision.normalized
+    user_grants.remove_domain_grant(normalized)
     existing = await get_run_context(
         session_manager,
         session_key,
@@ -266,6 +281,14 @@ async def enable_bundle_grant(
         scope=normalize_scope(scope, "workspace"),
         source="manual",
     )
+    if grant.scope == "workspace":
+        user_grants.upsert_bundle_grant(
+            {
+                "bundle_id": grant.bundle_id,
+                "scope": grant.scope,
+                "source": grant.source,
+            }
+        )
     if grant in existing.bundles:
         return existing
     bundles = tuple(b for b in existing.bundles if b.bundle_id != grant.bundle_id) + (
@@ -291,6 +314,7 @@ async def disable_bundle_grant(
     normalized_bundle_id = _normalize_bundle_id(bundle_id)
     if not expand_package_bundle(normalized_bundle_id):
         raise ValueError("unknown_package_bundle")
+    user_grants.remove_bundle_grant(normalized_bundle_id)
     existing = await get_run_context(
         session_manager,
         session_key,

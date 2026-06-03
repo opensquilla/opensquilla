@@ -47,6 +47,7 @@ def _ctx(
     sandbox: bool = True,
     security_grading: bool = True,
     permissions_default_mode: str = "off",
+    scopes: frozenset[str] | None = None,
 ):
     from opensquilla.gateway.auth import Principal
     from opensquilla.gateway.rpc import RpcContext
@@ -67,7 +68,7 @@ def _ctx(
         conn_id="c",
         principal=Principal(
             role="operator",
-            scopes=frozenset(["operator.read", "operator.write"]),
+            scopes=scopes or frozenset(["operator.read", "operator.write"]),
             is_owner=is_owner,
             authenticated=True,
         ),
@@ -218,6 +219,56 @@ async def test_rpc_run_context_get_includes_bundles_and_temporary_grants() -> No
             "expires_after": "once",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_resolve_leaves_sandbox_approval_pending_when_mutation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.gateway.rpc import get_dispatcher
+    from opensquilla.sandbox.escalation import build_network_approval_params
+    from opensquilla.sandbox.network_guard import NetworkDecision
+
+    reset_approval_queue()
+    manager = _SessionManager()
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace="/tmp/ws",
+        fingerprint="fp123",
+    )
+    assert params is not None
+    queue = get_approval_queue()
+    approval_id = queue.request(namespace="exec", params=params)
+
+    async def fail_apply(*args, **kwargs) -> None:
+        raise RuntimeError("mutation failed")
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_approvals.apply_sandbox_approval_choice",
+        fail_apply,
+    )
+
+    result = await get_dispatcher().dispatch(
+        "r1",
+        "exec.approval.resolve",
+        {"id": approval_id, "approved": True, "choice": "allow_chat"},
+        _ctx(manager, scopes=frozenset(["operator.approvals"])),
+    )
+
+    assert result.error is not None
+    assert "mutation failed" in result.error.message
+    pending = queue.get(approval_id)
+    assert pending.resolved is False
+    assert pending.approved is False
+
+    reset_approval_queue()
 
 
 @pytest.mark.asyncio

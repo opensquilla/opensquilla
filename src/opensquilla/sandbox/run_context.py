@@ -16,6 +16,7 @@ from opensquilla.sandbox.path_validation import (
 )
 from opensquilla.sandbox.run_mode import RunMode, config_run_mode, normalize_run_mode
 from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
+from opensquilla.sandbox.user_grants import load_user_grants_payload
 
 RUN_CONTEXT_ORIGIN_KEY = "sandbox_run_context"
 DEFAULT_ROOT_WORKSPACE = "/root/.opensquilla/workspace"
@@ -367,6 +368,63 @@ def run_context_from_origin_payload(
     return _context_from_payload(payload, source)
 
 
+def _merge_mount_grants(
+    base: tuple[MountGrant, ...],
+    overlay: tuple[MountGrant, ...],
+) -> tuple[MountGrant, ...]:
+    grants = {grant.path: grant for grant in base}
+    for grant in overlay:
+        grants[grant.path] = grant
+    return tuple(grants.values())
+
+
+def _merge_domain_grants(
+    base: tuple[DomainGrant, ...],
+    overlay: tuple[DomainGrant, ...],
+) -> tuple[DomainGrant, ...]:
+    grants = {grant.domain: grant for grant in base}
+    for grant in overlay:
+        grants[grant.domain] = grant
+    return tuple(grants.values())
+
+
+def _merge_bundle_grants(
+    base: tuple[PackageBundleGrant, ...],
+    overlay: tuple[PackageBundleGrant, ...],
+) -> tuple[PackageBundleGrant, ...]:
+    grants = {grant.bundle_id: grant for grant in base}
+    for grant in overlay:
+        grants[grant.bundle_id] = grant
+    return tuple(grants.values())
+
+
+def _with_user_grants(context: RunContext) -> RunContext:
+    payload = load_user_grants_payload()
+    user_mounts = _mounts_from_payload(payload.get("mounts"), workspace=context.workspace)
+    user_domains = _domains_from_payload(payload.get("domains"))
+    user_bundles = _bundles_from_payload(payload.get("bundles"))
+    if not user_mounts and not user_domains and not user_bundles:
+        return context
+    mounts = _merge_mount_grants(user_mounts, context.mounts)
+    domains = _merge_domain_grants(user_domains, context.domains)
+    bundles = _merge_bundle_grants(user_bundles, context.bundles)
+    if (
+        mounts == context.mounts
+        and domains == context.domains
+        and bundles == context.bundles
+    ):
+        return context
+    return RunContext(
+        run_mode=context.run_mode,
+        workspace=context.workspace,
+        mounts=mounts,
+        domains=domains,
+        bundles=bundles,
+        temporary_grants=context.temporary_grants,
+        source=context.source,
+    )
+
+
 async def get_run_context(
     session_manager: Any,
     session_key: str,
@@ -379,11 +437,13 @@ async def get_run_context(
         origin = _origin_dict(node)
         saved = _context_from_payload(origin.get(RUN_CONTEXT_ORIGIN_KEY), "saved")
         if saved is not None:
-            return saved
-    return RunContext(
-        run_mode=config_run_mode(config),
-        workspace=_workspace_from_payload(workspace),
-        source="default",
+            return _with_user_grants(saved)
+    return _with_user_grants(
+        RunContext(
+            run_mode=config_run_mode(config),
+            workspace=_workspace_from_payload(workspace),
+            source="default",
+        )
     )
 
 

@@ -149,6 +149,24 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         approved=approved,
     )
 
+    if sandbox_approval and approved:
+        await apply_sandbox_approval_choice(
+            pending.params,
+            choice=normalized_choice,
+            approved=True,
+            session_manager=ctx.session_manager,
+            config=ctx.config,
+        )
+        queue.resolve(
+            params["id"],
+            approved,
+            allow_always=allow_always,
+            remember_intent=remember_intent,
+            elevated_mode=None,
+            allow_idempotent=False,
+        )
+        return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
+
     queue.resolve(
         params["id"],
         approved,
@@ -158,14 +176,6 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         allow_idempotent=not sandbox_approval,
     )
 
-    if approved:
-        await apply_sandbox_approval_choice(
-            pending.params,
-            choice=normalized_choice,
-            approved=True,
-            session_manager=ctx.session_manager,
-            config=ctx.config,
-        )
     return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
 
 

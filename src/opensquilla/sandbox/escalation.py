@@ -144,6 +144,7 @@ def request_sandbox_approval(
         elif not entry.approved:
             status = "approval_denied"
         else:
+            approval_id = queue.request(namespace="exec", params=params)
             status = "approval_required"
     return _approval_payload(status, approval_id, params, message=message)
 
@@ -471,7 +472,7 @@ def _approval_payload(
 def _validate_matching_approval_params(existing: dict[str, Any], expected: dict[str, object]) -> None:
     if str(existing.get("approvalKind") or "") != str(expected.get("approvalKind") or ""):
         raise ValueError("approval_does_not_match_requested_sandbox_action")
-    for key in ("path", "host", "access"):
+    for key in ("path", "host", "access", "fingerprint", "sessionKey", "workspace"):
         existing_value = existing.get(key)
         expected_value = expected.get(key)
         if expected_value is None:

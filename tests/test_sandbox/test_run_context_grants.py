@@ -29,6 +29,12 @@ def _config():
     )
 
 
+def _manager_with_session_key(session_key: str) -> _SessionManager:
+    manager = _SessionManager()
+    manager.node.session_key = session_key
+    return manager
+
+
 @pytest.mark.asyncio
 async def test_mount_domain_and_bundle_grants_persist(tmp_path):
     from opensquilla.sandbox.run_context import get_run_context
@@ -80,6 +86,207 @@ async def test_mount_domain_and_bundle_grants_persist(tmp_path):
     assert ctx.mounts[0].access == "ro"
     assert ctx.domains[0].domain == "pypi.org"
     assert ctx.bundles[0].bundle_id == "python-package-install"
+
+
+@pytest.mark.asyncio
+async def test_workspace_domain_grant_persists_to_fresh_session_user_store(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from opensquilla.sandbox.run_context import DomainGrant, get_run_context
+    from opensquilla.sandbox.run_context_service import add_domain_grant
+
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = _manager_with_session_key("agent:main:webchat:first")
+
+    await add_domain_grant(
+        manager,
+        manager.node.session_key,
+        domain="example.com",
+        scope="workspace",
+        config=_config(),
+        workspace=str(workspace),
+    )
+
+    fresh = _manager_with_session_key("agent:main:webchat:fresh")
+    ctx = await get_run_context(
+        fresh,
+        fresh.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+
+    assert DomainGrant(domain="example.com", scope="workspace", source="manual") in ctx.domains
+
+
+@pytest.mark.asyncio
+async def test_workspace_mount_grant_persists_to_fresh_session_user_store(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from opensquilla.sandbox.run_context import MountGrant, get_run_context
+    from opensquilla.sandbox.run_context_service import add_mount_grant
+
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    manager = _manager_with_session_key("agent:main:webchat:first")
+
+    await add_mount_grant(
+        manager,
+        manager.node.session_key,
+        path=str(outside),
+        access="ro",
+        scope="workspace",
+        config=_config(),
+        workspace=str(workspace),
+    )
+
+    fresh = _manager_with_session_key("agent:main:webchat:fresh")
+    ctx = await get_run_context(
+        fresh,
+        fresh.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+
+    assert (
+        MountGrant(
+            path=str(outside.resolve(strict=False)),
+            access="ro",
+            scope="workspace",
+        )
+        in ctx.mounts
+    )
+
+
+@pytest.mark.asyncio
+async def test_workspace_bundle_grant_persists_to_fresh_session_user_store(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from opensquilla.sandbox.run_context import PackageBundleGrant, get_run_context
+    from opensquilla.sandbox.run_context_service import enable_bundle_grant
+
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    manager = _manager_with_session_key("agent:main:webchat:first")
+
+    await enable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id="python-package-install",
+        scope="workspace",
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    fresh = _manager_with_session_key("agent:main:webchat:fresh")
+    ctx = await get_run_context(
+        fresh,
+        fresh.node.session_key,
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert (
+        PackageBundleGrant(
+            bundle_id="python-package-install",
+            scope="workspace",
+            source="manual",
+        )
+        in ctx.bundles
+    )
+
+
+@pytest.mark.asyncio
+async def test_workspace_grant_removals_update_user_store(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.run_context_service import (
+        add_domain_grant,
+        add_mount_grant,
+        disable_bundle_grant,
+        enable_bundle_grant,
+        remove_domain_grant,
+        remove_mount_grant,
+    )
+
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    manager = _manager_with_session_key("agent:main:webchat:first")
+
+    await add_domain_grant(
+        manager,
+        manager.node.session_key,
+        domain="example.com",
+        scope="workspace",
+        config=_config(),
+        workspace=str(workspace),
+    )
+    await add_mount_grant(
+        manager,
+        manager.node.session_key,
+        path=str(outside),
+        access="ro",
+        scope="workspace",
+        config=_config(),
+        workspace=str(workspace),
+    )
+    await enable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id="python-package-install",
+        scope="workspace",
+        config=_config(),
+        workspace=str(workspace),
+    )
+
+    await remove_domain_grant(
+        manager,
+        manager.node.session_key,
+        domain="example.com",
+        config=_config(),
+        workspace=str(workspace),
+    )
+    await remove_mount_grant(
+        manager,
+        manager.node.session_key,
+        path=str(outside),
+        config=_config(),
+        workspace=str(workspace),
+    )
+    await disable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id="python-package-install",
+        config=_config(),
+        workspace=str(workspace),
+    )
+
+    fresh = _manager_with_session_key("agent:main:webchat:fresh")
+    ctx = await get_run_context(
+        fresh,
+        fresh.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+
+    assert [grant.domain for grant in ctx.domains] == []
+    assert [grant.path for grant in ctx.mounts] == []
+    assert [
+        grant.bundle_id
+        for grant in ctx.bundles
+        if grant.bundle_id == "python-package-install"
+    ] == []
 
 
 @pytest.mark.asyncio
@@ -1589,6 +1796,49 @@ async def test_apply_network_choice_persists_chat_domain_grant(tmp_path):
         workspace=str(workspace),
     )
     assert ("example.com", "chat") in [(grant.domain, grant.scope) for grant in ctx.domains]
+
+
+def test_request_sandbox_approval_reissues_matching_approved_approval() -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.sandbox.escalation import (
+        build_network_approval_params,
+        request_sandbox_approval,
+    )
+    from opensquilla.sandbox.network_guard import NetworkDecision
+
+    reset_approval_queue()
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key="agent:main:webchat:abc",
+        workspace="/tmp/ws",
+        fingerprint="fp123",
+    )
+    assert params is not None
+    first = request_sandbox_approval(
+        params,
+        message="Resolve this approval and retry.",
+    )
+    old_approval_id = str(first["approval_id"])
+    queue = get_approval_queue()
+    queue.resolve(old_approval_id, True)
+
+    second = request_sandbox_approval(
+        params,
+        approval_id=old_approval_id,
+        message="Resolve this approval and retry.",
+    )
+
+    new_approval_id = str(second["approval_id"])
+    assert second["status"] == "approval_required"
+    assert new_approval_id != old_approval_id
+    assert queue.get(new_approval_id).resolved is False
+
+    reset_approval_queue()
 
 
 @pytest.mark.asyncio

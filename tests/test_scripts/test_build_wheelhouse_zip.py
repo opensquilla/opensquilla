@@ -133,8 +133,8 @@ def test_portable_recommended_wheelhouse_uses_recommended_extra_only(tmp_path: P
         wheel_path,
         "recommended",
         target_platform_tag="windows-x64",
-        python_major=3,
-        python_minor=12,
+        python_major=sys.version_info.major,
+        python_minor=sys.version_info.minor,
     )
 
     assert str(wheel_path) + "[recommended]" in command

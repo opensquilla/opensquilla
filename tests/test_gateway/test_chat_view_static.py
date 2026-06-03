@@ -730,6 +730,7 @@ def test_chat_slash_input_supports_literal_slash_escape() -> None:
     slash_exec_guard_idx = send_prefix.index("if (!isLiteralSlash && text.startsWith('/')) {")
     assert literal_idx < normalize_idx < slash_exec_guard_idx
     assert "{ allowSlashCommand: isSlashCommand }" in send_prefix
+    assert "!!(await _lookupSlashCommand(text))" in send_prefix
     assert "await _executeSlashCommand(text)" in send_prefix
     assert "if (val.startsWith('//')) { _closeSlashMenu(); return; }" in source
 
@@ -748,6 +749,7 @@ def test_chat_slash_commands_are_blocked_while_streaming_after_literal_escape() 
         "if (_isStreaming || _isCompactInFlightForCurrentSession()) {"
     )
     execute_idx = send_prefix.index("await _executeSlashCommand(text)")
+    streaming_guard = "if (isSlashCommand) {"
     real_slash_guard = "if (!isLiteralSlash && text.startsWith('/')) {"
     streaming_block_end = send_prefix.index(f"\n\n    {real_slash_guard}", streaming_idx)
     streaming_block = send_prefix[streaming_idx:streaming_block_end]
@@ -760,7 +762,7 @@ def test_chat_slash_commands_are_blocked_while_streaming_after_literal_escape() 
         "_pendingAttachments = normalized.attachments;"
         in send_prefix[normalize_idx:streaming_idx]
     )
-    assert real_slash_guard in streaming_block
+    assert streaming_guard in streaming_block
     assert "const waitReason = _isCompactInFlightForCurrentSession()" in streaming_block
     assert "Wait for ${waitReason} before running" in streaming_block
     assert "_executeSlashCommand" not in streaming_block
@@ -768,15 +770,20 @@ def test_chat_slash_commands_are_blocked_while_streaming_after_literal_escape() 
     assert real_slash_guard in send_prefix[streaming_idx:execute_idx]
 
 
-def test_chat_slash_executor_handles_unknown_without_chat_send() -> None:
+def test_chat_slash_executor_lets_unknown_slash_input_fall_through() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
+    lookup_start = source.index("async function _lookupSlashCommand(text)")
+    lookup_end = source.index("async function _executeSlashCommand(text)", lookup_start)
     exec_start = source.index("async function _executeSlashCommand(text)")
     exec_end = source.index("  /* ── Send Message", exec_start)
+    lookup = source[lookup_start:lookup_end]
     executor = source[exec_start:exec_end]
 
-    assert "_slashCommandMap.get(_slashCommandKey(cmdText))" in executor
-    assert "Unsupported command" in executor
-    assert "return true;" in executor
+    assert "await _loadSlashCommands()" in lookup
+    assert "_slashCommandMap.get(_slashCommandKey(cmdText)) || null" in lookup
+    assert "const cmd = await _lookupSlashCommand(text);" in executor
+    assert "Unsupported command" not in executor
+    assert "return false;" in executor
     assert "chat.send" not in executor
 
 
@@ -1594,7 +1601,8 @@ def test_chat_manual_pending_enqueue_normalizes_large_pastes() -> None:
     assert "if (text.startsWith('//')) {" in current_body
     assert "isLiteralSlash = true;" in current_body
     assert "text = text.slice(1);" in current_body
-    assert "const isSlashCommand = !isLiteralSlash && text.startsWith('/');" in current_body
+    assert "const isSlashCommand = !isLiteralSlash && text.startsWith('/')" in current_body
+    assert "!!(await _lookupSlashCommand(text))" in current_body
     assert "{ allowSlashCommand: isSlashCommand }" in current_body
     assert normalize_idx < enqueue_idx
     assert "_pendingAttachments = normalized.attachments;" in current_body

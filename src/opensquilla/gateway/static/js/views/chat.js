@@ -2757,14 +2757,18 @@ const ChatView = (() => {
     }
   }
 
-  async function _executeSlashCommand(text) {
+  async function _lookupSlashCommand(text) {
     if (!_slashCatalogLoaded) await _loadSlashCommands();
-    const [cmdText, ...rest] = text.trim().split(/\s+/);
-    const cmd = _slashCommandMap.get(_slashCommandKey(cmdText));
+    const [cmdText] = text.trim().split(/\s+/);
+    return _slashCommandMap.get(_slashCommandKey(cmdText)) || null;
+  }
+
+  async function _executeSlashCommand(text) {
+    const [, ...rest] = text.trim().split(/\s+/);
+    const cmd = await _lookupSlashCommand(text);
     if (!cmd) {
       _closeSlashMenu();
-      UI.toast('Unsupported command: ' + cmdText, 'warn', 2500);
-      return true;
+      return false;
     }
     _selectSlashCmd(cmd, rest.join(' '));
     return true;
@@ -6075,7 +6079,8 @@ const ChatView = (() => {
       text = text.slice(1);
       hasPayload = text || _pendingAttachments.length > 0;
     }
-    const isSlashCommand = !isLiteralSlash && text.startsWith('/');
+    const isSlashCommand = !isLiteralSlash && text.startsWith('/')
+      && !!(await _lookupSlashCommand(text));
     const normalized = await _normalizeOutgoingComposerPayload(
       text,
       _pendingAttachments,
@@ -6090,7 +6095,7 @@ const ChatView = (() => {
     // the same queue: users may keep typing, but the next turn must wait until
     // the transcript maintenance action reaches a terminal state.
     if (_isStreaming || _isCompactInFlightForCurrentSession()) {
-      if (!isLiteralSlash && text.startsWith('/')) {
+      if (isSlashCommand) {
         const waitReason = _isCompactInFlightForCurrentSession()
           ? 'context compaction'
           : 'the current response';
@@ -9274,7 +9279,8 @@ const ChatView = (() => {
       text = text.slice(1);
       hasPayload = text || _pendingAttachments.length > 0;
     }
-    const isSlashCommand = !isLiteralSlash && text.startsWith('/');
+    const isSlashCommand = !isLiteralSlash && text.startsWith('/')
+      && !!(await _lookupSlashCommand(text));
     if (!hasPayload) return false;
     const normalized = await _normalizeOutgoingComposerPayload(
       text,

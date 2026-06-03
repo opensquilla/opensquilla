@@ -115,6 +115,7 @@ METHOD_SCOPES: dict[str, str] = {
     "sandbox.status": READ_SCOPE,  # OpenSquilla-only; sandbox posture summary.
     "sandbox.explain": READ_SCOPE,  # OpenSquilla-only; deterministic sandbox explanation.
     "sandbox.run_context.get": READ_SCOPE,  # OpenSquilla-only; session sandbox mode.
+    "sandbox.path.list": READ_SCOPE,  # OpenSquilla-only; inline path browser listing.
     "channels.status": READ_SCOPE,
     "commands.list_for_surface": READ_SCOPE,  # OpenSquilla-only.
     "chat.history": READ_SCOPE,

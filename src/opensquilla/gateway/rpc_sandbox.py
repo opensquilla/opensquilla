@@ -12,6 +12,7 @@ from opensquilla.gateway.rpc import (
     get_dispatcher,
 )
 from opensquilla.gateway.session_services import get_session_storage
+from opensquilla.sandbox.escalation import remember_resolved_run_context
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
 from opensquilla.sandbox.package_bundles import expand_package_bundle
 from opensquilla.sandbox.path_validation import (
@@ -96,6 +97,27 @@ def _validate_domain_param(domain: str) -> None:
 
 def _validate_workspace_param(workspace: str) -> str:
     return normalize_workspace_path(workspace)
+
+
+def _path_entry_payload(path: Any) -> dict[str, Any]:
+    payload = {
+        "name": path.name or str(path),
+        "path": str(path),
+        "kind": "directory" if path.is_dir() else "file",
+        "selectable": True,
+    }
+    if payload["name"].startswith("."):
+        payload["hidden"] = True
+    return payload
+
+
+def _parent_entry_payload(path: Any) -> dict[str, Any]:
+    return {
+        "name": "..",
+        "path": str(path),
+        "kind": "directory",
+        "selectable": True,
+    }
 
 
 def _pick_directory_path(initial_dir: str | None = None) -> str:
@@ -193,6 +215,25 @@ async def _workspace_for_session(
         agent_id = session_agent_id
     workspace = resolve_agent_workspace_dir(agent_id, config)
     return str(workspace) if workspace is not None else None
+
+
+def _remember_context_overlay(
+    ctx: RpcContext,
+    *,
+    session_key: str,
+    workspace: str | None,
+    context: RunContext,
+) -> None:
+    manager = getattr(ctx, "session_manager", None)
+    if manager is None:
+        return
+    remember_resolved_run_context(
+        session_key,
+        workspace,
+        context,
+        session_manager=manager,
+        config=ctx.config,
+    )
 
 
 async def _validate_mount_path_for_rpc(
@@ -306,6 +347,12 @@ async def _handle_sandbox_run_context_set(params: dict | None, ctx: RpcContext) 
         config=ctx.config,
         workspace=await _workspace_for_session(manager, session_key, ctx.config),
     )
+    _remember_context_overlay(
+        ctx,
+        session_key=session_key,
+        workspace=context.workspace,
+        context=context,
+    )
     return _payload(context)
 
 
@@ -337,6 +384,7 @@ async def _handle_sandbox_mount_add(params: dict | None, ctx: RpcContext) -> dic
         config=ctx.config,
         workspace=workspace,
     )
+    _remember_context_overlay(ctx, session_key=session_key, workspace=workspace, context=context)
     return _payload(context)
 
 
@@ -364,6 +412,7 @@ async def _handle_sandbox_mount_remove(params: dict | None, ctx: RpcContext) -> 
         config=ctx.config,
         workspace=workspace,
     )
+    _remember_context_overlay(ctx, session_key=session_key, workspace=workspace, context=context)
     return _payload(context)
 
 
@@ -387,6 +436,7 @@ async def _handle_sandbox_domain_add(params: dict | None, ctx: RpcContext) -> di
         config=ctx.config,
         workspace=workspace,
     )
+    _remember_context_overlay(ctx, session_key=session_key, workspace=workspace, context=context)
     return _payload(context)
 
 
@@ -409,6 +459,7 @@ async def _handle_sandbox_domain_remove(params: dict | None, ctx: RpcContext) ->
         config=ctx.config,
         workspace=workspace,
     )
+    _remember_context_overlay(ctx, session_key=session_key, workspace=workspace, context=context)
     return _payload(context)
 
 
@@ -431,6 +482,7 @@ async def _handle_sandbox_bundle_enable(params: dict | None, ctx: RpcContext) ->
         config=ctx.config,
         workspace=workspace,
     )
+    _remember_context_overlay(ctx, session_key=session_key, workspace=workspace, context=context)
     return _payload(context)
 
 
@@ -452,7 +504,45 @@ async def _handle_sandbox_bundle_disable(params: dict | None, ctx: RpcContext) -
         config=ctx.config,
         workspace=workspace,
     )
+    _remember_context_overlay(ctx, session_key=session_key, workspace=workspace, context=context)
     return _payload(context)
+
+
+@_d.method("sandbox.path.list", scope="operator.read")
+async def _handle_sandbox_path_list(params: dict | None, ctx: RpcContext) -> dict:
+    params = _require_params(params)
+    _require_session_key(params)
+    _require_owner(ctx, "sandbox.path.list")
+    path = _require_string_param(params, "path", "params.path is required")
+    kind = str(params.get("kind") or "workspace").strip().lower()
+    if kind not in {"workspace", "mount"}:
+        raise ValueError("params.kind must be workspace or mount")
+
+    normalized = normalize_path(path)
+    browse_children = params.get("browseChildren") is True
+    listing_dir = (
+        normalized
+        if browse_children and normalized.is_dir()
+        else normalized.parent if normalized.parent != normalized else normalized
+    )
+    entries = []
+    try:
+        entries = [_parent_entry_payload(listing_dir.parent)]
+        entries.extend(
+            _path_entry_payload(entry)
+            for entry in sorted(
+                listing_dir.iterdir(),
+                key=lambda item: (not item.is_dir(), item.name.casefold()),
+            )
+        )
+    except (OSError, RuntimeError):
+        entries = []
+
+    return {
+        "path": str(normalized),
+        "parentPath": str(listing_dir),
+        "entries": entries,
+    }
 
 
 @_d.method("sandbox.path.pick", scope="operator.write")
@@ -506,5 +596,11 @@ async def _handle_sandbox_workspace_set(params: dict | None, ctx: RpcContext) ->
         workspace_path=workspace_path,
         config=ctx.config,
         current_workspace=current_workspace,
+    )
+    _remember_context_overlay(
+        ctx,
+        session_key=session_key,
+        workspace=context.workspace,
+        context=context,
     )
     return _payload(context)

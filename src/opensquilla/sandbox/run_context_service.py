@@ -6,11 +6,13 @@ from dataclasses import replace
 from typing import Any
 
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
+from opensquilla.sandbox.network_guard import decide_network_access
 from opensquilla.sandbox.package_bundles import expand_package_bundle
 from opensquilla.sandbox.path_validation import (
     decide_path_access,
     normalize_mount_access,
 )
+from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.sandbox.run_context import (
     DomainGrant,
     MountGrant,
@@ -165,6 +167,54 @@ async def add_domain_grant(
     )
 
 
+async def auto_add_trusted_domain_grant(
+    session_manager: Any,
+    session_key: str,
+    *,
+    domain: str,
+    config: Any,
+    workspace: str | None,
+) -> RunContext:
+    domain_decision = validate_domain_pattern(domain)
+    if domain_decision.status == "blocked":
+        raise ValueError(domain_decision.reason)
+    normalized_host = domain_decision.normalized
+
+    existing = await get_run_context(
+        session_manager,
+        session_key,
+        config=config,
+        workspace=workspace,
+    )
+    grant = DomainGrant(
+        domain=normalized_host,
+        scope="chat",
+        source="auto_trusted",
+    )
+    if grant in existing.domains:
+        return existing
+    trusted_context = replace(existing, run_mode=RunMode.TRUSTED)
+    decision = decide_network_access(normalized_host, trusted_context)
+    if (
+        decision.status != "allow"
+        or decision.reason != "auto_trusted"
+        or decision.source != "auto_trusted:chat"
+    ):
+        raise ValueError(decision.reason)
+    domains = tuple(
+        existing_domain
+        for existing_domain in existing.domains
+        if existing_domain.domain != grant.domain
+    ) + (grant,)
+    if domains == existing.domains:
+        return existing
+    return await persist_run_context(
+        session_manager,
+        session_key,
+        replace(existing, domains=domains, source="saved"),
+    )
+
+
 async def remove_domain_grant(
     session_manager: Any,
     session_key: str,
@@ -247,7 +297,21 @@ async def disable_bundle_grant(
         config=config,
         workspace=workspace,
     )
+    existing_scope = next(
+        (
+            bundle.scope
+            for bundle in existing.bundles
+            if bundle.bundle_id == normalized_bundle_id
+        ),
+        "workspace",
+    )
+    grant = PackageBundleGrant(
+        bundle_id=normalized_bundle_id,
+        scope=normalize_scope(existing_scope, "workspace"),
+        source="disabled",
+    )
     bundles = tuple(b for b in existing.bundles if b.bundle_id != normalized_bundle_id)
+    bundles = bundles + (grant,)
     if bundles == existing.bundles:
         return existing
     return await persist_run_context(
@@ -260,6 +324,7 @@ async def disable_bundle_grant(
 __all__ = [
     "add_domain_grant",
     "add_mount_grant",
+    "auto_add_trusted_domain_grant",
     "disable_bundle_grant",
     "enable_bundle_grant",
     "normalize_scope",

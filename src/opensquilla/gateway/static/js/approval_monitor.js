@@ -142,6 +142,7 @@ const ApprovalMonitor = (() => {
     overlay.className = 'modal-backdrop';
 
     const canAlways = item.namespace === 'exec' && !!item.command;
+    const customChoices = Array.isArray(item.params && item.params.choices) ? item.params.choices : [];
     const command = _approvalCommand(item);
     const detail = _approvalDetail(item);
     const meta = [
@@ -149,6 +150,13 @@ const ApprovalMonitor = (() => {
       mode ? 'Mode: ' + mode : '',
       item.sessionKey ? 'Session: ' + item.sessionKey : '',
     ].filter(Boolean).join(' · ');
+    const footer = customChoices.length > 0
+      ? _renderCustomChoices(customChoices)
+      : `
+          <button class="btn btn--primary" data-approval-action="once" title="Approve only this pending tool call">Approve This Time</button>
+          ${canAlways ? '<button class="btn btn--ghost" data-approval-action="always" title="Remember this operation type for future matching intents">Always Allow This Type</button>' : ''}
+          <button class="btn btn--danger" data-approval-action="deny">Deny</button>
+        `;
 
     overlay.innerHTML = `
       <div class="modal approval-modal" role="dialog" aria-modal="true" aria-labelledby="approval-modal-title">
@@ -160,19 +168,34 @@ const ApprovalMonitor = (() => {
           ${detail ? `<div class="approval-modal-detail">${_esc(detail)}</div>` : ''}
         </div>
         <div class="modal-foot">
-          <button class="btn btn--primary" data-approval-action="once" title="Approve only this pending tool call">Approve This Time</button>
-          ${canAlways ? '<button class="btn btn--ghost" data-approval-action="always" title="Remember this operation type for future matching intents">Always Allow This Type</button>' : ''}
-          <button class="btn btn--danger" data-approval-action="deny">Deny</button>
+          ${footer}
         </div>
       </div>`;
 
+    overlay.querySelectorAll('[data-choice-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const choiceId = btn.dataset.choiceId || '';
+        const approved = btn.dataset.approved !== 'false';
+        _resolve(
+          item,
+          {
+            approved,
+            allowAlways: false,
+            rememberIntent: false,
+            choice: choiceId,
+            decision: choiceId,
+          },
+          overlay,
+        );
+      });
+    });
     overlay.querySelectorAll('[data-approval-action]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const action = btn.dataset.approvalAction;
         const approved = action === 'once' || action === 'always';
         const allowAlways = action === 'always';
         const rememberIntent = action === 'always';
-        _resolve(item, approved, allowAlways, rememberIntent, overlay);
+        _resolve(item, { approved, allowAlways, rememberIntent }, overlay);
       });
     });
 
@@ -180,17 +203,31 @@ const ApprovalMonitor = (() => {
     _modal = overlay;
   }
 
-  async function _resolve(item, approved, allowAlways, rememberIntent, overlay) {
+  function _renderCustomChoices(customChoices) {
+    return customChoices.map((choice, index) => {
+      const approved = choice && choice.approved !== false;
+      const style = choice && choice.style
+        ? String(choice.style)
+        : (!approved ? 'danger' : (index === 0 ? 'primary' : 'ghost'));
+      const label = choice && choice.label ? String(choice.label) : 'Choose';
+      const choiceId = choice && choice.id ? String(choice.id) : '';
+      return `<button class="btn btn--${_esc(style)}" data-choice-id="${_esc(choiceId)}" data-approved="${approved ? 'true' : 'false'}">${_esc(label)}</button>`;
+    }).join('');
+  }
+
+  async function _resolve(item, resolution, overlay) {
     if (_busy) return;
     _busy = true;
     overlay.querySelectorAll('button').forEach((btn) => { btn.disabled = true; });
     const body = {
       id: item.id,
       namespace: item.namespace || 'exec',
-      approved,
-      allowAlways,
-      rememberIntent,
+      approved: !!resolution.approved,
+      allowAlways: !!resolution.allowAlways,
+      rememberIntent: !!resolution.rememberIntent,
     };
+    if (resolution.choice) body.choice = resolution.choice;
+    if (resolution.decision) body.decision = resolution.decision;
     try {
       const resp = await fetch('/api/approvals/resolve', {
         method: 'POST',
@@ -200,8 +237,8 @@ const ApprovalMonitor = (() => {
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       _closeModal();
       UI.toast(
-        approved ? 'Approval granted' : 'Approval denied',
-        approved ? 'info' : 'warn',
+        body.approved ? 'Approval granted' : 'Approval denied',
+        body.approved ? 'info' : 'warn',
         2500
       );
       _resetPollBackoff();

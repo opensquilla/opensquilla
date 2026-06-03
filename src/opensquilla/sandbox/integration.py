@@ -44,6 +44,18 @@ from urllib.parse import urlsplit
 from opensquilla.sandbox.backend import Backend, NoopBackend, select_backend
 from opensquilla.sandbox.config import EffectiveMode, SandboxSettings
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
+from opensquilla.sandbox.escalation import (
+    build_backend_failure_approval_params,
+    build_network_approval_params,
+    consume_persisted_temporary_network_grant,
+    consume_temporary_network_grant,
+    context_with_temporary_network_grants,
+    current_tool_run_context,
+    has_temporary_network_grant,
+    remember_resolved_run_context,
+    request_sandbox_approval,
+    reset_resolved_run_context_overlays,
+)
 from opensquilla.sandbox.governance import (
     ApprovalGate,
     DenialLedger,
@@ -60,6 +72,7 @@ from opensquilla.sandbox.path_validation import (
 )
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
 from opensquilla.sandbox.run_context import DomainGrant, RunContext
+from opensquilla.sandbox.run_context_service import auto_add_trusted_domain_grant
 from opensquilla.sandbox.stale_output_cache import StaleOutputCache, get_stale_output_cache
 from opensquilla.sandbox.types import (
     ALLOW,
@@ -207,6 +220,7 @@ def reset_runtime() -> None:
     """Drop the process-wide runtime. Test helper."""
     global _runtime
     _runtime = None
+    reset_resolved_run_context_overlays()
 
 
 # ─── Core helpers ─────────────────────────────────────────────────────────
@@ -455,14 +469,53 @@ async def run_under_backend(
 
 
 def _current_run_context_for_network_proxy() -> RunContext | None:
-    try:
-        from opensquilla.tools.types import current_tool_context
+    return current_tool_run_context()
 
-        ctx = current_tool_context.get()
+
+def _current_sandbox_persistence_handles() -> tuple[Any | None, Any | None]:
+    try:
+        from opensquilla.tools.builtin import sessions as sessions_mod
     except Exception:  # pragma: no cover - defensive
-        return None
-    context = getattr(ctx, "sandbox_run_context", None) if ctx is not None else None
-    return context if isinstance(context, RunContext) else None
+        return None, None
+    return getattr(sessions_mod, "_session_manager", None), getattr(
+        sessions_mod,
+        "_gateway_config",
+        None,
+    )
+
+
+async def _persist_auto_trusted_host_if_available(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+    *,
+    decision: NetworkDecision,
+) -> None:
+    if decision.reason != "auto_trusted" or decision.source != "auto_trusted:chat":
+        return
+    session_key = _resolve_session_id(runtime, None)
+    if not session_key:
+        return
+    session_manager, config = _current_sandbox_persistence_handles()
+    if session_manager is None or config is None:
+        return
+    workspace = str(request.cwd)
+    try:
+        context = await auto_add_trusted_domain_grant(
+            session_manager,
+            session_key,
+            domain=decision.normalized_host,
+            config=config,
+            workspace=workspace,
+        )
+    except Exception:
+        return
+    remember_resolved_run_context(
+        session_key,
+        workspace,
+        context,
+        session_manager=session_manager,
+        config=config,
+    )
 
 
 async def _run_with_managed_network_proxy(
@@ -475,8 +528,42 @@ async def _run_with_managed_network_proxy(
             "NetworkMode.PROXY_ALLOWLIST requires Run Context grants to start "
             "the managed network proxy"
         )
+    fingerprint = action_fingerprint(request)
+    context = context_with_temporary_network_grants(
+        context,
+        fingerprint=fingerprint,
+    )
+    original_context = _current_run_context_for_network_proxy()
+    explicit_targets = _explicit_network_target_hosts(request.action_kind, request.argv)
+    for host in explicit_targets:
+        decision = decide_network_access(host, context)
+        await _persist_auto_trusted_host_if_available(
+            request,
+            runtime,
+            decision=decision,
+        )
+    consumed_hosts: set[str] = set()
 
-    proxy = SandboxProxyServer(lambda host: decide_network_access(host, context))
+    def _decide(host: str) -> NetworkDecision:
+        decision = decide_network_access(host, context)
+        if (
+            decision.status == "allow"
+            and has_temporary_network_grant(
+                original_context,
+                host=decision.normalized_host,
+                fingerprint=fingerprint,
+            )
+        ):
+            consume_temporary_network_grant(
+                session_key=_resolve_session_id(runtime, None),
+                workspace=str(request.cwd),
+                host=decision.normalized_host,
+                fingerprint=fingerprint,
+            )
+            consumed_hosts.add(decision.normalized_host)
+        return decision
+
+    proxy = SandboxProxyServer(_decide)
     await proxy.start()
     try:
         policy = dataclasses.replace(
@@ -485,6 +572,13 @@ async def _run_with_managed_network_proxy(
         )
         return await runtime.backend.run(request.with_policy(policy))
     finally:
+        for host in consumed_hosts:
+            await consume_persisted_temporary_network_grant(
+                session_key=_resolve_session_id(runtime, None),
+                workspace=str(request.cwd),
+                host=host,
+                fingerprint=fingerprint,
+            )
         await proxy.stop()
 
 
@@ -630,6 +724,8 @@ def sandboxed(
                 prepared = await _prepare_in_process_managed_network(request, rt)
                 if isinstance(prepared, DenialResult):
                     return json.dumps(prepared.to_dict())
+                if isinstance(prepared, dict):
+                    return json.dumps(prepared)
                 result = await _run_in_process_with_managed_network(
                     fn,
                     args,
@@ -684,7 +780,7 @@ def _string_env(value: Any) -> dict[str, str] | None:
 async def _prepare_in_process_managed_network(
     request: SandboxRequest,
     runtime: SandboxRuntime,
-) -> RunContext | DenialResult:
+) -> RunContext | DenialResult | dict[str, object]:
     context = _current_run_context_for_network_proxy()
     if context is None:
         return await _managed_in_process_denial(
@@ -693,6 +789,12 @@ async def _prepare_in_process_managed_network(
             "NetworkMode.PROXY_ALLOWLIST requires Run Context grants to run "
             "in-process network tools through the managed proxy.",
         )
+    fingerprint = action_fingerprint(request)
+    original_context = context
+    context = context_with_temporary_network_grants(
+        context,
+        fingerprint=fingerprint,
+    )
     system_domains = _system_domain_grants_for_request(request)
     effective_context = _context_with_system_domain_grants(context, system_domains)
     targets = _explicit_network_target_hosts(request.action_kind, request.argv)
@@ -708,7 +810,28 @@ async def _prepare_in_process_managed_network(
         )
     for host in targets:
         decision = decide_network_access(host, effective_context)
-        if decision.status != "allow":
+        if decision.status == "allow":
+            await _persist_auto_trusted_host_if_available(
+                request,
+                runtime,
+                decision=decision,
+            )
+            continue
+        if decision.status == "ask":
+            params = build_network_approval_params(
+                decision,
+                session_key=_resolve_session_id(runtime, None),
+                workspace=str(request.cwd),
+                fingerprint=fingerprint,
+            )
+            if params is not None:
+                return request_sandbox_approval(
+                    params,
+                    message=(
+                        "This network target is outside the current managed-network grants. "
+                        "Resolve this approval and retry."
+                    ),
+                )
             return await _managed_in_process_denial(
                 request,
                 runtime,
@@ -716,6 +839,32 @@ async def _prepare_in_process_managed_network(
                     "NetworkMode.PROXY_ALLOWLIST denied in-process network "
                     f"target {host!r}: {decision.reason}."
                 ),
+            )
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            (
+                "NetworkMode.PROXY_ALLOWLIST denied in-process network "
+                f"target {host!r}: {decision.reason}."
+            ),
+        )
+    for host in targets:
+        if has_temporary_network_grant(
+            original_context,
+            host=host,
+            fingerprint=fingerprint,
+        ):
+            consume_temporary_network_grant(
+                session_key=_resolve_session_id(runtime, None),
+                workspace=str(request.cwd),
+                host=host,
+                fingerprint=fingerprint,
+            )
+            await consume_persisted_temporary_network_grant(
+                session_key=_resolve_session_id(runtime, None),
+                workspace=str(request.cwd),
+                host=host,
+                fingerprint=fingerprint,
             )
     return effective_context
 
@@ -766,7 +915,7 @@ async def guard_in_process_network_action(
     action_kind: str,
     argv: tuple[str, ...],
     runtime: SandboxRuntime | None = None,
-) -> DenialResult | None:
+) -> DenialResult | dict[str, object] | None:
     """Fail-close helper for in-process network paths that bypass decorators.
 
     Returns a denial only when the resolved sandbox policy requires managed
@@ -795,7 +944,9 @@ async def guard_in_process_network_action(
     if rt is None:
         return None
     prepared = await _prepare_in_process_managed_network(request, rt)
-    return prepared if isinstance(prepared, DenialResult) else None
+    if isinstance(prepared, (DenialResult, dict)):
+        return prepared
+    return None
 
 
 async def run_in_process_network_action(
@@ -804,7 +955,7 @@ async def run_in_process_network_action(
     argv: tuple[str, ...],
     callback: Callable[[], Awaitable[Any]],
     runtime: SandboxRuntime | None = None,
-) -> Any | DenialResult:
+) -> Any | DenialResult | dict[str, object]:
     """Run an undecorated in-process network action under sandbox networking.
 
     Some gateway RPC handlers call provider code directly instead of going
@@ -857,6 +1008,8 @@ async def run_in_process_network_action(
         )
     prepared = await _prepare_in_process_managed_network(request, rt)
     if isinstance(prepared, DenialResult):
+        return prepared
+    if isinstance(prepared, dict):
         return prepared
     return await _run_in_process_with_managed_network(
         callback,
@@ -987,7 +1140,10 @@ async def escalate_backend_denial(
         escalation_request,
         escalation_policy,
         session_id=session_id,
-        extra_params={"approvalKind": "host_once"},
+        extra_params=build_backend_failure_approval_params(
+            session_key=session_id,
+            workspace=str(request.cwd),
+        ),
     )
 
     if not isinstance(decision, DenialResult):

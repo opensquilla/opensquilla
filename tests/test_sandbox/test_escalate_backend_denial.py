@@ -96,6 +96,11 @@ async def test_escalate_routes_to_approval_gate_with_require_approval(tmp_path: 
     assert decision is ALLOW
     assert queue.last_params is not None
     assert queue.last_params["approvalKind"] == "host_once"
+    assert [choice["id"] for choice in queue.last_params["choices"]] == [
+        "host_once",
+        "host_switch_chat_full",
+        "deny",
+    ]
     assert "host once requested after sandbox denied" in queue.last_params["reason"]
 
 

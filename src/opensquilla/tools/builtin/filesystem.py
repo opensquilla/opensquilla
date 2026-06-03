@@ -14,6 +14,11 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
+from opensquilla.sandbox.escalation import (
+    build_path_approval_params,
+    current_tool_mounts,
+    request_sandbox_approval,
+)
 from opensquilla.sandbox.integration import get_runtime, sandboxed
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.tools.path_policy import reject_foreign_host_path
@@ -233,21 +238,39 @@ def _sandbox_path_access_enabled() -> bool:
 
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
+    return current_tool_mounts()
+
+
+def _path_access_required_envelope(
+    decision: MountDecision,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object]:
     ctx = current_tool_context.get()
-    mounts = getattr(ctx, "sandbox_mounts", None) if ctx is not None else None
-    return mounts if isinstance(mounts, list) else []
-
-
-def _path_access_required_envelope(decision: MountDecision) -> dict[str, object]:
-    return {
-        "status": "path_access_required",
-        "path": decision.normalized_path,
-        "access": decision.access,
-        "message": (
+    workspace_root = _workspace_root()
+    approval = build_path_approval_params(
+        decision,
+        session_key=getattr(ctx, "session_key", None) if ctx is not None else None,
+        workspace=str(workspace_root) if workspace_root is not None else None,
+    )
+    if approval is None:
+        return {
+            "status": "path_access_required",
+            "path": decision.normalized_path,
+            "access": decision.access,
+            "message": (
+                "This path is outside the current sandbox view. "
+                "Add it as a mount to continue sandboxed."
+            ),
+        }
+    return request_sandbox_approval(
+        approval,
+        approval_id=approval_id,
+        message=(
             "This path is outside the current sandbox view. "
-            "Add it as a mount to continue sandboxed."
+            "Resolve this approval and retry."
         ),
-    }
+    )
 
 
 def _path_access_blocked_envelope(decision: MountDecision) -> dict[str, object]:
@@ -263,6 +286,7 @@ def _sandbox_path_access_envelope(
     resolved: Path,
     *,
     write: bool,
+    approval_id: str | None = None,
 ) -> dict[str, object] | None:
     if not _sandbox_path_access_enabled():
         return None
@@ -278,7 +302,7 @@ def _sandbox_path_access_envelope(
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
-    return _path_access_required_envelope(decision)
+    return _path_access_required_envelope(decision, approval_id=approval_id)
 
 
 def _sandbox_path_access_marker(candidate: Path, *, write: bool) -> str | None:
@@ -503,7 +527,11 @@ async def _gate_out_of_workspace_write(
             return build_block_envelope(
                 f"{tool_name} {original_path}", sensitive, tool_name=tool_name
             )
-    path_access = _sandbox_path_access_envelope(resolved, write=True)
+    path_access = _sandbox_path_access_envelope(
+        resolved,
+        write=True,
+        approval_id=approval_id,
+    )
     if path_access is not None:
         return path_access
 

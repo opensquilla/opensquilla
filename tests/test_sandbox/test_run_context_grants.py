@@ -222,7 +222,13 @@ async def test_absent_removals_do_not_create_saved_context(tmp_path):
         config=_config(),
         workspace=str(workspace),
     )
-    assert manager.node.origin is None
+    assert manager.node.origin["sandbox_run_context"]["bundles"] == [
+        {
+            "bundle_id": "python-package-install",
+            "scope": "workspace",
+            "source": "disabled",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -300,8 +306,18 @@ async def test_absent_removals_preserve_saved_origin(tmp_path):
         config=_config(),
         workspace=str(workspace),
     )
-    assert manager.node.origin is saved_origin
-    assert manager.node.origin == saved_origin
+    assert manager.node.origin["sandbox_run_context"]["bundles"] == [
+        {
+            "bundle_id": "python-package-install",
+            "scope": "workspace",
+            "source": "manual",
+        },
+        {
+            "bundle_id": "node-package-install",
+            "scope": "workspace",
+            "source": "disabled",
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -617,7 +633,8 @@ async def test_duplicate_same_bundle_grant_in_existing_list_is_noop_without_reor
 
 
 @pytest.mark.asyncio
-async def test_disable_bundle_grant_removes_existing_entry(tmp_path):
+async def test_disable_bundle_grant_persists_disabled_default_override(tmp_path):
+    from opensquilla.sandbox.run_context import PackageBundleGrant
     from opensquilla.sandbox.run_context_service import (
         disable_bundle_grant,
         enable_bundle_grant,
@@ -641,8 +658,60 @@ async def test_disable_bundle_grant_removes_existing_entry(tmp_path):
         workspace=str(tmp_path),
     )
 
-    assert updated.bundles == ()
-    assert manager.node.origin["sandbox_run_context"]["bundles"] == []
+    assert updated.bundles == (
+        PackageBundleGrant(
+            bundle_id="python-package-install",
+            scope="workspace",
+            source="disabled",
+        ),
+    )
+    assert manager.node.origin["sandbox_run_context"]["bundles"] == [
+        {
+            "bundle_id": "python-package-install",
+            "scope": "workspace",
+            "source": "disabled",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_enable_bundle_grant_clears_disabled_default_override(tmp_path):
+    from opensquilla.sandbox.network_guard import decide_network_access
+    from opensquilla.sandbox.run_context import PackageBundleGrant
+    from opensquilla.sandbox.run_context_service import (
+        disable_bundle_grant,
+        enable_bundle_grant,
+    )
+
+    manager = _SessionManager()
+
+    disabled = await disable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id="node-package-install",
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+    assert disabled.bundles[0].source == "disabled"
+    assert decide_network_access("registry.npmjs.org", disabled).status == "ask"
+
+    updated = await enable_bundle_grant(
+        manager,
+        manager.node.session_key,
+        bundle_id="node-package-install",
+        scope="workspace",
+        config=_config(),
+        workspace=str(tmp_path),
+    )
+
+    assert updated.bundles == (
+        PackageBundleGrant(
+            bundle_id="node-package-install",
+            scope="workspace",
+            source="manual",
+        ),
+    )
+    assert decide_network_access("registry.npmjs.org", updated).status == "allow"
 
 
 @pytest.mark.asyncio
@@ -1479,6 +1548,247 @@ async def test_set_run_mode_preserves_bundle_and_temporary_grants(tmp_path):
 
     assert updated.bundles == (bundle,)
     assert updated.temporary_grants == (temporary,)
+
+
+@pytest.mark.asyncio
+async def test_apply_network_choice_persists_chat_domain_grant(tmp_path):
+    from opensquilla.sandbox.escalation import (
+        apply_sandbox_approval_choice,
+        build_network_approval_params,
+    )
+    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.network_guard import NetworkDecision
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace=str(workspace),
+        fingerprint="fp123",
+    )
+
+    await apply_sandbox_approval_choice(
+        params,
+        choice="allow_chat",
+        approved=True,
+        session_manager=manager,
+        config=_config(),
+    )
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert ("example.com", "chat") in [(grant.domain, grant.scope) for grant in ctx.domains]
+
+
+@pytest.mark.asyncio
+async def test_apply_network_choice_persists_user_domain_grant_with_workspace_scope(tmp_path):
+    from opensquilla.sandbox.escalation import (
+        apply_sandbox_approval_choice,
+        build_network_approval_params,
+    )
+    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.network_guard import NetworkDecision
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace=str(workspace),
+        fingerprint="fp123",
+    )
+
+    await apply_sandbox_approval_choice(
+        params,
+        choice="allow_user",
+        approved=True,
+        session_manager=manager,
+        config=_config(),
+    )
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert ("example.com", "workspace") in [(grant.domain, grant.scope) for grant in ctx.domains]
+
+
+@pytest.mark.asyncio
+async def test_apply_network_once_choice_stays_transient_and_updates_overlay(tmp_path):
+    from opensquilla.sandbox.escalation import (
+        apply_sandbox_approval_choice,
+        build_network_approval_params,
+        resolved_run_context_overlay,
+    )
+    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.network_guard import NetworkDecision
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace=str(workspace),
+        fingerprint="fp123",
+    )
+
+    await apply_sandbox_approval_choice(
+        params,
+        choice="allow_once",
+        approved=True,
+        session_manager=manager,
+        config=_config(),
+    )
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert ctx.temporary_grants == ()
+    overlay = resolved_run_context_overlay(manager.node.session_key, str(workspace))
+    assert overlay is not None
+    assert [(grant.kind, grant.value, grant.fingerprint) for grant in overlay.temporary_grants] == [
+        ("domain", "example.com", "fp123")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_apply_path_choice_persists_requested_mount(tmp_path):
+    from opensquilla.sandbox.escalation import (
+        apply_sandbox_approval_choice,
+        build_path_approval_params,
+    )
+    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.path_validation import MountDecision
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    params = build_path_approval_params(
+        MountDecision(
+            status="request",
+            normalized_path=str(outside.resolve(strict=False)),
+            access="rw",
+            reason="outside_sandbox_mounts",
+        ),
+        session_key=manager.node.session_key,
+        workspace=str(workspace),
+    )
+
+    await apply_sandbox_approval_choice(
+        params,
+        choice="mount_rw_chat",
+        approved=True,
+        session_manager=manager,
+        config=_config(),
+    )
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert [(grant.path, grant.access, grant.scope) for grant in ctx.mounts] == [
+        (str(outside.resolve(strict=False)), "rw", "chat")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_apply_host_switch_chat_full_persists_full_run_mode(tmp_path):
+    from opensquilla.sandbox.escalation import (
+        apply_sandbox_approval_choice,
+        build_backend_failure_approval_params,
+    )
+    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.run_mode import RunMode
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    params = build_backend_failure_approval_params(
+        session_key=manager.node.session_key,
+        workspace=str(workspace),
+    )
+
+    await apply_sandbox_approval_choice(
+        params,
+        choice="host_switch_chat_full",
+        approved=True,
+        session_manager=manager,
+        config=_config(),
+    )
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert ctx.run_mode is RunMode.FULL
+
+
+@pytest.mark.asyncio
+async def test_apply_host_once_choice_does_not_persist_run_mode(tmp_path):
+    from opensquilla.sandbox.escalation import (
+        apply_sandbox_approval_choice,
+        build_backend_failure_approval_params,
+    )
+    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.run_mode import RunMode
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    params = build_backend_failure_approval_params(
+        session_key=manager.node.session_key,
+        workspace=str(workspace),
+    )
+
+    await apply_sandbox_approval_choice(
+        params,
+        choice="host_once",
+        approved=True,
+        session_manager=manager,
+        config=_config(),
+    )
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert ctx.run_mode is RunMode.STANDARD
 
 
 @pytest.mark.asyncio

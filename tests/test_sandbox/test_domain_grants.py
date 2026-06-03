@@ -93,12 +93,16 @@ def test_package_bundles_expand_to_known_domains() -> None:
         "files.pythonhosted.org",
         "pypi.python.org",
         "bootstrap.pypa.io",
+        "python-poetry.org",
+        "install.python-poetry.org",
     )
     assert expand_package_bundle("node-package-install") == (
         "registry.npmjs.org",
         "registry.yarnpkg.com",
         "yarnpkg.com",
         "nodejs.org",
+        "unpkg.com",
+        "cdn.jsdelivr.net",
     )
     assert expand_package_bundle("rust-package-install") == (
         "crates.io",

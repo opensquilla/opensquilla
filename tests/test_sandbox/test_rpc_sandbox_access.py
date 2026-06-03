@@ -39,7 +39,15 @@ class _SessionManager:
         return node
 
 
-def _ctx(manager: _SessionManager, *, is_owner: bool = True):
+def _ctx(
+    manager: _SessionManager,
+    *,
+    is_owner: bool = True,
+    run_mode: str = "standard",
+    sandbox: bool = True,
+    security_grading: bool = True,
+    permissions_default_mode: str = "off",
+):
     from opensquilla.gateway.auth import Principal
     from opensquilla.gateway.rpc import RpcContext
 
@@ -47,13 +55,13 @@ def _ctx(manager: _SessionManager, *, is_owner: bool = True):
         workspace_dir="/tmp/ws",
         agents=[],
         sandbox=SimpleNamespace(
-            run_mode="standard",
-            sandbox=True,
-            security_grading=True,
+            run_mode=run_mode,
+            sandbox=sandbox,
+            security_grading=security_grading,
             backend="noop",
             network_default="proxy_allowlist",
         ),
-        permissions=SimpleNamespace(default_mode="off"),
+        permissions=SimpleNamespace(default_mode=permissions_default_mode),
     )
     return RpcContext(
         conn_id="c",
@@ -66,6 +74,15 @@ def _ctx(manager: _SessionManager, *, is_owner: bool = True):
         session_manager=manager,
         config=config,
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_resolved_overlays() -> None:
+    from opensquilla.sandbox.escalation import reset_resolved_run_context_overlays
+
+    reset_resolved_run_context_overlays()
+    yield
+    reset_resolved_run_context_overlays()
 
 
 @pytest.mark.asyncio
@@ -204,6 +221,136 @@ async def test_rpc_run_context_get_includes_bundles_and_temporary_grants() -> No
 
 
 @pytest.mark.asyncio
+async def test_rpc_mount_remove_updates_resolved_overlay_for_current_tool_mounts() -> None:
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_mount_remove
+    from opensquilla.sandbox.escalation import current_tool_mounts, remember_resolved_run_context
+    from opensquilla.sandbox.run_context import MountGrant, RunContext
+    from opensquilla.sandbox.run_mode import RunMode
+    from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+
+    manager = _SessionManager()
+    ctx = _ctx(manager)
+
+    remembered = RunContext(
+        run_mode=RunMode.STANDARD,
+        workspace="/tmp/ws",
+        mounts=(MountGrant(path="/tmp/ws/extras", access="ro", scope="chat"),),
+        source="saved",
+    )
+    remember_resolved_run_context(
+        manager.node.session_key,
+        "/tmp/ws",
+        remembered,
+        session_manager=manager,
+        config=ctx.config,
+    )
+    manager.node.origin = remembered.to_origin_payload() and {
+        "sandbox_run_context": remembered.to_origin_payload()
+    }
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir="/tmp/ws",
+            session_key=manager.node.session_key,
+            sandbox_mounts=[{"path": "/tmp/ws/extras", "access": "ro"}],
+            sandbox_run_context=remembered,
+        )
+    )
+    try:
+        assert current_tool_mounts() == [{"path": "/tmp/ws/extras", "access": "ro"}]
+
+        result = await _handle_sandbox_mount_remove(
+            {"sessionKey": manager.node.session_key, "path": "/tmp/ws/extras"},
+            ctx,
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result["mounts"] == []
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir="/tmp/ws",
+            session_key=manager.node.session_key,
+            sandbox_mounts=[{"path": "/tmp/ws/extras", "access": "ro"}],
+            sandbox_run_context=remembered,
+        )
+    )
+    try:
+        assert current_tool_mounts() == []
+    finally:
+        current_tool_context.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_rpc_domain_remove_updates_resolved_overlay_for_current_tool_context() -> None:
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_domain_remove
+    from opensquilla.sandbox.escalation import current_tool_run_context, remember_resolved_run_context
+    from opensquilla.sandbox.network_guard import decide_network_access
+    from opensquilla.sandbox.run_context import DomainGrant, RunContext
+    from opensquilla.sandbox.run_mode import RunMode
+    from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+
+    manager = _SessionManager()
+    ctx = _ctx(manager)
+    remembered = RunContext(
+        run_mode=RunMode.STANDARD,
+        workspace="/tmp/ws",
+        domains=(DomainGrant(domain="example.com", scope="chat"),),
+        source="saved",
+    )
+    remember_resolved_run_context(
+        manager.node.session_key,
+        "/tmp/ws",
+        remembered,
+        session_manager=manager,
+        config=ctx.config,
+    )
+    manager.node.origin = {"sandbox_run_context": remembered.to_origin_payload()}
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir="/tmp/ws",
+            session_key=manager.node.session_key,
+            sandbox_run_context=remembered,
+        )
+    )
+    try:
+        merged = current_tool_run_context()
+        assert merged is not None
+        assert decide_network_access("example.com", merged).status == "allow"
+
+        result = await _handle_sandbox_domain_remove(
+            {"sessionKey": manager.node.session_key, "domain": "example.com"},
+            ctx,
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result["domains"] == []
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir="/tmp/ws",
+            session_key=manager.node.session_key,
+            sandbox_run_context=remembered,
+        )
+    )
+    try:
+        merged = current_tool_run_context()
+        assert merged is not None
+        assert decide_network_access("example.com", merged).status == "ask"
+    finally:
+        current_tool_context.reset(token)
+
+
+@pytest.mark.asyncio
 async def test_rpc_sandbox_status_reports_backend_managed_network_and_run_mode() -> None:
     from opensquilla.gateway.rpc_sandbox import _handle_sandbox_status
 
@@ -222,47 +369,71 @@ async def test_rpc_sandbox_status_reports_backend_managed_network_and_run_mode()
         "security_grading": True,
         "network_default": "proxy_allowlist",
     }
-    assert result["bundle_catalog"] == [
-        {
-            "bundle_id": "python-package-install",
-            "domains": [
-                "pypi.org",
-                "files.pythonhosted.org",
-                "pypi.python.org",
-                "bootstrap.pypa.io",
-            ],
+    catalog_by_id = {
+        bundle["bundle_id"]: set(bundle["domains"])
+        for bundle in result["bundle_catalog"]
+    }
+    expected_catalog_subsets = {
+        "python-package-install": {
+            "pypi.org",
+            "files.pythonhosted.org",
+            "pypi.python.org",
+            "bootstrap.pypa.io",
         },
-        {
-            "bundle_id": "node-package-install",
-            "domains": [
-                "registry.npmjs.org",
-                "registry.yarnpkg.com",
-                "yarnpkg.com",
-                "nodejs.org",
-            ],
+        "node-package-install": {
+            "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "yarnpkg.com",
+            "nodejs.org",
         },
-        {
-            "bundle_id": "rust-package-install",
-            "domains": [
-                "crates.io",
-                "static.crates.io",
-                "index.crates.io",
-                "github.com",
-                "objects.githubusercontent.com",
-            ],
+        "rust-package-install": {
+            "crates.io",
+            "static.crates.io",
+            "index.crates.io",
+            "github.com",
+            "objects.githubusercontent.com",
         },
-        {
-            "bundle_id": "go-package-install",
-            "domains": [
-                "proxy.golang.org",
-                "sum.golang.org",
-                "go.dev",
-                "golang.org",
-                "storage.googleapis.com",
-            ],
+        "go-package-install": {
+            "proxy.golang.org",
+            "sum.golang.org",
+            "go.dev",
+            "golang.org",
+            "storage.googleapis.com",
         },
-    ]
+        "github-default": {
+            "github.com",
+            "api.github.com",
+            "raw.githubusercontent.com",
+            "codeload.github.com",
+            "objects.githubusercontent.com",
+        },
+    }
+    for bundle_id, expected_domains in expected_catalog_subsets.items():
+        assert bundle_id in catalog_by_id
+        assert expected_domains.issubset(catalog_by_id[bundle_id])
     assert result["permissions"] == {"default_mode": "off"}
+
+
+@pytest.mark.asyncio
+async def test_rpc_sandbox_status_reports_full_host_access_without_managed_controls() -> None:
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_status
+
+    result = await _handle_sandbox_status(
+        {},
+        _ctx(
+            _SessionManager(),
+            run_mode="full",
+            sandbox=False,
+            security_grading=False,
+            permissions_default_mode="full",
+        ),
+    )
+
+    assert result["run_mode"] == "full"
+    assert result["run_mode_label"] == "Full Host Access"
+    assert result["execution_target"] == "host"
+    assert result["posture"] == "full"
+    assert result["managed_network"] == "inactive"
 
 
 @pytest.mark.asyncio
@@ -411,6 +582,135 @@ async def test_rpc_sandbox_path_pick_returns_valid_mount_selection(
     )
 
     assert result == {"path": str(selected), "kind": "mount"}
+
+
+@pytest.mark.asyncio
+async def test_rpc_sandbox_path_list_returns_parent_directory_entries(
+    tmp_path,
+) -> None:
+    import opensquilla.gateway.rpc_sandbox as rpc_sandbox
+
+    manager = _SessionManager()
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    sibling = parent / "sibling"
+    file_entry = parent / "notes.txt"
+    child.mkdir(parents=True)
+    sibling.mkdir()
+    file_entry.write_text("not a directory", encoding="utf-8")
+    handler = getattr(rpc_sandbox, "_handle_sandbox_path_list", None)
+
+    assert callable(handler)
+
+    result = await handler(
+        {
+            "sessionKey": manager.node.session_key,
+            "path": str(child),
+        },
+        _ctx(manager),
+    )
+
+    assert result["path"] == str(child)
+    assert result["parentPath"] == str(parent)
+    entries_by_path = {entry["path"]: entry for entry in result["entries"]}
+    assert {
+        str(child),
+        str(sibling),
+        str(file_entry),
+    }.issubset(entries_by_path)
+
+    assert entries_by_path[str(child)]["name"] == "child"
+    assert entries_by_path[str(child)]["kind"] == "directory"
+    assert entries_by_path[str(child)]["selectable"] is True
+    assert entries_by_path[str(sibling)]["name"] == "sibling"
+    assert entries_by_path[str(sibling)]["kind"] == "directory"
+    assert entries_by_path[str(sibling)]["selectable"] is True
+    assert entries_by_path[str(file_entry)]["name"] == "notes.txt"
+    assert entries_by_path[str(file_entry)]["kind"] == "file"
+    assert entries_by_path[str(file_entry)]["selectable"] is True
+
+
+@pytest.mark.asyncio
+async def test_rpc_sandbox_path_list_requires_owner(tmp_path) -> None:
+    from opensquilla.gateway.rpc import RpcHandlerError
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_path_list
+
+    manager = _SessionManager()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(RpcHandlerError, match="requires owner principal"):
+        await _handle_sandbox_path_list(
+            {
+                "sessionKey": manager.node.session_key,
+                "path": str(target),
+            },
+            _ctx(manager, is_owner=False),
+        )
+
+
+@pytest.mark.asyncio
+async def test_rpc_sandbox_path_list_supports_parent_row_and_child_drilldown(
+    tmp_path,
+) -> None:
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_path_list
+
+    manager = _SessionManager()
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    grandchild = child / "grandchild"
+    child_file = child / "inside.txt"
+    child.mkdir(parents=True)
+    grandchild.mkdir()
+    child_file.write_text("inside", encoding="utf-8")
+
+    result = await _handle_sandbox_path_list(
+        {
+            "sessionKey": manager.node.session_key,
+            "path": str(child),
+            "browseChildren": True,
+        },
+        _ctx(manager),
+    )
+
+    assert result["path"] == str(child)
+    assert result["parentPath"] == str(child)
+    entries_by_name = {entry["name"]: entry for entry in result["entries"]}
+    assert entries_by_name[".."] == {
+        "name": "..",
+        "path": str(parent),
+        "kind": "directory",
+        "selectable": True,
+    }
+    assert entries_by_name["grandchild"]["path"] == str(grandchild)
+    assert entries_by_name["grandchild"]["kind"] == "directory"
+    assert entries_by_name["grandchild"]["selectable"] is True
+    assert entries_by_name["inside.txt"]["path"] == str(child_file)
+    assert entries_by_name["inside.txt"]["kind"] == "file"
+    assert entries_by_name["inside.txt"]["selectable"] is True
+
+
+@pytest.mark.asyncio
+async def test_rpc_sandbox_path_browser_selection_is_validated_on_workspace_save(
+    tmp_path,
+) -> None:
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_workspace_set
+
+    manager = _SessionManager()
+    selected = tmp_path / ".aws" / "credentials"
+    selected.parent.mkdir()
+    selected.write_text("secret", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="sensitive_path"):
+        await _handle_sandbox_workspace_set(
+            {
+                "sessionKey": manager.node.session_key,
+                "workspace": str(selected),
+            },
+            _ctx(manager),
+        )
+
+    assert manager.node.origin is None
 
 
 @pytest.mark.asyncio

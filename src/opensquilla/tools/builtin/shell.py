@@ -21,6 +21,11 @@ from typing import Any, cast
 import structlog
 
 from opensquilla.gateway.approval_queue import get_approval_queue
+from opensquilla.sandbox.escalation import (
+    build_path_approval_params,
+    current_tool_mounts,
+    request_sandbox_approval,
+)
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend, build_bwrap_argv
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.backend.seatbelt import (
@@ -257,16 +262,36 @@ def _path_inside_any_root(path: Path, roots: list[Path]) -> bool:
     return False
 
 
-def _path_access_required_envelope(decision: MountDecision) -> dict[str, object]:
-    return {
-        "status": "path_access_required",
-        "path": decision.normalized_path,
-        "access": decision.access,
-        "message": (
+def _path_access_required_envelope(
+    decision: MountDecision,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object]:
+    ctx = current_tool_context.get()
+    workspace_root = _workspace_root_for_path_access()
+    approval = build_path_approval_params(
+        decision,
+        session_key=getattr(ctx, "session_key", None) if ctx is not None else None,
+        workspace=str(workspace_root) if workspace_root is not None else None,
+    )
+    if approval is None:
+        return {
+            "status": "path_access_required",
+            "path": decision.normalized_path,
+            "access": decision.access,
+            "message": (
+                "This path is outside the current sandbox view. "
+                "Add it as a mount to continue sandboxed."
+            ),
+        }
+    return request_sandbox_approval(
+        approval,
+        approval_id=approval_id,
+        message=(
             "This path is outside the current sandbox view. "
-            "Add it as a mount to continue sandboxed."
+            "Resolve this approval and retry."
         ),
-    }
+    )
 
 
 def _path_access_blocked_envelope(decision: MountDecision) -> dict[str, object]:
@@ -296,12 +321,14 @@ def _workspace_root_for_path_access() -> Path | None:
 
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
-    ctx = current_tool_context.get()
-    mounts = getattr(ctx, "sandbox_mounts", None) if ctx is not None else None
-    return mounts if isinstance(mounts, list) else []
+    return current_tool_mounts()
 
 
-def _sandbox_workdir_access_envelope(workdir: str | None) -> dict[str, object] | None:
+def _sandbox_workdir_access_envelope(
+    workdir: str | None,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object] | None:
     if not workdir or not _sandbox_path_access_enabled():
         return None
     decision = decide_path_access(
@@ -314,7 +341,7 @@ def _sandbox_workdir_access_envelope(workdir: str | None) -> dict[str, object] |
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
-    return _path_access_required_envelope(decision)
+    return _path_access_required_envelope(decision, approval_id=approval_id)
 
 
 def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:
@@ -723,7 +750,7 @@ async def exec_command(
     sensitive_block = _sensitive_shell_block("exec_command", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
-    path_access = _sandbox_workdir_access_envelope(cwd)
+    path_access = _sandbox_workdir_access_envelope(cwd, approval_id=approval_id)
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
     lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
@@ -845,7 +872,7 @@ async def background_process(
     sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
-    path_access = _sandbox_workdir_access_envelope(cwd)
+    path_access = _sandbox_workdir_access_envelope(cwd, approval_id=approval_id)
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
     lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)

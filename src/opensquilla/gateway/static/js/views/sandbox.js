@@ -222,10 +222,11 @@ const SandboxView = (() => {
         <label class="sandbox-field sandbox-field--span">
           <span>Workspace</span>
           <div class="sandbox-path-field">
-            <input class="sandbox-input" name="workspace" autocomplete="off" value="${_esc(workspaceValue)}" placeholder="/path/to/workspace" />
+            <input class="sandbox-input" name="workspace" autocomplete="off" value="${_esc(workspaceValue)}" placeholder="/path/to/workspace" data-path-browser-kind="workspace" />
             <button class="sandbox-path-btn" type="button" data-sandbox-action="workspace-browse" aria-label="Browse workspace directory">
               ${icons.search()}<span>Browse</span>
             </button>
+            <div class="sandbox-path-browser-slot" data-path-browser-kind="workspace"></div>
           </div>
         </label>
         <button class="sandbox-icon-btn sandbox-icon-btn--primary" type="submit" title="Save workspace" aria-label="Save workspace">
@@ -240,14 +241,15 @@ const SandboxView = (() => {
         <label class="sandbox-field sandbox-field--span">
           <span>Mount path</span>
           <div class="sandbox-path-field">
-            <input class="sandbox-input" name="path" autocomplete="off" placeholder="/path/to/folder" />
+            <input class="sandbox-input" name="path" autocomplete="off" placeholder="/path/to/folder" data-path-browser-kind="mount" />
             <button class="sandbox-path-btn" type="button" data-sandbox-action="mount-browse" aria-label="Browse mount directory">
               ${icons.search()}<span>Browse</span>
             </button>
+            <div class="sandbox-path-browser-slot" data-path-browser-kind="mount"></div>
           </div>
         </label>
         ${_select('access', [['ro', 'Read only'], ['rw', 'Read/write']], 'ro')}
-        ${_select('scope', [['chat', 'This chat'], ['workspace', 'Workspace']], 'chat')}
+        ${_select('scope', [['chat', 'This chat'], ['workspace', 'This user']], 'chat')}
         <button class="sandbox-icon-btn sandbox-icon-btn--primary" type="submit" title="Add mount" aria-label="Add mount">
           ${icons.plus()}
         </button>
@@ -271,51 +273,142 @@ const SandboxView = (() => {
     const domains = Array.isArray(runContext.domains) ? runContext.domains : [];
     const bundles = Array.isArray(runContext.bundles) ? runContext.bundles : [];
     const catalog = _bundleCatalog(status);
+    const defaultAllowlist = _defaultAllowlist(status);
     if (!sessionKey) {
       return _renderEmpty('Open a chat session to edit domains and bundles');
     }
+    const { chatDomains, userDomains } = _partitionNetworkDomains(domains);
+    const enabledBundleCount = catalog.reduce((count, bundle) => count + (_bundleState(bundle, bundles).enabled ? 1 : 0), 0);
     return `
-      <div class="sandbox-list-block">
-        <div class="sandbox-list-block__label">Domains</div>
-        ${domains.length ? `<div class="sandbox-list">${domains.map(d => _renderDomain(d, true)).join('')}</div>` : _renderEmpty('No custom domains')}
+      <div class="sandbox-network-stack">
+        ${_renderNetworkDetails(
+          'sandbox-network-summary--default',
+          `Default Allowlist · ${_defaultAllowlistDomainCount(defaultAllowlist)} domains`,
+          _renderDefaultAllowlist(defaultAllowlist),
+        )}
+        ${_renderNetworkDetails(
+          'sandbox-network-summary--bundles',
+          `Bundles · ${enabledBundleCount} enabled`,
+          _renderBundles(catalog, bundles),
+        )}
+        ${_renderNetworkSection(
+          'sandbox-network-summary--chat',
+          `This chat · ${chatDomains.length} added`,
+          chatDomains.length ? `<div class="sandbox-network-list">${chatDomains.map(d => _renderDomain(d, true)).join('')}</div>` : _renderNetworkEmpty('No domains added for this chat. Default access is still active.'),
+        )}
+        ${_renderNetworkSection(
+          'sandbox-network-summary--user',
+          `This user · ${userDomains.length} custom`,
+          userDomains.length ? `<div class="sandbox-network-list">${userDomains.map(d => _renderDomain(d, true)).join('')}</div>` : _renderNetworkEmpty('No domains added for this user. Default access is still active.'),
+        )}
       </div>
       <form class="sandbox-inline-form" data-sandbox-action="domain-add">
         <label class="sandbox-field sandbox-field--span">
           <span>Domain</span>
           <input class="sandbox-input" name="domain" autocomplete="off" placeholder="pypi.org" />
         </label>
-        ${_select('scope', [['chat', 'This chat'], ['workspace', 'Workspace']], 'chat')}
+        ${_select('scope', [['chat', 'This chat'], ['workspace', 'This user']], 'chat')}
         <button class="sandbox-icon-btn sandbox-icon-btn--primary" type="submit" title="Add domain" aria-label="Add domain">
           ${icons.plus()}
         </button>
-      </form>
-      <div class="sandbox-list-block">
-        <div class="sandbox-list-block__label">Bundles</div>
-        ${catalog.length ? `<div class="sandbox-list">${catalog.map(b => _renderBundleOption(b, bundles)).join('')}</div>` : _renderEmpty('No package bundle catalog')}
-      </div>`;
+      </form>`;
   }
 
-  function _renderDomain(domain, canRemove) {
-    const value = domain.domain || domain.value || domain.pattern || 'Unknown domain';
-    const access = domain.access || domain.scope || 'allow';
-    return `<div class="sandbox-list__row sandbox-list__row--action">
-      <span class="sandbox-list__main">${_esc(value)}</span>
-      <span class="sandbox-chip">${_esc(access)}</span>
-      ${canRemove ? `<button class="sandbox-icon-btn sandbox-icon-btn--danger" type="button" data-sandbox-action="domain-remove" data-domain="${_esc(value)}" title="Remove domain" aria-label="Remove domain">${icons.trash()}</button>` : ''}
-    </div>`;
+  function _renderNetworkDetails(summaryClass, summaryText, body) {
+    return `
+      <details class="sandbox-network-group">
+        <summary class="sandbox-network-summary ${summaryClass}">${_esc(summaryText)}</summary>
+        <div class="sandbox-network-body">${body}</div>
+      </details>`;
+  }
+
+  function _renderNetworkSection(summaryClass, summaryText, body) {
+    return `
+      <section class="sandbox-network-group sandbox-network-group--section">
+        <div class="sandbox-network-summary ${summaryClass}">${_esc(summaryText)}</div>
+        <div class="sandbox-network-body">${body}</div>
+      </section>`;
+  }
+
+  function _renderBundles(catalog, enabledBundles) {
+    if (!catalog.length) return _renderNetworkEmpty('No package bundle catalog');
+    return `<div class="sandbox-network-bundle-grid">${catalog.map(b => _renderBundleOption(b, enabledBundles)).join('')}</div>`;
   }
 
   function _renderBundleOption(bundle, enabledBundles) {
     const id = bundle.bundle_id || bundle.bundleId || bundle.id || '';
-    const enabled = enabledBundles.some(item => (item.bundle_id || item.bundleId || item.id) === id);
-    const domains = Array.isArray(bundle.domains) ? bundle.domains.join(', ') : '';
-    return `<div class="sandbox-list__row sandbox-list__row--action sandbox-list__row--bundle">
-      <span class="sandbox-list__main">${_esc(id || 'Unknown bundle')}</span>
+    const { enabled } = _bundleState(bundle, enabledBundles);
+    return `<button class="sandbox-network-bundle" type="button" data-sandbox-action="bundle-toggle" data-bundle-id="${_esc(id)}" data-enabled="${enabled ? '1' : '0'}" title="${enabled ? 'Disable bundle' : 'Enable bundle'}" aria-label="${enabled ? 'Disable bundle' : 'Enable bundle'}">
+      <span class="sandbox-network-bundle__name">${_esc(id || 'Unknown bundle')}</span>
       <span class="sandbox-chip">${enabled ? 'On' : 'Off'}</span>
-      <button class="sandbox-icon-btn ${enabled ? 'sandbox-icon-btn--danger' : 'sandbox-icon-btn--primary'}" type="button" data-sandbox-action="bundle-toggle" data-bundle-id="${_esc(id)}" data-enabled="${enabled ? '1' : '0'}" title="${enabled ? 'Disable bundle' : 'Enable bundle'}" aria-label="${enabled ? 'Disable bundle' : 'Enable bundle'}">
-        ${enabled ? icons.x() : icons.plus()}
-      </button>
-      ${domains ? `<span class="sandbox-list__sub">${_esc(domains)}</span>` : ''}
+    </button>`;
+  }
+
+  function _bundleState(bundle, enabledBundles) {
+    const matchingBundle = enabledBundles.find(item => (item.bundle_id || item.bundleId || item.id) === (bundle.bundle_id || bundle.bundleId || bundle.id));
+    const source = matchingBundle?.source || '';
+    const enabledByDefault = Boolean(bundle.enabled_by_default || bundle.enabledByDefault);
+    return {
+      enabled: source === 'disabled' ? false : (enabledByDefault || Boolean(matchingBundle)),
+    };
+  }
+
+  function _renderDefaultAllowlist(defaultAllowlist) {
+    if (!defaultAllowlist.length) return _renderNetworkEmpty('No default allowlist entries');
+    return `<div class="sandbox-network-list">
+      ${defaultAllowlist.map(group => _renderDefaultAllowlistGroup(group)).join('')}
+    </div>`;
+  }
+
+  function _renderDefaultAllowlistGroup(group) {
+    const label = group.group || group.name || 'default';
+    const domains = Array.isArray(group.domains) ? group.domains.join(', ') : '';
+    return `<div class="sandbox-network-row sandbox-network-row--bundle">
+      <div>
+        <div class="sandbox-network-row__main">${_esc(label)}</div>
+        ${domains ? `<div class="sandbox-network-row__sub">${_esc(domains)}</div>` : ''}
+      </div>
+      <span class="sandbox-chip">Read only</span>
+    </div>`;
+  }
+
+  function _defaultAllowlistDomainCount(defaultAllowlist) {
+    return defaultAllowlist.reduce((count, group) => count + (Array.isArray(group.domains) ? group.domains.length : 0), 0);
+  }
+
+  function _partitionNetworkDomains(domains) {
+    return domains.reduce((acc, domain) => {
+      const key = _networkScopeKey(domain.scope);
+      acc[key === 'user' ? 'userDomains' : 'chatDomains'].push(domain);
+      return acc;
+    }, { chatDomains: [], userDomains: [] });
+  }
+
+  function _networkScopeKey(scope) {
+    const value = String(scope || 'chat').trim().toLowerCase();
+    if (value === 'workspace' || value === 'user') return 'user';
+    return 'chat';
+  }
+
+  function _networkScopeLabel(scope) {
+    return _networkScopeKey(scope) === 'user' ? 'This user' : 'This chat';
+  }
+
+  function _networkScopePayload(scope) {
+    return _networkScopeKey(scope) === 'user' ? 'workspace' : 'chat';
+  }
+
+  function _renderNetworkEmpty(text) {
+    return `<div class="sandbox-network-empty">${_esc(text)}</div>`;
+  }
+
+  function _renderDomain(domain, canRemove) {
+    const value = domain.domain || domain.value || domain.pattern || 'Unknown domain';
+    const scope = _networkScopeLabel(domain.scope);
+    return `<div class="sandbox-network-row sandbox-network-row--action">
+      <div class="sandbox-network-row__main">${_esc(value)}</div>
+      <span class="sandbox-chip">${_esc(scope)}</span>
+      ${canRemove ? `<button class="sandbox-icon-btn sandbox-icon-btn--danger" type="button" data-sandbox-action="domain-remove" data-domain="${_esc(value)}" title="Remove domain" aria-label="Remove domain">${icons.trash()}</button>` : ''}
     </div>`;
   }
 
@@ -337,7 +430,7 @@ const SandboxView = (() => {
     } else if (action === 'domain-add') {
       await _mutate('sandbox.domain.add', {
         domain: values.domain,
-        scope: values.scope || 'chat',
+        scope: _networkScopePayload(values.scope || 'chat'),
       });
       form.reset();
     }
@@ -350,9 +443,13 @@ const SandboxView = (() => {
     if (action === 'run-mode-set') {
       await _mutate('sandbox.run_context.set', { runMode: btn.dataset.runMode || 'standard' });
     } else if (action === 'workspace-browse') {
-      await _browsePath('workspace');
+      await _loadPathBrowser('workspace');
     } else if (action === 'mount-browse') {
-      await _browsePath('mount');
+      await _loadPathBrowser('mount');
+    } else if (action === 'path-browser-open') {
+      await _loadPathBrowser(btn.dataset.kind || 'workspace', btn.dataset.path || '', { browseChildren: true });
+    } else if (action === 'path-browser-select') {
+      await _selectPathBrowserEntry(btn);
     } else if (action === 'mount-remove') {
       await _mutate('sandbox.mount.remove', { path: btn.dataset.path || '' });
     } else if (action === 'domain-remove') {
@@ -363,7 +460,7 @@ const SandboxView = (() => {
     }
   }
 
-  async function _browsePath(kind) {
+  async function _loadPathBrowser(kind, requestedPath, options = {}) {
     const root = _el;
     const rpc = _rpc;
     const sessionKey = _lastData?.sessionKey || _activeSessionKey();
@@ -371,22 +468,85 @@ const SandboxView = (() => {
       _setNotice(root, 'Open a chat session before choosing directories.', 'warn');
       return;
     }
-    const input = root.querySelector(kind === 'workspace' ? 'input[name="workspace"]' : 'input[name="path"]');
-    const mountAccess = root.querySelector('form[data-sandbox-action="mount-add"] select[name="access"]')?.value || 'ro';
+    const input = _pathInput(root, kind);
+    const slot = _pathBrowserSlot(root, kind);
+    const path = requestedPath || input?.value || _lastData?.runContext?.workspace || '~';
+    if (slot) slot.innerHTML = _renderPathBrowser(kind, { path, parentPath: path, entries: [], loading: true });
     try {
-      _setNotice(root, 'Opening directory picker...', 'info');
-      const result = await rpc.call('sandbox.path.pick', {
+      _setNotice(root, 'Loading paths...', 'info');
+      const result = await rpc.call('sandbox.path.list', {
         sessionKey,
         kind,
-        access: kind === 'mount' ? mountAccess : 'ro',
-        initialPath: input?.value || _lastData?.runContext?.workspace || '',
+        path,
+        browseChildren: options.browseChildren === true,
       });
-      if (input && result?.path) input.value = result.path;
-      _setNotice(root, 'Directory selected. Review and save.', 'ok');
+      if (slot) slot.innerHTML = _renderPathBrowser(kind, result);
+      _setNotice(root, 'Choose a path from the list or keep typing.', 'ok');
     } catch (err) {
       _setNotice(root, err?.message || String(err), 'warn');
+      if (slot) slot.innerHTML = '';
       input?.focus?.();
     }
+  }
+
+  function _renderPathBrowser(kind, result) {
+    const entries = Array.isArray(result?.entries) ? result.entries : [];
+    const parentPath = result?.parentPath || result?.path || '';
+    const loading = Boolean(result?.loading);
+    return `
+      <div class="sandbox-path-browser" role="listbox" data-kind="${_esc(kind)}">
+        <div class="sandbox-path-browser__head">
+          <span>${_esc(parentPath || 'Paths')}</span>
+          <button class="sandbox-icon-btn" type="button" data-sandbox-action="path-browser-open" data-kind="${_esc(kind)}" data-path="${_esc(parentPath)}" title="Reload path list" aria-label="Reload path list">
+            ${icons.refresh()}
+          </button>
+        </div>
+        ${loading ? _renderEmpty('Loading paths') : ''}
+        ${!loading && entries.length ? `<div class="sandbox-path-browser__list">
+          ${entries.map(entry => _renderPathBrowserEntry(kind, entry)).join('')}
+        </div>` : ''}
+        ${!loading && !entries.length ? _renderEmpty('No entries found') : ''}
+      </div>`;
+  }
+
+  function _renderPathBrowserEntry(kind, entry) {
+    const name = entry.name || entry.path || 'Unknown path';
+    const path = entry.path || '';
+    const entryKind = entry.kind === 'directory' ? 'directory' : 'file';
+    const hidden = entry.hidden ? ' sandbox-path-browser__row--hidden' : '';
+    const selectable = entry.selectable !== false;
+    return `
+      <button
+        class="sandbox-path-browser__row${hidden}"
+        type="button"
+        data-sandbox-action="path-browser-select"
+        data-kind="${_esc(kind)}"
+        data-path="${_esc(path)}"
+        data-entry-kind="${_esc(entryKind)}"
+        ${selectable ? '' : 'disabled'}
+      >
+        <span class="sandbox-path-browser__kind">${entryKind === 'directory' ? 'Dir' : 'File'}</span>
+        <span class="sandbox-path-browser__name">${_esc(name)}</span>
+      </button>`;
+  }
+
+  async function _selectPathBrowserEntry(btn) {
+    const root = _el;
+    if (!root) return;
+    const kind = btn.dataset.kind || 'workspace';
+    const path = btn.dataset.path || '';
+    const input = _pathInput(root, kind);
+    if (input) {
+      input.value = path;
+      input.focus();
+    }
+    if (btn.dataset.entryKind === 'directory') {
+      await _loadPathBrowser(kind, path, { browseChildren: true });
+      return;
+    }
+    const slot = _pathBrowserSlot(root, kind);
+    if (slot) slot.innerHTML = '';
+    _setNotice(root, 'Path selected. Review and save.', 'ok');
   }
 
   async function _mutate(method, payload) {
@@ -449,6 +609,14 @@ const SandboxView = (() => {
     </label>`;
   }
 
+  function _pathInput(root, kind) {
+    return root.querySelector(kind === 'workspace' ? 'input[name="workspace"]' : 'input[name="path"]');
+  }
+
+  function _pathBrowserSlot(root, kind) {
+    return root.querySelector(`.sandbox-path-browser-slot[data-path-browser-kind="${kind}"]`);
+  }
+
   function _renderEmpty(text) {
     return `<div class="sandbox-empty">${_esc(text)}</div>`;
   }
@@ -456,6 +624,11 @@ const SandboxView = (() => {
   function _bundleCatalog(status) {
     const catalog = status.bundle_catalog || status.bundleCatalog || [];
     return Array.isArray(catalog) ? catalog : [];
+  }
+
+  function _defaultAllowlist(status) {
+    const allowlist = status.default_allowlist || status.defaultAllowlist || [];
+    return Array.isArray(allowlist) ? allowlist : [];
   }
 
   function _activeSessionKey() {

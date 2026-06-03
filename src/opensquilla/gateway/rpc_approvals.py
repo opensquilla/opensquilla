@@ -10,10 +10,16 @@ from opensquilla.application.approval_rpc import (
     approval_request_rpc_payload,
     approval_resolve_rpc_payload,
     approval_settings_rpc_payload,
+    approval_status_rpc_payload,
     approval_snapshot_rpc_payload,
     approval_wait_decision_rpc_payload,
 )
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.sandbox.escalation import (
+    apply_sandbox_approval_choice,
+    is_sandbox_approval_kind,
+    validate_sandbox_approval_choice,
+)
 
 _d = get_dispatcher()
 
@@ -130,15 +136,37 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         raise ValueError("params.approved is required")
     allow_always = bool(params.get("allowAlways", False))
     remember_intent = bool(params.get("rememberIntent", False))
+    choice = params.get("choice")
     queue = get_approval_queue()
-    return approval_resolve_rpc_payload(
-        queue,
+    approved = bool(params["approved"])
+    pending = queue.get(params["id"])
+    normalized_choice = str(choice).strip() if isinstance(choice, str) and choice.strip() else None
+    sandbox_approval = is_sandbox_approval_kind(pending.params.get("approvalKind"))
+
+    validate_sandbox_approval_choice(
+        pending.params,
+        choice=normalized_choice,
+        approved=approved,
+    )
+
+    queue.resolve(
         params["id"],
-        bool(params["approved"]),
+        approved,
         allow_always=allow_always,
         remember_intent=remember_intent,
         elevated_mode=None,
+        allow_idempotent=not sandbox_approval,
     )
+
+    if approved:
+        await apply_sandbox_approval_choice(
+            pending.params,
+            choice=normalized_choice,
+            approved=True,
+            session_manager=ctx.session_manager,
+            config=ctx.config,
+        )
+    return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
 
 
 @_d.method("plugin.approval.request", scope="operator.approvals")

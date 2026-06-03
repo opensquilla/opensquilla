@@ -222,6 +222,7 @@ class ApprovalQueue:
         allow_always: bool = False,
         remember_intent: bool = False,
         elevated_mode: str | None = None,
+        allow_idempotent: bool = True,
     ) -> None:
         self._conn.execute("BEGIN IMMEDIATE")
         row = self._get_row(approval_id)
@@ -233,7 +234,7 @@ class ApprovalQueue:
             self._conn.rollback()
             self._pending[approval_id] = entry
             entry._event.set()
-            if entry.approved == approved:
+            if allow_idempotent and entry.approved == approved:
                 return
             raise ValueError(f"Approval already resolved: {approval_id}")
 
@@ -248,7 +249,7 @@ class ApprovalQueue:
             entry = self.get(approval_id)
             if entry.resolved:
                 entry._event.set()
-                if entry.approved == approved:
+                if allow_idempotent and entry.approved == approved:
                     return
                 raise ValueError(f"Approval already resolved: {approval_id}")
             raise ValueError(f"Approval could not be resolved: {approval_id}")

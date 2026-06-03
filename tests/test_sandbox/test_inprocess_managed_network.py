@@ -9,15 +9,23 @@ from types import SimpleNamespace
 import pytest
 
 from opensquilla.env import trust_env
+from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.gateway import rpc_tools
 from opensquilla.gateway.auth import Principal
-from opensquilla.gateway.rpc import RpcContext
+from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.sandbox import integration as integration_mod
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime, sandboxed
 from opensquilla.sandbox.network_guard import NetworkDecision
-from opensquilla.sandbox.run_context import DomainGrant, RunContext
+from opensquilla.sandbox.run_context import (
+    DomainGrant,
+    RunContext,
+    TemporaryGrant,
+    get_run_context,
+    run_context_from_origin_payload,
+)
 from opensquilla.sandbox.run_mode import RunMode
+from opensquilla.sandbox.types import NetworkMode, ResourceLimits, SandboxPolicy, SecurityLevel
 from opensquilla.tools.builtin import web as web_mod
 from opensquilla.tools.builtin import web_fetch as web_fetch_mod
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
@@ -25,6 +33,7 @@ from opensquilla.tools.types import CallerKind, ToolContext, current_tool_contex
 
 @pytest.fixture(autouse=True)
 def sandbox_runtime(tmp_path: Path) -> Iterator[None]:
+    reset_approval_queue()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     configure_runtime(
@@ -39,6 +48,7 @@ def sandbox_runtime(tmp_path: Path) -> Iterator[None]:
     try:
         yield
     finally:
+        reset_approval_queue()
         reset_runtime()
 
 
@@ -189,6 +199,540 @@ async def test_http_request_uses_explicit_context_proxy_kwargs(
 
 
 @pytest.mark.asyncio
+async def test_unknown_explicit_target_queues_sandbox_network_approval(
+    managed_context: ToolContext,
+) -> None:
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        return "ok"
+
+    payload = json.loads(await dummy_http_request("http://unknown.test/path"))
+
+    assert payload["status"] == "approval_required"
+    assert payload["approval_id"]
+    assert payload["approvalKind"] == "sandbox_network"
+    assert payload["host"] == "unknown.test"
+    assert payload["fingerprint"]
+    assert [choice["id"] for choice in payload["choices"]] == [
+        "allow_once",
+        "allow_chat",
+        "allow_user",
+        "deny",
+    ]
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["id"] == payload["approval_id"]
+    params = pending[0]["params"]
+    assert params["approvalKind"] == "sandbox_network"
+    assert params["host"] == "unknown.test"
+    assert [choice["id"] for choice in params["choices"]] == [
+        "allow_once",
+        "allow_chat",
+        "allow_user",
+        "deny",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_temporary_network_grant_allows_retry_for_explicit_target(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+) -> None:
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("unknown.test")
+            assert isinstance(decision, NetworkDecision)
+            assert decision.status == "allow"
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+
+    request = integration_mod.build_request(
+        action_kind="network.http",
+        argv=("http_request", "GET", "http://unknown.test/path"),
+        cwd=Path(managed_context.workspace_dir or "."),
+        policy=SandboxPolicy(
+            level=SecurityLevel.STANDARD,
+            network=NetworkMode.PROXY_ALLOWLIST,
+            mounts=(),
+            workspace_rw=True,
+            tmp_writable=True,
+            limits=ResourceLimits(),
+            env_allowlist=("PATH",),
+            require_approval=False,
+        ),
+    )
+    managed_context.sandbox_run_context = RunContext(
+        run_mode=RunMode.STANDARD,
+        temporary_grants=(
+            TemporaryGrant(
+                kind="domain",
+                value="unknown.test",
+                fingerprint=integration_mod.action_fingerprint(request),
+            ),
+        ),
+    )
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        return "ok"
+    result = await dummy_http_request("http://unknown.test/path")
+
+    assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_allow_once_resolve_allows_one_retry_then_expires_for_explicit_target(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+) -> None:
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("unknown.test")
+            assert isinstance(decision, NetworkDecision)
+            assert decision.status == "allow"
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+
+    manager = SimpleNamespace()
+    manager.node = SimpleNamespace(
+        session_key="s1",
+        agent_id="main",
+        origin={
+            "sandbox_run_context": managed_context.sandbox_run_context.to_origin_payload(),
+        },
+    )
+
+    async def _get_session(session_key: str):
+        return manager.node if session_key == manager.node.session_key else None
+
+    async def _update(session_key: str, **fields):
+        for key, value in fields.items():
+            setattr(manager.node, key, value)
+        return manager.node
+
+    manager.get_session = _get_session
+    manager.update = _update
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        return "ok"
+
+    first = json.loads(await dummy_http_request("http://unknown.test/path"))
+    approval_id = str(first["approval_id"])
+
+    result = await get_dispatcher().dispatch(
+        "r1",
+        "exec.approval.resolve",
+        {"id": approval_id, "approved": True, "choice": "allow_once"},
+        RpcContext(conn_id="test", session_manager=manager, config=config),
+    )
+    assert result.error is None, result.error
+    saved_after_resolve = await get_run_context(
+        manager,
+        "s1",
+        config=config,
+        workspace=managed_context.workspace_dir,
+    )
+    assert saved_after_resolve.temporary_grants == ()
+
+    allowed = await dummy_http_request("http://unknown.test/path")
+    assert allowed == "ok"
+
+    saved = await get_run_context(manager, "s1", config=config, workspace=managed_context.workspace_dir)
+    assert saved.temporary_grants == ()
+
+    second = json.loads(await dummy_http_request("http://unknown.test/path"))
+    assert second["status"] == "approval_required"
+    assert second["approvalKind"] == "sandbox_network"
+    assert second["host"] == "unknown.test"
+
+    fresh_context = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.CLI,
+        workspace_dir=str(managed_context.workspace_dir),
+        session_key="s1",
+        run_mode="standard",
+        sandbox_run_context=run_context_from_origin_payload(
+            manager.node.origin["sandbox_run_context"],
+            source="saved",
+        ),
+    )
+    token = current_tool_context.set(fresh_context)
+    try:
+        fresh_attempt = json.loads(await dummy_http_request("http://unknown.test/path"))
+    finally:
+        current_tool_context.reset(token)
+
+    assert fresh_attempt["status"] == "approval_required"
+    assert fresh_attempt["approvalKind"] == "sandbox_network"
+    assert fresh_attempt["host"] == "unknown.test"
+
+
+@pytest.mark.asyncio
+async def test_persisted_temporary_grant_from_saved_origin_does_not_allow_after_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            pytest.fail("proxy should not start when request still needs approval")
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        return "ok"
+
+    persisted = RunContext(
+        run_mode=RunMode.STANDARD,
+        temporary_grants=(
+            TemporaryGrant(
+                kind="domain",
+                value="unknown.test",
+                fingerprint="legacy-fp",
+            ),
+        ),
+        source="saved",
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=persisted,
+        )
+    )
+    try:
+        payload = json.loads(await dummy_http_request("http://unknown.test/path"))
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload["status"] == "approval_required"
+    assert payload["approvalKind"] == "sandbox_network"
+    assert payload["host"] == "unknown.test"
+
+
+@pytest.mark.asyncio
+async def test_trusted_explicit_target_auto_adds_chat_domain_grant_in_production_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import sessions as sessions_mod
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("api.github.com")
+            assert isinstance(decision, NetworkDecision)
+            assert decision.status == "allow"
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    manager = SimpleNamespace()
+    manager.node = SimpleNamespace(
+        session_key="s1",
+        agent_id="main",
+        origin={
+            "sandbox_run_context": RunContext(run_mode=RunMode.TRUSTED).to_origin_payload(),
+        },
+    )
+
+    async def _get_session(session_key: str):
+        return manager.node if session_key == manager.node.session_key else None
+
+    async def _update(session_key: str, **fields):
+        for key, value in fields.items():
+            setattr(manager.node, key, value)
+        return manager.node
+
+    manager.get_session = _get_session
+    manager.update = _update
+    config = SimpleNamespace(
+        workspace_dir=str(workspace),
+        agents=[],
+        sandbox=SimpleNamespace(
+            run_mode="trusted",
+            sandbox=True,
+            security_grading=True,
+            backend="noop",
+            network_default="proxy_allowlist",
+        ),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+    monkeypatch.setattr(sessions_mod, "_session_manager", manager)
+    monkeypatch.setattr(sessions_mod, "_gateway_config", config)
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        return "ok"
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(run_mode=RunMode.TRUSTED, source="route_metadata"),
+        )
+    )
+    try:
+        result = await dummy_http_request("https://api.github.com/repos/openai")
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "ok"
+    saved = await get_run_context(manager, "s1", config=config, workspace=str(workspace))
+    assert DomainGrant(
+        domain="api.github.com",
+        scope="chat",
+        source="auto_trusted",
+    ) in saved.domains
+
+
+@pytest.mark.asyncio
+async def test_standard_explicit_target_does_not_auto_add_recognized_default_host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import sessions as sessions_mod
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("api.github.com")
+            assert isinstance(decision, NetworkDecision)
+            assert decision.status == "allow"
+            assert decision.reason == "default_allowlist"
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    manager = SimpleNamespace()
+    manager.node = SimpleNamespace(
+        session_key="s1",
+        agent_id="main",
+        origin={
+            "sandbox_run_context": RunContext(run_mode=RunMode.STANDARD).to_origin_payload(),
+        },
+    )
+
+    async def _get_session(session_key: str):
+        return manager.node if session_key == manager.node.session_key else None
+
+    async def _update(session_key: str, **fields):
+        for key, value in fields.items():
+            setattr(manager.node, key, value)
+        return manager.node
+
+    manager.get_session = _get_session
+    manager.update = _update
+    config = SimpleNamespace(
+        workspace_dir=str(workspace),
+        agents=[],
+        sandbox=SimpleNamespace(
+            run_mode="standard",
+            sandbox=True,
+            security_grading=True,
+            backend="noop",
+            network_default="proxy_allowlist",
+        ),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+    monkeypatch.setattr(sessions_mod, "_session_manager", manager)
+    monkeypatch.setattr(sessions_mod, "_gateway_config", config)
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        return "ok"
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(run_mode=RunMode.STANDARD, source="route_metadata"),
+        )
+    )
+    try:
+        result = await dummy_http_request("https://api.github.com/repos/openai")
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "ok"
+    saved = await get_run_context(manager, "s1", config=config, workspace=str(workspace))
+    assert saved.domains == ()
+
+
+@pytest.mark.asyncio
+async def test_run_with_managed_network_proxy_honors_temporary_domain_grant(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("temp-allowed.test")
+            assert isinstance(decision, NetworkDecision)
+            seen["decision"] = decision
+
+        async def stop(self) -> None:
+            return None
+
+    class FakeBackend:
+        name = "fake"
+
+        async def run(self, request):
+            seen["policy"] = request.policy
+            return SimpleNamespace(
+                returncode=0,
+                stdout="ok",
+                stderr="",
+                wall_time_s=0.1,
+                backend_used="fake",
+                backend_notes=(),
+            )
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+
+    request = integration_mod.build_request(
+        action_kind="network.http",
+        argv=("http_request", "GET", "http://temp-allowed.test/path"),
+        cwd=workspace,
+        policy=policy,
+    )
+    runtime = SimpleNamespace(
+        backend=FakeBackend(),
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.STANDARD,
+                temporary_grants=(
+                    TemporaryGrant(
+                        kind="domain",
+                        value="temp-allowed.test",
+                        fingerprint=integration_mod.action_fingerprint(request),
+                    ),
+                ),
+            ),
+        )
+    )
+    try:
+        result = await integration_mod._run_with_managed_network_proxy(request, runtime)
+    finally:
+        current_tool_context.reset(token)
+
+    assert result.stdout == "ok"
+    decision = seen["decision"]
+    assert isinstance(decision, NetworkDecision)
+    assert decision.status == "allow"
+    assert decision.reason == "domain_grant"
+
+
+@pytest.mark.asyncio
 async def test_web_fetch_cache_hit_requires_current_run_context_grant(
     monkeypatch: pytest.MonkeyPatch,
     managed_context: ToolContext,
@@ -217,9 +761,10 @@ async def test_web_fetch_cache_hit_requires_current_run_context_grant(
     result = await web_fetch_mod.web_fetch(url)
 
     payload = json.loads(result)
-    assert payload["status"] == "denied"
-    assert payload["reason"] == "policy_denied"
-    assert "blocked.test" in payload["message"]
+    assert payload["status"] == "approval_required"
+    assert payload["approval_id"]
+    assert payload["approvalKind"] == "sandbox_network"
+    assert payload["host"] == "blocked.test"
     assert "cached secret" not in result
 
 

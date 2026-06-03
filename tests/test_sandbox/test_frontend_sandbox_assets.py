@@ -76,7 +76,7 @@ def test_sandbox_view_exposes_realtime_run_context_editing() -> None:
         "sandbox.bundle.enable",
         "sandbox.bundle.disable",
         "sandbox.run_context.set",
-        "sandbox.path.pick",
+        "sandbox.path.list",
     ):
         assert method in sandbox_js
 
@@ -85,12 +85,28 @@ def test_sandbox_view_exposes_realtime_run_context_editing() -> None:
     assert "data-sandbox-action=\"workspace-browse\"" in sandbox_js
     assert "data-sandbox-action=\"mount-add\"" in sandbox_js
     assert "data-sandbox-action=\"mount-browse\"" in sandbox_js
+    assert "data-sandbox-action=\"path-browser-open\"" in sandbox_js
+    assert "data-sandbox-action=\"path-browser-select\"" in sandbox_js
     assert "data-sandbox-action=\"domain-add\"" in sandbox_js
     assert "data-sandbox-action=\"bundle-toggle\"" in sandbox_js
     assert ".sandbox-inline-form" in sandbox_css
     assert ".sandbox-icon-btn" in sandbox_css
     assert ".sandbox-run-mode-grid" in sandbox_css
     assert ".sandbox-path-field" in sandbox_css
+    assert ".sandbox-path-browser" in sandbox_css
+
+
+def test_sandbox_view_uses_inline_path_browser_not_native_picker_rpc() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    assert "sandbox.path.list" in sandbox_js
+    assert "sandbox.path.pick" not in sandbox_js
+    assert "Opening directory picker" not in sandbox_js
+    assert "function _renderPathBrowser" in sandbox_js
+    assert "function _loadPathBrowser" in sandbox_js
+    assert "browseChildren" in sandbox_js
+    assert "_loadPathBrowser(kind, path, { browseChildren: true })" in sandbox_js
+    assert "entryKind === 'directory'" in sandbox_js
 
 
 def test_sandbox_view_hides_editing_panels_for_full_host_access() -> None:
@@ -100,6 +116,34 @@ def test_sandbox_view_hides_editing_panels_for_full_host_access() -> None:
     assert "function _renderFullHostAccessEmpty" in sandbox_js
     assert "_renderFullHostAccessEmpty(runContext)" in sandbox_js
     assert "No sandbox mounts, domains, or bundles are applied in this mode." in sandbox_js
+    full_host_start = sandbox_js.index("function _renderFullHostAccessEmpty")
+    full_host_body = sandbox_js[
+        full_host_start : sandbox_js.index("  function _renderWorkspace", full_host_start)
+    ]
+    assert "Managed Network" not in full_host_body
+    assert "Default Allowlist" not in full_host_body
+    assert "Bundles" not in full_host_body
+
+
+def test_sandbox_managed_network_assets_use_collapsed_summaries() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+    sandbox_css = _read(SANDBOX_CSS)
+
+    assert "Default Allowlist" in sandbox_js
+    assert "Bundles" in sandbox_js
+    assert "This chat" in sandbox_js
+    assert "This user" in sandbox_js
+    assert "[['chat', 'This chat'], ['workspace', 'This user']]" in sandbox_js
+    assert "No custom domains" not in sandbox_js
+    assert "No domains added for this chat. Default access is still active." in sandbox_js
+    assert "No domains added for this user. Default access is still active." in sandbox_js
+    assert "sandbox-network-summary" in sandbox_js
+    assert "sandbox-network-summary--default" in sandbox_js
+    assert "sandbox-network-summary--bundles" in sandbox_js
+    assert "sandbox-network-summary--chat" in sandbox_js
+    assert "sandbox-network-summary--user" in sandbox_js
+    assert "<details" in sandbox_js
+    assert ".sandbox-network-summary" in sandbox_css
 
 
 def test_standalone_approvals_view_assets_are_removed() -> None:
@@ -122,6 +166,17 @@ def test_approval_monitor_inline_button_uses_modal_polling_path() -> None:
     assert 'data-approval-action="deny"' in monitor
 
 
+def test_approval_monitor_renders_custom_choice_buttons_and_posts_selected_choice() -> None:
+    monitor = _read(APPROVAL_MONITOR_JS)
+
+    assert "item.params.choices" in monitor
+    assert "data-choice-id" in monitor
+    assert "choice:" in monitor
+    assert "decision:" in monitor
+    assert "Approve This Time" in monitor
+    assert "Always Allow This Type" in monitor
+
+
 def test_sandbox_view_tracks_pending_approval_activity() -> None:
     sandbox = _read(SANDBOX_JS)
 
@@ -134,6 +189,24 @@ def test_sandbox_view_tracks_pending_approval_activity() -> None:
     assert "root.querySelector('#sandbox-approval-activity')" in sandbox
     assert "Approvals pending" in sandbox
     assert "#sb-activity" not in sandbox
+
+
+def test_sandbox_bundle_controls_treat_defaults_as_enabled_until_disabled() -> None:
+    sandbox = _read(SANDBOX_JS)
+
+    assert "enabledByDefault" in sandbox
+    assert "source === 'disabled'" in sandbox
+    assert "enabled_by_default" in sandbox
+
+
+def test_sandbox_view_renders_read_only_default_allowlist() -> None:
+    sandbox = _read(SANDBOX_JS)
+
+    assert "Default Allowlist" in sandbox
+    assert "status.default_allowlist" in sandbox
+    assert "status.defaultAllowlist" in sandbox
+    assert "function _renderDefaultAllowlist" in sandbox
+    assert "default-allowlist-remove" not in sandbox
 
 
 def test_sandbox_approval_activity_preserves_rules_panel_base_state() -> None:

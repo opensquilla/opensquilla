@@ -1,17 +1,43 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
+from opensquilla.sandbox.domain_validation import domain_matches
 from opensquilla.sandbox.network_guard import NetworkDecision, decide_network_access
+from opensquilla.sandbox.package_bundles import expand_package_bundle
 from opensquilla.sandbox.run_context import DomainGrant, PackageBundleGrant, RunContext
 from opensquilla.sandbox.run_mode import RunMode
 
 
+class _SessionManager:
+    def __init__(self) -> None:
+        self.node = SimpleNamespace(
+            session_key="agent:main:webchat:abc",
+            agent_id="main",
+            origin=None,
+        )
+        self.sessions = {self.node.session_key: self.node}
+
+    async def get_session(self, session_key: str):
+        return self.sessions.get(session_key)
+
+    async def update(self, session_key: str, **fields):
+        node = self.sessions[session_key]
+        for key, value in fields.items():
+            setattr(node, key, value)
+        return node
+
+
 def _context(
     *,
+    run_mode: RunMode = RunMode.STANDARD,
     domains: tuple[DomainGrant, ...] = (),
     bundles: tuple[PackageBundleGrant, ...] = (),
 ) -> RunContext:
     return RunContext(
-        run_mode=RunMode.STANDARD,
+        run_mode=run_mode,
         domains=domains,
         bundles=bundles,
     )
@@ -54,6 +80,268 @@ def test_decide_network_access_asks_for_unknown_valid_domain() -> None:
     )
 
 
+def test_unknown_domain_builds_structured_network_escalation_choices() -> None:
+    from opensquilla.sandbox.escalation import build_network_approval_params
+
+    decision = decide_network_access("example.com", _context())
+
+    proposal = build_network_approval_params(
+        decision,
+        session_key="agent:main:webchat:abc",
+        workspace="/tmp/ws",
+        fingerprint="fp123",
+    )
+
+    assert proposal is not None
+    assert proposal["approvalKind"] == "sandbox_network"
+    assert proposal["host"] == "example.com"
+    assert proposal["sessionKey"] == "agent:main:webchat:abc"
+    assert proposal["workspace"] == "/tmp/ws"
+    assert [choice["id"] for choice in proposal["choices"]] == [
+        "allow_once",
+        "allow_chat",
+        "allow_user",
+        "deny",
+    ]
+    assert [choice["label"] for choice in proposal["choices"]] == [
+        "Allow once",
+        "Allow for this chat",
+        "Allow for this user",
+        "Deny",
+    ]
+
+
+def test_blocked_network_decision_has_no_escalation_choices() -> None:
+    from opensquilla.sandbox.escalation import build_network_approval_params
+
+    decision = decide_network_access("127.0.0.1", _context())
+
+    assert decision.status == "block"
+    assert build_network_approval_params(
+        decision,
+        session_key="agent:main:webchat:abc",
+        workspace="/tmp/ws",
+        fingerprint="fp123",
+    ) is None
+
+
+def test_standard_sandbox_allows_builtin_github_default_hosts() -> None:
+    expected_hosts = {
+        "github.com",
+        "api.github.com",
+        "raw.githubusercontent.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+    }
+
+    for host in expected_hosts:
+        decision = decide_network_access(host, _context())
+
+        assert decision.status == "allow", (host, decision)
+        assert decision.reason == "default_allowlist"
+        assert decision.source == "default:github"
+
+
+def test_standard_sandbox_allows_builtin_search_provider_hosts_without_custom_domains() -> None:
+    for host in ("api.search.brave.com", "html.duckduckgo.com"):
+        decision = decide_network_access(host, _context())
+
+        assert decision == NetworkDecision(
+            status="allow",
+            normalized_host=host,
+            reason="default_allowlist",
+            source="default:search",
+        )
+
+
+def test_github_exact_domain_grant_does_not_cover_github_workflow_hosts() -> None:
+    for host in (
+        "api.github.com",
+        "raw.githubusercontent.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+    ):
+        assert not domain_matches("github.com", host), host
+
+
+def test_full_host_access_bypasses_sandbox_domain_controls() -> None:
+    decision = decide_network_access(
+        "unknown-public.example",
+        _context(run_mode=RunMode.FULL),
+    )
+
+    assert decision == NetworkDecision(
+        status="allow",
+        normalized_host="unknown-public.example",
+        reason="full_host_access",
+        source="run_mode:full",
+    )
+
+
+def test_trusted_sandbox_auto_trusts_low_risk_recognized_hosts_for_this_chat() -> None:
+    context = _context(run_mode=RunMode.TRUSTED)
+
+    for host in ("api.github.com", "registry.npmjs.org"):
+        decision = decide_network_access(host, context)
+
+        assert decision == NetworkDecision(
+            status="allow",
+            normalized_host=host,
+            reason="auto_trusted",
+            source="auto_trusted:chat",
+        )
+
+
+@pytest.mark.asyncio
+async def test_trusted_sandbox_auto_trust_persists_chat_scoped_grant() -> None:
+    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.run_context_service import auto_add_trusted_domain_grant
+
+    manager = _SessionManager()
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(run_mode="trusted"),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+
+    context = await auto_add_trusted_domain_grant(
+        manager,
+        manager.node.session_key,
+        domain="api.github.com",
+        config=config,
+        workspace="/tmp/ws",
+    )
+    saved = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=config,
+        workspace="/tmp/ws",
+    )
+
+    expected_grant = DomainGrant(
+        domain="api.github.com",
+        scope="chat",
+        source="auto_trusted",
+    )
+    assert expected_grant in context.domains
+    assert expected_grant in saved.domains
+    assert manager.node.origin is not None
+
+
+@pytest.mark.asyncio
+async def test_trusted_sandbox_auto_trust_idempotent_second_call_does_not_mutate() -> None:
+    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.run_context_service import auto_add_trusted_domain_grant
+
+    manager = _SessionManager()
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(run_mode="trusted"),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+    manager.node.origin = {
+        "sandbox_run_context": {
+            "run_mode": "trusted",
+            "workspace": "/tmp/ws",
+            "domains": [{"domain": "registry.npmjs.org", "source": "manual"}],
+        }
+    }
+
+    first = await auto_add_trusted_domain_grant(
+        manager,
+        manager.node.session_key,
+        domain="HTTPS://Api.GitHub.com",
+        config=config,
+        workspace="/tmp/ws",
+    )
+    saved_after_first = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=config,
+        workspace="/tmp/ws",
+    )
+    origin_after_first = manager.node.origin
+
+    second = await auto_add_trusted_domain_grant(
+        manager,
+        manager.node.session_key,
+        domain="api.github.com",
+        config=config,
+        workspace="/tmp/ws",
+    )
+    saved_after_second = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=config,
+        workspace="/tmp/ws",
+    )
+
+    assert first.domains == saved_after_first.domains == saved_after_second.domains == second.domains
+    assert [grant.domain for grant in saved_after_second.domains] == [
+        "registry.npmjs.org",
+        "api.github.com",
+    ]
+    assert manager.node.origin is origin_after_first
+
+
+@pytest.mark.asyncio
+async def test_trusted_sandbox_auto_trust_does_not_persist_unsafe_or_unknown_hosts() -> None:
+    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.run_context_service import auto_add_trusted_domain_grant
+
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(run_mode="trusted"),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+
+    for host in (
+        "10.0.0.1",
+        "127.0.0.1",
+        "169.254.169.254",
+        "*.com",
+        "totally-unrecognized.example",
+    ):
+        manager = _SessionManager()
+
+        try:
+            result = await auto_add_trusted_domain_grant(
+                manager,
+                manager.node.session_key,
+                domain=host,
+                config=config,
+                workspace="/tmp/ws",
+            )
+        except ValueError:
+            result = None
+
+        saved = await get_run_context(
+            manager,
+            manager.node.session_key,
+            config=config,
+            workspace="/tmp/ws",
+        )
+
+        assert manager.node.origin is None, host
+        assert all(grant.source != "auto_trusted" for grant in saved.domains), host
+        if result is not None:
+            assert getattr(result, "status", "block") in {"ask", "block"}, (host, result)
+
+
+def test_trusted_sandbox_does_not_auto_trust_unsafe_or_unknown_hosts() -> None:
+    context = _context(run_mode=RunMode.TRUSTED)
+
+    for host in (
+        "127.0.0.1",
+        "10.0.0.1",
+        "localhost",
+        "169.254.169.254",
+        "*.example.com",
+        "*.com",
+        "totally-unrecognized.example",
+    ):
+        decision = decide_network_access(host, context)
+        assert decision.status != "allow", (host, decision)
+        assert decision.reason != "auto_trusted", (host, decision)
+
+
 def test_decide_network_access_blocks_unsafe_ip_literal() -> None:
     decision = decide_network_access("169.254.169.254", _context())
 
@@ -86,6 +374,37 @@ def test_decide_network_access_allows_package_bundle_domain() -> None:
         normalized_host="registry.npmjs.org",
         reason="package_bundle",
         source="bundle:node-package-install",
+    )
+
+
+def test_decide_network_access_allows_default_bundle_domain_without_explicit_grant() -> None:
+    decision = decide_network_access("registry.npmjs.org", _context())
+
+    assert decision == NetworkDecision(
+        status="allow",
+        normalized_host="registry.npmjs.org",
+        reason="package_bundle",
+        source="bundle:node-package-install",
+    )
+
+
+def test_decide_network_access_honors_disabled_default_bundle_override() -> None:
+    context = _context(
+        bundles=(
+            PackageBundleGrant(
+                bundle_id="node-package-install",
+                source="disabled",
+            ),
+        ),
+    )
+
+    decision = decide_network_access("registry.npmjs.org", context)
+
+    assert decision == NetworkDecision(
+        status="ask",
+        normalized_host="registry.npmjs.org",
+        reason="unknown_domain",
+        source=None,
     )
 
 
@@ -125,3 +444,55 @@ def test_package_install_bundles_cover_common_registry_and_artifact_hosts() -> N
             decision = decide_network_access(host, context)
             assert decision.status == "allow", (bundle_id, host, decision)
             assert decision.reason == "package_bundle"
+
+
+def test_default_github_bundle_covers_full_git_and_release_workflow_hosts() -> None:
+    expected_hosts = {
+        "github.com",
+        "api.github.com",
+        "raw.githubusercontent.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+    }
+
+    assert expected_hosts.issubset(set(expand_package_bundle("github-default")))
+
+
+def test_default_github_bundle_covers_developer_workflow_hosts() -> None:
+    expected_hosts = {
+        "actions.githubusercontent.com",
+        "pipelines.actions.githubusercontent.com",
+        "results-receiver.actions.githubusercontent.com",
+        "uploads.github.com",
+        "release-assets.githubusercontent.com",
+        "ghcr.io",
+        "pkg-containers.githubusercontent.com",
+    }
+
+    assert expected_hosts.issubset(set(expand_package_bundle("github-default")))
+
+
+def test_default_github_bundle_allows_workflow_host() -> None:
+    decision = decide_network_access("actions.githubusercontent.com", _context())
+
+    assert decision == NetworkDecision(
+        status="allow",
+        normalized_host="actions.githubusercontent.com",
+        reason="package_bundle",
+        source="bundle:github-default",
+    )
+
+
+def test_disabled_default_github_bundle_blocks_workflow_host() -> None:
+    context = _context(
+        bundles=(PackageBundleGrant(bundle_id="github-default", source="disabled"),),
+    )
+
+    decision = decide_network_access("actions.githubusercontent.com", context)
+
+    assert decision == NetworkDecision(
+        status="ask",
+        normalized_host="actions.githubusercontent.com",
+        reason="unknown_domain",
+        source=None,
+    )

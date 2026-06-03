@@ -146,6 +146,16 @@ def test_sandbox_managed_network_assets_use_collapsed_summaries() -> None:
     assert ".sandbox-network-summary" in sandbox_css
 
 
+def test_sandbox_managed_network_audits_public_network_grants() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    assert "function _renderPublicNetworkGrants" in sandbox_js
+    assert "publicNetwork: Array.isArray(runContext.publicNetwork)" in sandbox_js
+    assert "runContext.public_network" in sandbox_js
+    assert "Normal public network" in sandbox_js
+    assert "Blocked, private, and unsafe hosts stay blocked." in sandbox_js
+
+
 def test_standalone_approvals_view_assets_are_removed() -> None:
     assert not APPROVALS_JS.exists()
     assert not APPROVALS_CSS.exists()

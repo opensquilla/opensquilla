@@ -272,6 +272,7 @@ const SandboxView = (() => {
   function _renderNetwork(status, runContext, sessionKey) {
     const domains = Array.isArray(runContext.domains) ? runContext.domains : [];
     const bundles = Array.isArray(runContext.bundles) ? runContext.bundles : [];
+    const publicNetwork = Array.isArray(runContext.publicNetwork) ? runContext.publicNetwork : [];
     const catalog = _bundleCatalog(status);
     const defaultAllowlist = _defaultAllowlist(status);
     if (!sessionKey) {
@@ -291,6 +292,11 @@ const SandboxView = (() => {
           `Bundles · ${enabledBundleCount} enabled`,
           _renderBundles(catalog, bundles),
         )}
+        ${publicNetwork.length ? _renderNetworkSection(
+          'sandbox-network-summary--public',
+          `Normal public network · ${_publicNetworkScopeSummary(publicNetwork)}`,
+          _renderPublicNetworkGrants(publicNetwork),
+        ) : ''}
         ${_renderNetworkSection(
           'sandbox-network-summary--chat',
           `This chat · ${chatDomains.length} added`,
@@ -328,6 +334,24 @@ const SandboxView = (() => {
         <div class="sandbox-network-summary ${summaryClass}">${_esc(summaryText)}</div>
         <div class="sandbox-network-body">${body}</div>
       </section>`;
+  }
+
+  function _renderPublicNetworkGrants(publicNetwork) {
+    return `<div class="sandbox-network-row sandbox-network-row--bundle">
+      <div>
+        <div class="sandbox-network-row__main">Normal public network</div>
+        <div class="sandbox-network-row__sub">Blocked, private, and unsafe hosts stay blocked.</div>
+      </div>
+      <span class="sandbox-chip">${_esc(_publicNetworkScopeSummary(publicNetwork))}</span>
+    </div>`;
+  }
+
+  function _publicNetworkScopeSummary(publicNetwork) {
+    const active = new Set(publicNetwork.map(grant => _networkScopeKey(grant?.scope)));
+    return [['chat', 'This chat'], ['user', 'This user']]
+      .filter(([scope]) => active.has(scope))
+      .map(([, label]) => label)
+      .join(' / ') || 'Active';
   }
 
   function _renderBundles(catalog, enabledBundles) {
@@ -647,6 +671,9 @@ const SandboxView = (() => {
       mounts: Array.isArray(runContext.mounts) ? runContext.mounts : [],
       domains: Array.isArray(runContext.domains) ? runContext.domains : [],
       bundles: Array.isArray(runContext.bundles) ? runContext.bundles : [],
+      publicNetwork: Array.isArray(runContext.publicNetwork)
+        ? runContext.publicNetwork
+        : (Array.isArray(runContext.public_network) ? runContext.public_network : []),
     };
   }
 

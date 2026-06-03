@@ -296,7 +296,7 @@ const SandboxView = (() => {
       <div class="sandbox-network-stack">
         ${_renderNetworkDetails(
           'sandbox-network-summary--default',
-          `Default Allowlist · ${_defaultAllowlistDomainCount(defaultAllowlist)} domains`,
+          `Default Access · ${_defaultAllowlistDomainCount(defaultAllowlist)} domains`,
           _renderDefaultAllowlist(defaultAllowlist),
         )}
         ${_renderNetworkDetails(
@@ -312,12 +312,12 @@ const SandboxView = (() => {
         ${_renderNetworkSection(
           'sandbox-network-summary--chat',
           `This chat · ${chatDomains.length} added`,
-          chatDomains.length ? `<div class="sandbox-network-list">${chatDomains.map(d => _renderDomain(d, true)).join('')}</div>` : _renderNetworkEmpty('No domains added for this chat. Default access is still active.'),
+          chatDomains.length ? `<div class="sandbox-network-list">${chatDomains.map(d => _renderDomain(d, true)).join('')}</div>` : _renderNetworkEmpty('No domains added for this chat. Default public access is still active.'),
         )}
         ${_renderNetworkSection(
           'sandbox-network-summary--user',
           `This user · ${userDomains.length} custom`,
-          userDomains.length ? `<div class="sandbox-network-list">${userDomains.map(d => _renderDomain(d, true)).join('')}</div>` : _renderNetworkEmpty('No domains added for this user. Default access is still active.'),
+          userDomains.length ? `<div class="sandbox-network-list">${userDomains.map(d => _renderDomain(d, true)).join('')}</div>` : _renderNetworkEmpty('No domains added for this user. Default public access is still active.'),
         )}
       </div>
       <form class="sandbox-inline-form" data-sandbox-action="domain-add">
@@ -360,8 +360,8 @@ const SandboxView = (() => {
 
   function _publicNetworkScopeSummary(publicNetwork) {
     const active = new Set(publicNetwork.map(grant => _networkScopeKey(grant?.scope)));
-    return [['chat', 'This chat'], ['user', 'This user']]
-      .filter(([scope]) => active.has(scope))
+    return [['chat', 'This chat'], ['workspace', 'This user']]
+      .filter(([scope]) => active.has(_networkScopeKey(scope)))
       .map(([, label]) => label)
       .join(' / ') || 'Active';
   }
@@ -390,7 +390,7 @@ const SandboxView = (() => {
   }
 
   function _renderDefaultAllowlist(defaultAllowlist) {
-    if (!defaultAllowlist.length) return _renderNetworkEmpty('No default allowlist entries');
+    if (!defaultAllowlist.length) return _renderNetworkEmpty('No default access entries');
     return `<div class="sandbox-network-list">
       ${defaultAllowlist.map(group => _renderDefaultAllowlistGroup(group)).join('')}
     </div>`;

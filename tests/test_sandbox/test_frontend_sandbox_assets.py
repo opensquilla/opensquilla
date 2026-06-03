@@ -157,7 +157,8 @@ def test_sandbox_view_hides_editing_panels_for_full_host_access() -> None:
         full_host_start : sandbox_js.index("  function _renderWorkspace", full_host_start)
     ]
     assert "Managed Network" not in full_host_body
-    assert "Default Allowlist" not in full_host_body
+    assert "Default Access" not in full_host_body
+    assert "Default Allowlist" not in sandbox_js
     assert "Bundles" not in full_host_body
 
 
@@ -165,14 +166,18 @@ def test_sandbox_managed_network_assets_use_collapsed_summaries() -> None:
     sandbox_js = _read(SANDBOX_JS)
     sandbox_css = _read(SANDBOX_CSS)
 
-    assert "Default Allowlist" in sandbox_js
+    assert "Default Access" in sandbox_js
+    assert "Default Allowlist" not in sandbox_js
     assert "Bundles" in sandbox_js
     assert "This chat" in sandbox_js
     assert "This user" in sandbox_js
     assert "[['chat', 'This chat'], ['workspace', 'This user']]" in sandbox_js
+    assert "[['chat', 'This chat'], ['user', 'This user']]" not in sandbox_js
     assert "No custom domains" not in sandbox_js
-    assert "No domains added for this chat. Default access is still active." in sandbox_js
-    assert "No domains added for this user. Default access is still active." in sandbox_js
+    assert "No domains added for this chat. Default public access is still active." in sandbox_js
+    assert "No domains added for this user. Default public access is still active." in sandbox_js
+    assert "No domains added for this chat. Default access is still active." not in sandbox_js
+    assert "No domains added for this user. Default access is still active." not in sandbox_js
     assert "sandbox-network-summary" in sandbox_js
     assert "sandbox-network-summary--default" in sandbox_js
     assert "sandbox-network-summary--bundles" in sandbox_js
@@ -248,7 +253,8 @@ def test_sandbox_bundle_controls_treat_defaults_as_enabled_until_disabled() -> N
 def test_sandbox_view_renders_read_only_default_allowlist() -> None:
     sandbox = _read(SANDBOX_JS)
 
-    assert "Default Allowlist" in sandbox
+    assert "Default Access" in sandbox
+    assert "Default Allowlist" not in sandbox
     assert "status.default_allowlist" in sandbox
     assert "status.defaultAllowlist" in sandbox
     assert "function _renderDefaultAllowlist" in sandbox

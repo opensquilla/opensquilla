@@ -17,8 +17,10 @@ from opensquilla.sandbox.integration import (
     escalate_backend_denial,
     gate_action,
     get_runtime,
+    preflight_subprocess_managed_network,
     run_under_backend,
 )
+from opensquilla.sandbox.policy import LevelHints
 from opensquilla.sandbox.types import DenialResult, SandboxRequest
 from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import full_host_access_active
@@ -137,6 +139,11 @@ def _check_code_sensitive_access(code: str) -> tuple[str, str] | None:
             return "sensitive_payload", marker
 
     return None
+
+
+def _code_needs_network(code: str) -> bool:
+    lowered = code.lower()
+    return any(token in lowered for token in _CODE_NETWORK_TOKENS)
 
 
 _MAX_TIMEOUT = 120
@@ -322,6 +329,7 @@ async def execute_code(
     start_ns = time.monotonic_ns()
 
     safe_env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    hints = LevelHints(needs_network=_code_needs_network(code))
 
     if runtime is None or (runtime.effective.sandbox_enabled and not host_execution):
         decision, _policy, request = await gate_action(
@@ -329,6 +337,7 @@ async def execute_code(
             argv=(python_bin, "-c", code),
             cwd=workdir_path,
             env=safe_env,
+            hints=hints,
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
@@ -339,6 +348,12 @@ async def execute_code(
             policy=request.policy,
             env=safe_env,
         )
+        if runtime is not None:
+            preflight = await preflight_subprocess_managed_network(backend_request, runtime)
+            if isinstance(preflight, DenialResult):
+                return json.dumps(preflight.to_dict())
+            if isinstance(preflight, dict):
+                return json.dumps(preflight)
         try:
             sandbox_result = await run_under_backend(backend_request, runtime=runtime)
         except Exception as exc:

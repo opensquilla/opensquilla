@@ -149,10 +149,14 @@ def _resolve_network(
     level: SecurityLevel,
     action_kind: str,
     settings: SandboxSettings,
+    hints: LevelHints | None = None,
 ) -> NetworkMode:
     if level == SecurityLevel.DISABLED:
         return NetworkMode.HOST
-    if action_kind in _NETWORK_TAGS and level == SecurityLevel.STANDARD:
+    h = hints or LevelHints()
+    if level == SecurityLevel.STANDARD and (
+        action_kind in _NETWORK_TAGS or (action_kind in _CODE_TAGS and h.needs_network)
+    ):
         if settings.network_default == "proxy_allowlist":
             return NetworkMode.PROXY_ALLOWLIST
         return NetworkMode.NONE
@@ -212,6 +216,7 @@ def build_policy(
     settings: SandboxSettings,
     *,
     trusted: bool = True,
+    hints: LevelHints | None = None,
     session_mounts: tuple[MountSpec, ...] = (),
 ) -> SandboxPolicy:
     """Materialise a :class:`SandboxPolicy` for ``level``.
@@ -231,7 +236,7 @@ def build_policy(
 
     mounts, workspace_rw = _collect_mounts(level, workspace, settings, session_mounts)
     limits = _resolve_limits(level, settings)
-    network = _resolve_network(level, action_kind, settings)
+    network = _resolve_network(level, action_kind, settings, hints)
     tmp_writable = level != SecurityLevel.LOCKED
 
     require_approval = level >= SecurityLevel.STRICT and (

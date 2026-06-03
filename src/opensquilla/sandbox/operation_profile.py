@@ -14,6 +14,10 @@ _NODE_INSTALL_COMMANDS = frozenset({"add", "ci", "install"})
 _SHELL_WRAPPERS = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
 _DESTRUCTIVE_COMMANDS = frozenset({"del", "erase", "format", "mkfs", "rm"})
 _SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|"})
+_URL_NETWORK_COMMANDS = frozenset({"aria2", "aria2c", "curl", "http", "httpie", "https", "wget"})
+_GIT_NETWORK_COMMANDS = frozenset(
+    {"clone", "fetch", "ls-remote", "pull", "push", "submodule"}
+)
 _ASSIGNMENT_RE = re.compile(r"[a-z_][a-z0-9_]*=.*")
 _TRAILING_URL_PUNCTUATION = ".,;:!?)]}\"'`>"
 
@@ -40,13 +44,22 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
     if _is_go_package_install(lowered):
         return OperationProfile("package_install", True, "go")
     if _is_shell_wrapper(lowered):
+        script_profile = _classify_shell_script(parts)
         if _shell_script_is_destructive(lowered):
-            return OperationProfile("destructive_shell", high_impact=True)
+            return OperationProfile(
+                "destructive_shell",
+                needs_network=script_profile.needs_network,
+                package_manager=script_profile.package_manager,
+                requested_domains=script_profile.requested_domains,
+                high_impact=True,
+            )
+        if script_profile.needs_network:
+            return script_profile
         return OperationProfile("unknown_shell")
     if _is_destructive(lowered):
         return OperationProfile("destructive_shell", high_impact=True)
     domains = _domains_from_argv(parts)
-    if domains:
+    if domains and _command_uses_http_url(lowered):
         return OperationProfile("url_fetch", True, requested_domains=domains)
     if lowered and lowered[0] in {"cat", "ls", "find", "rg"}:
         return OperationProfile("workspace_read")
@@ -100,6 +113,19 @@ def _is_go_package_install(lowered: tuple[str, ...]) -> bool:
     }
 
 
+def _command_uses_http_url(lowered: tuple[str, ...]) -> bool:
+    if not lowered:
+        return False
+    command = _command_name(lowered[0])
+    if command in _URL_NETWORK_COMMANDS:
+        return True
+    if command == "git" and len(lowered) >= 2:
+        if lowered[1] in _GIT_NETWORK_COMMANDS:
+            return True
+        return len(lowered) >= 3 and lowered[1] == "submodule" and lowered[2] == "update"
+    return False
+
+
 def _domains_from_argv(parts: tuple[str, ...]) -> tuple[str, ...]:
     domains: list[str] = []
     for part in parts:
@@ -145,11 +171,43 @@ def _shell_tokens(script: str) -> tuple[str, ...]:
         return tuple(script.split())
 
 
-def _shell_script(lowered: tuple[str, ...]) -> str:
-    for index, part in enumerate(lowered[1:], start=1):
-        if _is_shell_command_option(part):
-            return " ".join(lowered[index + 1 :])
-    return " ".join(lowered[1:])
+def _classify_shell_script(parts: tuple[str, ...]) -> OperationProfile:
+    for command_parts in _shell_commands(parts):
+        profile = classify_command(command_parts)
+        if profile.needs_network:
+            return profile
+    return OperationProfile("unknown_shell")
+
+
+def _shell_commands(parts: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+    commands: list[tuple[str, ...]] = []
+    current: list[str] = []
+    for token in _shell_tokens(_shell_script(parts)):
+        if token in _SHELL_SEPARATORS:
+            cleaned = _strip_assignment_prefix(tuple(current))
+            if cleaned:
+                commands.append(cleaned)
+            current = []
+            continue
+        current.append(token)
+    cleaned = _strip_assignment_prefix(tuple(current))
+    if cleaned:
+        commands.append(cleaned)
+    return tuple(commands)
+
+
+def _strip_assignment_prefix(parts: tuple[str, ...]) -> tuple[str, ...]:
+    index = 0
+    while index < len(parts) and _ASSIGNMENT_RE.fullmatch(parts[index].lower()):
+        index += 1
+    return parts[index:]
+
+
+def _shell_script(parts: tuple[str, ...]) -> str:
+    for index, part in enumerate(parts[1:], start=1):
+        if _is_shell_command_option(part.lower()):
+            return " ".join(parts[index + 1 :])
+    return " ".join(parts[1:])
 
 
 def _is_shell_command_option(part: str) -> bool:

@@ -145,15 +145,32 @@ def test_unknown_shell_is_conservative() -> None:
     assert profile.name == "unknown_shell"
 
 
-def test_shell_wrapper_with_url_is_conservative() -> None:
+def test_shell_wrapper_with_url_detects_network() -> None:
     profile = classify_command(("sh", "-lc", "curl https://example.com"))
+    assert profile.name == "url_fetch"
+    assert profile.needs_network is True
+    assert profile.requested_domains == ("example.com",)
+
+
+def test_shell_wrapper_with_url_text_is_not_network() -> None:
+    profile = classify_command(("sh", "-lc", "echo https://example.com"))
     assert profile.name == "unknown_shell"
+    assert profile.needs_network is False
+
+
+def test_shell_wrapper_with_package_install_detects_network() -> None:
+    profile = classify_command(("sh", "-lc", "pip install requests"))
+    assert profile.name == "package_install"
+    assert profile.needs_network is True
+    assert profile.package_manager == "python"
 
 
 def test_shell_wrapper_preserves_obvious_destructive_impact() -> None:
     profile = classify_command(("sh", "-lc", "rm -rf dist && curl https://example.com"))
     assert profile.name == "destructive_shell"
     assert profile.high_impact is True
+    assert profile.needs_network is True
+    assert profile.requested_domains == ("example.com",)
 
 
 def test_shell_wrapper_finds_c_option_after_long_options() -> None:

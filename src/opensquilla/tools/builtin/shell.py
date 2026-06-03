@@ -21,11 +21,6 @@ from typing import Any, cast
 import structlog
 
 from opensquilla.gateway.approval_queue import get_approval_queue
-from opensquilla.sandbox.escalation import (
-    build_path_approval_params,
-    current_tool_mounts,
-    request_sandbox_approval,
-)
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend, build_bwrap_argv
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.backend.seatbelt import (
@@ -33,16 +28,23 @@ from opensquilla.sandbox.backend.seatbelt import (
     build_seatbelt_argv,
     render_seatbelt_profile,
 )
+from opensquilla.sandbox.escalation import (
+    build_path_approval_params,
+    current_tool_mounts,
+    request_sandbox_approval,
+)
 from opensquilla.sandbox.governance import action_fingerprint
 from opensquilla.sandbox.integration import (
     build_request,
     escalate_backend_denial,
     gate_action,
     get_runtime,
+    preflight_subprocess_managed_network,
     run_under_backend,
 )
+from opensquilla.sandbox.operation_profile import OperationProfile, classify_command
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
-from opensquilla.sandbox.policy import build_policy, select_level
+from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
 from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy, SandboxRequest
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.path_policy import reject_foreign_host_path
@@ -149,6 +151,21 @@ def _append_sandbox_network_hint(text: str, *, force: bool = False) -> str:
     if not force and not _looks_like_sandbox_network_failure(text):
         return text
     return text.rstrip() + "\n" + _SANDBOX_NETWORK_HINT + "\n"
+
+
+def _profile_shell_command(command: str) -> OperationProfile:
+    return classify_command(("sh", "-lc", command))
+
+
+def _level_hints_for_shell_profile(
+    profile: OperationProfile,
+    *,
+    warnlist_handled: bool = False,
+) -> LevelHints:
+    return LevelHints(
+        needs_network=profile.needs_network,
+        high_impact=profile.high_impact and not warnlist_handled,
+    )
 
 
 def _sandbox_effectively_off() -> bool:
@@ -782,6 +799,7 @@ async def exec_command(
     if env:
         merged_env.update(env)
     effective_timeout = _resolve_exec_timeout(timeout)
+    profile = _profile_shell_command(command)
 
     host_execution = _host_execution_allowed()
 
@@ -792,6 +810,10 @@ async def exec_command(
             argv=("exec_command", command),
             cwd=Path(workdir) if workdir else None,
             env=merged_env,
+            hints=_level_hints_for_shell_profile(
+                profile,
+                warnlist_handled=result.needs_approval,
+            ),
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
@@ -804,6 +826,11 @@ async def exec_command(
             env=dict(merged_env),
             reason=getattr(request, "reason", ""),
         )
+        preflight = await preflight_subprocess_managed_network(backend_request, runtime)
+        if isinstance(preflight, DenialResult):
+            return json.dumps(preflight.to_dict())
+        if isinstance(preflight, dict):
+            return json.dumps(preflight)
         try:
             sandbox_result = await run_under_backend(backend_request, runtime=runtime)
         except Exception as exc:
@@ -907,6 +934,7 @@ async def background_process(
             return json.dumps(approval_response)
 
     host_execution = _host_execution_allowed()
+    profile = _profile_shell_command(command)
 
     runtime = get_runtime()
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
@@ -915,18 +943,28 @@ async def background_process(
             argv=("background_process", command),
             cwd=Path(workdir) if workdir else None,
             env=dict(os.environ),
+            hints=_level_hints_for_shell_profile(
+                profile,
+                warnlist_handled=result.needs_approval,
+            ),
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
+        backend_request = SandboxRequest(
+            argv=("sh", "-lc", command),
+            cwd=request.cwd,
+            action_kind=request.action_kind,
+            policy=policy,
+            env=dict(os.environ),
+        )
+        preflight = await preflight_subprocess_managed_network(backend_request, runtime)
+        if isinstance(preflight, DenialResult):
+            return json.dumps(preflight.to_dict())
+        if isinstance(preflight, dict):
+            return json.dumps(preflight)
         spawned = await _spawn_sandboxed_background_process(
             runtime=runtime,
-            request=SandboxRequest(
-                argv=("sh", "-lc", command),
-                cwd=request.cwd,
-                action_kind=request.action_kind,
-                policy=policy,
-                env=dict(os.environ),
-            ),
+            request=backend_request,
         )
         session_id = str(uuid.uuid4())[:8]
         ctx = current_tool_context.get()

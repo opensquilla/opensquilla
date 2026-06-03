@@ -35,6 +35,7 @@ import functools
 import inspect
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,6 +107,8 @@ _SEARCH_PROVIDER_SYSTEM_DOMAINS: dict[str, tuple[str, ...]] = {
     "brave": ("api.search.brave.com",),
     "duckduckgo": ("html.duckduckgo.com",),
 }
+_HTTP_URL_RE = re.compile(r"https?://[^\s\"'`<>]+", re.IGNORECASE)
+_TRAILING_URL_PUNCTUATION = ".,;:!?)]}"
 
 
 # ─── Approval queue / context protocols ──────────────────────────────────
@@ -382,7 +385,14 @@ async def gate_action(
         # relying on ``None``.
         ws = Path(cwd) if cwd and Path(cwd).is_absolute() else Path.cwd()
         settings = SandboxSettings(sandbox=False, security_grading=False)
-        policy = build_policy(SecurityLevel.STANDARD, action_kind, ws, settings, trusted=True)
+        policy = build_policy(
+            SecurityLevel.STANDARD,
+            action_kind,
+            ws,
+            settings,
+            trusted=True,
+            hints=hints,
+        )
         req = build_request(
             action_kind=action_kind,
             argv=argv,
@@ -424,6 +434,7 @@ async def gate_action(
         workspace,
         rt.settings,
         trusted=(hints is None or hints.trusted_source),
+        hints=hints,
         session_mounts=_session_mounts_for_policy(workspace),
     )
     request = build_request(
@@ -889,6 +900,77 @@ async def _prepare_in_process_managed_network(
     return effective_context
 
 
+async def preflight_subprocess_managed_network(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+) -> DenialResult | dict[str, object] | None:
+    """Preflight explicit network targets before subprocess proxy execution.
+
+    Subprocess tools still rely on :func:`run_under_backend` to start the
+    managed proxy and enforce runtime decisions. This helper only handles the
+    user-facing part the proxy cannot: visible explicit targets that should
+    enter the sandbox-network approval flow before the command sees a hard
+    proxy denial.
+    """
+    if getattr(request.policy, "network", None) != NetworkMode.PROXY_ALLOWLIST:
+        return None
+
+    targets = _explicit_network_target_hosts(request.action_kind, request.argv)
+    if not targets:
+        return None
+
+    context = _current_run_context_for_network_proxy()
+    if context is None:
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            "NetworkMode.PROXY_ALLOWLIST requires Run Context grants to preflight "
+            "explicit subprocess network targets.",
+        )
+
+    fingerprint = action_fingerprint(request)
+    effective_context = context_with_temporary_network_grants(
+        context,
+        fingerprint=fingerprint,
+    )
+    for host in targets:
+        decision = decide_network_access(host, effective_context)
+        if decision.status == "allow":
+            continue
+        if decision.status == "ask":
+            params = build_network_approval_params(
+                decision,
+                session_key=_resolve_session_id(runtime, None),
+                workspace=str(request.cwd),
+                fingerprint=fingerprint,
+            )
+            if params is not None:
+                return request_sandbox_approval(
+                    params,
+                    message=(
+                        "This network target is outside the current managed-network grants. "
+                        "Resolve this approval and retry."
+                    ),
+                )
+            return await _managed_in_process_denial(
+                request,
+                runtime,
+                (
+                    "NetworkMode.PROXY_ALLOWLIST denied subprocess network "
+                    f"target {host!r}: {decision.reason}."
+                ),
+            )
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            (
+                "NetworkMode.PROXY_ALLOWLIST denied subprocess network "
+                f"target {host!r}: {decision.reason}."
+            ),
+        )
+    return None
+
+
 async def _managed_in_process_denial(
     request: SandboxRequest,
     runtime: SandboxRuntime,
@@ -1063,6 +1145,9 @@ def _explicit_network_target_hosts(action_kind: str, argv: tuple[str, ...]) -> t
         host = _explicit_network_target_host(action_kind, value)
         if host and host not in hosts:
             hosts.append(host)
+        for embedded_host in _embedded_http_url_hosts(value):
+            if embedded_host not in hosts:
+                hosts.append(embedded_host)
     return tuple(hosts)
 
 
@@ -1136,6 +1221,16 @@ def _host_from_http_url(value: str) -> str | None:
     if parsed.scheme.lower() not in {"http", "https"}:
         return None
     return parsed.hostname.lower() if parsed.hostname else None
+
+
+def _embedded_http_url_hosts(value: object) -> tuple[str, ...]:
+    text = str(value or "")
+    hosts: list[str] = []
+    for match in _HTTP_URL_RE.finditer(text):
+        host = _host_from_http_url(match.group(0).rstrip(_TRAILING_URL_PUNCTUATION))
+        if host and host not in hosts:
+            hosts.append(host)
+    return tuple(hosts)
 
 
 async def escalate_backend_denial(
@@ -1239,6 +1334,7 @@ __all__ = [
     "get_runtime",
     "guard_in_process_network_action",
     "managed_network_httpx_kwargs",
+    "preflight_subprocess_managed_network",
     "record_success",
     "reset_runtime",
     "run_in_process_network_action",

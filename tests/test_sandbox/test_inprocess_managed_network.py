@@ -17,8 +17,10 @@ from opensquilla.sandbox import integration as integration_mod
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime, sandboxed
 from opensquilla.sandbox.network_guard import NetworkDecision
+from opensquilla.sandbox.network_guard import decide_network_access
 from opensquilla.sandbox.run_context import (
     DomainGrant,
+    PublicNetworkGrant,
     RunContext,
     TemporaryGrant,
     get_run_context,
@@ -404,6 +406,66 @@ async def test_allow_once_resolve_allows_one_retry_then_expires_for_explicit_tar
     assert fresh_attempt["status"] == "approval_required"
     assert fresh_attempt["approvalKind"] == "sandbox_network"
     assert fresh_attempt["host"] == "unknown.test"
+
+
+@pytest.mark.asyncio
+async def test_allow_public_chat_choice_allows_later_unknown_public_targets(
+    managed_context: ToolContext,
+) -> None:
+    manager = SimpleNamespace()
+    manager.node = SimpleNamespace(
+        session_key="s1",
+        agent_id="main",
+        origin={
+            "sandbox_run_context": managed_context.sandbox_run_context.to_origin_payload(),
+        },
+    )
+
+    async def _get_session(session_key: str):
+        return manager.node if session_key == manager.node.session_key else None
+
+    async def _update(session_key: str, **fields):
+        for key, value in fields.items():
+            setattr(manager.node, key, value)
+        return manager.node
+
+    manager.get_session = _get_session
+    manager.update = _update
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        return "ok"
+
+    first = json.loads(await dummy_http_request("http://docs.example.com/path"))
+    approval_id = str(first["approval_id"])
+
+    result = await get_dispatcher().dispatch(
+        "r1",
+        "exec.approval.resolve",
+        {"id": approval_id, "approved": True, "choice": "allow_public_chat"},
+        RpcContext(conn_id="test", session_manager=manager, config=config),
+    )
+    assert result.error is None, result.error
+
+    context = await get_run_context(
+        manager,
+        "s1",
+        config=config,
+        workspace=str(managed_context.workspace_dir),
+    )
+    decision = decide_network_access("another-docs.example.com", context)
+
+    assert PublicNetworkGrant(scope="chat", source="manual") in context.public_network
+    assert decision.status == "allow"
+    assert decision.reason == "public_network"
 
 
 @pytest.mark.asyncio

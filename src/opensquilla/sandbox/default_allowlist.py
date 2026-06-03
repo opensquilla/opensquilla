@@ -13,10 +13,24 @@ DEFAULT_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "codeload.github.com",
         "github.githubassets.com",
         "avatars.githubusercontent.com",
+        "uploads.github.com",
+        "release-assets.githubusercontent.com",
+        "ghcr.io",
+        "pkg-containers.githubusercontent.com",
     ),
     "search": (
         "api.search.brave.com",
         "html.duckduckgo.com",
+        "duckduckgo.com",
+        "www.google.com",
+        "www.bing.com",
+    ),
+    "developer-docs": (
+        "developer.mozilla.org",
+        "docs.python.org",
+        "docs.npmjs.com",
+        "doc.rust-lang.org",
+        "go.dev",
     ),
 }
 

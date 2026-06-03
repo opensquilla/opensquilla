@@ -9,6 +9,7 @@ from opensquilla.sandbox.domain_validation import (
     validate_domain_pattern,
 )
 from opensquilla.sandbox.package_bundles import (
+    DEFAULT_PACKAGE_BUNDLE_IDS,
     PACKAGE_BUNDLES,
     expand_package_bundle,
 )
@@ -119,6 +120,7 @@ def test_package_bundles_expand_to_known_domains() -> None:
         "storage.googleapis.com",
     )
     assert "rust-package-install" in PACKAGE_BUNDLES
+    assert DEFAULT_PACKAGE_BUNDLE_IDS == tuple(PACKAGE_BUNDLES)
     assert expand_package_bundle("unknown") == ()
 
 

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from opensquilla.sandbox.default_allowlist import default_allowlist_payload
 from opensquilla.sandbox.domain_validation import domain_matches
 from opensquilla.sandbox.network_guard import NetworkDecision, decide_network_access
 from opensquilla.sandbox.package_bundles import expand_package_bundle
@@ -206,6 +207,12 @@ def test_standard_sandbox_allows_builtin_github_default_hosts() -> None:
         "raw.githubusercontent.com",
         "codeload.github.com",
         "objects.githubusercontent.com",
+        "github.githubassets.com",
+        "avatars.githubusercontent.com",
+        "uploads.github.com",
+        "release-assets.githubusercontent.com",
+        "ghcr.io",
+        "pkg-containers.githubusercontent.com",
     }
 
     for host in expected_hosts:
@@ -217,7 +224,13 @@ def test_standard_sandbox_allows_builtin_github_default_hosts() -> None:
 
 
 def test_standard_sandbox_allows_builtin_search_provider_hosts_without_custom_domains() -> None:
-    for host in ("api.search.brave.com", "html.duckduckgo.com"):
+    for host in (
+        "api.search.brave.com",
+        "html.duckduckgo.com",
+        "duckduckgo.com",
+        "www.google.com",
+        "www.bing.com",
+    ):
         decision = decide_network_access(host, _context())
 
         assert decision == NetworkDecision(
@@ -226,6 +239,51 @@ def test_standard_sandbox_allows_builtin_search_provider_hosts_without_custom_do
             reason="default_allowlist",
             source="default:search",
         )
+
+
+def test_standard_sandbox_allows_developer_doc_hosts_without_custom_domains() -> None:
+    for host in (
+        "developer.mozilla.org",
+        "docs.python.org",
+        "docs.npmjs.com",
+        "doc.rust-lang.org",
+        "go.dev",
+    ):
+        decision = decide_network_access(host, _context())
+
+        assert decision == NetworkDecision(
+            status="allow",
+            normalized_host=host,
+            reason="default_allowlist",
+            source="default:developer-docs",
+        )
+
+
+def test_standard_sandbox_allows_common_package_and_doc_hosts_by_default() -> None:
+    for host in (
+        "pypi.org",
+        "files.pythonhosted.org",
+        "registry.npmjs.org",
+        "crates.io",
+        "proxy.golang.org",
+        "developer.mozilla.org",
+        "docs.python.org",
+    ):
+        decision = decide_network_access(host, _context())
+
+        assert decision.status == "allow", (host, decision)
+
+
+def test_default_allowlist_payload_exposes_read_only_builtin_groups() -> None:
+    payload = {entry["group"]: entry for entry in default_allowlist_payload()}
+
+    assert {"github", "search", "developer-docs"}.issubset(payload)
+    for group in ("github", "search", "developer-docs"):
+        assert payload[group]["read_only"] is True
+
+    assert "pkg-containers.githubusercontent.com" in payload["github"]["domains"]
+    assert "www.google.com" in payload["search"]["domains"]
+    assert "developer.mozilla.org" in payload["developer-docs"]["domains"]
 
 
 def test_github_exact_domain_grant_does_not_cover_github_workflow_hosts() -> None:

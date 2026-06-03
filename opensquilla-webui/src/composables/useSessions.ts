@@ -1,70 +1,10 @@
 import { ref, computed } from 'vue'
 import { useRpcStore } from '@/stores/rpc'
+import type { RawSessionItem, RawSessionListEntry, SessionsListResponse } from '@/types/rpc'
 
 export const SESSION_LIST_VIEW = 'session-list-v1'
 
-export interface RawSessionItem {
-  key?: string
-  session?: string
-  sessionKey?: string
-  sessionId?: string
-  agentId?: string
-  agent_id?: string
-  effectiveAgentId?: string
-  sessionKind?: string
-  surface?: string
-  conversationKind?: string
-  thread?: { id?: string; kind?: string } | null
-  channelContext?: { name?: string; id?: string; accountId?: string; threadId?: string } | null
-  title?: string
-  subtitle?: string
-  groupLabel?: string
-  updatedAt?: number | string
-  updated_at?: number | string
-  messageCount?: number
-  message_count?: number
-  entry_count?: number
-  status?: string
-  runStatus?: string
-  run_status?: string
-  active_task?: { status?: string }
-  activeTask?: { status?: string }
-  last_task?: { status?: string }
-  lastTask?: { status?: string }
-  terminal_status?: string
-  terminalStatus?: string
-  display_name?: string
-  displayName?: string
-  subject?: string
-  derived_title?: string
-  derivedTitle?: string
-  source_kind?: string
-  sourceKind?: string
-  channel_kind?: string
-  channelKind?: string
-  channel_id?: string
-  channelId?: string
-  chat_type?: string
-  chatType?: string
-  group_id?: string
-  groupId?: string
-  last_channel?: string
-  lastChannel?: string
-  last_to?: string
-  lastTo?: string
-  last_account_id?: string
-  lastAccountId?: string
-  last_thread_id?: string
-  lastThreadId?: string
-  delivery_context?: any
-  deliveryContext?: any
-  origin?: any
-  interactive?: boolean
-  model?: string
-  channel?: any
-  parent?: any
-  cron?: any
-}
+export type { RawSessionItem } from '@/types/rpc'
 
 export interface SessionItem {
   key: string
@@ -94,19 +34,21 @@ export interface SessionGroup {
   updatedAt: number
 }
 
-function hasOwn(obj: any, field: string): boolean {
+function hasOwn(obj: unknown, field: string): boolean {
   return !!obj && Object.prototype.hasOwnProperty.call(obj, field)
 }
 
-export function itemKey(item: any): string {
-  return typeof item === 'string' ? item : (item?.key || item?.session || item?.sessionKey || '')
+export function itemKey(item: unknown): string {
+  if (typeof item === 'string') return item
+  const row = item && typeof item === 'object' ? item as RawSessionItem : null
+  return row?.key || row?.session || row?.sessionKey || ''
 }
 
-function textValue(value: any): string {
+function textValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function numberValue(value: any): number | null {
+function numberValue(value: unknown): number | null {
   if (value == null || value === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
@@ -299,8 +241,8 @@ function normalizeRequiredString(
   return fallback
 }
 
-export function normalizeSessionItem(item: any): SessionItem | null {
-  const raw: RawSessionItem = typeof item === 'string' ? { key: item } : (item || {})
+export function normalizeSessionItem(item: unknown): SessionItem | null {
+  const raw: RawSessionItem = typeof item === 'string' ? { key: item } : (item || {}) as RawSessionItem
   const key = itemKey(item)
   if (!key || key === 'unknown') return null
 
@@ -393,7 +335,7 @@ export function groupSessions(items: SessionItem[]): SessionGroup[] {
 
 export function useSessions() {
   const rpc = useRpcStore()
-  const sessionsList = ref<any[]>([])
+  const sessionsList = ref<RawSessionListEntry[]>([])
   const sessionListError = ref(false)
   const isLoading = ref(false)
 
@@ -411,9 +353,9 @@ export function useSessions() {
     sessionListError.value = false
     try {
       await rpc.waitForConnection()
-      const data = await rpc.call<any>('sessions.list', { limit: 200, view: SESSION_LIST_VIEW })
+      const data = await rpc.call<SessionsListResponse>('sessions.list', { limit: 200, view: SESSION_LIST_VIEW })
       const raw = data?.sessions || data?.keys || []
-      sessionsList.value = raw.filter((s: any) => !!itemKey(s))
+      sessionsList.value = raw.filter(s => !!itemKey(s))
     } catch (err: any) {
       console.error('[useSessions] sessions.list error:', err?.message || err)
       sessionListError.value = true

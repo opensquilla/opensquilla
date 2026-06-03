@@ -48,6 +48,7 @@
             :data-source="msg.routerSource"
             :data-observe="msg.routerObserve ? 'true' : undefined"
             :data-static="msg.routerStatic ? 'true' : undefined"
+            :data-settled="msg.routerSettled ? 'true' : undefined"
           >
             <div class="router-fx-header">
               <span class="glyph">&#8592;</span>
@@ -69,11 +70,11 @@
               <div
                 v-if="Number(msg.winnerIdx) >= 0"
                 class="router-fx-selector visible lock"
-                :class="{ 'lock-impact': !msg.routerStatic }"
+                :class="{ 'lock-impact': !msg.routerStatic && !msg.routerSettled }"
                 :style="routerSelectorStyle(msg)"
                 aria-hidden="true"
               />
-              <div v-if="Number(msg.winnerIdx) >= 0 && !msg.routerStatic" class="router-fx-burst" :style="routerBurstStyle(msg)" aria-hidden="true">
+              <div v-if="Number(msg.winnerIdx) >= 0 && !msg.routerStatic && !msg.routerSettled" class="router-fx-burst" :style="routerBurstStyle(msg)" aria-hidden="true">
                 <i v-for="n in 6" :key="n" />
               </div>
             </div>
@@ -229,22 +230,17 @@
               <!-- Artifacts -->
               <div v-if="msg.artifacts?.length" class="msg-artifacts">
                 <div class="msg-artifact-files">
-                  <button
+                  <ArtifactChip
                     v-for="art in msg.artifacts"
                     :key="art.id || art.name"
-                    type="button"
-                    class="msg-artifact-chip"
-                    @click="downloadArtifact(art)"
-                  >
-                    <span class="msg-artifact-icon" :data-kind="artifactCategory(art)" aria-hidden="true">
-                      <Icon :name="artifactIconName(art)" :size="22" />
-                    </span>
-                    <span class="msg-artifact-info">
-                      <span class="msg-artifact-name">{{ artifactFileTitle(art) }}</span>
-                      <span class="msg-artifact-meta">{{ artifactFileSubtitle(art) }}</span>
-                    </span>
-                    <span class="msg-artifact-action">{{ artifactActionLabel(art) }}</span>
-                  </button>
+                    :artifact="art"
+                    :category="artifactCategory(art)"
+                    :icon-name="artifactIconName(art)"
+                    :title="artifactFileTitle(art)"
+                    :subtitle="artifactFileSubtitle(art)"
+                    :action-label="artifactActionLabel(art)"
+                    @download="downloadArtifact"
+                  />
                 </div>
               </div>
 
@@ -258,6 +254,7 @@
                   <span v-if="msg.meta.cachedTokens">cache:{{ fmtTok(msg.meta.cachedTokens) }}</span>
                   <span v-if="msg.meta.reasoningTokens">think:{{ fmtTok(msg.meta.reasoningTokens) }}</span>
                   <span v-if="msg.meta.costUsd">${{ msg.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
+                  <span v-if="msg.meta.hasSaved" class="savings-indicator">{{ msg.meta.savedLabel }}</span>
                 </div>
                 <div class="msg-ai-actions">
                   <button type="button" class="msg-action" title="Copy" @click="copyMessage(msg)"><Icon name="copy" :size="12" /></button>
@@ -354,22 +351,17 @@
             <!-- Stream artifacts -->
             <div v-if="streamArtifacts.length" class="msg-artifacts">
               <div class="msg-artifact-files">
-                <button
+                <ArtifactChip
                   v-for="art in streamArtifacts"
                   :key="art.id || art.name"
-                  type="button"
-                  class="msg-artifact-chip"
-                  @click="downloadArtifact(art)"
-                >
-                  <span class="msg-artifact-icon" :data-kind="artifactCategory(art)" aria-hidden="true">
-                    <Icon :name="artifactIconName(art)" :size="22" />
-                  </span>
-                  <span class="msg-artifact-info">
-                    <span class="msg-artifact-name">{{ artifactFileTitle(art) }}</span>
-                    <span class="msg-artifact-meta">{{ artifactFileSubtitle(art) }}</span>
-                  </span>
-                  <span class="msg-artifact-action">{{ artifactActionLabel(art) }}</span>
-                </button>
+                  :artifact="art"
+                  :category="artifactCategory(art)"
+                  :icon-name="artifactIconName(art)"
+                  :title="artifactFileTitle(art)"
+                  :subtitle="artifactFileSubtitle(art)"
+                  :action-label="artifactActionLabel(art)"
+                  @download="downloadArtifact"
+                />
               </div>
             </div>
 
@@ -432,68 +424,22 @@
       </div>
     </div>
 
-    <!-- Composer -->
-    <div ref="composerRef" class="chat-composer">
-      <div class="chat-composer-inner">
-        <div v-if="pendingAttachments.length > 0" class="chat-attachments">
-          <div
-            v-for="(att, i) in pendingAttachments"
-            :key="att.local_id"
-            class="attachment-chip"
-            :class="{ 'attachment-chip--busy': att.kind === 'inline_pending' || att.kind === 'uploading' }"
-            :data-mime="att.mime || ''"
-          >
-            <span class="attachment-chip__icon" aria-hidden="true">
-              <span v-if="att.kind === 'inline_pending' || att.kind === 'uploading'" class="spinner attachment-chip__spinner" />
-              <span v-else>file</span>
-            </span>
-            <span class="attachment-chip__name">{{ att.name }}</span>
-            <span class="attachment-chip__meta">{{ attachmentMeta(att) }}</span>
-            <button class="attachment-remove" title="Remove" @click="removeAttachment(i)">&times;</button>
-          </div>
-        </div>
-        <div class="chat-input-panel">
-          <div class="chat-input-wrap">
-            <textarea
-              ref="textareaRef"
-              v-model="inputText"
-              class="chat-textarea"
-              rows="1"
-              :placeholder="composerPlaceholder"
-              maxlength="100000"
-              aria-label="Message to send"
-              @input="onTextareaInput"
-              @keydown="onTextareaKeydown"
-              @compositionstart="composing = true"
-              @compositionend="composing = false"
-            />
-          </div>
-          <div class="chat-input-footer">
-            <div class="chat-input-actions chat-input-actions--left">
-              <button class="btn btn--icon btn--ghost chat-plus-btn" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON" aria-label="Attach files" @click="fileInputRef?.click()">
-                <Icon name="plus" :size="18" />
-              </button>
-            </div>
-            <div class="chat-input-actions chat-input-actions--right">
-              <button class="btn btn--icon btn--primary chat-send-btn" :class="{ 'is-ready': hasSendContent }" :title="sendButtonTitle" aria-label="Send" @click="onSend">
-                <Icon name="arrowUp" :size="17" />
-              </button>
-              <button v-if="isStreaming" class="btn btn--icon btn--danger chat-send-btn" title="Stop current response (Esc)" aria-label="Stop current response" @click="onStop">
-                <Icon name="stop" :size="16" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <input
-      ref="fileInputRef"
-      type="file"
-      accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,text/html,text/csv,application/json,.md,.markdown"
-      multiple
-      class="hidden"
-      @change="onFileInputChange"
+    <ChatComposer
+      ref="composerRef"
+      v-model="inputText"
+      :attachments="pendingAttachments"
+      :has-send-content="hasSendContent"
+      :is-streaming="isStreaming"
+      :is-new-landing="isNewChatLanding"
+      :placeholder="composerPlaceholder"
+      :send-button-title="sendButtonTitle"
+      @composition-change="composing = $event"
+      @file-change="onFileInputChange"
+      @input="onTextareaInput"
+      @keydown="onTextareaKeydown"
+      @remove-attachment="removeAttachment"
+      @send="onSend"
+      @stop="onStop"
     />
 
     <!-- Tool Result Modal -->
@@ -516,23 +462,31 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useAppStore } from '@/stores/app'
+import ArtifactChip from '@/components/chat/ArtifactChip.vue'
+import ChatComposer from '@/components/chat/ChatComposer.vue'
 import Icon from '@/components/Icon.vue'
+import { useMediaQuery } from '@/composables/chat/useMediaQuery'
+import type { Attachment } from '@/types/chat'
 import type { IconName } from '@/utils/icons'
+import type {
+  ArtifactPayload,
+  ChatHistoryResponse,
+  ChatSendParams,
+  ChatSendResponse,
+  CompactionPayload,
+  RouterDecisionPayload,
+  SessionMessagesSubscribeParams,
+  SessionMessagesSubscribeResponse,
+  SessionEventPayload,
+  TextDeltaPayload,
+  ToolDeltaPayload,
+  ToolResultPayload,
+  ToolUsePayload,
+} from '@/types/rpc'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
 /* ── Types ─────────────────────────────────────────────────────────── */
-
-interface Attachment {
-  kind: 'inline' | 'staged' | 'inline_pending' | 'uploading'
-  local_id: number
-  name: string
-  mime: string
-  size?: number
-  data?: string
-  dataUrl?: string
-  file_uuid?: string
-}
 
 interface PendingItem {
   text: string
@@ -540,12 +494,19 @@ interface PendingItem {
   intent: string | null
 }
 
+interface ChatComposerHandle {
+  composerElement: () => HTMLElement | null
+  focusTextarea: () => void
+  isTextareaFocused: () => boolean
+  resizeTextarea: () => void
+}
+
 interface Message {
   role: string
   text: string
   ts: string | number | null
-  routerDecision?: any
-  artifacts?: any[]
+  routerDecision?: RouterDecisionPayload | null
+  artifacts?: ArtifactPayload[]
   tool_calls?: any[]
   timeline?: any[]
   attachments?: Attachment[]
@@ -629,7 +590,7 @@ interface RenderedMessage {
   attachments?: Attachment[]
   toolCalls?: any[]
   timelineItems?: StreamTimelineItem[]
-  artifacts?: any[]
+  artifacts?: ArtifactPayload[]
   meta?: any
   interrupted?: boolean
   provenanceKind?: string
@@ -640,6 +601,7 @@ interface RenderedMessage {
   routerSource?: string
   routerObserve?: boolean
   routerStatic?: boolean
+  routerSettled?: boolean
   gridCells?: RouterCell[]
   winnerIdx?: number
 }
@@ -711,6 +673,8 @@ const rpc = useRpcStore()
 const appStore = useAppStore()
 const route = useRoute()
 const router = useRouter()
+const isCompactViewport = useMediaQuery('(max-width: 480px)')
+const isDesktopViewport = useMediaQuery('(min-width: 769px)')
 const assistantAvatarUrl = computed(() => {
   const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
   return `${base}/static/img/opensquilla-mark.png`
@@ -723,9 +687,7 @@ const landingLockupUrl = computed(() => {
 /* ── DOM refs ──────────────────────────────────────────────────────── */
 
 const threadRef = ref<HTMLElement | null>(null)
-const textareaRef = ref<HTMLTextAreaElement | null>(null)
-const composerRef = ref<HTMLElement | null>(null)
-const fileInputRef = ref<HTMLInputElement | null>(null)
+const composerRef = ref<ChatComposerHandle | null>(null)
 
 /* ── State ─────────────────────────────────────────────────────────── */
 
@@ -739,12 +701,12 @@ const messages = ref<Message[]>([])
 const pendingAttachments = ref<Attachment[]>([])
 const pendingQueue = ref<PendingItem[]>([])
 const nextAttachmentId = ref(1)
-const pendingRouterDecision = ref<{ payload: any; decision: any } | null>(null)
+const pendingRouterDecision = ref<{ payload: RouterDecisionPayload; decision: RouterDecisionPayload } | null>(null)
 
 // Streaming
 const streamRaw = ref('')
 const streamSegments = ref<StreamSegment[]>([])
-const streamArtifacts = ref<any[]>([])
+const streamArtifacts = ref<ArtifactPayload[]>([])
 const streamToolCalls = ref<StreamToolCall[]>([])
 const openToolGroups = ref<Set<string>>(new Set())
 const openToolItems = ref<Set<string>>(new Set())
@@ -899,7 +861,7 @@ const isNewChatLanding = computed(() => {
 
 const composerPlaceholder = computed(() => {
   if (isNewChatLanding.value) return '分配一个任务或提问任何问题'
-  return window.innerWidth <= 480 ? 'Message...' : 'Send a message...'
+  return isCompactViewport.value ? 'Message...' : 'Send a message...'
 })
 
 const hasSendContent = computed(() => {
@@ -926,6 +888,13 @@ const renderedMessages = computed((): RenderedMessage[] => {
   const result: RenderedMessage[] = []
   let prevDay = ''
   let prevRole = ''
+  // Track the index of the last router strip emitted within the current
+  // turn (resets on every `user` message). Within a turn we only ever
+  // show ONE router strip; later decisions update that strip in place so
+  // the selector animates from old tier → new tier instead of stacking
+  // multiple animations.
+  let turnRouterIdx = -1
+  let turnIdx = 0
 
   for (let i = 0; i < messages.value.length; i++) {
     const msg = messages.value[i]
@@ -937,12 +906,14 @@ const renderedMessages = computed((): RenderedMessage[] => {
       prevRole = ''
     }
 
+    if (msg.role === 'user') { turnRouterIdx = -1; turnIdx++ }
+
     const routerDecision = normalizeRouterDecision(msg.routerDecision || (msg.provenanceKind === 'router_decision' ? msg : null))
     if (routerDecision) {
       const cells = routerDecisionCells(routerDecision)
       const winnerIdx = routerWinnerCellIndex(cells, routerDecision.tier)
-      result.push({
-        id: `router-${msg.messageId || i}`,
+      const stripItem: RenderedMessage = {
+        id: `router-turn-${turnIdx}`,
         role: 'router',
         displayRole: 'router',
         roleLabel: 'Router',
@@ -954,10 +925,18 @@ const renderedMessages = computed((): RenderedMessage[] => {
         routerSource: routerDecision.source || 'none',
         routerObserve: routerDecision.routing_applied === false,
         routerStatic: msg.restoredFromHistory === true,
+        routerSettled: (msg as any).routerSettled === true,
         gridCells: cells,
         winnerIdx,
         messageId: msg.messageId,
-      })
+      }
+      if (turnRouterIdx >= 0) {
+        stripItem.routerSettled = true
+        result[turnRouterIdx] = stripItem
+      } else {
+        result.push(stripItem)
+        turnRouterIdx = result.length - 1
+      }
       prevRole = ''
       continue
     }
@@ -966,8 +945,8 @@ const renderedMessages = computed((): RenderedMessage[] => {
     if (usageRouterDecision) {
       const cells = routerDecisionCells(usageRouterDecision)
       const winnerIdx = routerWinnerCellIndex(cells, usageRouterDecision.tier)
-      result.push({
-        id: `router-usage-${msg.messageId || i}`,
+      const stripItem: RenderedMessage = {
+        id: `router-turn-${turnIdx}`,
         role: 'router',
         displayRole: 'router',
         roleLabel: 'Router',
@@ -979,10 +958,18 @@ const renderedMessages = computed((): RenderedMessage[] => {
         routerSource: usageRouterDecision.source || 'none',
         routerObserve: usageRouterDecision.routing_applied === false,
         routerStatic: msg.restoredFromHistory === true,
+        routerSettled: (msg as any).routerSettled === true,
         gridCells: cells,
         winnerIdx,
         messageId: `${msg.messageId || i}-router`,
-      })
+      }
+      if (turnRouterIdx >= 0) {
+        stripItem.routerSettled = true
+        result[turnRouterIdx] = stripItem
+      } else {
+        result.push(stripItem)
+        turnRouterIdx = result.length - 1
+      }
       prevRole = ''
     }
 
@@ -1544,14 +1531,6 @@ function resolveAttachmentMime(file: File): string {
   return extensionMime || file.type || 'application/octet-stream'
 }
 
-function attachmentMeta(att: Attachment): string {
-  const kb = att.size ? Math.max(1, Math.round(att.size / 1024)) + ' KB' : ''
-  const stagedTag = att.kind === 'staged' ? ' • staged' : ''
-  if (att.kind === 'inline_pending') return 'Reading...'
-  if (att.kind === 'uploading') return 'Uploading...'
-  return `${att.mime || ''} ${kb}${stagedTag}`.trim()
-}
-
 /* ── Markdown / Text processing ────────────────────────────────────── */
 
 const DIRECTIVE_TAG_RE = /\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]\s*/g
@@ -1581,20 +1560,34 @@ function stripTimePrefix(text: string): string {
   return typeof text === 'string' ? text.replace(TIME_PREFIX_RE, '') : text
 }
 
+const markdownCache = new Map<string, string>()
+const MARKDOWN_CACHE_MAX = 500
+
 function renderMarkdown(text: string): string {
   text = stripProtocolTextLeak(stripDirectiveTags(stripGeneratedArtifactMarkers(text)))
   if (!text) return ''
 
+  const cached = markdownCache.get(text)
+  if (cached !== undefined) return cached
+
   const rawHtml = marked.parse(text, { async: false, breaks: true }) as string
-  return DOMPurify.sanitize(rawHtml, {
+  const html = DOMPurify.sanitize(rawHtml, {
     ALLOWED_TAGS: [
       'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
       'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
-      'strong', 'em', 'del', 'a', 'img', 'table', 'thead',
+      'strong', 'em', 'del', 'a', 'table', 'thead',
       'tbody', 'tr', 'th', 'td', 'div', 'span', 'sup',
     ],
-    ALLOWED_ATTR: ['href', 'title', 'src', 'alt', 'class', 'target', 'rel'],
+    ALLOWED_ATTR: ['href', 'title', 'alt', 'target', 'rel'],
+    ALLOWED_URI_REGEXP: /^(?:https?|mailto|#):/i,
   })
+
+  if (markdownCache.size >= MARKDOWN_CACHE_MAX) {
+    const firstKey = markdownCache.keys().next().value
+    if (firstKey !== undefined) markdownCache.delete(firstKey)
+  }
+  markdownCache.set(text, html)
+  return html
 }
 
 /* ── Subagent ──────────────────────────────────────────────────────── */
@@ -1624,11 +1617,11 @@ function subagentBody(text: string): string {
 
 /* ── Artifacts ─────────────────────────────────────────────────────── */
 
-function artifactMime(artifact: any): string {
+function artifactMime(artifact: ArtifactPayload): string {
   return artifact?.mime ? String(artifact.mime).toLowerCase() : ''
 }
 
-function artifactName(artifact: any): string {
+function artifactName(artifact: ArtifactPayload): string {
   return artifact?.name ? String(artifact.name) : 'artifact'
 }
 
@@ -1639,7 +1632,7 @@ function artifactExtension(name: string): string {
   return trimmed.slice(idx + 1)
 }
 
-function artifactCategory(artifact: any): string {
+function artifactCategory(artifact: ArtifactPayload): string {
   const mime = artifactMime(artifact)
   if (mime.startsWith('image/')) return 'visual'
   if (ARTIFACT_MIME_CATEGORIES[mime]) return ARTIFACT_MIME_CATEGORIES[mime]
@@ -1650,7 +1643,7 @@ function artifactCategory(artifact: any): string {
   return 'file'
 }
 
-function artifactCategoryLabel(artifact: any): string {
+function artifactCategoryLabel(artifact: ArtifactPayload): string {
   const cat = artifactCategory(artifact)
   switch (cat) {
     case 'data': return 'data'
@@ -1660,7 +1653,7 @@ function artifactCategoryLabel(artifact: any): string {
   }
 }
 
-function artifactIconName(artifact: any): IconName {
+function artifactIconName(artifact: ArtifactPayload): IconName {
   const cat = artifactCategory(artifact)
   if (cat === 'visual') return 'image'
   if (cat === 'data') return 'table'
@@ -1668,29 +1661,29 @@ function artifactIconName(artifact: any): IconName {
   return 'fileText'
 }
 
-function artifactFileTitle(artifact: any): string {
+function artifactFileTitle(artifact: ArtifactPayload): string {
   return artifactName(artifact)
 }
 
-function artifactFileSubtitle(artifact: any): string {
+function artifactFileSubtitle(artifact: ArtifactPayload): string {
   const label = artifactCategoryLabel(artifact)
   const meta = artifactMeta(artifact)
   const action = artifactActionLabel(artifact) === '预览' ? '预览文件' : '下载文件'
   return [action, label.toUpperCase(), meta].filter(Boolean).join(' · ')
 }
 
-function artifactActionLabel(artifact: any): string {
+function artifactActionLabel(artifact: ArtifactPayload): string {
   const cat = artifactCategory(artifact)
   return cat === 'visual' || cat === 'document' ? '预览' : '下载'
 }
 
-function artifactMeta(artifact: any): string {
+function artifactMeta(artifact: ArtifactPayload): string {
   const mime = artifact?.mime ? String(artifact.mime) : ''
   const size = artifact?.size ? `${Math.max(1, Math.round(Number(artifact.size) / 1024))} KB` : ''
   return [mime, size].filter(Boolean).join(' · ')
 }
 
-function artifactDownloadUrl(artifact: any): string {
+function artifactDownloadUrl(artifact: ArtifactPayload): string {
   let raw = artifact?.download_url ? String(artifact.download_url) : ''
   if (!raw && artifact?.id) raw = `/api/v1/artifacts/${encodeURIComponent(artifact.id)}`
   if (!raw) return ''
@@ -1702,7 +1695,7 @@ function artifactDownloadUrl(artifact: any): string {
   } catch { return raw }
 }
 
-async function downloadArtifact(artifact: any) {
+async function downloadArtifact(artifact: ArtifactPayload) {
   const url = artifactDownloadUrl(artifact)
   if (!url) return
   try {
@@ -1733,45 +1726,32 @@ function genKey(): string {
   return webchatSessionKey(agentIdFromSessionKey(sessionKey.value), Math.random().toString(36).slice(2, 10))
 }
 
-function persistSession(key: string) {
+function routeStringParam(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function persistSession(key: string, options: { updateRoute?: boolean } = {}) {
   sessionKey.value = canonicalSessionKey(key)
   try { localStorage.setItem('opensquilla_active_session', sessionKey.value) } catch {}
-  try {
-    const url = new URL(window.location.href)
-    url.searchParams.set('session', sessionKey.value)
-    url.searchParams.delete('agent')
-    url.searchParams.delete('new')
-    url.searchParams.delete('newChat')
-    history.replaceState(null, '', url)
-  } catch {}
+  if (options.updateRoute === false) return
+  if (routeStringParam(route.query.session) === sessionKey.value) return
+  router.replace({ path: '/chat', query: { session: sessionKey.value } }).catch(() => {})
 }
 
 function hasNewChatRouteSignal(): boolean {
-  if (route.query.newChat === '1' || route.query.new === '1') return true
-  try {
-    const params = new URL(window.location.href).searchParams
-    return params.get('newChat') === '1' || params.get('new') === '1'
-  } catch {
-    return false
-  }
-}
-
-function replaceRouteWithCurrentSession() {
-  if (!sessionKey.value) return
-  router.replace({ path: '/chat', query: { session: sessionKey.value } }).catch(() => {})
+  return route.query.newChat === '1' || route.query.new === '1'
 }
 
 function consumeNewChatRouteSignal() {
   newSession()
-  replaceRouteWithCurrentSession()
 }
 
 function readSessionFromUrl(): string {
-  try { return new URLSearchParams(window.location.search).get('session') || '' } catch { return '' }
+  return routeStringParam(route.query.session)
 }
 
 function readAgentFromUrl(): string {
-  try { return new URLSearchParams(window.location.search).get('agent') || '' } catch { return '' }
+  return routeStringParam(route.query.agent)
 }
 
 function loadElevatedMode() {
@@ -1929,8 +1909,8 @@ async function subscribeSession() {
   try {
     await rpc.waitForConnection()
     if (key !== sessionKey.value) return
-    const params: any = { key, since_stream_seq: sinceStreamSeq }
-    const res = await rpc.call('sessions.messages.subscribe', params) as any
+    const params: SessionMessagesSubscribeParams = { key, since_stream_seq: sinceStreamSeq }
+    const res = await rpc.call<SessionMessagesSubscribeResponse>('sessions.messages.subscribe', params)
     if (key !== sessionKey.value) return
     if (res && res.subscribed === false) throw new Error('No subscription manager available')
     applySessionRunState(res)
@@ -1960,23 +1940,23 @@ function applySessionRunState(source: any) {
   runStatus.value = state
 }
 
-function isCurrentSessionPayload(payload: any): boolean {
+function isCurrentSessionPayload(payload: SessionEventPayload): boolean {
   const key = payload?.key || payload?.session_key || payload?.sessionKey || ''
   return !key || !sessionKey.value || key === sessionKey.value
 }
 
-function taskGroupId(payload: any): string {
+function taskGroupId(payload: SessionEventPayload): string {
   const id = payload?.group_id
   return typeof id === 'string' && id ? id : ''
 }
 
-function noteTaskGroupActive(payload: any) {
+function noteTaskGroupActive(payload: SessionEventPayload) {
   const gid = taskGroupId(payload)
   if (gid) activeTaskGroups.value.add(gid)
   applySessionRunState(activeTaskGroupRunState(payload))
 }
 
-function noteTaskGroupTerminal(payload: any, terminalStatus: string) {
+function noteTaskGroupTerminal(payload: SessionEventPayload, terminalStatus: string) {
   const gid = taskGroupId(payload)
   if (gid) activeTaskGroups.value.delete(gid)
   if (activeTaskGroups.value.size > 0) {
@@ -1989,23 +1969,23 @@ function noteTaskGroupTerminal(payload: any, terminalStatus: string) {
   })
 }
 
-function activeTaskGroupRunState(payload: any = {}) {
+function activeTaskGroupRunState(payload: SessionEventPayload = {}) {
   return {
     run_status: 'running',
     active_task: { ...(payload || {}), status: 'running', task_group_count: activeTaskGroups.value.size },
   }
 }
 
-function sessionChangeIsTerminal(payload: any): boolean {
+function sessionChangeIsTerminal(payload: SessionEventPayload): boolean {
   const reason = String(payload?.reason || '').toLowerCase()
   if (reason === 'turn_complete' || reason === 'task_terminal') return true
   const lifecycle = String(payload?.status || '').toLowerCase()
   if (['done', 'failed', 'killed', 'timeout'].includes(lifecycle)) return true
-  const runStatus = normalizeRunStatus(payload?.run_status || payload?.runStatus)
+  const runStatus = normalizeRunStatus(String(payload?.run_status || payload?.runStatus || ''))
   return ['failed', 'timeout', 'cancelled', 'interrupted'].includes(runStatus)
 }
 
-function syncTerminalSessionChange(payload: any = {}) {
+function syncTerminalSessionChange(payload: SessionEventPayload = {}) {
   if (!isCurrentSessionPayload(payload)) return false
   activeTaskGroups.value.clear()
   const state = sessionRunStatus(payload)
@@ -2141,16 +2121,19 @@ function resetStreamForRouterReplay() {
 }
 
 function removeTrailingRouterStrips() {
-  while (messages.value[messages.value.length - 1]?.role === 'router') {
-    messages.value.pop()
-  }
+  // No-op retained for back-compat. We no longer pop router strips on
+  // router_control_replay — the next router_decision coalesces into the
+  // existing strip so the selector slides via CSS transition.
 }
+void removeTrailingRouterStrips
 
 function handleRouterControlReplay() {
   if (!isStreaming.value) startStreaming()
   pendingRouterDecision.value = null
   resetStreamForRouterReplay()
-  removeTrailingRouterStrips()
+  // Do NOT remove the existing router strip — the next router_decision will
+  // arrive immediately and we want to coalesce into the existing strip so
+  // the selector slides via transition instead of remounting and replaying.
   resetStreamIdleTimer()
   scrollToBottom()
 }
@@ -2250,13 +2233,31 @@ function scrollToBottom() {
   })
 }
 
-function appendRouterDecision(payload: any, decision = normalizeRouterDecision(payload)) {
+function appendRouterDecision(payload: RouterDecisionPayload, decision = normalizeRouterDecision(payload)) {
   if (!decision) return
   const messageId = payload?.stream_seq
     ? `router-${sessionKey.value}-${payload.stream_seq}`
     : `router-${sessionKey.value}-${Date.now()}`
   const last = messages.value[messages.value.length - 1]
   if (last?.messageId === messageId) return
+  // Coalesce router decisions within the same turn — when the model makes a
+  // tool call that re-routes (e.g. user asks to switch models), update the
+  // turn's existing strip in place AND mark it settled so the strip's
+  // selector slides via CSS transition instead of replaying the keyframes.
+  if (isStreaming.value) {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const m = messages.value[i]
+      if (m.role === 'user') break
+      if (m.role === 'router' && m.provenanceKind === 'router_decision') {
+        m.routerDecision = decision
+        m.messageId = messageId
+        m.ts = new Date().toISOString()
+        ;(m as any).routerSettled = true
+        scrollToBottom()
+        return
+      }
+    }
+  }
   messages.value.push({
     role: 'router',
     text: '',
@@ -2268,14 +2269,18 @@ function appendRouterDecision(payload: any, decision = normalizeRouterDecision(p
   scrollToBottom()
 }
 
-function queueRouterDecision(payload: any) {
+function queueRouterDecision(payload: RouterDecisionPayload) {
   const decision = normalizeRouterDecision(payload)
   if (!decision) return
   if (isStreaming.value && streamBubble.value && !streamHasVisibleOutput.value) {
     const model = shortModelName(decision.model || decision.routed_model || '')
     setStreamActivity(model ? `模型路由完成 · ${model}` : '模型路由完成')
   }
+  // Show the router strip immediately so the user sees which model was picked
+  // before the response starts streaming. Keep the pending ref for the
+  // abort/clear path, but the bubble is already on screen.
   pendingRouterDecision.value = { payload, decision }
+  appendRouterDecision(payload, decision)
 }
 
 function flushPendingRouterDecision() {
@@ -2414,7 +2419,7 @@ function ensureStreamToolCall(payload: any, options: { running: boolean }): Stre
   return call
 }
 
-function appendToolCall(payload: any) {
+function appendToolCall(payload: ToolUsePayload) {
   const tc = ensureStreamToolCall(payload, { running: true })
   if (!tc) return
 
@@ -2422,7 +2427,7 @@ function appendToolCall(payload: any) {
   scrollToBottom()
 }
 
-function appendToolDelta(payload: any) {
+function appendToolDelta(payload: ToolDeltaPayload) {
   if (!payload || aborted.value) return
   if (isStreaming.value && streamBubble.value && !streamHasVisibleOutput.value) {
     setStreamActivity('正在接收工具参数')
@@ -2446,7 +2451,7 @@ function appendToolDelta(payload: any) {
   scrollToBottom()
 }
 
-function appendToolResult(payload: any) {
+function appendToolResult(payload: ToolResultPayload) {
   if (!payload) return
   const name = normalizeToolName(payload)
   if (name && isInternalToolName(name)) return
@@ -2612,7 +2617,7 @@ function showToolResultModal(content: string, title = 'Tool Result') {
   toolResultModal.value = { open: true, title, content }
 }
 
-function appendArtifact(payload: any) {
+function appendArtifact(payload: ArtifactPayload) {
   if (!payload) return
   clearStreamActivity()
   streamArtifacts.value.push(payload)
@@ -2661,9 +2666,11 @@ async function onSend() {
   const now = new Date().toISOString()
   const userText = text
   messages.value.push({ role: 'user', text: userText, ts: now })
+  autoScroll.value = true
+  scrollToBottom()
 
   // Build RPC params
-  const params: any = { message: text || 'Describe these attachments', sessionKey: sessionKey.value }
+  const params: ChatSendParams = { message: text || 'Describe these attachments', sessionKey: sessionKey.value }
   const elevated = normalizeElevatedMode(elevatedMode.value)
   if (elevated) params._source = { elevated }
   if (pendingSessionIntent.value) {
@@ -2686,7 +2693,7 @@ async function onSend() {
   showThinkingIndicator()
 
   try {
-    const res = await rpc.call('chat.send', params) as any
+    const res = await rpc.call<ChatSendResponse>('chat.send', params)
     if (res?.sessionKey && res.sessionKey !== sessionKey.value) persistSession(res.sessionKey)
   } catch (err: any) {
     endStreaming()
@@ -2834,7 +2841,7 @@ function popPendingTail() {
 
 function popAllPendingIntoComposer(): boolean {
   clearPendingDrainAfterTerminalTimer()
-  if (!textareaRef.value || pendingQueue.value.length === 0) return false
+  if (!composerRef.value || pendingQueue.value.length === 0) return false
   const queuedTexts = pendingQueue.value.map(p => p.text).filter(Boolean)
   const queuedAttachments = pendingQueue.value.flatMap(p => p.attachments || [])
   const headIntent = pendingQueue.value[0]?.intent
@@ -3035,7 +3042,7 @@ async function loadHistory() {
   try {
     await rpc.waitForConnection()
     if (key !== sessionKey.value) return
-    const data = await rpc.call('chat.history', { sessionKey: key }) as any
+    const data = await rpc.call<ChatHistoryResponse>('chat.history', { sessionKey: key })
     if (key !== sessionKey.value) return
     const msgs = data.messages || []
 
@@ -3046,8 +3053,8 @@ async function loadHistory() {
       return
     }
 
-    messages.value = msgs.map((msg: any) => ({
-      role: msg.role,
+    messages.value = msgs.map(msg => ({
+      role: msg.role || 'assistant',
       text: msg.role === 'user' ? stripTimePrefix(msg.text || '') : msg.text || '',
       ts: msg.timestamp || msg.ts || null,
       routerDecision: msg.router_decision || msg.routerDecision || null,
@@ -3059,9 +3066,9 @@ async function loadHistory() {
       provenanceSourceSessionKey: msg.provenance_source_session_key || '',
       provenanceSourceTool: msg.provenance_source_tool || '',
       usage: msg.usage || msg.turn_usage || null,
-      model: msg.model || null,
-      input: msg.input || msg.input_tokens || null,
-      output: msg.output || msg.output_tokens || null,
+      model: msg.model || undefined,
+      input: msg.input || msg.input_tokens || undefined,
+      output: msg.output || msg.output_tokens || undefined,
       messageId: msg.message_id || msg.id || '',
       restoredFromHistory: true,
     }))
@@ -3138,7 +3145,7 @@ function editMessage(index: number) {
   messages.value = messages.value.slice(0, msgIndex)
   inputText.value = text
   autoResizeTextarea()
-  nextTick(() => textareaRef.value?.focus())
+  composerRef.value?.focusTextarea()
 }
 
 /* ── Textarea ──────────────────────────────────────────────────────── */
@@ -3149,12 +3156,7 @@ function onTextareaInput() {
 }
 
 function autoResizeTextarea() {
-  nextTick(() => {
-    const ta = textareaRef.value
-    if (!ta) return
-    ta.style.height = 'auto'
-    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'
-  })
+  composerRef.value?.resizeTextarea()
 }
 
 function onTextareaKeydown(e: KeyboardEvent) {
@@ -3339,13 +3341,13 @@ async function loadFeatureToggles() {
 
 /* ── Event handlers ────────────────────────────────────────────────── */
 
-function isStaleEpoch(payload: any): boolean {
+function isStaleEpoch(payload: SessionEventPayload): boolean {
   const ep = payload?.epoch
   if (typeof ep !== 'number' || !Number.isFinite(ep)) return false
   return ep < currentEpoch.value
 }
 
-function acceptStreamSeq(payload: any): boolean {
+function acceptStreamSeq(payload: SessionEventPayload): boolean {
   if (!isCurrentSessionPayload(payload)) return false
   const seq = payload?.stream_seq
   if (typeof seq !== 'number' || !Number.isFinite(seq)) return true
@@ -3418,7 +3420,7 @@ function onDocumentKeydown(e: KeyboardEvent) {
     return
   }
 
-  if (pendingQueue.value.length > 0 && document.activeElement !== textareaRef.value) {
+  if (pendingQueue.value.length > 0 && !composerRef.value?.isTextareaFocused()) {
     e.preventDefault()
     popAllPendingIntoComposer()
   }
@@ -3440,9 +3442,10 @@ onMounted(async () => {
   const startNewChatOnMount = hasNewChatRouteSignal()
   const urlSession = readSessionFromUrl()
   const urlAgent = readAgentFromUrl()
-  const storedSession = localStorage.getItem('opensquilla_active_session') || ''
-  sessionKey.value = canonicalSessionKey(urlSession || (urlAgent ? webchatSessionKey(urlAgent) : storedSession))
-  persistSession(sessionKey.value)
+  const storedSession = canonicalSessionKey(localStorage.getItem('opensquilla_active_session') || '')
+  const fallbackSession = urlAgent ? webchatSessionKey(urlAgent) : (storedSession || WEBCHAT_SESSION_KEY)
+  sessionKey.value = canonicalSessionKey(urlSession || fallbackSession)
+  persistSession(sessionKey.value, { updateRoute: !urlSession })
 
   // Load elevated mode
   loadElevatedMode()
@@ -3451,14 +3454,14 @@ onMounted(async () => {
   await loadFeatureToggles()
 
   // Subscribe to RPC events
-  unsubs.push(rpc.on('session.event.text_delta', (payload: any) => {
+  unsubs.push(rpc.on('session.event.text_delta', (payload: TextDeltaPayload) => {
     if (isStaleEpoch(payload)) return
     if (!acceptStreamSeq(payload)) return
     resetStreamIdleTimer()
     appendDelta(payload.text || '')
   }))
 
-  unsubs.push(rpc.on('session.event.tool_use_start', (payload: any) => {
+  unsubs.push(rpc.on('session.event.tool_use_start', (payload: ToolUsePayload) => {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
     if (!acceptStreamSeq(payload)) return
@@ -3466,7 +3469,7 @@ onMounted(async () => {
     appendToolCall(payload)
   }))
 
-  unsubs.push(rpc.on('session.event.tool_use_delta', (payload: any) => {
+  unsubs.push(rpc.on('session.event.tool_use_delta', (payload: ToolDeltaPayload) => {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
     if (!acceptStreamSeq(payload)) return
@@ -3474,7 +3477,7 @@ onMounted(async () => {
     appendToolDelta(payload)
   }))
 
-  unsubs.push(rpc.on('session.event.tool_result', (payload: any) => {
+  unsubs.push(rpc.on('session.event.tool_result', (payload: ToolResultPayload) => {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
     if (!acceptStreamSeq(payload)) return
@@ -3482,7 +3485,7 @@ onMounted(async () => {
     appendToolResult(payload)
   }))
 
-  unsubs.push(rpc.on('session.event.artifact', (payload: any) => {
+  unsubs.push(rpc.on('session.event.artifact', (payload: ArtifactPayload) => {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
     if (!acceptStreamSeq(payload)) return
@@ -3490,7 +3493,7 @@ onMounted(async () => {
     appendArtifact(payload)
   }))
 
-  unsubs.push(rpc.on('session.event.state_change', (payload: any) => {
+  unsubs.push(rpc.on('session.event.state_change', (payload: SessionEventPayload) => {
     if (isStaleEpoch(payload)) return
     if (!payload || aborted.value) return
     if (!acceptStreamSeq(payload)) return
@@ -3514,7 +3517,7 @@ onMounted(async () => {
     }
   }))
 
-  unsubs.push(rpc.on('session.event.run_heartbeat', (payload: any) => {
+  unsubs.push(rpc.on('session.event.run_heartbeat', (payload: SessionEventPayload) => {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
     if (!acceptStreamSeq(payload)) return
@@ -3527,18 +3530,18 @@ onMounted(async () => {
     }
   }))
 
-  unsubs.push(rpc.on('session.event.compaction', (payload: any, meta: any) => {
+  unsubs.push(rpc.on('session.event.compaction', (payload: CompactionPayload, meta: any) => {
     if (isStaleEpoch(payload)) return
     if (!acceptStreamSeq(payload)) return
     showCompactionToast(payload || {}, meta || {})
   }))
 
-  unsubs.push(rpc.on('session.event.warning', (payload: any) => {
+  unsubs.push(rpc.on('session.event.warning', (payload: SessionEventPayload) => {
     if (isStaleEpoch(payload)) return
     console.warn((payload && payload.message) || 'Assistant warning')
   }))
 
-  unsubs.push(rpc.on('session.epoch_changed', (payload: any) => {
+  unsubs.push(rpc.on('session.epoch_changed', (payload: SessionEventPayload) => {
     const ep = payload?.epoch
     if (typeof ep === 'number' && Number.isFinite(ep) && ep > currentEpoch.value) {
       activeTaskGroups.value.clear()
@@ -3546,7 +3549,7 @@ onMounted(async () => {
     }
   }))
 
-  unsubs.push(rpc.on('sessions.changed', (payload: any) => {
+  unsubs.push(rpc.on('sessions.changed', (payload: SessionEventPayload) => {
     if (isStaleEpoch(payload)) return
     if (!isCurrentSessionPayload(payload)) return
     if (sessionChangeIsTerminal(payload)) {
@@ -3556,47 +3559,47 @@ onMounted(async () => {
     applySessionRunState(payload)
   }))
 
-  unsubs.push(rpc.on('task.queued', (payload: any) => {
+  unsubs.push(rpc.on('task.queued', (payload: SessionEventPayload) => {
     if (!isCurrentSessionPayload(payload)) return
     applySessionRunState({ run_status: 'queued', active_task: { ...(payload || {}), status: 'queued' } })
   }))
 
-  unsubs.push(rpc.on('task.running', (payload: any) => {
+  unsubs.push(rpc.on('task.running', (payload: SessionEventPayload) => {
     if (!isCurrentSessionPayload(payload)) return
     applySessionRunState({ run_status: 'running', active_task: { ...(payload || {}), status: 'running' } })
   }))
 
-  unsubs.push(rpc.on('session.event.task_group.waiting', (payload: any) => {
+  unsubs.push(rpc.on('session.event.task_group.waiting', (payload: SessionEventPayload) => {
     if (isStaleEpoch(payload)) return
     if (!acceptStreamSeq(payload)) return
     noteTaskGroupActive(payload)
   }))
 
-  unsubs.push(rpc.on('session.event.task_group.synthesizing', (payload: any) => {
+  unsubs.push(rpc.on('session.event.task_group.synthesizing', (payload: SessionEventPayload) => {
     if (isStaleEpoch(payload)) return
     if (!acceptStreamSeq(payload)) return
     noteTaskGroupActive(payload)
   }))
 
-  unsubs.push(rpc.on('session.event.task_group.done', (payload: any) => {
+  unsubs.push(rpc.on('session.event.task_group.done', (payload: SessionEventPayload) => {
     if (isStaleEpoch(payload)) return
     if (!acceptStreamSeq(payload)) return
     noteTaskGroupTerminal(payload, 'succeeded')
   }))
 
-  unsubs.push(rpc.on('session.event.task_group.failed', (payload: any) => {
+  unsubs.push(rpc.on('session.event.task_group.failed', (payload: SessionEventPayload) => {
     if (isStaleEpoch(payload)) return
     if (!acceptStreamSeq(payload)) return
     noteTaskGroupTerminal(payload, 'failed')
   }))
 
-  unsubs.push(rpc.on('session.event.router_decision', (payload: any) => {
+  unsubs.push(rpc.on('session.event.router_decision', (payload: RouterDecisionPayload) => {
     if (isStaleEpoch(payload)) return
     if (!acceptStreamSeq(payload)) return
     queueRouterDecision(payload)
   }))
 
-  unsubs.push(rpc.on('session.event.router_control_replay', (payload: any) => {
+  unsubs.push(rpc.on('session.event.router_control_replay', (payload: SessionEventPayload) => {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
     if (!acceptStreamSeq(payload)) return
@@ -3698,12 +3701,13 @@ onMounted(async () => {
   document.addEventListener('click', onDocumentClick)
 
   // Composer resize observer
-  if (composerRef.value) {
+  const composerEl = composerRef.value?.composerElement()
+  if (composerEl) {
     composerResizeObserver = new ResizeObserver(() => {
-      const h = composerRef.value?.getBoundingClientRect().height || 0
+      const h = composerRef.value?.composerElement()?.getBoundingClientRect().height || 0
       document.documentElement.style.setProperty('--composer-h', h + 'px')
     })
-    composerResizeObserver.observe(composerRef.value)
+    composerResizeObserver.observe(composerEl)
   }
 
   // Load the requested chat state.
@@ -3716,8 +3720,8 @@ onMounted(async () => {
   loadSlashCommands()
 
   // Focus textarea on desktop
-  if (window.innerWidth > 768) {
-    nextTick(() => textareaRef.value?.focus())
+  if (isDesktopViewport.value) {
+    composerRef.value?.focusTextarea()
   }
 })
 
@@ -3920,7 +3924,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   align-items: center;
   padding: 0.125rem 0.5rem;
   border-radius: 9999px;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   background: var(--bg-tertiary, #e5e5e5);
   color: var(--text-muted, #666);
@@ -3946,7 +3950,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 }
 
 .chat-ctx-warn {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: #dc2626;
 }
@@ -4088,7 +4092,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   padding: 0.0625rem 0.25rem;
   border-radius: 3px;
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: #52525b;
 }
 .msg-ai-text :deep(pre) {
@@ -4156,9 +4160,10 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 .msg-ai-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.375rem;
-  font-size: 0.625rem;
-  color: #c4c4c4;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  color: var(--text-muted, #8a8a8a);
 }
 
 /* System / Subagent / Error messages */
@@ -4169,7 +4174,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 }
 
 .msg-system {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: #a1a1aa;
   padding: 0.25rem 0.625rem;
   border-radius: 6px;
@@ -4441,7 +4446,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 }
 
 .step-status {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: #9ca29b;
   white-space: nowrap;
 }
@@ -4508,13 +4513,13 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 }
 
 .chat-pending-label {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-muted, #666);
 }
 
 .chat-pending-clear {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--accent-color, #3b82f6);
   background: none;
   border: none;
@@ -4535,7 +4540,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   background: var(--bg-primary, #fff);
   border: 1px solid var(--border-color, #e5e5e5);
   border-radius: 0.375rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   cursor: default;
 }
 
@@ -4559,7 +4564,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 }
 
 .chat-pending-attch {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
 }
 
 /* Compact status */
@@ -4691,7 +4696,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   background: #f9fafb;
   border: 1px solid var(--border-color, #e5e5e5);
   border-radius: 0.375rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
 }
 
 .attachment-chip--busy {
@@ -4954,7 +4959,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 
 .btn--sm {
   padding: 0.25rem 0.5rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
 }
 
 /* Toolbar */
@@ -5086,7 +5091,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   align-items: center;
   padding: 0.25rem 0.625rem;
   border-radius: 0.375rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
   border: 1px solid transparent;
@@ -5318,7 +5323,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 }
 
 .msg-artifact-card__name {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5491,7 +5496,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 }
 
 .msg-file-chip__meta {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--text-muted, #999);
 }
 
@@ -5525,7 +5530,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
   padding: 0.5rem;
   background: var(--bg-tertiary, #e5e5e5);
   border-radius: 0.25rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   overflow-x: auto;
   max-height: 200px;
   overflow-y: auto;
@@ -5675,6 +5680,31 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 
 .router-fx[data-source="fallback"] .router-fx-cell.win::after {
   background: var(--router-danger);
+}
+
+/* Settled state: a router decision has already animated in this turn.
+   Subsequent decisions in the same turn (e.g. tool-call model switch)
+   update data only — no keyframes replay; the selector slides via
+   transition to the new tier. */
+.router-fx[data-settled="true"] .router-fx-cell,
+.router-fx[data-settled="true"] .router-fx-cell.win,
+.router-fx[data-settled="true"] .router-fx-cell.win::after,
+.router-fx[data-settled="true"] .router-fx-header .glyph {
+  animation: none !important;
+}
+.router-fx[data-settled="true"] .router-fx-cell.win {
+  color: var(--router-accent);
+  background: color-mix(in srgb, var(--router-accent) 9%, #fff);
+  border-color: var(--router-accent);
+  font-weight: 600;
+}
+.router-fx[data-settled="true"][data-source="fallback"] .router-fx-cell.win {
+  color: var(--router-danger);
+  background: color-mix(in srgb, var(--router-danger) 9%, #fff);
+  border-color: var(--router-danger);
+}
+.router-fx[data-settled="true"] .router-fx-selector {
+  transition: left 360ms cubic-bezier(.4,.0,.2,1), top 360ms cubic-bezier(.4,.0,.2,1);
 }
 
 @keyframes router-fx-winner-reveal {
@@ -5952,7 +5982,7 @@ function settleCompactInFlight(payload: any = {}, options: any = {}) {
 
 /* Savings indicator */
 .savings-indicator {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
 }
 

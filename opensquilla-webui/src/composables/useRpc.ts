@@ -10,16 +10,20 @@ export function useRpcEvent(event: string, handler: (...args: any[]) => void) {
   let unsub: (() => void) | null = null
 
   onMounted(() => {
-    if (rpc.client) {
-      unsub = rpc.on(event, handler)
-    }
+    unsub = rpc.on(event, handler)
   })
 
   onUnmounted(() => {
     unsub?.()
+    unsub = null
   })
 
-  return { unsub }
+  return {
+    unsub: () => {
+      unsub?.()
+      unsub = null
+    },
+  }
 }
 
 /**
@@ -34,13 +38,15 @@ export function useRpcCall<T = unknown>(
   const loading = ref(false)
   const error = ref<string | null>(null)
 
+  let stateUnsub: (() => void) | null = null
+
   async function execute() {
     loading.value = true
     error.value = null
     try {
       data.value = await rpc.call<T>(method, params)
     } catch (e: any) {
-      error.value = e.message || String(e)
+      error.value = e?.message || String(e)
       throw e
     } finally {
       loading.value = false
@@ -49,15 +55,25 @@ export function useRpcCall<T = unknown>(
 
   onMounted(() => {
     if (rpc.isConnected) {
-      execute()
+      execute().catch(() => {
+        /* error already captured in error ref */
+      })
     } else {
-      const unsub = rpc.on('_state', (s: string) => {
+      stateUnsub = rpc.on('_state', (s: string) => {
         if (s === 'connected') {
-          unsub?.()
-          execute()
+          stateUnsub?.()
+          stateUnsub = null
+          execute().catch(() => {
+            /* error already captured in error ref */
+          })
         }
       })
     }
+  })
+
+  onUnmounted(() => {
+    stateUnsub?.()
+    stateUnsub = null
   })
 
   return { data, loading, error, execute }

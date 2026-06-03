@@ -87,10 +87,10 @@ export const useRpcStore = defineStore('rpc', () => {
     return client.value.on(event, handler)
   }
 
-  function waitForConnection(): Promise<void> {
+  function waitForConnection(timeoutMs?: number): Promise<void> {
     if (!client.value) return Promise.reject(new Error('RPC client not initialized'))
     if (state.value === 'connected') return Promise.resolve()
-    return client.value.waitForConnection()
+    return client.value.waitForConnection(timeoutMs)
   }
 
   return {

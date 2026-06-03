@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -9,10 +9,22 @@ export const useAppStore = defineStore('app', () => {
   const sidebarHovered = ref(false)
   const approvalCount = ref(0)
 
+  const systemDark = ref<boolean>(
+    window.matchMedia('(prefers-color-scheme: dark)').matches
+  )
+
   const resolvedTheme = computed<'light' | 'dark'>(() => {
     if (theme.value !== 'system') return theme.value
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+    return systemDark.value ? 'dark' : 'light'
   })
+
+  let mq: MediaQueryList | null = null
+  let mqHandler: ((e: MediaQueryListEvent) => void) | null = null
+  let themeWatchStop: (() => void) | null = null
+
+  function applyTheme() {
+    document.documentElement.setAttribute('data-theme', resolvedTheme.value)
+  }
 
   function initTheme() {
     try {
@@ -23,24 +35,38 @@ export const useAppStore = defineStore('app', () => {
     } catch {
       // ignore
     }
-    applyTheme()
 
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const handler = () => {
-      if (theme.value === 'system') applyTheme()
+    if (!themeWatchStop) {
+      themeWatchStop = watch(resolvedTheme, applyTheme, { immediate: true })
+    } else {
+      applyTheme()
     }
-    if (mq.addEventListener) mq.addEventListener('change', handler)
-    else if ((mq as any).addListener) (mq as any).addListener(handler)
+
+    if (mq) return // idempotent
+    mq = window.matchMedia('(prefers-color-scheme: dark)')
+    mqHandler = (e: MediaQueryListEvent) => {
+      systemDark.value = e.matches
+    }
+    if (mq.addEventListener) mq.addEventListener('change', mqHandler)
+    else if ((mq as any).addListener) (mq as any).addListener(mqHandler)
   }
 
-  function applyTheme() {
-    document.documentElement.setAttribute('data-theme', resolvedTheme.value)
+  function destroyTheme() {
+    if (mq && mqHandler) {
+      if (mq.removeEventListener) mq.removeEventListener('change', mqHandler)
+      else if ((mq as any).removeListener) (mq as any).removeListener(mqHandler)
+    }
+    mq = null
+    mqHandler = null
+    if (themeWatchStop) {
+      themeWatchStop()
+      themeWatchStop = null
+    }
   }
 
   function setTheme(mode: ThemeMode) {
     theme.value = mode
     try { localStorage.setItem('opensquilla-theme', mode) } catch {}
-    applyTheme()
   }
 
   function cycleTheme() {
@@ -80,6 +106,7 @@ export const useAppStore = defineStore('app', () => {
     approvalCount,
     features,
     initTheme,
+    destroyTheme,
     setTheme,
     cycleTheme,
     setSidebarOpen,

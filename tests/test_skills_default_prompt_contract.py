@@ -158,6 +158,7 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
         EligibilityContext(
             os_name="linux",
             has_bin_cache={
+                "bibtex": True,
                 "codex": True,
                 "curl": True,
                 "ffmpeg": True,

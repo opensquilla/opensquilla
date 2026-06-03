@@ -85,8 +85,9 @@ def test_sandbox_view_exposes_realtime_run_context_editing() -> None:
     assert "data-sandbox-action=\"workspace-browse\"" in sandbox_js
     assert "data-sandbox-action=\"mount-add\"" in sandbox_js
     assert "data-sandbox-action=\"mount-browse\"" in sandbox_js
-    assert "data-sandbox-action=\"path-browser-open\"" in sandbox_js
     assert "data-sandbox-action=\"path-browser-select\"" in sandbox_js
+    assert "data-sandbox-action=\"path-browser-ok\"" in sandbox_js
+    assert "data-sandbox-action=\"path-browser-cancel\"" in sandbox_js
     assert "data-sandbox-action=\"domain-add\"" in sandbox_js
     assert "data-sandbox-action=\"bundle-toggle\"" in sandbox_js
     assert ".sandbox-inline-form" in sandbox_css
@@ -107,6 +108,29 @@ def test_sandbox_view_uses_inline_path_browser_not_native_picker_rpc() -> None:
     assert "browseChildren" in sandbox_js
     assert "_loadPathBrowser(kind, path, { browseChildren: true })" in sandbox_js
     assert "entryKind === 'directory'" in sandbox_js
+    assert "path-browser-ok" in sandbox_js
+    assert "path-browser-cancel" in sandbox_js
+
+
+def test_path_browser_has_ok_cancel_and_close_behavior() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    assert 'data-sandbox-action="path-browser-ok"' in sandbox_js
+    assert 'data-sandbox-action="path-browser-cancel"' in sandbox_js
+    assert "function _commitPathBrowser" in sandbox_js
+    assert "function _closePathBrowser" in sandbox_js
+    assert "Escape" in sandbox_js
+    assert "click outside" not in sandbox_js.lower()
+    assert "document.addEventListener('click'" in sandbox_js or 'document.addEventListener(\"click\"' in sandbox_js
+
+
+def test_path_browser_does_not_render_current_path_header() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    start = sandbox_js.index("function _renderPathBrowser")
+    body = sandbox_js[start : sandbox_js.index("  function _renderPathBrowserEntry", start)]
+    assert "sandbox-path-browser__head" not in body
+    assert "Reload path list" not in body
 
 
 def test_sandbox_view_hides_editing_panels_for_full_host_access() -> None:

@@ -6,6 +6,9 @@ const SandboxView = (() => {
   let _generation = 0;
   let _pendingApprovalCount = 0;
   let _lastData = null;
+  let _pathBrowserLoadIds = { workspace: 0, mount: 0 };
+
+  const _PATH_BROWSER_KINDS = ['workspace', 'mount'];
 
   const _RUN_MODES = [
     [
@@ -66,6 +69,10 @@ const SandboxView = (() => {
     _el.querySelector('#sandbox-refresh')?.addEventListener('click', _load);
     _el.addEventListener('submit', _onSubmit);
     _el.addEventListener('click', _onClick);
+    document.removeEventListener('keydown', _onDocumentKeydown);
+    document.removeEventListener('click', _onDocumentClick, true);
+    document.addEventListener('keydown', _onDocumentKeydown);
+    document.addEventListener('click', _onDocumentClick, true);
     window.addEventListener('opensquilla:approvals-pending', _onApprovalsPending);
     _load();
   }
@@ -76,11 +83,14 @@ const SandboxView = (() => {
       _el.removeEventListener('submit', _onSubmit);
       _el.removeEventListener('click', _onClick);
     }
+    document.removeEventListener('keydown', _onDocumentKeydown);
+    document.removeEventListener('click', _onDocumentClick, true);
     window.removeEventListener('opensquilla:approvals-pending', _onApprovalsPending);
     _el = null;
     _rpc = null;
     _lastData = null;
     _pendingApprovalCount = 0;
+    _pathBrowserLoadIds = { workspace: 0, mount: 0 };
   }
 
   async function _load() {
@@ -221,7 +231,7 @@ const SandboxView = (() => {
       <form class="sandbox-inline-form" data-sandbox-action="workspace-save">
         <label class="sandbox-field sandbox-field--span">
           <span>Workspace</span>
-          <div class="sandbox-path-field">
+          <div class="sandbox-path-field" data-path-kind="workspace">
             <input class="sandbox-input" name="workspace" autocomplete="off" value="${_esc(workspaceValue)}" placeholder="/path/to/workspace" data-path-browser-kind="workspace" />
             <button class="sandbox-path-btn" type="button" data-sandbox-action="workspace-browse" aria-label="Browse workspace directory">
               ${icons.search()}<span>Browse</span>
@@ -240,7 +250,7 @@ const SandboxView = (() => {
       <form class="sandbox-inline-form sandbox-inline-form--mount" data-sandbox-action="mount-add">
         <label class="sandbox-field sandbox-field--span">
           <span>Mount path</span>
-          <div class="sandbox-path-field">
+          <div class="sandbox-path-field" data-path-kind="mount">
             <input class="sandbox-input" name="path" autocomplete="off" placeholder="/path/to/folder" data-path-browser-kind="mount" />
             <button class="sandbox-path-btn" type="button" data-sandbox-action="mount-browse" aria-label="Browse mount directory">
               ${icons.search()}<span>Browse</span>
@@ -470,10 +480,12 @@ const SandboxView = (() => {
       await _loadPathBrowser('workspace');
     } else if (action === 'mount-browse') {
       await _loadPathBrowser('mount');
-    } else if (action === 'path-browser-open') {
-      await _loadPathBrowser(btn.dataset.kind || 'workspace', btn.dataset.path || '', { browseChildren: true });
     } else if (action === 'path-browser-select') {
       await _selectPathBrowserEntry(btn);
+    } else if (action === 'path-browser-ok') {
+      _commitPathBrowser(btn.dataset.kind || 'workspace');
+    } else if (action === 'path-browser-cancel') {
+      _closePathBrowser(btn.dataset.kind || 'workspace', { restore: true });
     } else if (action === 'mount-remove') {
       await _mutate('sandbox.mount.remove', { path: btn.dataset.path || '' });
     } else if (action === 'domain-remove') {
@@ -495,6 +507,11 @@ const SandboxView = (() => {
     const input = _pathInput(root, kind);
     const slot = _pathBrowserSlot(root, kind);
     const path = requestedPath || input?.value || _lastData?.runContext?.workspace || '~';
+    if (input && input.dataset.committedValue === undefined) {
+      input.dataset.committedValue = input.value || '';
+    }
+    _closeAllPathBrowsers({ restore: true, except: kind });
+    const loadId = _nextPathBrowserLoadId(kind);
     if (slot) slot.innerHTML = _renderPathBrowser(kind, { path, parentPath: path, entries: [], loading: true });
     try {
       _setNotice(root, 'Loading paths...', 'info');
@@ -504,9 +521,11 @@ const SandboxView = (() => {
         path,
         browseChildren: options.browseChildren === true,
       });
+      if (!_isPathBrowserLoadCurrent(kind, loadId) || root !== _el) return;
       if (slot) slot.innerHTML = _renderPathBrowser(kind, result);
       _setNotice(root, 'Choose a path from the list or keep typing.', 'ok');
     } catch (err) {
+      if (!_isPathBrowserLoadCurrent(kind, loadId) || root !== _el) return;
       _setNotice(root, err?.message || String(err), 'warn');
       if (slot) slot.innerHTML = '';
       input?.focus?.();
@@ -515,21 +534,18 @@ const SandboxView = (() => {
 
   function _renderPathBrowser(kind, result) {
     const entries = Array.isArray(result?.entries) ? result.entries : [];
-    const parentPath = result?.parentPath || result?.path || '';
     const loading = Boolean(result?.loading);
     return `
       <div class="sandbox-path-browser" role="listbox" data-kind="${_esc(kind)}">
-        <div class="sandbox-path-browser__head">
-          <span>${_esc(parentPath || 'Paths')}</span>
-          <button class="sandbox-icon-btn" type="button" data-sandbox-action="path-browser-open" data-kind="${_esc(kind)}" data-path="${_esc(parentPath)}" title="Reload path list" aria-label="Reload path list">
-            ${icons.refresh()}
-          </button>
-        </div>
         ${loading ? _renderEmpty('Loading paths') : ''}
         ${!loading && entries.length ? `<div class="sandbox-path-browser__list">
           ${entries.map(entry => _renderPathBrowserEntry(kind, entry)).join('')}
         </div>` : ''}
         ${!loading && !entries.length ? _renderEmpty('No entries found') : ''}
+        <div class="sandbox-path-browser__actions">
+          <button class="btn btn--primary btn--sm" type="button" data-sandbox-action="path-browser-ok" data-kind="${_esc(kind)}">OK</button>
+          <button class="btn btn--ghost btn--sm" type="button" data-sandbox-action="path-browser-cancel" data-kind="${_esc(kind)}">Cancel</button>
+        </div>
       </div>`;
   }
 
@@ -568,9 +584,80 @@ const SandboxView = (() => {
       await _loadPathBrowser(kind, path, { browseChildren: true });
       return;
     }
-    const slot = _pathBrowserSlot(root, kind);
-    if (slot) slot.innerHTML = '';
+    _setNotice(root, 'Path selected. Press OK to commit or keep browsing.', 'ok');
+  }
+
+  function _onDocumentKeydown(event) {
+    if (!_el) return;
+    if (event.key === 'Escape') {
+      if (_hasOpenPathBrowser()) {
+        event.preventDefault();
+        _closeAllPathBrowsers({ restore: true });
+      }
+      return;
+    }
+    if (event.key !== 'Enter') return;
+    const kind = _pathBrowserKindFromNode(document.activeElement);
+    if (!kind || !_hasOpenPathBrowser(kind)) return;
+    event.preventDefault();
+    _commitPathBrowser(kind);
+  }
+
+  function _onDocumentClick(event) {
+    if (!_el || _el.contains(event.target)) return;
+    _closeAllPathBrowsers({ restore: true });
+  }
+
+  function _closeAllPathBrowsers(options = {}) {
+    _PATH_BROWSER_KINDS.forEach(kind => {
+      if (kind !== options.except) _closePathBrowser(kind, options);
+    });
+  }
+
+  function _commitPathBrowser(kind) {
+    const root = _el;
+    if (!root) return;
+    const input = _pathInput(root, kind);
+    if (input) input.dataset.committedValue = input.value || '';
+    _closePathBrowser(kind, { restore: false });
     _setNotice(root, 'Path selected. Review and save.', 'ok');
+  }
+
+  function _closePathBrowser(kind, options = {}) {
+    const root = _el;
+    if (!root) return;
+    const slot = _pathBrowserSlot(root, kind);
+    const wasOpen = Boolean(slot?.querySelector('.sandbox-path-browser'));
+    if (wasOpen) _nextPathBrowserLoadId(kind);
+    const input = _pathInput(root, kind);
+    if (options.restore && wasOpen && input && input.dataset.committedValue !== undefined) {
+      input.value = input.dataset.committedValue;
+    }
+    if (slot) slot.innerHTML = '';
+  }
+
+  function _hasOpenPathBrowser(kind) {
+    const root = _el;
+    if (!root) return false;
+    if (kind) return Boolean(_pathBrowserSlot(root, kind)?.querySelector('.sandbox-path-browser'));
+    return Boolean(root.querySelector('.sandbox-path-browser'));
+  }
+
+  function _pathBrowserKindFromNode(node) {
+    const fieldKind = node?.closest?.('.sandbox-path-field')?.dataset?.pathKind;
+    if (fieldKind) return fieldKind;
+    const browserKind = node?.closest?.('.sandbox-path-browser')?.dataset?.kind;
+    if (browserKind) return browserKind;
+    return node?.dataset?.pathBrowserKind || '';
+  }
+
+  function _nextPathBrowserLoadId(kind) {
+    _pathBrowserLoadIds[kind] = (_pathBrowserLoadIds[kind] || 0) + 1;
+    return _pathBrowserLoadIds[kind];
+  }
+
+  function _isPathBrowserLoadCurrent(kind, loadId) {
+    return _pathBrowserLoadIds[kind] === loadId;
   }
 
   async function _mutate(method, payload) {

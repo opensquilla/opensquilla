@@ -165,6 +165,43 @@ async def test_clarify_submit_forwards_to_chat_send(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_clarify_submit_logs_safe_entry_metadata(monkeypatch):
+    """Entry logging proves the Web UI submit reached RPC without
+    exposing field values in gateway logs."""
+    captured: dict = {}
+
+    async def _fake_send(send_params, ctx):
+        return {"ok": True, "sessionKey": send_params["sessionKey"]}
+
+    def _fake_info(event, **kwargs):
+        captured["event"] = event
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_chat._handle_chat_send",
+        _fake_send,
+    )
+    monkeypatch.setattr("opensquilla.gateway.rpc_chat.log.info", _fake_info)
+
+    ctx = RpcContext(conn_id="c", principal=SimpleNamespace(role="operator"))
+    await _handle_chat_clarify_submit(
+        {
+            "sessionKey": "agent:main:webchat:abc",
+            "fields": {"review": "ok"},
+            "run_id": "r-xyz",
+        },
+        ctx,
+    )
+
+    assert captured["event"] == "chat.clarify_submit.params"
+    assert captured["kwargs"] == {
+        "session_key": "agent:main:webchat:abc",
+        "field_count": 1,
+        "run_id": "r-xyz",
+    }
+
+
+@pytest.mark.asyncio
 async def test_clarify_submit_works_without_run_id(monkeypatch):
     """run_id is optional; absent → no _source tag, but submission still
     flows through normally."""

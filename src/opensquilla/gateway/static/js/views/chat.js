@@ -4825,6 +4825,11 @@ const ChatView = (() => {
     _unsubs.push(_rpc.on('session.event.warning', (payload) => {
       if (_dropForeignSessionPayload('event.warning', payload)) return;
       if (_isStaleEpoch(payload)) return;
+      const code = String((payload && payload.code) || '');
+      const silentWarningCodes = new Set([
+        'provider_reasoning_only_retry',
+      ]);
+      if (silentWarningCodes.has(code)) return;
       const msg = (payload && payload.message) || 'Squilla warning';
       UI.toast(msg, 'warn', 5000);
     }));
@@ -6390,10 +6395,9 @@ const ChatView = (() => {
       _chatDiag('thinking.skip.compaction_in_flight', {});
       return;
     }
-    // Timer starts at send so "Watching · N.Ns" reads total wait. The indicator
-    // is RETAINED — but _showThinkingIndicatorNow defers it until the router
-    // panel has settled, so routing animates first and "Watching…" only appears
-    // afterwards (while the model is still generating), not before it.
+    // Timer starts at send so "Watching · N.Ns" reads total wait. Keep this
+    // independent from router scanning: provider first-byte waits can be long,
+    // and the user still needs an immediate progress signal.
     _thinkingStartTime = Date.now();
 
     // Delay showing the indicator — fast responses won't flash it
@@ -6411,16 +6415,6 @@ const ChatView = (() => {
       _thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, 150);
       return;
     }
-    // Defer while the router panel is still animating to its final state — the
-    // "Watching…" indicator belongs AFTER routing settles, not during the scan.
-    // Re-check shortly; the panel locks within ~1s, then this shows (with the
-    // elapsed counted from send).
-    if (_thread && _thread.querySelector('.router-fx[data-scanning="true"]')) {
-      _chatDiag('thinking.defer.router_scan', {});
-      _thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, 150);
-      return;
-    }
-
     const empty = _thread.querySelector('.chat-empty');
     if (empty) empty.remove();
 
@@ -7066,6 +7060,21 @@ const ChatView = (() => {
     return name || 'tool';
   }
 
+  function _metaStepRunningHint(name) {
+    if (!name || !name.startsWith('meta-step:')) return '';
+    const stepId = name.slice('meta-step:'.length);
+    if (stepId.endsWith('_video')) {
+      return '正在生成视频素材，可能需要几分钟。Generating video assets; this may take several minutes.';
+    }
+    if (stepId.endsWith('_image') || stepId.endsWith('_img_prompt')) {
+      return '正在生成视觉素材，可能需要稍等。Generating visual assets; this can take a little while.';
+    }
+    if (stepId.includes('duration') || stepId.includes('prompt')) {
+      return '正在准备这一生成步骤。Preparing this generation step.';
+    }
+    return '正在运行这个 meta-skill 步骤。Running this meta-skill step.';
+  }
+
   function _isControlPlaneToolName(name) {
     return name === 'router_control';
   }
@@ -7105,6 +7114,14 @@ const ChatView = (() => {
 
     const toolsBody = document.createElement('div');
     toolsBody.className = 'chat-tools-body';
+
+    const runningHint = isRunning ? _metaStepRunningHint(name) : '';
+    if (runningHint) {
+      const hint = document.createElement('div');
+      hint.className = 'chat-meta-step-running-hint';
+      hint.textContent = runningHint;
+      toolsBody.appendChild(hint);
+    }
 
     // Only show input preview if non-empty (arguments may arrive later via tool_use_delta)
     const emptyInputs = ['', '""', '{}', 'null', 'undefined'];
@@ -7594,6 +7611,84 @@ const ChatView = (() => {
       }
     });
 
+    const requiredFields = fields.filter((field) => field && field.required);
+    const confirmedRequiredFields = requiredFields.filter((field) => (
+      confirmedByName[field.name] !== undefined
+    ));
+    const missingRequiredFields = requiredFields.filter((field) => (
+      confirmedByName[field.name] === undefined
+    ));
+    const clarifyFieldPromptText = (field) => {
+      if (!field) return '';
+      return String(field.prompt || '').replace(/\s+/g, ' ').trim();
+    };
+    const clarifyFieldDisplayLabel = (field) => {
+      if (!field) return '';
+      const nameText = String(field.name || '').replace(/[_-]+/g, ' ').trim();
+      const promptText = clarifyFieldPromptText(field);
+      const promptLower = promptText.toLowerCase();
+      const nameLower = nameText.toLowerCase();
+      const promptLooksLikeScriptReplyField = (
+        (
+          promptLower.includes('script draft')
+          && promptLower.includes('verbatim reply')
+        )
+        || (
+          promptText.includes('脚本草稿')
+          && promptText.includes('原样')
+        )
+      );
+      const looksLikeScriptReplyField = (
+        promptLooksLikeScriptReplyField
+        || nameLower === 'reply'
+        || nameLower === 'reply text'
+      );
+      if (looksLikeScriptReplyField) {
+        return clarifyText('回复内容', 'Reply');
+      }
+      if (promptText && promptText.length <= 60) return promptText;
+      if (nameText) {
+        return nameText.replace(/\b[a-z]/g, (char) => char.toUpperCase());
+      }
+      if (promptText) return promptText.slice(0, 60).trim() + '...';
+      return '';
+    };
+
+    if (fields.length > 0) {
+      const progress = document.createElement('div');
+      progress.className = 'clarify-form-progress';
+
+      const metric = document.createElement('div');
+      metric.className = 'clarify-form-progress-metric';
+      metric.textContent = clarifyText(
+        '已收集 ' + confirmedRequiredFields.length + '/' + requiredFields.length + ' 项必填信息',
+        'Captured ' + confirmedRequiredFields.length + '/' + requiredFields.length + ' required details',
+      );
+      progress.appendChild(metric);
+
+      const next = document.createElement('div');
+      next.className = 'clarify-form-progress-next';
+      if (missingRequiredFields.length > 0) {
+        const missingLabels = missingRequiredFields.map(clarifyFieldDisplayLabel).filter(Boolean);
+        next.textContent = clarifyText(
+          '建议下一步：补充 ' + missingLabels.join('、') + '。可在表单中填写，也可直接继续聊天补充。',
+          'Suggested next steps: add ' + missingLabels.join(', ') + '. You can fill the form or keep chatting.',
+        );
+      } else if (ambiguousFields.length > 0) {
+        next.textContent = clarifyText(
+          '建议下一步：检查不确定的信息，确认无误后提交。',
+          'Suggested next steps: review the unclear details, then submit.',
+        );
+      } else {
+        next.textContent = clarifyText(
+          '建议下一步：检查已识别的信息，确认无误后提交。',
+          'Suggested next steps: review the captured details, then submit.',
+        );
+      }
+      progress.appendChild(next);
+      card.appendChild(progress);
+    }
+
     if (
       confirmedFields.length > 0
       || ambiguousFields.length > 0
@@ -7656,9 +7751,9 @@ const ChatView = (() => {
       card.appendChild(prefill);
     }
 
-    const form = document.createElement('form');
+    const form = document.createElement('div');
     form.className = 'clarify-form-fields';
-    form.setAttribute('novalidate', '');
+    form.setAttribute('role', 'form');
 
     fields.forEach((field) => {
       const row = document.createElement('div');
@@ -7670,9 +7765,24 @@ const ChatView = (() => {
       const label = document.createElement('label');
       label.className = 'clarify-form-label';
       const requiredFlag = field.required ? ' *' : '';
-      label.textContent = (field.prompt || field.name) + requiredFlag;
+      const fieldPromptText = clarifyFieldPromptText(field);
+      label.textContent = clarifyFieldDisplayLabel(field) + requiredFlag;
       label.setAttribute('for', 'clarify-' + field.name);
       row.appendChild(label);
+
+      if (field.prompt && clarifyFieldDisplayLabel(field) !== fieldPromptText) {
+        const help = document.createElement('details');
+        help.className = 'clarify-form-field-help';
+        const helpSummary = document.createElement('summary');
+        helpSummary.className = 'clarify-form-field-help-summary';
+        helpSummary.textContent = clarifyText('填写要求', 'Requirements');
+        help.appendChild(helpSummary);
+        const helpBody = document.createElement('div');
+        helpBody.className = 'clarify-form-field-help-body';
+        helpBody.textContent = fieldPromptText;
+        help.appendChild(helpBody);
+        row.appendChild(help);
+      }
 
       let input;
       if (field.type === 'enum' && Array.isArray(field.choices)) {
@@ -7778,7 +7888,7 @@ const ChatView = (() => {
     actions.className = 'clarify-form-actions';
 
     const submitBtn = document.createElement('button');
-    submitBtn.type = 'submit';
+    submitBtn.type = 'button';
     submitBtn.className = 'clarify-form-submit';
     submitBtn.textContent = clarifyText('提交', 'Submit');
     actions.appendChild(submitBtn);
@@ -7788,8 +7898,9 @@ const ChatView = (() => {
         ? schema.cancel_keywords[0]
         : ''
     );
+    let cancelBtn = null;
     if (cancelKeyword) {
-      const cancelBtn = document.createElement('button');
+      cancelBtn = document.createElement('button');
       cancelBtn.type = 'button';
       cancelBtn.className = 'clarify-form-cancel';
       cancelBtn.textContent = clarifyText('取消', 'Cancel');
@@ -7809,8 +7920,23 @@ const ChatView = (() => {
     }
     form.appendChild(actions);
 
-    form.addEventListener('submit', (evt) => {
-      evt.preventDefault();
+    const submitStatus = document.createElement('div');
+    submitStatus.className = 'clarify-form-submit-status';
+    submitStatus.hidden = true;
+    form.appendChild(submitStatus);
+
+    let clarifySubmitInFlight = false;
+    const waitForClarifySubmitConnection = () => Promise.race([
+      _rpc.waitForConnection(),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(clarifyText(
+          '连接超时，请刷新页面后重试。',
+          'Connection timed out; refresh the page and retry.',
+        ))), 10000);
+      }),
+    ]);
+    const submitClarifyForm = () => {
+      if (clarifySubmitInFlight) return;
       const collected = {};
       let firstErrorEl = null;
       form.querySelectorAll('[data-clarify-field]').forEach((el) => {
@@ -7845,16 +7971,54 @@ const ChatView = (() => {
         UI.toast(clarifyText('请至少填写一个字段', 'Please fill in at least one field'), 'warn');
         return;
       }
+      clarifySubmitInFlight = true;
       submitBtn.disabled = true;
+      if (cancelBtn) cancelBtn.disabled = true;
+      card.classList.add('clarify-form--submitting');
+      submitStatus.hidden = false;
+      submitStatus.textContent = clarifyText(
+        '正在提交；如果连接刚恢复，会自动继续。',
+        'Submitting; if the connection just recovered, this will continue automatically.',
+      );
       const sessionKey = _currentSessionKey();
-      _rpc.call('chat.clarify_submit', {
-        sessionKey: sessionKey,
-        run_id: runId,
-        fields: collected,
-      }).catch((err) => {
-        submitBtn.disabled = false;
-        UI.toast(clarifyText('提交失败: ', 'Submit failed: ') + (err && err.message || err), 'error');
-      });
+      waitForClarifySubmitConnection()
+        .then(() => _rpc.call('chat.clarify_submit', {
+          sessionKey: sessionKey,
+          run_id: runId,
+          fields: collected,
+        }))
+        .then(() => {
+          clarifySubmitInFlight = false;
+          card.classList.remove('clarify-form--submitting');
+          card.classList.add('clarify-form--submitted');
+          submitStatus.textContent = clarifyText(
+            '已提交，正在继续流程...',
+            'Submitted, continuing...',
+          );
+          UI.toast(clarifyText('已提交，正在继续流程', 'Submitted, continuing'), 'info');
+        })
+        .catch((err) => {
+          clarifySubmitInFlight = false;
+          submitBtn.disabled = false;
+          if (cancelBtn) cancelBtn.disabled = false;
+          card.classList.remove('clarify-form--submitting');
+          submitStatus.hidden = true;
+          submitStatus.textContent = '';
+          UI.toast(clarifyText('提交失败: ', 'Submit failed: ') + (err && err.message || err), 'error');
+        });
+    };
+
+    submitBtn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      submitClarifyForm();
+    });
+    form.addEventListener('keydown', (evt) => {
+      if (evt.key !== 'Enter' || evt.shiftKey || evt.altKey || evt.ctrlKey || evt.metaKey) {
+        return;
+      }
+      if (evt.target && evt.target.tagName === 'TEXTAREA') return;
+      evt.preventDefault();
+      submitClarifyForm();
     });
 
     card.appendChild(form);

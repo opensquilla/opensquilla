@@ -488,6 +488,59 @@ def _highest_text_tier(ctx: TurnContext) -> tuple[str, str] | None:
     return tier_name, model
 
 
+def _text_tier_at_least(ctx: TurnContext, minimum: str) -> tuple[str, str] | None:
+    """Return the lowest configured text tier at or above ``minimum``."""
+
+    router_cfg = getattr(getattr(ctx, "config", None), "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", None)
+    if not isinstance(tiers, dict) or not tiers:
+        return None
+    minimum_key = _tier_sort_key(minimum, 0)[0]
+
+    candidates: list[tuple[tuple[int, int], str, str]] = []
+    for index, (name, tier_cfg) in enumerate(tiers.items()):
+        if not isinstance(tier_cfg, dict):
+            continue
+        if bool(tier_cfg.get("image_only", False)):
+            continue
+        model = str(tier_cfg.get("model") or "").strip()
+        tier_name = str(name).strip()
+        tier_key = _tier_sort_key(tier_name, index)
+        if tier_name and model and tier_key[0] >= minimum_key:
+            candidates.append((tier_key, tier_name, model))
+    if not candidates:
+        return None
+    _key, tier_name, model = min(candidates, key=lambda item: item[0])
+    return tier_name, model
+
+
+def _upgrade_meta_entry_model(
+    ctx: TurnContext,
+    *,
+    tier_name: str,
+    model: str,
+    source: str,
+) -> None:
+    baseline_model = str(getattr(ctx, "model", "") or "")
+    ctx.model = model
+    ctx.metadata["meta_required_tier"] = tier_name
+    ctx.metadata["meta_required_model"] = model
+    ctx.metadata["meta_required_source"] = source
+    ctx.metadata.setdefault("baseline_model", baseline_model)
+    ctx.metadata["routed_tier"] = tier_name
+    ctx.metadata["routed_model"] = model
+    ctx.metadata["routing_source"] = "meta_skill_required_tier"
+    ctx.metadata["routing_confidence"] = 1.0
+    ctx.metadata["routing_applied"] = True
+    ctx.metadata["applied_model"] = model
+    ctx.metadata["meta_resolution_model_upgrade"] = {
+        "from_model": baseline_model,
+        "to_model": model,
+        "to_tier": tier_name,
+        "source": source,
+    }
+
+
 def _trigger_matches(trigger: str, message_lower: str) -> bool:
     """Match a trigger phrase against the user message.
 
@@ -1168,18 +1221,23 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         highest = _highest_text_tier(ctx)
         if highest is not None:
             tier_name, model = highest
-            baseline_model = str(getattr(ctx, "model", "") or "")
-            ctx.model = model
-            ctx.metadata["meta_required_tier"] = tier_name
-            ctx.metadata["meta_required_model"] = model
-            ctx.metadata["meta_required_source"] = "meta-skill-creator"
-            ctx.metadata.setdefault("baseline_model", baseline_model)
-            ctx.metadata["routed_tier"] = tier_name
-            ctx.metadata["routed_model"] = model
-            ctx.metadata["routing_source"] = "meta_skill_required_tier"
-            ctx.metadata["routing_confidence"] = 1.0
-            ctx.metadata["routing_applied"] = True
-            ctx.metadata["applied_model"] = model
+            _upgrade_meta_entry_model(
+                ctx,
+                tier_name=tier_name,
+                model=model,
+                source="meta-skill-creator",
+            )
+    else:
+        minimum = _text_tier_at_least(ctx, "c2")
+        current_tier_key = _tier_sort_key(str(ctx.metadata.get("routed_tier") or ""), 0)[0]
+        if minimum is not None and 0 <= current_tier_key < 2:
+            tier_name, model = minimum
+            _upgrade_meta_entry_model(
+                ctx,
+                tier_name=tier_name,
+                model=model,
+                source="meta-skill-entry",
+            )
 
     # ── Soft-hint injection ────────────────────────────────────────────
     # Append to the uncached suffix slot of system_prompt so cache

@@ -1015,6 +1015,17 @@
 .chat-tools-collapse--running > .chat-tools-summary::after,
 .chat-tools-summary[aria-disabled="true"]::after { opacity: 0.2; }
 
+.chat-meta-step-running-hint {
+  margin-top: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
 .chat-tools-collapse--success {
   border-left: 3px solid var(--ok);
 }
@@ -2670,6 +2681,28 @@
   gap: var(--sp-1);
 }
 
+.clarify-form-field-help {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.clarify-form-field-help-summary {
+  cursor: pointer;
+  width: fit-content;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.clarify-form-field-help-body {
+  margin-top: var(--sp-1);
+  padding: var(--sp-2);
+  background: color-mix(in srgb, var(--bg-surface) 88%, var(--bg-base));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+}
+
 .clarify-form-input {
   font-size: var(--fs-sm);
   padding: var(--sp-2) var(--sp-3);
@@ -2757,6 +2790,41 @@ select.clarify-form-input {
 .clarify-form--submitted {
   opacity: 0.6;
   pointer-events: none;
+}
+
+.clarify-form--submitting {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+}
+
+.clarify-form-submit-status {
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+
+/* Progress and next-step summary shown at the top of active clarify forms. */
+.clarify-form-progress {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, var(--accent) 22%);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-2) 86%, var(--accent) 14%);
+}
+
+.clarify-form-progress-metric {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.clarify-form-progress-next {
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-muted);
 }
 
 

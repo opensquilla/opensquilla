@@ -42,15 +42,27 @@ def _meta_spec(*, name: str, triggers: tuple[str, ...]):
     return spec
 
 
-def _ctx(*, message: str, session_id: str, skills: list):
+def _ctx(
+    *,
+    message: str,
+    session_id: str,
+    skills: list,
+    metadata: dict | None = None,
+    model: str = "",
+    tiers: dict | None = None,
+):
     loader = MagicMock()
     loader.load_all.return_value = skills
+    meta = {"skill_loader": loader}
+    if metadata:
+        meta.update(metadata)
     return SimpleNamespace(
         message=message,
         session_key=session_id,
-        metadata={"skill_loader": loader},
+        metadata=meta,
+        model=model,
         system_prompt="",
-        config=SimpleNamespace(squilla_router=SimpleNamespace(tiers={})),
+        config=SimpleNamespace(squilla_router=SimpleNamespace(tiers=tiers or {})),
         surface_kind="cli",
     )
 
@@ -79,6 +91,61 @@ async def test_fresh_match_arms_sticky_cache():
     assert cached["skill"] == "meta-paper-write"
     assert cached["trigger"] == "帮我写篇论文"
     assert cached["uses"] == mr._STICKY_MAX_USES
+
+
+@pytest.mark.asyncio
+async def test_meta_match_upgrades_low_router_tier_to_c2_entry_model():
+    skills = [_meta_spec(name="meta-short-drama", triggers=("生成一个短剧",))]
+    tiers = {
+        "c0": {"model": "deepseek-v4-flash"},
+        "c1": {"model": "deepseek-v4-flash"},
+        "c2": {"model": "deepseek-v4-pro"},
+        "c3": {"model": "highest-tier-model"},
+    }
+    ctx = _ctx(
+        message="生成一个短剧，啥都行",
+        session_id="S-META-UPGRADE",
+        skills=skills,
+        model="deepseek-v4-flash",
+        tiers=tiers,
+        metadata={
+            "routed_tier": "c0",
+            "routed_model": "deepseek-v4-flash",
+            "routing_source": "v4_phase3",
+            "routing_applied": True,
+        },
+    )
+
+    out = await meta_resolution(ctx)
+
+    assert out.model == "deepseek-v4-pro"
+    assert out.metadata["routed_tier"] == "c2"
+    assert out.metadata["routed_model"] == "deepseek-v4-pro"
+    assert out.metadata["meta_required_source"] == "meta-skill-entry"
+    assert out.metadata["meta_resolution_model_upgrade"] == {
+        "from_model": "deepseek-v4-flash",
+        "to_model": "deepseek-v4-pro",
+        "to_tier": "c2",
+        "source": "meta-skill-entry",
+    }
+
+
+@pytest.mark.asyncio
+async def test_meta_match_without_router_tier_does_not_force_entry_model():
+    skills = [_meta_spec(name="meta-short-drama", triggers=("生成一个短剧",))]
+    tiers = {"c2": {"model": "deepseek-v4-pro"}}
+    ctx = _ctx(
+        message="生成一个短剧，啥都行",
+        session_id="S-META-NO-ROUTER",
+        skills=skills,
+        model="operator-selected-model",
+        tiers=tiers,
+    )
+
+    out = await meta_resolution(ctx)
+
+    assert out.model == "operator-selected-model"
+    assert "meta_resolution_model_upgrade" not in out.metadata
 
 
 @pytest.mark.asyncio

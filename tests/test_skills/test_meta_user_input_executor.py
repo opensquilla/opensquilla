@@ -304,6 +304,57 @@ async def test_prefill_scan_seeds_awaiting_filled_with_known_values() -> None:
     assert "days" in ambiguous
 
 
+@pytest.mark.asyncio
+async def test_prefill_scan_ignores_empty_sentinel_from_catch_all_field() -> None:
+    """Prefill runs before the user has answered, so an extractor that follows
+    a catch-all prompt's empty-input instruction must not make ``(empty)`` look
+    like a real user confirmation."""
+    dao = MagicMock()
+    dao.try_claim_awaiting.return_value = True
+    chat = _llm_returning({
+        "intent": "FILL",
+        "fields": {"review": "(empty)"},
+        "ambiguous_fields": [],
+        "unknown_mentions": [],
+    })
+    cfg = _cfg_with_nl_extract(
+        ClarifyField(
+            name="review",
+            type="string",
+            required=True,
+            prompt=(
+                "The user's verbatim reply about the script draft. "
+                "If the user's reply is empty or pure whitespace, emit \"(empty)\"."
+            ),
+        ),
+    )
+
+    with pytest.raises(MetaPaused) as exc:
+        await run_user_input_step(
+            _step(cfg),
+            inputs={"user_message": "生成一个短剧，啥都行", "collected": {}},
+            outputs={"script_draft": "draft text"},
+            run_id="r1",
+            session_id="S1",
+            dao=dao,
+            now=lambda: 1700000000.0,
+            llm_chat=chat,
+            prefill_context={
+                "original_user_message": "生成一个短剧，啥都行",
+                "prior_step_outputs": {"script_draft": "draft text"},
+            },
+        )
+
+    kwargs = dao.try_claim_awaiting.call_args.kwargs
+    filled = json.loads(kwargs["awaiting_filled_json"])
+    assert "review" not in filled
+    audit = filled.get("__prefill_audit__")
+    assert audit
+    assert "review" not in audit.get("fields", [])
+    assert audit.get("dropped_empty_sentinels") == ["review"]
+    assert exc.value.confirmed_fields is None
+
+
 def test_deterministic_prefill_skips_empty_list_and_unspecified_sentinels() -> None:
     cfg = ClarifyStepConfig(
         mode="form",

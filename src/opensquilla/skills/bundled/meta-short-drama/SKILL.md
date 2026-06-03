@@ -132,6 +132,10 @@ composition:
           shots). ASPECT_RATIO: 9:16.
 
           Output style: plain text only. No emoji, no decorative symbols.
+          Do not call publish_artifact or any other tool. The meta-skill
+          captures this step's final assistant text directly, so your final
+          message must contain the complete script itself, not a file link,
+          artifact marker, or "[Used tool: ...]" placeholder.
 
           Language: match the user's request language for every field.
           Both downstream models accept CJK natively — do NOT translate

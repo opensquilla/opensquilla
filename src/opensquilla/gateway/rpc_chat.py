@@ -561,6 +561,14 @@ async def _handle_chat_clarify_submit(params: dict | None, ctx: RpcContext) -> d
     if not text:
         raise ValueError("params.fields contained only empty values")
 
+    run_id = params.get("run_id")
+    log.info(
+        "chat.clarify_submit.params",
+        session_key=session_key,
+        field_count=len(fields),
+        run_id=run_id if isinstance(run_id, str) and run_id else None,
+    )
+
     send_params: dict = {
         "message": text,
         "sessionKey": session_key,
@@ -571,7 +579,6 @@ async def _handle_chat_clarify_submit(params: dict | None, ctx: RpcContext) -> d
         # form submits from typed replies downstream.
         "inputProvenance": "clarify_form",
     }
-    run_id = params.get("run_id")
     if isinstance(run_id, str) and run_id:
         send_params["_source"] = {
             "caller_kind": "web",

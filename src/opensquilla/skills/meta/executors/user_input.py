@@ -43,6 +43,7 @@ from opensquilla.skills.meta.types import (
 # it out of any field-name collision since clarify field names cannot
 # start with ``__`` (parser invariant).
 _PREFILL_AUDIT_KEY = "__prefill_audit__"
+_EMPTY_PREFILL_SENTINELS: frozenset[str] = frozenset({"", "(empty)"})
 
 LLMChatProto = Callable[[str, str], Awaitable[str]]
 
@@ -230,6 +231,10 @@ async def run_user_input_step(
             context=prefill_context,
             step_id=step.id,
         )
+        prefilled_values, prefill_audit = _drop_empty_prefill_sentinels(
+            prefilled_values,
+            prefill_audit,
+        )
         # Deterministic hits win on conflict — they came directly
         # from an upstream emitter that we know followed the
         # ``KEY: value`` contract, while the LLM scan is best-effort
@@ -381,6 +386,41 @@ async def _run_prefill_scan(
     if result.errors:
         audit["errors"] = list(result.errors)
     return dict(result.fields), audit
+
+
+def _drop_empty_prefill_sentinels(
+    prefilled_values: dict[str, Any],
+    prefill_audit: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Remove extractor placeholders that only mean "no user reply yet".
+
+    Prefill scanning intentionally calls NL extraction with ``reply_text=""``.
+    Catch-all fields may instruct the extractor to emit ``(empty)`` for a blank
+    user reply; that sentinel is useful during real resume parsing, but it must
+    not become an auto-confirmed value before the user has responded.
+    """
+    dropped = sorted(
+        name
+        for name, value in prefilled_values.items()
+        if isinstance(value, str)
+        and value.strip().lower() in _EMPTY_PREFILL_SENTINELS
+    )
+    if not dropped:
+        return prefilled_values, prefill_audit
+
+    cleaned = {
+        name: value
+        for name, value in prefilled_values.items()
+        if name not in dropped
+    }
+    audit = dict(prefill_audit) if isinstance(prefill_audit, dict) else {}
+    raw_fields = audit.get("fields")
+    if isinstance(raw_fields, list | tuple | set):
+        audit["fields"] = [name for name in raw_fields if name not in dropped]
+    else:
+        audit["fields"] = []
+    audit["dropped_empty_sentinels"] = dropped
+    return cleaned, audit
 
 
 def _render_clarify_config(

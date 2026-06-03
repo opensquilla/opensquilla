@@ -2547,15 +2547,11 @@ class Agent:
                             )
                         ):
                             _attempt_retries_used[_ProviderAttemptKind.REASONING_ONLY] += 1
-                            _thinking_fallback_done = True
-                            thinking_enabled = False
-                            thinking_budget = 0
-                            chat_cfg = _chat_config_with_thinking_disabled(chat_cfg)
                             yield WarningEvent(
                                 code="provider_reasoning_only_retry",
                                 message=(
                                     "The provider returned reasoning without visible content; "
-                                    "retrying once with thinking disabled."
+                                    "retrying once to request visible content."
                                 ),
                             )
                             _call_attempt += 1
@@ -5545,22 +5541,120 @@ class Agent:
         if race_lost is not None:
             return "你之前的回答已被处理。", True
 
-        # Soft-clarify (free-form continuation) — pop the resolver's
-        # progress markers so they don't accumulate, then return None
-        # to let the turn flow through to the LLM normally. The model
-        # responds based on the user's actual message plus the
-        # webui's visible clarify form; we deliberately do NOT
-        # template a reply here because the whole point of
-        # soft-clarify is that the user is having a natural
-        # conversation, not getting a form-style canned response.
-        # A follow-up commit will inject a brief status hint into
-        # the system prompt so the model knows what's still missing;
-        # for now the visible form (Web) / CLI prompt is the source
-        # of truth for "what's needed".
-        metadata.pop("meta_clarify_soft_progress", None)
-        metadata.pop("meta_clarify_proceed_blocked", None)
+        proceed_blocked = metadata.pop("meta_clarify_proceed_blocked", None)
+        soft_progress = metadata.pop("meta_clarify_soft_progress", None)
+        if proceed_blocked is not None:
+            return self._render_clarify_progress(
+                proceed_blocked, proceed_blocked=True,
+            ), True
+        if soft_progress is not None:
+            return self._render_clarify_progress(
+                soft_progress, proceed_blocked=False,
+            ), True
 
         return None
+
+    def _render_clarify_progress(
+        self, payload: Any, *, proceed_blocked: bool,
+    ) -> str:
+        """Render soft-clarify progress without exposing internal state."""
+        data = payload if isinstance(payload, dict) else {}
+        filled = data.get("filled")
+        filled_summary = self._format_clarify_filled(filled)
+        missing = self._coerce_clarify_names(data.get("missing_required"))
+        ambiguous = self._format_clarify_ambiguous(
+            data.get("ambiguous_fields"),
+        )
+
+        lines: list[str] = []
+        if proceed_blocked:
+            if missing:
+                lines.append(
+                    "现在还不能开始，还需要补充："
+                    + "、".join(missing)
+                    + "。"
+                )
+            else:
+                lines.append("现在还不能开始，还需要补充必填信息。")
+            if filled_summary:
+                lines.append("已记录：" + filled_summary + "。")
+        else:
+            if filled_summary:
+                lines.append("已记录：" + filled_summary + "。")
+            else:
+                lines.append("已收到补充。")
+            if missing:
+                lines.append("还需要：" + "、".join(missing) + "。")
+            else:
+                lines.append("必填信息已补齐，可以回复“开始”继续。")
+
+        if ambiguous:
+            lines.append("仍不确定：" + ambiguous + "。")
+        lines.append("你可以直接回复缺少字段，或在上面的表单里填写。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _coerce_clarify_names(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        names: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                names.append(text)
+        return names
+
+    def _format_clarify_filled(self, value: Any) -> str:
+        if not isinstance(value, dict):
+            return ""
+        parts: list[str] = []
+        for key in sorted(value):
+            label = str(key).strip()
+            if not label:
+                continue
+            parts.append(label + "=" + self._format_clarify_value(value[key]))
+            if len(parts) >= 6:
+                break
+        return "，".join(parts)
+
+    @staticmethod
+    def _format_clarify_value(value: Any) -> str:
+        if isinstance(value, str):
+            text = value
+        elif isinstance(value, (dict, list, tuple)):
+            try:
+                text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            except TypeError:
+                text = str(value)
+        else:
+            text = str(value)
+        text = " ".join(text.split())
+        if len(text) > 80:
+            return text[:77] + "..."
+        return text
+
+    @staticmethod
+    def _format_clarify_ambiguous(value: Any) -> str:
+        if not isinstance(value, list):
+            return ""
+        parts: list[str] = []
+        for entry in value:
+            if isinstance(entry, dict):
+                name = str(entry.get("name") or "").strip()
+                reason = str(entry.get("reason") or "").strip()
+                if name and reason:
+                    parts.append(name + "（" + reason + "）")
+                elif name:
+                    parts.append(name)
+            elif entry is not None:
+                text = str(entry).strip()
+                if text:
+                    parts.append(text)
+            if len(parts) >= 4:
+                break
+        return "，".join(parts)
 
     def _render_clarify_errors(
         self, errors: Any, awaiting: Any,

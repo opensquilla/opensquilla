@@ -29,6 +29,7 @@ class RouterHudSnapshot:
     prompt_policy: str
     routing_applied: bool
     rollout_phase: str
+    context_window: int | None
     label: str
     style: str
 
@@ -65,6 +66,7 @@ def build_router_hud_snapshot(payload: Mapping[str, Any]) -> RouterHudSnapshot:
     prompt_policy = _string_field(payload, "prompt_policy")
     routing_applied = _bool_field(payload, "routing_applied", True)
     rollout_phase = _string_field(payload, "rollout_phase", "full")
+    context_window = _optional_int_field(payload, "context_window")
     style = _style_for(
         fallback=fallback,
         routing_applied=routing_applied,
@@ -94,6 +96,7 @@ def build_router_hud_snapshot(payload: Mapping[str, Any]) -> RouterHudSnapshot:
         prompt_policy=prompt_policy,
         routing_applied=routing_applied,
         rollout_phase=rollout_phase,
+        context_window=context_window,
         label=label,
         style=style,
     )
@@ -186,6 +189,15 @@ def _int_field(payload: Mapping[str, Any], key: str, default: int) -> int:
     if isinstance(value, int):
         return value
     return default
+
+
+def _optional_int_field(payload: Mapping[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
 
 
 def _tier_index_from_tier(tier: str) -> int:

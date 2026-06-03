@@ -41,6 +41,7 @@ ROUTER_PAYLOAD: dict[str, object] = {
     "prompt_policy": "default",
     "routing_applied": True,
     "rollout_phase": "full",
+    "context_window": 200_000,
 }
 
 
@@ -247,7 +248,7 @@ def test_opentui_router_sink_updates_toolbar_only_for_router_events() -> None:
     assert output.invalidations == 1
 
 
-def test_opentui_router_sink_writes_resolved_context_window() -> None:
+def test_opentui_router_sink_writes_context_window_from_payload() -> None:
     class _Output:
         def __init__(self) -> None:
             self.updates: list[tuple[str, object | None]] = []
@@ -261,7 +262,7 @@ def test_opentui_router_sink_writes_resolved_context_window() -> None:
     output = _Output()
     sink = router_hud_event_sink_factory(output)
 
-    sink(_router_event({**ROUTER_PAYLOAD, "model": "gpt-5.5"}))
+    sink(_router_event({**ROUTER_PAYLOAD, "context_window": 1_000_000}))
 
     assert ("router_context_window", 1_000_000) in output.updates
 

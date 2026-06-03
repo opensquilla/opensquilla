@@ -6,7 +6,19 @@ from typing import Any, cast
 
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.types import RouterDecisionEvent
+from opensquilla.provider.model_catalog import ModelCatalog
 from opensquilla.router_tiers import normalize_text_tier, tier_index
+
+_model_catalog: ModelCatalog | None = None
+
+
+def _resolve_context_window(model_id: str) -> int | None:
+    if not model_id:
+        return None
+    global _model_catalog  # noqa: PLW0603
+    if _model_catalog is None:
+        _model_catalog = ModelCatalog()
+    return _model_catalog.resolve_context_window(model_id)
 
 
 def _coerce_probs(value: object) -> list[float]:
@@ -62,10 +74,12 @@ def build_router_decision_event(turn: TurnContext) -> RouterDecisionEvent | None
     if routing_applied is None:
         routing_applied = True
 
+    model = str(turn.metadata.get("routed_model") or turn.model or "")
+
     return RouterDecisionEvent(
         tier=str(routed_tier),
         tier_index=tier_idx,
-        model=str(turn.metadata.get("routed_model") or turn.model or ""),
+        model=model,
         baseline_model=str(turn.metadata.get("baseline_model") or ""),
         source=source,
         confidence=float(turn.metadata.get("routing_confidence") or 0.0),
@@ -76,4 +90,5 @@ def build_router_decision_event(turn: TurnContext) -> RouterDecisionEvent | None
         prompt_policy=str(turn.metadata.get("prompt_policy") or ""),
         routing_applied=bool(routing_applied),
         rollout_phase=str(turn.metadata.get("rollout_phase") or "full"),
+        context_window=_resolve_context_window(model),
     )

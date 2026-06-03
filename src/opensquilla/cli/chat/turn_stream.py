@@ -267,6 +267,15 @@ def _int_field(payload: Mapping[str, Any], key: str, default: int) -> int:
     return default
 
 
+def _optional_int_field(payload: Mapping[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
 def _float_list_field(payload: Mapping[str, Any], key: str) -> list[float]:
     value = payload.get(key)
     if not isinstance(value, list):
@@ -304,6 +313,7 @@ def normalize_router_decision_payload(payload: Mapping[str, Any]) -> dict[str, A
         "prompt_policy": _string_field(payload, "prompt_policy"),
         "routing_applied": _bool_field(payload, "routing_applied", True),
         "rollout_phase": _string_field(payload, "rollout_phase", "full"),
+        "context_window": _optional_int_field(payload, "context_window"),
     }
 
 

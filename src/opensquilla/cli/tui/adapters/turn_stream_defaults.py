@@ -19,7 +19,6 @@ from opensquilla.cli.tui.plugins.router_hud import (
 )
 from opensquilla.cli.ui import console, error_panel
 from opensquilla.engine.commands import Surface
-from opensquilla.provider.model_catalog import ModelCatalog
 
 TurnStreamDependencies = _turn_stream.TurnStreamDependencies
 
@@ -55,7 +54,6 @@ def router_hud_event_sink_factory(
     tui_output: TuiOutputHandle | None,
 ) -> Callable[[TuiDomainEvent], None]:
     manager = _plugin_manager_for_output(tui_output)
-    model_catalog = ModelCatalog()
 
     def _sink(event: TuiDomainEvent) -> None:
         if event.kind != KIND_ROUTER_DECISION:
@@ -74,7 +72,7 @@ def router_hud_event_sink_factory(
         _set_toolbar_value(
             tui_output,
             "router_context_window",
-            _resolve_router_context_window(model_catalog, snapshot.model),
+            snapshot.context_window,
         )
         _invalidate_output(tui_output)
 
@@ -86,15 +84,6 @@ def _plugin_manager_for_output(tui_output: TuiOutputHandle | None) -> TuiPluginM
     if isinstance(manager, TuiPluginManager):
         return manager
     return default_tui_plugin_manager()
-
-
-def _resolve_router_context_window(
-    model_catalog: ModelCatalog,
-    model_id: str,
-) -> int | None:
-    if not model_id:
-        return None
-    return model_catalog.resolve_context_window(model_id)
 
 
 def _set_toolbar_value(

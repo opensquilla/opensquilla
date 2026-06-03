@@ -379,6 +379,215 @@ def test_chat_view_loads_and_reaches_gateway_http_status_in_real_browser(tmp_pat
     }
 
 
+def test_replay_gap_history_refresh_preserves_scroll_in_real_browser(tmp_path: Path) -> None:
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_gap_scroll_server.py"
+    browser_script = tmp_path / "webui_gap_scroll_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+              page.on("console", msg => {
+                if (msg.type() === "error") errors.push(msg.text());
+              });
+
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+
+              await page.evaluate(() => {
+                const rpc = App.getRpc();
+                const originalCall = rpc.call.bind(rpc);
+                const messages = [];
+                for (let i = 1; i <= 70; i += 1) {
+                  const label = i % 2 ? "User" : "Assistant";
+                  messages.push({
+                    role: i % 2 ? "user" : "assistant",
+                    text: `${label} history row ${String(i).padStart(2, "0")} `.repeat(8),
+                    timestamp: `2026-06-03T00:${String(i % 60).padStart(2, "0")}:00.000Z`,
+                    message_id: `gap-probe-${i}`,
+                  });
+                }
+                window.__gapProbe = { subscribeCount: 0, historyCount: 0, gapInjected: false };
+                rpc.call = async (method, params) => {
+                  if (method === "chat.history") {
+                    window.__gapProbe.historyCount += 1;
+                    return {
+                      messages,
+                      has_more: false,
+                      history_scope: "complete",
+                      oldest_cursor: null,
+                      newest_cursor: null,
+                      compaction_summaries: [],
+                    };
+                  }
+                  if (method === "sessions.messages.subscribe") {
+                    window.__gapProbe.subscribeCount += 1;
+                    if (window.__gapProbe.subscribeCount <= 1) {
+                      return {
+                        subscribed: true,
+                        key: params && params.key,
+                        current_stream_seq: 12,
+                        replay_complete: true,
+                        replayed_count: 0,
+                        run_status: "idle",
+                      };
+                    }
+                    window.__gapProbe.gapInjected = true;
+                    return {
+                      subscribed: true,
+                      key: params && params.key,
+                      current_stream_seq: 18,
+                      replay_complete: false,
+                      replay_gap_reason: "stream_buffer_empty",
+                      replayed_count: 0,
+                      run_status: "idle",
+                    };
+                  }
+                  return originalCall(method, params);
+                };
+              });
+
+              await page.evaluate(() =>
+                Router.navigate(
+                  "/chat?session=" +
+                    encodeURIComponent("agent:main:webchat:gap-playwright-regression")
+                )
+              );
+              await page.waitForSelector("#chat-thread .msg", { timeout: 15000 });
+              await page.waitForFunction(
+                () => document.querySelectorAll("#chat-thread .msg").length >= 60,
+                { timeout: 15000 }
+              );
+
+              const before = await page.evaluate(() => {
+                const thread = document.querySelector("#chat-thread");
+                thread.scrollTop = 120;
+                return {
+                  scrollTop: thread.scrollTop,
+                  scrollHeight: thread.scrollHeight,
+                  clientHeight: thread.clientHeight,
+                  bottomDistance: thread.scrollHeight - thread.clientHeight - thread.scrollTop,
+                  messageCount: document.querySelectorAll("#chat-thread .msg").length,
+                };
+              });
+
+              await page.evaluate(() => {
+                const handlers = App.getRpc()._listeners.get("_state");
+                if (handlers) handlers.forEach(h => h("connected"));
+              });
+              await page.waitForFunction(
+                () => window.__gapProbe && window.__gapProbe.gapInjected === true,
+                { timeout: 15000 }
+              );
+              await page.waitForFunction(
+                () => window.__gapProbe && window.__gapProbe.historyCount >= 3,
+                { timeout: 15000 }
+              );
+
+              const after = await page.evaluate(() => {
+                const thread = document.querySelector("#chat-thread");
+                return {
+                  scrollTop: thread.scrollTop,
+                  scrollHeight: thread.scrollHeight,
+                  clientHeight: thread.clientHeight,
+                  bottomDistance: thread.scrollHeight - thread.clientHeight - thread.scrollTop,
+                  messageCount: document.querySelectorAll("#chat-thread .msg").length,
+                  toasts: Array.from(document.querySelectorAll(".toast")).map(el =>
+                    el.textContent.trim()
+                  ),
+                  probe: window.__gapProbe,
+                };
+              });
+
+              await browser.close();
+              console.log(JSON.stringify({ before, after, errors }));
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/overview"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    assert payload["errors"] == [], payload["errors"]
+    assert payload["before"]["messageCount"] >= 60
+    assert payload["after"]["messageCount"] == payload["before"]["messageCount"]
+    assert payload["after"]["probe"]["gapInjected"] is True
+    assert payload["after"]["bottomDistance"] > 1000, payload
+    assert payload["after"]["scrollTop"] <= payload["before"]["scrollTop"] + 80, payload
+    assert "Session stream gap detected; reloading transcript." not in payload["after"]["toasts"]
+
+
 def test_chat_topbar_one_row_layout_in_real_browser(tmp_path: Path) -> None:
     if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
         pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")

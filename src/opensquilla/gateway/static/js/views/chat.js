@@ -2776,8 +2776,16 @@ const ChatView = (() => {
         if (typeof res.current_stream_seq === 'number') {
           _setSessionStreamSeq(subscribeKey, res.current_stream_seq);
         }
-        UI.toast('Session stream gap detected; reloading transcript.', 'warn', 5000);
-        _loadHistory();
+        const replayGapReason = res.replay_gap_reason || res.replayGapReason || '';
+        if (_replayGapShouldWarn(replayGapReason)) {
+          UI.toast('Missed live stream events; transcript refreshed.', 'warn', 5000);
+        } else {
+          _chatDiag('session.subscribe.replay_gap.history_refresh', {
+            reason: replayGapReason,
+            currentStreamSeq: res.current_stream_seq,
+          });
+        }
+        _loadHistory(_historyRefreshScrollOptions());
       } else if (
         res
         && typeof res.current_stream_seq === 'number'
@@ -5059,7 +5067,7 @@ const ChatView = (() => {
         _hideThinkingIndicator();
         _subscribeSession();
         _loadCurrentSessionUsage();
-        _loadHistory();
+        _loadHistory(_historyRefreshScrollOptions());
       }
       if (state === 'disconnected' && _isStreaming) {
         _clearStreamIdleTimer();
@@ -5178,11 +5186,27 @@ const ChatView = (() => {
 
   /* ── Chat History ───────────────────────────────────────────────────── */
 
+  function _historyRefreshScrollOptions() {
+    if (!_thread || !_historyHasRendered) return {};
+    const gap = _thread.scrollHeight - _thread.scrollTop - _thread.clientHeight;
+    if (gap < 60) return {};
+    return {
+      preserveScroll: true,
+      previousScrollHeight: _thread.scrollHeight,
+      previousScrollTop: _thread.scrollTop,
+    };
+  }
+
+  function _replayGapShouldWarn(reason) {
+    const value = String(reason || '').toLowerCase();
+    return !['stream_buffer_empty', 'stream_buffer_reset', 'cursor_ahead_of_stream'].includes(value);
+  }
+
   function _scheduleHistorySync() {
     if (_historySyncTimer) clearTimeout(_historySyncTimer);
     _historySyncTimer = setTimeout(() => {
       _historySyncTimer = null;
-      _loadHistory();
+      _loadHistory(_historyRefreshScrollOptions());
     }, 50);
   }
 
@@ -5313,7 +5337,7 @@ const ChatView = (() => {
     _thread.insertBefore(row, _thread.firstChild || null);
   }
 
-  async function _loadHistory() {
+  async function _loadHistory(opts = {}) {
     if (!_sessionKey || !_thread) return;
     const requestSessionKey = _sessionKey;
     const requestSeq = ++_historyRequestSeq;
@@ -5352,7 +5376,7 @@ const ChatView = (() => {
         historyScope: _historyScope,
       });
       _historyHydrating = false;
-      _renderHistoryMessages(messages);
+      _renderHistoryMessages(messages, opts);
     } catch (err) {
       if (requestSessionKey === _sessionKey && requestSeq === _historyRequestSeq) {
         _historyHydrating = false;

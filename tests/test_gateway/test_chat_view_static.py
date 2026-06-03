@@ -931,7 +931,8 @@ def test_chat_subscribe_uses_stream_replay_cursor() -> None:
     assert "params.since_stream_seq = _lastStreamSeq;" not in source
     assert "if (_lastStreamSeq > 0) params.since_stream_seq = _lastStreamSeq;" not in body
     assert "function _acceptStreamSeq(payload)" in source
-    assert "Session stream gap detected; reloading transcript." in source
+    assert "function _replayGapShouldWarn(reason)" in source
+    assert "Session stream gap detected; reloading transcript." not in body
 
 
 def test_chat_stream_handlers_drop_replayed_duplicate_frames() -> None:
@@ -1004,9 +1005,31 @@ def test_chat_resets_replay_cursor_after_stream_gap() -> None:
 
     assert "if (res && res.replay_complete === false)" in body
     assert "_setSessionStreamSeq(subscribeKey, res.current_stream_seq);" in body
+    assert "const replayGapReason = res.replay_gap_reason || res.replayGapReason || '';" in body
+    assert "if (_replayGapShouldWarn(replayGapReason))" in body
+    assert "_loadHistory(_historyRefreshScrollOptions());" in body
     assert body.index("_setSessionStreamSeq(subscribeKey, res.current_stream_seq);") < body.index(
-        "_loadHistory();"
+        "_loadHistory(_historyRefreshScrollOptions());"
     )
+    assert body.index("if (_replayGapShouldWarn(replayGapReason))") < body.index(
+        "_loadHistory(_historyRefreshScrollOptions());"
+    )
+
+
+def test_chat_replay_gap_history_refresh_preserves_reader_scroll() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _historyRefreshScrollOptions()" in source
+    start = source.index("function _historyRefreshScrollOptions()")
+    end = source.index("function _scheduleHistorySync", start)
+    body = source[start:end]
+
+    assert "!_thread || !_historyHasRendered" in body
+    assert "_thread.scrollHeight - _thread.scrollTop - _thread.clientHeight" in body
+    assert "if (gap < 60) return {};" in body
+    assert "preserveScroll: true" in body
+    assert "previousScrollHeight: _thread.scrollHeight" in body
+    assert "previousScrollTop: _thread.scrollTop" in body
 
 
 def test_chat_empty_history_preserves_live_stream_bubble() -> None:
@@ -1317,7 +1340,7 @@ def test_chat_compaction_summary_separator_anchors_to_transcript_ids() -> None:
     )
     sync_end = source.index("function _compactFailureBlocksPending", sync_start)
     sync_body = source[sync_start:sync_end]
-    history_start = source.index("async function _loadHistory() {")
+    history_start = source.index("async function _loadHistory(opts = {}) {")
     history_end = source.index("_chatDiag('history.done'", history_start)
     history_body = source[history_start:history_end]
 
@@ -1718,7 +1741,7 @@ def test_chat_diag_is_opt_in_by_default() -> None:
 
 def test_chat_history_requests_active_paginated_metadata() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    history_start = source.index("async function _loadHistory() {")
+    history_start = source.index("async function _loadHistory(opts = {}) {")
     history_end = source.index("async function _loadEarlierHistory()", history_start)
     history_body = source[history_start:history_end]
     earlier_start = source.index("async function _loadEarlierHistory() {")
@@ -1758,7 +1781,7 @@ def test_chat_history_scope_row_surfaces_partial_compacted_and_error_states() ->
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")
     start = source.index("function _renderHistoryScopeRow() {")
-    end = source.index("async function _loadHistory()", start)
+    end = source.index("async function _loadHistory(opts = {})", start)
     body = source[start:end]
 
     assert "chat-history-scope" in body
@@ -1776,7 +1799,7 @@ def test_chat_history_scope_row_surfaces_partial_compacted_and_error_states() ->
 
 def test_chat_history_render_preserves_visible_messages_on_errors() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    initial_start = source.index("async function _loadHistory() {")
+    initial_start = source.index("async function _loadHistory(opts = {}) {")
     initial_end = source.index("async function _loadEarlierHistory()", initial_start)
     initial_body = source[initial_start:initial_end]
     earlier_start = source.index("async function _loadEarlierHistory() {")
@@ -1794,7 +1817,7 @@ def test_chat_history_render_preserves_visible_messages_on_errors() -> None:
 def test_chat_history_scope_row_is_not_a_message_node() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("function _renderHistoryScopeRow() {")
-    end = source.index("async function _loadHistory()", start)
+    end = source.index("async function _loadHistory(opts = {})", start)
     body = source[start:end]
 
     assert "row.className = `chat-history-scope chat-history-scope--${tone}`;" in body
@@ -1804,7 +1827,7 @@ def test_chat_history_scope_row_is_not_a_message_node() -> None:
 
 def test_router_fx_history_reuses_settled_strip_for_same_turn_identity() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    history_start = source.index("async function _loadHistory() {")
+    history_start = source.index("async function _loadHistory(opts = {}) {")
     history_end = source.index("  /* ── Send Message", history_start)
     history_body = source[history_start:history_end]
 
@@ -1826,7 +1849,7 @@ def test_router_fx_history_reanchors_stranded_strip() -> None:
     # flag — keep the one whose identity matches, drop extras, and re-anchor the
     # survivor beneath its user message, so the first chat never shows two grids.
     source = CHAT_JS.read_text(encoding="utf-8")
-    history_start = source.index("async function _loadHistory() {")
+    history_start = source.index("async function _loadHistory(opts = {}) {")
     history_end = source.index("  /* ── Send Message", history_start)
     history_body = source[history_start:history_end]
 
@@ -2176,7 +2199,7 @@ def test_router_fx_strip_survives_multistep_turn() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     assert "delete settledStrip.dataset.live;" not in source
     assert "_routerFxFindAttachedStrip" not in source
-    history_start = source.index("async function _loadHistory() {")
+    history_start = source.index("async function _loadHistory(opts = {}) {")
     history_end = source.index("  /* ── Send Message", history_start)
     history_body = source[history_start:history_end]
     assert "ownStrips.find((el) => el.dataset.live === 'true')" not in history_body
@@ -2214,7 +2237,7 @@ def test_router_decision_without_anchor_is_cached_for_history_replay() -> None:
     assert "_chatDiag('router_decision.cached_pending_anchor'" in source
     assert "_chatDiag('router_decision.skip.no_anchor_user'" not in handler_body
 
-    history_start = source.index("async function _loadHistory() {")
+    history_start = source.index("async function _loadHistory(opts = {}) {")
     history_end = source.index("function _appendHistoryDaySeparator", history_start)
     history_body = source[history_start:history_end]
     assert "_historyHydrating = true;" in history_body
@@ -2299,7 +2322,7 @@ def test_done_stream_bubble_survives_until_history_persists_assistant() -> None:
     mark_marker = "_markPendingFinalizedAssistantBubble(_streamBubble, cleanedText);"
     assert end_body.index(stamp_marker) < end_body.index(mark_marker)
 
-    history_start = source.index("async function _loadHistory() {")
+    history_start = source.index("async function _loadHistory(opts = {}) {")
     history_end = source.index("function _appendHistoryDaySeparator", history_start)
     history_body = source[history_start:history_end]
     assert "_chatDiag('history.empty.keep_pending_finalized_assistant'" in history_body
@@ -2572,7 +2595,7 @@ def test_router_fx_disable_removes_all_strips_without_live_spare_path() -> None:
         in source
     )
     assert ".router-fx:not([data-live=\"true\"])" not in source
-    history_start = source.index("async function _loadHistory() {")
+    history_start = source.index("async function _loadHistory(opts = {}) {")
     history_end = source.index("  /* ── Send Message", history_start)
     history_body = source[history_start:history_end]
     assert "if (!_routerFx.enabled) {" in history_body
@@ -2623,7 +2646,7 @@ def test_router_fx_visualisation_toggle_markup_reuses_switch() -> None:
 
 def test_chat_history_replays_turn_meta_to_restore_combo_streak() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    start = source.index("async function _loadHistory() {")
+    start = source.index("async function _loadHistory(opts = {}) {")
     end = source.index("  /* ── Send Message", start)
     body = source[start:end]
 
@@ -2790,7 +2813,7 @@ def test_rpc_client_passes_event_meta_without_polluting_payload() -> None:
 
 def test_chat_history_reconciles_by_message_identity_without_clear_replace() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    start = source.index("async function _loadHistory() {")
+    start = source.index("async function _loadHistory(opts = {}) {")
     end = source.index("  /* ── Send Message", start)
     body = source[start:end]
 
@@ -2818,7 +2841,7 @@ def test_chat_history_reconciles_by_message_identity_without_clear_replace() -> 
 
 def test_chat_history_reorders_reused_nodes_to_match_transcript_order() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    start = source.index("async function _loadHistory() {")
+    start = source.index("async function _loadHistory(opts = {}) {")
     end = source.index("  /* ── Send Message", start)
     body = source[start:end]
 

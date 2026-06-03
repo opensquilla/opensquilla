@@ -354,6 +354,43 @@ def _context_from_payload(payload: Any, source: str) -> RunContext | None:
     )
 
 
+def _origin_item_scope(item: Any, default: str) -> str:
+    if not isinstance(item, dict):
+        return default
+    return normalize_scope(item.get("scope"), default)
+
+
+def _without_materialized_user_grants(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    filtered = dict(payload)
+    mounts = payload.get("mounts")
+    if isinstance(mounts, Iterable) and not isinstance(mounts, (str, bytes, dict)):
+        filtered["mounts"] = [
+            item for item in mounts if _origin_item_scope(item, "chat") != "workspace"
+        ]
+    domains = payload.get("domains")
+    if isinstance(domains, Iterable) and not isinstance(domains, (str, bytes, dict)):
+        filtered["domains"] = [
+            item for item in domains if _origin_item_scope(item, "chat") != "workspace"
+        ]
+    bundles = payload.get("bundles")
+    if isinstance(bundles, Iterable) and not isinstance(bundles, (str, bytes, dict)):
+        filtered["bundles"] = [
+            item
+            for item in bundles
+            if (
+                _origin_item_scope(item, "workspace") != "workspace"
+                or (
+                    isinstance(item, dict)
+                    and (_string_value(item.get("source"), "manual") or "manual")
+                    == "disabled"
+                )
+            )
+        ]
+    return filtered
+
+
 def run_context_from_origin_payload(
     payload: Any,
     *,
@@ -365,7 +402,7 @@ def run_context_from_origin_payload(
     silently become grants unless it passes the same normalization as saved
     session context.
     """
-    return _context_from_payload(payload, source)
+    return _context_from_payload(_without_materialized_user_grants(payload), source)
 
 
 def _merge_mount_grants(
@@ -449,7 +486,10 @@ async def get_run_context(
     node = await _get_session_node(session_manager, session_key)
     if node is not None:
         origin = _origin_dict(node)
-        saved = _context_from_payload(origin.get(RUN_CONTEXT_ORIGIN_KEY), "saved")
+        saved = _context_from_payload(
+            _without_materialized_user_grants(origin.get(RUN_CONTEXT_ORIGIN_KEY)),
+            "saved",
+        )
         if saved is not None:
             return _with_user_grants(saved) if include_user_grants else saved
     context = RunContext(

@@ -1632,6 +1632,10 @@ function esc(s: string): string {
 
 /* Dialog */
 .sk-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-surface);
@@ -1641,6 +1645,7 @@ function esc(s: string): string {
   max-height: 85vh;
   overflow: hidden;
   padding: 0;
+  margin: 0;
 }
 .sk-dialog::backdrop {
   background: rgba(0, 0, 0, 0.5);

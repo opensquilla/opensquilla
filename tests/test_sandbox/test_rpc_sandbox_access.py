@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -229,6 +230,7 @@ async def test_exec_approval_resolve_leaves_sandbox_approval_pending_when_mutati
     from opensquilla.gateway.rpc import get_dispatcher
     from opensquilla.sandbox.escalation import build_network_approval_params
     from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import get_run_context
 
     reset_approval_queue()
     manager = _SessionManager()
@@ -267,6 +269,90 @@ async def test_exec_approval_resolve_leaves_sandbox_approval_pending_when_mutati
     pending = queue.get(approval_id)
     assert pending.resolved is False
     assert pending.approved is False
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_ctx(manager).config,
+        workspace="/tmp/ws",
+    )
+    assert context.domains == ()
+
+    reset_approval_queue()
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_resolve_claim_prevents_deny_race_from_landing_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.gateway.rpc import get_dispatcher
+    from opensquilla.sandbox import escalation as escalation_mod
+    from opensquilla.sandbox.escalation import build_network_approval_params
+    from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import get_run_context
+
+    reset_approval_queue()
+    manager = _SessionManager()
+    ctx = _ctx(manager, scopes=frozenset(["operator.approvals"]))
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace="/tmp/ws",
+        fingerprint="fp123",
+    )
+    assert params is not None
+    queue = get_approval_queue()
+    approval_id = queue.request(namespace="exec", params=params)
+
+    mutation_started = asyncio.Event()
+    release_mutation = asyncio.Event()
+
+    async def delayed_apply(*args, **kwargs) -> None:
+        mutation_started.set()
+        await release_mutation.wait()
+        await escalation_mod.apply_sandbox_approval_choice(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_approvals.apply_sandbox_approval_choice",
+        delayed_apply,
+    )
+
+    approve_task = asyncio.create_task(
+        get_dispatcher().dispatch(
+            "approve",
+            "exec.approval.resolve",
+            {"id": approval_id, "approved": True, "choice": "allow_chat"},
+            ctx,
+        )
+    )
+    await asyncio.wait_for(mutation_started.wait(), timeout=1)
+
+    deny_result = await get_dispatcher().dispatch(
+        "deny",
+        "exec.approval.resolve",
+        {"id": approval_id, "approved": False, "choice": "deny"},
+        ctx,
+    )
+    release_mutation.set()
+    approve_result = await approve_task
+
+    assert deny_result.error is not None
+    assert approve_result.error is None, approve_result.error
+    resolved = queue.get(approval_id)
+    assert resolved.resolved is True
+    assert resolved.approved is True
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=ctx.config,
+        workspace="/tmp/ws",
+    )
+    assert ("example.com", "chat") in [(grant.domain, grant.scope) for grant in context.domains]
 
     reset_approval_queue()
 

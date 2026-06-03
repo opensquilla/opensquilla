@@ -35,6 +35,11 @@ def _manager_with_session_key(session_key: str) -> _SessionManager:
     return manager
 
 
+class _FailingUpdateSessionManager(_SessionManager):
+    async def update(self, session_key: str, **fields):
+        raise RuntimeError("persist failed")
+
+
 @pytest.mark.asyncio
 async def test_mount_domain_and_bundle_grants_persist(tmp_path):
     from opensquilla.sandbox.run_context import get_run_context
@@ -86,6 +91,125 @@ async def test_mount_domain_and_bundle_grants_persist(tmp_path):
     assert ctx.mounts[0].access == "ro"
     assert ctx.domains[0].domain == "pypi.org"
     assert ctx.bundles[0].bundle_id == "python-package-install"
+
+
+@pytest.mark.asyncio
+async def test_workspace_domain_grant_does_not_write_user_store_when_session_persist_fails(
+    tmp_path,
+):
+    from opensquilla.sandbox.run_context_service import add_domain_grant
+    from opensquilla.sandbox.user_grants import load_user_grants_payload
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = _FailingUpdateSessionManager()
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        await add_domain_grant(
+            manager,
+            manager.node.session_key,
+            domain="example.com",
+            scope="workspace",
+            config=_config(),
+            workspace=str(workspace),
+        )
+
+    assert load_user_grants_payload()["domains"] == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_mount_grant_does_not_write_user_store_when_session_persist_fails(
+    tmp_path,
+):
+    from opensquilla.sandbox.run_context_service import add_mount_grant
+    from opensquilla.sandbox.user_grants import load_user_grants_payload
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    manager = _FailingUpdateSessionManager()
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        await add_mount_grant(
+            manager,
+            manager.node.session_key,
+            path=str(outside),
+            access="ro",
+            scope="workspace",
+            config=_config(),
+            workspace=str(workspace),
+        )
+
+    assert load_user_grants_payload()["mounts"] == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_bundle_grant_does_not_write_user_store_when_session_persist_fails(
+    tmp_path,
+):
+    from opensquilla.sandbox.run_context_service import enable_bundle_grant
+    from opensquilla.sandbox.user_grants import load_user_grants_payload
+
+    manager = _FailingUpdateSessionManager()
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        await enable_bundle_grant(
+            manager,
+            manager.node.session_key,
+            bundle_id="python-package-install",
+            scope="workspace",
+            config=_config(),
+            workspace=str(tmp_path),
+        )
+
+    assert load_user_grants_payload()["bundles"] == []
+
+
+def test_user_grants_store_round_trips_payloads(tmp_path):
+    from opensquilla.sandbox.user_grants import (
+        load_user_grants_payload,
+        remove_bundle_grant,
+        remove_domain_grant,
+        remove_mount_grant,
+        upsert_bundle_grant,
+        upsert_domain_grant,
+        upsert_mount_grant,
+    )
+
+    mount_path = str((tmp_path / "outside").resolve(strict=False))
+
+    upsert_domain_grant(
+        {"domain": "example.com", "scope": "workspace", "source": "manual"}
+    )
+    upsert_mount_grant({"path": mount_path, "access": "ro", "scope": "workspace"})
+    upsert_bundle_grant(
+        {
+            "bundle_id": "python-package-install",
+            "scope": "workspace",
+            "source": "manual",
+        }
+    )
+
+    assert load_user_grants_payload() == {
+        "domains": [
+            {"domain": "example.com", "scope": "workspace", "source": "manual"}
+        ],
+        "mounts": [{"path": mount_path, "access": "ro", "scope": "workspace"}],
+        "bundles": [
+            {
+                "bundle_id": "python-package-install",
+                "scope": "workspace",
+                "source": "manual",
+            }
+        ],
+    }
+
+    remove_domain_grant("example.com")
+    remove_mount_grant(mount_path)
+    remove_bundle_grant("python-package-install")
+
+    assert load_user_grants_payload() == {"domains": [], "mounts": [], "bundles": []}
 
 
 @pytest.mark.asyncio

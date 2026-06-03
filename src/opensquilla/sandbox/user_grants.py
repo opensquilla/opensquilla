@@ -4,22 +4,30 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
 from opensquilla.paths import state_dir
 
-_STATE_FILE = "sandbox_user_grants.json"
-_COLLECTIONS = frozenset({"mounts", "domains", "bundles"})
+_STATE_FILE = "sandbox_user_grants.sqlite"
+_KINDS = ("mounts", "domains", "bundles")
 
 
 def load_user_grants_payload() -> dict[str, list[dict[str, Any]]]:
-    raw = _read_state()
-    return {
-        "mounts": _items(raw.get("mounts")),
-        "domains": _items(raw.get("domains")),
-        "bundles": _items(raw.get("bundles")),
-    }
+    payload = {kind: [] for kind in _KINDS}
+    with _connect() as conn:
+        for row in conn.execute(
+            "SELECT kind, payload FROM sandbox_user_grants ORDER BY rowid"
+        ):
+            kind = str(row["kind"])
+            if kind not in payload:
+                continue
+            item = _decode_payload(row["payload"])
+            if item is not None:
+                payload[kind].append(item)
+    return payload
 
 
 def upsert_domain_grant(payload: dict[str, Any]) -> None:
@@ -27,7 +35,7 @@ def upsert_domain_grant(payload: dict[str, Any]) -> None:
 
 
 def remove_domain_grant(domain: str) -> None:
-    _remove("domains", "domain", domain)
+    _remove("domains", domain)
 
 
 def upsert_mount_grant(payload: dict[str, Any]) -> None:
@@ -35,7 +43,7 @@ def upsert_mount_grant(payload: dict[str, Any]) -> None:
 
 
 def remove_mount_grant(path: str) -> None:
-    _remove("mounts", "path", path)
+    _remove("mounts", path)
 
 
 def upsert_bundle_grant(payload: dict[str, Any]) -> None:
@@ -43,69 +51,70 @@ def upsert_bundle_grant(payload: dict[str, Any]) -> None:
 
 
 def remove_bundle_grant(bundle_id: str) -> None:
-    _remove("bundles", "bundle_id", bundle_id)
+    _remove("bundles", bundle_id)
 
 
 def _state_path() -> Path:
     return state_dir(_STATE_FILE)
 
 
-def _read_state() -> dict[str, Any]:
-    path = _state_path()
-    try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _write_state(payload: dict[str, Any]) -> None:
+def _connect() -> sqlite3.Connection:
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
+    conn = sqlite3.connect(os.fspath(path), timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sandbox_user_grants ("
+        "kind TEXT NOT NULL, "
+        "grant_key TEXT NOT NULL, "
+        "payload TEXT NOT NULL, "
+        "updated_at REAL NOT NULL, "
+        "PRIMARY KEY(kind, grant_key)"
+        ")"
     )
-    os.replace(tmp, path)
+    return conn
 
 
-def _items(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [dict(item) for item in value if isinstance(item, dict)]
+def _decode_payload(raw: Any) -> dict[str, Any] | None:
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(str(raw or "{}"))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
-def _state_with_collections(raw: dict[str, Any]) -> dict[str, Any]:
-    state = {"version": 1}
-    for collection in _COLLECTIONS:
-        state[collection] = _items(raw.get(collection))
-    return state
-
-
-def _upsert(collection: str, key: str, payload: dict[str, Any]) -> None:
-    value = str(payload.get(key) or "").strip()
-    if not value:
+def _upsert(kind: str, key_field: str, payload: dict[str, Any]) -> None:
+    key = str(payload.get(key_field) or "").strip()
+    if not key:
         return
-    state = _state_with_collections(_read_state())
-    items = [item for item in state[collection] if str(item.get(key) or "").strip() != value]
-    items.append(dict(payload))
-    state[collection] = items
-    _write_state(state)
+    encoded = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO sandbox_user_grants(kind, grant_key, payload, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(kind, grant_key) DO UPDATE SET "
+            "payload = excluded.payload, updated_at = excluded.updated_at",
+            (kind, key, encoded, time.time()),
+        )
+        conn.commit()
 
 
-def _remove(collection: str, key: str, value: str) -> None:
-    normalized = str(value or "").strip()
+def _remove(kind: str, key: str) -> None:
+    normalized = str(key or "").strip()
     if not normalized:
         return
-    state = _state_with_collections(_read_state())
-    items = [item for item in state[collection] if str(item.get(key) or "").strip() != normalized]
-    if items == state[collection]:
-        return
-    state[collection] = items
-    _write_state(state)
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM sandbox_user_grants WHERE kind = ? AND grant_key = ?",
+            (kind, normalized),
+        )
+        conn.commit()
 
 
 __all__ = [

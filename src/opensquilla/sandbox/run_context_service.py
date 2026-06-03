@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable
 
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
 from opensquilla.sandbox.network_guard import decide_network_access
@@ -28,6 +28,54 @@ from opensquilla.sandbox import user_grants
 
 def _normalize_bundle_id(bundle_id: Any) -> str:
     return str(bundle_id or "").strip()
+
+
+def _upsert_user_mount_grant(grant: MountGrant) -> None:
+    user_grants.upsert_mount_grant(
+        {"path": grant.path, "access": grant.access, "scope": grant.scope}
+    )
+
+
+def _upsert_user_domain_grant(grant: DomainGrant) -> None:
+    user_grants.upsert_domain_grant(
+        {
+            "domain": grant.domain,
+            "scope": grant.scope,
+            "source": grant.source,
+        }
+    )
+
+
+def _upsert_user_bundle_grant(grant: PackageBundleGrant) -> None:
+    user_grants.upsert_bundle_grant(
+        {
+            "bundle_id": grant.bundle_id,
+            "scope": grant.scope,
+            "source": grant.source,
+        }
+    )
+
+
+async def _persist_then_apply_user_store(
+    session_manager: Any,
+    session_key: str,
+    *,
+    existing: RunContext,
+    updated: RunContext,
+    apply_user_store: Callable[[], None] | None = None,
+) -> RunContext:
+    persisted = await persist_run_context(session_manager, session_key, updated)
+    if apply_user_store is None:
+        return persisted
+    try:
+        apply_user_store()
+    except Exception as exc:
+        try:
+            await persist_run_context(session_manager, session_key, existing)
+        except Exception as rollback_exc:
+            raise exc from rollback_exc
+        raise
+    return persisted
 
 
 async def set_workspace(
@@ -87,19 +135,24 @@ async def add_mount_grant(
         access=mount_access,
         scope=normalize_scope(scope),
     )
+    apply_user_store = None
     if grant.scope == "workspace":
-        user_grants.upsert_mount_grant(
-            {"path": grant.path, "access": grant.access, "scope": grant.scope}
-        )
+        apply_user_store = lambda grant=grant: _upsert_user_mount_grant(grant)
     if grant in existing.mounts:
+        if apply_user_store is not None:
+            apply_user_store()
         return existing
     mounts = tuple(m for m in existing.mounts if m.path != grant.path) + (grant,)
     if mounts == existing.mounts:
+        if apply_user_store is not None:
+            apply_user_store()
         return existing
-    return await persist_run_context(
+    return await _persist_then_apply_user_store(
         session_manager,
         session_key,
-        replace(existing, mounts=mounts, source="saved"),
+        existing=existing,
+        updated=replace(existing, mounts=mounts, source="saved"),
+        apply_user_store=apply_user_store,
     )
 
 
@@ -125,15 +178,17 @@ async def remove_mount_grant(
     if decision.status == "blocked":
         raise ValueError(decision.reason or "mount_blocked")
     normalized_path = decision.normalized_path
-    user_grants.remove_mount_grant(normalized_path)
     removal_paths = {normalized_path, path}
     mounts = tuple(m for m in existing.mounts if m.path not in removal_paths)
     if mounts == existing.mounts:
+        user_grants.remove_mount_grant(normalized_path)
         return existing
-    return await persist_run_context(
+    return await _persist_then_apply_user_store(
         session_manager,
         session_key,
-        replace(existing, mounts=mounts, source="saved"),
+        existing=existing,
+        updated=replace(existing, mounts=mounts, source="saved"),
+        apply_user_store=lambda: user_grants.remove_mount_grant(normalized_path),
     )
 
 
@@ -161,23 +216,24 @@ async def add_domain_grant(
         scope=normalize_scope(scope),
         source=source,
     )
+    apply_user_store = None
     if grant.scope == "workspace":
-        user_grants.upsert_domain_grant(
-            {
-                "domain": grant.domain,
-                "scope": grant.scope,
-                "source": grant.source,
-            }
-        )
+        apply_user_store = lambda grant=grant: _upsert_user_domain_grant(grant)
     if grant in existing.domains:
+        if apply_user_store is not None:
+            apply_user_store()
         return existing
     domains = tuple(d for d in existing.domains if d.domain != grant.domain) + (grant,)
     if domains == existing.domains:
+        if apply_user_store is not None:
+            apply_user_store()
         return existing
-    return await persist_run_context(
+    return await _persist_then_apply_user_store(
         session_manager,
         session_key,
-        replace(existing, domains=domains, source="saved"),
+        existing=existing,
+        updated=replace(existing, domains=domains, source="saved"),
+        apply_user_store=apply_user_store,
     )
 
 
@@ -241,7 +297,6 @@ async def remove_domain_grant(
     if decision.status == "blocked":
         raise ValueError(decision.reason)
     normalized = decision.normalized
-    user_grants.remove_domain_grant(normalized)
     existing = await get_run_context(
         session_manager,
         session_key,
@@ -250,11 +305,14 @@ async def remove_domain_grant(
     )
     domains = tuple(d for d in existing.domains if d.domain != normalized)
     if domains == existing.domains:
+        user_grants.remove_domain_grant(normalized)
         return existing
-    return await persist_run_context(
+    return await _persist_then_apply_user_store(
         session_manager,
         session_key,
-        replace(existing, domains=domains, source="saved"),
+        existing=existing,
+        updated=replace(existing, domains=domains, source="saved"),
+        apply_user_store=lambda: user_grants.remove_domain_grant(normalized),
     )
 
 
@@ -281,25 +339,26 @@ async def enable_bundle_grant(
         scope=normalize_scope(scope, "workspace"),
         source="manual",
     )
+    apply_user_store = None
     if grant.scope == "workspace":
-        user_grants.upsert_bundle_grant(
-            {
-                "bundle_id": grant.bundle_id,
-                "scope": grant.scope,
-                "source": grant.source,
-            }
-        )
+        apply_user_store = lambda grant=grant: _upsert_user_bundle_grant(grant)
     if grant in existing.bundles:
+        if apply_user_store is not None:
+            apply_user_store()
         return existing
     bundles = tuple(b for b in existing.bundles if b.bundle_id != grant.bundle_id) + (
         grant,
     )
     if bundles == existing.bundles:
+        if apply_user_store is not None:
+            apply_user_store()
         return existing
-    return await persist_run_context(
+    return await _persist_then_apply_user_store(
         session_manager,
         session_key,
-        replace(existing, bundles=bundles, source="saved"),
+        existing=existing,
+        updated=replace(existing, bundles=bundles, source="saved"),
+        apply_user_store=apply_user_store,
     )
 
 
@@ -314,7 +373,6 @@ async def disable_bundle_grant(
     normalized_bundle_id = _normalize_bundle_id(bundle_id)
     if not expand_package_bundle(normalized_bundle_id):
         raise ValueError("unknown_package_bundle")
-    user_grants.remove_bundle_grant(normalized_bundle_id)
     existing = await get_run_context(
         session_manager,
         session_key,
@@ -337,11 +395,14 @@ async def disable_bundle_grant(
     bundles = tuple(b for b in existing.bundles if b.bundle_id != normalized_bundle_id)
     bundles = bundles + (grant,)
     if bundles == existing.bundles:
+        user_grants.remove_bundle_grant(normalized_bundle_id)
         return existing
-    return await persist_run_context(
+    return await _persist_then_apply_user_store(
         session_manager,
         session_key,
-        replace(existing, bundles=bundles, source="saved"),
+        existing=existing,
+        updated=replace(existing, bundles=bundles, source="saved"),
+        apply_user_store=lambda: user_grants.remove_bundle_grant(normalized_bundle_id),
     )
 
 

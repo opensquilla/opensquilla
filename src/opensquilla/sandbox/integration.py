@@ -1178,10 +1178,20 @@ async def escalate_backend_denial(
 
 
 def _runtime_is_full_host_access(runtime: SandboxRuntime) -> bool:
+    try:
+        from opensquilla.tools.run_mode import current_run_mode, full_host_access_active
+
+        if current_run_mode() is not None:
+            return full_host_access_active()
+    except Exception:  # pragma: no cover - defensive against tool-context imports
+        pass
+
+    context = current_tool_run_context()
+    if context is not None:
+        return context.run_mode == RunMode.FULL
     if runtime.settings.run_mode is not None:
         return normalize_run_mode(runtime.settings.run_mode) == RunMode.FULL
-    context = current_tool_run_context()
-    return context is not None and context.run_mode == RunMode.FULL
+    return False
 
 
 __all__ = [

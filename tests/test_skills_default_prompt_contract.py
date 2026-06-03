@@ -163,6 +163,7 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
                 "ffmpeg": True,
                 "ffprobe": True,
                 "xelatex": True,
+                "bibtex": True,
                 "nano-pdf": True,
                 "python": True,
                 "python3": True,

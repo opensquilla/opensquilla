@@ -364,6 +364,88 @@ async def test_exec_approval_resolve_claim_prevents_deny_race_from_landing_grant
 
 
 @pytest.mark.asyncio
+async def test_exec_approval_wait_and_consume_wait_for_sandbox_grant_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.gateway.rpc import get_dispatcher
+    from opensquilla.sandbox import escalation as escalation_mod
+    from opensquilla.sandbox.escalation import build_network_approval_params
+    from opensquilla.sandbox.network_guard import NetworkDecision
+
+    reset_approval_queue()
+    manager = _SessionManager()
+    ctx = _ctx(manager, scopes=frozenset(["operator.approvals"]))
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace="/tmp/ws",
+        fingerprint="fp123",
+    )
+    assert params is not None
+    queue = get_approval_queue()
+    approval_id = queue.request(namespace="exec", params=params)
+
+    mutation_started = asyncio.Event()
+    release_mutation = asyncio.Event()
+
+    async def delayed_apply(*args, **kwargs) -> None:
+        mutation_started.set()
+        await release_mutation.wait()
+        await escalation_mod.apply_sandbox_approval_choice(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_approvals.apply_sandbox_approval_choice",
+        delayed_apply,
+    )
+
+    approve_task = asyncio.create_task(
+        get_dispatcher().dispatch(
+            "approve",
+            "exec.approval.resolve",
+            {"id": approval_id, "approved": True, "choice": "allow_chat"},
+            ctx,
+        )
+    )
+    await asyncio.wait_for(mutation_started.wait(), timeout=1)
+
+    wait_task = asyncio.create_task(queue.wait(approval_id, timeout=1.0))
+    wait_decision_task = asyncio.create_task(
+        get_dispatcher().dispatch(
+            "wait",
+            "exec.approval.waitDecision",
+            {"id": approval_id},
+            ctx,
+        )
+    )
+    await asyncio.sleep(0.05)
+
+    assert wait_task.done() is False
+    assert wait_decision_task.done() is False
+    with pytest.raises(ValueError, match="in progress|not approved"):
+        queue.consume(approval_id)
+
+    release_mutation.set()
+    approve_result = await approve_task
+    assert approve_result.error is None, approve_result.error
+    assert await wait_task is True
+    wait_decision_result = await wait_decision_task
+    assert wait_decision_result.error is None, wait_decision_result.error
+    assert wait_decision_result.payload["approved"] is True
+    assert wait_decision_result.payload["resolved"] is True
+
+    queue.consume(approval_id)
+    assert queue.status(approval_id)["consumed"] is True
+
+    reset_approval_queue()
+
+
+@pytest.mark.asyncio
 async def test_exec_approval_resolve_finalize_failure_does_not_land_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

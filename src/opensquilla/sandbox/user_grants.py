@@ -148,7 +148,10 @@ def _migrate_legacy_json(conn: sqlite3.Connection) -> None:
                 payload["bundle_id"] = payload["bundleId"]
             _upsert_row(conn, kind=kind, grant_key=key, payload=payload)
     conn.commit()
-    legacy_path.unlink()
+    try:
+        legacy_path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _upsert(kind: str, key_field: str, payload: dict[str, Any]) -> None:

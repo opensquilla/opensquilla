@@ -174,6 +174,13 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         except Exception:
             queue.reopen_resolved_approval(params["id"], expected_approved=True)
             raise
+        queue.complete_claimed_resolution(
+            params["id"],
+            claim_token,
+            allow_always=allow_always,
+            remember_intent=remember_intent,
+            elevated_mode=None,
+        )
         return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
 
     queue.resolve(

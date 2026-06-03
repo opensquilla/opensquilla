@@ -109,8 +109,7 @@ class ApprovalQueue:
         self._conn.execute(
             "UPDATE approval_queue "
             "SET claim_token = NULL, claim_started_at = NULL "
-            "WHERE resolved = 0 "
-            "AND claim_token IS NOT NULL "
+            "WHERE claim_token IS NOT NULL "
             "AND (claim_started_at IS NULL OR claim_started_at <= ?)",
             (threshold,),
         )
@@ -210,7 +209,7 @@ class ApprovalQueue:
 
     async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
         entry = self.get(approval_id)
-        if entry.resolved:
+        if entry.resolved and entry.claim_token is None:
             return entry.approved
         t = timeout if timeout is not None else self._timeout
         deadline = time.monotonic() + t
@@ -226,7 +225,7 @@ class ApprovalQueue:
             except TimeoutError:
                 pass
             entry = self.get(approval_id)
-            if entry.resolved:
+            if entry.resolved and entry.claim_token is None:
                 return entry.approved
         return self._deny_on_timeout_if_unresolved(approval_id)
 
@@ -238,15 +237,15 @@ class ApprovalQueue:
             self._conn.rollback()
             raise KeyError(f"Approval not found: {approval_id}")
         entry = self._row_to_entry(row)
+        if entry.claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution in progress: {approval_id}")
         if entry.resolved:
             self._conn.rollback()
             self._pending[approval_id] = entry
             entry._event.set()
             return entry.approved
-        if entry.claim_token:
-            self._conn.rollback()
-            self._pending[approval_id] = entry
-            raise ValueError(f"Approval resolution in progress: {approval_id}")
         self._conn.execute(
             "UPDATE approval_queue "
             "SET resolved = 1, approved = 0 "
@@ -276,6 +275,10 @@ class ApprovalQueue:
             self._conn.rollback()
             raise KeyError(f"Approval not found: {approval_id}")
         entry = self._row_to_entry(row)
+        if entry.claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution in progress: {approval_id}")
         if entry.resolved:
             self._conn.rollback()
             self._pending[approval_id] = entry
@@ -283,10 +286,6 @@ class ApprovalQueue:
             if allow_idempotent and entry.approved == approved:
                 return
             raise ValueError(f"Approval already resolved: {approval_id}")
-        if entry.claim_token:
-            self._conn.rollback()
-            self._pending[approval_id] = entry
-            raise ValueError(f"Approval resolution in progress: {approval_id}")
 
         cursor = self._conn.execute(
             "UPDATE approval_queue "
@@ -328,15 +327,15 @@ class ApprovalQueue:
             self._conn.rollback()
             raise KeyError(f"Approval not found: {approval_id}")
         entry = self._row_to_entry(row)
+        if entry.claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution in progress: {approval_id}")
         if entry.resolved:
             self._conn.rollback()
             self._pending[approval_id] = entry
             entry._event.set()
             raise ValueError(f"Approval already resolved: {approval_id}")
-        if entry.claim_token:
-            self._conn.rollback()
-            self._pending[approval_id] = entry
-            raise ValueError(f"Approval resolution in progress: {approval_id}")
         cursor = self._conn.execute(
             "UPDATE approval_queue "
             "SET claim_token = ?, claim_started_at = ? "
@@ -382,7 +381,7 @@ class ApprovalQueue:
             raise ValueError(f"Approval resolution claim mismatch: {approval_id}")
         cursor = self._conn.execute(
             "UPDATE approval_queue "
-            "SET resolved = 1, approved = ?, claim_token = NULL, claim_started_at = NULL "
+            "SET resolved = 1, approved = ? "
             "WHERE approval_id = ? AND resolved = 0 AND claim_token = ?",
             (1 if approved else 0, approval_id, claim_token),
         )
@@ -391,16 +390,58 @@ class ApprovalQueue:
             raise ValueError(f"Approval could not be finalized: {approval_id}")
         self._conn.commit()
 
-        entry = self.get(approval_id)
+        row = self._get_row(approval_id)
+        if row is None:
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
         entry.approved = bool(approved)
         entry.resolved = True
-        entry.claim_token = None
+        self._pending[approval_id] = entry
+
+        del elevated_mode
+
+    def complete_claimed_resolution(
+        self,
+        approval_id: str,
+        claim_token: str,
+        *,
+        allow_always: bool = False,
+        remember_intent: bool = False,
+        elevated_mode: str | None = None,
+    ) -> None:
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if not entry.resolved or not entry.approved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval is not approved: {approval_id}")
+        if entry.claim_token != claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution claim mismatch: {approval_id}")
+        cursor = self._conn.execute(
+            "UPDATE approval_queue "
+            "SET claim_token = NULL, claim_started_at = NULL "
+            "WHERE approval_id = ? AND resolved = 1 AND approved = 1 "
+            "AND claim_token = ?",
+            (approval_id, claim_token),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise ValueError(f"Approval could not be completed: {approval_id}")
+        self._conn.commit()
+
+        entry = self.get(approval_id)
         entry._event.set()
         self._pending[approval_id] = entry
 
         del elevated_mode
 
-        if approved and entry.namespace == "exec" and (allow_always or remember_intent):
+        if entry.namespace == "exec" and (allow_always or remember_intent):
             self._persist_command_intent(entry.params, allow_always=allow_always)
 
     def release_resolution_claim(self, approval_id: str, claim_token: str) -> None:
@@ -477,12 +518,17 @@ class ApprovalQueue:
             return
 
     def consume(self, approval_id: str) -> None:
+        self._release_stale_claims()
         self._conn.execute("BEGIN IMMEDIATE")
         row = self._get_row(approval_id)
         if row is None:
             self._conn.rollback()
             raise KeyError(f"Approval not found: {approval_id}")
         entry = self._row_to_entry(row)
+        if entry.claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution in progress: {approval_id}")
         if not entry.resolved or not entry.approved:
             self._conn.rollback()
             raise ValueError(f"Approval is not approved: {approval_id}")
@@ -492,7 +538,8 @@ class ApprovalQueue:
         cursor = self._conn.execute(
             "UPDATE approval_queue "
             "SET consumed = 1 "
-            "WHERE approval_id = ? AND resolved = 1 AND approved = 1 AND consumed = 0",
+            "WHERE approval_id = ? AND resolved = 1 AND approved = 1 "
+            "AND consumed = 0 AND claim_token IS NULL",
             (approval_id,),
         )
         if cursor.rowcount != 1:
@@ -507,14 +554,15 @@ class ApprovalQueue:
 
     def status(self, approval_id: str) -> dict:
         entry = self.get(approval_id)
+        ready = entry.resolved and entry.claim_token is None
         return {
             "id": entry.approval_id,
             "namespace": entry.namespace,
             "params": entry.params,
             "created_at": entry.created_at,
-            "resolved": entry.resolved,
-            "approved": entry.approved,
-            "consumed": entry.consumed,
+            "resolved": ready,
+            "approved": entry.approved if ready else False,
+            "consumed": entry.consumed if ready else False,
         }
 
     def list_pending(self, namespace: str | None = None) -> list[dict]:

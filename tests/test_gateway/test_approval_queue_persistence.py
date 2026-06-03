@@ -176,3 +176,28 @@ def test_approval_queue_consume_is_one_shot_with_stale_unconsumed_read(
         assert queue.get(approval_id).consumed is True
     finally:
         queue.close()
+
+
+def test_approval_queue_recovers_stale_resolved_claim_as_ready(tmp_path) -> None:
+    db_path = tmp_path / "approval_queue.sqlite"
+    queue = ApprovalQueue(db_path=str(db_path), default_timeout=1.0, poll_interval=0.01)
+    approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
+    token = queue.claim_resolution(approval_id)
+    try:
+        queue.finalize_claimed_resolution(approval_id, token, True)
+        queue._conn.execute(
+            "UPDATE approval_queue SET claim_token = ?, claim_started_at = 0 "
+            "WHERE approval_id = ?",
+            ("stale-token", approval_id),
+        )
+        queue._conn.commit()
+
+        entry = queue.get(approval_id)
+
+        assert entry.claim_token is None
+        assert entry.resolved is True
+        assert entry.approved is True
+        queue.consume(approval_id)
+        assert queue.status(approval_id)["consumed"] is True
+    finally:
+        queue.close()

@@ -261,6 +261,46 @@ def test_user_grants_store_migrates_legacy_json(tmp_path):
     assert legacy_path.exists() is False
 
 
+def test_user_grants_store_migration_tolerates_concurrent_legacy_unlink(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from pathlib import Path
+
+    from opensquilla.paths import state_dir
+    from opensquilla.sandbox.user_grants import load_user_grants_payload
+
+    legacy_path = state_dir("sandbox_user_grants.json")
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "domains": [
+                    {
+                        "domain": "example.com",
+                        "scope": "workspace",
+                        "source": "manual",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_unlink = Path.unlink
+
+    def concurrent_unlink(self: Path, *args, **kwargs) -> None:
+        if self == legacy_path:
+            original_unlink(self, *args, **kwargs)
+            raise FileNotFoundError
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", concurrent_unlink)
+
+    assert load_user_grants_payload()["domains"] == [
+        {"domain": "example.com", "scope": "workspace", "source": "manual"}
+    ]
+    assert legacy_path.exists() is False
+
+
 @pytest.mark.asyncio
 async def test_durable_user_domain_is_not_materialized_into_session_origin(tmp_path):
     from opensquilla.sandbox.run_context import get_run_context

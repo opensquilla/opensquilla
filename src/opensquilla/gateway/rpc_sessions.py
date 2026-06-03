@@ -30,7 +30,11 @@ from opensquilla.gateway.session_services import (
 )
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.paths import media_root_from_config
-from opensquilla.sandbox.run_context import get_run_context, set_run_mode
+from opensquilla.sandbox.run_context import (
+    get_run_context,
+    run_context_from_origin_payload,
+    set_run_mode,
+)
 from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
@@ -193,8 +197,16 @@ def _apply_run_context_route_metadata(
     principal_is_owner: bool,
 ) -> None:
     run_context_payload = run_context.to_origin_payload()
+    filtered_run_context = run_context_from_origin_payload(
+        run_context_payload,
+        source="route_metadata",
+    )
     route_envelope.metadata["run_mode"] = run_context.run_mode.value
-    route_envelope.metadata["sandbox_mounts"] = run_context_payload["mounts"]
+    route_envelope.metadata["sandbox_mounts"] = (
+        filtered_run_context.to_origin_payload()["mounts"]
+        if filtered_run_context is not None
+        else []
+    )
     route_envelope.metadata["sandbox_run_context"] = run_context_payload
     if run_context.run_mode.value == "full" and principal_is_owner:
         route_envelope.metadata["elevated"] = "full"

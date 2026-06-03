@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Any
 
 from opensquilla.channels.types import IncomingMessage
-from opensquilla.sandbox.run_context import run_context_from_origin_payload
+from opensquilla.sandbox.run_context import normalize_scope, run_context_from_origin_payload
 from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.session.keys import normalize_agent_id, parse_agent_id
 from opensquilla.tools.policy import apply_tool_policy_layer
@@ -346,6 +346,19 @@ def delivery_fields_from_envelope(envelope: RouteEnvelope) -> dict[str, Any]:
     }
 
 
+def _filtered_legacy_sandbox_mounts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    mounts: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if normalize_scope(item.get("scope"), "chat") == "workspace":
+            continue
+        mounts.append(dict(item))
+    return mounts
+
+
 def tool_context_from_envelope(
     envelope: RouteEnvelope,
     *,
@@ -392,9 +405,9 @@ def tool_context_from_envelope(
         run_mode = None
     if run_mode == RunMode.FULL and is_owner:
         elevated = "full"
-    sandbox_mounts = envelope.metadata.get("sandbox_mounts")
-    if not isinstance(sandbox_mounts, list):
-        sandbox_mounts = []
+    sandbox_mounts = _filtered_legacy_sandbox_mounts(
+        envelope.metadata.get("sandbox_mounts")
+    )
     sandbox_run_context = run_context_from_origin_payload(
         envelope.metadata.get("sandbox_run_context"),
         source="route_metadata",

@@ -42,15 +42,21 @@ async def run_tui_runtime(
             with contextlib.suppress(Exception):
                 await abort_turn
 
-        def _cancel_inflight_turn() -> None:
+        def _cancel_inflight_turn() -> asyncio.Task[None] | None:
             task = turn_task
             if task is not None and not task.done():
+                abort_task: asyncio.Task[None] | None = None
                 with contextlib.suppress(Exception):
                     abort_turn = hooks.on_cancel_active_turn()
-                    asyncio.create_task(_schedule_abort(abort_turn))
+                    abort_task = asyncio.create_task(_schedule_abort(abort_turn))
                 task.cancel()
+                return abort_task
+            return None
 
-        tui_surface.set_cancel_callback(_cancel_inflight_turn)
+        def _cancel_callback() -> None:
+            _cancel_inflight_turn()
+
+        tui_surface.set_cancel_callback(_cancel_callback)
 
         def _shutdown_drain_then_exit() -> None:
             tui_surface.emit_eof()
@@ -187,11 +193,13 @@ async def run_tui_runtime(
                 if category is TuiInputKind.DESTRUCTIVE:
                     runtime_state.clear_pending()
                     if turn_task is not None and not turn_task.done():
-                        turn_task.cancel()
+                        abort_task = _cancel_inflight_turn()
                         try:
                             await turn_task
                         except asyncio.CancelledError:
                             hooks.clear_current_cancel()
+                        if abort_task is not None:
+                            await abort_task
                         turn_task = None
                     keep_going = await _run_dispatch(user_input)
                     if not keep_going:

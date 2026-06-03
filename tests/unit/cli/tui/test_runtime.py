@@ -151,6 +151,8 @@ async def test_runtime_destructive_slash_cancels_active_turn_and_purges_queue() 
     first_started = asyncio.Event()
     first_cancelled = asyncio.Event()
     clear_completed = asyncio.Event()
+    cancel_calls: list[str] = []
+    clear_cancel_snapshots: list[list[str]] = []
 
     async def _dispatch(user_input: str) -> bool:
         if user_input == "first":
@@ -165,8 +167,13 @@ async def test_runtime_destructive_slash_cancels_active_turn_and_purges_queue() 
             return True
         executed.append(user_input)
         if user_input == "/clear":
+            clear_cancel_snapshots.append(list(cancel_calls))
             clear_completed.set()
         return True
+
+    async def _cancel_active_turn() -> None:
+        await asyncio.sleep(0)
+        cancel_calls.append("cancel")
 
     task = asyncio.create_task(
         run_tui_runtime(
@@ -177,7 +184,7 @@ async def test_runtime_destructive_slash_cancels_active_turn_and_purges_queue() 
                     TuiInputKind.DESTRUCTIVE if text == "/clear" else TuiInputKind.NORMAL
                 )
             ),
-            hooks=_runtime_hooks(),
+            hooks=_runtime_hooks(on_cancel_active_turn=_cancel_active_turn),
         )
     )
 
@@ -195,6 +202,8 @@ async def test_runtime_destructive_slash_cancels_active_turn_and_purges_queue() 
     await asyncio.wait_for(task, timeout=2.0)
 
     assert executed == ["first-start", "/clear"]
+    assert cancel_calls == ["cancel"]
+    assert clear_cancel_snapshots == [["cancel"]]
 
 
 @pytest.mark.asyncio

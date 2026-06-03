@@ -229,8 +229,15 @@
             </div>
           </dl>
           <footer class="cron-card__actions">
-            <button class="cron-iconbtn cron-iconbtn--accent" title="Run now" @click="runJob(j.id, $event)">
-              <Icon name="send" :size="16" /><span>Run</span>
+            <button
+              class="cron-iconbtn cron-iconbtn--accent"
+              title="Run now"
+              :disabled="isJobRunning(j.id)"
+              @click="runJob(j.id)"
+            >
+              <span v-if="isJobRunning(j.id)" class="cron-spinner" aria-hidden="true"></span>
+              <Icon v-else name="send" :size="16" />
+              <span>{{ isJobRunning(j.id) ? 'Running...' : 'Run' }}</span>
             </button>
             <button class="cron-iconbtn" :title="j.enabled ? 'Pause' : 'Resume'" @click="toggleJob(j)">
               <Icon :name="j.enabled ? 'stop' : 'send'" :size="16" /><span>{{ j.enabled ? 'Pause' : 'Resume' }}</span>
@@ -277,8 +284,14 @@
               <td class="cron-mono">{{ j.last_run ? humanCountdownPast(new Date(j.last_run)) : '—' }}</td>
               <td class="cron-mono">{{ j.enabled ? nextRunText(j) : '—' }}</td>
               <td class="cron-table__actions">
-                <button class="cron-iconbtn cron-iconbtn--sm" title="Run now" @click="runJob(j.id, $event)">
-                  <Icon name="send" :size="14" />
+                <button
+                  class="cron-iconbtn cron-iconbtn--sm"
+                  :title="isJobRunning(j.id) ? 'Running' : 'Run now'"
+                  :disabled="isJobRunning(j.id)"
+                  @click="runJob(j.id)"
+                >
+                  <span v-if="isJobRunning(j.id)" class="cron-spinner" aria-hidden="true"></span>
+                  <Icon v-else name="send" :size="14" />
                 </button>
                 <button class="cron-iconbtn cron-iconbtn--sm" :title="j.enabled ? 'Pause' : 'Resume'" @click="toggleJob(j)">
                   <Icon :name="j.enabled ? 'stop' : 'send'" :size="14" />
@@ -573,7 +586,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
 
@@ -667,12 +680,14 @@ interface PanelTemplate {
 // ---------------------------------------------------------------------------
 
 const rpc = useRpcStore()
+const route = useRoute()
 const router = useRouter()
 
 const jobs = ref<CronJob[]>([])
 const selectedId = ref<string | null>(null)
 const searchText = ref('')
 const viewMode = ref<'cards' | 'table'>('cards')
+const runningJobIds = ref<Set<string>>(new Set())
 
 const panelOpen = ref(false)
 const editingJob = ref<CronJob | null>(null)
@@ -976,11 +991,12 @@ async function toggleJob(job: CronJob) {
   }
 }
 
-async function runJob(id: string, event: Event) {
-  const btn = event.currentTarget as HTMLButtonElement
-  const orig = btn.innerHTML
-  btn.disabled = true
-  btn.innerHTML = `<span class="cron-spinner"></span><span>Running&hellip;</span>`
+function isJobRunning(id: string): boolean {
+  return runningJobIds.value.has(id)
+}
+
+async function runJob(id: string) {
+  runningJobIds.value = new Set(runningJobIds.value).add(id)
   try {
     const res = await rpc.call<{ reply?: string; error?: string }>('cron.run', { id })
     if (res && res.reply) {
@@ -993,8 +1009,9 @@ async function runJob(id: string, event: Event) {
   } catch (err) {
     console.warn('Run failed: ' + (err instanceof Error ? err.message : String(err)))
   } finally {
-    btn.disabled = false
-    btn.innerHTML = orig
+    const next = new Set(runningJobIds.value)
+    next.delete(id)
+    runningJobIds.value = next
   }
 }
 
@@ -1596,11 +1613,8 @@ function relTime(ts: string): string {
 // ---------------------------------------------------------------------------
 
 function activeChatSessionKey(): string {
-  try {
-    const params = new URLSearchParams(window.location.search)
-    const urlSession = canonicalSessionKey(params.get('session') || '')
-    if (urlSession) return urlSession
-  } catch { /* ignore */ }
+  const routeSession = typeof route.query.session === 'string' ? canonicalSessionKey(route.query.session) : ''
+  if (routeSession) return routeSession
   try {
     return canonicalSessionKey(localStorage.getItem('opensquilla_active_session') || '')
   } catch { return '' }
@@ -2164,6 +2178,11 @@ function jobSessionKey(job: CronJob | null): string {
   background: var(--bg-elevated);
   border-color: var(--border);
   color: var(--text);
+}
+
+.cron-iconbtn:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 .cron-iconbtn--accent:hover {

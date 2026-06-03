@@ -242,18 +242,13 @@ import { useSessions, type SessionItem } from './composables/useSessions'
 import type { IconName } from './utils/icons'
 import Icon from './components/Icon.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
+import type { AgentOption, AgentsListResponse } from './types/rpc'
 
 const appStore = useAppStore()
 const rpcStore = useRpcStore()
 const $route = useRoute()
 const router = useRouter()
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
-
-interface AgentOption {
-  id: string
-  name: string
-  model?: string
-}
 
 type SidebarFamilyId = 'chats' | 'channels' | 'automations'
 
@@ -545,9 +540,9 @@ async function loadAgents() {
   agentListError.value = false
   try {
     await rpcStore.waitForConnection()
-    const data = await rpcStore.call<any>('agents.list')
-    agents.value = (data?.agents || []).map((a: any) => ({
-      id: normalizeAgentId(a.id || a.agentId || a.name),
+    const data = await rpcStore.call<AgentsListResponse>('agents.list')
+    agents.value = (data?.agents || []).map(a => ({
+      id: normalizeAgentId(a.id || a.agentId || a.name || ''),
       name: a.name || a.id || a.agentId || 'Agent',
       model: a.model || '',
     })).filter((a: AgentOption) => !!a.id)

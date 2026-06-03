@@ -92,15 +92,23 @@ export class RpcClient {
     return this._policy || {};
   }
 
-  waitForConnection(): Promise<void> {
+  waitForConnection(timeoutMs: number = 30000): Promise<void> {
     if (this._state === 'connected') return Promise.resolve();
-    return new Promise((resolve) => {
-      const unsub = this.on('_state', (s: ConnectionState) => {
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const off = this.on('_state', (s: ConnectionState) => {
         if (s === 'connected') {
-          unsub();
+          if (timer !== null) clearTimeout(timer);
+          off();
           resolve();
         }
       });
+      if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
+        timer = setTimeout(() => {
+          off();
+          reject(new Error(`waitForConnection timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
     });
   }
 

@@ -42,11 +42,9 @@ async def test_intermediate_text_is_thinking_final_text_is_answer_card() -> None
     handle = _RecordingHandle()
     r = OpenTuiStreamRenderer(output_handle=handle)
     r.__enter__()
-    # narration before the tool call, classified intermediate by the agent
     await r.aappend_text("Let me check", presentation="intermediate")
     await r.atool_start("web_search", {"query": "x"}, "c1")
     await r.atool_finished("c1", success=True, result="result line")
-    # the final answer, classified answer by the agent
     await r.aappend_text("Final answer", presentation="answer")
     await r.afinalize(None)
 
@@ -82,28 +80,43 @@ async def test_final_answer_is_a_card_from_the_first_delta() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reasoning_renders_as_distinct_thinking_block() -> None:
-    """Reasoning arrives via aappend_reasoning and renders as its own thinking
-    block, opened before the answer block — no retype, no shared block."""
+async def test_reasoning_renders_as_collapsed_marker_not_streamed_text() -> None:
+    """Reasoning (the model's extended-thinking process) must NOT be shown
+    verbatim. aappend_reasoning opens a collapsed 'reasoning' marker block — a
+    single 'Thinking…' affordance — and the raw reasoning text is never streamed
+    onto the timeline as block.append deltas."""
     handle = _RecordingHandle()
     r = OpenTuiStreamRenderer(output_handle=handle)
     r.__enter__()
-    await r.aappend_reasoning("thinking it through")
+    await r.aappend_reasoning("let me think step by step about the internals")
     await r.aappend_text("the answer")
     await r.afinalize(None)
 
-    begins = [
-        (p["id"], p["kind"])
-        for t, p in handle.sent
-        if t == "block.begin" and p.get("kind") in {"thinking", "answer"}
+    # the reasoning block is its own kind, distinct from intermediate "thinking"
+    # text and from the "answer" card
+    reasoning_begins = [
+        p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "reasoning"
     ]
-    kinds = [kind for _id, kind in begins]
-    assert kinds == ["thinking", "answer"]
+    assert len(reasoning_begins) == 1
+    reasoning_id = reasoning_begins[0]["id"]
+    # the verbatim reasoning text is NEVER appended to the timeline
+    reasoning_appends = [
+        p for t, p in handle.sent if t == "block.append" and p["id"] == reasoning_id
+    ]
+    assert reasoning_appends == [], "reasoning process text must not be streamed"
+    assert not any(
+        "step by step" in p.get("delta", "")
+        for t, p in handle.sent
+        if t == "block.append"
+    )
     assert not [t for t, _ in handle.sent if t == "block.retype"]
-    # the thinking block is closed before the answer block opens
-    thinking_id = begins[0][0]
+    # the reasoning marker is closed before the answer block opens
     ends = [p["id"] for t, p in handle.sent if t == "block.end"]
-    assert thinking_id in ends
+    assert reasoning_id in ends
+    answer_begins = [
+        p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "answer"
+    ]
+    assert len(answer_begins) == 1
 
 
 @pytest.mark.asyncio

@@ -59,19 +59,30 @@ async def _render_response(
         _set_toolbar(output, "router_hud_style", "normal")
         _invalidate(output)
         await renderer.astatus("router route standard -> fake-terminal 99% save 42%")
-        # Reasoning streamed before the tool call: it renders as a purple ✱
-        # thinking timeline, distinct from the answer card, and must not flicker
-        # the answer card while streaming.
+        # Mirror the real turn shape so the harness exercises all three block
+        # kinds:
+        #   1. reasoning — the model's extended-thinking PROCESS, collapsed to a
+        #      transient "Thinking…" marker, its verbatim text never shown.
         await renderer.aappend_reasoning(
-            "intermediate-before-tool "
+            "reasoning-process-should-stay-hidden "
             + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 6
-            + "\nsecond-intermediate-line "
+        )
+        #   2. assistant text the model speaks before a tool call — streams into
+        #      a purple intermediate narration block.
+        await renderer.aappend_text(
+            "intermediate-before-tool narration "
             + "0123456789" * 10
+            + "\nsecond-intermediate-line tail",
+            presentation="intermediate",
         )
         await renderer.atool_start("fake_tool", {"path": "fixture.txt"}, "tool-1")
         await renderer.atool_finished("tool-1", success=True, elapsed=0.01)
         await renderer.astatus("approval requested: allow fake_tool fixture.txt")
-        await renderer.aappend_text("complex-state-complete tool-card history projection")
+        #   3. final answer — the cyan answer card.
+        await renderer.aappend_text(
+            "complex-state-complete tool-card history projection",
+            presentation="answer",
+        )
     elif scenario_id == "architecture_prompt":
         usage = await replay_architecture_prompt(renderer, output)
     elif scenario_id == "terminal_changes":

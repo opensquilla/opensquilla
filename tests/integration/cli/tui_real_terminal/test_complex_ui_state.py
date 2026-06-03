@@ -26,6 +26,8 @@ def test_complex_ui_state(run_real_terminal_scenario) -> None:
     )
 
     assert result.backend_id == "opentui"
+    # Intermediate narration is visible as purple thinking text, separate from
+    # reasoning and from the final answer card.
     assert_visible_text(intermediate_frame, "intermediate-before-tool")
     intermediate_lines = [
         line
@@ -34,8 +36,14 @@ def test_complex_ui_state(run_real_terminal_scenario) -> None:
     ]
     assert intermediate_lines
     assert intermediate_lines[0].lstrip().startswith("✱ ")
-    assert "…" in intermediate_lines[0]
     assert "second-intermediate-line" in intermediate_frame.text
+    # The reasoning PROCESS text is never shown verbatim — only ever a transient
+    # "Thinking…" marker stood in for it.
+    assert "reasoning-process-should-stay-hidden" not in intermediate_frame.text
+    # And the marker is transient: by the time the model has moved on to speaking,
+    # reasoning has ended and its marker is removed from the timeline (it does not
+    # linger as a permanent node).
+    assert "Thinking" not in intermediate_frame.text
 
 
 def _read_frame(

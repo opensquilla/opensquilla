@@ -124,6 +124,18 @@ def test_path_browser_has_ok_cancel_and_close_behavior() -> None:
     assert "document.addEventListener('click'" in sandbox_js or 'document.addEventListener(\"click\"' in sandbox_js
 
 
+def test_path_browser_opens_from_path_inputs() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    assert "_el.addEventListener('focusin', _onFocusIn);" in sandbox_js
+    assert "_el.removeEventListener('focusin', _onFocusIn);" in sandbox_js
+    assert "function _onFocusIn" in sandbox_js
+    assert "input[data-path-browser-kind]" in sandbox_js
+    assert "function _openPathBrowserFromInput" in sandbox_js
+    assert "_hasOpenPathBrowser(kind)" in sandbox_js
+    assert "_loadPathBrowser(kind)" in sandbox_js
+
+
 def test_path_browser_does_not_render_current_path_header() -> None:
     sandbox_js = _read(SANDBOX_JS)
 

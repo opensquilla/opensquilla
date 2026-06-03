@@ -69,6 +69,7 @@ const SandboxView = (() => {
     _el.querySelector('#sandbox-refresh')?.addEventListener('click', _load);
     _el.addEventListener('submit', _onSubmit);
     _el.addEventListener('click', _onClick);
+    _el.addEventListener('focusin', _onFocusIn);
     document.removeEventListener('keydown', _onDocumentKeydown);
     document.removeEventListener('click', _onDocumentClick, true);
     document.addEventListener('keydown', _onDocumentKeydown);
@@ -82,6 +83,7 @@ const SandboxView = (() => {
     if (_el) {
       _el.removeEventListener('submit', _onSubmit);
       _el.removeEventListener('click', _onClick);
+      _el.removeEventListener('focusin', _onFocusIn);
     }
     document.removeEventListener('keydown', _onDocumentKeydown);
     document.removeEventListener('click', _onDocumentClick, true);
@@ -471,6 +473,11 @@ const SandboxView = (() => {
   }
 
   async function _onClick(event) {
+    const pathInput = event.target?.closest?.('input[data-path-browser-kind]');
+    if (pathInput && _el?.contains(pathInput)) {
+      await _openPathBrowserFromInput(pathInput);
+      return;
+    }
     const btn = event.target?.closest?.('button[data-sandbox-action]');
     if (!btn || !_el?.contains(btn)) return;
     const action = btn.dataset.sandboxAction;
@@ -494,6 +501,18 @@ const SandboxView = (() => {
       const method = btn.dataset.enabled === '1' ? 'sandbox.bundle.disable' : 'sandbox.bundle.enable';
       await _mutate(method, { bundleId: btn.dataset.bundleId || '' });
     }
+  }
+
+  async function _onFocusIn(event) {
+    const input = event.target?.closest?.('input[data-path-browser-kind]');
+    if (!input || !_el?.contains(input)) return;
+    await _openPathBrowserFromInput(input);
+  }
+
+  async function _openPathBrowserFromInput(input) {
+    const kind = input?.dataset?.pathBrowserKind || '';
+    if (!kind || _hasOpenPathBrowser(kind)) return;
+    await _loadPathBrowser(kind);
   }
 
   async function _loadPathBrowser(kind, requestedPath, options = {}) {

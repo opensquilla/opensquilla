@@ -623,7 +623,9 @@ const SandboxView = (() => {
   }
 
   function _onDocumentClick(event) {
-    if (!_el || _el.contains(event.target)) return;
+    if (!_el || !_hasOpenPathBrowser()) return;
+    const targetKind = _pathBrowserKindFromNode(event.target);
+    if (targetKind && _hasOpenPathBrowser(targetKind)) return;
     _closeAllPathBrowsers({ restore: true });
   }
 

@@ -124,6 +124,25 @@ def test_path_browser_has_ok_cancel_and_close_behavior() -> None:
     assert "document.addEventListener('click'" in sandbox_js or 'document.addEventListener(\"click\"' in sandbox_js
 
 
+def test_path_browser_document_click_closes_outside_active_path_field() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    start = sandbox_js.index("function _onDocumentClick")
+    body = sandbox_js[start : sandbox_js.index("  function _closeAllPathBrowsers", start)]
+    kind_start = sandbox_js.index("function _pathBrowserKindFromNode")
+    kind_body = sandbox_js[
+        kind_start : sandbox_js.index("  function _nextPathBrowserLoadId", kind_start)
+    ]
+
+    assert "if (!_el || !_hasOpenPathBrowser()) return;" in body
+    assert "const targetKind = _pathBrowserKindFromNode(event.target);" in body
+    assert "if (targetKind && _hasOpenPathBrowser(targetKind)) return;" in body
+    assert "_closeAllPathBrowsers({ restore: true });" in body
+    assert "_el.contains(event.target)" not in body
+    assert "node?.closest?.('.sandbox-path-field')" in kind_body
+    assert "node?.closest?.('.sandbox-path-browser')" in kind_body
+
+
 def test_path_browser_opens_from_path_inputs() -> None:
     sandbox_js = _read(SANDBOX_JS)
 

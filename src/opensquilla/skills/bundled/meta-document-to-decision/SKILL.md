@@ -53,6 +53,7 @@ metadata:
 composition:
   steps:
     - id: intake
+      label: "意图提取"
       kind: llm_chat
       with:
         system: "You classify document decision requests and preserve every path, URL, excerpt, and decision question."
@@ -78,6 +79,7 @@ composition:
           assumed from the user's ask. In that case MISSING_FIELDS must be
           exactly "- none".
     - id: clarify
+      label: "澄清"
       kind: user_input
       depends_on: [intake]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.intake and '- none' not in outputs.intake"
@@ -98,6 +100,7 @@ composition:
         cancel_keywords: ["取消", "算了", "cancel", "stop"]
         timeout_hours: 24
     - id: pdf_extract
+      label: "PDF 抽取"
       kind: skill_exec
       skill: pdf-toolkit
       depends_on: [intake, clarify]
@@ -106,6 +109,7 @@ composition:
       with:
         task: "Extract text, tables, document title, and page references for this decision analysis: {{ outputs.intake | truncate(1200) }}"
     - id: docx_extract
+      label: "DOCX 抽取"
       kind: skill_exec
       skill: docx
       depends_on: [intake, clarify]
@@ -114,6 +118,7 @@ composition:
       with:
         task: "Inspect document text, headings, tracked-change hints, tables, and clauses for this decision analysis."
     - id: xlsx_extract
+      label: "XLSX 抽取"
       kind: skill_exec
       skill: xlsx
       depends_on: [intake, clarify]
@@ -122,6 +127,7 @@ composition:
       with:
         task: "Inspect sheets, tables, totals, formula outputs, and anomalies for this decision analysis."
     - id: pasted_text_extract
+      label: "粘贴文本抽取"
       kind: llm_chat
       depends_on: [intake, clarify]
       when: "'pasted_text' in (outputs.intake | lower) or 'unknown' in (outputs.intake | lower)"
@@ -139,6 +145,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(6000) }}
     - id: pdf_extract_fallback
+      label: "PDF 抽取兜底"
       kind: llm_chat
       with:
         system: "You build a limited PDF evidence packet from only the user's pasted text and explicit file names."
@@ -148,6 +155,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(5000) }}
     - id: docx_extract_fallback
+      label: "DOCX 抽取兜底"
       kind: llm_chat
       with:
         system: "You build a limited DOCX evidence packet from only the user's pasted text and explicit file names."
@@ -157,6 +165,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(5000) }}
     - id: xlsx_extract_fallback
+      label: "XLSX 抽取兜底"
       kind: llm_chat
       with:
         system: "You build a limited spreadsheet evidence packet from only the user's pasted text and explicit file names."
@@ -166,6 +175,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(5000) }}
     - id: risk_review
+      label: "风险审查"
       kind: llm_chat
       depends_on: [pdf_extract, docx_extract, xlsx_extract, pasted_text_extract]
       with:
@@ -199,6 +209,7 @@ composition:
           Pasted text:
           {{ outputs.pasted_text_extract | truncate(4000) }}
     - id: decision_brief
+      label: "决策简报"
       kind: llm_chat
       depends_on: [risk_review]
       with:
@@ -256,6 +267,7 @@ composition:
           Risk review:
           {{ outputs.risk_review | truncate(7000) }}
     - id: decision_brief_audit
+      label: "简报审稿"
       kind: llm_chat
       depends_on: [decision_brief, risk_review]
       with:

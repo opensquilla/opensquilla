@@ -119,3 +119,50 @@ def test_skipped_emitted_on_when_false(
         if isinstance(ev, MetaStepStateEvent)
     ]
     assert ("optional", "skipped") in states
+
+
+@pytest.fixture
+def failing_dispatch():
+    async def _dispatch(step, effective_skill, inputs, outputs):
+        if step.id == "search":
+            raise RuntimeError("simulated step failure")
+        yield _StepDone(text=f"out:{step.id}")
+
+    return _dispatch
+
+
+@pytest.fixture
+def make_failover_match():
+    plan = MetaPlan(
+        name="meta-fail-fake",
+        triggers=("fake",),
+        priority=0,
+        steps=(
+            MetaStep(
+                id="search", skill="search", kind="agent", label="检索",
+                on_failure="search_fallback",
+            ),
+            MetaStep(
+                id="search_fallback", skill="search_fallback",
+                kind="llm_chat", label="替代检索",
+            ),
+        ),
+        final_text_mode="raw",
+    )
+    return MetaMatch(plan=plan, inputs={"user_message": "hi"})
+
+
+def test_failed_then_substituted(
+    make_failover_match, failing_dispatch, fake_preface,
+):
+    events = asyncio.run(_collect_all_events(
+        make_failover_match, failing_dispatch, fake_preface,
+    ))
+
+    states = [
+        (ev.step_id, ev.state, ev.substitute_for)
+        for ev in events
+        if isinstance(ev, MetaStepStateEvent)
+    ]
+    assert ("search", "failed", None) in states
+    assert ("search_fallback", "substituted", "search") in states

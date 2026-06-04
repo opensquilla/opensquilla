@@ -1649,6 +1649,40 @@ async def test_gateway_chat_does_not_forward_workspace_fields() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_client_resolve_approval_forwards_choice() -> None:
+    from opensquilla.cli.gateway_client import GatewayClient
+
+    client = GatewayClient()
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_call(method: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append((method, params))
+        return {"status": "resolved"}
+
+    client._call = fake_call  # type: ignore[method-assign]
+
+    result = await client.resolve_approval(
+        "approval-1",
+        True,
+        allow_always=True,
+        choice="mount_ro_chat",
+    )
+
+    assert result == {"status": "resolved"}
+    assert calls == [
+        (
+            "exec.approval.resolve",
+            {
+                "id": "approval-1",
+                "approved": True,
+                "allowAlways": True,
+                "choice": "mount_ro_chat",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_gateway_client_follows_background_task_group_until_terminal() -> None:
     from opensquilla.cli.gateway_client import GatewayClient
 

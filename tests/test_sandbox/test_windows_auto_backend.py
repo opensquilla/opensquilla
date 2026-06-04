@@ -27,13 +27,19 @@ def _reset_sandbox_runtime():
     reset_runtime()
 
 
-def test_windows_auto_backend_disables_sandbox_runtime(
+def test_windows_auto_backend_selects_appcontainer_when_available(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from opensquilla.sandbox import integration
+    from opensquilla.sandbox import backend as backend_mod
+    from opensquilla.sandbox.backend import (
+        WindowsAppContainerBackend,
+        WindowsRestrictedTokenBackend,
+    )
 
-    monkeypatch.setattr(integration.sys, "platform", "win32")
+    monkeypatch.setattr(backend_mod.sys, "platform", "win32")
+    monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: True)
+    monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: True)
 
     runtime = configure_runtime(
         SandboxSettings(sandbox=True, security_grading=True, backend="auto"),
@@ -41,11 +47,56 @@ def test_windows_auto_backend_disables_sandbox_runtime(
         workspace=tmp_path,
     )
 
-    assert runtime.settings.sandbox is False
-    assert runtime.settings.security_grading is False
-    assert runtime.effective.sandbox_enabled is False
-    assert runtime.effective.grading_enabled is False
-    assert runtime.backend.name == "noop"
+    assert runtime.settings.sandbox is True
+    assert runtime.settings.security_grading is True
+    assert runtime.effective.sandbox_enabled is True
+    assert runtime.effective.grading_enabled is True
+    assert runtime.backend.name == "windows_appcontainer"
+
+
+def test_windows_auto_backend_falls_back_to_restricted_token_when_appcontainer_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import backend as backend_mod
+    from opensquilla.sandbox.backend import (
+        WindowsAppContainerBackend,
+        WindowsRestrictedTokenBackend,
+    )
+
+    monkeypatch.setattr(backend_mod.sys, "platform", "win32")
+    monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: False)
+    monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: True)
+
+    runtime = configure_runtime(
+        SandboxSettings(sandbox=True, security_grading=True, backend="auto"),
+        approval_queue=_FakeApprovalQueue(),
+        workspace=tmp_path,
+    )
+
+    assert runtime.backend.name == "windows_restricted_token"
+
+
+def test_windows_auto_backend_fails_closed_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import backend as backend_mod
+    from opensquilla.sandbox.backend import (
+        WindowsAppContainerBackend,
+        WindowsRestrictedTokenBackend,
+    )
+
+    monkeypatch.setattr(backend_mod.sys, "platform", "win32")
+    monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: False)
+    monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: False)
+
+    with pytest.raises(SandboxBackendError, match="no real sandbox backend"):
+        configure_runtime(
+            SandboxSettings(sandbox=True, security_grading=True, backend="auto"),
+            approval_queue=_FakeApprovalQueue(),
+            workspace=tmp_path,
+        )
 
 
 def test_macos_auto_backend_selects_seatbelt_when_available(
@@ -53,9 +104,7 @@ def test_macos_auto_backend_selects_seatbelt_when_available(
     tmp_path: Path,
 ) -> None:
     from opensquilla.sandbox import backend as backend_mod
-    from opensquilla.sandbox import integration
 
-    monkeypatch.setattr(integration.sys, "platform", "darwin")
     monkeypatch.setattr(backend_mod.sys, "platform", "darwin")
     monkeypatch.setattr(
         backend_mod.SeatbeltBackend,
@@ -81,9 +130,7 @@ def test_explicit_macos_seatbelt_backend_still_fails_closed(
     tmp_path: Path,
 ) -> None:
     from opensquilla.sandbox import backend as backend_mod
-    from opensquilla.sandbox import integration
 
-    monkeypatch.setattr(integration.sys, "platform", "darwin")
     monkeypatch.setattr(backend_mod.sys, "platform", "darwin")
     monkeypatch.setattr(
         backend_mod.SeatbeltBackend,
@@ -104,9 +151,7 @@ def test_linux_auto_backend_without_real_backend_still_fails_closed(
     tmp_path: Path,
 ) -> None:
     from opensquilla.sandbox import backend as backend_mod
-    from opensquilla.sandbox import integration
 
-    monkeypatch.setattr(integration.sys, "platform", "linux")
     monkeypatch.setattr(backend_mod.sys, "platform", "linux")
     monkeypatch.setattr(
         backend_mod.BubblewrapBackend,

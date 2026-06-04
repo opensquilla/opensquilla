@@ -125,6 +125,15 @@ composition:
       depends_on: [intake_extract]
       with:
         task: |
+          CRITICAL — OUTPUT CONTRACT (read first): print the COMPLETE script
+          as the plain-text body of your FINAL message. Do NOT call
+          publish_artifact, write_file, or ANY tool — the orchestrator
+          captures your final text verbatim and persists it itself. If you
+          publish an artifact (or make any tool call) your text output
+          becomes just a tool marker like "[Used tool: publish_artifact]",
+          which silently destroys the script and fails the entire drama.
+          The script is short (a few KB) — always inline it as text.
+
           Generate a strict-format short-drama shooting script following
           ai-video-script's SKILL.md OUTPUT FORMAT section. Use the
           N_SHOTS value from the intake contract below (clamp 1..10).
@@ -280,6 +289,13 @@ composition:
       when: "'DECISION: proceed' in outputs.review_normalize and 'HAS_OVERRIDES: yes' in outputs.review_normalize"
       with:
         task: |
+          CRITICAL — OUTPUT CONTRACT (read first): print the COMPLETE
+          re-drafted script as the plain-text body of your FINAL message.
+          Do NOT call publish_artifact, write_file, or ANY tool — the
+          orchestrator captures your final text verbatim. A tool call makes
+          your output a marker like "[Used tool: publish_artifact]" and
+          fails the drama.
+
           Re-draft the script applying the user's overrides. Keep the
           same OUTPUT FORMAT as ai-video-script's SKILL.md. If NEW_N_SHOTS
           is an integer, use exactly that many shot blocks (1..10).
@@ -304,38 +320,38 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(800) }}
 
     # =========================================================================
-    # 6. Pick the final script everyone downstream reads.
-    # =========================================================================
-    - id: final_script
-      kind: llm_chat
-      depends_on: [review_normalize, script_reread, script_revised]
-      with:
-        system: "Echo one of two inputs verbatim. No commentary. No new content."
-        task: |
-          If a revised script block is present below, echo it verbatim.
-          Otherwise echo the re-read script verbatim (this preserves any
-          hand-edits the user made to script.txt during review).
-
-          REVISED (may be empty):
-          {{ outputs.get('script_revised', '') | truncate(8000) }}
-
-          RE-READ FROM DISK:
-          {{ outputs.script_reread | truncate(8000) }}
-
-    # =========================================================================
-    # 7. Save the final script to disk (overwrites the draft so the file
-    #    on disk always reflects the post-review canonical script —
-    #    important when the LLM produced a revision the user didn't write
-    #    by hand).
+    # 6. Save the post-review canonical script to disk. DETERMINISTIC select
+    #    (no LLM): the re-drafted script when the user supplied overrides,
+    #    else the re-read draft (which preserves any hand-edits made during
+    #    review). This overwrites the draft so the file always reflects the
+    #    post-review canonical script.
+    #
+    #    NOTE: this used to be an llm_chat "echo verbatim" step (final_script)
+    #    that picked between the two inputs. That was unreliable — the model
+    #    could return a file PATH or a summary instead of the script, silently
+    #    stripping the "=== SHOT_N ===" blocks and breaking every downstream
+    #    shot/subtitle step. The selection is now pure Jinja + a file round-trip.
     # =========================================================================
     - id: script_save
       kind: tool_call
       tool: write_file
       tool_allowlist: [write_file]
-      depends_on: [final_script]
+      depends_on: [review_normalize, script_reread, script_revised]
       tool_args:
         path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/script.txt"
-        content: "{{ outputs.final_script }}"
+        content: "{{ outputs.script_revised if outputs.get('script_revised', '') else outputs.script_reread }}"
+
+    # =========================================================================
+    # 7. The canonical script everyone downstream reads — a DETERMINISTIC
+    #    re-read of the file just written. Byte-exact, always retains the
+    #    "=== SHOT_N ===" blocks (replaces the old unreliable llm_chat echo).
+    # =========================================================================
+    - id: final_script
+      kind: skill_exec
+      skill: text-file-read
+      depends_on: [script_save]
+      with:
+        input: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/script.txt"
 
     # =========================================================================
     # 8. Title / subtitle / ending text extracts (cheap llm_chat).
@@ -947,7 +963,6 @@ composition:
       skill: seedance-2-prompt
       depends_on: [shot1_vid_prompt, shot1_duration, reference_image, shot1_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot1_vid_prompt"
-      on_failure: shot1_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
         # input_reference image. Mirrors the upstream JiMeng prompt
@@ -972,17 +987,6 @@ composition:
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
-    - id: shot1_video_fallback
-      kind: skill_exec
-      skill: video-still-animator
-      with:
-        input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/1_shot.png"
-        output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/1_shot.mp4"
-        duration: "{{ outputs.shot1_duration | int(5) }}"
-        width: 720
-        height: 1280
-        fps: 24
-
     # ---- SHOT_2 image / video / fallback ----
     - id: shot2_image
       kind: skill_exec
@@ -1003,7 +1007,6 @@ composition:
       skill: seedance-2-prompt
       depends_on: [shot2_vid_prompt, shot2_duration, reference_image, shot2_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot2_vid_prompt"
-      on_failure: shot2_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
         # input_reference image. Mirrors the upstream JiMeng prompt
@@ -1028,17 +1031,6 @@ composition:
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
-    - id: shot2_video_fallback
-      kind: skill_exec
-      skill: video-still-animator
-      with:
-        input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/2_shot.png"
-        output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/2_shot.mp4"
-        duration: "{{ outputs.shot2_duration | int(5) }}"
-        width: 720
-        height: 1280
-        fps: 24
-
     # ---- SHOT_3 image / video / fallback ----
     - id: shot3_image
       kind: skill_exec
@@ -1059,7 +1051,6 @@ composition:
       skill: seedance-2-prompt
       depends_on: [shot3_vid_prompt, shot3_duration, reference_image, shot3_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot3_vid_prompt"
-      on_failure: shot3_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
         # input_reference image. Mirrors the upstream JiMeng prompt
@@ -1084,17 +1075,6 @@ composition:
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
-    - id: shot3_video_fallback
-      kind: skill_exec
-      skill: video-still-animator
-      with:
-        input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/3_shot.png"
-        output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/3_shot.mp4"
-        duration: "{{ outputs.shot3_duration | int(5) }}"
-        width: 720
-        height: 1280
-        fps: 24
-
     # ---- SHOT_4 image / video / fallback ----
     - id: shot4_image
       kind: skill_exec
@@ -1115,7 +1095,6 @@ composition:
       skill: seedance-2-prompt
       depends_on: [shot4_vid_prompt, shot4_duration, reference_image, shot4_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot4_vid_prompt"
-      on_failure: shot4_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
         # input_reference image. Mirrors the upstream JiMeng prompt
@@ -1140,17 +1119,6 @@ composition:
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
-    - id: shot4_video_fallback
-      kind: skill_exec
-      skill: video-still-animator
-      with:
-        input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/4_shot.png"
-        output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/4_shot.mp4"
-        duration: "{{ outputs.shot4_duration | int(5) }}"
-        width: 720
-        height: 1280
-        fps: 24
-
     # ---- SHOT_5 image / video / fallback ----
     - id: shot5_image
       kind: skill_exec
@@ -1171,7 +1139,6 @@ composition:
       skill: seedance-2-prompt
       depends_on: [shot5_vid_prompt, shot5_duration, reference_image, shot5_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot5_vid_prompt"
-      on_failure: shot5_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
         # input_reference image. Mirrors the upstream JiMeng prompt
@@ -1196,17 +1163,6 @@ composition:
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
-    - id: shot5_video_fallback
-      kind: skill_exec
-      skill: video-still-animator
-      with:
-        input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/5_shot.png"
-        output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/5_shot.mp4"
-        duration: "{{ outputs.shot5_duration | int(5) }}"
-        width: 720
-        height: 1280
-        fps: 24
-
     # ---- SHOT_6 image / video / fallback ----
     - id: shot6_image
       kind: skill_exec
@@ -1227,7 +1183,6 @@ composition:
       skill: seedance-2-prompt
       depends_on: [shot6_vid_prompt, shot6_duration, reference_image, shot6_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot6_vid_prompt"
-      on_failure: shot6_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
         # input_reference image. Mirrors the upstream JiMeng prompt
@@ -1252,17 +1207,6 @@ composition:
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
-    - id: shot6_video_fallback
-      kind: skill_exec
-      skill: video-still-animator
-      with:
-        input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/6_shot.png"
-        output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/6_shot.mp4"
-        duration: "{{ outputs.shot6_duration | int(5) }}"
-        width: 720
-        height: 1280
-        fps: 24
-
     # ---- SHOT_7 image / video / fallback ----
     - id: shot7_image
       kind: skill_exec
@@ -1283,7 +1227,6 @@ composition:
       skill: seedance-2-prompt
       depends_on: [shot7_vid_prompt, shot7_duration, reference_image, shot7_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot7_vid_prompt"
-      on_failure: shot7_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
         # input_reference image. Mirrors the upstream JiMeng prompt
@@ -1308,17 +1251,6 @@ composition:
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
-    - id: shot7_video_fallback
-      kind: skill_exec
-      skill: video-still-animator
-      with:
-        input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/7_shot.png"
-        output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/7_shot.mp4"
-        duration: "{{ outputs.shot7_duration | int(5) }}"
-        width: 720
-        height: 1280
-        fps: 24
-
     # ---- SHOT_8 image / video / fallback ----
     - id: shot8_image
       kind: skill_exec
@@ -1339,7 +1271,6 @@ composition:
       skill: seedance-2-prompt
       depends_on: [shot8_vid_prompt, shot8_duration, reference_image, shot8_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot8_vid_prompt"
-      on_failure: shot8_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
         # input_reference image. Mirrors the upstream JiMeng prompt
@@ -1364,17 +1295,6 @@ composition:
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
-    - id: shot8_video_fallback
-      kind: skill_exec
-      skill: video-still-animator
-      with:
-        input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/8_shot.png"
-        output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/8_shot.mp4"
-        duration: "{{ outputs.shot8_duration | int(5) }}"
-        width: 720
-        height: 1280
-        fps: 24
-
     # ---- SHOT_9 image / video / fallback ----
     - id: shot9_image
       kind: skill_exec
@@ -1395,7 +1315,6 @@ composition:
       skill: seedance-2-prompt
       depends_on: [shot9_vid_prompt, shot9_duration, reference_image, shot9_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot9_vid_prompt"
-      on_failure: shot9_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
         # input_reference image. Mirrors the upstream JiMeng prompt
@@ -1420,17 +1339,6 @@ composition:
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
-    - id: shot9_video_fallback
-      kind: skill_exec
-      skill: video-still-animator
-      with:
-        input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/9_shot.png"
-        output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/9_shot.mp4"
-        duration: "{{ outputs.shot9_duration | int(5) }}"
-        width: 720
-        height: 1280
-        fps: 24
-
     # ---- SHOT_10 image / video / fallback ----
     - id: shot10_image
       kind: skill_exec
@@ -1451,7 +1359,6 @@ composition:
       skill: seedance-2-prompt
       depends_on: [shot10_vid_prompt, shot10_duration, reference_image, shot10_image, review_normalize]
       when: "'DECISION: proceed' in outputs.review_normalize and '__SHOT_ABSENT__' not in outputs.shot10_vid_prompt"
-      on_failure: shot10_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
         # input_reference image. Mirrors the upstream JiMeng prompt
@@ -1475,17 +1382,6 @@ composition:
         duration: "{{ outputs.shot10_duration | int(5) }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
-
-    - id: shot10_video_fallback
-      kind: skill_exec
-      skill: video-still-animator
-      with:
-        input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/10_shot.png"
-        output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.user_message | slugify | truncate(40) }}/10_shot.mp4"
-        duration: "{{ outputs.shot10_duration | int(5) }}"
-        width: 720
-        height: 1280
-        fps: 24
 
     # =========================================================================
     # Ending card image + 1.5s video.

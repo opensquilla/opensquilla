@@ -19,6 +19,7 @@ from pathlib import Path
 
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.types import (
+    SANDBOX_WORKSPACE_PATH,
     MountSpec,
     NetworkMode,
     ResourceLimits,
@@ -145,13 +146,21 @@ def _resolve_limits(level: SecurityLevel, settings: SandboxSettings) -> Resource
     )
 
 
-def _resolve_network(level: SecurityLevel, action_kind: str) -> NetworkMode:
+def _resolve_network(
+    level: SecurityLevel,
+    action_kind: str,
+    settings: SandboxSettings,
+    hints: LevelHints | None = None,
+) -> NetworkMode:
     if level == SecurityLevel.DISABLED:
         return NetworkMode.HOST
-    if action_kind in _NETWORK_TAGS and level == SecurityLevel.STANDARD:
-        # STANDARD + explicit network tag: operators running `web.fetch` at
-        # L1 expect egress; isolation still applies to FS/process state.
-        return NetworkMode.HOST
+    h = hints or LevelHints()
+    if level == SecurityLevel.STANDARD and (
+        action_kind in _NETWORK_TAGS or (action_kind in _CODE_TAGS and h.needs_network)
+    ):
+        if settings.network_default == "proxy_allowlist":
+            return NetworkMode.PROXY_ALLOWLIST
+        return NetworkMode.NONE
     return NetworkMode.NONE
 
 
@@ -159,6 +168,7 @@ def _collect_mounts(
     level: SecurityLevel,
     workspace: Path,
     settings: SandboxSettings,
+    session_mounts: tuple[MountSpec, ...] = (),
 ) -> tuple[tuple[MountSpec, ...], bool]:
     """Build the ordered mount list.
 
@@ -170,11 +180,15 @@ def _collect_mounts(
     mounts.append(
         MountSpec(
             host_path=workspace,
-            sandbox_path=Path("/workspace"),
+            sandbox_path=SANDBOX_WORKSPACE_PATH,
             mode="rw" if workspace_rw else "ro",
             required=True,
         )
     )
+    if level in (SecurityLevel.STANDARD, SecurityLevel.DISABLED):
+        mounts.extend(session_mounts)
+    elif level == SecurityLevel.STRICT:
+        mounts.extend(mount.with_mode("ro") for mount in session_mounts)
     if level in (SecurityLevel.STANDARD, SecurityLevel.DISABLED):
         for host in settings.extra_ro_mounts:
             p = Path(host)
@@ -203,6 +217,8 @@ def build_policy(
     settings: SandboxSettings,
     *,
     trusted: bool = True,
+    hints: LevelHints | None = None,
+    session_mounts: tuple[MountSpec, ...] = (),
 ) -> SandboxPolicy:
     """Materialise a :class:`SandboxPolicy` for ``level``.
 
@@ -219,9 +235,9 @@ def build_policy(
     if not workspace.is_absolute():
         raise ValueError(f"workspace must be an absolute path, got {workspace!r}")
 
-    mounts, workspace_rw = _collect_mounts(level, workspace, settings)
+    mounts, workspace_rw = _collect_mounts(level, workspace, settings, session_mounts)
     limits = _resolve_limits(level, settings)
-    network = _resolve_network(level, action_kind)
+    network = _resolve_network(level, action_kind, settings, hints)
     tmp_writable = level != SecurityLevel.LOCKED
 
     require_approval = level >= SecurityLevel.STRICT and (

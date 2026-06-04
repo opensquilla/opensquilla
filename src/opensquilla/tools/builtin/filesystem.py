@@ -14,9 +14,17 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
+from opensquilla.sandbox.escalation import (
+    build_path_approval_params,
+    current_tool_mounts,
+    grant_temporary_mount_for_current_tool,
+    request_sandbox_approval,
+)
 from opensquilla.sandbox.integration import get_runtime, sandboxed
+from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import full_host_access_active, trusted_sandbox_active
 from opensquilla.tools.types import ToolError, WorkspaceAccessError, current_tool_context
 from opensquilla.tools.write_tracking import record_workspace_file_write
 
@@ -221,6 +229,124 @@ def _is_outside_workspace(resolved: Path) -> bool:
         return True
 
 
+def _sandbox_path_access_enabled() -> bool:
+    runtime = get_runtime()
+    if runtime is None or not runtime.effective.sandbox_enabled:
+        return False
+    if full_host_access_active():
+        return False
+    return True
+
+
+def _active_sandbox_mounts() -> list[dict[str, object]]:
+    return current_tool_mounts()
+
+
+def _path_access_required_envelope(
+    decision: MountDecision,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object]:
+    ctx = current_tool_context.get()
+    workspace_root = _workspace_root()
+    approval = build_path_approval_params(
+        decision,
+        session_key=getattr(ctx, "session_key", None) if ctx is not None else None,
+        workspace=str(workspace_root) if workspace_root is not None else None,
+    )
+    if approval is None:
+        return {
+            "status": "path_access_required",
+            "path": decision.normalized_path,
+            "access": decision.access,
+            "message": _path_access_message(workspace_root),
+        }
+    return request_sandbox_approval(
+        approval,
+        approval_id=approval_id,
+        message=_path_access_message(workspace_root),
+        denied_message=_path_access_denied_message(workspace_root),
+    )
+
+
+def _path_access_message(workspace_root: Path | None) -> str:
+    workspace = str(workspace_root) if workspace_root is not None else "the configured workspace"
+    return (
+        f"The requested path is outside the current workspace ({workspace}). "
+        "Ask the user whether to add this path as read-only or read/write access."
+    )
+
+
+def _path_access_denied_message(workspace_root: Path | None) -> str:
+    workspace = str(workspace_root) if workspace_root is not None else "the configured workspace"
+    return (
+        "The user denied access outside the current workspace. "
+        "Do not ask for the same access again in this turn. "
+        "Explain that the requested path cannot be inspected from the current "
+        f"workspace ({workspace}) unless the user approves access or changes run mode. "
+        "Do not substitute details from other repositories or prior comparison context."
+    )
+
+
+def _path_access_blocked_envelope(decision: MountDecision) -> dict[str, object]:
+    return {
+        "status": "blocked",
+        "reason": "sensitive_path",
+        "path": decision.normalized_path,
+        "message": decision.reason,
+    }
+
+
+def _sandbox_path_access_envelope(
+    resolved: Path,
+    *,
+    write: bool,
+    approval_id: str | None = None,
+) -> dict[str, object] | None:
+    if not _sandbox_path_access_enabled():
+        return None
+    if _memory_source_rel_path(resolved) is not None:
+        return None
+    decision = decide_path_access(
+        resolved,
+        workspace=_workspace_root(),
+        mounts=_active_sandbox_mounts(),
+        write=write,
+    )
+    if decision.status == "allowed":
+        return None
+    if decision.status == "blocked":
+        return _path_access_blocked_envelope(decision)
+    if not write and trusted_sandbox_active():
+        if grant_temporary_mount_for_current_tool(decision):
+            return None
+    return _path_access_required_envelope(decision, approval_id=approval_id)
+
+
+def _sandbox_path_access_marker(candidate: Path, *, write: bool) -> str | None:
+    envelope = _sandbox_path_access_envelope(
+        candidate.resolve(strict=False),
+        write=write,
+    )
+    if envelope is None:
+        return None
+    if envelope.get("status") == "blocked":
+        return f"[blocked] {candidate}: {envelope.get('message') or 'sensitive path'}"
+    return f"[blocked] {candidate}: outside current sandbox view"
+
+
+def _active_sandbox_mount_allows(resolved: Path, *, write: bool) -> bool:
+    if not _sandbox_path_access_enabled():
+        return False
+    decision = decide_path_access(
+        resolved,
+        workspace=_workspace_root(),
+        mounts=_active_sandbox_mounts(),
+        write=write,
+    )
+    return decision.status == "allowed"
+
+
 def _strict_read_workspace_root() -> Path | None:
     """Return the read-containment root when workspace-strict mode is active.
 
@@ -254,7 +380,29 @@ def _strict_read_material_root() -> Path | None:
     ).resolve(strict=False)
 
 
+def _strict_read_mount_roots() -> tuple[Path, ...]:
+    ctx = current_tool_context.get()
+    if ctx is None or not ctx.workspace_strict:
+        return tuple()
+    roots: list[Path] = []
+    for mount in _active_sandbox_mounts():
+        if not isinstance(mount, dict):
+            continue
+        raw_path = mount.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        try:
+            root = Path(raw_path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
 def _strict_read_roots() -> tuple[Path, ...]:
+    if full_host_access_active():
+        return tuple()
     roots: list[Path] = []
     workspace_root = _strict_read_workspace_root()
     if workspace_root is not None:
@@ -262,6 +410,9 @@ def _strict_read_roots() -> tuple[Path, ...]:
     material_root = _strict_read_material_root()
     if material_root is not None:
         roots.append(material_root)
+    for mount_root in _strict_read_mount_roots():
+        if mount_root not in roots:
+            roots.append(mount_root)
     return tuple(roots)
 
 
@@ -340,9 +491,8 @@ def _workspace_strict_candidate_marker(
 def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) -> dict | None:
     """Return a hard-block envelope for sensitive host paths, unless fully elevated."""
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
 
-    if _context_elevated_mode() == "full":
+    if full_host_access_active():
         return None
     sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
     if sensitive is None:
@@ -352,11 +502,10 @@ def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) 
 
 def _is_sensitive_access_path(resolved: Path, workspace: Path | None = None) -> bool:
     from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
 
     root = workspace if workspace is not None else _workspace_root()
     return (
-        _context_elevated_mode() != "full"
+        not full_host_access_active()
         and sensitive_path_marker(str(resolved), workspace=root) is not None
     )
 
@@ -411,15 +560,21 @@ async def _gate_out_of_workspace_write(
     """
     # Sensitive-path hard block — takes precedence over approval flow.
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
 
-    elevated_full = _context_elevated_mode() == "full"
+    elevated_full = full_host_access_active()
     if not elevated_full:
         sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
         if sensitive is not None:
             return build_block_envelope(
                 f"{tool_name} {original_path}", sensitive, tool_name=tool_name
             )
+    path_access = _sandbox_path_access_envelope(
+        resolved,
+        write=True,
+        approval_id=approval_id,
+    )
+    if path_access is not None:
+        return path_access
 
     _gate_workspace_lockdown_write(tool_name, resolved, original_path)
     from opensquilla.tools.write_policy import gate_workspace_write_deny
@@ -434,6 +589,8 @@ async def _gate_out_of_workspace_write(
     if not _is_outside_workspace(resolved):
         return None
     if _memory_source_rel_path(resolved) is not None:
+        return None
+    if _active_sandbox_mount_allows(resolved, write=True):
         return None
     from opensquilla.tools.builtin.shell import (
         _approval_elevation_state,
@@ -482,6 +639,9 @@ async def read_file(path: str, offset: int | None = None, limit: int | None = No
     blocked = _sensitive_access_block("read_file", p, path)
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(p, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("read_file", p, path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
@@ -537,6 +697,9 @@ async def read_spreadsheet(
     blocked = _sensitive_access_block("read_spreadsheet", p, path)
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(p, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("read_spreadsheet", p, path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
@@ -822,14 +985,21 @@ async def edit_file(
     description="List directory contents with type and size.",
     params={
         "path": {"type": "string", "description": "Directory path to list."},
+        "approval_id": {
+            "type": "string",
+            "description": "Approval record to consume after granting sandbox path access.",
+        },
     },
     required=["path"],
 )
-async def list_dir(path: str) -> str:
+async def list_dir(path: str, approval_id: str | None = None) -> str:
     p = _resolve_path(path)
     blocked = _sensitive_access_block("list_dir", p, path)
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(p, write=False, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("list_dir", p, path)
     if not p.exists():
         raise FileNotFoundError(f"Path not found: {path}")
@@ -882,6 +1052,9 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
     blocked = _sensitive_access_block("glob_search", base, path or str(base))
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(base, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("glob_search", base, path or str(base))
 
     loop = asyncio.get_event_loop()
@@ -934,6 +1107,9 @@ async def grep_search(
     blocked = _sensitive_access_block("grep_search", base, path or str(base))
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(base, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("grep_search", base, path or str(base))
 
     loop = asyncio.get_event_loop()
@@ -949,6 +1125,10 @@ async def grep_search(
         results: list[str] = []
 
         def search_file(fp: Path) -> None:
+            marker = _sandbox_path_access_marker(fp, write=False)
+            if marker is not None:
+                results.append(marker)
+                return
             if _is_sensitive_access_path(fp.resolve(strict=False), workspace=workspace_root):
                 return
             try:

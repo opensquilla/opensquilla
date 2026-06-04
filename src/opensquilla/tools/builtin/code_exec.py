@@ -17,10 +17,13 @@ from opensquilla.sandbox.integration import (
     escalate_backend_denial,
     gate_action,
     get_runtime,
+    preflight_subprocess_managed_network,
     run_under_backend,
 )
+from opensquilla.sandbox.policy import LevelHints
 from opensquilla.sandbox.types import DenialResult, SandboxRequest
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import full_host_access_active
 from opensquilla.tools.types import ToolError, current_tool_context
 
 # Destructive Python patterns that must go through the same approval flow as
@@ -136,6 +139,11 @@ def _check_code_sensitive_access(code: str) -> tuple[str, str] | None:
             return "sensitive_payload", marker
 
     return None
+
+
+def _code_needs_network(code: str) -> bool:
+    lowered = code.lower()
+    return any(token in lowered for token in _CODE_NETWORK_TOKENS)
 
 
 _MAX_TIMEOUT = 120
@@ -254,10 +262,8 @@ async def execute_code(
     if not code.strip():
         raise ToolError("Code must not be empty")
 
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
-
     sensitive_access = _check_code_sensitive_access(code)
-    if sensitive_access is not None and _context_elevated_mode() != "full":
+    if sensitive_access is not None and not full_host_access_active():
         reason, marker = sensitive_access
         if reason == "sensitive_payload":
             from opensquilla.tools.builtin.web import _sensitive_body_block
@@ -278,28 +284,16 @@ async def execute_code(
     # Destructive-Python gate — mirrors the shell warnlist approval flow.
     warning = _check_code_destructive(code)
     if warning is not None:
-        from opensquilla.tools.builtin.shell import (
-            _approval_elevation_state,
-            _check_exec_approval,
-            _restore_approval_elevation,
-        )
+        from opensquilla.tools.builtin.shell import _check_exec_approval
 
-        prior_elevation = _approval_elevation_state()
-        approval_response: dict[str, object] | None = None
-        approval_granted = False
-        try:
-            approval_response = await _check_exec_approval(
-                tool_name="execute_code",
-                command=code[:200],
-                workdir=None,
-                warning=warning,
-                approval_id=approval_id,
-                background=False,
-            )
-            approval_granted = approval_response is None and _approval_elevation_state()
-        finally:
-            if not approval_granted:
-                _restore_approval_elevation(prior_elevation)
+        approval_response = await _check_exec_approval(
+            tool_name="execute_code",
+            command=code[:200],
+            workdir=None,
+            warning=warning,
+            approval_id=approval_id,
+            background=False,
+        )
         if approval_response is not None:
             return json.dumps(approval_response)
 
@@ -307,7 +301,16 @@ async def execute_code(
 
     ctx = current_tool_context.get()
     runtime = get_runtime()
-    sandbox_enabled = bool(runtime is not None and runtime.effective.sandbox_enabled)
+    from opensquilla.tools.builtin.shell import (
+        _consume_host_once_current_call,
+        _host_execution_allowed,
+        _host_once_current_call,
+    )
+
+    host_execution = _host_execution_allowed()
+    sandbox_enabled = bool(
+        runtime is not None and runtime.effective.sandbox_enabled and not host_execution
+    )
     python_bin = _resolve_python_bin(sandbox_enabled=sandbox_enabled)
     workspace = (
         Path(ctx.workspace_dir).expanduser().resolve() if ctx and ctx.workspace_dir else None
@@ -326,16 +329,15 @@ async def execute_code(
     start_ns = time.monotonic_ns()
 
     safe_env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    hints = LevelHints(needs_network=_code_needs_network(code))
 
-    from opensquilla.tools.builtin.shell import _elevated_mode
-
-    elevated_bypass = _elevated_mode() in ("on", "bypass", "full")
-    if runtime is None or (runtime.effective.sandbox_enabled and not elevated_bypass):
+    if runtime is None or (runtime.effective.sandbox_enabled and not host_execution):
         decision, _policy, request = await gate_action(
             action_kind="code.exec",
             argv=(python_bin, "-c", code),
             cwd=workdir_path,
             env=safe_env,
+            hints=hints,
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
@@ -346,6 +348,12 @@ async def execute_code(
             policy=request.policy,
             env=safe_env,
         )
+        if runtime is not None:
+            preflight = await preflight_subprocess_managed_network(backend_request, runtime)
+            if isinstance(preflight, DenialResult):
+                return json.dumps(preflight.to_dict())
+            if isinstance(preflight, dict):
+                return json.dumps(preflight)
         try:
             sandbox_result = await run_under_backend(backend_request, runtime=runtime)
         except Exception as exc:
@@ -362,6 +370,8 @@ async def execute_code(
             )
             if isinstance(escalation, DenialResult):
                 return json.dumps(escalation.to_dict())
+            _host_once_current_call.set(True)
+            _consume_host_once_current_call()
             try:
                 proc = await asyncio.create_subprocess_exec(
                     python_bin, "-c", code,
@@ -395,6 +405,8 @@ async def execute_code(
                     returncode=-1, stdout="", stderr=f"Execution error: {exc}",
                     timed_out=False, elapsed_ms=0,
                 )
+            finally:
+                _host_once_current_call.set(False)
         elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
         stdout = sandbox_result.stdout
         stderr = sandbox_result.stderr

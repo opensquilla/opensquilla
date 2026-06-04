@@ -13,8 +13,11 @@ from urllib.parse import parse_qsl, urlparse
 
 import httpx
 
-from opensquilla.env import trust_env as _trust_env
-from opensquilla.sandbox.integration import sandboxed
+from opensquilla.sandbox.integration import (
+    current_managed_network_proxy_url,
+    managed_network_httpx_kwargs,
+    sandboxed,
+)
 from opensquilla.search.types import SearchProviderError, SearchResult
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
@@ -230,7 +233,10 @@ async def http_request(
 
     content: bytes | None = body.encode() if body else None
 
-    async with httpx.AsyncClient(timeout=timeout, trust_env=_trust_env()) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        **managed_network_httpx_kwargs(),
+    ) as client:
         response = await client.request(
             method=method_upper,
             url=url,
@@ -380,9 +386,10 @@ def _format_search_error(provider_name: str, exc: Exception) -> tuple[str, str]:
 
 
 def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
+    managed_proxy = current_managed_network_proxy_url()
     kwargs: dict[str, object] = {
-        "proxy": _active_search_proxy,
-        "use_env_proxy": _active_search_use_env_proxy,
+        "proxy": managed_proxy or _active_search_proxy,
+        "use_env_proxy": False if managed_proxy else _active_search_use_env_proxy,
     }
     if provider_name == "brave" and _active_search_api_key:
         kwargs["api_key"] = _active_search_api_key

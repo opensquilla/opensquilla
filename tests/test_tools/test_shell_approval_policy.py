@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,7 +61,7 @@ async def test_sandbox_off_forces_prompt_over_global_auto_approve() -> None:
 
 
 @pytest.mark.asyncio
-async def test_elevated_bypass_skips_prompt_even_when_sandbox_off() -> None:
+async def test_elevated_bypass_prompts_when_sandbox_off() -> None:
     ctx = current_tool_context.get()
     assert ctx is not None
     ctx.elevated = "bypass"
@@ -75,8 +75,9 @@ async def test_elevated_bypass_skips_prompt_even_when_sandbox_off() -> None:
         True,
     )
 
-    assert result is None
-    assert shell._elevate_current_call.get() is True
+    assert result is not None
+    assert result["status"] == "approval_required"
+    assert shell._elevate_current_call.get() is False
 
 
 @pytest.mark.asyncio
@@ -98,7 +99,7 @@ async def test_sandbox_off_forces_prompt_over_cached_intent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_elevated_full_remains_explicit_override_when_sandbox_off() -> None:
+async def test_elevated_full_skips_prompt_without_host_once_flag_when_sandbox_off() -> None:
     ctx = current_tool_context.get()
     assert ctx is not None
     ctx.elevated = "full"
@@ -113,7 +114,8 @@ async def test_elevated_full_remains_explicit_override_when_sandbox_off() -> Non
     )
 
     assert result is None
-    assert shell._elevate_current_call.get() is True
+    assert shell._host_execution_allowed() is True
+    assert shell._elevate_current_call.get() is False
 
 
 def test_audit_command_preserves_long_commands_until_cap() -> None:
@@ -182,31 +184,30 @@ async def test_unattended_destructive_code_exec_fails_fast_without_pending_exec_
 
 
 @pytest.mark.asyncio
-async def test_unattended_bypass_allows_warnlist_shell_without_pending_approval() -> None:
+async def test_unattended_bypass_with_sandbox_off_fails_fast_without_pending_approval() -> None:
     ctx = current_tool_context.get()
     assert ctx is not None
     ctx.interaction_mode = InteractionMode.UNATTENDED
     ctx.elevated = "bypass"
     queue = get_approval_queue()
 
-    result = await shell._check_exec_approval(
-        "exec_command",
-        "rm target.txt",
-        None,
-        "command requires approval",
-        None,
-        True,
-    )
+    with pytest.raises(UnsupportedSurfaceError):
+        await shell._check_exec_approval(
+            "exec_command",
+            "rm target.txt",
+            None,
+            "command requires approval",
+            None,
+            True,
+        )
 
-    assert result is None
-    assert shell._elevate_current_call.get() is True
+    assert shell._elevate_current_call.get() is False
     assert len(queue.list_pending("exec")) == 0
 
 
 @pytest.mark.asyncio
-async def test_unattended_bypass_allows_destructive_code_exec(
+async def test_unattended_bypass_with_sandbox_off_blocks_destructive_code_exec(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx = current_tool_context.get()
     assert ctx is not None
@@ -219,22 +220,16 @@ async def test_unattended_bypass_allows_destructive_code_exec(
         SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
         workspace=tmp_path,
     )
-    monkeypatch.setattr(
-        code_exec,
-        "_resolve_python_bin",
-        lambda *, sandbox_enabled: sys.executable,
-    )
 
-    result = await execute_code("import os\nos.remove('target.txt')")
-    payload = json.loads(result)
+    with pytest.raises(UnsupportedSurfaceError):
+        await execute_code("import os\nos.remove('target.txt')")
 
-    assert payload["exit_code"] == 0
-    assert not target.exists()
+    assert target.exists()
     assert len(get_approval_queue().list_pending("exec")) == 0
 
 
 @pytest.mark.asyncio
-async def test_approved_destructive_code_exec_uses_host_grant_when_sandbox_enabled(
+async def test_approved_destructive_code_exec_uses_sandbox_when_sandbox_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -252,16 +247,19 @@ async def test_approved_destructive_code_exec_uses_host_grant_when_sandbox_enabl
         ),
         workspace=tmp_path,
     )
-    monkeypatch.setattr(
-        code_exec,
-        "_resolve_python_bin",
-        lambda *, sandbox_enabled: sys.executable,
-    )
+    sandbox_calls: list[object] = []
 
-    async def fail_sandbox(*args: object, **kwargs: object) -> object:
-        raise AssertionError("sandbox backend should not run after approval")
+    async def fake_sandbox(request: object, *, runtime: object = None) -> object:
+        sandbox_calls.append(request)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="sandboxed\n",
+            stderr="",
+            timed_out=False,
+            backend_notes=(),
+        )
 
-    monkeypatch.setattr(code_exec, "run_under_backend", fail_sandbox)
+    monkeypatch.setattr(code_exec, "run_under_backend", fake_sandbox)
 
     code = "import os\nos.remove('target.txt')"
     pending = json.loads(await execute_code(code))
@@ -273,11 +271,14 @@ async def test_approved_destructive_code_exec_uses_host_grant_when_sandbox_enabl
     payload = json.loads(result)
 
     assert payload["exit_code"] == 0
-    assert not target.exists()
+    assert payload["stdout"] == "sandboxed\n"
+    assert sandbox_calls
+    assert target.exists()
+    assert shell._elevate_current_call.get() is False
 
 
 @pytest.mark.asyncio
-async def test_approved_background_process_uses_host_grant_when_sandbox_enabled(
+async def test_approved_background_process_uses_sandbox_when_sandbox_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -296,10 +297,25 @@ async def test_approved_background_process_uses_host_grant_when_sandbox_enabled(
         workspace=tmp_path,
     )
 
-    async def fail_sandbox(*args: object, **kwargs: object) -> object:
-        raise AssertionError("sandbox background backend should not run after approval")
+    sandbox_calls: list[object] = []
 
-    monkeypatch.setattr(shell, "_spawn_sandboxed_background_process", fail_sandbox)
+    class _FakeStream:
+        async def read(self, size: int) -> bytes:
+            return b""
+
+    class _FakeProcess:
+        stdout = _FakeStream()
+        stdin = None
+        returncode = 0
+
+        async def wait(self) -> int:
+            return 0
+
+    async def fake_sandbox_spawn(*args: object, **kwargs: object) -> object:
+        sandbox_calls.append(kwargs.get("request"))
+        return shell._SpawnedBackgroundProcess(process=_FakeProcess())  # type: ignore[arg-type]
+
+    monkeypatch.setattr(shell, "_spawn_sandboxed_background_process", fake_sandbox_spawn)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -327,11 +343,15 @@ async def test_approved_background_process_uses_host_grant_when_sandbox_enabled(
     session = shell._bg_sessions[session_id]
     assert session.collector_task is not None
     await session.collector_task
-    assert not target.exists()
+    assert sandbox_calls
+    assert target.exists()
+    assert shell._elevate_current_call.get() is False
 
 
 @pytest.mark.asyncio
-async def test_unattended_bypass_allows_outside_workspace_write(tmp_path: Path) -> None:
+async def test_unattended_bypass_with_sandbox_off_blocks_outside_workspace_write(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     outside = tmp_path / "outside.txt"
@@ -342,10 +362,10 @@ async def test_unattended_bypass_allows_outside_workspace_write(tmp_path: Path) 
     ctx.workspace_dir = str(workspace)
 
     write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
-    result = await write_file(str(outside), "ok")
+    with pytest.raises(UnsupportedSurfaceError):
+        await write_file(str(outside), "ok")
 
-    assert result.startswith("Written 2 bytes to ")
-    assert outside.read_text(encoding="utf-8") == "ok"
+    assert not outside.exists()
     assert len(get_approval_queue().list_pending("exec")) == 0
 
 
@@ -372,7 +392,9 @@ async def test_workspace_lockdown_blocks_outside_workspace_write_even_with_bypas
 
 
 @pytest.mark.asyncio
-async def test_workspace_lockdown_allows_configured_scratch_dir(tmp_path: Path) -> None:
+async def test_unattended_bypass_with_sandbox_off_blocks_configured_scratch_dir_write(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     scratch = tmp_path / "scratch"
     workspace.mkdir()
@@ -387,10 +409,11 @@ async def test_workspace_lockdown_allows_configured_scratch_dir(tmp_path: Path) 
     ctx.workspace_lockdown = True  # type: ignore[attr-defined]
 
     write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
-    result = await write_file(str(target), "print('ok')")
+    with pytest.raises(UnsupportedSurfaceError):
+        await write_file(str(target), "print('ok')")
 
-    assert result.startswith("Written 11 bytes to ")
-    assert target.read_text(encoding="utf-8") == "print('ok')"
+    assert not target.exists()
+    assert len(get_approval_queue().list_pending("exec")) == 0
 
 
 @pytest.mark.asyncio

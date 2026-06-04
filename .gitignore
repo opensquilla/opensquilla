@@ -42,7 +42,10 @@ GEMINI.md
 /prd.json
 /progress.txt
 /plans/
-/docs/superpowers/
+/docs/superpowers/**
+!/docs/superpowers/
+!/docs/superpowers/plans/
+!/docs/superpowers/specs/
 *.png
 # Brand assets are intentionally tracked: top-level assets/ for branding,
 # and the WebUI static asset path so the gateway page renders the mark.

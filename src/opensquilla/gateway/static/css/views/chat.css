@@ -1914,7 +1914,7 @@
 /*
  * Composer-state controls live inside a popover anchored to a single gear
  * button in the input bar. The trigger glows accent only when at least one
- * control is in a non-default state: bypass on OR router off.
+ * control is in a non-default state: trusted/full run mode OR router off.
  */
 .chat-toolbar-wrap {
   position: relative;
@@ -1949,8 +1949,12 @@
   transition: background 200ms var(--ease-press, cubic-bezier(.2,.7,.2,1)),
               box-shadow 200ms ease;
 }
-/* Bypass — danger/warn red-orange tint, the only safety-critical signal. */
-.chat-toolbar-trigger.has-dot-bypass .chat-toolbar-trigger-dots i[data-dot="bypass"] {
+/* Run Mode — accent for trusted, danger for full. */
+.chat-toolbar-trigger.has-dot-run-mode .chat-toolbar-trigger-dots i[data-dot="run-mode"] {
+  background: var(--accent);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.chat-toolbar-trigger.has-dot-run-mode-full .chat-toolbar-trigger-dots i[data-dot="run-mode"] {
   background: var(--danger);
   box-shadow: 0 0 4px color-mix(in srgb, var(--danger) 70%, transparent);
 }
@@ -2023,6 +2027,120 @@
   font-size: var(--fs-sm);
   white-space: nowrap;
 }
+
+.chat-run-mode-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.chat-run-mode-trigger,
+.chat-run-mode-option {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.chat-run-mode-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  min-width: 168px;
+  min-height: 30px;
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  background: var(--bg);
+}
+
+.chat-run-mode-trigger:hover,
+.chat-run-mode-trigger.is-open {
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+}
+
+.chat-run-mode-current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-run-mode-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translateY(-1px);
+  opacity: .7;
+  flex-shrink: 0;
+}
+
+.chat-run-mode-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 1002;
+  display: flex;
+  min-width: 220px;
+  padding: 4px;
+  flex-direction: column;
+  gap: 2px;
+  background: color-mix(in srgb, var(--bg-elevated, var(--bg-surface)) 94%, #000);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .34), 0 2px 8px rgba(0, 0, 0, .18);
+}
+
+.chat-run-mode-menu.hidden { display: none; }
+
+.chat-run-mode-option {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 var(--sp-3);
+  border-color: transparent;
+  text-align: left;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.chat-run-mode-option:hover,
+.chat-run-mode-option:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text);
+  outline: none;
+}
+
+.chat-run-mode-option.is-active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.chat-run-mode-trigger.is-danger,
+.chat-run-mode-option.is-danger {
+  color: var(--danger);
+}
+
+.chat-run-mode-tooltip {
+  position: fixed;
+  z-index: 1300;
+  max-width: 280px;
+  padding: 9px 11px;
+  background: color-mix(in srgb, var(--bg-elevated, var(--bg-surface)) 90%, #000);
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: var(--radius-md);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, .36), 0 1px 0 rgba(255, 255, 255, .04) inset;
+  color: var(--text);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  pointer-events: none;
+}
+
+.chat-run-mode-tooltip.hidden { display: none; }
 
 /* ─── Chat Toolbar (feature toggle pills) ──────────────────────────────── */
 

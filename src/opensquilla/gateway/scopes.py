@@ -112,6 +112,10 @@ METHOD_SCOPES: dict[str, str] = {
     "tools.catalog": READ_SCOPE,
     "tools.effective": READ_SCOPE,
     "tools.search_provider": READ_SCOPE,  # OpenSquilla-only; classified read.
+    "sandbox.status": READ_SCOPE,  # OpenSquilla-only; sandbox posture summary.
+    "sandbox.explain": READ_SCOPE,  # OpenSquilla-only; deterministic sandbox explanation.
+    "sandbox.run_context.get": READ_SCOPE,  # OpenSquilla-only; session sandbox mode.
+    "sandbox.path.list": READ_SCOPE,  # OpenSquilla-only; inline path browser listing.
     "channels.status": READ_SCOPE,
     "commands.list_for_surface": READ_SCOPE,  # OpenSquilla-only.
     "chat.history": READ_SCOPE,
@@ -150,6 +154,15 @@ METHOD_SCOPES: dict[str, str] = {
     "sessions.contextCompact": WRITE_SCOPE,
     "sessions.compact": WRITE_SCOPE,
     "sessions.truncate": WRITE_SCOPE,
+    "sandbox.workspace.set": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.mount.add": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.mount.remove": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.domain.add": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.domain.remove": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.bundle.enable": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.bundle.disable": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.run_context.set": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.path.pick": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded host directory picker.
     # OpenSquilla-only; explicit override of `config.` admin prefix.
     "config.patch.safe": WRITE_SCOPE,
     # ----- approvals -----

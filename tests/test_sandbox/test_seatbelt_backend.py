@@ -18,6 +18,7 @@ from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.types import (
     MountSpec,
     NetworkMode,
+    NetworkProxySpec,
     ResourceLimits,
     SandboxBackendError,
     SandboxPolicy,
@@ -35,6 +36,7 @@ def _policy(
     workspace: Path,
     *,
     network: NetworkMode = NetworkMode.NONE,
+    network_proxy: NetworkProxySpec | None = None,
     workspace_rw: bool = True,
     tmp_writable: bool = True,
     mounts: tuple[MountSpec, ...] | None = None,
@@ -56,6 +58,7 @@ def _policy(
         limits=ResourceLimits(wall_timeout_s=0.1),
         env_allowlist=("PATH", "LANG"),
         require_approval=False,
+        network_proxy=network_proxy,
     )
 
 
@@ -131,11 +134,29 @@ def test_profile_allows_network_host(tmp_path: Path) -> None:
     assert "(allow network*)" in profile
 
 
-def test_profile_rejects_proxy_allowlist(tmp_path: Path) -> None:
-    with pytest.raises(SandboxBackendError, match="PROXY_ALLOWLIST"):
+def test_profile_rejects_proxy_allowlist_without_proxy(tmp_path: Path) -> None:
+    with pytest.raises(SandboxBackendError, match="network proxy"):
         render_seatbelt_profile(
             _request(_policy(tmp_path, network=NetworkMode.PROXY_ALLOWLIST), tmp_path)
         )
+
+
+def test_profile_allows_only_proxy_endpoint_for_proxy_allowlist(tmp_path: Path) -> None:
+    profile = render_seatbelt_profile(
+        _request(
+            _policy(
+                tmp_path,
+                network=NetworkMode.PROXY_ALLOWLIST,
+                network_proxy=NetworkProxySpec(host="127.0.0.1", port=18080),
+            ),
+            tmp_path,
+        )
+    )
+
+    assert "(allow network-outbound" in profile
+    assert "127.0.0.1:18080" in profile
+    assert "(allow network*)" not in profile
+    assert "(deny network*)" not in profile
 
 
 def test_profile_keeps_workspace_ro_when_policy_ro(tmp_path: Path) -> None:
@@ -274,6 +295,54 @@ async def test_run_filters_env_and_returns_nonzero_without_raise(
     assert env["PATH"] == "/bin"
     assert "SECRET" not in env
     assert "TMPDIR" in env
+
+
+@pytest.mark.asyncio
+async def test_run_injects_proxy_env_for_proxy_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b"ok\n", b""
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: object) -> FakeProcess:
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setattr(seatbelt_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        seatbelt_mod,
+        "_sandbox_exec_binary",
+        lambda binary=None: "/usr/bin/sandbox-exec",
+    )
+    monkeypatch.setattr(
+        seatbelt_mod.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    policy = _policy(
+        tmp_path,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        network_proxy=NetworkProxySpec(host="127.0.0.1", port=18080),
+    )
+    request = _request(policy, tmp_path)
+    request.env["HTTP_PROXY"] = "http://attacker.invalid:1"
+
+    result = await SeatbeltBackend().run(request)
+
+    assert result.returncode == 0
+    env = captured["env"]
+    assert isinstance(env, dict)
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        assert env[key] == "http://127.0.0.1:18080"
+    assert "http://attacker.invalid:1" not in env.values()
 
 
 @pytest.mark.asyncio

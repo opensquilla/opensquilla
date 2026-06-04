@@ -15,7 +15,7 @@ from pathlib import Path
 APP_JS = Path("src/opensquilla/gateway/static/js/app.js")
 CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
 APPROVAL_MONITOR_JS = Path("src/opensquilla/gateway/static/js/approval_monitor.js")
-APPROVALS_JS = Path("src/opensquilla/gateway/static/js/views/approvals.js")
+CONFIG_JS = Path("src/opensquilla/gateway/static/js/views/config.js")
 CHAT_CSS = Path("src/opensquilla/gateway/static/css/views/chat.css")
 BASE_CSS = Path("src/opensquilla/gateway/static/css/base.css")
 
@@ -32,8 +32,8 @@ def _read_approval_monitor_js() -> str:
     return APPROVAL_MONITOR_JS.read_text(encoding="utf-8")
 
 
-def _read_approvals_js() -> str:
-    return APPROVALS_JS.read_text(encoding="utf-8")
+def _read_config_js() -> str:
+    return CONFIG_JS.read_text(encoding="utf-8")
 
 
 def _read_chat_css() -> str:
@@ -70,20 +70,87 @@ def test_chat_input_accept_attribute_matches_allowlist() -> None:
         assert mime in source, mime
 
 
-def test_chat_permission_pill_distinguishes_global_and_session_modes() -> None:
+def test_chat_run_mode_control_replaces_elevated_bypass_copy() -> None:
     source = _read_chat_js()
+    config_source = _read_config_js()
+    chat_css = _read_chat_css()
 
-    assert '<span class="chat-toolbar-row-label">Execution mode</span>' in source
+    assert '<span class="chat-toolbar-row-label">Run Mode</span>' in source
     assert '<span class="chat-toolbar-row-label">Approvals</span>' not in source
-    assert "cfg?.permissions?.default_mode" in source
-    assert "Global ${_globalElevatedMode.toUpperCase()}" in source
-    assert "Session ${_elevatedMode.toUpperCase()}" in source
-    assert "Approval prompts are active" in source
-    assert "opensquilla sandbox on|bypass|full|reset" in source
+    assert source.count('class="chat-toolbar-row-label"') == 3
+    assert '<span class="chat-toolbar-row-label">Squilla Router</span>' in source
+    assert '<span class="chat-toolbar-row-label">Visual effects</span>' in source
+    assert "Workspace" not in source[source.index('id="chat-toolbar"'):]
+    assert "Open Sandbox" not in source[source.index('id="chat-toolbar"'):]
+    assert 'id="chat-run-mode-trigger"' in source
+    assert 'id="chat-run-mode-menu"' in source
+    assert 'class="chat-run-mode-current"' in source
+    assert "chat-run-mode-option" in source
+    assert "chat-run-mode-tooltip" in source
+    assert ".chat-run-mode-tooltip" in chat_css
+    assert "sandbox.run_context.get" in source
+    assert "sandbox.run_context.set" in source
+    assert "Standard-Sandbox" in source
+    assert "Trusted-Sandbox" in source
+    assert "Full Host Access" in source
+    assert "Sandboxed execution. Risky actions ask before running." in source
+    assert (
+        "Sandboxed execution with fewer routine prompts. Boundary changes still ask."
+        in source
+    )
+    assert "Host execution without per-command prompts. Use only for trusted workspaces." in source
+    assert 'title="Standard:' not in source
+    assert 'title="Trusted:' not in source
+    assert 'title="Full:' not in source
+    assert "chat-run-mode-segment" not in source
+    assert "_source.runMode" in source
+    assert "_source.elevated" not in source
+    assert "opensquilla sandbox on|trust|full|reset" in config_source
+    assert "sandbox.run_mode: standard, trusted, or full" in config_source
+    assert "opensquilla sandbox on|bypass|full|reset" not in source
+    assert "opensquilla sandbox on|bypass|full|reset" not in config_source
+    assert "This maps to /elevated bypass" not in source
+    assert "Execution mode" not in source
+    assert "Session ${_elevatedMode.toUpperCase()}" not in source
     assert "Bypass Off" not in source
 
     # The legacy image-only `accept="image/*" multiple` literal must be gone:
     assert 'accept="image/*" multiple' not in source
+
+
+def test_chat_session_transitions_reset_run_mode_before_loading_context() -> None:
+    source = _read_chat_js()
+
+    start = source.index("function _startNewChatSession(")
+    end = source.index("  function _bindEvents()", start)
+    new_chat_helper = source[start:end]
+
+    start = source.index("function _switchToSession(key)")
+    end = source.index("  function _bindSessionChip()", start)
+    switch_helper = source[start:end]
+
+    for helper in (new_chat_helper, switch_helper):
+        persist_idx = helper.index("_persistSession(key);")
+        reset_idx = helper.index("_setRunMode(_RUN_MODE_DEFAULT")
+        load_idx = helper.index("_loadRunContext()")
+        assert "_updateSessionChip(key);" in helper
+        assert persist_idx < reset_idx < load_idx
+
+    assert "function _startNewChatSession(source)" in new_chat_helper
+    assert "_parkCurrentSessionStreamState(source || 'new_chat')" in new_chat_helper
+    assert "newBtn.addEventListener('click', () => _startNewChatSession('new_chat'))" in source
+
+
+def test_chat_run_context_load_failure_ignores_stale_sessions() -> None:
+    source = _read_chat_js()
+    start = source.index("async function _loadRunContext()")
+    end = source.index("  async function _syncRunMode", start)
+    helper = source[start:end]
+    catch_body = helper[helper.index("} catch {") :]
+
+    guard_idx = catch_body.index("if (sessionKey !== _sessionKey) return;")
+    reset_idx = catch_body.index("_setRunMode(_RUN_MODE_DEFAULT")
+    assert guard_idx < reset_idx
 
 
 def test_chat_does_not_render_persistent_bypass_warning_chip() -> None:
@@ -95,20 +162,26 @@ def test_chat_does_not_render_persistent_bypass_warning_chip() -> None:
     assert "Approvals bypassed by global default" not in chat_source
 
 
-def test_webui_bypass_shortcuts_do_not_enable_full_mode() -> None:
+def test_webui_removes_bypass_approval_shortcuts() -> None:
     chat_source = _read_chat_js()
     monitor_source = _read_approval_monitor_js()
-    approvals_source = _read_approvals_js()
-    combined = "\n".join([chat_source, monitor_source, approvals_source])
+    app_source = _read_app_js()
+    template_source = Path("src/opensquilla/gateway/templates/index.html").read_text(
+        encoding="utf-8"
+    )
+    combined = "\n".join([chat_source, monitor_source])
 
-    assert "ELEVATED_MODE_VERSION_KEY" in chat_source
-    assert "localStorage.getItem(_ELEVATED_MODE_VERSION_KEY)" in chat_source
-    assert "if (ok) _setElevatedMode('bypass', { toast: true, sync: true });" in chat_source
-    assert "This maps to /elevated bypass" in chat_source
-    assert "action === 'bypass' ? 'bypass' : ''" in monitor_source
-    assert "decision === 'bypass' ? 'bypass' : ''" in approvals_source
+    assert "Bypass Approvals" not in combined
+    assert "Bypass approvals" not in combined
+    assert 'data-approval-action="bypass"' not in monitor_source
+    assert "action === 'bypass'" not in monitor_source
+    assert "elevatedMode" not in monitor_source
+    assert "opensquilla:elevated-mode" not in monitor_source
     assert "maps to /elevated full" not in combined
     assert "Bypass All Permissions" not in combined
+    assert "Router.register('/approvals'" not in app_source
+    assert "/static/js/views/approvals.js" not in template_source
+    assert "/static/css/views/approvals.css" not in template_source
 
 
 def test_app_uses_dynamic_viewport_height_after_100vh_fallback_for_mobile_composer() -> None:

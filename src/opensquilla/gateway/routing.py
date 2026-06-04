@@ -7,6 +7,8 @@ from enum import StrEnum
 from typing import Any
 
 from opensquilla.channels.types import IncomingMessage
+from opensquilla.sandbox.run_context import normalize_scope, run_context_from_origin_payload
+from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.session.keys import normalize_agent_id, parse_agent_id
 from opensquilla.tools.policy import apply_tool_policy_layer
 from opensquilla.tools.types import (
@@ -63,6 +65,7 @@ class RouteEnvelope:
     delivery_context: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     interaction_mode: InteractionMode = InteractionMode.INTERACTIVE
+    sandbox_run_context_fresh: bool = False
 
     def delivery_fields(self) -> dict[str, Any]:
         """Return session routing fields derived from the reply target."""
@@ -157,6 +160,7 @@ def build_cli_route_envelope(
     principal_is_owner: bool | None = None,
     interaction_mode: InteractionMode | str = InteractionMode.INTERACTIVE,
     elevated: str | None = None,
+    run_mode: str | None = None,
 ) -> RouteEnvelope:
     """Build a route for local CLI input."""
     resolved_interaction_mode = _interaction_mode(interaction_mode)
@@ -165,6 +169,12 @@ def build_cli_route_envelope(
         metadata["principal_is_owner"] = principal_is_owner
     if elevated in ("on", "bypass", "full"):
         metadata["elevated"] = elevated
+    try:
+        normalized_run_mode = normalize_run_mode(run_mode) if run_mode else None
+    except ValueError:
+        normalized_run_mode = None
+    if normalized_run_mode is not None:
+        metadata["run_mode"] = normalized_run_mode.value
     return RouteEnvelope(
         source_kind=SourceKind.CLI,
         source_name=source_name,
@@ -337,6 +347,19 @@ def delivery_fields_from_envelope(envelope: RouteEnvelope) -> dict[str, Any]:
     }
 
 
+def _filtered_legacy_sandbox_mounts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    mounts: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if normalize_scope(item.get("scope"), "once") != "chat":
+            continue
+        mounts.append(dict(item))
+    return mounts
+
+
 def tool_context_from_envelope(
     envelope: RouteEnvelope,
     *,
@@ -363,9 +386,42 @@ def tool_context_from_envelope(
         denied_tools = set(SUBAGENT_TOOL_DENY)
     source_kind = envelope.metadata.get("tool_source_kind") or envelope.source_kind.value
     source_name = envelope.metadata.get("tool_source_name") or envelope.source_name
-    elevated = envelope.metadata.get("elevated") or default_elevated
-    if elevated not in ("on", "bypass", "full") or not is_owner:
-        elevated = None
+    legacy_elevated = envelope.metadata.get("elevated")
+    elevated = None
+    run_mode_value = envelope.metadata.get("run_mode")
+    if run_mode_value:
+        try:
+            run_mode = normalize_run_mode(run_mode_value)
+        except ValueError:
+            run_mode = None
+        if run_mode == RunMode.FULL and not is_owner:
+            run_mode = None
+    elif legacy_elevated in ("on", "bypass") and is_owner:
+        run_mode = RunMode.TRUSTED
+    elif legacy_elevated == "full" and is_owner:
+        run_mode = RunMode.FULL
+    elif default_elevated == "full" and is_owner:
+        run_mode = RunMode.FULL
+    else:
+        run_mode = None
+    if run_mode == RunMode.FULL and is_owner:
+        elevated = "full"
+    elif legacy_elevated in ("on", "bypass") and is_owner:
+        elevated = legacy_elevated
+    sandbox_run_context_fresh = bool(
+        getattr(envelope, "sandbox_run_context_fresh", False)
+    )
+    sandbox_run_context = run_context_from_origin_payload(
+        envelope.metadata.get("sandbox_run_context"),
+        source="route_metadata",
+        preserve_materialized_user_grants=sandbox_run_context_fresh,
+    )
+    if sandbox_run_context_fresh and sandbox_run_context is not None:
+        sandbox_mounts = sandbox_run_context.to_origin_payload()["mounts"]
+    else:
+        sandbox_mounts = _filtered_legacy_sandbox_mounts(
+            envelope.metadata.get("sandbox_mounts")
+        )
     ctx = ToolContext(
         is_owner=is_owner,
         caller_kind=caller_kind,
@@ -374,6 +430,9 @@ def tool_context_from_envelope(
         agent_id=envelope.agent_id,
         workspace_dir=workspace_dir,
         workspace_strict=workspace_strict,
+        run_mode=run_mode.value if run_mode is not None else None,
+        sandbox_mounts=sandbox_mounts,
+        sandbox_run_context=sandbox_run_context,
         session_key=envelope.session_key,
         channel_kind=envelope.channel_name or envelope.channel_type,
         channel_id=envelope.channel_id,

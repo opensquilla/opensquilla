@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -91,6 +92,30 @@ class _ApprovalClient:
 
     async def abort_session(self, *_args: Any, **_kwargs: Any) -> None:
         return None
+
+
+class _SessionManager:
+    def __init__(self) -> None:
+        self.node = SimpleNamespace(
+            session_key="agent:main:webchat:abc",
+            agent_id="main",
+            origin=None,
+        )
+
+    async def get_session(self, session_key: str) -> object | None:
+        return self.node if session_key == self.node.session_key else None
+
+    async def update(self, session_key: str, **fields: Any) -> object:
+        for key, value in fields.items():
+            setattr(self.node, key, value)
+        return self.node
+
+
+def _sandbox_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
 
 
 def test_default_turn_stream_dependencies_preserves_explicit_falsey_overrides() -> None:
@@ -186,6 +211,78 @@ async def test_tui_gateway_stream_coerces_invalid_output_approval_surface(
     )
 
     assert captured["surface"] is Surface.CLI_GATEWAY
+
+
+@pytest.mark.asyncio
+async def test_local_approval_resolver_threads_sandbox_choice(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import turn_stream
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.sandbox.escalation import build_path_approval_params
+    from opensquilla.sandbox.path_validation import MountDecision
+
+    reset_approval_queue()
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    params = build_path_approval_params(
+        MountDecision(
+            status="request",
+            normalized_path=str(outside.resolve(strict=False)),
+            access="ro",
+            reason="outside_sandbox_mounts",
+        ),
+        session_key=manager.node.session_key,
+        workspace=str(workspace),
+    )
+    assert params is not None
+    approval_id = get_approval_queue().request(namespace="exec", params=params)
+    captured: dict[str, Any] = {}
+
+    async def fake_apply_sandbox_approval_choice(
+        params: dict[str, Any] | None,
+        *,
+        choice: str | None,
+        approved: bool,
+        session_manager: object,
+        config: object,
+    ) -> None:
+        captured.update(
+            {
+                "params": params,
+                "choice": choice,
+                "approved": approved,
+                "session_manager": session_manager,
+                "config": config,
+            }
+        )
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_approvals.apply_sandbox_approval_choice",
+        fake_apply_sandbox_approval_choice,
+    )
+
+    resolver = turn_stream.local_approval_resolver(
+        session_manager=manager,
+        config=_sandbox_config(),
+    )
+
+    await resolver(approval_id, True, choice="mount_ro_chat")
+
+    pending = get_approval_queue().get(approval_id)
+    assert pending.resolved is True
+    assert pending.approved is True
+    assert pending.claim_token is None
+    assert captured["choice"] == "mount_ro_chat"
+    assert captured["approved"] is True
+    assert captured["params"] == params
+    assert captured["session_manager"] is manager
+
+    reset_approval_queue()
 
 
 @pytest.mark.asyncio

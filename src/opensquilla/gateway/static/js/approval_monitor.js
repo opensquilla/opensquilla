@@ -3,9 +3,6 @@
 const ApprovalMonitor = (() => {
   const POLL_MS = 1500;
   const POLL_MAX_MS = 30000;
-  const ELEVATED_MODE_KEY = 'opensquilla.elevatedMode';
-  const ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version';
-  const ELEVATED_MODE_STORAGE_VERSION = '2';
   let _timer = null;
   let _modal = null;
   let _busy = false;
@@ -132,7 +129,9 @@ const ApprovalMonitor = (() => {
     if (!inline.dataset.bound) {
       inline.dataset.bound = '1';
       inline.addEventListener('click', () => {
-        if (window.Router) Router.navigate('/approvals');
+        if (_modal) return;
+        _resetPollBackoff();
+        _poll();
       });
     }
   }
@@ -143,39 +142,57 @@ const ApprovalMonitor = (() => {
     overlay.className = 'modal-backdrop';
 
     const canAlways = item.namespace === 'exec' && !!item.command;
+    const customChoices = Array.isArray(item.params && item.params.choices) ? item.params.choices : [];
+    const title = _approvalTitle(item);
     const command = _approvalCommand(item);
-    const detail = _approvalDetail(item);
-    const meta = [
-      item.namespace ? 'Namespace: ' + item.namespace : '',
-      mode ? 'Mode: ' + mode : '',
-      item.sessionKey ? 'Session: ' + item.sessionKey : '',
-    ].filter(Boolean).join(' · ');
+    const detail = _approvalDetailHtml(item);
+    const meta = _approvalMeta(item, mode);
+    const footer = customChoices.length > 0
+      ? _renderCustomChoices(customChoices)
+      : `
+          <button class="btn btn--primary" data-approval-action="once" title="Approve only this pending tool call">Approve This Time</button>
+          ${canAlways ? '<button class="btn btn--ghost" data-approval-action="always" title="Remember this operation type for future matching intents">Always Allow This Type</button>' : ''}
+          <button class="btn btn--danger" data-approval-action="deny">Deny</button>
+        `;
 
     overlay.innerHTML = `
       <div class="modal approval-modal" role="dialog" aria-modal="true" aria-labelledby="approval-modal-title">
-        <div class="modal-title" id="approval-modal-title">Approval Required</div>
+        <div class="modal-title" id="approval-modal-title">${_esc(title)}</div>
         <div class="modal-body">
-          <div class="approval-modal-tool">${_esc(item.toolName || item.actionKind || 'Tool execution')}</div>
+          <div class="approval-modal-tool">${_esc(_approvalToolLabel(item))}</div>
           ${meta ? `<div class="approval-modal-meta">${_esc(meta)}</div>` : ''}
           ${command ? `<pre class="approval-modal-command">${_esc(command)}</pre>` : ''}
-          ${detail ? `<div class="approval-modal-detail">${_esc(detail)}</div>` : ''}
+          ${detail}
         </div>
         <div class="modal-foot">
-          <button class="btn btn--primary" data-approval-action="once" title="Approve only this pending tool call">Approve This Time</button>
-          ${canAlways ? '<button class="btn btn--ghost" data-approval-action="always" title="Remember this operation type for future matching intents">Always Allow This Type</button>' : ''}
-          <button class="btn btn--warn" data-approval-action="bypass" title="Enable approval bypass in this browser session and approve this pending tool call">Bypass Approvals</button>
-          <button class="btn btn--danger" data-approval-action="deny">Deny</button>
+          ${footer}
         </div>
       </div>`;
 
+    overlay.querySelectorAll('[data-choice-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const choiceId = btn.dataset.choiceId || '';
+        const approved = btn.dataset.approved !== 'false';
+        _resolve(
+          item,
+          {
+            approved,
+            allowAlways: false,
+            rememberIntent: false,
+            choice: choiceId,
+            decision: choiceId,
+          },
+          overlay,
+        );
+      });
+    });
     overlay.querySelectorAll('[data-approval-action]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const action = btn.dataset.approvalAction;
-        const approved = action === 'once' || action === 'always' || action === 'bypass';
+        const approved = action === 'once' || action === 'always';
         const allowAlways = action === 'always';
         const rememberIntent = action === 'always';
-        const elevatedMode = action === 'bypass' ? 'bypass' : '';
-        _resolve(item, approved, allowAlways, rememberIntent, elevatedMode, overlay);
+        _resolve(item, { approved, allowAlways, rememberIntent }, overlay);
       });
     });
 
@@ -183,18 +200,110 @@ const ApprovalMonitor = (() => {
     _modal = overlay;
   }
 
-  async function _resolve(item, approved, allowAlways, rememberIntent, elevatedMode, overlay) {
+  function _renderCustomChoices(customChoices) {
+    const buttons = customChoices.map((choice, index) => {
+      const approved = choice && choice.approved !== false;
+      const style = choice && choice.style
+        ? String(choice.style)
+        : (!approved ? 'danger' : (index === 0 ? 'primary' : 'ghost'));
+      const label = choice && choice.label ? String(choice.label) : 'Choose';
+      const description = choice && choice.description ? String(choice.description) : '';
+      const choiceId = choice && choice.id ? String(choice.id) : '';
+      const tone = _approvalChoiceTone(style);
+      return `
+        <button class="btn approval-modal-choice approval-modal-choice--${_esc(tone)}" data-choice-id="${_esc(choiceId)}" data-approved="${approved ? 'true' : 'false'}">
+          <span class="approval-modal-choice-copy">
+            <span class="approval-modal-choice-label">${_esc(label)}</span>
+            ${description ? `<span class="approval-modal-choice-description">${_esc(description)}</span>` : ''}
+          </span>
+        </button>`;
+    }).join('');
+    return `<div class="approval-modal-choices">${buttons}</div>`;
+  }
+
+  function _approvalChoiceTone(style) {
+    const tone = String(style || '').trim().toLowerCase();
+    if (tone === 'primary' || tone === 'danger' || tone === 'warn') return tone;
+    return 'ghost';
+  }
+
+  function _approvalToolLabel(item) {
+    const raw = String(item.toolName || item.actionKind || '').trim();
+    if (raw && raw.toLowerCase() !== 'unknown') return raw;
+    const approvalKind = _approvalKind(item);
+    const labels = {
+      sandbox_path: 'Workspace boundary',
+      sandbox_network: 'Network boundary',
+      host_once: 'Sandbox fallback',
+    };
+    return labels[approvalKind] || raw || 'Tool execution';
+  }
+
+  function _approvalKind(item) {
+    return String(item.params?.approvalKind || '').trim();
+  }
+
+  function _isSandboxApproval(item) {
+    return ['sandbox_path', 'sandbox_network', 'host_once'].includes(_approvalKind(item));
+  }
+
+  function _approvalTitle(item) {
+    const approvalKind = _approvalKind(item);
+    if (approvalKind === 'sandbox_path') return 'Allow access outside the workspace?';
+    if (approvalKind === 'sandbox_network') return 'Allow network access?';
+    if (approvalKind === 'host_once') return 'Run outside the sandbox?';
+    return 'Approval Required';
+  }
+
+  function _approvalMeta(item, mode) {
+    if (_isSandboxApproval(item)) return '';
+    return [
+      item.namespace ? 'Namespace: ' + item.namespace : '',
+      mode ? 'Mode: ' + mode : '',
+      item.sessionKey ? 'Session: ' + item.sessionKey : '',
+    ].filter(Boolean).join(' · ');
+  }
+
+  function _approvalDetailHtml(item) {
+    const approvalKind = _approvalKind(item);
+    if (approvalKind === 'sandbox_path') return _renderSandboxPathApproval(item);
+    const detail = _approvalDetail(item);
+    return detail ? `<div class="approval-modal-detail">${_esc(detail)}</div>` : '';
+  }
+
+  function _renderSandboxPathApproval(item) {
+    const params = item.params || {};
+    const path = String(params.path || '');
+    const workspace = String(params.workspace || '');
+    const requestedMount = String(params.access || 'ro').toLowerCase() === 'rw' ? 'Read/write' : 'Read-only';
+    const impact = requestedMount === 'Read/write'
+      ? 'If approved, OpenSquilla can read and modify files under this path.'
+      : 'If approved, OpenSquilla can read/list this path and copy files into the workspace, but cannot modify the original files.';
+    return `
+      <div class="approval-modal-summary">
+        <p>OpenSquilla needs access to a folder or file outside the current workspace.</p>
+        <dl class="approval-modal-summary-grid">
+          ${workspace ? `<dt>Current workspace</dt><dd>${_esc(workspace)}</dd>` : ''}
+          <dt>Path requested</dt><dd>${_esc(path || 'Unknown')}</dd>
+          <dt>Access needed</dt><dd>${_esc(requestedMount)}</dd>
+        </dl>
+        <div class="approval-modal-note">${_esc(impact)}</div>
+      </div>`;
+  }
+
+  async function _resolve(item, resolution, overlay) {
     if (_busy) return;
     _busy = true;
     overlay.querySelectorAll('button').forEach((btn) => { btn.disabled = true; });
     const body = {
       id: item.id,
       namespace: item.namespace || 'exec',
-      approved,
-      allowAlways,
-      rememberIntent,
+      approved: !!resolution.approved,
+      allowAlways: !!resolution.allowAlways,
+      rememberIntent: !!resolution.rememberIntent,
     };
-    if (elevatedMode) body.elevatedMode = elevatedMode;
+    if (resolution.choice) body.choice = resolution.choice;
+    if (resolution.decision) body.decision = resolution.decision;
     try {
       const resp = await fetch('/api/approvals/resolve', {
         method: 'POST',
@@ -202,11 +311,10 @@ const ApprovalMonitor = (() => {
         body: JSON.stringify(body),
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      if (elevatedMode) _setBrowserElevated(elevatedMode);
       _closeModal();
       UI.toast(
-        elevatedMode ? 'Approval bypass enabled' : (approved ? 'Approval granted' : 'Approval denied'),
-        approved ? 'info' : 'warn',
+        body.approved ? 'Approval granted' : 'Approval denied',
+        body.approved ? 'info' : 'warn',
         2500
       );
       _resetPollBackoff();
@@ -222,20 +330,6 @@ const ApprovalMonitor = (() => {
   function _closeModal() {
     if (_modal) _modal.remove();
     _modal = null;
-  }
-
-  function _setBrowserElevated(mode) {
-    const normalized = mode === 'full' || mode === 'bypass' || mode === 'on' ? mode : '';
-    try {
-      if (normalized) {
-        localStorage.setItem(ELEVATED_MODE_KEY, normalized);
-        localStorage.setItem(ELEVATED_MODE_VERSION_KEY, ELEVATED_MODE_STORAGE_VERSION);
-      } else {
-        localStorage.removeItem(ELEVATED_MODE_KEY);
-        localStorage.removeItem(ELEVATED_MODE_VERSION_KEY);
-      }
-    } catch {}
-    window.dispatchEvent(new CustomEvent('opensquilla:elevated-mode', { detail: { mode: normalized } }));
   }
 
   function _approvalCommand(item) {

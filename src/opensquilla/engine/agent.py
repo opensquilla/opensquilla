@@ -1695,6 +1695,10 @@ class Agent:
         Explicit state machine — no recursion. Tool loop iterates until
         the model finishes, unless config.max_iterations is a positive cap.
         """
+        if self._session_key:
+            from opensquilla.sandbox.escalation import clear_sandbox_approval_denials
+
+            clear_sandbox_approval_denials(self._session_key)
         async for event in self._turn_generator(message, extra_messages, semantic_message):
             yield event
 

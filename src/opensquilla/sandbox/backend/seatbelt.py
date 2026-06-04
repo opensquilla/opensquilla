@@ -22,12 +22,13 @@ import tempfile
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, cast
 
 from opensquilla.sandbox.backend.base import Backend
 from opensquilla.sandbox.types import (
     NetworkMode,
+    NetworkProxySpec,
     SandboxBackendError,
     SandboxPolicy,
     SandboxRequest,
@@ -52,6 +53,7 @@ _BASE_RO_PATHS: tuple[Path, ...] = (
     Path("/Library/Developer/CommandLineTools"),
 )
 _BREW_PREFIXES: tuple[Path, ...] = (Path("/opt/homebrew"), Path("/usr/local"))
+_PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
 
 
 def _sandbox_exec_binary(binary: str | None = None) -> str | None:
@@ -62,7 +64,7 @@ def _sandbox_exec_binary(binary: str | None = None) -> str | None:
     return shutil.which(_SANDBOX_EXEC_NAME)
 
 
-def _validate_mount_path(path: Path, *, kind: str) -> None:
+def _validate_mount_path(path: PurePath, *, kind: str) -> None:
     if not path.is_absolute():
         raise SandboxBackendError(f"{kind} path must be absolute: {path!r}")
     if any(part == ".." for part in path.parts):
@@ -186,6 +188,15 @@ def _env_for_policy(
         resolved[key] = value
     if tmp_dir is not None:
         resolved["TMPDIR"] = str(tmp_dir)
+    if policy.network == NetworkMode.PROXY_ALLOWLIST:
+        if policy.network_proxy is None:
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                "for the seatbelt backend"
+            )
+        proxy_url = f"http://{policy.network_proxy.host}:{policy.network_proxy.port}"
+        for key in _PROXY_ENV_KEYS:
+            resolved[key] = proxy_url
     return resolved
 
 
@@ -201,6 +212,10 @@ def _write_rules(paths: Iterable[Path]) -> list[str]:
     return [f"(allow file-write* {_subpath(path)})" for path in _unique_existing(paths)]
 
 
+def _network_proxy_rule(proxy: NetworkProxySpec) -> str:
+    return f"(allow network-outbound (remote tcp {_scheme_string(f'{proxy.host}:{proxy.port}')}))"
+
+
 def render_seatbelt_profile(
     request: SandboxRequest,
     *,
@@ -209,9 +224,11 @@ def render_seatbelt_profile(
     """Render a deny-by-default SBPL profile for ``request``."""
     policy = request.policy
     if policy.network == NetworkMode.PROXY_ALLOWLIST:
-        raise SandboxBackendError(
-            "NetworkMode.PROXY_ALLOWLIST is not supported by the seatbelt backend"
-        )
+        if policy.network_proxy is None:
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                "for the seatbelt backend"
+            )
 
     read_paths: list[Path] = []
     write_paths: list[Path] = []
@@ -254,6 +271,13 @@ def render_seatbelt_profile(
         lines.append("(deny network*)")
     elif policy.network == NetworkMode.HOST:
         lines.append("(allow network*)")
+    elif policy.network == NetworkMode.PROXY_ALLOWLIST:
+        if policy.network_proxy is None:  # pragma: no cover - guarded above
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                "for the seatbelt backend"
+            )
+        lines.append(_network_proxy_rule(policy.network_proxy))
     else:  # pragma: no cover - exhaustive guard for future enum values
         raise SandboxBackendError(f"unsupported seatbelt network mode: {policy.network!r}")
 

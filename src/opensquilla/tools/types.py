@@ -46,6 +46,10 @@ class ToolContext:
     scratch_dir: str | None = None
     workspace_lockdown: bool = False
     workspace_write_deny_globs: list[str] = field(default_factory=list)
+    run_mode: str | None = None
+    sandbox_mounts: list[dict[str, Any]] = field(default_factory=list)
+    sandbox_run_context: Any | None = None
+    host_once: bool = False
     session_key: str | None = None
     channel_kind: str | None = None
     channel_id: str | None = None
@@ -63,9 +67,8 @@ class ToolContext:
     denied_tools: set[str] = field(default_factory=set)
     on_memory_source_write: Callable[[str, str], None] | None = None
     on_bootstrap_source_write: Callable[[str, str], None] | None = None
-    # Elevated mode: None/"off" = sandboxed, "on" = host exec with approval,
-    # "bypass" = skip approval prompts but keep sensitive-path checks,
-    # "full" = bypass approval and sensitive-path checks (trusted operators only).
+    # Legacy elevated mode compatibility. New code should treat only "full" as
+    # host execution; standard/trusted run modes stay sandboxed.
     elevated: str | None = None
     # Additive per-call tool surface overrides (surfaced tools are made visible even
     # when exposed_by_default=False). Does NOT relax allowed_tools strict denylist.

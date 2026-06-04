@@ -89,21 +89,28 @@ def test_unattended_cli_denies_runtime_dependent_tools_but_keeps_session_reads()
     assert "session_status" not in ctx.denied_tools
 
 
-def test_default_elevated_mode_applies_only_to_owner_tool_context() -> None:
+def test_default_elevated_mode_only_keeps_full_for_owner_tool_context() -> None:
     envelope = build_cli_route_envelope(session_key="agent:main:cli")
 
-    owner_ctx = tool_context_from_envelope(
+    bypass_ctx = tool_context_from_envelope(
         envelope,
         is_owner=True,
         default_elevated="bypass",
     )
+    owner_ctx = tool_context_from_envelope(
+        envelope,
+        is_owner=True,
+        default_elevated="full",
+    )
     non_owner_ctx = tool_context_from_envelope(
         envelope,
         is_owner=False,
-        default_elevated="bypass",
+        default_elevated="full",
     )
 
-    assert owner_ctx.elevated == "bypass"
+    assert bypass_ctx.elevated is None
+    assert owner_ctx.elevated == "full"
+    assert owner_ctx.run_mode == "full"
     assert non_owner_ctx.elevated is None
 
 
@@ -114,22 +121,47 @@ def test_cron_default_elevated_resolves_at_context_build_time() -> None:
         session_target=SessionTarget.ISOLATED,
         creator_is_owner=True,
     )
-    default_mode = {"value": "bypass"}
+    default_mode = {"value": "full"}
 
     first_ctx = _build_cron_tool_context(
         "agent",
         job,
         default_elevated=lambda: default_mode["value"],
     )
-    default_mode["value"] = "full"
+    default_mode["value"] = "bypass"
     second_ctx = _build_cron_tool_context(
         "agent",
         job,
         default_elevated=lambda: default_mode["value"],
     )
 
-    assert first_ctx.elevated == "bypass"
-    assert second_ctx.elevated == "full"
+    assert first_ctx.elevated == "full"
+    assert first_ctx.run_mode == "full"
+    assert second_ctx.elevated is None
+
+
+def test_route_run_mode_metadata_reaches_tool_context() -> None:
+    envelope = build_cli_route_envelope(
+        session_key="agent:main:cli",
+        run_mode="trusted",
+    )
+
+    ctx = tool_context_from_envelope(envelope, is_owner=True)
+
+    assert ctx.run_mode == "trusted"
+    assert ctx.elevated is None
+
+
+def test_non_owner_full_run_mode_metadata_does_not_reach_tool_context() -> None:
+    envelope = build_cli_route_envelope(
+        session_key="agent:main:cli",
+        run_mode="full",
+    )
+
+    ctx = tool_context_from_envelope(envelope, is_owner=False)
+
+    assert ctx.run_mode is None
+    assert ctx.elevated is None
 
 
 def test_owner_cron_route_carries_owner_principal_for_task_runtime() -> None:

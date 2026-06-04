@@ -101,6 +101,7 @@ class GatewayClientLike(Protocol):
         approved: bool,
         *,
         allow_always: bool = False,
+        choice: str | None = None,
     ) -> Any: ...
 
     async def abort_session(self, key: str) -> dict[str, Any]: ...
@@ -712,13 +713,14 @@ async def _handle_elevated_command(
         )
     elif arg == "on":
         console.print(
-            f"[yellow]permissions: on[/yellow] - exec on host, approvals required. "
+            f"[yellow]permissions: on[/yellow] - legacy alias for Trusted-Sandbox; "
+            f"approvals still apply. "
             f"{revoked_suffix}"
         )
     elif arg == "bypass":
         console.print(
-            f"[red]permissions: bypass[/red] - exec on host, approvals auto-granted. "
-            f"Sensitive paths (~/.ssh, /etc, ...) still hard-blocked. {revoked_suffix}"
+            f"[red]permissions: bypass[/red] - legacy alias for Trusted-Sandbox "
+            f"with fewer prompts; host access is not granted. {revoked_suffix}"
         )
     else:
         console.print(

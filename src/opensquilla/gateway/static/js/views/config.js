@@ -67,11 +67,11 @@ const ConfigView = (() => {
     'memory.retrieval_mode':
       'Memory retrieval mode. "hybrid" uses vectors when an embedding provider is available; "fts_only" disables vectors.',
     'sandbox.sandbox':
-      'Runtime sandbox switch. The out-of-box posture keeps this false; use opensquilla sandbox on|bypass|full to change sandbox and permission defaults together.',
+      'Runtime sandbox switch. Prefer opensquilla sandbox on|trust|full|reset so sandbox and permission defaults stay aligned.',
     'sandbox.security_grading':
       'Risk grading and approval gate for tool actions. Keep this paired with sandbox.sandbox unless using the sandbox CLI posture commands.',
     'permissions.default_mode':
-      'Default owner/operator permission mode: bypass is the out-of-box local posture, off keeps sandboxed execution, on uses host execution with approvals, and full bypasses sensitive-path gates too.',
+      'Legacy compatibility field. New user-facing execution posture is sandbox.run_mode: standard, trusted, or full.',
     'prompt_cache.mode':
       'Anthropic prompt cache control. "auto" (default) lets the provider decide; "on" forces caching; "off" disables it entirely.',
     'context_budget_tokens':

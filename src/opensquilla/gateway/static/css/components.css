@@ -503,6 +503,113 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+.approval-modal-summary {
+  display: grid;
+  gap: var(--sp-3);
+}
+.approval-modal-summary p {
+  color: var(--text-muted);
+}
+.approval-modal-summary-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+.approval-modal-summary-grid dt {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+}
+.approval-modal-summary-grid dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.approval-modal-note {
+  padding: var(--sp-3);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-elevated));
+  color: var(--text);
+}
+.approval-modal-choices {
+  display: grid;
+  gap: var(--sp-2);
+  width: 100%;
+}
+.approval-modal-choice {
+  align-items: center;
+  background: var(--bg-elevated);
+  border-color: var(--border);
+  color: var(--text);
+  display: flex;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 10px 12px;
+  text-align: left;
+  white-space: normal;
+  width: 100%;
+}
+.approval-modal-choice-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.approval-modal-choice-label {
+  font-weight: 650;
+}
+.approval-modal-choice-description {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  line-height: 1.35;
+}
+.approval-modal-choice::after {
+  border-right: 1.5px solid currentColor;
+  border-top: 1.5px solid currentColor;
+  content: "";
+  flex: 0 0 auto;
+  height: 7px;
+  margin-left: var(--sp-3);
+  opacity: 0.45;
+  transform: rotate(45deg);
+  width: 7px;
+}
+.approval-modal-choice:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-focus);
+}
+.approval-modal-choice--primary {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  color: var(--text);
+  font-weight: 650;
+}
+.approval-modal-choice--primary:hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg-elevated));
+  border-color: var(--accent);
+}
+.approval-modal-choice--danger {
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+  color: var(--danger);
+}
+.approval-modal-choice--danger:hover {
+  background: color-mix(in srgb, var(--danger) 16%, var(--bg-elevated));
+  border-color: var(--danger);
+  opacity: 1;
+}
+.approval-modal-choice--warn {
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  color: var(--text);
+}
 
 /* Toast notifications */
 .toast-stack {

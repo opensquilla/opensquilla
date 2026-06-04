@@ -96,6 +96,8 @@ def legacy_state_to_run_mode(
         return RunMode.FULL
     if permission_mode == "bypass":
         return RunMode.TRUSTED
+    if not bool(sandbox_enabled):
+        return RunMode.FULL
     if bool(sandbox_enabled) and bool(grading_enabled):
         return RunMode.STANDARD
     if permission_mode in {"off", "restricted", "on"}:

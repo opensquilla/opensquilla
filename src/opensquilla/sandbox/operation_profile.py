@@ -18,8 +18,14 @@ _URL_NETWORK_COMMANDS = frozenset({"aria2", "aria2c", "curl", "http", "httpie", 
 _GIT_NETWORK_COMMANDS = frozenset(
     {"clone", "fetch", "ls-remote", "pull", "push", "submodule"}
 )
+_READ_PATH_COMMANDS = frozenset(
+    {"cat", "du", "find", "grep", "head", "ls", "rg", "tail", "tree"}
+)
+_COPY_PATH_COMMANDS = frozenset({"cp", "copy", "install", "rsync"})
+_MOVE_PATH_COMMANDS = frozenset({"mv", "move", "ren", "rename"})
 _ASSIGNMENT_RE = re.compile(r"[a-z_][a-z0-9_]*=.*")
 _TRAILING_URL_PUNCTUATION = ".,;:!?)]}\"'`>"
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[a-z]:[\\/]", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,7 @@ class OperationProfile:
     package_manager: str | None = None
     requested_domains: tuple[str, ...] = ()
     requested_paths: tuple[str, ...] = ()
+    requested_write_paths: tuple[str, ...] = ()
     high_impact: bool = False
 
 
@@ -53,7 +60,11 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
                 requested_domains=script_profile.requested_domains,
                 high_impact=True,
             )
-        if script_profile.needs_network:
+        if (
+            script_profile.needs_network
+            or script_profile.requested_paths
+            or script_profile.requested_write_paths
+        ):
             return script_profile
         return OperationProfile("unknown_shell")
     if _is_destructive(lowered):
@@ -61,8 +72,20 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
     domains = _domains_from_argv(parts)
     if domains and _command_uses_http_url(lowered):
         return OperationProfile("url_fetch", True, requested_domains=domains)
-    if lowered and lowered[0] in {"cat", "ls", "find", "rg"}:
-        return OperationProfile("workspace_read")
+    if lowered and _command_name(lowered[0]) in _READ_PATH_COMMANDS:
+        return OperationProfile("workspace_read", requested_paths=_path_args_from_argv(parts))
+    if lowered and _command_name(lowered[0]) in _COPY_PATH_COMMANDS:
+        read_paths, write_paths = _copy_path_args_from_argv(parts)
+        if read_paths or write_paths:
+            return OperationProfile(
+                "path_transfer",
+                requested_paths=read_paths,
+                requested_write_paths=write_paths,
+            )
+    if lowered and _command_name(lowered[0]) in _MOVE_PATH_COMMANDS:
+        write_paths = _path_args_from_argv(parts)
+        if write_paths:
+            return OperationProfile("path_transfer", requested_write_paths=write_paths)
     return OperationProfile("unknown_shell")
 
 
@@ -172,10 +195,24 @@ def _shell_tokens(script: str) -> tuple[str, ...]:
 
 
 def _classify_shell_script(parts: tuple[str, ...]) -> OperationProfile:
+    requested_paths: list[str] = []
+    requested_write_paths: list[str] = []
     for command_parts in _shell_commands(parts):
         profile = classify_command(command_parts)
         if profile.needs_network:
             return profile
+        for path in profile.requested_paths:
+            if path not in requested_paths:
+                requested_paths.append(path)
+        for path in profile.requested_write_paths:
+            if path not in requested_write_paths:
+                requested_write_paths.append(path)
+    if requested_paths or requested_write_paths:
+        return OperationProfile(
+            "path_transfer" if requested_write_paths else "workspace_read",
+            requested_paths=tuple(requested_paths),
+            requested_write_paths=tuple(requested_write_paths),
+        )
     return OperationProfile("unknown_shell")
 
 
@@ -221,6 +258,38 @@ def _is_shell_command_option(part: str) -> bool:
 def _command_name(value: str) -> str:
     name = value.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     return name.removesuffix(".exe")
+
+
+def _path_args_from_argv(parts: tuple[str, ...]) -> tuple[str, ...]:
+    paths: list[str] = []
+    for part in parts[1:]:
+        cleaned = part.strip("'\"")
+        if cleaned.startswith("-"):
+            continue
+        if not _looks_like_path_arg(cleaned):
+            continue
+        if cleaned not in paths:
+            paths.append(cleaned)
+    return tuple(paths)
+
+
+def _copy_path_args_from_argv(parts: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    path_args = _path_args_from_argv(parts)
+    if len(path_args) < 2:
+        return path_args, ()
+    return path_args[:-1], path_args[-1:]
+
+
+def _looks_like_path_arg(part: str) -> bool:
+    if not part or part == "-":
+        return False
+    lowered = part.lower()
+    if lowered.startswith(("http://", "https://")):
+        return False
+    return (
+        part.startswith(("/", "~/", "~\\", "../", "..\\", "./", ".\\"))
+        or _WINDOWS_ABSOLUTE_PATH_RE.match(part) is not None
+    )
 
 
 __all__ = ["OperationProfile", "classify_command", "package_bundle_for_manager"]

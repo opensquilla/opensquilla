@@ -654,9 +654,49 @@ async def test_rpc_mount_remove_updates_resolved_overlay_for_current_tool_mounts
 
 
 @pytest.mark.asyncio
+async def test_rpc_mount_remove_chat_scope_leaves_user_scope_mount_visible() -> None:
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_mount_remove
+    from opensquilla.sandbox.run_context import MountGrant, RunContext, get_run_context
+    from opensquilla.sandbox.run_mode import RunMode
+    from opensquilla.sandbox.user_grants import upsert_mount_grant
+
+    manager = _SessionManager()
+    ctx = _ctx(manager)
+    path = "/tmp/shared-mount"
+    upsert_mount_grant({"path": path, "access": "ro", "scope": "workspace"})
+    manager.node.origin = {
+        "sandbox_run_context": RunContext(
+            run_mode=RunMode.STANDARD,
+            workspace="/tmp/ws",
+            mounts=(MountGrant(path=path, access="rw", scope="chat"),),
+            source="saved",
+        ).to_origin_payload()
+    }
+
+    result = await _handle_sandbox_mount_remove(
+        {"sessionKey": manager.node.session_key, "path": path, "scope": "chat"},
+        ctx,
+    )
+
+    assert result["mounts"] == [{"path": path, "access": "ro", "scope": "workspace"}]
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=ctx.config,
+        workspace="/tmp/ws",
+    )
+    assert [(grant.path, grant.access, grant.scope) for grant in context.mounts] == [
+        (path, "ro", "workspace")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_rpc_domain_remove_updates_resolved_overlay_for_current_tool_context() -> None:
     from opensquilla.gateway.rpc_sandbox import _handle_sandbox_domain_remove
-    from opensquilla.sandbox.escalation import current_tool_run_context, remember_resolved_run_context
+    from opensquilla.sandbox.escalation import (
+        current_tool_run_context,
+        remember_resolved_run_context,
+    )
     from opensquilla.sandbox.network_guard import decide_network_access
     from opensquilla.sandbox.run_context import DomainGrant, RunContext
     from opensquilla.sandbox.run_mode import RunMode
@@ -716,6 +756,46 @@ async def test_rpc_domain_remove_updates_resolved_overlay_for_current_tool_conte
         assert decide_network_access("example.com", merged).status == "ask"
     finally:
         current_tool_context.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_rpc_domain_remove_chat_scope_leaves_user_scope_domain_visible() -> None:
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_domain_remove
+    from opensquilla.sandbox.run_context import DomainGrant, RunContext, get_run_context
+    from opensquilla.sandbox.run_mode import RunMode
+    from opensquilla.sandbox.user_grants import upsert_domain_grant
+
+    manager = _SessionManager()
+    ctx = _ctx(manager)
+    upsert_domain_grant(
+        {"domain": "example.com", "scope": "workspace", "source": "manual"}
+    )
+    manager.node.origin = {
+        "sandbox_run_context": RunContext(
+            run_mode=RunMode.STANDARD,
+            workspace="/tmp/ws",
+            domains=(DomainGrant(domain="example.com", scope="chat", source="manual"),),
+            source="saved",
+        ).to_origin_payload()
+    }
+
+    result = await _handle_sandbox_domain_remove(
+        {"sessionKey": manager.node.session_key, "domain": "example.com", "scope": "chat"},
+        ctx,
+    )
+
+    assert result["domains"] == [
+        {"domain": "example.com", "scope": "workspace", "source": "manual"}
+    ]
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=ctx.config,
+        workspace="/tmp/ws",
+    )
+    assert [(grant.domain, grant.scope) for grant in context.domains] == [
+        ("example.com", "workspace")
+    ]
 
 
 @pytest.mark.asyncio
@@ -849,8 +929,8 @@ async def test_rpc_sandbox_mutations_reject_non_owner(
     handler_name: str,
     params: dict[str, str],
 ) -> None:
-    from opensquilla.gateway.rpc import RpcHandlerError
     import opensquilla.gateway.rpc_sandbox as rpc_sandbox
+    from opensquilla.gateway.rpc import RpcHandlerError
 
     manager = _SessionManager()
     handler = getattr(rpc_sandbox, handler_name)
@@ -981,6 +1061,13 @@ async def test_rpc_sandbox_path_list_returns_parent_directory_entries(
     assert result["path"] == str(child)
     assert result["parentPath"] == str(parent)
     entries_by_path = {entry["path"]: entry for entry in result["entries"]}
+    entries_by_name = {entry["name"]: entry for entry in result["entries"]}
+    assert entries_by_name[".."] == {
+        "name": "..",
+        "path": str(parent),
+        "kind": "directory",
+        "selectable": True,
+    }
     assert {
         str(child),
         str(sibling),

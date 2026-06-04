@@ -127,6 +127,9 @@ def _env_args(policy: SandboxPolicy, override_env: dict[str, str]) -> list[str]:
             )
             continue
         resolved[key] = value
+    workspace_mount = next((m for m in policy.mounts if m.sandbox_path == Path("/workspace")), None)
+    if workspace_mount is not None and "HOME" in allowlist:
+        resolved["HOME"] = str(workspace_mount.sandbox_path)
     args: list[str] = []
     for key, value in resolved.items():
         args.extend(["--setenv", key, value])

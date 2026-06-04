@@ -10,14 +10,16 @@ from opensquilla.application.approval_rpc import (
     approval_request_rpc_payload,
     approval_resolve_rpc_payload,
     approval_settings_rpc_payload,
-    approval_status_rpc_payload,
     approval_snapshot_rpc_payload,
+    approval_status_rpc_payload,
     approval_wait_decision_rpc_payload,
 )
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.sandbox.escalation import (
     apply_sandbox_approval_choice,
+    deny_matching_pending_sandbox_approvals,
     is_sandbox_approval_kind,
+    remember_sandbox_approval_denial,
     validate_sandbox_approval_choice,
 )
 
@@ -215,6 +217,13 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         elevated_mode=None,
         allow_idempotent=not sandbox_approval,
     )
+    if sandbox_approval and not approved:
+        remember_sandbox_approval_denial(pending.params, params["id"])
+        deny_matching_pending_sandbox_approvals(
+            queue,
+            pending.params,
+            exclude_approval_id=params["id"],
+        )
 
     return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
 

@@ -44,6 +44,20 @@ def test_legacy_bypass_state_maps_to_trusted_without_preserving_host_bypass() ->
     assert mode == RunMode.TRUSTED
 
 
+def test_default_sandbox_settings_resolve_to_full_host_access() -> None:
+    settings = SandboxSettings()
+    config = types.SimpleNamespace(
+        sandbox=settings,
+        permissions=types.SimpleNamespace(default_mode="off"),
+    )
+
+    effective = settings.validate_combination()
+
+    assert effective.sandbox_enabled is False
+    assert effective.grading_enabled is False
+    assert config_run_mode(config) == RunMode.FULL
+
+
 def test_trusted_patch_round_trips_through_config_run_mode() -> None:
     patch = run_mode_config_patch(RunMode.TRUSTED)
     config = types.SimpleNamespace(

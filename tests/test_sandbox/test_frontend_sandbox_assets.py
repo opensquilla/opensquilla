@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 STATIC = ROOT / "src" / "opensquilla" / "gateway" / "static"
 APP_JS = STATIC / "js" / "app.js"
 ICONS_JS = STATIC / "js" / "icons.js"
 TEMPLATE = ROOT / "src" / "opensquilla" / "gateway" / "templates" / "index.html"
 APPROVAL_MONITOR_JS = STATIC / "js" / "approval_monitor.js"
+CHAT_JS = STATIC / "js" / "views" / "chat.js"
 SANDBOX_JS = STATIC / "js" / "views" / "sandbox.js"
 SANDBOX_CSS = STATIC / "css" / "views" / "sandbox.css"
 APPROVALS_JS = STATIC / "js" / "views" / "approvals.js"
@@ -61,6 +61,25 @@ def test_sandbox_assets_define_icon_and_control_sections() -> None:
     assert ".sandbox-strip" not in sandbox_css
     assert "Approval activity" not in sandbox_js
     assert ".sandbox-stage" in sandbox_css
+
+
+def test_frontend_defaults_to_full_host_access_when_no_session_context_exists() -> None:
+    chat_js = _read(CHAT_JS)
+    sandbox_js = _read(SANDBOX_JS)
+
+    assert "const _RUN_MODE_DEFAULT = 'full';" in chat_js
+    assert "status.run_mode || 'full'" in sandbox_js
+
+
+def test_run_mode_tooltips_can_escape_execution_panel() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+    sandbox_css = _read(SANDBOX_CSS)
+
+    assert "sandbox-panel sandbox-panel--run-mode" in sandbox_js
+    assert ".sandbox-panel--run-mode" in sandbox_css
+    assert "overflow: visible;" in sandbox_css
+    assert ".sandbox-run-mode-option::after" in sandbox_css
+    assert "z-index: 1000;" in sandbox_css
 
 
 def test_sandbox_view_exposes_realtime_run_context_editing() -> None:
@@ -121,7 +140,105 @@ def test_path_browser_has_ok_cancel_and_close_behavior() -> None:
     assert "function _closePathBrowser" in sandbox_js
     assert "Escape" in sandbox_js
     assert "click outside" not in sandbox_js.lower()
-    assert "document.addEventListener('click'" in sandbox_js or 'document.addEventListener(\"click\"' in sandbox_js
+    assert (
+        "document.addEventListener('click'" in sandbox_js
+        or 'document.addEventListener("click"' in sandbox_js
+    )
+
+
+def test_path_browser_fields_are_not_wrapped_in_implicit_labels() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    start = sandbox_js.index("function _renderWorkspace")
+    body = sandbox_js[start : sandbox_js.index("  function _renderMount", start)]
+
+    assert '<div class="sandbox-field sandbox-field--span">' in body
+    assert '<label class="sandbox-field sandbox-field--span">' not in body
+    assert 'aria-label="Workspace path"' in body
+    assert 'aria-label="Mount path"' in body
+
+
+def test_mount_rows_keep_long_paths_separate_from_actions() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+    sandbox_css = _read(SANDBOX_CSS)
+
+    start = sandbox_js.index("function _renderMount")
+    body = sandbox_js[start : sandbox_js.index("  function _renderNetwork", start)]
+
+    assert "sandbox-list__row--mount" in body
+    assert "sandbox-list__content" in body
+    assert "sandbox-list__meta" in body
+    assert "sandbox-list__main--path" in body
+    assert "_mountAccessLabel(access)" in body
+    assert "_networkScopeLabel(scope)" in body
+    assert ".sandbox-list__row--mount" in sandbox_css
+    assert ".sandbox-list__content" in sandbox_css
+    assert ".sandbox-list__meta" in sandbox_css
+    assert ".sandbox-list__main--path" in sandbox_css
+    assert "grid-template-columns: minmax(0, 1fr) auto;" in sandbox_css
+    assert "white-space: nowrap;" in sandbox_css
+
+
+def test_sandbox_remove_actions_preserve_chat_or_user_scope() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    mount_start = sandbox_js.index("function _renderMount")
+    mount_body = sandbox_js[
+        mount_start : sandbox_js.index("  function _mountAccessLabel", mount_start)
+    ]
+    domain_start = sandbox_js.index("function _renderDomain")
+    domain_body = sandbox_js[
+        domain_start : sandbox_js.index("  async function _onSubmit", domain_start)
+    ]
+    click_start = sandbox_js.index("async function _onClick")
+    click_body = sandbox_js[
+        click_start : sandbox_js.index("  async function _onFocusIn", click_start)
+    ]
+
+    assert 'data-scope="${_esc(scope || \'chat\')}"' in mount_body
+    assert 'data-scope="${_esc(domain.scope || \'chat\')}"' in domain_body
+    assert "scope: btn.dataset.scope || 'chat'" in click_body
+    assert "sandbox.mount.remove" in click_body
+    assert "sandbox.domain.remove" in click_body
+
+
+def test_path_browser_overlay_does_not_push_mount_form_columns() -> None:
+    sandbox_css = _read(SANDBOX_CSS)
+    sandbox_js = _read(SANDBOX_JS)
+
+    assert ".sandbox-panel--wide" in sandbox_css
+    assert "overflow: visible;" in sandbox_css
+    assert ".sandbox-inline-form.is-path-browser-open" in sandbox_css
+    assert "z-index: 2000;" in sandbox_css
+    assert ".sandbox-field > span" in sandbox_css
+    assert ".sandbox-field span {" not in sandbox_css
+    assert ".sandbox-field--span.is-path-browser-open" in sandbox_css
+    assert "z-index: 2001;" in sandbox_css
+    assert ".sandbox-path-field {\n  display: grid;" in sandbox_css
+    assert "position: relative;" in sandbox_css
+    assert ".sandbox-path-browser-slot {\n  grid-column: 1 / -1;" in sandbox_css
+    assert "position: absolute;" in sandbox_css
+    assert "top: calc(36px + var(--sp-2));" in sandbox_css
+    assert "z-index: 1000;" in sandbox_css
+    assert ".sandbox-path-browser {\n  background: var(--bg-surface);" in sandbox_css
+    assert (
+        ".sandbox-path-browser__row {\n  align-items: center;\n  background: var(--bg-surface);"
+        in sandbox_css
+    )
+    assert "function _setPathBrowserLayer" in sandbox_js
+    assert "_setPathBrowserLayer(root, kind, true);" in sandbox_js
+    assert "_setPathBrowserLayer(root, kind, false);" in sandbox_js
+    assert "classList?.toggle('is-path-browser-open', active)" in sandbox_js
+
+
+def test_sandbox_network_details_preserve_open_state_after_rerender() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    assert "function _captureOpenNetworkDetails" in sandbox_js
+    assert "function _restoreOpenNetworkDetails" in sandbox_js
+    assert "const openDetails = _captureOpenNetworkDetails(root);" in sandbox_js
+    assert "_restoreOpenNetworkDetails(controls, openDetails);" in sandbox_js
+    assert 'data-details-key="${_esc(summaryClass)}"' in sandbox_js
 
 
 def test_path_browser_document_click_closes_outside_active_path_field() -> None:
@@ -153,6 +270,14 @@ def test_path_browser_opens_from_path_inputs() -> None:
     assert "function _openPathBrowserFromInput" in sandbox_js
     assert "_hasOpenPathBrowser(kind)" in sandbox_js
     assert "_loadPathBrowser(kind)" in sandbox_js
+
+
+def test_path_browser_empty_input_defaults_to_root_not_workspace() -> None:
+    sandbox_js = _read(SANDBOX_JS)
+
+    assert "function _pathBrowserRequestPath" in sandbox_js
+    assert "return value || '/';" in sandbox_js
+    assert "_lastData?.runContext?.workspace || '~'" not in sandbox_js
 
 
 def test_path_browser_does_not_render_current_path_header() -> None:
@@ -238,21 +363,62 @@ def test_approval_monitor_inline_button_uses_modal_polling_path() -> None:
 
 def test_approval_monitor_renders_custom_choice_buttons_and_posts_selected_choice() -> None:
     monitor = _read(APPROVAL_MONITOR_JS)
+    components_css = _read(STATIC / "css" / "components.css")
 
     assert "item.params.choices" in monitor
+    assert "approval-modal-choices" in monitor
+    assert "approval-modal-choice" in monitor
     assert "data-choice-id" in monitor
     assert "choice:" in monitor
     assert "decision:" in monitor
+    assert "function _approvalToolLabel" in monitor
+    assert "Workspace boundary" in monitor
+    assert ".approval-modal-choices" in components_css
+    assert ".approval-modal-choice" in components_css
+    assert "white-space: normal;" in components_css
+    assert "justify-content: space-between;" in components_css
     assert "Approve This Time" in monitor
     assert "Always Allow This Type" in monitor
+
+
+def test_approval_monitor_renders_sandbox_path_approval_as_plain_language_card() -> None:
+    monitor = _read(APPROVAL_MONITOR_JS)
+    components_css = _read(STATIC / "css" / "components.css")
+
+    assert "function _renderSandboxPathApproval" in monitor
+    assert "Allow access outside the workspace?" in monitor
+    assert "Current workspace" in monitor
+    assert "Path requested" in monitor
+    assert "Access needed" in monitor
+    assert "Host workspace" not in monitor
+    assert "Sandbox view" not in monitor
+    assert "Current access" not in monitor
+    assert "Not mounted" not in monitor
+    assert "Requested mount" not in monitor
+    assert "<dt>Access</dt>" not in monitor
+    assert "If approved, OpenSquilla can" in monitor
+    assert "copy files into the workspace" in monitor
+    meta_start = monitor.index("function _approvalMeta")
+    meta_body = monitor[meta_start : monitor.index("  function _approvalDetailHtml", meta_start)]
+    assert "if (_isSandboxApproval(item)) return '';" in meta_body
+    assert "JSON.stringify(args, null, 2)" in monitor
+    assert "_isSandboxApproval(item)" in monitor
+    assert ".approval-modal-summary" in components_css
+    assert ".approval-modal-choice-description" in components_css
 
 
 def test_sandbox_view_tracks_pending_approval_activity() -> None:
     sandbox = _read(SANDBOX_JS)
 
     assert "opensquilla:approvals-pending" in sandbox
-    assert "window.addEventListener('opensquilla:approvals-pending', _onApprovalsPending);" in sandbox
-    assert "window.removeEventListener('opensquilla:approvals-pending', _onApprovalsPending);" in sandbox
+    assert (
+        "window.addEventListener('opensquilla:approvals-pending', _onApprovalsPending);"
+        in sandbox
+    )
+    assert (
+        "window.removeEventListener('opensquilla:approvals-pending', _onApprovalsPending);"
+        in sandbox
+    )
     assert "function _onApprovalsPending(event)" in sandbox
     assert "function _updateApprovalActivity(count)" in sandbox
     assert "root.querySelector('#sandbox-approval-count')" in sandbox

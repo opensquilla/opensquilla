@@ -213,6 +213,75 @@ def test_fresh_route_metadata_preserves_user_scope_grants_for_execution(
     ]
 
 
+def test_policy_mounts_use_live_run_context_when_legacy_mount_metadata_is_stale(
+    tmp_path,
+) -> None:
+    from opensquilla.sandbox.integration import _session_mounts_for_policy
+    from opensquilla.tools.types import ToolContext, current_tool_context
+
+    workspace = tmp_path / "workspace"
+    approved_mount = tmp_path / "approved-mount"
+    workspace.mkdir()
+    approved_mount.mkdir()
+
+    ctx = ToolContext(
+        is_owner=True,
+        workspace_dir=str(workspace),
+        session_key="agent:main:cli",
+        sandbox_mounts=[],
+        sandbox_run_context=RunContext(
+            run_mode=RunMode.TRUSTED,
+            workspace=str(workspace),
+            mounts=(MountGrant(path=str(approved_mount), access="ro", scope="chat"),),
+        ),
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        policy_mounts = _session_mounts_for_policy(workspace)
+    finally:
+        current_tool_context.reset(token)
+
+    assert [
+        (str(mount.host_path), str(mount.sandbox_path), mount.mode)
+        for mount in policy_mounts
+    ] == [
+        (str(approved_mount), str(approved_mount), "ro"),
+    ]
+
+
+def test_policy_mounts_treat_live_empty_run_context_as_authoritative(
+    tmp_path,
+) -> None:
+    from opensquilla.sandbox.integration import _session_mounts_for_policy
+    from opensquilla.tools.types import ToolContext, current_tool_context
+
+    workspace = tmp_path / "workspace"
+    removed_mount = tmp_path / "removed-mount"
+    workspace.mkdir()
+    removed_mount.mkdir()
+
+    ctx = ToolContext(
+        is_owner=True,
+        workspace_dir=str(workspace),
+        session_key="agent:main:cli",
+        sandbox_mounts=[{"path": str(removed_mount), "access": "ro"}],
+        sandbox_run_context=RunContext(
+            run_mode=RunMode.STANDARD,
+            workspace=str(workspace),
+            mounts=(),
+        ),
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        policy_mounts = _session_mounts_for_policy(workspace)
+    finally:
+        current_tool_context.reset(token)
+
+    assert policy_mounts == ()
+
+
 def test_invalid_route_run_context_metadata_is_ignored() -> None:
     envelope = build_cli_route_envelope(
         session_key="agent:main:cli",

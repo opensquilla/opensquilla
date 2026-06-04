@@ -17,13 +17,14 @@ from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
     current_tool_mounts,
+    grant_temporary_mount_for_current_tool,
     request_sandbox_approval,
 )
 from opensquilla.sandbox.integration import get_runtime, sandboxed
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
-from opensquilla.tools.run_mode import full_host_access_active
+from opensquilla.tools.run_mode import full_host_access_active, trusted_sandbox_active
 from opensquilla.tools.types import ToolError, WorkspaceAccessError, current_tool_context
 from opensquilla.tools.write_tracking import record_workspace_file_write
 
@@ -258,18 +259,32 @@ def _path_access_required_envelope(
             "status": "path_access_required",
             "path": decision.normalized_path,
             "access": decision.access,
-            "message": (
-                "This path is outside the current sandbox view. "
-                "Add it as a mount to continue sandboxed."
-            ),
+            "message": _path_access_message(workspace_root),
         }
     return request_sandbox_approval(
         approval,
         approval_id=approval_id,
-        message=(
-            "This path is outside the current sandbox view. "
-            "Resolve this approval and retry."
-        ),
+        message=_path_access_message(workspace_root),
+        denied_message=_path_access_denied_message(workspace_root),
+    )
+
+
+def _path_access_message(workspace_root: Path | None) -> str:
+    workspace = str(workspace_root) if workspace_root is not None else "the configured workspace"
+    return (
+        f"The requested path is outside the current workspace ({workspace}). "
+        "Ask the user whether to add this path as read-only or read/write access."
+    )
+
+
+def _path_access_denied_message(workspace_root: Path | None) -> str:
+    workspace = str(workspace_root) if workspace_root is not None else "the configured workspace"
+    return (
+        "The user denied access outside the current workspace. "
+        "Do not ask for the same access again in this turn. "
+        "Explain that the requested path cannot be inspected from the current "
+        f"workspace ({workspace}) unless the user approves access or changes run mode. "
+        "Do not substitute details from other repositories or prior comparison context."
     )
 
 
@@ -302,6 +317,9 @@ def _sandbox_path_access_envelope(
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
+    if not write and trusted_sandbox_active():
+        if grant_temporary_mount_for_current_tool(decision):
+            return None
     return _path_access_required_envelope(decision, approval_id=approval_id)
 
 
@@ -362,6 +380,26 @@ def _strict_read_material_root() -> Path | None:
     ).resolve(strict=False)
 
 
+def _strict_read_mount_roots() -> tuple[Path, ...]:
+    ctx = current_tool_context.get()
+    if ctx is None or not ctx.workspace_strict:
+        return tuple()
+    roots: list[Path] = []
+    for mount in _active_sandbox_mounts():
+        if not isinstance(mount, dict):
+            continue
+        raw_path = mount.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        try:
+            root = Path(raw_path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
 def _strict_read_roots() -> tuple[Path, ...]:
     if full_host_access_active():
         return tuple()
@@ -372,6 +410,9 @@ def _strict_read_roots() -> tuple[Path, ...]:
     material_root = _strict_read_material_root()
     if material_root is not None:
         roots.append(material_root)
+    for mount_root in _strict_read_mount_roots():
+        if mount_root not in roots:
+            roots.append(mount_root)
     return tuple(roots)
 
 
@@ -944,15 +985,19 @@ async def edit_file(
     description="List directory contents with type and size.",
     params={
         "path": {"type": "string", "description": "Directory path to list."},
+        "approval_id": {
+            "type": "string",
+            "description": "Approval record to consume after granting sandbox path access.",
+        },
     },
     required=["path"],
 )
-async def list_dir(path: str) -> str:
+async def list_dir(path: str, approval_id: str | None = None) -> str:
     p = _resolve_path(path)
     blocked = _sensitive_access_block("list_dir", p, path)
     if blocked is not None:
         return json.dumps(blocked)
-    path_access = _sandbox_path_access_envelope(p, write=False)
+    path_access = _sandbox_path_access_envelope(p, write=False, approval_id=approval_id)
     if path_access is not None:
         return json.dumps(path_access)
     _gate_workspace_strict_read("list_dir", p, path)

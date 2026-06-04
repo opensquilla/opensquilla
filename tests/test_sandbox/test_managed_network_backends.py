@@ -133,6 +133,43 @@ def test_bubblewrap_proxy_allowlist_proxy_env_overrides_user_input(
     assert "http://attacker.invalid:1" not in argv
 
 
+def test_bubblewrap_sets_home_to_workspace_when_workspace_is_mounted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", "/home/lrk")
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(
+            MountSpec(
+                host_path=tmp_path,
+                sandbox_path=Path("/workspace"),
+                mode="rw",
+                required=True,
+            ),
+        ),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(wall_timeout_s=0.1),
+        env_allowlist=("PATH", "HOME"),
+        require_approval=False,
+    )
+    request = SandboxRequest(
+        argv=("sh", "-lc", "echo $HOME"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={"HOME": "/home/lrk"},
+    )
+
+    argv = build_bwrap_argv(request, binary="bwrap")
+
+    home_index = argv.index("HOME")
+    assert argv[home_index + 1] == "/workspace"
+    assert "/home/lrk" not in argv[home_index : home_index + 2]
+
+
 @pytest.mark.asyncio
 async def test_bubblewrap_run_starts_and_stops_proxy_bridge(
     monkeypatch: pytest.MonkeyPatch,

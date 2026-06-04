@@ -12,7 +12,7 @@ const ChatView = (() => {
   let _sessionKey = '';
   let _pendingSessionIntent = null;
 
-  const _RUN_MODE_DEFAULT = 'standard';
+  const _RUN_MODE_DEFAULT = 'full';
   const _RUN_MODE_LABELS = {
     standard: 'Standard-Sandbox',
     trusted: 'Trusted-Sandbox',

@@ -298,14 +298,45 @@ def _session_mounts_for_policy(workspace: Path) -> tuple[MountSpec, ...]:
         ctx = current_tool_context.get()
     except Exception:  # pragma: no cover - defensive
         ctx = None
-    raw_mounts = getattr(ctx, "sandbox_mounts", None) if ctx is not None else None
-    if not isinstance(raw_mounts, list):
+
+    run_context = current_tool_run_context()
+    if isinstance(run_context, RunContext):
+        source_items = [
+            {
+                "path": grant.path,
+                "access": grant.access,
+            }
+            for grant in run_context.mounts
+        ]
+    else:
+        source_items = []
+        raw_mounts = getattr(ctx, "sandbox_mounts", None) if ctx is not None else None
+        if isinstance(raw_mounts, list):
+            for item in raw_mounts:
+                if not isinstance(item, dict):
+                    continue
+                raw_path = item.get("path")
+                if not isinstance(raw_path, str) or not raw_path.strip():
+                    continue
+                source_items.append(
+                    {
+                        "path": raw_path,
+                        "access": item.get("access"),
+                    }
+                )
+
+    merged_items: dict[str, dict[str, object]] = {}
+    for item in source_items:
+        raw_path = item.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        merged_items[raw_path] = item
+
+    if not merged_items:
         return ()
 
     mounts: list[MountSpec] = []
-    for item in raw_mounts:
-        if not isinstance(item, dict):
-            continue
+    for item in merged_items.values():
         raw_path = item.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
             continue

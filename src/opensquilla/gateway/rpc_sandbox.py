@@ -12,8 +12,8 @@ from opensquilla.gateway.rpc import (
     get_dispatcher,
 )
 from opensquilla.gateway.session_services import get_session_storage
-from opensquilla.sandbox.escalation import remember_resolved_run_context
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
+from opensquilla.sandbox.escalation import remember_resolved_run_context
 from opensquilla.sandbox.package_bundles import expand_package_bundle
 from opensquilla.sandbox.path_validation import (
     decide_path_access,
@@ -410,6 +410,7 @@ async def _handle_sandbox_mount_remove(params: dict | None, ctx: RpcContext) -> 
         manager,
         session_key,
         path=path,
+        scope=str(params.get("scope") or ""),
         config=ctx.config,
         workspace=workspace,
     )
@@ -457,6 +458,7 @@ async def _handle_sandbox_domain_remove(params: dict | None, ctx: RpcContext) ->
         manager,
         session_key,
         domain=domain,
+        scope=str(params.get("scope") or ""),
         config=ctx.config,
         workspace=workspace,
     )
@@ -526,9 +528,10 @@ async def _handle_sandbox_path_list(params: dict | None, ctx: RpcContext) -> dic
         if browse_children and normalized.is_dir()
         else normalized.parent if normalized.parent != normalized else normalized
     )
+    parent_target = normalized.parent if normalized.parent != normalized else normalized
     entries = []
     try:
-        entries = [_parent_entry_payload(listing_dir.parent)]
+        entries = [_parent_entry_payload(parent_target)]
         entries.extend(
             _path_entry_payload(entry)
             for entry in sorted(

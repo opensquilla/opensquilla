@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
-from typing import Any, Callable
+from typing import Any
 
+from opensquilla.sandbox import user_grants
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
 from opensquilla.sandbox.network_guard import decide_network_access
 from opensquilla.sandbox.package_bundles import expand_package_bundle
@@ -12,7 +14,6 @@ from opensquilla.sandbox.path_validation import (
     decide_path_access,
     normalize_mount_access,
 )
-from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.sandbox.run_context import (
     DomainGrant,
     MountGrant,
@@ -24,7 +25,7 @@ from opensquilla.sandbox.run_context import (
     normalize_workspace_path,
     persist_run_context,
 )
-from opensquilla.sandbox import user_grants
+from opensquilla.sandbox.run_mode import RunMode
 
 
 def _normalize_bundle_id(bundle_id: Any) -> str:
@@ -147,7 +148,9 @@ async def add_mount_grant(
     )
     apply_user_store = None
     if grant.scope == "workspace":
-        apply_user_store = lambda grant=grant: _upsert_user_mount_grant(grant)
+        def apply_user_store(grant: MountGrant = grant) -> None:
+            _upsert_user_mount_grant(grant)
+
     if grant in existing.mounts:
         if apply_user_store is not None:
             apply_user_store()
@@ -173,6 +176,7 @@ async def remove_mount_grant(
     path: str,
     config: Any,
     workspace: str | None,
+    scope: str | None = None,
 ) -> RunContext:
     existing = await get_run_context(
         session_manager,
@@ -189,16 +193,40 @@ async def remove_mount_grant(
         raise ValueError(decision.reason or "mount_blocked")
     normalized_path = decision.normalized_path
     removal_paths = {normalized_path, path}
-    mounts = tuple(m for m in existing.mounts if m.path not in removal_paths)
-    if mounts == existing.mounts:
-        user_grants.remove_mount_grant(normalized_path)
-        return existing
-    return await _persist_then_apply_user_store(
+    target_scope = str(scope or "").strip().lower()
+
+    session_existing = await get_run_context(
         session_manager,
         session_key,
-        existing=existing,
-        updated=replace(existing, mounts=mounts, source="saved"),
-        apply_user_store=lambda: user_grants.remove_mount_grant(normalized_path),
+        config=config,
+        workspace=workspace,
+        include_user_grants=False,
+    )
+    if target_scope in {"chat", "workspace"}:
+        remove_user = target_scope == "workspace"
+        remove_chat = target_scope == "chat"
+    else:
+        remove_user = True
+        remove_chat = True
+
+    mounts = tuple(
+        m
+        for m in session_existing.mounts
+        if not (m.path in removal_paths and (remove_chat or m.scope == target_scope))
+    )
+    if mounts != session_existing.mounts:
+        await persist_run_context(
+            session_manager,
+            session_key,
+            replace(session_existing, mounts=mounts, source="saved"),
+        )
+    if remove_user:
+        user_grants.remove_mount_grant(normalized_path)
+    return await get_run_context(
+        session_manager,
+        session_key,
+        config=config,
+        workspace=workspace,
     )
 
 
@@ -228,7 +256,9 @@ async def add_domain_grant(
     )
     apply_user_store = None
     if grant.scope == "workspace":
-        apply_user_store = lambda grant=grant: _upsert_user_domain_grant(grant)
+        def apply_user_store(grant: DomainGrant = grant) -> None:
+            _upsert_user_domain_grant(grant)
+
     if grant in existing.domains:
         if apply_user_store is not None:
             apply_user_store()
@@ -316,7 +346,9 @@ async def add_public_network_grant(
     )
     apply_user_store = None
     if grant.scope == "workspace":
-        apply_user_store = lambda grant=grant: _upsert_user_public_network_grant(grant)
+        def apply_user_store(grant: PublicNetworkGrant = grant) -> None:
+            _upsert_user_public_network_grant(grant)
+
     if grant in existing.public_network:
         if apply_user_store is not None:
             apply_user_store()
@@ -344,27 +376,45 @@ async def remove_domain_grant(
     domain: str,
     config: Any,
     workspace: str | None,
+    scope: str | None = None,
 ) -> RunContext:
     decision = validate_domain_pattern(domain)
     if decision.status == "blocked":
         raise ValueError(decision.reason)
     normalized = decision.normalized
-    existing = await get_run_context(
+    target_scope = str(scope or "").strip().lower()
+    session_existing = await get_run_context(
         session_manager,
         session_key,
         config=config,
         workspace=workspace,
+        include_user_grants=False,
     )
-    domains = tuple(d for d in existing.domains if d.domain != normalized)
-    if domains == existing.domains:
+    if target_scope in {"chat", "workspace"}:
+        remove_user = target_scope == "workspace"
+        remove_chat = target_scope == "chat"
+    else:
+        remove_user = True
+        remove_chat = True
+
+    domains = tuple(
+        d
+        for d in session_existing.domains
+        if not (d.domain == normalized and (remove_chat or d.scope == target_scope))
+    )
+    if domains != session_existing.domains:
+        await persist_run_context(
+            session_manager,
+            session_key,
+            replace(session_existing, domains=domains, source="saved"),
+        )
+    if remove_user:
         user_grants.remove_domain_grant(normalized)
-        return existing
-    return await _persist_then_apply_user_store(
+    return await get_run_context(
         session_manager,
         session_key,
-        existing=existing,
-        updated=replace(existing, domains=domains, source="saved"),
-        apply_user_store=lambda: user_grants.remove_domain_grant(normalized),
+        config=config,
+        workspace=workspace,
     )
 
 
@@ -393,7 +443,9 @@ async def enable_bundle_grant(
     )
     apply_user_store = None
     if grant.scope == "workspace":
-        apply_user_store = lambda grant=grant: _upsert_user_bundle_grant(grant)
+        def apply_user_store(grant: PackageBundleGrant = grant) -> None:
+            _upsert_user_bundle_grant(grant)
+
     if grant in existing.bundles:
         if apply_user_store is not None:
             apply_user_store()

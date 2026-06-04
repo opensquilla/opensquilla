@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from opensquilla.sandbox.network_guard import NetworkDecision
 from opensquilla.sandbox.path_validation import MountDecision
 from opensquilla.sandbox.run_context import (
     DomainGrant,
+    MountGrant,
     RunContext,
     TemporaryGrant,
     get_run_context,
@@ -24,10 +26,10 @@ from opensquilla.sandbox.run_context_service import (
 )
 from opensquilla.sandbox.run_mode import RunMode
 
-
 SANDBOX_APPROVAL_KINDS = frozenset({"sandbox_network", "sandbox_path", "host_once"})
 _RESOLVED_RUN_CONTEXT_OVERLAYS: dict[tuple[str, str | None], RunContext] = {}
 _RESOLVED_RUN_CONTEXT_PERSISTORS: dict[tuple[str, str | None], tuple[Any, Any]] = {}
+_DENIED_SANDBOX_APPROVALS: dict[str, str] = {}
 _DURABLE_TEMPORARY_GRANT_SOURCES = frozenset({"saved", "route_metadata", "metadata"})
 
 
@@ -37,13 +39,17 @@ def _choice(
     *,
     approved: bool = True,
     style: str = "ghost",
+    description: str | None = None,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "id": choice_id,
         "label": label,
         "approved": approved,
         "style": style,
     }
+    if description:
+        payload["description"] = description
+    return payload
 
 
 def build_network_approval_params(
@@ -88,9 +94,25 @@ def build_path_approval_params(
         "path": decision.normalized_path,
         "access": decision.access,
         "choices": [
-            _choice("mount_ro_chat", "Add read-only mount for this chat", style="primary"),
-            _choice("mount_rw_chat", "Add read-write mount for this chat"),
-            _choice("mount_ro_user", "Add read-only mount for this user"),
+            _choice(
+                "mount_ro_chat",
+                "Allow read for this chat",
+                style="primary",
+                description=(
+                    "OpenSquilla can read/list this path and copy files into "
+                    "the workspace, but cannot modify the original files."
+                ),
+            ),
+            _choice(
+                "mount_rw_chat",
+                "Allow read/write for this chat",
+                description="OpenSquilla can read and modify files under this path.",
+            ),
+            _choice(
+                "mount_ro_user",
+                "Remember read access",
+                description="Allow future chats for this user to read this path.",
+            ),
             _choice("deny", "Deny", approved=False, style="danger"),
         ],
     }
@@ -130,6 +152,7 @@ def request_sandbox_approval(
     *,
     approval_id: str | None = None,
     message: str,
+    denied_message: str | None = None,
 ) -> dict[str, object]:
     from opensquilla.gateway.approval_queue import get_approval_queue
 
@@ -138,8 +161,13 @@ def request_sandbox_approval(
 
     queue = get_approval_queue()
     if approval_id is None:
-        approval_id = queue.request(namespace="exec", params=params)
-        status = "approval_required"
+        denied_approval_id = denied_sandbox_approval_id(params)
+        if denied_approval_id is not None:
+            approval_id = denied_approval_id
+            status = "approval_denied"
+        else:
+            approval_id = queue.request(namespace="exec", params=params)
+            status = "approval_required"
     else:
         entry = queue.get(approval_id)
         if entry.namespace != "exec":
@@ -148,11 +176,77 @@ def request_sandbox_approval(
         if not entry.resolved:
             status = "approval_pending"
         elif not entry.approved:
+            remember_sandbox_approval_denial(params, approval_id)
             status = "approval_denied"
         else:
             approval_id = queue.request(namespace="exec", params=params)
             status = "approval_required"
+    if status == "approval_denied":
+        message = denied_message or _default_denied_sandbox_approval_message()
     return _approval_payload(status, approval_id, params, message=message)
+
+
+def _default_denied_sandbox_approval_message() -> str:
+    return (
+        "The user denied this sandbox request. Do not ask for the same access "
+        "again in this turn. Explain that the requested operation cannot "
+        "continue from the current sandbox unless the user changes sandbox "
+        "settings."
+    )
+
+
+def remember_sandbox_approval_denial(
+    params: dict[str, Any] | None,
+    approval_id: str,
+) -> None:
+    key = _sandbox_approval_key(params)
+    if key is not None:
+        _DENIED_SANDBOX_APPROVALS[key] = approval_id
+
+
+def denied_sandbox_approval_id(params: dict[str, Any] | None) -> str | None:
+    key = _sandbox_approval_key(params)
+    if key is None:
+        return None
+    return _DENIED_SANDBOX_APPROVALS.get(key)
+
+
+def clear_sandbox_approval_denials(session_key: str | None = None) -> None:
+    target_session = str(session_key or "").strip()
+    if not target_session:
+        _DENIED_SANDBOX_APPROVALS.clear()
+        return
+
+    for key in list(_DENIED_SANDBOX_APPROVALS):
+        try:
+            payload = json.loads(key)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if str(payload.get("sessionKey") or "").strip() == target_session:
+            _DENIED_SANDBOX_APPROVALS.pop(key, None)
+
+
+def deny_matching_pending_sandbox_approvals(
+    queue: Any,
+    params: dict[str, Any] | None,
+    *,
+    exclude_approval_id: str | None = None,
+) -> int:
+    key = _sandbox_approval_key(params)
+    if key is None:
+        return 0
+    count = 0
+    for pending in queue.list_pending("exec"):
+        approval_id = str(pending.get("id") or "")
+        if not approval_id or approval_id == exclude_approval_id:
+            continue
+        pending_params = pending.get("params")
+        if _sandbox_approval_key(pending_params) != key:
+            continue
+        queue.resolve(approval_id, False, allow_idempotent=True)
+        remember_sandbox_approval_denial(pending_params, approval_id)
+        count += 1
+    return count
 
 
 def validate_sandbox_approval_choice(
@@ -288,6 +382,45 @@ def current_tool_mounts() -> list[dict[str, object]]:
     return list(merged.values())
 
 
+def grant_temporary_mount_for_current_tool(decision: MountDecision) -> bool:
+    if decision.status != "request" or decision.access != "ro":
+        return False
+    try:
+        from opensquilla.tools.types import current_tool_context
+
+        ctx = current_tool_context.get()
+    except Exception:  # pragma: no cover - defensive
+        return False
+    if ctx is None:
+        return False
+
+    path = decision.normalized_path
+    access = decision.access
+    ctx.sandbox_mounts = [
+        mount
+        for mount in list(getattr(ctx, "sandbox_mounts", ()) or ())
+        if str(mount.get("path") or "").strip() != path
+    ] + [{"path": path, "access": access}]
+
+    context = current_tool_run_context()
+    if context is None:
+        context = RunContext(
+            run_mode=RunMode.TRUSTED,
+            workspace=getattr(ctx, "workspace_dir", None),
+            source="temporary",
+        )
+    grant = MountGrant(path=path, access=access, scope="chat")
+    mounts = tuple(mount for mount in context.mounts if mount.path != path) + (grant,)
+    updated = replace(context, mounts=mounts, source="resolved_overlay")
+    ctx.sandbox_run_context = updated
+    remember_resolved_run_context(
+        getattr(ctx, "session_key", None),
+        getattr(ctx, "workspace_dir", None),
+        updated,
+    )
+    return True
+
+
 def resolved_run_context_overlay(
     session_key: str | None,
     workspace: str | None,
@@ -317,6 +450,7 @@ def remember_resolved_run_context(
 def reset_resolved_run_context_overlays() -> None:
     _RESOLVED_RUN_CONTEXT_OVERLAYS.clear()
     _RESOLVED_RUN_CONTEXT_PERSISTORS.clear()
+    _DENIED_SANDBOX_APPROVALS.clear()
 
 
 def consume_temporary_network_grant(
@@ -476,7 +610,10 @@ def _approval_payload(
     return payload
 
 
-def _validate_matching_approval_params(existing: dict[str, Any], expected: dict[str, object]) -> None:
+def _validate_matching_approval_params(
+    existing: dict[str, Any],
+    expected: dict[str, object],
+) -> None:
     if str(existing.get("approvalKind") or "") != str(expected.get("approvalKind") or ""):
         raise ValueError("approval_does_not_match_requested_sandbox_action")
     for key in ("path", "host", "access", "fingerprint", "sessionKey", "workspace"):
@@ -686,6 +823,28 @@ def _workspace_param(params: dict[str, Any]) -> str | None:
     return workspace or None
 
 
+def _sandbox_approval_key(params: dict[str, Any] | None) -> str | None:
+    if not isinstance(params, dict):
+        return None
+    approval_kind = str(params.get("approvalKind") or "").strip()
+    if approval_kind not in SANDBOX_APPROVAL_KINDS:
+        return None
+    fields: dict[str, object] = {
+        "kind": approval_kind,
+        "sessionKey": str(params.get("sessionKey") or "").strip(),
+        "workspace": _normalize_workspace(str(params.get("workspace") or "").strip()),
+    }
+    if approval_kind == "sandbox_path":
+        fields["path"] = str(params.get("path") or "").strip()
+        fields["access"] = str(params.get("access") or "").strip()
+    elif approval_kind == "sandbox_network":
+        fields["host"] = str(params.get("host") or "").strip().casefold()
+        fields["fingerprint"] = str(params.get("fingerprint") or "").strip()
+    elif approval_kind == "host_once":
+        fields["fallback"] = "host_once"
+    return json.dumps(fields, ensure_ascii=False, sort_keys=True)
+
+
 def _overlay_key(session_key: str | None, workspace: str | None) -> tuple[str, str | None] | None:
     key = str(session_key or "").strip()
     if not key:
@@ -741,11 +900,13 @@ __all__ = [
     "build_backend_failure_approval_params",
     "build_network_approval_params",
     "build_path_approval_params",
+    "clear_sandbox_approval_denials",
     "consume_persisted_temporary_network_grant",
     "consume_temporary_network_grant",
     "context_with_temporary_network_grants",
     "current_tool_mounts",
     "current_tool_run_context",
+    "grant_temporary_mount_for_current_tool",
     "has_temporary_network_grant",
     "merge_run_context_overlay",
     "remember_resolved_run_context",

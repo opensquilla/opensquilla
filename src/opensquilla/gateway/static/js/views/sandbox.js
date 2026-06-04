@@ -48,7 +48,7 @@ const SandboxView = (() => {
 
         <div class="sandbox-notice" id="sandbox-notice" hidden></div>
 
-        <section class="sandbox-panel" aria-labelledby="sandbox-run-mode-title">
+        <section class="sandbox-panel sandbox-panel--run-mode" aria-labelledby="sandbox-run-mode-title">
           <div class="sandbox-panel__head">
             <div>
               <span class="sandbox-panel__eyebrow">Execution</span>
@@ -134,6 +134,7 @@ const SandboxView = (() => {
   }
 
   function _renderLoaded(root, data) {
+    const openDetails = _captureOpenNetworkDetails(root);
     const status = data.status || {};
     const runContext = _normalizeRunContext(status, data.runContext || {});
     _lastData = { ...data, runContext };
@@ -152,6 +153,7 @@ const SandboxView = (() => {
       controls.innerHTML = _isFullHostAccess(status, runContext)
         ? _renderFullHostAccessEmpty(runContext)
         : _renderSandboxControls(status, runContext, data.sessionKey);
+      _restoreOpenNetworkDetails(controls, openDetails);
     }
     _updateApprovalActivity(_pendingApprovalCount);
   }
@@ -231,16 +233,16 @@ const SandboxView = (() => {
     const mounts = Array.isArray(runContext.mounts) ? runContext.mounts : [];
     return `
       <form class="sandbox-inline-form" data-sandbox-action="workspace-save">
-        <label class="sandbox-field sandbox-field--span">
+        <div class="sandbox-field sandbox-field--span">
           <span>Workspace</span>
           <div class="sandbox-path-field" data-path-kind="workspace">
-            <input class="sandbox-input" name="workspace" autocomplete="off" value="${_esc(workspaceValue)}" placeholder="/path/to/workspace" data-path-browser-kind="workspace" />
+            <input class="sandbox-input" name="workspace" autocomplete="off" value="${_esc(workspaceValue)}" placeholder="/path/to/workspace" aria-label="Workspace path" data-path-browser-kind="workspace" />
             <button class="sandbox-path-btn" type="button" data-sandbox-action="workspace-browse" aria-label="Browse workspace directory">
               ${icons.search()}<span>Browse</span>
             </button>
             <div class="sandbox-path-browser-slot" data-path-browser-kind="workspace"></div>
           </div>
-        </label>
+        </div>
         <button class="sandbox-icon-btn sandbox-icon-btn--primary" type="submit" title="Save workspace" aria-label="Save workspace">
           ${icons.check()}
         </button>
@@ -250,16 +252,16 @@ const SandboxView = (() => {
         ${mounts.length ? `<div class="sandbox-list">${mounts.map(m => _renderMount(m, true)).join('')}</div>` : _renderEmpty('No extra mounts')}
       </div>
       <form class="sandbox-inline-form sandbox-inline-form--mount" data-sandbox-action="mount-add">
-        <label class="sandbox-field sandbox-field--span">
+        <div class="sandbox-field sandbox-field--span">
           <span>Mount path</span>
           <div class="sandbox-path-field" data-path-kind="mount">
-            <input class="sandbox-input" name="path" autocomplete="off" placeholder="/path/to/folder" data-path-browser-kind="mount" />
+            <input class="sandbox-input" name="path" autocomplete="off" placeholder="/path/to/folder" aria-label="Mount path" data-path-browser-kind="mount" />
             <button class="sandbox-path-btn" type="button" data-sandbox-action="mount-browse" aria-label="Browse mount directory">
               ${icons.search()}<span>Browse</span>
             </button>
             <div class="sandbox-path-browser-slot" data-path-browser-kind="mount"></div>
           </div>
-        </label>
+        </div>
         ${_select('access', [['ro', 'Read only'], ['rw', 'Read/write']], 'ro')}
         ${_select('scope', [['chat', 'This chat'], ['workspace', 'This user']], 'chat')}
         <button class="sandbox-icon-btn sandbox-icon-btn--primary" type="submit" title="Add mount" aria-label="Add mount">
@@ -273,12 +275,24 @@ const SandboxView = (() => {
     const access = mount.access || mount.mode || 'ro';
     const scope = mount.scope || '';
     const source = mount.source && mount.source !== path ? mount.source : (mount.created_by || mount.createdBy || '');
-    return `<div class="sandbox-list__row sandbox-list__row--action">
-      <span class="sandbox-list__main">${_esc(path)}</span>
-      <span class="sandbox-chip">${_esc(access)}</span>
-      ${canRemove ? `<button class="sandbox-icon-btn sandbox-icon-btn--danger" type="button" data-sandbox-action="mount-remove" data-path="${_esc(path)}" title="Remove mount" aria-label="Remove mount">${icons.trash()}</button>` : ''}
-      ${scope || source ? `<span class="sandbox-list__sub">${_esc([scope, source].filter(Boolean).join(' / '))}</span>` : ''}
+    const details = [
+      scope ? _networkScopeLabel(scope) : '',
+      source,
+    ].filter(Boolean);
+    return `<div class="sandbox-list__row sandbox-list__row--mount">
+      <span class="sandbox-list__content">
+        <span class="sandbox-list__main sandbox-list__main--path">${_esc(path)}</span>
+        ${details.length ? `<span class="sandbox-list__sub">${_esc(details.join(' / '))}</span>` : ''}
+      </span>
+      <span class="sandbox-list__meta">
+        <span class="sandbox-chip">${_esc(_mountAccessLabel(access))}</span>
+        ${canRemove ? `<button class="sandbox-icon-btn sandbox-icon-btn--danger" type="button" data-sandbox-action="mount-remove" data-path="${_esc(path)}" data-scope="${_esc(scope || 'chat')}" title="Remove mount" aria-label="Remove mount">${icons.trash()}</button>` : ''}
+      </span>
     </div>`;
+  }
+
+  function _mountAccessLabel(access) {
+    return String(access || '').toLowerCase() === 'rw' ? 'Read/write' : 'Read only';
   }
 
   function _renderNetwork(status, runContext, sessionKey) {
@@ -334,10 +348,25 @@ const SandboxView = (() => {
 
   function _renderNetworkDetails(summaryClass, summaryText, body) {
     return `
-      <details class="sandbox-network-group">
+      <details class="sandbox-network-group" data-details-key="${_esc(summaryClass)}">
         <summary class="sandbox-network-summary ${summaryClass}">${_esc(summaryText)}</summary>
         <div class="sandbox-network-body">${body}</div>
       </details>`;
+  }
+
+  function _captureOpenNetworkDetails(root) {
+    const keys = new Set();
+    root?.querySelectorAll?.('details.sandbox-network-group[data-details-key][open]').forEach(details => {
+      if (details.dataset.detailsKey) keys.add(details.dataset.detailsKey);
+    });
+    return keys;
+  }
+
+  function _restoreOpenNetworkDetails(root, keys) {
+    if (!keys?.size) return;
+    root?.querySelectorAll?.('details.sandbox-network-group[data-details-key]').forEach(details => {
+      if (keys.has(details.dataset.detailsKey)) details.open = true;
+    });
   }
 
   function _renderNetworkSection(summaryClass, summaryText, body) {
@@ -440,11 +469,12 @@ const SandboxView = (() => {
 
   function _renderDomain(domain, canRemove) {
     const value = domain.domain || domain.value || domain.pattern || 'Unknown domain';
-    const scope = _networkScopeLabel(domain.scope);
+    const rawScope = domain.scope || 'chat';
+    const scope = _networkScopeLabel(rawScope);
     return `<div class="sandbox-network-row sandbox-network-row--action">
       <div class="sandbox-network-row__main">${_esc(value)}</div>
       <span class="sandbox-chip">${_esc(scope)}</span>
-      ${canRemove ? `<button class="sandbox-icon-btn sandbox-icon-btn--danger" type="button" data-sandbox-action="domain-remove" data-domain="${_esc(value)}" title="Remove domain" aria-label="Remove domain">${icons.trash()}</button>` : ''}
+      ${canRemove ? `<button class="sandbox-icon-btn sandbox-icon-btn--danger" type="button" data-sandbox-action="domain-remove" data-domain="${_esc(value)}" data-scope="${_esc(domain.scope || 'chat')}" title="Remove domain" aria-label="Remove domain">${icons.trash()}</button>` : ''}
     </div>`;
   }
 
@@ -494,9 +524,15 @@ const SandboxView = (() => {
     } else if (action === 'path-browser-cancel') {
       _closePathBrowser(btn.dataset.kind || 'workspace', { restore: true });
     } else if (action === 'mount-remove') {
-      await _mutate('sandbox.mount.remove', { path: btn.dataset.path || '' });
+      await _mutate('sandbox.mount.remove', {
+        path: btn.dataset.path || '',
+        scope: btn.dataset.scope || 'chat',
+      });
     } else if (action === 'domain-remove') {
-      await _mutate('sandbox.domain.remove', { domain: btn.dataset.domain || '' });
+      await _mutate('sandbox.domain.remove', {
+        domain: btn.dataset.domain || '',
+        scope: btn.dataset.scope || 'chat',
+      });
     } else if (action === 'bundle-toggle') {
       const method = btn.dataset.enabled === '1' ? 'sandbox.bundle.disable' : 'sandbox.bundle.enable';
       await _mutate(method, { bundleId: btn.dataset.bundleId || '' });
@@ -525,11 +561,12 @@ const SandboxView = (() => {
     }
     const input = _pathInput(root, kind);
     const slot = _pathBrowserSlot(root, kind);
-    const path = requestedPath || input?.value || _lastData?.runContext?.workspace || '~';
+    const path = _pathBrowserRequestPath(input, requestedPath);
     if (input && input.dataset.committedValue === undefined) {
       input.dataset.committedValue = input.value || '';
     }
     _closeAllPathBrowsers({ restore: true, except: kind });
+    _setPathBrowserLayer(root, kind, true);
     const loadId = _nextPathBrowserLoadId(kind);
     if (slot) slot.innerHTML = _renderPathBrowser(kind, { path, parentPath: path, entries: [], loading: true });
     try {
@@ -655,6 +692,15 @@ const SandboxView = (() => {
       input.value = input.dataset.committedValue;
     }
     if (slot) slot.innerHTML = '';
+    _setPathBrowserLayer(root, kind, false);
+  }
+
+  function _setPathBrowserLayer(root, kind, active) {
+    const input = _pathInput(root, kind);
+    const field = input?.closest?.('.sandbox-field--span');
+    const form = input?.closest?.('.sandbox-inline-form');
+    field?.classList?.toggle('is-path-browser-open', active);
+    form?.classList?.toggle('is-path-browser-open', active);
   }
 
   function _hasOpenPathBrowser(kind) {
@@ -749,6 +795,12 @@ const SandboxView = (() => {
     return root.querySelector(`.sandbox-path-browser-slot[data-path-browser-kind="${kind}"]`);
   }
 
+  function _pathBrowserRequestPath(input, requestedPath) {
+    if (requestedPath !== undefined && requestedPath !== null) return requestedPath;
+    const value = String(input?.value || '').trim();
+    return value || '/';
+  }
+
   function _renderEmpty(text) {
     return `<div class="sandbox-empty">${_esc(text)}</div>`;
   }
@@ -774,8 +826,8 @@ const SandboxView = (() => {
   function _normalizeRunContext(status, runContext) {
     return {
       ...runContext,
-      runMode: runContext.runMode || status.run_mode || 'standard',
-      runModeLabel: runContext.runModeLabel || status.run_mode_label || _runModeLabel(status.run_mode || 'standard'),
+      runMode: runContext.runMode || status.run_mode || 'full',
+      runModeLabel: runContext.runModeLabel || status.run_mode_label || _runModeLabel(status.run_mode || 'full'),
       mounts: Array.isArray(runContext.mounts) ? runContext.mounts : [],
       domains: Array.isArray(runContext.domains) ? runContext.domains : [],
       bundles: Array.isArray(runContext.bundles) ? runContext.bundles : [],

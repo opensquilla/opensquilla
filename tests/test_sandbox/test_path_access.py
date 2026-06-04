@@ -28,11 +28,13 @@ def tool_context(
     *,
     run_mode: str = "standard",
     sandbox_mounts: list[dict[str, object]] | None = None,
+    workspace_strict: bool = False,
 ) -> Iterator[ToolContext]:
     ctx = ToolContext(
         is_owner=True,
         caller_kind=CallerKind.CLI,
         workspace_dir=str(workspace),
+        workspace_strict=workspace_strict,
         run_mode=run_mode,
         session_key="s1",
         sandbox_mounts=sandbox_mounts or [],
@@ -45,7 +47,14 @@ def tool_context(
 
 
 @pytest.fixture(autouse=True)
-def sandbox_runtime(tmp_path: Path) -> Iterator[None]:
+def sandbox_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    from opensquilla.application import approval_queue as approval_queue_mod
+
+    monkeypatch.setattr(
+        approval_queue_mod,
+        "_DEFAULT_APPROVAL_QUEUE_PATH",
+        tmp_path / "approval_queue.sqlite",
+    )
     reset_approval_queue()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -125,11 +134,12 @@ def test_request_path_builds_structured_mount_escalation_choices(tmp_path: Path)
         "deny",
     ]
     assert [choice["label"] for choice in proposal["choices"]] == [
-        "Add read-only mount for this chat",
-        "Add read-write mount for this chat",
-        "Add read-only mount for this user",
+        "Allow read for this chat",
+        "Allow read/write for this chat",
+        "Remember read access",
         "Deny",
     ]
+    assert "copy files into the workspace" in proposal["choices"][0]["description"]
 
 
 def test_blocked_path_has_no_mount_escalation_choices(tmp_path: Path) -> None:
@@ -206,6 +216,28 @@ async def test_existing_ro_mount_allows_filesystem_read_and_list(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_existing_ro_mount_allows_list_dir_when_workspace_strict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    (mounted / "notes.txt").write_text("hello\n", encoding="utf-8")
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(
+        workspace,
+        sandbox_mounts=[{"path": str(mounted), "access": "ro"}],
+        workspace_strict=True,
+    ):
+        result = await fs.list_dir(str(mounted))
+
+    assert "notes.txt" in result
+
+
+@pytest.mark.asyncio
 async def test_filesystem_read_outside_workspace_requests_ro_mount(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
@@ -227,10 +259,129 @@ async def test_filesystem_read_outside_workspace_requests_ro_mount(tmp_path: Pat
         "mount_ro_user",
         "deny",
     ]
-    assert "outside the current sandbox view" in payload["message"]
+    assert "outside the current workspace" in payload["message"]
+    assert str(workspace) in payload["message"]
+    assert "read-only or read/write access" in payload["message"]
+    assert "appears as /workspace" not in payload["message"]
     pending = get_approval_queue().get(payload["approval_id"])
     assert pending.params["approvalKind"] == "sandbox_path"
     assert pending.params["path"] == str(outside.resolve(strict=False))
+
+
+@pytest.mark.asyncio
+async def test_denied_sandbox_path_request_does_not_create_repeated_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from opensquilla.gateway.rpc_approvals import _handle_exec_approval_resolve
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(workspace):
+        first = json.loads(await fs.list_dir(str(outside)))
+
+    assert first["status"] == "approval_required"
+    assert first["approvalKind"] == "sandbox_path"
+    approval_id = first["approval_id"]
+    assert len(get_approval_queue().list_pending("exec")) == 1
+
+    await _handle_exec_approval_resolve(
+        {"id": approval_id, "approved": False, "choice": "deny"},
+        SimpleNamespace(session_manager=None, config=None),
+    )
+
+    with tool_context(workspace):
+        second = json.loads(await fs.list_dir(str(outside)))
+
+    assert second["status"] == "approval_denied"
+    assert second["approval_id"] == approval_id
+    assert "user denied" in second["message"].lower()
+    assert "do not ask" in second["message"].lower()
+    assert "Add the requested path" not in second["message"]
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_denied_sandbox_path_request_can_be_requested_again_next_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from opensquilla.gateway.rpc_approvals import _handle_exec_approval_resolve
+    from opensquilla.sandbox.escalation import clear_sandbox_approval_denials
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(workspace):
+        first = json.loads(await fs.list_dir(str(outside)))
+
+    assert first["status"] == "approval_required"
+    approval_id = first["approval_id"]
+
+    await _handle_exec_approval_resolve(
+        {"id": approval_id, "approved": False, "choice": "deny"},
+        SimpleNamespace(session_manager=None, config=None),
+    )
+
+    with tool_context(workspace):
+        same_turn = json.loads(await fs.list_dir(str(outside)))
+
+    assert same_turn["status"] == "approval_denied"
+    assert same_turn["approval_id"] == approval_id
+
+    clear_sandbox_approval_denials("s1")
+
+    with tool_context(workspace):
+        next_turn = json.loads(await fs.list_dir(str(outside)))
+
+    assert next_turn["status"] == "approval_required"
+    assert next_turn["approval_id"] != approval_id
+
+
+@pytest.mark.asyncio
+async def test_denied_sandbox_path_request_clears_duplicate_pending_prompts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from opensquilla.gateway.rpc_approvals import _handle_exec_approval_resolve
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(workspace):
+        first = json.loads(await fs.list_dir(str(outside)))
+        second = json.loads(await fs.list_dir(str(outside)))
+
+    assert first["status"] == "approval_required"
+    assert second["status"] == "approval_required"
+    assert first["approval_id"] != second["approval_id"]
+    assert len(get_approval_queue().list_pending("exec")) == 2
+
+    await _handle_exec_approval_resolve(
+        {"id": first["approval_id"], "approved": False, "choice": "deny"},
+        SimpleNamespace(session_manager=None, config=None),
+    )
+
+    assert get_approval_queue().list_pending("exec") == []
+    duplicate = get_approval_queue().get(second["approval_id"])
+    assert duplicate.resolved is True
+    assert duplicate.approved is False
 
 
 @pytest.mark.asyncio
@@ -320,6 +471,27 @@ async def test_existing_ro_mount_write_requests_rw_mount_not_legacy_approval(
 
 
 @pytest.mark.asyncio
+async def test_list_dir_retry_accepts_path_approval_id_after_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    (mounted / "notes.txt").write_text("hello\n", encoding="utf-8")
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(
+        workspace,
+        sandbox_mounts=[{"path": str(mounted), "access": "ro"}],
+    ):
+        result = await fs.list_dir(str(mounted), approval_id="approved-path")
+
+    assert "notes.txt" in result
+
+
+@pytest.mark.asyncio
 async def test_grep_search_does_not_follow_workspace_symlink_to_unmounted_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -384,7 +556,202 @@ async def test_shell_workdir_outside_workspace_requests_rw_mount(
 
 
 @pytest.mark.asyncio
-async def test_path_request_approval_does_not_mutate_until_choice_is_resolved(tmp_path: Path) -> None:
+async def test_standard_shell_simple_read_path_outside_workspace_requests_ro_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backend_calls: list[object] = []
+
+    async def fail_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        raise AssertionError("backend should not run before path access is granted")
+
+    monkeypatch.setattr(shell, "run_under_backend", fail_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="standard"):
+        payload = json.loads(await shell.exec_command(f"ls {outside}"))
+
+    assert payload["status"] == "approval_required"
+    assert payload["path"] == str(outside.resolve(strict=False))
+    assert payload["access"] == "ro"
+    assert payload["approvalKind"] == "sandbox_path"
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_trusted_filesystem_read_path_outside_workspace_auto_mounts_without_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "notes.txt"
+    target.write_text("trusted read\n", encoding="utf-8")
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(workspace, run_mode="trusted") as ctx:
+        result = await fs.read_file(str(target))
+
+    assert "trusted read" in result
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [{"path": str(target.resolve(strict=False)), "access": "ro"}]
+
+
+@pytest.mark.asyncio
+async def test_trusted_shell_simple_read_path_outside_workspace_auto_mounts_without_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backend_calls: list[object] = []
+
+    async def fake_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(stdout="listed\n", stderr="", returncode=0, backend_notes=[])
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="trusted") as ctx:
+        result = await shell.exec_command(f"ls {outside}")
+
+    assert "exit_code=0" in result
+    assert "listed" in result
+    assert backend_calls
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [{"path": str(outside.resolve(strict=False)), "access": "ro"}]
+
+
+@pytest.mark.asyncio
+async def test_shell_copy_from_outside_workspace_requests_ro_mount_before_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = outside / "notes.txt"
+    target = workspace / "notes.txt"
+    backend_calls: list[object] = []
+
+    async def fail_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        raise AssertionError("backend should not run before source path access is granted")
+
+    monkeypatch.setattr(shell, "run_under_backend", fail_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="standard"):
+        payload = json.loads(await shell.exec_command(f"cp {source} {target}"))
+
+    assert payload["status"] == "approval_required"
+    assert payload["path"] == str(source.resolve(strict=False))
+    assert payload["access"] == "ro"
+    assert payload["approvalKind"] == "sandbox_path"
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_shell_copy_to_outside_workspace_requests_rw_mount_before_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    source = workspace / "notes.txt"
+    target = tmp_path / "outside" / "notes.txt"
+    backend_calls: list[object] = []
+
+    async def fail_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        raise AssertionError("backend should not run before destination path access is granted")
+
+    monkeypatch.setattr(shell, "run_under_backend", fail_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="trusted"):
+        payload = json.loads(await shell.exec_command(f"cp {source} {target}"))
+
+    assert payload["status"] == "approval_required"
+    assert payload["path"] == str(target.resolve(strict=False))
+    assert payload["access"] == "rw"
+    assert payload["approvalKind"] == "sandbox_path"
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_shell_simple_read_path_full_host_access_does_not_request_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backend_calls: list[object] = []
+    host_calls: list[tuple[str, str | None]] = []
+
+    async def fail_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        raise AssertionError("full host access should not use the sandbox backend")
+
+    async def fake_host(
+        command: str,
+        *,
+        cwd: str | None,
+        env: dict[str, str],
+        timeout: float,
+    ) -> str:
+        host_calls.append((command, cwd))
+        return "host-ran"
+
+    monkeypatch.setattr(shell, "run_under_backend", fail_backend)
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="full"):
+        result = await shell.exec_command(f"ls {outside}")
+
+    assert result == "host-ran"
+    assert host_calls == [(f"ls {outside}", str(workspace.resolve()))]
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_path_request_approval_does_not_mutate_until_choice_is_resolved(
+    tmp_path: Path,
+) -> None:
     from opensquilla.gateway.rpc import RpcContext, get_dispatcher
     from opensquilla.sandbox.run_context import get_run_context
 

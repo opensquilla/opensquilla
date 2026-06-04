@@ -140,6 +140,54 @@ def test_classify_workspace_read() -> None:
     assert profile.name == "workspace_read"
 
 
+def test_workspace_read_tracks_obvious_path_arguments() -> None:
+    profile = classify_command(("ls", "/tmp/outside"))
+    assert profile.name == "workspace_read"
+    assert profile.requested_paths == ("/tmp/outside",)
+
+
+def test_copy_command_tracks_source_read_and_destination_write_paths() -> None:
+    profile = classify_command(
+        ("cp", "/home/lrk/opensquilla/LICENSE", "/workspace/opensquilla-license.txt")
+    )
+
+    assert profile.name == "path_transfer"
+    assert profile.requested_paths == ("/home/lrk/opensquilla/LICENSE",)
+    assert profile.requested_write_paths == ("/workspace/opensquilla-license.txt",)
+
+
+def test_move_command_treats_source_and_destination_as_write_paths() -> None:
+    profile = classify_command(("mv", "/tmp/outside.txt", "/workspace/outside.txt"))
+
+    assert profile.name == "path_transfer"
+    assert profile.requested_paths == ()
+    assert profile.requested_write_paths == ("/tmp/outside.txt", "/workspace/outside.txt")
+
+
+def test_shell_wrapper_preserves_workspace_read_path_arguments() -> None:
+    profile = classify_command(("sh", "-lc", "ls /tmp/outside"))
+    assert profile.name == "workspace_read"
+    assert profile.requested_paths == ("/tmp/outside",)
+
+
+def test_shell_wrapper_preserves_copy_source_and_destination_paths() -> None:
+    profile = classify_command(
+        ("sh", "-lc", "cp /home/lrk/opensquilla/LICENSE /workspace/license.txt")
+    )
+
+    assert profile.name == "path_transfer"
+    assert profile.requested_paths == ("/home/lrk/opensquilla/LICENSE",)
+    assert profile.requested_write_paths == ("/workspace/license.txt",)
+
+
+def test_shell_wrapper_preserves_move_write_paths() -> None:
+    profile = classify_command(("sh", "-lc", "mv /tmp/outside.txt /workspace/outside.txt"))
+
+    assert profile.name == "path_transfer"
+    assert profile.requested_paths == ()
+    assert profile.requested_write_paths == ("/tmp/outside.txt", "/workspace/outside.txt")
+
+
 def test_unknown_shell_is_conservative() -> None:
     profile = classify_command(("sh", "-lc", "complex $(unknown)"))
     assert profile.name == "unknown_shell"

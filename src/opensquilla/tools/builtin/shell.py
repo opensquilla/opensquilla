@@ -31,6 +31,7 @@ from opensquilla.sandbox.backend.seatbelt import (
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
     current_tool_mounts,
+    grant_temporary_mount_for_current_tool,
     request_sandbox_approval,
 )
 from opensquilla.sandbox.governance import action_fingerprint
@@ -49,7 +50,11 @@ from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy,
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
-from opensquilla.tools.run_mode import current_run_mode, full_host_access_active
+from opensquilla.tools.run_mode import (
+    current_run_mode,
+    full_host_access_active,
+    trusted_sandbox_active,
+)
 from opensquilla.tools.types import (
     CallerKind,
     InteractionMode,
@@ -296,18 +301,32 @@ def _path_access_required_envelope(
             "status": "path_access_required",
             "path": decision.normalized_path,
             "access": decision.access,
-            "message": (
-                "This path is outside the current sandbox view. "
-                "Add it as a mount to continue sandboxed."
-            ),
+            "message": _path_access_message(workspace_root),
         }
     return request_sandbox_approval(
         approval,
         approval_id=approval_id,
-        message=(
-            "This path is outside the current sandbox view. "
-            "Resolve this approval and retry."
-        ),
+        message=_path_access_message(workspace_root),
+        denied_message=_path_access_denied_message(workspace_root),
+    )
+
+
+def _path_access_message(workspace_root: Path | None) -> str:
+    workspace = str(workspace_root) if workspace_root is not None else "the configured workspace"
+    return (
+        f"The requested path is outside the current workspace ({workspace}). "
+        "Ask the user whether to add this path as read-only or read/write access."
+    )
+
+
+def _path_access_denied_message(workspace_root: Path | None) -> str:
+    workspace = str(workspace_root) if workspace_root is not None else "the configured workspace"
+    return (
+        "The user denied access outside the current workspace. "
+        "Do not ask for the same access again in this turn. "
+        "Explain that the requested path cannot be inspected from the current "
+        f"workspace ({workspace}) unless the user approves access or changes run mode. "
+        "Do not substitute details from other repositories or prior comparison context."
     )
 
 
@@ -359,6 +378,55 @@ def _sandbox_workdir_access_envelope(
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
     return _path_access_required_envelope(decision, approval_id=approval_id)
+
+
+def _sandbox_read_path_access_envelope(
+    profile: OperationProfile,
+    workdir: str | None,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object] | None:
+    if not profile.requested_paths or not _sandbox_path_access_enabled():
+        return None
+    for raw_path in profile.requested_paths:
+        decision = decide_path_access(
+            _resolve_shell_write_target(raw_path, workdir),
+            workspace=_workspace_root_for_path_access(),
+            mounts=_active_sandbox_mounts(),
+            write=False,
+        )
+        if decision.status == "allowed":
+            continue
+        if decision.status == "blocked":
+            return _path_access_blocked_envelope(decision)
+        if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(decision):
+            continue
+        return _path_access_required_envelope(decision, approval_id=approval_id)
+    return None
+
+
+def _sandbox_write_path_access_envelope(
+    profile: OperationProfile,
+    workdir: str | None,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object] | None:
+    write_paths = getattr(profile, "requested_write_paths", ())
+    if not write_paths or not _sandbox_path_access_enabled():
+        return None
+    for raw_path in write_paths:
+        decision = decide_path_access(
+            _resolve_shell_write_target(raw_path, workdir),
+            workspace=_workspace_root_for_path_access(),
+            mounts=_active_sandbox_mounts(),
+            write=True,
+        )
+        if decision.status == "allowed":
+            continue
+        if decision.status == "blocked":
+            return _path_access_blocked_envelope(decision)
+        return _path_access_required_envelope(decision, approval_id=approval_id)
+    return None
 
 
 def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:
@@ -759,6 +827,7 @@ async def exec_command(
 
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
+    profile = _profile_shell_command(command)
 
     # Denylist: hard-block, never bypassable
     if not result.allowed:
@@ -768,6 +837,12 @@ async def exec_command(
     if sensitive_block is not None:
         return sensitive_block
     path_access = _sandbox_workdir_access_envelope(cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_write_path_access_envelope(profile, cwd, approval_id=approval_id)
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
     lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
@@ -799,7 +874,6 @@ async def exec_command(
     if env:
         merged_env.update(env)
     effective_timeout = _resolve_exec_timeout(timeout)
-    profile = _profile_shell_command(command)
 
     host_execution = _host_execution_allowed()
 
@@ -894,12 +968,19 @@ async def background_process(
 ) -> str:
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
+    profile = _profile_shell_command(command)
     if not result.allowed:
         raise ToolError(result.reason)
     sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
     path_access = _sandbox_workdir_access_envelope(cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_write_path_access_envelope(profile, cwd, approval_id=approval_id)
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
     lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
@@ -934,7 +1015,6 @@ async def background_process(
             return json.dumps(approval_response)
 
     host_execution = _host_execution_allowed()
-    profile = _profile_shell_command(command)
 
     runtime = get_runtime()
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:

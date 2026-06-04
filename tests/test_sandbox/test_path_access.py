@@ -12,6 +12,7 @@ from opensquilla.gateway.approval_queue import get_approval_queue, reset_approva
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime
 from opensquilla.sandbox.path_validation import decide_path_access
+from opensquilla.sandbox.types import SandboxRequest
 from opensquilla.tools.builtin import filesystem as fs
 from opensquilla.tools.builtin import shell
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
@@ -569,6 +570,55 @@ async def test_shell_read_only_workdir_outside_workspace_requests_ro_mount(
     assert pending["status"] == "approval_pending"
     assert pending["approval_id"] == approval_id
     assert backend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_shell_ro_workdir_mount_stays_read_only_in_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backend_calls: list[SandboxRequest] = []
+
+    async def fake_backend(request: SandboxRequest, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(stdout="", stderr="", returncode=0, backend_notes=[])
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(
+        workspace,
+        sandbox_mounts=[{"path": str(outside), "access": "ro"}],
+    ):
+        await shell.exec_command(
+            "python -c 'open(\"x\", \"w\").write(\"1\")'",
+            workdir=str(outside),
+        )
+
+    assert len(backend_calls) == 1
+    request = backend_calls[0]
+    workspace_mount = next(
+        mount
+        for mount in request.policy.mounts
+        if str(mount.sandbox_path) == "/workspace"
+    )
+    outside_mount = next(
+        mount
+        for mount in request.policy.mounts
+        if mount.host_path == outside.resolve(strict=False)
+    )
+    assert request.cwd == outside.resolve(strict=False)
+    assert workspace_mount.host_path == workspace.resolve(strict=False)
+    assert workspace_mount.mode == "rw"
+    assert outside_mount.mode == "ro"
 
 
 @pytest.mark.asyncio

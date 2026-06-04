@@ -351,9 +351,25 @@ def _workspace_root_for_path_access() -> Path | None:
     if ctx is not None and ctx.workspace_dir:
         return Path(ctx.workspace_dir).expanduser().resolve(strict=False)
     runtime = get_runtime()
-    if runtime is not None:
-        return runtime.workspace.expanduser().resolve(strict=False)
+    runtime_workspace = getattr(runtime, "workspace", None) if runtime is not None else None
+    if runtime_workspace is not None:
+        return Path(runtime_workspace).expanduser().resolve(strict=False)
     return None
+
+
+def _sandbox_shell_policy_cwd(cwd: str | None) -> Path | None:
+    workspace = _workspace_root_for_path_access()
+    if workspace is not None:
+        return workspace
+    if cwd:
+        return Path(cwd).expanduser().resolve(strict=False)
+    return None
+
+
+def _sandbox_shell_backend_cwd(cwd: str | None, request: SandboxRequest) -> Path:
+    if cwd:
+        return Path(cwd).expanduser().resolve(strict=False)
+    return request.cwd
 
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
@@ -906,7 +922,7 @@ async def exec_command(
         decision, policy, request = await gate_action(
             action_kind="shell.exec",
             argv=("exec_command", command),
-            cwd=Path(workdir) if workdir else None,
+            cwd=_sandbox_shell_policy_cwd(cwd),
             env=merged_env,
             hints=_level_hints_for_shell_profile(
                 profile,
@@ -917,7 +933,7 @@ async def exec_command(
             return json.dumps(decision.to_dict())
         backend_request = SandboxRequest(
             argv=("sh", "-lc", command),
-            cwd=request.cwd,
+            cwd=_sandbox_shell_backend_cwd(cwd, request),
             action_kind=request.action_kind,
             policy=request.policy,
             stdin=None,
@@ -1049,7 +1065,7 @@ async def background_process(
         decision, policy, request = await gate_action(
             action_kind="shell.background",
             argv=("background_process", command),
-            cwd=Path(workdir) if workdir else None,
+            cwd=_sandbox_shell_policy_cwd(cwd),
             env=dict(os.environ),
             hints=_level_hints_for_shell_profile(
                 profile,
@@ -1060,7 +1076,7 @@ async def background_process(
             return json.dumps(decision.to_dict())
         backend_request = SandboxRequest(
             argv=("sh", "-lc", command),
-            cwd=request.cwd,
+            cwd=_sandbox_shell_backend_cwd(cwd, request),
             action_kind=request.action_kind,
             policy=policy,
             env=dict(os.environ),

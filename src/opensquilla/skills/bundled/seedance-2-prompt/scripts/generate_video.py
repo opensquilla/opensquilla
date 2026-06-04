@@ -275,13 +275,117 @@ def _encode_input_image(path: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
-def _resolve_api_key(provided: str | None, env_names: Iterable[str]) -> str | None:
+def _home_dir() -> Path:
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        return Path(home).expanduser()
+    return Path.home()
+
+
+def _expand_user(path: str) -> Path:
+    if path == "~":
+        return _home_dir()
+    if path.startswith("~/") or path.startswith("~\\"):
+        return _home_dir() / path[2:]
+    return Path(path).expanduser()
+
+
+def _default_opensquilla_home() -> Path:
+    state_dir = (os.environ.get("OPENSQUILLA_STATE_DIR") or "").strip()
+    if state_dir:
+        return _expand_user(state_dir)
+    return _home_dir() / ".opensquilla"
+
+
+def _gateway_config_candidates() -> list[Path]:
+    config_path = (os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH") or "").strip()
+    if config_path:
+        return [_expand_user(config_path)]
+    return [
+        Path.cwd() / "opensquilla.toml",
+        _default_opensquilla_home() / "config.toml",
+    ]
+
+
+def _selected_llm_config() -> dict | None:
+    """Return the llm table from the config file GatewayConfig would select.
+
+    This intentionally stops at the first existing candidate, matching
+    ``GatewayConfig.load``. In particular, ``OPENSQUILLA_STATE_DIR`` replaces
+    the default home; it is not a profile layered over ``~/.opensquilla``.
+    """
+    import tomllib
+
+    for path in _gateway_config_candidates():
+        try:
+            if not path.is_file():
+                continue
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+        except (OSError, tomllib.TOMLDecodeError):
+            return {}
+        llm = data.get("llm") if isinstance(data, dict) else None
+        return llm if isinstance(llm, dict) else {}
+    return None
+
+
+def _config_llm_provider(llm: dict | None) -> str:
+    if llm is None:
+        return "openrouter"
+    return str(llm.get("provider") or "openrouter").strip().lower()
+
+
+def _effective_llm_provider(llm: dict | None) -> str:
+    if isinstance(llm, dict) and "provider" in llm:
+        return _config_llm_provider(llm)
+    env_provider = (os.environ.get("OPENSQUILLA_LLM_PROVIDER") or "").strip()
+    if env_provider:
+        return env_provider.lower()
+    return _config_llm_provider(llm)
+
+
+def _openrouter_llm_env_key(llm: dict | None) -> str | None:
+    if _effective_llm_provider(llm) != "openrouter":
+        return None
+    return (os.environ.get("OPENSQUILLA_LLM_API_KEY") or "").strip() or None
+
+
+def _openrouter_key_from_config(llm: dict | None) -> str | None:
+    """Fallback: read OpenRouter credentials from the selected TOML config.
+
+    Bundled skills run as detached Python subprocesses and cannot
+    import opensquilla, so this duplicates the config-discovery logic
+    from ``opensquilla.gateway.config.GatewayConfig.load`` and
+    ``opensquilla.paths.default_opensquilla_home`` deliberately.
+    """
+    if not isinstance(llm, dict) or _effective_llm_provider(llm) != "openrouter":
+        return None
+    key = str(llm.get("api_key") or "").strip()
+    if key:
+        return key
+    key_env = str(llm.get("api_key_env") or "").strip()
+    if key_env:
+        return (os.environ.get(key_env) or "").strip() or None
+    return None
+
+
+def _resolve_api_key(
+    provided: str | None,
+    env_names: Iterable[str],
+    *,
+    provider_name: str = "",
+) -> str | None:
     if provided:
-        return provided.strip()
+        key = provided.strip()
+        if key:
+            return key
     for name in env_names:
         val = (os.environ.get(name) or "").strip()
         if val:
             return val
+    if provider_name == "openrouter":
+        llm = _selected_llm_config()
+        return _openrouter_llm_env_key(llm) or _openrouter_key_from_config(llm)
     return None
 
 
@@ -481,13 +585,23 @@ def main() -> int:
     provider = PROVIDERS[raw.provider]
     base_url = raw.base_url or provider.default_base_url
     model_id = raw.model or provider.default_model
-    api_key = _resolve_api_key(raw.api_key or None, provider.default_env)
+    api_key = _resolve_api_key(
+        raw.api_key or None, provider.default_env, provider_name=provider.name,
+    )
     if not api_key:
         env_hint = " / ".join(provider.default_env)
-        print(
-            f"Error: no API key. Pass --api-key or set one of: {env_hint}.",
-            file=sys.stderr,
-        )
+        if provider.name == "openrouter":
+            print(
+                "Error: no OpenRouter API key found. Pass --api-key, set "
+                "OPENROUTER_API_KEY, or configure an OpenRouter llm key in "
+                "OpenSquilla config.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Error: no API key. Pass --api-key or set one of: {env_hint}.",
+                file=sys.stderr,
+            )
         return 1
 
     if raw.input_image and not Path(raw.input_image).is_file():

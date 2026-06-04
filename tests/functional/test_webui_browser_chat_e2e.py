@@ -4240,3 +4240,199 @@ def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
     assert payload["sessionDeleteFalseSuccess"] is False
     assert payload["logState"]["tailCalls"] >= 2
     assert payload["logState"]["maxInFlight"] == 1
+
+
+def test_meta_skill_ribbon_renders_and_progresses_in_real_browser(tmp_path: Path) -> None:
+    """P0-1 ribbon: inject meta-skill events through the RPC bus and assert
+    the ribbon renders, chip states advance through running → succeeded, and
+    the counter reaches its declared total.
+
+    We bypass the meta-skill scheduler — the events are pushed directly to
+    chat.js's ``_rpc.on`` listeners. This isolates the front-end contract
+    (announce → state → completed) from scheduler timing.
+    """
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_meta_ribbon_server.py"
+    browser_script = tmp_path / "webui_meta_ribbon_browser.js"
+    out_path = tmp_path / "meta_ribbon_payload.json"
+
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+            const fs = require("fs");
+
+            function fire(page, name, payload) {
+              return page.evaluate(
+                ({ name, payload }) => {
+                  const rpc = App.getRpc();
+                  const ls = rpc._listeners;
+                  const handlers = ls.get(name);
+                  if (handlers) handlers.forEach(h => h(payload));
+                },
+                { name, payload }
+              );
+            }
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage();
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+
+              const RUN_ID = "r-meta-1";
+              await fire(page, "session.event.meta_run_announced", {
+                run_id: RUN_ID,
+                meta_skill_name: "meta-stub-two-step",
+                steps: [
+                  { id: "intake", label: "意图提取", kind: "llm_chat", depends_on: [] },
+                  { id: "summary", label: "总结", kind: "llm_chat", depends_on: ["intake"] },
+                ],
+                total: 2,
+                parent_run_id: null,
+              });
+
+              await page.waitForSelector(".meta-ribbon", { timeout: 5000 });
+              const chipsAfterAnnounce = await page.$$eval(
+                ".meta-ribbon-chips .chip",
+                els => els.map(e => e.className)
+              );
+
+              await fire(page, "session.event.meta_step_state", {
+                run_id: RUN_ID, step_id: "intake", state: "running",
+              });
+              await fire(page, "session.event.meta_step_state", {
+                run_id: RUN_ID, step_id: "intake", state: "succeeded",
+              });
+              await fire(page, "session.event.meta_step_state", {
+                run_id: RUN_ID, step_id: "summary", state: "running",
+              });
+              await fire(page, "session.event.meta_step_state", {
+                run_id: RUN_ID, step_id: "summary", state: "succeeded",
+              });
+              await fire(page, "session.event.meta_run_completed", {
+                run_id: RUN_ID,
+                outcome: "ok",
+                completed_steps: ["intake", "summary"],
+                failed_steps: [],
+                skipped_steps: [],
+              });
+
+              await page.waitForFunction(
+                () =>
+                  document.querySelector(".meta-ribbon-counter")?.textContent === "2/2",
+                { timeout: 5000 }
+              );
+
+              const finalCounter = await page.$eval(
+                ".meta-ribbon-counter",
+                el => el.textContent
+              );
+              const finalChips = await page.$$eval(
+                ".meta-ribbon-chips .chip",
+                els => els.map(e => e.className)
+              );
+              const title = await page.$eval(
+                ".meta-ribbon-title",
+                el => el.textContent
+              );
+
+              fs.writeFileSync(process.env.OUT_PATH, JSON.stringify({
+                chipsAfterAnnounce,
+                finalCounter,
+                finalChips,
+                title,
+                errors,
+              }));
+
+              await browser.close();
+            })();
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.time() + 30
+        ready = False
+        while time.time() < deadline:
+            try:
+                r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
+                if r.status_code < 500:
+                    ready = True
+                    break
+            except httpx.HTTPError:
+                pass
+            time.sleep(0.1)
+        if not ready:
+            pytest.skip("gateway did not start in time")
+
+        subprocess.run(
+            ["node", str(browser_script)],
+            check=True,
+            env={
+                **os.environ,
+                "TARGET_URL": f"http://127.0.0.1:{port}/",
+                "OUT_PATH": str(out_path),
+            },
+            timeout=60,
+        )
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+
+    assert not payload["errors"], f"page errors: {payload['errors']}"
+    assert payload["title"] == "meta-stub-two-step"
+    assert payload["finalCounter"] == "2/2"
+    # All chips landed in succeeded class on the success path.
+    assert len(payload["chipsAfterAnnounce"]) == 2
+    for cls in payload["finalChips"]:
+        assert "succeeded" in cls, f"chip class did not reach succeeded: {cls}"

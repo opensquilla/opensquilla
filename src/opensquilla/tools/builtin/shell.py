@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -41,6 +41,7 @@ from opensquilla.sandbox.integration import (
     gate_action,
     get_runtime,
     preflight_subprocess_managed_network,
+    prepare_subprocess_managed_network_proxy,
     run_under_backend,
 )
 from opensquilla.sandbox.operation_profile import OperationProfile, classify_command
@@ -121,12 +122,14 @@ class _BgSession:
     returncode: int | None = None
     collector_task: asyncio.Task[None] | None = None
     cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list)
+    async_cleanup_callbacks: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class _SpawnedBackgroundProcess:
     process: asyncio.subprocess.Process
     cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list)
+    async_cleanup_callbacks: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
 
 
 # Task-local flag for a single host rerun after the sandbox backend itself
@@ -715,6 +718,15 @@ def _finalize_bg_session(session: _BgSession) -> None:
             callback()
 
 
+async def _finalize_bg_session_async(session: _BgSession) -> None:
+    _finalize_bg_session(session)
+    callbacks = list(session.async_cleanup_callbacks)
+    session.async_cleanup_callbacks.clear()
+    for callback in callbacks:
+        with contextlib.suppress(Exception):
+            await callback()
+
+
 def _signal_bg_process(session: _BgSession, sig: signal.Signals) -> None:
     proc = session.process
     if proc.returncode is not None:
@@ -1105,10 +1117,18 @@ async def background_process(
             return json.dumps(preflight.to_dict())
         if isinstance(preflight, dict):
             return json.dumps(preflight)
-        spawned = await _spawn_sandboxed_background_process(
+        managed_network = await prepare_subprocess_managed_network_proxy(
+            backend_request,
             runtime=runtime,
-            request=backend_request,
         )
+        try:
+            spawned = await _spawn_sandboxed_background_process(
+                runtime=runtime,
+                request=managed_network.request,
+            )
+        except Exception:
+            await managed_network.cleanup()
+            raise
         session_id = str(uuid.uuid4())[:8]
         ctx = current_tool_context.get()
         session = _BgSession(
@@ -1120,6 +1140,10 @@ async def background_process(
             is_owner_run=bool(ctx.is_owner) if ctx is not None else False,
             local_urls=_local_server_urls_from_command(command),
             cleanup_callbacks=spawned.cleanup_callbacks,
+            async_cleanup_callbacks=[
+                *spawned.async_cleanup_callbacks,
+                managed_network.cleanup,
+            ],
         )
         _bg_sessions[session_id] = session
         effective_timeout = _resolve_background_timeout(timeout)
@@ -1134,7 +1158,7 @@ async def background_process(
                 session.output_lines.append(f"[timeout after {effective_timeout}s]\n")
             finally:
                 await _await_bg_output_task(output_task)
-                _finalize_bg_session(session)
+                await _finalize_bg_session_async(session)
 
         session.collector_task = asyncio.create_task(_collect_restricted())
         return _background_process_result(session)
@@ -1191,7 +1215,7 @@ async def background_process(
             session.output_lines.append(f"[timeout after {effective_timeout}s]\n")
         finally:
             await _await_bg_output_task(output_task)
-            _finalize_bg_session(session)
+            await _finalize_bg_session_async(session)
 
     session.collector_task = asyncio.create_task(_collect_host())
 
@@ -1355,7 +1379,7 @@ async def process(
                         timeout=_BACKGROUND_KILL_TIMEOUT,
                     )
             if not session.done:
-                _finalize_bg_session(session)
+                await _finalize_bg_session_async(session)
             status = _bg_status(session)
             return json.dumps(
                 {
@@ -1376,7 +1400,7 @@ async def process(
                     timeout=_BACKGROUND_KILL_TIMEOUT,
                 )
         if not session.done:
-            _finalize_bg_session(session)
+            await _finalize_bg_session_async(session)
         status = _bg_status(session)
         return json.dumps(
             {

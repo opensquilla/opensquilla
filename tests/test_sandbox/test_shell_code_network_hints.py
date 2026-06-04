@@ -11,7 +11,7 @@ import pytest
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime
-from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_context import DomainGrant, RunContext
 from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
@@ -242,6 +242,69 @@ async def test_shell_unknown_explicit_url_queues_network_approval_before_proxy_r
     pending = get_approval_queue().list_pending("exec")
     assert len(pending) == 1
     assert pending[0]["params"]["host"] == "unknown.test"
+
+
+@pytest.mark.asyncio
+async def test_background_shell_network_spawn_receives_managed_proxy(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    class _FakeStream:
+        async def read(self, size: int) -> bytes:
+            return b""
+
+    class _FakeProcess:
+        stdout = _FakeStream()
+        stdin = None
+        returncode = 0
+
+        async def wait(self) -> int:
+            return 0
+
+    seen: dict[str, object] = {}
+
+    async def _fake_spawn(*, runtime: object, request: object) -> object:
+        seen["policy"] = request.policy
+        assert request.policy.network_proxy is not None
+        return shell._SpawnedBackgroundProcess(process=_FakeProcess())  # type: ignore[arg-type]
+
+    monkeypatch.setattr(shell, "_spawn_sandboxed_background_process", _fake_spawn)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.STANDARD,
+                domains=(DomainGrant(domain="example.com"),),
+            ),
+        )
+    )
+    try:
+        result = await shell.background_process(
+            "curl https://example.com",
+            workdir=str(managed_runtime),
+            timeout=5,
+        )
+        session_id = result.splitlines()[0].split("=", 1)[1]
+        session = shell._bg_sessions[session_id]
+        assert session.collector_task is not None
+        await session.collector_task
+    finally:
+        current_tool_context.reset(token)
+
+    assert "policy" in seen
 
 
 @pytest.mark.asyncio

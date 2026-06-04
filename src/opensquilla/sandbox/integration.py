@@ -145,6 +145,14 @@ class SandboxRuntime:
     workspace: Path
 
 
+@dataclass(frozen=True)
+class ManagedNetworkSubprocess:
+    """A subprocess request plus cleanup for a live managed-network proxy."""
+
+    request: SandboxRequest
+    cleanup: Callable[[], Awaitable[None]]
+
+
 _runtime: SandboxRuntime | None = None
 
 
@@ -512,6 +520,10 @@ async def run_under_backend(
     return await rt.backend.run(request)
 
 
+async def _noop_managed_network_cleanup() -> None:
+    return None
+
+
 def _current_run_context_for_network_proxy() -> RunContext | None:
     return current_tool_run_context()
 
@@ -588,6 +600,39 @@ async def _run_with_managed_network_proxy(
     request: SandboxRequest,
     runtime: SandboxRuntime,
 ) -> SandboxResult:
+    managed = await prepare_subprocess_managed_network_proxy(request, runtime=runtime)
+    try:
+        return await runtime.backend.run(managed.request)
+    finally:
+        await managed.cleanup()
+
+
+async def prepare_subprocess_managed_network_proxy(
+    request: SandboxRequest,
+    *,
+    runtime: SandboxRuntime | None = None,
+) -> ManagedNetworkSubprocess:
+    """Start the managed proxy needed by a subprocess sandbox request.
+
+    Foreground subprocess tools can await :func:`run_under_backend`; background
+    subprocess tools need the proxy to outlive process creation. This helper
+    returns a request with ``network_proxy`` populated and an async cleanup
+    callback that must run after the subprocess exits or spawn fails.
+    """
+    if (
+        request.policy.network != NetworkMode.PROXY_ALLOWLIST
+        or request.policy.network_proxy is not None
+    ):
+        return ManagedNetworkSubprocess(
+            request=request,
+            cleanup=_noop_managed_network_cleanup,
+        )
+
+    rt = runtime or get_runtime()
+    if rt is None:
+        raise SandboxBackendError(
+            "Sandbox runtime is not configured; refusing to start managed network proxy"
+        )
     context = _current_run_context_for_network_proxy()
     if context is None:
         raise SandboxBackendError(
@@ -613,7 +658,7 @@ async def _run_with_managed_network_proxy(
             )
         ):
             consume_temporary_network_grant(
-                session_key=_resolve_session_id(runtime, None),
+                session_key=_resolve_session_id(rt, None),
                 workspace=str(request.cwd),
                 host=decision.normalized_host,
                 fingerprint=fingerprint,
@@ -623,7 +668,7 @@ async def _run_with_managed_network_proxy(
 
     on_upstream_opened = _auto_trusted_persistence_callback(
         request,
-        runtime,
+        rt,
         context=context,
     )
     if on_upstream_opened is None:
@@ -631,21 +676,25 @@ async def _run_with_managed_network_proxy(
     else:
         proxy = SandboxProxyServer(_decide, on_upstream_opened=on_upstream_opened)
     await proxy.start()
-    try:
-        policy = dataclasses.replace(
-            request.policy,
-            network_proxy=NetworkProxySpec(host=proxy.host, port=proxy.port),
-        )
-        return await runtime.backend.run(request.with_policy(policy))
-    finally:
+
+    async def _cleanup() -> None:
         for host in consumed_hosts:
             await consume_persisted_temporary_network_grant(
-                session_key=_resolve_session_id(runtime, None),
+                session_key=_resolve_session_id(rt, None),
                 workspace=str(request.cwd),
                 host=host,
                 fingerprint=fingerprint,
             )
         await proxy.stop()
+
+    policy = dataclasses.replace(
+        request.policy,
+        network_proxy=NetworkProxySpec(host=proxy.host, port=proxy.port),
+    )
+    return ManagedNetworkSubprocess(
+        request=request.with_policy(policy),
+        cleanup=_cleanup,
+    )
 
 
 def current_managed_network_proxy_url() -> str | None:
@@ -1369,7 +1418,9 @@ __all__ = [
     "get_runtime",
     "guard_in_process_network_action",
     "managed_network_httpx_kwargs",
+    "ManagedNetworkSubprocess",
     "preflight_subprocess_managed_network",
+    "prepare_subprocess_managed_network_proxy",
     "record_success",
     "reset_runtime",
     "run_in_process_network_action",

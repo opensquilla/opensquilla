@@ -122,6 +122,14 @@ def test_classify_destructive_shell() -> None:
     assert profile.high_impact is True
 
 
+def test_destructive_command_tracks_obvious_write_target_paths() -> None:
+    profile = classify_command(("rm", "-f", "/tmp/outside.txt"))
+
+    assert profile.name == "destructive_shell"
+    assert profile.high_impact is True
+    assert profile.requested_write_paths == ("/tmp/outside.txt",)
+
+
 def test_top_level_destructive_command_dominates_url_detection() -> None:
     profile = classify_command(("rm", "-rf", "https://example.com"))
     assert profile.name == "destructive_shell"
@@ -241,6 +249,14 @@ def test_shell_wrapper_preserves_obvious_destructive_impact() -> None:
     assert profile.high_impact is True
     assert profile.needs_network is True
     assert profile.requested_domains == ("example.com",)
+
+
+def test_shell_wrapper_preserves_destructive_write_target_paths() -> None:
+    profile = classify_command(("sh", "-lc", "rm -f /tmp/outside.txt"))
+
+    assert profile.name == "destructive_shell"
+    assert profile.high_impact is True
+    assert profile.requested_write_paths == ("/tmp/outside.txt",)
 
 
 def test_shell_wrapper_finds_c_option_after_long_options() -> None:

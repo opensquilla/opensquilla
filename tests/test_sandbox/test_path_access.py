@@ -148,18 +148,14 @@ def test_request_path_builds_structured_mount_escalation_choices(tmp_path: Path)
     assert proposal["path"] == str(sibling.resolve(strict=False))
     assert proposal["access"] == "rw"
     assert [choice["id"] for choice in proposal["choices"]] == [
-        "mount_ro_chat",
         "mount_rw_chat",
-        "mount_ro_user",
         "deny",
     ]
     assert [choice["label"] for choice in proposal["choices"]] == [
-        "Allow read for this chat",
         "Allow read/write for this chat",
-        "Remember read access",
         "Deny",
     ]
-    assert "copy files into the workspace" in proposal["choices"][0]["description"]
+    assert proposal["choices"][0]["style"] == "primary"
 
 
 def test_blocked_path_has_no_mount_escalation_choices(tmp_path: Path) -> None:
@@ -418,7 +414,7 @@ async def test_filesystem_write_outside_workspace_requests_rw_mount(tmp_path: Pa
     assert payload["path"] == str(outside.resolve(strict=False))
     assert payload["access"] == "rw"
     assert payload["approvalKind"] == "sandbox_path"
-    assert payload["choices"][1]["id"] == "mount_rw_chat"
+    assert [choice["id"] for choice in payload["choices"]] == ["mount_rw_chat", "deny"]
     assert not outside.exists()
 
 
@@ -868,7 +864,7 @@ async def test_write_retry_uses_resolved_rw_mount_even_with_stale_tool_context(
 
 
 @pytest.mark.asyncio
-async def test_write_retry_stays_blocked_after_resolving_ro_mount(
+async def test_write_request_rejects_ro_mount_choice(
     tmp_path: Path,
 ) -> None:
     from opensquilla.gateway.rpc import RpcContext, get_dispatcher
@@ -904,12 +900,6 @@ async def test_write_retry_stays_blocked_after_resolving_ro_mount(
             {"id": approval_id, "approved": True, "choice": "mount_ro_chat"},
             RpcContext(conn_id="test", session_manager=manager, config=config),
         )
-        assert result.error is None, result.error
+        assert result.error is not None
 
-        retried = json.loads(
-            await fs.write_file(str(outside), "outside body\n", approval_id=approval_id)
-        )
-
-    assert retried["status"] == "approval_required"
-    assert retried["access"] == "rw"
     assert outside.exists() is False

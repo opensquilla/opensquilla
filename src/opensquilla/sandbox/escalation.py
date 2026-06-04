@@ -89,11 +89,18 @@ def build_path_approval_params(
 ) -> dict[str, object] | None:
     if decision.status != "request":
         return None
-    params: dict[str, object] = {
-        "approvalKind": "sandbox_path",
-        "path": decision.normalized_path,
-        "access": decision.access,
-        "choices": [
+    if decision.access == "rw":
+        choices = [
+            _choice(
+                "mount_rw_chat",
+                "Allow read/write for this chat",
+                style="primary",
+                description="OpenSquilla can read and modify files under this path.",
+            ),
+            _choice("deny", "Deny", approved=False, style="danger"),
+        ]
+    else:
+        choices = [
             _choice(
                 "mount_ro_chat",
                 "Allow read for this chat",
@@ -114,7 +121,12 @@ def build_path_approval_params(
                 description="Allow future chats for this user to read this path.",
             ),
             _choice("deny", "Deny", approved=False, style="danger"),
-        ],
+        ]
+    params: dict[str, object] = {
+        "approvalKind": "sandbox_path",
+        "path": decision.normalized_path,
+        "access": decision.access,
+        "choices": choices,
     }
     if session_key:
         params["sessionKey"] = session_key
@@ -746,6 +758,7 @@ async def _apply_path_choice(
     session_key = _require_session_key(params)
     workspace = _workspace_param(params)
     path = _require_text(params, "path")
+    requested_access = str(params.get("access") or "").strip()
 
     if choice == "mount_ro_chat":
         access = "ro"
@@ -758,6 +771,9 @@ async def _apply_path_choice(
         scope = "workspace"
     else:
         raise ValueError(f"unknown_path_choice:{choice}")
+
+    if requested_access == "rw" and access != "rw":
+        raise ValueError("path_choice_requires_write_access")
 
     updated = await add_mount_grant(
         session_manager,

@@ -62,6 +62,8 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
                 needs_network=script_profile.needs_network,
                 package_manager=script_profile.package_manager,
                 requested_domains=script_profile.requested_domains,
+                requested_paths=script_profile.requested_paths,
+                requested_write_paths=script_profile.requested_write_paths,
                 high_impact=True,
             )
         if (
@@ -72,7 +74,11 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
             return script_profile
         return OperationProfile("unknown_shell")
     if _is_destructive(lowered):
-        return OperationProfile("destructive_shell", high_impact=True)
+        return OperationProfile(
+            "destructive_shell",
+            requested_write_paths=_path_args_from_argv(parts),
+            high_impact=True,
+        )
     domains = _domains_from_argv(parts)
     if domains and _command_uses_http_url(lowered):
         return OperationProfile("url_fetch", True, requested_domains=domains)

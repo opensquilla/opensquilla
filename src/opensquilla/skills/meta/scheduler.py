@@ -24,6 +24,7 @@ import structlog
 
 from opensquilla.engine.types import (
     AgentEvent,
+    MetaRunAnnouncedEvent,
     ToolResultEvent,
     ToolUseStartEvent,
 )
@@ -197,6 +198,29 @@ async def run_dag(
     if not ordered:
         yield MetaResult(ok=True, final_text="", step_outputs={})
         return
+
+    # Announce the static composition so the WebUI can seed its step
+    # ribbon before any per-step tool-call event arrives. Run-scoped id
+    # is the orchestrator's existing handle on this DAG run; if no
+    # explicit run_id is plumbed, fall back to the first step's id +
+    # plan name (good enough to bind ribbon DOM nodes; not used for
+    # persistence keys).
+    _run_id = getattr(match, "run_id", "") or f"{match.plan.name}:{id(match)}"
+    yield MetaRunAnnouncedEvent(
+        run_id=_run_id,
+        meta_skill_name=match.plan.name,
+        steps=[
+            {
+                "id": s.id,
+                "label": s.label,
+                "kind": s.kind,
+                "depends_on": list(s.depends_on),
+            }
+            for s in match.plan.steps
+        ],
+        total=len(match.plan.steps),
+        parent_run_id=None,
+    )
 
     steps_by_id: dict[str, MetaStep] = {s.id: s for s in ordered}
     pending_deps: dict[str, set[str]] = {

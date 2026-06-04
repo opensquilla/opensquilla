@@ -86,3 +86,36 @@ def test_running_precedes_succeeded(
         if isinstance(ev, MetaStepStateEvent) and ev.step_id == "intake"
     ]
     assert seq.index("running") < seq.index("succeeded")
+
+
+@pytest.fixture
+def make_skipped_match():
+    plan = MetaPlan(
+        name="meta-skip-fake",
+        triggers=("fake",),
+        priority=0,
+        steps=(
+            MetaStep(id="intake", skill="intake", kind="llm_chat", label="意图提取"),
+            MetaStep(
+                id="optional", skill="optional", kind="llm_chat",
+                label="可选", depends_on=("intake",), when="False",
+            ),
+        ),
+        final_text_mode="raw",
+    )
+    return MetaMatch(plan=plan, inputs={"user_message": "hi"})
+
+
+def test_skipped_emitted_on_when_false(
+    make_skipped_match, fake_dispatch_stream, fake_preface,
+):
+    events = asyncio.run(_collect_all_events(
+        make_skipped_match, fake_dispatch_stream, fake_preface,
+    ))
+
+    states = [
+        (ev.step_id, ev.state)
+        for ev in events
+        if isinstance(ev, MetaStepStateEvent)
+    ]
+    assert ("optional", "skipped") in states

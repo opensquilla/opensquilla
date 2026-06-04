@@ -383,6 +383,14 @@ async def run_dag(
                         ),
                     ),
                 )
+                await event_queue.put((
+                    step.id,
+                    MetaStepStateEvent(
+                        run_id=_run_id,
+                        step_id=step.id,
+                        state="skipped",
+                    ),
+                ))
                 await event_queue.put((step.id, _StepDone(text="", status="skipped")))
                 return
 

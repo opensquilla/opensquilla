@@ -103,16 +103,23 @@ See `references/recipes.md`, `references/modes-and-recipes.md`,
 ## Auth
 
 - `openrouter` provider API-key resolution order:
-  1. `OPENROUTER_API_KEY` env var
-  2. `OPENSQUILLA_LLM_API_KEY` env var (Pydantic shortcut for `llm.api_key`)
-  3. `llm.api_key` from the OpenSquilla TOML config (`./opensquilla.toml`,
-     then `$OPENSQUILLA_STATE_DIR/config.toml`, then
-     `~/.opensquilla/config.toml`) — only used when `llm.provider` in
-     the same file equals `"openrouter"`.
+  1. `--api-key` CLI argument
+  2. `OPENROUTER_API_KEY` env var
+  3. `OPENSQUILLA_LLM_API_KEY` env var, only when the effective
+     OpenSquilla LLM provider resolves to `openrouter`
+  4. `llm.api_key` or `llm.api_key_env` from the selected OpenSquilla
+     TOML config. Config discovery matches `GatewayConfig.load`:
+     explicit `OPENSQUILLA_GATEWAY_CONFIG_PATH` first; otherwise
+     `./opensquilla.toml`, then `default_opensquilla_home()/config.toml`.
+     `OPENSQUILLA_STATE_DIR` changes `default_opensquilla_home()`, so a
+     state-dir profile does not fall through to `~/.opensquilla`.
+     Config-file credentials are consumed only when the selected config's
+     `llm.provider` is `openrouter` or omitted.
 - `volcengine` / `byteplus` provider reads `ARK_API_KEY` (with provider-
   specific fallbacks `VOLC_ARK_API_KEY` / `BYTEPLUS_API_KEY`). No
-  config-file fallback for these — the OpenSquilla config file holds
-  the **agent's** key, which is OpenRouter, so it would not apply.
+  config-file fallback for these — the OpenSquilla `[llm]` config
+  describes the agent's selected LLM provider, not ARK / BytePlus video
+  credentials.
 - All three send the key as `Authorization: Bearer <key>`.
 - For OpenRouter the same bearer is also added when downloading the
   resulting `unsigned_urls[0]`. Volcengine returns pre-signed object

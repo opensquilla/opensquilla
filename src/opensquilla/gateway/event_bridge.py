@@ -11,9 +11,26 @@ from typing import Any
 
 import structlog
 
+from opensquilla.engine.types import AgentEvent
 from opensquilla.gateway.session_streams import get_session_streams
 
 log = structlog.get_logger(__name__)
+
+
+def bridge_event_name(event: AgentEvent) -> str:
+    """Return the canonical ``session.event.*`` name for an engine event.
+
+    Derives the name from the event's ``kind`` discriminator (e.g. a
+    :class:`~opensquilla.engine.types.MetaStepStateEvent` whose ``kind`` is
+    ``"meta_step_state"`` maps to ``"session.event.meta_step_state"``).
+
+    This single derivation point lets new event types (engine dataclasses
+    in :mod:`opensquilla.engine.types`) flow through to WebSocket
+    subscribers without per-event hardcoded mappings. Existing call
+    sites in ``channel_dispatch`` still use hardcoded strings; future
+    refactors can adopt this helper to centralise the mapping.
+    """
+    return f"session.event.{event.kind}"
 
 
 class EventBridge:

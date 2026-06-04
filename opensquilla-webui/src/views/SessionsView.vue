@@ -1,14 +1,13 @@
 <template>
-  <div class="sess-stage">
-    <header class="sess-stage__header">
-      <div class="sess-stage__title-block">
-        <span class="sess-stage__eyebrow">Control &middot; Sessions</span>
-        <h2 class="sess-stage__title">Sessions</h2>
-        <p class="sess-stage__subtitle">
+  <div class="sess-stage control-stage">
+    <header class="sess-stage__header control-stage__header">
+      <div class="sess-stage__title-block control-stage__title-block">
+        <h2 class="sess-stage__title control-stage__title">Sessions</h2>
+        <p class="sess-stage__subtitle control-stage__subtitle">
           Session history, current task activity, and agent runs — open one to chat, or clean up old state.
         </p>
       </div>
-      <div class="sess-stage__actions">
+      <div class="sess-stage__actions control-stage__actions">
         <div class="sess-search-wrap">
           <span class="sess-search-icon">
             <Icon name="search" :size="14" />
@@ -29,25 +28,25 @@
       </div>
     </header>
 
-    <section class="stat-row">
-      <div class="stat stat--hero">
-        <div class="stat-label">Total sessions</div>
-        <div class="stat-value">{{ totalSessions }}</div>
-        <div class="stat-hint">
+    <section class="stat-row control-stat-grid control-stat-grid--fixed" style="--control-stat-columns: 3">
+      <div class="stat stat--hero control-stat control-stat--hero">
+        <div class="stat-label control-stat__label">Total sessions</div>
+        <div class="stat-value control-stat__value">{{ totalSessions }}</div>
+        <div class="stat-hint control-stat__hint">
           {{ lifecycleOpen }} open &middot; {{ doneCount }} completed &middot; {{ failedOrTimedOut }} failed/timed out &middot; {{ abortedCount }} aborted
         </div>
       </div>
-      <div class="stat" title="Sessions with queued or running tasks">
-        <div class="stat-label">Executing</div>
-        <div class="stat-value">
+      <div class="stat control-stat" title="Sessions with queued or running tasks">
+        <div class="stat-label control-stat__label">Executing</div>
+        <div class="stat-value control-stat__value">
           {{ activeRuns }}<span v-if="activeRuns > 0" class="dot ok"></span>
         </div>
-        <div class="stat-hint">{{ activeRuns ? 'tasks queued/running' : 'none executing' }}</div>
+        <div class="stat-hint control-stat__hint">{{ activeRuns ? 'tasks queued/running' : 'none executing' }}</div>
       </div>
-      <div class="stat">
-        <div class="stat-label">Messages</div>
-        <div class="stat-value mono">{{ totalMessages.toLocaleString() }}</div>
-        <div class="stat-hint">{{ distinctAgents.size }} agent{{ distinctAgents.size === 1 ? '' : 's' }} &middot; across all sessions</div>
+      <div class="stat control-stat">
+        <div class="stat-label control-stat__label">Messages</div>
+        <div class="stat-value mono control-stat__value control-stat__value--mono">{{ totalMessages.toLocaleString() }}</div>
+        <div class="stat-hint control-stat__hint">{{ distinctAgents.size }} agent{{ distinctAgents.size === 1 ? '' : 's' }} &middot; across all sessions</div>
       </div>
     </section>
 
@@ -284,37 +283,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
-import {
-  SESSION_LIST_VIEW,
-  normalizeSessionItem,
-  sessionMatches,
-  type SessionItem,
-} from '@/composables/useSessions'
-import type { RawSessionListEntry } from '@/types/rpc'
+import { useSessionsData } from '@/composables/sessions/useSessionsData'
+import { useSessionTableState } from '@/composables/sessions/useSessionTableState'
+import { copyTextWithFallback } from '@/utils/browser'
+import type { SessionItem } from '@/composables/useSessions'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface Agent {
-  id: string
-  name?: string
-  model?: string
-  isBuiltin?: boolean
-  type?: string
-}
-
-interface AgentsListData {
-  agents?: Agent[]
-}
-
-interface SessionsListData {
-  sessions?: RawSessionListEntry[]
-}
 
 interface DeleteResponse {
   deleted?: string[]
@@ -332,193 +311,36 @@ const rpc = useRpcStore()
 // State
 // ---------------------------------------------------------------------------
 
-const allSessions = ref<SessionItem[]>([])
-const filtered = ref<SessionItem[]>([])
-const sortCol = ref<'title' | 'groupLabel' | 'updatedAt' | 'messageCount'>('updatedAt')
-const sortAsc = ref(false)
-const page = ref(0)
-const pageSize = ref(25)
-const selected = ref<Set<string>>(new Set())
-const searchVal = ref('')
-const searchInput = ref('')
-const agentsById = ref<Map<string, Agent>>(new Map())
+const {
+  allSessions,
+  filtered,
+  sortCol,
+  sortAsc,
+  page,
+  pageSize,
+  selected,
+  searchVal,
+  searchInput,
+  totalPages,
+  slice,
+  allOnPageSelected,
+  totalSessions,
+  lifecycleOpen,
+  activeRuns,
+  doneCount,
+  failedOrTimedOut,
+  abortedCount,
+  totalMessages,
+  distinctAgents,
+  setSessions,
+  onSearchInput,
+  setSort,
+  toggleRow,
+  toggleSelectAll,
+  clearSelection,
+} = useSessionTableState()
 
-let searchDebounceId: ReturnType<typeof setTimeout> | null = null
-let pollInterval: ReturnType<typeof setInterval> | null = null
-
-// ---------------------------------------------------------------------------
-// Computed
-// ---------------------------------------------------------------------------
-
-const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
-
-const slice = computed(() => {
-  const tp = totalPages.value
-  page.value = Math.min(page.value, tp - 1)
-  return filtered.value.slice(page.value * pageSize.value, (page.value + 1) * pageSize.value)
-})
-
-const allOnPageSelected = computed(() => {
-  return slice.value.length > 0 && slice.value.every(s => selected.value.has(s.key))
-})
-
-const totalSessions = computed(() => allSessions.value.length)
-
-const lifecycleOpen = computed(() => allSessions.value.filter(s => s.status === 'running').length)
-
-const activeRuns = computed(() =>
-  allSessions.value.filter(s => s.runStatus === 'queued' || s.runStatus === 'running').length
-)
-
-const doneCount = computed(() =>
-  allSessions.value.filter(s => sessionVisualStatus(s) === 'done').length
-)
-
-const failedOrTimedOut = computed(() =>
-  allSessions.value.filter(s => {
-    const status = sessionVisualStatus(s)
-    return status === 'failed' || status === 'timeout'
-  }).length
-)
-
-const abortedCount = computed(() =>
-  allSessions.value.filter(s => sessionVisualStatus(s) === 'killed').length
-)
-
-const totalMessages = computed(() =>
-  allSessions.value.reduce((acc, s) => acc + (Number(s.messageCount) || 0), 0)
-)
-
-const distinctAgents = computed(() => {
-  const agents = new Set<string>()
-  allSessions.value.forEach(s => {
-    if (s.effectiveAgentId && s.effectiveAgentId !== 'unknown') agents.add(s.effectiveAgentId)
-  })
-  return agents
-})
-
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
-
-onMounted(() => {
-  loadData()
-  pollInterval = setInterval(loadData, 30000)
-})
-
-onUnmounted(() => {
-  if (pollInterval) {
-    clearInterval(pollInterval)
-    pollInterval = null
-  }
-})
-
-// ---------------------------------------------------------------------------
-// Data loading
-// ---------------------------------------------------------------------------
-
-async function loadData() {
-  try {
-    await rpc.waitForConnection()
-  } catch {
-    return
-  }
-
-  const [sessRes, agentsRes] = await Promise.allSettled([
-    rpc.call<SessionsListData>('sessions.list', { limit: 200, view: SESSION_LIST_VIEW }),
-    rpc.call<AgentsListData>('agents.list'),
-  ])
-
-  if (agentsRes.status === 'fulfilled') {
-    const list = agentsRes.value?.agents || []
-    agentsById.value = new Map(list.map(a => [a.id, a]))
-  }
-
-  if (sessRes.status === 'fulfilled') {
-    allSessions.value = (sessRes.value?.sessions || [])
-      .map(normalizeSessionItem)
-      .filter((item): item is SessionItem => !!item)
-    selected.value.clear()
-    applyFilter()
-  } else {
-    console.warn('Failed to load sessions: ' + (sessRes.reason?.message || 'unknown error'))
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Filtering & Sorting
-// ---------------------------------------------------------------------------
-
-function onSearchInput() {
-  if (searchDebounceId !== null) clearTimeout(searchDebounceId)
-  searchDebounceId = setTimeout(() => {
-    searchDebounceId = null
-    searchVal.value = searchInput.value.trim().toLowerCase()
-    page.value = 0
-    selected.value.clear()
-    applyFilter()
-  }, 180)
-}
-
-function applyFilter() {
-  if (!searchVal.value) {
-    filtered.value = [...allSessions.value]
-  } else {
-    const sv = searchVal.value
-    filtered.value = allSessions.value.filter(s => sessionMatches(s, sv))
-  }
-  sortData()
-}
-
-function sortData() {
-  filtered.value.sort((a, b) => {
-    let va: string | number = a[sortCol.value] ?? ''
-    let vb: string | number = b[sortCol.value] ?? ''
-    if (sortCol.value === 'messageCount' || sortCol.value === 'updatedAt') {
-      va = Number(va) || 0
-      vb = Number(vb) || 0
-    } else {
-      va = String(va).toLowerCase()
-      vb = String(vb).toLowerCase()
-    }
-    const cmp = va < vb ? -1 : va > vb ? 1 : 0
-    return sortAsc.value ? cmp : -cmp
-  })
-}
-
-function setSort(col: 'title' | 'groupLabel' | 'updatedAt' | 'messageCount') {
-  if (sortCol.value === col) {
-    sortAsc.value = !sortAsc.value
-  } else {
-    sortCol.value = col
-    sortAsc.value = true
-  }
-  sortData()
-}
-
-// ---------------------------------------------------------------------------
-// Selection
-// ---------------------------------------------------------------------------
-
-function toggleRow(key: string) {
-  if (selected.value.has(key)) {
-    selected.value.delete(key)
-  } else {
-    selected.value.add(key)
-  }
-}
-
-function toggleSelectAll() {
-  if (allOnPageSelected.value) {
-    slice.value.forEach(s => selected.value.delete(s.key))
-  } else {
-    slice.value.forEach(s => selected.value.add(s.key))
-  }
-}
-
-function clearSelection() {
-  selected.value.clear()
-}
+const { agentsById, loadData } = useSessionsData(setSessions)
 
 // ---------------------------------------------------------------------------
 // Actions
@@ -534,7 +356,7 @@ function goToAgents() {
 
 async function copyKey(key: string) {
   try {
-    await navigator.clipboard.writeText(key)
+    await copyTextWithFallback(key)
     console.warn('Copied session key')
   } catch {
     console.warn('Copy failed')
@@ -712,72 +534,6 @@ function relTime(timestamp: number | undefined): string {
 </script>
 
 <style scoped>
-.sess-stage {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-5);
-  max-width: none;
-  position: relative;
-}
-
-.sess-stage__header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--sp-4);
-  padding-top: var(--sp-3);
-}
-
-.sess-stage__title-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.sess-stage__eyebrow {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-
-.sess-stage__title {
-  font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
-  font-weight: 700;
-  letter-spacing: 0;
-  line-height: 1.05;
-  position: relative;
-  margin: 0;
-}
-
-.sess-stage__title::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  bottom: -8px;
-  width: 36px;
-  height: 2px;
-  background: linear-gradient(90deg, var(--accent), transparent);
-  border-radius: 2px;
-}
-
-.sess-stage__subtitle {
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  margin: var(--sp-3) 0 0;
-  max-width: 60ch;
-}
-
-.sess-stage__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
-}
-
 /* Search */
 .sess-search-wrap {
   display: flex;
@@ -809,56 +565,8 @@ function relTime(timestamp: number | undefined): string {
   color: var(--text-dim);
 }
 
-/* Stats */
-.stat-row {
-  display: grid;
-  gap: var(--sp-3);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.stat {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  color: var(--text);
-  overflow: hidden;
-  padding: var(--sp-4);
-  position: relative;
-}
-
 .stat--hero {
   min-height: 116px;
-}
-
-.stat-label {
-  color: var(--text-dim);
-  display: block;
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  line-height: 1.25;
-  text-transform: uppercase;
-}
-
-.stat-value {
-  align-items: center;
-  display: flex;
-  font-size: 2rem;
-  font-variant-numeric: tabular-nums;
-  gap: 8px;
-  letter-spacing: 0;
-  line-height: 1.12;
-  margin-top: var(--sp-4);
-}
-
-.stat-value.mono {
-  font-family: var(--font-mono);
-}
-
-.stat-hint {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  margin-top: var(--sp-2);
 }
 
 .dot {

@@ -1,12 +1,11 @@
 <template>
-  <div class="ag-stage">
-    <header class="ag-stage__header">
-      <div class="ag-stage__title-block">
-        <span class="ag-stage__eyebrow">Control &middot; Agents</span>
-        <h2 class="ag-stage__title">Agents</h2>
-        <p class="ag-stage__subtitle">Custom personalities and skill sets you can chat with.</p>
+  <div class="ag-stage control-stage">
+    <header class="ag-stage__header control-stage__header">
+      <div class="ag-stage__title-block control-stage__title-block">
+        <h2 class="ag-stage__title control-stage__title">Agents</h2>
+        <p class="ag-stage__subtitle control-stage__subtitle">Custom personalities and skill sets you can chat with.</p>
       </div>
-      <div class="ag-stage__actions">
+      <div class="ag-stage__actions control-stage__actions">
         <button class="btn btn--ghost" title="Refresh" @click="loadData">
           <Icon name="refresh" :size="16" />
           <span>Refresh</span>
@@ -14,25 +13,25 @@
       </div>
     </header>
 
-    <section class="stat-row">
-      <div class="stat stat--hero">
-        <div class="stat-label">Total agents</div>
-        <div class="stat-value">{{ total }}</div>
-        <div class="stat-hint">
+    <section class="stat-row control-stat-grid control-stat-grid--fixed" style="--control-stat-columns: 3">
+      <div class="stat stat--hero control-stat control-stat--hero">
+        <div class="stat-label control-stat__label">Total agents</div>
+        <div class="stat-value control-stat__value">{{ total }}</div>
+        <div class="stat-hint control-stat__hint">
           {{ builtins ? `${builtins} built-in` : '' }}
           {{ builtins && customs ? ' &middot; ' : '' }}
           {{ customs ? `${customs} custom` : '' }}
         </div>
       </div>
-      <div class="stat">
-        <div class="stat-label">Models in use</div>
-        <div class="stat-value mono">{{ models.size || '—' }}</div>
-        <div class="stat-hint">{{ models.size ? 'distinct models' : 'unset' }}</div>
+      <div class="stat control-stat">
+        <div class="stat-label control-stat__label">Models in use</div>
+        <div class="stat-value mono control-stat__value control-stat__value--mono">{{ models.size || '—' }}</div>
+        <div class="stat-hint control-stat__hint">{{ models.size ? 'distinct models' : 'unset' }}</div>
       </div>
-      <div class="stat">
-        <div class="stat-label">Tools wired</div>
-        <div class="stat-value">{{ toolsCount }}</div>
-        <div class="stat-hint">across all agents</div>
+      <div class="stat control-stat">
+        <div class="stat-label control-stat__label">Tools wired</div>
+        <div class="stat-value control-stat__value">{{ toolsCount }}</div>
+        <div class="stat-hint control-stat__hint">across all agents</div>
       </div>
     </section>
 
@@ -70,12 +69,12 @@
         <p class="state-text">Use the form above to add one. The default <code>main</code> agent is always available.</p>
       </div>
 
-      <div v-else class="ag-cards">
+      <div v-else class="ag-cards control-card-grid" style="--control-card-min: 320px">
         <article
           v-for="(a, i) in agents"
           :key="a.id || a.name || i"
-          class="ag-card"
-          :class="{ 'is-builtin': isAgentBuiltin(a) }"
+          class="ag-card control-card control-card--interactive"
+          :class="{ 'is-builtin control-card--accent': isAgentBuiltin(a) }"
           :style="{ '--i': i }"
           tabindex="0"
           role="button"
@@ -215,7 +214,7 @@
                   <Icon name="plus" :size="16" />
                   <span>Customize&hellip;</span>
                 </button>
-                <button v-else class="btn btn--primary" @click="drawerMode = 'edit'">Edit</button>
+                <button v-else class="btn btn--primary" @click="enterEditMode">Edit</button>
               </template>
               <template v-else>
                 <button class="btn btn--ghost" @click="onCancelEdit">Cancel</button>
@@ -250,45 +249,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface Agent {
-  id?: string
-  name?: string
-  type?: string
-  isBuiltin?: boolean
-  description?: string
-  model?: string
-  tools?: string[]
-  skills?: string[]
-  workspace?: string
-  agent_dir?: string
-  agentDir?: string
-  enabled?: boolean
-  system_prompt?: string
-  systemPrompt?: string
-}
-
-interface AgentsListResponse {
-  agents?: Agent[]
-}
-
-interface AgentForm {
-  id: string
-  name: string
-  description: string
-  tools: string[]
-  workspace: string
-  agentDir: string
-  enabled: boolean
-}
+import { useAgentsData } from '@/composables/agents/useAgentsData'
+import { isAgentBuiltin, useAgentDrawer } from '@/composables/agents/useAgentDrawer'
+import type { Agent } from '@/types/agents'
 
 // ---------------------------------------------------------------------------
 // State
@@ -297,24 +264,9 @@ interface AgentForm {
 const rpc = useRpcStore()
 const router = useRouter()
 
-const agents = ref<Agent[]>([])
+const { agents, loadData } = useAgentsData()
 const newId = ref('')
 const newName = ref('')
-
-const drawerOpen = ref(false)
-const drawerMode = ref<'view' | 'edit'>('view')
-const drawerAgentId = ref('')
-const drawerIsBuiltin = ref(false)
-const drawerModel = ref('')
-const systemPromptHint = ref(false)
-const saving = ref(false)
-
-const initialForm = ref<AgentForm>({
-  id: '', name: '', description: '', tools: [], workspace: '', agentDir: '', enabled: true,
-})
-const form = ref<AgentForm>({
-  id: '', name: '', description: '', tools: [], workspace: '', agentDir: '', enabled: true,
-})
 
 const confirmOpen = ref(false)
 const confirmTitle = ref('')
@@ -323,7 +275,27 @@ const confirmPrimaryLabel = ref('Confirm')
 const confirmPrimaryClass = ref('btn--danger')
 let confirmResolve: ((value: boolean) => void) | null = null
 
-let pollInterval: ReturnType<typeof setInterval> | null = null
+const {
+  drawerOpen,
+  drawerMode,
+  drawerAgentId,
+  drawerIsBuiltin,
+  drawerModel,
+  systemPromptHint,
+  saving,
+  form,
+  drawerTitle,
+  isDirty,
+  toolsInput,
+  advancedOpen,
+  openDrawer,
+  closeDrawer,
+  enterEditMode,
+  onOverlayClick,
+  onCancelEdit,
+  buildSavePayload,
+  applyUpdatedAgent,
+} = useAgentDrawer(agents, confirmDiscard)
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -341,62 +313,9 @@ const models = computed(() => {
   return set
 })
 
-const drawerTitle = computed(() =>
-  drawerMode.value === 'edit' ? `Edit agent: ${drawerAgentId.value}` : `Agent: ${drawerAgentId.value}`
-)
-
-const isDirty = computed(() => {
-  try {
-    return JSON.stringify(initialForm.value) !== JSON.stringify(form.value)
-  } catch {
-    return true
-  }
-})
-
-const toolsInput = computed({
-  get: () => (form.value.tools || []).join(', '),
-  set: (val: string) => {
-    form.value.tools = String(val || '').split(',').map(s => s.trim()).filter(Boolean)
-  },
-})
-
-const advancedOpen = computed(() =>
-  !!form.value.workspace || !!form.value.agentDir || (form.value.tools || []).length > 0 || !form.value.enabled
-)
-
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
-
-onMounted(() => {
-  loadData()
-  pollInterval = setInterval(loadData, 30000)
-})
-
-onUnmounted(() => {
-  if (pollInterval) {
-    clearInterval(pollInterval)
-    pollInterval = null
-  }
-})
-
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
-
-async function loadData() {
-  try {
-    await rpc.waitForConnection()
-    const data = await rpc.call<AgentsListResponse>('agents.list')
-    agents.value = data.agents || []
-  } catch (err) {
-    console.warn('Failed to load agents: ' + (err instanceof Error ? err.message : String(err)))
-  }
-}
-
-function isAgentBuiltin(a: Agent): boolean {
-  return a.isBuiltin === true || a.type === 'builtin'
-}
 
 function agentTools(a: Agent): string[] {
   return Array.isArray(a.tools) ? a.tools : []
@@ -469,77 +388,11 @@ function customizeFromBuiltin(builtinId?: string) {
   console.warn('Tweak the ID, then click Add to create your copy')
 }
 
-// ---------------------------------------------------------------------------
-// Drawer
-// ---------------------------------------------------------------------------
-
-function agentToForm(agent: Agent): AgentForm {
-  return {
-    id: agent.id || '',
-    name: agent.name || '',
-    description: agent.description || '',
-    tools: Array.isArray(agent.tools) ? agent.tools.slice() : [],
-    workspace: agent.workspace || '',
-    agentDir: agent.agent_dir || agent.agentDir || '',
-    enabled: agent.enabled !== false,
-  }
-}
-
-function openDrawer(mode: 'view' | 'edit', agentId?: string) {
-  if (!agentId) return
-  const found = agents.value.find(a => a.id === agentId)
-  if (!found) {
-    console.warn(`Agent "${agentId}" not found`)
-    return
-  }
-  const builtin = isAgentBuiltin(found)
-  const seed = agentToForm(found)
-
-  drawerMode.value = mode
-  drawerAgentId.value = agentId
-  drawerIsBuiltin.value = builtin
-  drawerModel.value = found.model || ''
-  systemPromptHint.value = !!(found.system_prompt || found.systemPrompt)
-
-  initialForm.value = JSON.parse(JSON.stringify(seed))
-  form.value = JSON.parse(JSON.stringify(seed))
-
-  drawerOpen.value = true
-}
-
-function closeDrawer() {
-  drawerOpen.value = false
-}
-
-function onOverlayClick() {
-  if (drawerMode.value === 'view') {
-    closeDrawer()
-    return
-  }
-  if (!isDirty.value) {
-    closeDrawer()
-    return
-  }
-  confirmDiscard().then(ok => {
-    if (ok) closeDrawer()
-  })
-}
-
-function onCancelEdit() {
-  if (!isDirty.value) {
-    drawerMode.value = 'view'
-    return
-  }
-  confirmDiscard().then(ok => {
-    if (ok) drawerMode.value = 'view'
-  })
-}
-
 async function onSave() {
   if (saving.value) return
   saving.value = true
   try {
-    const payload = buildUpdatePayload(initialForm.value, form.value, drawerAgentId.value)
+    const payload = buildSavePayload()
     if (Object.keys(payload).length <= 1) {
       console.warn('Nothing to save')
       saving.value = false
@@ -550,13 +403,8 @@ async function onSave() {
     await loadData()
     const updated = agents.value.find(a => a.id === drawerAgentId.value)
     if (updated) {
-      const seed = agentToForm(updated)
-      initialForm.value = JSON.parse(JSON.stringify(seed))
-      form.value = JSON.parse(JSON.stringify(seed))
-      drawerModel.value = updated.model || ''
-      systemPromptHint.value = !!(updated.system_prompt || updated.systemPrompt)
+      applyUpdatedAgent(updated)
     }
-    drawerMode.value = 'view'
   } catch (err: unknown) {
     const code = rpcErrorCode(err)
     const msg = errorMessage(err)
@@ -567,17 +415,6 @@ async function onSave() {
   } finally {
     saving.value = false
   }
-}
-
-function buildUpdatePayload(initial: AgentForm, current: AgentForm, id: string): Record<string, unknown> {
-  const p: Record<string, unknown> = { id }
-  for (const k of ['name', 'description', 'workspace', 'agentDir', 'enabled'] as const) {
-    if (initial[k] !== current[k]) p[k] = current[k]
-  }
-  if (JSON.stringify(initial.tools || []) !== JSON.stringify(current.tools || [])) {
-    p.tools = current.tools
-  }
-  return p
 }
 
 // ---------------------------------------------------------------------------
@@ -646,113 +483,8 @@ function rpcErrorCode(err: unknown): string {
 </script>
 
 <style scoped>
-.ag-stage {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-5);
-  max-width: none;
-  position: relative;
-}
-
-.ag-stage__header {
-  align-items: flex-end;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-4);
-  justify-content: space-between;
-  padding-top: var(--sp-3);
-}
-
-.ag-stage__title-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.ag-stage__title {
-  font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
-  font-weight: 700;
-  letter-spacing: 0;
-  line-height: 1.05;
-  margin: 0;
-  position: relative;
-}
-
-.ag-stage__title::after {
-  background: linear-gradient(90deg, var(--accent), transparent);
-  border-radius: 2px;
-  bottom: -8px;
-  content: "";
-  height: 2px;
-  left: 0;
-  position: absolute;
-  width: 36px;
-}
-
-.ag-stage__subtitle {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  margin: var(--sp-3) 0 0;
-}
-
-.ag-stage__eyebrow {
-  color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.stat-row {
-  display: grid;
-  gap: var(--sp-3);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.stat {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  color: var(--text);
-  overflow: hidden;
-  padding: var(--sp-4);
-  position: relative;
-}
-
 .stat--hero {
   min-height: 116px;
-}
-
-.stat-label {
-  color: var(--text-dim);
-  display: block;
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  line-height: 1.25;
-  text-transform: uppercase;
-}
-
-.stat-value {
-  align-items: center;
-  display: flex;
-  font-size: 2rem;
-  font-variant-numeric: tabular-nums;
-  gap: 8px;
-  letter-spacing: 0;
-  line-height: 1.12;
-  margin-top: var(--sp-4);
-}
-
-.stat-value.mono {
-  font-family: var(--font-mono);
-}
-
-.stat-hint {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  margin-top: var(--sp-2);
 }
 
 .ag-create {
@@ -837,30 +569,8 @@ function rpcErrorCode(err: unknown): string {
   padding: 2px 8px;
 }
 
-.ag-cards {
-  display: grid;
-  gap: var(--sp-3);
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-}
-
 .ag-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  color: var(--text);
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  overflow: hidden;
-  padding: var(--sp-4);
-  position: relative;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-
-.ag-card:hover {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+  outline: none;
 }
 
 .ag-card.is-builtin {

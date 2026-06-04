@@ -43,17 +43,19 @@
     </div>
 
     <!-- Function list -->
-    <div class="sidebar-section">
+    <div class="sidebar-section sidebar-primary-nav" aria-label="Control navigation">
       <router-link
         v-for="route in quickRoutes"
         :key="route.path"
         :to="route.path"
         class="sidebar-fn-item"
         :class="{ 'is-active': $route.path === route.path }"
+        :title="route.title"
+        :aria-label="route.title"
         @click="handleNavClick"
       >
         <Icon :name="route.icon" :size="18" />
-        <span>{{ route.title }}</span>
+        <span class="sidebar-fn-label">{{ route.title }}</span>
         <span v-if="route.path === '/approvals' && appStore.approvalCount > 0" class="nav-badge">
           {{ appStore.approvalCount }}
         </span>
@@ -135,10 +137,12 @@
         :to="route.path"
         class="sidebar-fn-item"
         :class="{ 'is-active': $route.path === route.path }"
+        :title="route.title"
+        :aria-label="route.title"
         @click="handleNavClick"
       >
         <Icon :name="route.icon" :size="16" />
-        <span>{{ route.title }}</span>
+        <span class="sidebar-fn-label">{{ route.title }}</span>
       </router-link>
     </div>
   </nav>
@@ -370,6 +374,7 @@ function familyIcon(id: SidebarFamilyId): IconName {
 // Main function routes (visible in sidebar) — Chat is accessed via history, not a dedicated button
 const quickRoutes = computed(() => [
   { path: '/overview', title: 'Overview', icon: 'home' as const },
+  { path: '/health', title: 'Health', icon: 'logs' as const },
   { path: '/agents', title: 'Agents', icon: 'agents' as const },
   { path: '/skills', title: 'Skills', icon: 'skills' as const },
   { path: '/channels', title: 'Channels', icon: 'channels' as const },
@@ -502,6 +507,12 @@ const conversationFamilies = computed((): SidebarConversationFamily[] => {
 let hoverLeaveTimer: ReturnType<typeof setTimeout> | null = null
 let sessionRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let rpcUnsubSessionsChanged: (() => void) | null = null
+
+function syncMobileSidebar() {
+  if (window.innerWidth <= 768 && appStore.sidebarOpen) {
+    appStore.setSidebarOpen(false)
+  }
+}
 
 function toggleDock() {
   appStore.toggleSidebar()
@@ -645,6 +656,8 @@ function errorMessage(err: unknown): string {
 useDocumentEvent('keydown', handleKeydown)
 
 onMounted(() => {
+  syncMobileSidebar()
+  window.addEventListener('resize', syncMobileSidebar)
   try {
     const raw = localStorage.getItem('opensquilla_sidebar_conversation_groups')
     if (raw) expandedConversationGroups.value = JSON.parse(raw)
@@ -658,6 +671,7 @@ onUnmounted(() => {
   if (hoverLeaveTimer) clearTimeout(hoverLeaveTimer)
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   if (rpcUnsubSessionsChanged) rpcUnsubSessionsChanged()
+  window.removeEventListener('resize', syncMobileSidebar)
 })
 
 </script>

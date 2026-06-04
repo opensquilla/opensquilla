@@ -1,14 +1,13 @@
 <template>
-  <div class="ch-stage">
-    <header class="ch-stage__header">
-      <div class="ch-stage__title-block">
-        <span class="ch-stage__eyebrow">Control &middot; Channels</span>
-        <h2 class="ch-stage__title">Channels</h2>
-        <p class="ch-stage__subtitle">
+  <div class="ch-stage control-stage">
+    <header class="ch-stage__header control-stage__header">
+      <div class="ch-stage__title-block control-stage__title-block">
+        <h2 class="ch-stage__title control-stage__title">Channels</h2>
+        <p class="ch-stage__subtitle control-stage__subtitle">
           Runtime status for configured channels. Use guided setup or CLI to add and change channel configuration.
         </p>
       </div>
-      <div class="ch-stage__actions">
+      <div class="ch-stage__actions control-stage__actions">
         <button class="btn btn--ghost" title="Refresh" @click="loadData">
           <Icon name="refresh" :size="16" />
           <span>Refresh</span>
@@ -16,34 +15,34 @@
       </div>
     </header>
 
-    <section class="stat-row">
-      <div class="stat stat--hero">
-        <div class="stat-label">Total channels</div>
-        <div class="stat-value">{{ total }}</div>
-        <div class="stat-hint">{{ typeCount }} type{{ typeCount === 1 ? '' : 's' }}</div>
+    <section class="stat-row control-stat-grid control-stat-grid--fixed" style="--control-stat-columns: 4">
+      <div class="stat stat--hero control-stat control-stat--hero">
+        <div class="stat-label control-stat__label">Total channels</div>
+        <div class="stat-value control-stat__value">{{ total }}</div>
+        <div class="stat-hint control-stat__hint">{{ typeCount }} type{{ typeCount === 1 ? '' : 's' }}</div>
       </div>
-      <div class="stat">
-        <div class="stat-label">Connected</div>
-        <div class="stat-value">
+      <div class="stat control-stat">
+        <div class="stat-label control-stat__label">Connected</div>
+        <div class="stat-value control-stat__value">
           {{ connected }}
           <span v-if="connected > 0" class="dot ok"></span>
         </div>
-        <div class="stat-hint">
+        <div class="stat-hint control-stat__hint">
           {{ connected > 0 ? 'live' : (attention > 0 ? `${attention} unhealthy` : 'all idle') }}
         </div>
       </div>
-      <div class="stat">
-        <div class="stat-label">Inactive</div>
-        <div class="stat-value">{{ inactive }}</div>
-        <div class="stat-hint">
+      <div class="stat control-stat">
+        <div class="stat-label control-stat__label">Inactive</div>
+        <div class="stat-value control-stat__value">{{ inactive }}</div>
+        <div class="stat-hint control-stat__hint">
           <span v-if="attention > 0" class="ch-neg">{{ attention }} need attention</span>
           <span v-else>{{ inactiveHint }}</span>
         </div>
       </div>
-      <div class="stat">
-        <div class="stat-label">Restart attempts</div>
-        <div class="stat-value mono">{{ restarts }}</div>
-        <div class="stat-hint">since gateway start</div>
+      <div class="stat control-stat">
+        <div class="stat-label control-stat__label">Restart attempts</div>
+        <div class="stat-value mono control-stat__value control-stat__value--mono">{{ restarts }}</div>
+        <div class="stat-hint control-stat__hint">since gateway start</div>
       </div>
     </section>
 
@@ -94,11 +93,11 @@
         <code class="ch-empty__code">opensquilla onboard configure channels &middot; opensquilla channels list</code>
       </div>
 
-      <div v-else class="ch-cards">
+      <div v-else class="ch-cards control-card-grid" style="--control-card-min: 300px">
         <article
           v-for="(ch, i) in channels"
           :key="ch.id || ch.name || i"
-          class="ch-card"
+          class="ch-card control-card"
           :style="{ '--i': i }"
         >
           <header class="ch-card__head">
@@ -332,113 +331,8 @@ function statusHint(ch: Channel): string {
 </script>
 
 <style scoped>
-.ch-stage {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-5);
-  max-width: none;
-  position: relative;
-}
-
-.ch-stage__header {
-  align-items: flex-end;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-4);
-  justify-content: space-between;
-  padding-top: var(--sp-3);
-}
-
-.ch-stage__title-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.ch-stage__title {
-  font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
-  font-weight: 700;
-  letter-spacing: 0;
-  line-height: 1.05;
-  margin: 0;
-  position: relative;
-}
-
-.ch-stage__title::after {
-  background: linear-gradient(90deg, var(--accent), transparent);
-  border-radius: 2px;
-  bottom: -8px;
-  content: "";
-  height: 2px;
-  left: 0;
-  position: absolute;
-  width: 36px;
-}
-
-.ch-stage__subtitle {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  margin: var(--sp-3) 0 0;
-}
-
-.ch-stage__eyebrow {
-  color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.stat-row {
-  display: grid;
-  gap: var(--sp-3);
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.stat {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  color: var(--text);
-  overflow: hidden;
-  padding: var(--sp-4);
-  position: relative;
-}
-
 .stat--hero {
   min-height: 116px;
-}
-
-.stat-label {
-  color: var(--text-dim);
-  display: block;
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  line-height: 1.25;
-  text-transform: uppercase;
-}
-
-.stat-value {
-  align-items: center;
-  display: flex;
-  font-size: 2rem;
-  font-variant-numeric: tabular-nums;
-  gap: 8px;
-  letter-spacing: 0;
-  line-height: 1.12;
-  margin-top: var(--sp-4);
-}
-
-.stat-value.mono {
-  font-family: var(--font-mono);
-}
-
-.stat-hint {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  margin-top: var(--sp-2);
 }
 
 .dot {
@@ -487,25 +381,6 @@ function statusHint(ch: Channel): string {
   font-variant-numeric: tabular-nums;
   margin-left: 6px;
   padding: 2px 8px;
-}
-
-.ch-cards {
-  display: grid;
-  gap: var(--sp-3);
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-}
-
-.ch-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  color: var(--text);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  overflow: hidden;
-  padding: var(--sp-4);
-  position: relative;
 }
 
 .ch-card__head {

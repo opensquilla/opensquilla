@@ -1,13 +1,12 @@
 <template>
-  <div class="ov-stage">
+  <div class="ov-stage control-stage control-stage--spacious">
     <!-- Header -->
-    <header class="ov-stage__header">
-      <div class="ov-stage__title-block">
-        <span class="ov-stage__eyebrow">Control &middot; Overview</span>
-        <h2 class="ov-stage__title">OpenSquilla</h2>
-        <p class="ov-stage__subtitle">Live status, recent sessions, and the live event stream.</p>
+    <header class="ov-stage__header control-stage__header">
+      <div class="ov-stage__title-block control-stage__title-block">
+        <h2 class="ov-stage__title control-stage__title">OpenSquilla</h2>
+        <p class="ov-stage__subtitle control-stage__subtitle">Live status, recent sessions, and the live event stream.</p>
       </div>
-      <div class="ov-stage__actions">
+      <div class="ov-stage__actions control-stage__actions">
         <button class="btn btn--ghost" title="Refresh" @click="refresh">
           <Icon name="refresh" :size="16" />
           <span>Refresh</span>
@@ -20,61 +19,61 @@
     </header>
 
     <!-- Stat cards -->
-    <section class="ov-stats">
-      <button class="ov-stat ov-stat--accent" type="button" @click="router.push('/usage')">
-        <div class="ov-stat__icon">
+    <section class="ov-stats control-stat-grid" style="--control-stat-min: 220px">
+      <button class="ov-stat ov-stat--accent control-stat control-stat--clickable control-stat--hero" type="button" @click="router.push('/usage')">
+        <div class="ov-stat__icon control-stat__icon">
           <Icon name="usage" :size="18" />
         </div>
-        <div class="ov-stat__label">Total tokens</div>
-        <div class="ov-stat__value">{{ tokensDisplay }}</div>
-        <div class="ov-stat__hint">{{ costLine }}</div>
+        <div class="ov-stat__label control-stat__label">Total tokens</div>
+        <div class="ov-stat__value control-stat__value">{{ tokensDisplay }}</div>
+        <div class="ov-stat__hint control-stat__hint">{{ costLine }}</div>
       </button>
 
-      <button class="ov-stat" type="button" title="Total sessions across all statuses" @click="router.push('/sessions')">
-        <div class="ov-stat__icon">
+      <button class="ov-stat control-stat control-stat--clickable" type="button" title="Total sessions across all statuses" @click="router.push('/sessions')">
+        <div class="ov-stat__icon control-stat__icon">
           <Icon name="sessions" :size="18" />
         </div>
-        <div class="ov-stat__label">Total sessions</div>
-        <div class="ov-stat__value">{{ sessionsCount }}</div>
-        <div class="ov-stat__hint">view all &rarr;</div>
+        <div class="ov-stat__label control-stat__label">Total sessions</div>
+        <div class="ov-stat__value control-stat__value">{{ sessionsCount }}</div>
+        <div class="ov-stat__hint control-stat__hint">view all &rarr;</div>
       </button>
 
-      <button class="ov-stat" type="button" @click="router.push('/agents')">
-        <div class="ov-stat__icon">
+      <button class="ov-stat control-stat control-stat--clickable" type="button" @click="router.push('/agents')">
+        <div class="ov-stat__icon control-stat__icon">
           <Icon name="agents" :size="18" />
         </div>
-        <div class="ov-stat__label">Provider</div>
-        <div class="ov-stat__value ov-stat__value--mono">{{ provider }}</div>
-        <div class="ov-stat__hint">manage agents &rarr;</div>
+        <div class="ov-stat__label control-stat__label">Provider</div>
+        <div class="ov-stat__value ov-stat__value--mono control-stat__value control-stat__value--mono">{{ provider }}</div>
+        <div class="ov-stat__hint control-stat__hint">manage agents &rarr;</div>
       </button>
 
-      <button class="ov-stat" type="button" @click="router.push('/health')">
-        <div class="ov-stat__icon">
+      <button class="ov-stat control-stat control-stat--clickable" type="button" @click="router.push('/health')">
+        <div class="ov-stat__icon control-stat__icon">
           <Icon name="logs" :size="18" />
         </div>
-        <div class="ov-stat__label">Health</div>
-        <div class="ov-stat__value ov-stat__value--status">{{ healthStatus }}</div>
-        <div class="ov-stat__hint">{{ healthSummary }}</div>
+        <div class="ov-stat__label control-stat__label">Health</div>
+        <div class="ov-stat__value ov-stat__value--status control-stat__value">{{ healthStatus }}</div>
+        <div class="ov-stat__hint control-stat__hint">{{ healthSummary }}</div>
       </button>
 
-      <div class="ov-stat ov-stat--static">
-        <div class="ov-stat__icon">
+      <div class="ov-stat ov-stat--static control-stat control-stat--static">
+        <div class="ov-stat__icon control-stat__icon">
           <Icon name="cron" :size="18" />
         </div>
-        <div class="ov-stat__label">Uptime</div>
-        <div class="ov-stat__value ov-stat__value--mono">{{ uptime }}</div>
-        <div class="ov-stat__hint">{{ versionLine }}</div>
+        <div class="ov-stat__label control-stat__label">Uptime</div>
+        <div class="ov-stat__value ov-stat__value--mono control-stat__value control-stat__value--mono">{{ uptime }}</div>
+        <div class="ov-stat__hint control-stat__hint">{{ versionLine }}</div>
       </div>
     </section>
 
     <!-- Grid panels -->
     <div class="ov-grid">
       <!-- Recent sessions -->
-      <section class="ov-panel ov-panel--span2">
-        <div class="ov-panel__head">
+      <section class="ov-panel ov-panel--span2 control-panel">
+        <div class="ov-panel__head control-panel__head">
           <div>
-            <span class="ov-panel__eyebrow">Recent activity</span>
-            <h3 class="ov-panel__title">Sessions</h3>
+            <span class="ov-panel__eyebrow control-panel__eyebrow">Recent activity</span>
+            <h3 class="ov-panel__title control-panel__title">Sessions</h3>
           </div>
           <button class="ov-link" type="button" @click="router.push('/sessions')">
             View all &rarr;
@@ -117,11 +116,11 @@
       </section>
 
       <!-- Connection panel -->
-      <section class="ov-panel">
-        <div class="ov-panel__head">
+      <section class="ov-panel control-panel">
+        <div class="ov-panel__head control-panel__head">
           <div>
-            <span class="ov-panel__eyebrow">Connection</span>
-            <h3 class="ov-panel__title">Gateway</h3>
+            <span class="ov-panel__eyebrow control-panel__eyebrow">Connection</span>
+            <h3 class="ov-panel__title control-panel__title">Gateway</h3>
           </div>
           <span class="conn-pill" :class="connPillClass">{{ connPillState }}</span>
         </div>
@@ -156,11 +155,11 @@
       </section>
 
       <!-- Event stream -->
-      <section class="ov-panel ov-panel--span3">
-        <div class="ov-panel__head">
+      <section class="ov-panel ov-panel--span3 control-panel">
+        <div class="ov-panel__head control-panel__head">
           <div>
-            <span class="ov-panel__eyebrow">Live</span>
-            <h3 class="ov-panel__title">Event stream</h3>
+            <span class="ov-panel__eyebrow control-panel__eyebrow">Live</span>
+            <h3 class="ov-panel__title control-panel__title">Event stream</h3>
           </div>
           <span class="ov-panel__meta">{{ eventCountText }}</span>
         </div>
@@ -534,169 +533,14 @@ function saveConnectionSettings(url: string, token: string): void {
 </script>
 
 <style scoped>
-.ov-stage {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-6);
-  max-width: none;
-  position: relative;
-}
-
-/* Header */
-.ov-stage__header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--sp-4);
-  padding-top: var(--sp-3);
-}
-.ov-stage__title-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.ov-stage__eyebrow {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-.ov-stage__title {
-  font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
-  font-weight: 700;
-  letter-spacing: 0;
-  line-height: 1.05;
-  position: relative;
-  margin: 0;
-}
-.ov-stage__title::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  bottom: -8px;
-  width: 36px;
-  height: 2px;
-  background: linear-gradient(90deg, var(--accent), transparent);
-  border-radius: 2px;
-}
-.ov-stage__subtitle {
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  margin: var(--sp-3) 0 0;
-  max-width: 60ch;
-}
-.ov-stage__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
-}
-
-/* Stat tiles */
-.ov-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: var(--sp-3);
-}
-.ov-stat {
-  position: relative;
-  text-align: left;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: var(--sp-4) var(--sp-4) var(--sp-4) var(--sp-5);
-  overflow: hidden;
-  transition: border-color var(--transition), box-shadow var(--transition), transform 200ms ease;
-  animation: ov-fade-up 360ms ease both;
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-}
-.ov-stat--static {
-  cursor: default;
-}
 .ov-stats > .ov-stat:nth-child(1) { animation-delay: 40ms; }
 .ov-stats > .ov-stat:nth-child(2) { animation-delay: 80ms; }
 .ov-stats > .ov-stat:nth-child(3) { animation-delay: 120ms; }
 .ov-stats > .ov-stat:nth-child(4) { animation-delay: 160ms; }
-.ov-stat::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--border);
-}
-.ov-stat:hover {
-  border-color: var(--border-focus);
-  box-shadow: 0 8px 24px -16px rgba(0, 0, 0, 0.4);
-  transform: translateY(-1px);
-}
-.ov-stat--static:hover {
-  transform: none;
-  box-shadow: none;
-}
-.ov-stat--accent::before {
-  background: var(--accent);
-}
-.ov-stat--accent::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%);
-  pointer-events: none;
-}
-.ov-stat__icon {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent);
-  opacity: 0.85;
-}
-.ov-stat__label {
-  color: var(--text-dim);
-  display: block;
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  line-height: 1.25;
-  margin-bottom: 6px;
-  text-transform: uppercase;
-}
-.ov-stat__value {
-  font-size: 1.75rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  color: var(--text);
-  line-height: 1.18;
-  font-variant-numeric: tabular-nums;
-}
-.ov-stat__value--mono {
-  font-family: var(--font-mono);
-  font-size: 1.375rem;
-  line-height: 1.3;
-}
 .ov-stat__value--status {
   font-size: clamp(1.35rem, 1.35vw, 1.55rem);
   line-height: 1.2;
   white-space: nowrap;
-}
-.ov-stat__hint {
-  margin-top: 6px;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-}
-.ov-stat:hover .ov-stat__hint {
-  color: var(--text);
 }
 
 /* Grid panels */
@@ -710,37 +554,6 @@ function saveConnectionSettings(url: string, token: string): void {
 }
 .ov-panel--span3 {
   grid-column: 1 / -1;
-}
-.ov-panel {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: var(--sp-4) var(--sp-5);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  animation: ov-fade-up 380ms ease both;
-}
-.ov-panel__head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: var(--sp-3);
-}
-.ov-panel__eyebrow {
-  display: block;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  margin-bottom: 2px;
-}
-.ov-panel__title {
-  font-size: var(--fs-lg);
-  font-weight: 600;
-  letter-spacing: 0;
-  margin: 0;
 }
 .ov-panel__meta {
   font-size: var(--fs-xs);

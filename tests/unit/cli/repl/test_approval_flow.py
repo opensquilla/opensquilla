@@ -197,3 +197,72 @@ def test_maybe_handle_approval_restarts_live_after_resolver_exception(
     assert live.stop_calls == 1
     assert live.start_calls == 1
     assert "Failed to resolve approval" in buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_approved", "expected_choice"),
+    [
+        ("1", True, "mount_ro_chat"),
+        ("2", False, "deny"),
+    ],
+)
+def test_maybe_handle_approval_resolves_sandbox_choice(
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+    expected_approved: bool,
+    expected_choice: str,
+) -> None:
+    from opensquilla.cli.repl import approval as approval_mod
+
+    calls: list[tuple[str, bool, str | None]] = []
+
+    async def _resolver(
+        approval_id: str,
+        approved: bool,
+        *,
+        allow_always: bool = False,
+        choice: str | None = None,
+    ) -> None:
+        del allow_always
+        calls.append((approval_id, approved, choice))
+
+    async def _fake_prompt_approval(prefix: str, *, surface: Surface) -> str:
+        assert prefix == "Decision [1-2]: "
+        assert surface is Surface.CLI_GATEWAY
+        return answer
+
+    monkeypatch.setattr(approval_mod, "prompt_approval", _fake_prompt_approval)
+
+    live = _FakeLive()
+
+    asyncio.run(
+        approval_mod.maybe_handle_approval(
+            {
+                "status": "approval_required",
+                "approval_id": "sandbox-approval-1",
+                "message": "Allow access outside the workspace?",
+                "params": {
+                    "approvalKind": "sandbox_path",
+                    "choices": [
+                        {
+                            "id": "mount_ro_chat",
+                            "label": "Allow read for this chat",
+                            "approved": True,
+                        },
+                        {
+                            "id": "deny",
+                            "label": "Deny",
+                            "approved": False,
+                        },
+                    ],
+                },
+            },
+            live,
+            _resolver,
+            surface=Surface.CLI_GATEWAY,
+        )
+    )
+
+    assert live.stop_calls == 1
+    assert live.start_calls == 1
+    assert calls == [("sandbox-approval-1", expected_approved, expected_choice)]

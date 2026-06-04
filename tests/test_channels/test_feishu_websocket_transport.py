@@ -74,7 +74,9 @@ def _install_fake_lark_module(monkeypatch: pytest.MonkeyPatch) -> tuple[types.Mo
     class FakeClient:
         instances: list[FakeClient] = []
 
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
             self.disconnect_called = False
             self.started = False
             self.start_loop: asyncio.AbstractEventLoop | None = None
@@ -131,6 +133,7 @@ async def test_feishu_websocket_stop_stops_sdk_loop_thread(
 
     client = fake_client.instances[-1]
     assert client.start_loop is sdk_module.loop
+    assert client.args[:2] == ("app", "secret")
 
     await transport.stop()
 

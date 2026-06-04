@@ -242,7 +242,9 @@ import { useSessions, type SessionItem } from './composables/useSessions'
 import type { IconName } from './utils/icons'
 import Icon from './components/Icon.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
+import { useDocumentEvent } from './composables/useDocumentEvent'
 import type { AgentOption, AgentsListResponse } from './types/rpc'
+import { newWebchatSessionKey, normalizeAgentId } from './utils/chat/sessionKeys'
 
 const appStore = useAppStore()
 const rpcStore = useRpcStore()
@@ -304,17 +306,6 @@ const currentSessionKey = computed(() => {
 
 function isCurrentSession(key: string): boolean {
   return key === currentSessionKey.value
-}
-
-function normalizeAgentId(agentId: string): string {
-  const raw = String(agentId || '').trim().toLowerCase()
-  if (!raw || raw === 'default') return 'main'
-  const normalized = raw.replace(/[^a-z0-9_-]/g, '-').replace(/^-+|-+$/g, '')
-  return normalized && normalized !== 'default' ? normalized : 'main'
-}
-
-function webchatSessionKey(agentId: string, suffix = Math.random().toString(36).slice(2, 10)): string {
-  return `agent:${normalizeAgentId(agentId)}:webchat:${suffix}`
 }
 
 function agentDisplayName(agentId: string): string {
@@ -546,8 +537,8 @@ async function loadAgents() {
       name: a.name || a.id || a.agentId || 'Agent',
       model: a.model || '',
     })).filter((a: AgentOption) => !!a.id)
-  } catch (err: any) {
-    console.warn('[App] agents.list error:', err?.message || err)
+  } catch (err: unknown) {
+    console.warn('[App] agents.list error:', errorMessage(err))
     agentListError.value = true
     if (!agents.value.length) agents.value = [{ id: 'main', name: 'Main Agent' }]
   }
@@ -574,7 +565,7 @@ function onNewChatBackdrop(e: MouseEvent) {
 
 function startNewChatForSelectedAgent() {
   const agentId = normalizeAgentId(selectedNewChatAgentId.value || 'main')
-  const key = webchatSessionKey(agentId)
+  const key = newWebchatSessionKey(agentId)
   localChatSessions.value = {
     ...localChatSessions.value,
     [key]: { effectiveAgentId: agentId, title: 'New chat', updatedAt: Date.now() },
@@ -647,8 +638,13 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+useDocumentEvent('keydown', handleKeydown)
+
 onMounted(() => {
-  document.addEventListener('keydown', handleKeydown)
   try {
     const raw = localStorage.getItem('opensquilla_sidebar_conversation_groups')
     if (raw) expandedConversationGroups.value = JSON.parse(raw)
@@ -659,7 +655,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  document.removeEventListener('keydown', handleKeydown)
   if (hoverLeaveTimer) clearTimeout(hoverLeaveTimer)
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   if (rpcUnsubSessionsChanged) rpcUnsubSessionsChanged()

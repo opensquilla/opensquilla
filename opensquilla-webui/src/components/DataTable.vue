@@ -57,7 +57,7 @@ interface Column {
 const props = withDefaults(
   defineProps<{
     columns: Column[]
-    rows: Array<Record<string, any>>
+    rows: Array<Record<string, unknown>>
     loading?: boolean
     emptyText?: string
   }>(),

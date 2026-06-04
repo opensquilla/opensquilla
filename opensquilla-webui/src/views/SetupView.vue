@@ -78,12 +78,13 @@
           </details>
           <div v-if="providerEnvMissing" class="setup-warning">
             <div>{{ providerEnvKey }} is not visible to this gateway process. Set it before starting or restarting the gateway, or paste an API key instead.</div>
-            <div v-if="providerEnvCommand" class="setup-warning__command">
-              <code>{{ providerEnvCommand }}</code>
-              <button class="setup-cli__copy" type="button" :title="'Copy set provider key command'" :aria-label="'Copy set provider key command'" @click="copyCommand(providerEnvCommand)">
-                <Icon name="copy" :size="14" />
-              </button>
-            </div>
+            <SetupCommandBlock
+              v-if="providerEnvCommand"
+              class="setup-warning__command"
+              :command="providerEnvCommand"
+              copy-label="Copy set provider key command"
+              @copy="copyCommand"
+            />
           </div>
           <div class="setup-actions">
             <button class="setup-btn setup-btn--primary" :disabled="!providerSelected" @click="saveProvider">Save Provider</button>
@@ -196,12 +197,13 @@
               <span class="setup-badge" :class="capabilityBadgeTone('search')">{{ capabilityBadgeLabel('search') }}</span>
             </div>
             <p class="setup-muted">{{ searchStatusText() }}</p>
-            <div v-if="searchEnvCommand" class="setup-warning__command setup-mini__env-command">
-              <code>{{ searchEnvCommand }}</code>
-              <button class="setup-cli__copy" type="button" :title="'Copy set search key command'" :aria-label="'Copy set search key command'" @click="copyCommand(searchEnvCommand)">
-                <Icon name="copy" :size="14" />
-              </button>
-            </div>
+            <SetupCommandBlock
+              v-if="searchEnvCommand"
+              class="setup-warning__command setup-mini__env-command"
+              :command="searchEnvCommand"
+              copy-label="Copy set search key command"
+              @copy="copyCommand"
+            />
             <SetupNeedList :items="searchNeeds" label="Search needs" />
             <label>
               <span>Provider</span>
@@ -257,12 +259,13 @@
               <span class="setup-badge" :class="capabilityBadgeTone('memory_embedding')">{{ capabilityBadgeLabel('memory_embedding') }}</span>
             </div>
             <p class="setup-muted">{{ memoryStatusText }}</p>
-            <div v-if="memoryEnvCommand" class="setup-warning__command setup-mini__env-command">
-              <code>{{ memoryEnvCommand }}</code>
-              <button class="setup-cli__copy" type="button" :title="'Copy set memory key command'" :aria-label="'Copy set memory key command'" @click="copyCommand(memoryEnvCommand)">
-                <Icon name="copy" :size="14" />
-              </button>
-            </div>
+            <SetupCommandBlock
+              v-if="memoryEnvCommand"
+              class="setup-warning__command setup-mini__env-command"
+              :command="memoryEnvCommand"
+              copy-label="Copy set memory key command"
+              @copy="copyCommand"
+            />
             <SetupNeedList :items="memoryNeeds" label="Memory needs" />
             <label>
               <span>Provider</span>
@@ -305,12 +308,13 @@
               <span class="setup-badge" :class="capabilityBadgeTone('image_generation')">{{ capabilityBadgeLabel('image_generation') }}</span>
             </div>
             <p class="setup-muted">{{ imageStatusText }}</p>
-            <div v-if="imageEnvCommand" class="setup-warning__command setup-mini__env-command">
-              <code>{{ imageEnvCommand }}</code>
-              <button class="setup-cli__copy" type="button" :title="'Copy set image key command'" :aria-label="'Copy set image key command'" @click="copyCommand(imageEnvCommand)">
-                <Icon name="copy" :size="14" />
-              </button>
-            </div>
+            <SetupCommandBlock
+              v-if="imageEnvCommand"
+              class="setup-warning__command setup-mini__env-command"
+              :command="imageEnvCommand"
+              copy-label="Copy set image key command"
+              @copy="copyCommand"
+            />
             <SetupNeedList :items="imageNeeds" label="Image needs" />
             <div v-if="imageEnabled">
               <label>
@@ -358,33 +362,36 @@
         <div class="setup-cli">
           <section v-if="fixCommands.length > 0" class="setup-cli__group" aria-label="Fix now">
             <div class="setup-cli__group-head"><h4>Fix now</h4></div>
-            <div v-for="cmd in fixCommands" :key="cmd.label" class="setup-cli__row">
-              <span class="setup-cli__label">{{ cmd.label }}</span>
-              <code>{{ cmd.command }}</code>
-              <button class="setup-cli__copy" type="button" :title="`Copy ${cmd.label} command`" :aria-label="`Copy ${cmd.label} command`" @click="copyCommand(cmd.command)">
-                <Icon name="copy" :size="14" />
-              </button>
-            </div>
+            <SetupCommandBlock
+              v-for="cmd in fixCommands"
+              :key="cmd.label"
+              class="setup-cli__row"
+              :label="cmd.label"
+              :command="cmd.command"
+              @copy="copyCommand"
+            />
           </section>
           <section class="setup-cli__group" aria-label="CLI handoff">
             <div class="setup-cli__group-head"><h4>CLI handoff</h4></div>
-            <div v-for="cmd in handoffCommands" :key="cmd.label" class="setup-cli__row">
-              <span class="setup-cli__label">{{ cmd.label }}</span>
-              <code>{{ cmd.command }}</code>
-              <button class="setup-cli__copy" type="button" :title="`Copy ${cmd.label} command`" :aria-label="`Copy ${cmd.label} command`" @click="copyCommand(cmd.command)">
-                <Icon name="copy" :size="14" />
-              </button>
-            </div>
+            <SetupCommandBlock
+              v-for="cmd in handoffCommands"
+              :key="cmd.label"
+              class="setup-cli__row"
+              :label="cmd.label"
+              :command="cmd.command"
+              @copy="copyCommand"
+            />
           </section>
           <section class="setup-cli__group" aria-label="CLI recipes">
             <div class="setup-cli__group-head"><h4>CLI recipes</h4></div>
-            <div v-for="cmd in recipeCommands" :key="cmd.label" class="setup-cli__row">
-              <span class="setup-cli__label">{{ cmd.label }}</span>
-              <code>{{ cmd.command }}</code>
-              <button class="setup-cli__copy" type="button" :title="`Copy ${cmd.label} command`" :aria-label="`Copy ${cmd.label} command`" @click="copyCommand(cmd.command)">
-                <Icon name="copy" :size="14" />
-              </button>
-            </div>
+            <SetupCommandBlock
+              v-for="cmd in recipeCommands"
+              :key="cmd.label"
+              class="setup-cli__row"
+              :label="cmd.label"
+              :command="cmd.command"
+              @copy="copyCommand"
+            />
           </section>
         </div>
         <div class="setup-summary">
@@ -434,8 +441,9 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
-import Icon from '@/components/Icon.vue'
+import { copyTextWithFallback } from '@/utils/browser'
 import SetupField from '@/components/SetupField.vue'
+import SetupCommandBlock from '@/components/setup/SetupCommandBlock.vue'
 import SetupNeedList from '@/components/SetupNeedList.vue'
 
 // ---------------------------------------------------------------------------
@@ -1470,20 +1478,7 @@ function shellArg(value: string): string {
 async function copyCommand(command: string) {
   if (!command) return
   try {
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      await navigator.clipboard.writeText(command)
-    } else {
-      const ta = document.createElement('textarea')
-      ta.value = command
-      ta.setAttribute('readonly', '')
-      ta.style.position = 'fixed'
-      ta.style.left = '-9999px'
-      document.body.appendChild(ta)
-      ta.select()
-      const ok = document.execCommand('copy')
-      document.body.removeChild(ta)
-      if (!ok) throw new Error('Copy command failed')
-    }
+    await copyTextWithFallback(command)
     console.warn('Copied command')
   } catch (err) {
     console.warn('Copy failed: ' + (err instanceof Error ? err.message : String(err)))

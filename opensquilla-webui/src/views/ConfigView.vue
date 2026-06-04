@@ -285,9 +285,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
+import { useDocumentEvent } from '@/composables/useDocumentEvent'
 import Icon from '@/components/Icon.vue'
 
 // ---------------------------------------------------------------------------
@@ -403,14 +404,10 @@ const stickyBarCount = computed(() => {
 
 onMounted(() => {
   loadData()
-  document.addEventListener('click', onDocClickForTooltip, true)
-  document.addEventListener('keydown', onDocKeyForTooltip, true)
 })
 
-onUnmounted(() => {
-  document.removeEventListener('click', onDocClickForTooltip, true)
-  document.removeEventListener('keydown', onDocKeyForTooltip, true)
-})
+useDocumentEvent('click', onDocClickForTooltip, true)
+useDocumentEvent('keydown', onDocKeyForTooltip, true)
 
 // ---------------------------------------------------------------------------
 // Data loading

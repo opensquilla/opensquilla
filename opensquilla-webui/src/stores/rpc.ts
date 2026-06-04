@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import { RpcClient } from '@/lib/rpc'
+import { RpcClient, type RpcEventHandler } from '@/lib/rpc'
 
 const WS_URL_KEY = 'opensquilla.wsUrl'
 const WS_TOKEN_KEY = 'opensquilla.wsToken'
@@ -79,7 +79,7 @@ export const useRpcStore = defineStore('rpc', () => {
     return client.value.call(method, params) as Promise<T>
   }
 
-  function on(event: string, handler: (...args: any[]) => void): () => void {
+  function on(event: string, handler: RpcEventHandler): () => void {
     if (!client.value) {
       console.warn(`[RPC] No client for event subscription: ${event}`)
       return () => {}

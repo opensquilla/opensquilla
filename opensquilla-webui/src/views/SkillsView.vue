@@ -26,32 +26,13 @@
       </div>
     </header>
 
-    <section class="sk-stats">
-      <button
-        v-for="tile in statTiles"
-        :key="tile.key"
-        class="sk-stat"
-        :class="[tile.mods, { 'is-active': statusFilter === tile.key }]"
-        type="button"
-        @click="setStatusFilter(tile.key)"
-      >
-        <div class="sk-stat__label">{{ tile.label }}</div>
-        <div class="sk-stat__value" v-html="tile.value" />
-        <div class="sk-stat__hint">{{ tile.hint }}</div>
-      </button>
-      <button
-        v-if="proposals.length > 0"
-        class="sk-stat sk-stat--proposals"
-        :class="{ 'is-active': statusFilter === 'proposals' }"
-        type="button"
-        title="Pending meta-skill proposals — synthesised by meta-skill-creator from your usage patterns"
-        @click="scrollToProposals"
-      >
-        <div class="sk-stat__label">Pending Proposals</div>
-        <div class="sk-stat__value"><span class="sk-stat__warn">{{ proposals.length }}</span></div>
-        <div class="sk-stat__hint">awaiting review</div>
-      </button>
-    </section>
+    <SkillsStats
+      :tiles="statTiles"
+      :active-key="statusFilter"
+      :proposal-count="proposals.length"
+      @select="setStatusFilter"
+      @show-proposals="scrollToProposals"
+    />
 
     <div class="sk-tabs" role="tablist" aria-label="Skill source">
       <button
@@ -270,7 +251,10 @@
           <div class="state-icon">
             <Icon name="skills" :size="36" />
           </div>
-          <p class="state-text" v-html="emptyMessage" />
+          <p class="state-text">
+            <template v-if="filterText">No skills match <strong>{{ filterText }}</strong>.</template>
+            <template v-else>{{ emptyMessage }}</template>
+          </p>
         </div>
       </div>
     </div>
@@ -492,6 +476,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRpcStore } from '@/stores/rpc'
+import SkillsStats from '@/components/skills/SkillsStats.vue'
 import Icon from '@/components/Icon.vue'
 
 // ---------------------------------------------------------------------------
@@ -729,7 +714,7 @@ const installedEmpty = computed(() => {
 
 const emptyMessage = computed(() => {
   if (filterText.value) {
-    return `No skills match <strong>${esc(filterText.value)}</strong>.`
+    return 'No skills match the current filter.'
   }
   if (statusFilter.value === 'ready') {
     return 'No skills are ready. Install dependencies to enable them.'
@@ -752,8 +737,8 @@ const statTiles = computed(() => {
 
   return [
     { key: 'all', label: 'All skills', value: String(total), hint: `${layers.size} layer${layers.size === 1 ? '' : 's'}`, mods: 'sk-stat--accent' },
-    { key: 'ready', label: 'Ready', value: `<span class="sk-stat__ok">${ready}</span>`, hint: ready ? 'install-ready' : 'none ready', mods: '' },
-    { key: 'needs-setup', label: 'Needs setup', value: `<span class="sk-stat__warn">${needs}</span>`, hint: needs ? 'awaiting deps' : 'all set', mods: '' },
+    { key: 'ready', label: 'Ready', value: String(ready), hint: ready ? 'install-ready' : 'none ready', mods: '', tone: 'sk-stat__ok' },
+    { key: 'needs-setup', label: 'Needs setup', value: String(needs), hint: needs ? 'awaiting deps' : 'all set', mods: '', tone: 'sk-stat__warn' },
     { key: 'not-declared', label: 'Not declared', value: String(notDeclared), hint: 'no manifest', mods: '' },
   ]
 })
@@ -1065,13 +1050,6 @@ async function uninstallSkill(name: string) {
   }
 }
 
-function esc(s: string): string {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
 </script>
 
 <style scoped>
@@ -1166,82 +1144,6 @@ function esc(s: string): string {
 }
 .sk-search-wrap--lg .sk-search-input {
   min-width: 320px;
-}
-
-/* Stats */
-.sk-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: var(--sp-3);
-}
-.sk-stat {
-  position: relative;
-  text-align: left;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: var(--sp-4);
-  overflow: hidden;
-  transition: border-color var(--transition), box-shadow var(--transition), transform 200ms ease;
-  animation: sk-fade-up 360ms ease both;
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-}
-.sk-stat.is-active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-.sk-stat:hover {
-  border-color: var(--border-focus);
-  box-shadow: 0 8px 24px -16px rgba(0, 0, 0, 0.4);
-  transform: translateY(-1px);
-}
-.sk-stat--accent::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--accent);
-}
-.sk-stat--proposals::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--warn);
-}
-.sk-stat__label {
-  color: var(--text-dim);
-  display: block;
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  line-height: 1.25;
-  margin-bottom: 6px;
-  text-transform: uppercase;
-}
-.sk-stat__value {
-  font-size: 1.75rem;
-  font-weight: 700;
-  color: var(--text);
-  line-height: 1.18;
-  font-variant-numeric: tabular-nums;
-}
-.sk-stat__ok {
-  color: var(--ok);
-}
-.sk-stat__warn {
-  color: var(--warn);
-}
-.sk-stat__hint {
-  margin-top: 6px;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
 }
 
 /* Tabs */

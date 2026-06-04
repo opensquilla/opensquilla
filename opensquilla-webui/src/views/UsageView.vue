@@ -31,28 +31,15 @@
       </div>
     </header>
 
-    <section class="stat-row" id="usage-metrics">
-      <div class="stat stat--hero">
-        <div class="stat-label">Total tokens</div>
-        <div class="stat-value">{{ totalTokensDisplay }}</div>
-        <div class="stat-hint" v-html="tokensBreakdownHtml" />
-      </div>
-      <div class="stat">
-        <div class="stat-label">Total cost</div>
-        <div class="stat-value mono">{{ totalCostDisplay }}</div>
-        <div class="stat-hint" :title="costHintTitle">{{ costHintText }}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Sessions</div>
-        <div class="stat-value">{{ sessionCountDisplay }}</div>
-        <div class="stat-hint">across all models</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Avg cost / session</div>
-        <div class="stat-value mono">{{ avgCostDisplay }}</div>
-        <div class="stat-hint">running average</div>
-      </div>
-    </section>
+    <UsageSummaryStats
+      :total-tokens="totalTokensDisplay"
+      :token-parts="tokensBreakdownParts"
+      :total-cost="totalCostDisplay"
+      :cost-hint-text="costHintText"
+      :cost-hint-title="costHintTitle"
+      :session-count="sessionCountDisplay"
+      :avg-cost="avgCostDisplay"
+    />
 
     <section class="usage-chart">
       <div class="usage-chart__head">
@@ -285,6 +272,9 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
+import { useDocumentEvent } from '@/composables/useDocumentEvent'
+import { downloadText } from '@/utils/browser'
+import UsageSummaryStats from '@/components/usage/UsageSummaryStats.vue'
 import Icon from '@/components/Icon.vue'
 
 // ---------------------------------------------------------------------------
@@ -491,14 +481,14 @@ const totalTokensDisplay = computed(() => {
   return total != null ? total.toLocaleString() : '—'
 })
 
-const tokensBreakdownHtml = computed(() => {
+const tokensBreakdownParts = computed(() => {
   const t = usageTotals.value
-  const parts: string[] = []
-  if (t.input != null) parts.push(`<span><em>In</em> ${t.input.toLocaleString()}</span>`)
-  if (t.output != null) parts.push(`<span><em>Out</em> ${t.output.toLocaleString()}</span>`)
-  if (t.cacheRead) parts.push(`<span><em>Cache R</em> ${t.cacheRead.toLocaleString()}</span>`)
-  if (t.cacheWrite) parts.push(`<span><em>Cache W</em> ${t.cacheWrite.toLocaleString()}</span>`)
-  return parts.join('<span>·</span>')
+  const parts: Array<{ label: string; value: string }> = []
+  if (t.input != null) parts.push({ label: 'In', value: t.input.toLocaleString() })
+  if (t.output != null) parts.push({ label: 'Out', value: t.output.toLocaleString() })
+  if (t.cacheRead) parts.push({ label: 'Cache R', value: t.cacheRead.toLocaleString() })
+  if (t.cacheWrite) parts.push({ label: 'Cache W', value: t.cacheWrite.toLocaleString() })
+  return parts
 })
 
 const totalCostDisplay = computed(() => fmtCost(usageTotals.value.cost, { decimals: 4 }))
@@ -710,13 +700,13 @@ const sessionsMeta = computed(() => {
 onMounted(() => {
   loadData()
   autoRefreshId = setInterval(loadData, 60000)
-  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
   if (autoRefreshId) clearInterval(autoRefreshId)
-  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
+
+useDocumentEvent('visibilitychange', onVisibilityChange)
 
 function onVisibilityChange() {
   if (document.visibilityState === 'visible') loadData()
@@ -1023,13 +1013,7 @@ function relTime(timestamp: number | string): string {
 }
 
 function download(filename: string, mime: string, content: string) {
-  const blob = new Blob([content], { type: mime })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
+  downloadText(filename, mime, content)
 }
 </script>
 
@@ -1121,63 +1105,6 @@ function download(filename: string, mime: string, content: string) {
 .usage-currency__btn.is-active {
   background: var(--accent);
   color: #fff;
-}
-
-/* Stat row */
-.stat-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: var(--sp-3);
-}
-.stat {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: var(--sp-4);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.stat--hero {
-  position: relative;
-}
-.stat--hero::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%);
-  pointer-events: none;
-  border-radius: inherit;
-}
-.stat-label {
-  color: var(--text-dim);
-  display: block;
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  line-height: 1.25;
-  text-transform: uppercase;
-}
-.stat-value {
-  font-size: 1.75rem;
-  font-weight: 700;
-  color: var(--text);
-  line-height: 1.18;
-  font-variant-numeric: tabular-nums;
-}
-.stat-value.mono {
-  font-family: var(--font-mono);
-  font-size: 1.5rem;
-}
-.stat-hint {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  margin-top: 2px;
-}
-.stat-hint :deep(em) {
-  color: var(--text-dim);
-  font-style: normal;
-  margin-right: 4px;
 }
 
 /* Chart */
